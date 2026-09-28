@@ -58,10 +58,275 @@ fn fixture() -> DomainState {
     .unwrap();
     s
 }
+fn schedule() -> Schedule {
+    Schedule {
+        id: "schedule-1".into(),
+        title: "Daily review".into(),
+        text: "Review the project".into(),
+        project: Some("alondra".into()),
+        options: BTreeMap::new(),
+        disallowed_tools: vec!["mcp__example__write-*".into()],
+        frequency: ScheduleFrequency::Daily,
+        hour: 9,
+        minute: 0,
+        weekday: None,
+        interval: None,
+        start_at: None,
+        enabled: true,
+        next_run: Some(100),
+        revision: 1,
+        deleted_at: None,
+    }
+}
+fn scheduled_request_task(request_id: &str, task_id: &str) -> (Request, Task) {
+    let request = Request {
+        id: request_id.into(),
+        body: "Review the project".into(),
+        closed: false,
+    };
+    let task = Task {
+        id: task_id.into(),
+        request_id: request.id.clone(),
+        agent_id: None,
+        title: "Updated review".into(),
+        state: TaskState::NotStarted,
+        revision: 0,
+        started: false,
+        review_prs: false,
+        final_presentation: None,
+        pr_id: None,
+        dependencies: BTreeSet::new(),
+        stack: None,
+        documents: BTreeMap::new(),
+        archived: false,
+    };
+    (request, task)
+}
 fn text() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::Text {
         text: "The result".into(),
     }]
+}
+
+#[test]
+fn schedule_commands_preserve_claim_and_result_history() {
+    let mut state = fixture();
+    reject_unchanged(
+        &mut state,
+        user(),
+        Command::CreateSchedule {
+            schedule: schedule(),
+        },
+        "forbidden",
+    );
+    exec(
+        &mut state,
+        Actor::System,
+        Command::CreateSchedule {
+            schedule: schedule(),
+        },
+    )
+    .unwrap();
+    let original = state.schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+    let mut stale = original.clone();
+    stale.title = "Stale edit".into();
+    reject_unchanged(
+        &mut state,
+        Actor::System,
+        Command::UpdateSchedule { schedule: stale },
+        "stale_revision",
+    );
+    let mut updated = original;
+    updated.revision += 1;
+    updated.title = "Updated review".into();
+    exec(
+        &mut state,
+        Actor::System,
+        Command::UpdateSchedule { schedule: updated },
+    )
+    .unwrap();
+    reject_unchanged(
+        &mut state,
+        user(),
+        Command::ClaimScheduleRun {
+            schedule_id: "schedule-1".into(),
+            run_id: "run-1".into(),
+            origin: ScheduleRunOrigin::Due,
+            now: 100,
+            next_after_now: Some(200),
+        },
+        "forbidden",
+    );
+    exec(
+        &mut state,
+        Actor::System,
+        Command::ClaimScheduleRun {
+            schedule_id: "schedule-1".into(),
+            run_id: "run-1".into(),
+            origin: ScheduleRunOrigin::Due,
+            now: 100,
+            next_after_now: Some(200),
+        },
+    )
+    .unwrap();
+    let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
+    assert_eq!(run.due_at, Some(100));
+    assert_eq!(run.definition_snapshot.as_ref().unwrap().title, "Updated review");
+    let (request, mut task) = scheduled_request_task("scheduled-request", "scheduled-task");
+    task.request_id = "wrong-request".into();
+    reject_unchanged(
+        &mut state,
+        Actor::System,
+        Command::RecordScheduleRunSent {
+            run_id: "run-1".into(),
+            request,
+            task,
+            finished_at: 101,
+        },
+        "invalid_input",
+    );
+    let (request, task) = scheduled_request_task("scheduled-request", "scheduled-task");
+    exec(
+        &mut state,
+        Actor::System,
+        Command::RecordScheduleRunSent {
+            run_id: "run-1".into(),
+            request,
+            task,
+            finished_at: 101,
+        },
+    )
+    .unwrap();
+    exec(
+        &mut state,
+        Actor::System,
+        Command::RecordScheduleRunFailed {
+            run_id: "run-1".into(),
+            reason: "Launch failed".into(),
+            finished_at: 102,
+        },
+    )
+    .unwrap();
+    let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
+    assert_eq!(run.state, ScheduleRunState::Failed);
+    assert_eq!(run.finished_at, Some(101));
+    assert_eq!(run.request_id, Some("scheduled-request".into()));
+    assert_eq!(run.task_id, Some("scheduled-task".into()));
+    assert_eq!(state.schedule.schedules[&ScheduleId::from("schedule-1")].next_run, Some(200));
+    state.validate().unwrap();
+}
+
+#[test]
+fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
+    let mut state = DomainState::new("epoch");
+    exec(
+        &mut state,
+        Actor::System,
+        Command::CreateSchedule {
+            schedule: schedule(),
+        },
+    )
+    .unwrap();
+    exec(
+        &mut state,
+        Actor::System,
+        Command::ClaimScheduleRun {
+            schedule_id: "schedule-1".into(),
+            run_id: "run-1".into(),
+            origin: ScheduleRunOrigin::Due,
+            now: 100,
+            next_after_now: Some(200),
+        },
+    )
+    .unwrap();
+    let mut changed = state.schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+    changed.revision += 1;
+    changed.title = "Changed while sending".into();
+    reject_unchanged(
+        &mut state,
+        Actor::System,
+        Command::UpdateSchedule { schedule: changed },
+        "conflict",
+    );
+    reject_unchanged(
+        &mut state,
+        Actor::System,
+        Command::DeleteSchedule {
+            schedule_id: "schedule-1".into(),
+            deleted_at: 150,
+        },
+        "conflict",
+    );
+    exec(
+        &mut state,
+        Actor::System,
+        Command::InterruptScheduleRunsOnRestart,
+    )
+    .unwrap();
+    assert_eq!(state.schedule.runs[&ScheduleRunId::from("run-1")].state, ScheduleRunState::Interrupted);
+    reject_unchanged(
+        &mut state,
+        Actor::System,
+        Command::ClaimScheduleRun {
+            schedule_id: "schedule-1".into(),
+            run_id: "run-2".into(),
+            origin: ScheduleRunOrigin::Due,
+            now: 100,
+            next_after_now: Some(200),
+        },
+        "conflict",
+    );
+    exec(
+        &mut state,
+        Actor::System,
+        Command::DeleteSchedule {
+            schedule_id: "schedule-1".into(),
+            deleted_at: 150,
+        },
+    )
+    .unwrap();
+    assert_eq!(state.schedule.schedules[&ScheduleId::from("schedule-1")].deleted_at, Some(150));
+    reject_unchanged(
+        &mut state,
+        Actor::System,
+        Command::ClaimScheduleRun {
+            schedule_id: "schedule-1".into(),
+            run_id: "run-2".into(),
+            origin: ScheduleRunOrigin::Manual,
+            now: 150,
+            next_after_now: None,
+        },
+        "not_found",
+    );
+    state.validate().unwrap();
+}
+
+#[test]
+fn schedule_state_deserializes_old_snapshots_and_rejects_broken_links() {
+    let old = serde_json::json!({
+        "data_epoch": "epoch", "revision": 0, "orchestrator_generation": 0,
+        "requests": {}, "agents": {}, "tasks": {}, "documents": {},
+        "document_revisions": {}, "document_reviews": [], "pull_requests": {},
+        "interactions": {}, "merge_authorizations": {}, "stack_readiness": {}
+    });
+    let old: DomainState = serde_json::from_value(old).unwrap();
+    assert_eq!(old.schedule, ScheduleState::default());
+    let mut state = fixture();
+    exec(&mut state, Actor::System, Command::CreateSchedule { schedule: schedule() }).unwrap();
+    exec(&mut state, Actor::System, Command::ClaimScheduleRun {
+        schedule_id: "schedule-1".into(), run_id: "run-1".into(),
+        origin: ScheduleRunOrigin::Due, now: 100, next_after_now: Some(200),
+    }).unwrap();
+    let (request, mut task) = scheduled_request_task("scheduled-request", "scheduled-task");
+    task.title = "Daily review".into();
+    exec(&mut state, Actor::System, Command::RecordScheduleRunSent {
+        run_id: "run-1".into(), request, task, finished_at: 101,
+    }).unwrap();
+    let encoded = serde_json::to_value(&state).unwrap();
+    let decoded: DomainState = serde_json::from_value(encoded).unwrap();
+    assert_eq!(decoded, state);
+    state.schedule.runs.get_mut(&ScheduleRunId::from("run-1")).unwrap().request_id = Some("other".into());
+    assert_eq!(state.validate().unwrap_err().code, "invalid_input");
 }
 fn present(s: &mut DomainState, id: &str, targets: Vec<DeliveryTarget>) {
     exec(

@@ -13,6 +13,38 @@ pub struct CommandEnvelope {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
+    /// Trusted adapter materializes a validated draft and computes `next_run`
+    /// with the Mac's local calendar before submitting this command.
+    CreateSchedule {
+        schedule: Schedule,
+    },
+    /// The adapter recomputes `next_run`; clients cannot submit this command.
+    UpdateSchedule {
+        schedule: Schedule,
+    },
+    DeleteSchedule {
+        schedule_id: ScheduleId,
+        deleted_at: i64,
+    },
+    ClaimScheduleRun {
+        schedule_id: ScheduleId,
+        run_id: ScheduleRunId,
+        origin: ScheduleRunOrigin,
+        now: i64,
+        next_after_now: Option<i64>,
+    },
+    RecordScheduleRunSent {
+        run_id: ScheduleRunId,
+        request: Request,
+        task: Task,
+        finished_at: i64,
+    },
+    RecordScheduleRunFailed {
+        run_id: ScheduleRunId,
+        reason: String,
+        finished_at: i64,
+    },
+    InterruptScheduleRunsOnRestart,
     CreateRequest {
         request_id: RequestId,
         body: String,
