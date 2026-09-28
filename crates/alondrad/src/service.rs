@@ -1559,6 +1559,10 @@ impl Journal {
 }
 
 #[cfg(test)]
+#[path = "service/domain_v2_parity_tests.rs"]
+mod domain_v2_parity_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use axum::{

@@ -22,6 +22,7 @@ pub fn routes() -> Router<Arc<Hub>> {
     Router::new()
         .route("/v2/domain", get(projection))
         .route("/v2/domain/capabilities", get(capabilities))
+        .route("/v2/domain/delivery-attempts", get(delivery_evidence))
         .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization))
         .route("/v2/domain/changes", get(changes))
         .route("/v2/domain/pull-requests/{id}/diff", get(pull_request_diff))
@@ -524,6 +525,21 @@ pub(crate) fn resolve_delivery_attempt_id(path: &str) -> Option<i64> {
         return None;
     }
     value.parse::<i64>().ok().filter(|id| *id > 0)
+}
+
+async fn delivery_evidence(
+    State(hub): State<Arc<Hub>>,
+    signed: Option<Extension<Signed>>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if !signed_read(&hub, &signed) {
+        return unsigned_read();
+    }
+    let response = delivery_evidence_inner(&hub.domain, query.as_deref().unwrap_or_default());
+    if !signed_read(&hub, &signed) {
+        return unsigned_read();
+    }
+    response
 }
 
 pub(crate) fn delivery_evidence_inner(domain: &DomainRuntime, query: &str) -> Response {
