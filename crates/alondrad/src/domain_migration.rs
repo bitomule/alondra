@@ -190,7 +190,7 @@ fn ensure_legacy_delivery_reconciled(view: &View) -> Result<()> {
     Ok(())
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct BackupFile {
     pub path: String,
     pub bytes: u64,
@@ -497,6 +497,87 @@ pub(crate) fn verify_backup_expected(root: &Path, expected_digest: &str) -> Resu
     verify_backup(root)
 }
 
+/// Recopy every preserved source under the same exclusive HOME lease used by
+/// promotion. The legacy sequence alone cannot detect changed snapshots,
+/// technical journals, configuration or stored content.
+pub(crate) fn verify_current_source_matches_backup(
+    lock: &alondra_core::home_lock::HomeLock,
+    home: &Path,
+    backup: &Path,
+    expected: &BackupManifest,
+    stage: Option<&Path>,
+    allow_unlisted_files: bool,
+) -> Result<()> {
+    let check = std::env::temp_dir().join(format!(
+        "alondra-domain-current-check-{}",
+        crate::auth::random_hex(8)
+    ));
+    let result = (|| {
+        let current = backup_locked(lock, home, &check, &backup.join("legacy-alondrad"))?;
+        let expected_files: std::collections::BTreeMap<_, _> = expected
+            .files
+            .iter()
+            .map(|item| (item.path.as_str(), item))
+            .collect();
+        let current_files: std::collections::BTreeMap<_, _> = current
+            .files
+            .iter()
+            .map(|item| (item.path.as_str(), item))
+            .collect();
+        let originals_match = expected_files.iter().all(|(path, item)| {
+            current_files
+                .get(path)
+                .is_some_and(|observed| *observed == *item)
+        });
+        let allowed_extra = if let Some(stage) = stage {
+            let mut staged = Vec::new();
+            if stage.join("files").exists() {
+                collect_stage_files(stage, &stage.join("files"), &mut staged)?;
+            }
+            staged
+                .into_iter()
+                .map(|item| (item.path, (item.bytes, item.sha256)))
+                .collect::<std::collections::BTreeMap<_, _>>()
+        } else {
+            Default::default()
+        };
+        let extras_match = current_files
+            .iter()
+            .filter(|(path, _)| !expected_files.contains_key(*path))
+            .all(|(path, item)| {
+                allow_unlisted_files
+                    || allowed_extra
+                        .get(*path)
+                        .is_some_and(|(bytes, sha)| *bytes == item.bytes && *sha == item.sha256)
+            });
+        ensure!(
+            current.canonical_source_home == expected.canonical_source_home
+                && current.source_seq == expected.source_seq
+                && originals_match
+                && extras_match,
+            "current HOME differs from verified cutover backup; prepare a fresh backup and stage"
+        );
+        Ok(())
+    })();
+    if check.exists() {
+        fs::remove_dir_all(&check)?;
+    }
+    result
+}
+
+fn collect_stage_files(stage: &Path, directory: &Path, files: &mut Vec<BackupFile>) -> Result<()> {
+    for entry in fs::read_dir(directory)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            collect_stage_files(stage, &path, files)?;
+        } else {
+            files.push(describe_file(stage, &path)?);
+        }
+    }
+    Ok(())
+}
+
 #[derive(Debug, Serialize)]
 pub(crate) struct Rehearsal {
     pub source: LegacyInventory,
@@ -510,6 +591,46 @@ pub(crate) struct CutoverPreparation {
     pub backup_manifest_sha256: String,
     pub backup_files: usize,
     pub rehearsal: Rehearsal,
+}
+
+/// Binds a staged image to the exact verified backup from which it was made.
+/// This file stays outside the live HOME and contains no source data or secrets.
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StageProvenance {
+    pub format: u32,
+    pub backup_manifest_sha256: String,
+    pub source_seq: u64,
+    pub data_epoch: String,
+    pub domain_state_sha256: String,
+    pub import_map_sha256: String,
+}
+
+pub(crate) fn domain_state_digest(state: &alondra_core::domain_v2::DomainState) -> Result<String> {
+    Ok(hex(&Sha256::digest(serde_json::to_vec(state)?)))
+}
+
+pub(crate) fn import_map_digest(database: &Path) -> Result<String> {
+    let database = canonical_leaf(database)?;
+    let connection = Connection::open_with_flags(
+        &database,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    let mut statement = connection.prepare("SELECT source_kind,source_id,role,target_kind,target_id,source_digest,source_seq FROM legacy_import_map ORDER BY source_kind,source_id,role")?;
+    let rows = statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, i64>(6)?,
+            ))
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()?;
+    Ok(hex(&Sha256::digest(serde_json::to_vec(&rows)?)))
 }
 
 /// Prepare the exact cutover image under one exclusive HOME lease. This does
@@ -587,6 +708,23 @@ pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehears
     }
     if let Some(digest) = backup_digest {
         verify_backup_expected(source_home, &digest)?;
+        let provenance = StageProvenance {
+            format: 1,
+            backup_manifest_sha256: digest,
+            source_seq: view.seq,
+            data_epoch: epoch.0.clone(),
+            domain_state_sha256: domain_state_digest(&loaded)?,
+            import_map_sha256: import_map_digest(&target_home.join("domain-v2.db"))?,
+        };
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW)
+            .open(target_home.join("domain-v2-stage.json"))?;
+        file.write_all(&serde_json::to_vec(&provenance)?)?;
+        file.sync_all()?;
+        File::open(target_home)?.sync_all()?;
     }
     Ok(Rehearsal {
         source,
@@ -879,6 +1017,8 @@ mod tests {
             "a populated target cannot be reimported"
         );
         drop(domain);
+        drop(crate::domain_runtime::DomainRuntime::open(&source).unwrap());
+        assert!(crate::legacy_sidecar_is_empty(&source.join("domain-v2.db")).unwrap());
         assert_eq!(
             crate::domain_runtime::DomainRuntime::open(&target)
                 .unwrap()
@@ -889,6 +1029,109 @@ mod tests {
             2,
             "the runtime must open the same filename populated by migration"
         );
+        let provenance = target.join("domain-v2-stage.json");
+        let original_provenance = fs::read(&provenance).unwrap();
+        fs::write(&provenance, b"mismatched backup").unwrap();
+        assert!(
+            crate::domain_cutover::promote_stage_offline(
+                &source,
+                &backup,
+                &manifest_digest,
+                &target,
+            )
+            .is_err(),
+            "a stage without verified provenance must not fence HOME"
+        );
+        assert!(
+            crate::domain_cutover::read_marker(&source)
+                .unwrap()
+                .is_none()
+        );
+        fs::write(&provenance, original_provenance).unwrap();
+        {
+            let connection = Connection::open(target.join("domain-v2.db")).unwrap();
+            connection.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('test','unreconciled',?1,'{}')", [vec![0u8;32]]).unwrap();
+        }
+        assert!(
+            crate::domain_cutover::promote_stage_offline(
+                &source,
+                &backup,
+                &manifest_digest,
+                &target,
+            )
+            .is_err(),
+            "a stage with technical receipts must not be promoted"
+        );
+        assert!(
+            crate::domain_cutover::read_marker(&source)
+                .unwrap()
+                .is_none()
+        );
+        Connection::open(target.join("domain-v2.db"))
+            .unwrap()
+            .execute("DELETE FROM local_command_results WHERE sender='test'", [])
+            .unwrap();
+        let live_file = source.join("files/question.txt");
+        let live_bytes = fs::read(&live_file).unwrap();
+        fs::write(&live_file, b"changed without an event").unwrap();
+        assert!(
+            crate::domain_cutover::promote_stage_offline(
+                &source,
+                &backup,
+                &manifest_digest,
+                &target,
+            )
+            .is_err(),
+            "changed HOME content with the same event sequence must be rejected"
+        );
+        assert!(
+            crate::domain_cutover::read_marker(&source)
+                .unwrap()
+                .is_none()
+        );
+        fs::write(&live_file, live_bytes).unwrap();
+        let prepared_marker = crate::domain_cutover::Marker {
+            format: 1,
+            phase: crate::domain_cutover::Phase::Prepared,
+            backup_manifest_sha256: manifest_digest.clone(),
+            source_seq: manifest.source_seq,
+            data_epoch: imported.data_epoch.0.clone(),
+        };
+        let marker_path = source.join(crate::domain_cutover::MARKER);
+        fs::write(&marker_path, serde_json::to_vec(&prepared_marker).unwrap()).unwrap();
+        fs::set_permissions(&marker_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(source.join("domain-v2.db.next"), b"interrupted copy").unwrap();
+        crate::domain_cutover::abort_prepared_offline(&source, &backup, &manifest_digest).unwrap();
+        assert!(
+            crate::domain_cutover::read_marker(&source)
+                .unwrap()
+                .is_none()
+        );
+        assert!(!source.join("domain-v2.db.next").exists());
+        drop(crate::domain_runtime::DomainRuntime::open(&source).unwrap());
+        let child = std::process::Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("domain_migration::tests::crash_after_empty_sidecar_wal")
+            .env("ALONDRA_CUTOVER_WAL_CHILD", source.join("domain-v2.db"))
+            .status()
+            .unwrap();
+        assert!(
+            child.success(),
+            "crashed SQLite child must exit after durable WAL write"
+        );
+        assert!(source.join("domain-v2.db-wal").exists());
+        fs::write(&marker_path, serde_json::to_vec(&prepared_marker).unwrap()).unwrap();
+        fs::set_permissions(&marker_path, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::write(source.join("domain-v2.db.next"), b"interrupted copy").unwrap();
+        fs::write(
+            source.join("domain-v2-cutover.json.next"),
+            b"interrupted marker",
+        )
+        .unwrap();
+        let interrupted_content = source.join("domain-v2-content-next");
+        fs::create_dir(&interrupted_content).unwrap();
+        fs::set_permissions(&interrupted_content, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::write(interrupted_content.join("partial-copy"), b"partial").unwrap();
         let marker = crate::domain_cutover::promote_stage_offline(
             &source,
             &backup,
@@ -897,6 +1140,13 @@ mod tests {
         )
         .unwrap();
         assert_eq!(marker.phase, crate::domain_cutover::Phase::Committed);
+        assert!(!source.join("domain-v2.db-wal").exists());
+        assert!(!interrupted_content.exists());
+        assert!(
+            crate::domain_cutover::abort_prepared_offline(&source, &backup, &manifest_digest)
+                .is_err(),
+            "committed HOME cannot be reopened as legacy"
+        );
         assert_eq!(marker.source_seq, 2);
         assert_eq!(
             crate::domain_cutover::read_marker(&source)
@@ -961,5 +1211,21 @@ mod tests {
             "backup verification must detect changed attachment"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn crash_after_empty_sidecar_wal() {
+        let Some(path) = std::env::var_os("ALONDRA_CUTOVER_WAL_CHILD") else {
+            return;
+        };
+        let wal = Connection::open(Path::new(&path)).unwrap();
+        wal.execute_batch(
+            "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+             CREATE TABLE abandoned_wal_test(value INTEGER);
+             DROP TABLE abandoned_wal_test;",
+        )
+        .unwrap();
+        assert!(Path::new(&path).with_file_name("domain-v2.db-wal").exists());
+        unsafe { libc::_exit(0) };
     }
 }
