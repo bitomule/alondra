@@ -187,6 +187,17 @@ impl DomainStore {
     pub(crate) fn project(&mut self) -> Result<DomainProjection> {
         Ok(self.load()?.projection())
     }
+    pub(crate) fn schedule_request_tools(&mut self, request_id: &RequestId) -> Result<Option<Vec<String>>> {
+        let tx = self.conn.transaction()?;
+        check_schema(&tx)?;
+        let patterns = repository::load_schedule_request_tools(&tx, request_id)?;
+        tx.commit()?;
+        Ok(patterns)
+    }
+    pub(crate) fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool> {
+        check_schema(&self.conn)?;
+        repository::was_schedule_launch_failed(&self.conn, request_id)
+    }
     pub(crate) fn integrity_check(&self) -> Result<()> {
         ensure!(
             self.conn

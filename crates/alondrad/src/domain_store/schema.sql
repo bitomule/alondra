@@ -118,7 +118,9 @@ CREATE TABLE schedule_runs (
  task_id TEXT UNIQUE REFERENCES tasks(id),
  error TEXT,
  definition_snapshot TEXT CHECK(definition_snapshot IS NULL OR (json_valid(definition_snapshot) AND json_type(definition_snapshot)='object')),
- launch TEXT CHECK(launch IS NULL OR (json_valid(launch) AND json_type(launch)='object')),
+ launch TEXT CHECK(launch IS NULL OR (json_valid(launch) AND json_type(launch)='object'
+   AND COALESCE(json_type(launch,'$.intent')='object',0)
+   AND COALESCE(json_extract(launch,'$.state') IN ('pending','dispatching','handed','failed','uncertain'),0))),
  UNIQUE(schedule_id,claim_revision),
  FOREIGN KEY(request_id,task_id) REFERENCES tasks(request_id,id),
  CHECK((request_id IS NULL)=(task_id IS NULL)),
@@ -130,6 +132,8 @@ CREATE TABLE schedule_runs (
  CHECK(state!='launching' OR (finished_at IS NULL AND error IS NULL AND request_id IS NULL)),
  CHECK(state NOT IN ('failed','interrupted') OR (error IS NOT NULL AND length(error)>0)),
  CHECK(launch IS NULL OR (origin!='legacy_last_observed' AND request_id IS NOT NULL AND task_id IS NOT NULL)),
+ CHECK(launch IS NULL OR (state='sent' AND json_extract(launch,'$.state')!='failed')
+   OR (state='failed' AND json_extract(launch,'$.state')='failed')),
  CHECK(origin='legacy_last_observed' OR request_id IS NULL OR launch IS NOT NULL)
 );
 CREATE INDEX schedule_runs_recent ON schedule_runs(schedule_id,claim_revision DESC);

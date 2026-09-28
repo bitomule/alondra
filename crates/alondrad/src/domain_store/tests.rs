@@ -493,6 +493,8 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
         "Task must belong to the run Request");
     assert!(upgraded.conn.execute_batch(&valid_run.replace("'due',2", "'due',5")).is_err(),
         "a run cannot claim a future Schedule revision");
+    assert!(upgraded.conn.execute_batch(&valid_run.replace("\"state\":\"pending\"", "\"state\":\"bogus\"")).is_err(),
+        "unknown technical launch states are rejected");
     upgraded.conn.execute_batch(&valid_run).unwrap();
     upgraded.conn.execute("UPDATE schedules SET revision=3 WHERE id='schedule-1'", []).unwrap();
     upgraded.conn.execute_batch(r#"INSERT INTO schedule_runs

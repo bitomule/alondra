@@ -210,6 +210,23 @@ fn schedule_commands_preserve_claim_and_result_history() {
         },
     )
     .unwrap();
+    reject_unchanged(&mut state, user(), Command::AssignTask {
+        task_id: "scheduled-task".into(), agent_id: "a".into(),
+    }, "conflict");
+    reject_unchanged(&mut state, user(), Command::SetDependencies {
+        task_id: "scheduled-task".into(), dependencies: ["t".into()].into_iter().collect(), stack: None,
+    }, "conflict");
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().agent_id = Some("a".into());
+    state.validate().unwrap();
+    reject_unchanged(&mut state, Actor::System, Command::ClaimScheduleLaunch {
+        run_id: "run-1".into(), now: 102,
+    }, "conflict");
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().agent_id = None;
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().dependencies = ["t".into()].into_iter().collect();
+    reject_unchanged(&mut state, Actor::System, Command::ClaimScheduleLaunch {
+        run_id: "run-1".into(), now: 102,
+    }, "conflict");
+    state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().dependencies.clear();
     exec(
         &mut state,
         Actor::System,

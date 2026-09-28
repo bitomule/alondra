@@ -212,6 +212,7 @@ fn protocol_mode(home: &Path) -> Result<ProtocolMode> {
 
 /// Critical v2 workers must not disappear while the local listener remains healthy.
 async fn supervise_v2_workers<S>(server: S, outbox: tokio::task::JoinHandle<Result<()>>,
+    scheduler: tokio::task::JoinHandle<Result<()>>,
     connector: Option<tokio::task::JoinHandle<()>>) -> Result<()>
 where S: std::future::Future<Output = std::io::Result<()>> {
     tokio::select! {
@@ -224,6 +225,13 @@ where S: std::future::Future<Output = std::io::Result<()>> {
                 Ok(Ok(())) => anyhow::bail!("v2 outbox worker stopped unexpectedly"),
                 Ok(Err(error)) => anyhow::bail!("v2 outbox worker failed: {error:#}"),
                 Err(error) => anyhow::bail!("v2 outbox worker panicked: {error}"),
+            }
+        },
+        result = scheduler => {
+            match result {
+                Ok(Ok(())) => anyhow::bail!("v2 Schedule worker stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("v2 Schedule worker failed: {error:#}"),
+                Err(error) => anyhow::bail!("v2 Schedule worker panicked: {error}"),
             }
         },
         result = async {
@@ -299,9 +307,10 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     log!("v2-only domain listener on http://{addr}, data in {}", config.home.display());
     let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).into_future();
     let outbox = tokio::spawn(domain_delivery::run_v2(
-        domain, config.home.clone(), push, service.clone()));
+        domain.clone(), config.home.clone(), push, service.clone()));
+    let scheduler = tokio::spawn(domain_schedule_runner::run(domain, config.home.clone(), config.wake));
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
-    supervise_v2_workers(server, outbox, connector).await
+    supervise_v2_workers(server, outbox, scheduler, connector).await
 }
 
 #[cfg(test)]
@@ -312,16 +321,24 @@ mod v2_worker_supervision_tests {
     async fn unexpected_connector_or_outbox_exit_stops_listener() {
         let server = || std::future::pending::<std::io::Result<()>>();
         let exit = supervise_v2_workers(server(), tokio::spawn(std::future::pending::<Result<()>>()),
+            tokio::spawn(std::future::pending::<Result<()>>()),
             Some(tokio::spawn(async {}))).await.unwrap_err();
         assert!(exit.to_string().contains("connector stopped unexpectedly"));
         let panic = supervise_v2_workers(server(), tokio::spawn(std::future::pending::<Result<()>>()),
+            tokio::spawn(std::future::pending::<Result<()>>()),
             Some(tokio::spawn(async { panic!("synthetic failure") }))).await.unwrap_err();
         assert!(panic.to_string().contains("connector failed"));
-        let stopped_outbox = supervise_v2_workers(server(), tokio::spawn(async { Ok(()) }), None).await.unwrap_err();
+        let stopped_outbox = supervise_v2_workers(server(), tokio::spawn(async { Ok(()) }),
+            tokio::spawn(std::future::pending::<Result<()>>()), None).await.unwrap_err();
         assert!(stopped_outbox.to_string().contains("outbox worker stopped unexpectedly"));
         let failed_outbox = supervise_v2_workers(server(),
-            tokio::spawn(async { anyhow::bail!("synthetic SQL failure") }), None).await.unwrap_err();
+            tokio::spawn(async { anyhow::bail!("synthetic SQL failure") }),
+            tokio::spawn(std::future::pending::<Result<()>>()), None).await.unwrap_err();
         assert!(failed_outbox.to_string().contains("synthetic SQL failure"));
+        let failed_scheduler = supervise_v2_workers(server(),
+            tokio::spawn(std::future::pending::<Result<()>>()),
+            tokio::spawn(async { anyhow::bail!("synthetic Schedule failure") }), None).await.unwrap_err();
+        assert!(failed_scheduler.to_string().contains("synthetic Schedule failure"));
     }
 
 }
