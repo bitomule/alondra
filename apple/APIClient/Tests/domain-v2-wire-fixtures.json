@@ -121,7 +121,7 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
@@ -378,7 +378,7 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
@@ -573,7 +573,7 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
@@ -746,7 +746,7 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
@@ -937,7 +937,7 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [

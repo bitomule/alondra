@@ -191,7 +191,7 @@ public actor CloudAppServices {
         }
     }
 
-    private var triageIdentity: TriageIdentity {
+    var triageIdentity: TriageIdentity {
         TriageIdentity(server: scope.server, deviceID: scope.deviceID,
                        credentialRevision: scope.credentialRevision, generation: scope.generation)
     }
@@ -225,6 +225,7 @@ public actor CloudAppServices {
                 if local, LoopbackSession.neverSent(error) { return false }
                 if let error = error as? ServiceAPIError { return error == .outcomeUnknown }
                 if error is APIError { return false }
+                if error is DomainV2.DomainError || error is DomainIntentError { return false }
                 if error is DeliveryHandoffUnconfirmed { return false }
                 if case RelaySessionError.invalidRequest = error { return false }
                 if case RelaySessionError.operationIdentityConflict = error { return false }

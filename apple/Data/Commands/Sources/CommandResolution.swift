@@ -29,6 +29,12 @@ public struct CommandResolution: Codable, Equatable, Sendable, Identifiable {
             case .answer:
                 _ = try DeliveryHandoffUnconfirmed.inspect(response.body, requiresJSONObject: true, status: response.status)
             case .resolveDelivery(let decision): try decision.validate(response.body)
+            case .domain:
+                _ = try DomainV2.decode(DomainV2.CommandOutcome.self, from: response.body)
+            case .resolveDomainDelivery(let decision):
+                guard decision.validate(try DomainV2.decode(DomainV2.DeliveryResolution.self, from: response.body)) else {
+                    throw DeliveryResponseError.invalid
+                }
             default: break
             }
         }

@@ -5,6 +5,25 @@ import Foundation
 extension CommandKind {
     var userFacingDescription: String {
         switch self {
+        case .domain(let kind):
+            switch kind.action {
+            case "mark_read": String(localized: "Mark as read", table: "AlondraShared", bundle: #bundle)
+            case "answer_question": String(localized: "Answer question", table: "AlondraShared", bundle: #bundle)
+            case "accept_delivery": String(localized: "Accept result", table: "AlondraShared", bundle: #bundle)
+            case "submit_feedback": String(localized: "Send feedback", table: "AlondraShared", bundle: #bundle)
+            case "authorize_merge": String(localized: "Authorize merge", table: "AlondraShared", bundle: #bundle)
+            case "cancel_task": String(localized: "Cancel task", table: "AlondraShared", bundle: #bundle)
+            case "reopen_task": String(localized: "Reopen task", table: "AlondraShared", bundle: #bundle)
+            case "archive_task": String(localized: "Archive task", table: "AlondraShared", bundle: #bundle)
+            case "unarchive_task": String(localized: "Restore task", table: "AlondraShared", bundle: #bundle)
+            case "create_request": String(localized: "New request", table: "AlondraShared", bundle: #bundle)
+            case "close_request": String(localized: "Close request", table: "AlondraShared", bundle: #bundle)
+            default: kind.action
+            }
+        case .resolveDomainDelivery(let decision):
+            decision.retry
+                ? String(localized: "Retry delivery #\(decision.attemptID)", table: "AlondraShared", bundle: #bundle)
+                : String(localized: "Discard delivery #\(decision.attemptID)", table: "AlondraShared", bundle: #bundle)
         case .answer(let id): String(localized: "Answer question #\(id)", table: "AlondraShared", bundle: #bundle)
         case .resolveDelivery(let decision):
             decision.retry

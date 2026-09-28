@@ -612,6 +612,7 @@ extension DomainV2 {
     }
 
     public enum DomainEffect: Codable, Equatable, Sendable {
+        case notifyUser(taskId: TaskId?, interactionId: InteractionId)
         case notifyAgent(agentId: AgentId, taskId: TaskId?, interactionId: InteractionId?, message: String)
         case notifyOrchestrator(interactionId: InteractionId)
 
@@ -626,6 +627,7 @@ extension DomainV2 {
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             switch try container.decode(String.self, forKey: .kind) {
+            case "notify_user": self = .notifyUser(taskId: try container.decodeIfPresent(TaskId.self, forKey: .taskId), interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
             case "notify_agent": self = .notifyAgent(agentId: try container.decode(AgentId.self, forKey: .agentId), taskId: try container.decodeIfPresent(TaskId.self, forKey: .taskId), interactionId: try container.decodeIfPresent(InteractionId.self, forKey: .interactionId), message: try container.decode(String.self, forKey: .message))
             case "notify_orchestrator": self = .notifyOrchestrator(interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
             default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown domain v2 DomainEffect kind")
@@ -635,6 +637,10 @@ extension DomainV2 {
         public func encode(to encoder: any Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             switch self {
+            case let .notifyUser(taskId, interactionId):
+                try container.encode("notify_user", forKey: .kind)
+                try container.encodeIfPresent(taskId, forKey: .taskId)
+                try container.encode(interactionId, forKey: .interactionId)
             case let .notifyAgent(agentId, taskId, interactionId, message):
                 try container.encode("notify_agent", forKey: .kind)
                 try container.encode(agentId, forKey: .agentId)
