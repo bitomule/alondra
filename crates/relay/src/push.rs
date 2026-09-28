@@ -180,16 +180,75 @@ impl Apns {
             .header("content-type", "application/json")
             .body(body)
             .send()
-            .await?;
-        if !response.status().is_success() {
-            bail!(
-                "APNs rejected encrypted push with HTTP {}",
-                response.status()
-            );
+            .await
+            .map_err(reqwest::Error::without_url)?;
+        let status = response.status();
+        if !status.is_success() {
+            let apns_id = response
+                .headers()
+                .get("apns-id")
+                .and_then(|value| value.to_str().ok())
+                .map(str::to_owned);
+            let body = response.bytes().await.unwrap_or_default();
+            return Err(ApnsRejection::new(status.as_u16(), apns_id.as_deref(), &body).into());
         }
         Ok(())
     }
 }
+
+/// APNs refused a push. Carries only Apple's status, reason and apns-id, never token or payload.
+#[derive(Debug, PartialEq)]
+pub struct ApnsRejection {
+    pub status: u16,
+    pub reason: Option<String>,
+    pub apns_id: Option<String>,
+}
+
+impl ApnsRejection {
+    pub fn new(status: u16, apns_id: Option<&str>, body: &[u8]) -> Self {
+        let reason = serde_json::from_slice::<Value>(body)
+            .ok()
+            .and_then(|value| value["reason"].as_str().and_then(log_safe));
+        Self {
+            status,
+            reason,
+            apns_id: apns_id.and_then(log_safe),
+        }
+    }
+
+    /// Apple will never deliver to this token again; the phone must register a new one.
+    pub fn registration_is_dead(&self) -> bool {
+        self.status == 410
+            || (self.status == 400
+                && matches!(
+                    self.reason.as_deref(),
+                    Some("BadDeviceToken" | "DeviceTokenNotForTopic" | "Unregistered")
+                ))
+    }
+}
+
+fn log_safe(value: &str) -> Option<String> {
+    (!value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.')))
+    .then(|| value.to_owned())
+}
+
+impl std::fmt::Display for ApnsRejection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "APNs rejected encrypted push with HTTP {} reason={} apns-id={}",
+            self.status,
+            self.reason.as_deref().unwrap_or("none"),
+            self.apns_id.as_deref().unwrap_or("none")
+        )
+    }
+}
+
+impl std::error::Error for ApnsRejection {}
 
 #[cfg(test)]
 mod tests {
@@ -211,5 +270,41 @@ mod tests {
         invalid = valid.clone();
         invalid.token = "g0".repeat(32);
         assert!(validate_registration(&invalid).is_err());
+    }
+
+    #[test]
+    fn rejection_keeps_apple_reason_and_apns_id() {
+        let rejection = ApnsRejection::new(
+            400,
+            Some("EC1BF194-B3B2-424A-89A9-5A918A6E6B5C"),
+            br#"{"reason":"BadDeviceToken"}"#,
+        );
+        assert_eq!(rejection.reason.as_deref(), Some("BadDeviceToken"));
+        assert_eq!(
+            rejection.to_string(),
+            "APNs rejected encrypted push with HTTP 400 reason=BadDeviceToken apns-id=EC1BF194-B3B2-424A-89A9-5A918A6E6B5C"
+        );
+        assert_eq!(
+            ApnsRejection::new(500, None, b"<html>oops</html>").to_string(),
+            "APNs rejected encrypted push with HTTP 500 reason=none apns-id=none"
+        );
+        let injected = ApnsRejection::new(400, Some("id\nforged"), br#"{"reason":"Bad\nline"}"#);
+        assert_eq!((injected.reason, injected.apns_id), (None, None));
+    }
+
+    #[test]
+    fn only_dead_token_rejections_mark_the_registration_gone() {
+        let dead = |status, body: &[u8]| ApnsRejection::new(status, None, body).registration_is_dead();
+        assert!(dead(410, br#"{"reason":"Unregistered","timestamp":1}"#));
+        assert!(dead(410, br#"{"reason":"ExpiredToken"}"#));
+        assert!(dead(410, b""));
+        assert!(dead(400, br#"{"reason":"BadDeviceToken"}"#));
+        assert!(dead(400, br#"{"reason":"DeviceTokenNotForTopic"}"#));
+        assert!(dead(400, br#"{"reason":"Unregistered"}"#));
+        assert!(!dead(400, br#"{"reason":"BadTopic"}"#));
+        assert!(!dead(400, b""));
+        assert!(!dead(403, br#"{"reason":"InvalidProviderToken"}"#));
+        assert!(!dead(429, br#"{"reason":"TooManyRequests"}"#));
+        assert!(!dead(503, br#"{"reason":"ServiceUnavailable"}"#));
     }
 }

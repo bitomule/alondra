@@ -433,10 +433,23 @@ async fn send_push(
         ));
     }
     server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&request.device_id)).await.map_err(authentication_error)?;
-    apns.send(&registration, e)
-        .await
-        .map_err(|_| error(StatusCode::BAD_GATEWAY, "apns_delivery_failed"))?;
+    if let Err(failure) = apns.send(&registration, e).await {
+        eprintln!(
+            "alondra-relay: APNs delivery to device {} failed: {failure:#}",
+            request.device_id
+        );
+        return Err(apns_failure_response(&failure));
+    }
     Ok(StatusCode::ACCEPTED.into_response())
+}
+
+fn apns_failure_response(failure: &anyhow::Error) -> (StatusCode, Json<Value>) {
+    match failure.downcast_ref::<push::ApnsRejection>() {
+        Some(rejection) if rejection.registration_is_dead() => {
+            error(StatusCode::GONE, "push_registration_gone")
+        }
+        _ => error(StatusCode::BAD_GATEWAY, "apns_delivery_failed"),
+    }
 }
 
 fn parse_envelope(
@@ -1590,12 +1603,19 @@ mod http_tests {
                 let captured = captured.clone();
                 async move {
                     assert_eq!(version, axum::http::Version::HTTP_2);
-                    let reject = body["alondra"]["envelope"]["request_id"] == "push-reject";
+                    let request_id = body["alondra"]["envelope"]["request_id"].clone();
                     captured.lock().unwrap().push(body);
-                    if reject {
-                        StatusCode::BAD_REQUEST
+                    if request_id == "push-reject" {
+                        (StatusCode::BAD_REQUEST, Json(json!({"reason":"BadTopic"}))).into_response()
+                    } else if request_id == "push-gone" {
+                        (
+                            StatusCode::GONE,
+                            [("apns-id", "EC1BF194-B3B2-424A-89A9-5A918A6E6B5C")],
+                            Json(json!({"reason":"Unregistered","timestamp":1})),
+                        )
+                            .into_response()
                     } else {
-                        StatusCode::OK
+                        StatusCode::OK.into_response()
                     }
                 }
             }),
@@ -1880,6 +1900,40 @@ mod http_tests {
             StatusCode::BAD_GATEWAY,
             "APNs rejection must not look accepted"
         );
+        assert_eq!(rejected.json::<Value>().await.unwrap()["error"], "apns_delivery_failed");
+
+        let gone_envelope = EnvelopeV1::seal_random(
+            Context {
+                route: "mac-1",
+                sender: "mac-1",
+                recipient: "phone-push",
+                request_id: "push-gone",
+                kind: "push",
+                expires_at_ms: now_ms() + 120_000,
+            },
+            br#"{"event":"unreadable"}"#,
+            &mac_sign,
+            &phone_ecdh.public_key(),
+        )
+        .unwrap();
+        let gone_body =
+            serde_json::to_vec(&json!({"device_id":"phone-push","envelope":gone_envelope}))
+                .unwrap();
+        let gone = sign(
+            &epoch,
+            client.post(format!("{url}{path}")).body(gone_body.clone()),
+            &mac_sign,
+            "mac-1",
+            "POST",
+            path,
+            &gone_body,
+            61,
+        )
+        .send()
+        .await
+        .unwrap();
+        assert_eq!(gone.status(), StatusCode::GONE, "a dead APNs token is not an outage");
+        assert_eq!(gone.json::<Value>().await.unwrap()["error"], "push_registration_gone");
 
         server
             .auth
