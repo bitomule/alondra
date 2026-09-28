@@ -11,7 +11,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{DeliveryClaim, OutboxMessage};
 use crate::wake::WriteFailure;
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{AgentId, DomainState, InteractionId, InteractionPayload, ScheduleLaunchState};
+use alondra_core::domain_v2::{AgentId, DomainState, InteractionId, InteractionPayload, MergeAttemptState, ScheduleLaunchState};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -181,6 +181,17 @@ fn render(state: &DomainState, message: &OutboxMessage) -> String {
             InteractionPayload::Delivery { feedback, .. } => {
                 if let Some(latest) = feedback.last() {
                     text.push_str(&format!(" feedback={}", serde_json::to_string(latest).unwrap_or_default()));
+                }
+                // A merge authorization is the exact claim the Agent may make:
+                // its id, the PR, the head and the method the user chose.
+                for authorization in state.merge_authorizations.values().filter(|authorization| {
+                    authorization.presentation_id == interaction.id && authorization.valid
+                        && authorization.attempt == MergeAttemptState::Unclaimed
+                }) {
+                    text.push_str(&format!(" merge_authorization={}", serde_json::to_string(&serde_json::json!({
+                        "authorization_id": authorization.id, "pr_id": authorization.pr_id,
+                        "head": authorization.head, "method": authorization.method,
+                    })).unwrap_or_default()));
                 }
             }
             _ => (),
@@ -435,6 +446,32 @@ mod tests {
         let reopened = fixture.open();
         assert!(agent_outbox(&reopened, "session-b").is_empty());
         assert!(agent_outbox(&reopened, "session-a").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_merge_authorization_travels_with_its_message() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        answered_question(&domain, "session-a");
+        let head = "0123456789abcdef0123456789abcdef01234567";
+        command(&domain, Actor::Agent { agent_id: "session-a".into() }, "pr", Command::RegisterPr {
+            task_id: "task-session-a".into(), pr_id: "pr".into(), host: "github.com".into(),
+            repository: "owner/repo".into(), number: 7, head: head.into(), base: "main".into(),
+            allowed_methods: vec![MergeMethod::Squash],
+        });
+        command(&domain, Actor::Agent { agent_id: "session-a".into() }, "present", Command::PresentResult {
+            attachments: vec![], task_id: "task-session-a".into(), interaction_id: "delivery".into(),
+            body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }],
+            is_final: true,
+        });
+        command(&domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
+            authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
+            expected_head: head.into(), method: MergeMethod::Squash,
+        });
+        let (reply, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
+        result.unwrap();
+        let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert!(context.contains(&format!("merge_authorization={{\"authorization_id\":\"auth\",\"head\":\"{head}\",\"method\":\"squash\",\"pr_id\":\"pr\"}}")), "{context}");
     }
 
     #[tokio::test]

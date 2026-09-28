@@ -17,10 +17,16 @@ use std::sync::Arc;
 pub(crate) struct V2Only {
     domain: Arc<DomainRuntime>,
     home: PathBuf,
+    observer: Box<dyn crate::domain_github::PrObserver>,
 }
 
 impl V2Only {
     pub(crate) fn open(home: &Path, expected_epoch: &str) -> Result<Arc<Self>> {
+        Self::open_with(home, expected_epoch, Box::new(crate::domain_github::GhCli::new()))
+    }
+
+    pub(crate) fn open_with(home: &Path, expected_epoch: &str,
+        observer: Box<dyn crate::domain_github::PrObserver>) -> Result<Arc<Self>> {
         let database = home.join("domain-v2.db");
         let metadata = std::fs::symlink_metadata(&database).with_context(|| {
             format!("committed domain database missing: {}", database.display())
@@ -37,6 +43,7 @@ impl V2Only {
         Ok(Arc::new(Self {
             domain,
             home: home.to_owned(),
+            observer,
         }))
     }
 
@@ -54,6 +61,9 @@ impl crate::domain_api::DomainHost for V2Only {
     }
     fn cutover_committed(&self) -> bool {
         true
+    }
+    fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver {
+        &*self.observer
     }
 }
 
