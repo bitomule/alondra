@@ -199,7 +199,16 @@ pub(crate) fn ensure_legacy_schedules_reconciled(home: &Path) -> Result<()> {
     let path = home.join("schedules.db");
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            for sidecar in ["schedules.db-wal", "schedules.db-shm", "schedules.db-journal"] {
+                match fs::symlink_metadata(home.join(sidecar)) {
+                    Ok(_) => anyhow::bail!("schedules.db is missing but {sidecar} exists"),
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(error) => return Err(error.into()),
+                }
+            }
+            return Ok(());
+        }
         Err(error) => return Err(error.into()),
     };
     ensure!(
@@ -896,6 +905,16 @@ mod tests {
         fs::remove_file(source.join("schedules.db")).unwrap();
         fs::write(source.join("schedules.db"), b"not a SQLite database").unwrap();
         assert!(ensure_legacy_schedules_reconciled(&source).is_err());
+        fs::remove_file(source.join("schedules.db")).unwrap();
+        for sidecar in ["schedules.db-wal", "schedules.db-shm", "schedules.db-journal"] {
+            fs::write(source.join(sidecar), b"orphaned SQLite sidecar").unwrap();
+            let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
+            assert!(error.contains(sidecar), "{error}");
+            let error = rehearse(&source, &stage).unwrap_err().to_string();
+            assert!(error.contains(sidecar), "{error}");
+            assert!(!stage.exists(), "failed rehearsal must leave no stage");
+            fs::remove_file(source.join(sidecar)).unwrap();
+        }
         fs::remove_dir_all(root).unwrap();
     }
 
