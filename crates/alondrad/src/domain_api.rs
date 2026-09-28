@@ -28,6 +28,8 @@ pub(crate) trait DomainHost: Send + Sync + 'static {
     fn domain(&self) -> &DomainRuntime;
     fn home(&self) -> &FsPath;
     fn cutover_committed(&self) -> bool;
+    /// Who confirms a PR's remote head and base before an Agent's merge claim is admitted.
+    fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver;
 }
 impl DomainHost for Hub {
     fn domain(&self) -> &DomainRuntime {
@@ -38,6 +40,10 @@ impl DomainHost for Hub {
     }
     fn cutover_committed(&self) -> bool {
         false
+    }
+    fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver {
+        static GH: std::sync::OnceLock<crate::domain_github::GhCli> = std::sync::OnceLock::new();
+        GH.get_or_init(crate::domain_github::GhCli::new)
     }
 }
 
@@ -780,6 +786,12 @@ async fn command<H: DomainHost>(
         let Some(token) = header.to_str().ok().and_then(|value| value.strip_prefix("Bearer ")) else {
             return domain_error(DomainError::new("forbidden", "invalid domain capability"));
         };
+        if let Err(error) = host.domain().resolve_bearer(token) {
+            return store_error(error);
+        }
+        if let Err(error) = crate::domain_github::verify_claim(host.domain(), host.pr_observer(), &envelope.command).await {
+            return store_error(error);
+        }
         return match host.domain().execute_bearer(token, &envelope) {
             Ok(outcome) => Json(outcome).into_response(),
             Err(error) => store_error(error),
