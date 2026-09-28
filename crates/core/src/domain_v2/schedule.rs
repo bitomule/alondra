@@ -1,6 +1,6 @@
 //! Pure scheduled-work state. Calendar arithmetic and external launching belong to adapters.
 //! The v2 repository must commit these transitions with Request/Task and receipts before use.
-use super::{DomainError, MAX_REVISION, RequestId, ScheduleId, ScheduleRunId, TaskId};
+use super::{AgentId, DomainError, MAX_REVISION, RequestId, ScheduleId, ScheduleRunId, TaskId};
 use crate::options::Choice;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
@@ -91,7 +91,11 @@ pub struct ScheduleLaunch {
     pub state: ScheduleLaunchState,
     pub claimed_at: Option<i64>,
     pub finished_at: Option<i64>,
+    /// The short id `claude --bg` printed; the terminal `claude attach` opens.
     pub session_id: Option<String>,
+    /// The Agent the handed session runs as; the Task is assigned to it.
+    #[serde(default)]
+    pub agent_id: Option<AgentId>,
     pub error: Option<String>,
 }
 
@@ -510,6 +514,7 @@ impl ScheduleState {
             claimed_at: None,
             finished_at: None,
             session_id: None,
+            agent_id: None,
             error: None,
         });
         Ok(())
@@ -533,7 +538,8 @@ impl ScheduleState {
     }
 
     pub fn record_launch_handed(
-        &mut self, run_id: &ScheduleRunId, session_id: Option<String>, finished_at: i64,
+        &mut self, run_id: &ScheduleRunId, session_id: Option<String>, agent_id: Option<AgentId>,
+        finished_at: i64,
     ) -> Result<(), DomainError> {
         if finished_at < 0 || session_id.as_ref().is_some_and(|id| id.is_empty() || id.len() > 256) {
             return Err(invalid("invalid launch handoff result"));
@@ -551,6 +557,7 @@ impl ScheduleState {
         launch.state = ScheduleLaunchState::Handed;
         launch.finished_at = Some(finished_at);
         launch.session_id = session_id;
+        launch.agent_id = agent_id;
         Ok(())
     }
 
@@ -809,7 +816,7 @@ mod tests {
         assert_eq!(state.runs[&ScheduleRunId::from("second")].launch.as_ref().unwrap().state,
             ScheduleLaunchState::Pending);
         state.claim_launch(&"second".into(), 107).unwrap();
-        state.record_launch_handed(&"second".into(), Some("session-1".into()), 108).unwrap();
+        state.record_launch_handed(&"second".into(), Some("session-1".into()), None, 108).unwrap();
         assert!(state.record_failed(&"second".into(), "late".into(), 109).is_err());
         state.validate().unwrap();
     }

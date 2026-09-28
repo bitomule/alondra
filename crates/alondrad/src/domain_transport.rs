@@ -502,10 +502,7 @@ mod tests {
         });
         command(domain, Actor::System, "claim-launch", Command::ClaimScheduleLaunch { run_id: "run-1".into(), now });
         command(domain, Actor::System, "handed", Command::RecordScheduleLaunchHanded {
-            run_id: "run-1".into(), session_id: Some(short.into()), finished_at: now,
-        });
-        command(domain, Actor::User { user_id: "u".into() }, "assign", Command::AssignTask {
-            task_id: "scheduled-task".into(), agent_id: agent.into(),
+            run_id: "run-1".into(), session_id: Some(short.into()), agent_id: Some(agent.into()), finished_at: now,
         });
     }
 

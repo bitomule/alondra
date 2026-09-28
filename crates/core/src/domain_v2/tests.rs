@@ -2518,7 +2518,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordScheduleRunSent { run_id: ids.run.into(), request, task,
             launch: scheduled_launch(), finished_at: 1 }, false),
         (Command::ClaimScheduleLaunch { run_id: ids.run.into(), now: 1 }, false),
-        (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, finished_at: 1 }, false),
+        (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, agent_id: None, finished_at: 1 }, false),
         (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
         (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into() }, true),
@@ -2744,4 +2744,46 @@ fn external_merge_requires_explicit_delivery_acceptance_not_retroactive_authoriz
         },
     )
     .unwrap();
+}
+
+#[test]
+fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
+    let mut state = fixture();
+    let mut schedule = schedule();
+    schedule.title = "Updated review".into();
+    exec(&mut state, Actor::System, Command::CreateSchedule { schedule }).unwrap();
+    exec(&mut state, Actor::System, Command::ClaimScheduleRun {
+        schedule_id: "schedule-1".into(), run_id: "run-1".into(), origin: ScheduleRunOrigin::Due,
+        now: 100, next_after_now: Some(200), expected_schedule_revision: None,
+    }).unwrap();
+    let (request, task) = scheduled_request_task("scheduled-request", "scheduled-task");
+    exec(&mut state, Actor::System, Command::RecordScheduleRunSent {
+        run_id: "run-1".into(), request, task, launch: scheduled_launch(), finished_at: 101,
+    }).unwrap();
+    exec(&mut state, Actor::System, Command::ClaimScheduleLaunch { run_id: "run-1".into(), now: 102 }).unwrap();
+    reject_unchanged(&mut state, Actor::System, Command::RecordScheduleLaunchHanded {
+        run_id: "run-1".into(), session_id: Some("ab1234".into()),
+        agent_id: Some("never-registered".into()), finished_at: 103,
+    }, "not_found");
+    reject_unchanged(&mut state, agent(), Command::RecordScheduleLaunchHanded {
+        run_id: "run-1".into(), session_id: Some("ab1234".into()), agent_id: Some("a".into()), finished_at: 103,
+    }, "forbidden");
+    let before = state.tasks[&TaskId::from("scheduled-task")].revision;
+    exec(&mut state, Actor::System, Command::RecordScheduleLaunchHanded {
+        run_id: "run-1".into(), session_id: Some("ab1234".into()), agent_id: Some("a".into()), finished_at: 103,
+    }).unwrap();
+    let task = &state.tasks[&TaskId::from("scheduled-task")];
+    assert_eq!(task.agent_id, Some("a".into()));
+    assert!(task.revision > before, "assignment moves the Task revision");
+    let launch = state.schedule.runs[&ScheduleRunId::from("run-1")].launch.as_ref().unwrap();
+    assert_eq!(launch.agent_id, Some("a".into()));
+    assert_eq!(launch.session_id.as_deref(), Some("ab1234"));
+    reject_unchanged(&mut state, Actor::System, Command::RecordScheduleLaunchHanded {
+        run_id: "run-1".into(), session_id: Some("ab1234".into()), agent_id: Some("a".into()), finished_at: 104,
+    }, "conflict");
+    exec(&mut state, agent(), Command::PublishInformation {
+        attachments: vec![], interaction_id: "i".into(),
+        scope: Scope::Task { task_id: "scheduled-task".into() }, recipient: Recipient::User, body: "Started".into(),
+    }).unwrap();
+    state.validate().unwrap();
 }

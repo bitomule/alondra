@@ -352,6 +352,9 @@ mod tests {
     struct FakeClaude;
     impl crate::orchestrate::Launcher for FakeClaude {
         async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+            panic!("a v2 producer launch must carry its environment");
+        }
+        async fn run_with_env(&self, _: &str, _: &[String], _: &[(String, String)]) -> Result<String, crate::orchestrate::Refusal> {
             Ok("backgrounded · ab1234 · scheduled/manual".into())
         }
         fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
