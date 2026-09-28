@@ -296,6 +296,18 @@ command that fixes it. It exits with 1 when any check is ✗.
 | `apns` | ! no `apns.json`: no notifications. ✗ invalid file or the `.p8` is missing | step 4b |
 | `apns push` | Apple rejects the key (403) or answers oddly | check key ID, team ID and topic; rerun the step 4b setup command with `--force` |
 | `pairing` | no paired device | step 5 |
+| `startup` | ✗ the daemon is down because its last starts failed; after 3 failures in a row launchd retries every few minutes instead of every 10 seconds | read the reason and `~/.alondra/alondrad.log`; installing a fixed binary retries at once |
+| `upgrade` | ! a newer binary was installed but failed its startup check (`alondrad --preflight`), so the running version was kept | wait for a fixed release and upgrade again |
+
+### Upgrades restart the daemon by themselves
+
+When launchd runs the daemon, it checks every minute whether the file at the path launchd
+started (for Homebrew, `/opt/homebrew/opt/alondra/bin/alondrad`) was replaced. The new binary
+first runs `alondrad --preflight`, which loads the configuration and replays the stored state
+on a private copy of `~/.alondra`, changing nothing. Only if that passes does the daemon release
+the hooks it holds and exit, and launchd starts the new version. A binary that fails preflight
+is not started: the old daemon keeps running and `alondra doctor` shows why. A daemon started
+by hand, outside launchd, is never restarted.
 
 Other problems:
 

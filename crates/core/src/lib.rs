@@ -13,6 +13,7 @@ pub mod orchestrator;
 pub mod pr;
 pub mod sessions;
 pub mod stack;
+pub mod startup;
 #[cfg(test)]
 mod recorded;
 pub mod states;
