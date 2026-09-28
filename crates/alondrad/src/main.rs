@@ -63,7 +63,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
-            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --commit-domain-cutover <source-home> <new-backup> <manifest-sha256> <new-stage-home>\n      --abort-domain-cutover <source-home> <new-backup> <manifest-sha256>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged. Commit and abort require the same stopped writers and a verified backup.\nWithout options, starts the local daemon and configured service connector.");
+            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --commit-domain-cutover <source-home> <new-backup> <manifest-sha256> <new-stage-home>\n      --abort-domain-cutover <source-home> <new-backup> <manifest-sha256>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n      --rehearse-domain-cutover <live-home> <new-work-dir> <legacy-daemon> <report-prefix>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged. Commit and abort require the same stopped writers and a verified backup.\nWithout options, starts the local daemon and configured service connector.");
             return Ok(());
         }
         [flag] if flag == "--version" || flag == "-V" => {
@@ -109,6 +109,12 @@ fn main() -> Result<()> {
         [flag, backup, digest, target] if flag == "--restore-domain-rehearsal" => {
             let result = domain_migration::restore_rehearsal(std::path::Path::new(backup), digest, std::path::Path::new(target))?;
             println!("Verified rollback rehearsal: legacy seq {}", result.source_seq);
+            return Ok(());
+        }
+        [flag, live, work, legacy, report] if flag == "--rehearse-domain-cutover" => {
+            let passed = domain_migration::rehearsal::run_and_write(
+                Path::new(live), Path::new(work), Path::new(legacy), Path::new(report))?;
+            if !passed { std::process::exit(1); }
             return Ok(());
         }
         [flag, source, backup, digest] if flag == "--abort-domain-cutover" => {
