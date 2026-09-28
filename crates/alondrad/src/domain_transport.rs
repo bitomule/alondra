@@ -484,6 +484,7 @@ mod tests {
         command(domain, Actor::System, "claim-run", Command::ClaimScheduleRun {
             schedule_id: "schedule-1".into(), run_id: "run-1".into(),
             origin: ScheduleRunOrigin::Manual, now, next_after_now: None,
+            expected_schedule_revision: None,
         });
         let snapshot = domain.state().unwrap().schedule.runs[&"run-1".into()].definition_snapshot.clone().unwrap();
         let request = Request { id: "scheduled-request".into(), body: snapshot.text.clone(), closed: false };
