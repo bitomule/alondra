@@ -69,6 +69,8 @@ pub struct ScheduleRun {
     pub origin: ScheduleRunOrigin,
     pub due_at: Option<i64>,
     pub claimed_at: Option<i64>,
+    /// Schedule revision immediately after claim. NULL only for legacy last-observed runs.
+    pub claim_revision: Option<i64>,
     pub finished_at: Option<i64>,
     pub state: ScheduleRunState,
     pub request_id: Option<RequestId>,
@@ -178,12 +180,18 @@ impl ScheduleRun {
             return Err(invalid("invalid due time for schedule run origin"));
         }
         if self.origin == ScheduleRunOrigin::LegacyLastObserved {
-            if self.claimed_at.is_some() || self.definition_snapshot.is_some() {
+            if self.claimed_at.is_some()
+                || self.claim_revision.is_some()
+                || self.definition_snapshot.is_some()
+            {
                 return Err(invalid(
                     "legacy last run cannot invent claim or definition snapshot",
                 ));
             }
-        } else if self.claimed_at.is_none() || self.definition_snapshot.is_none() {
+        } else if self.claimed_at.is_none()
+            || self.claim_revision.is_none_or(|revision| revision < 1)
+            || self.definition_snapshot.is_none()
+        {
             return Err(invalid(
                 "new schedule run needs claim and definition snapshot",
             ));
@@ -224,6 +232,7 @@ impl ScheduleState {
         let mut requests = BTreeSet::new();
         let mut tasks = BTreeSet::new();
         let mut launching = BTreeSet::new();
+        let mut claim_revisions = BTreeSet::new();
         for (id, run) in &self.runs {
             run.validate()?;
             if id != &run.id || !self.schedules.contains_key(&run.schedule_id) {
@@ -231,6 +240,12 @@ impl ScheduleState {
             }
             if run.state == ScheduleRunState::Launching && !launching.insert(&run.schedule_id) {
                 return Err(invalid("schedule has two active claims"));
+            }
+            if run.claim_revision.is_some_and(|revision| {
+                revision > self.schedules[&run.schedule_id].revision
+                    || !claim_revisions.insert((&run.schedule_id, revision))
+            }) {
+                return Err(invalid("invalid or duplicate schedule claim revision"));
             }
             if run
                 .request_id
@@ -305,6 +320,7 @@ impl ScheduleState {
         if schedule.revision == i64::MAX {
             return Err(invalid("schedule revision overflow"));
         }
+        schedule.revision += 1;
         let run = ScheduleRun {
             id: run_id.clone(),
             schedule_id: schedule_id.clone(),
@@ -313,6 +329,7 @@ impl ScheduleState {
                 .then_some(schedule.next_run)
                 .flatten(),
             claimed_at: Some(now),
+            claim_revision: Some(schedule.revision),
             finished_at: None,
             state: ScheduleRunState::Launching,
             request_id: None,
@@ -321,7 +338,6 @@ impl ScheduleState {
             definition_snapshot: Some(schedule.snapshot()),
         };
         schedule.next_run = next_after_now;
-        schedule.revision += 1;
         self.runs.insert(run_id, run.clone());
         Ok(run)
     }
@@ -350,7 +366,7 @@ impl ScheduleState {
         }
         let run = self
             .runs
-            .get_mut(run_id)
+            .get(run_id)
             .ok_or_else(|| DomainError::new("not_found", "schedule run not found"))?;
         if run.state != ScheduleRunState::Launching {
             return Err(DomainError::new(
@@ -366,6 +382,7 @@ impl ScheduleState {
             .revision
             .checked_add(1)
             .ok_or_else(|| invalid("schedule revision overflow"))?;
+        let run = self.runs.get_mut(run_id).expect("run checked above");
         run.state = ScheduleRunState::Sent;
         run.finished_at = Some(finished_at);
         run.request_id = Some(request_id);
@@ -386,7 +403,7 @@ impl ScheduleState {
         }
         let run = self
             .runs
-            .get_mut(run_id)
+            .get(run_id)
             .ok_or_else(|| DomainError::new("not_found", "schedule run not found"))?;
         if !matches!(
             run.state,
@@ -397,14 +414,22 @@ impl ScheduleState {
                 "schedule run already resolved",
             ));
         }
-        let schedule = self
-            .schedules
-            .get_mut(&run.schedule_id)
-            .ok_or_else(|| invalid("schedule run has no Schedule"))?;
-        schedule.revision = schedule
-            .revision
-            .checked_add(1)
-            .ok_or_else(|| invalid("schedule revision overflow"))?;
+        let newer_run_exists = self.runs.values().any(|other| {
+            other.schedule_id == run.schedule_id
+                && other.id != run.id
+                && other.claim_revision > run.claim_revision
+        });
+        if !newer_run_exists {
+            let schedule = self
+                .schedules
+                .get_mut(&run.schedule_id)
+                .ok_or_else(|| invalid("schedule run has no Schedule"))?;
+            schedule.revision = schedule
+                .revision
+                .checked_add(1)
+                .ok_or_else(|| invalid("schedule revision overflow"))?;
+        }
+        let run = self.runs.get_mut(run_id).expect("run checked above");
         match run.state {
             ScheduleRunState::Launching => run.finished_at = Some(finished_at),
             ScheduleRunState::Sent => (),
@@ -624,6 +649,7 @@ mod tests {
                 origin: ScheduleRunOrigin::LegacyLastObserved,
                 due_at: None,
                 claimed_at: None,
+                claim_revision: None,
                 finished_at: Some(100),
                 state: ScheduleRunState::Sent,
                 request_id: Some("r".into()),
@@ -674,5 +700,52 @@ mod tests {
             )
             .unwrap();
         assert_eq!(state.schedules[&ScheduleId::from("s")].next_run, None);
+    }
+
+    #[test]
+    fn late_failure_of_older_run_does_not_change_latest_schedule_revision() {
+        let mut state = state(false, None);
+        state
+            .claim(
+                &"s".into(),
+                "first".into(),
+                ScheduleRunOrigin::Manual,
+                100,
+                None,
+            )
+            .unwrap();
+        state
+            .record_sent(&"first".into(), "r1".into(), "t1".into(), 101)
+            .unwrap();
+        state
+            .claim(
+                &"s".into(),
+                "second".into(),
+                ScheduleRunOrigin::Manual,
+                101,
+                None,
+            )
+            .unwrap();
+        state
+            .record_sent(&"second".into(), "r2".into(), "t2".into(), 102)
+            .unwrap();
+        let revision = state.schedules[&ScheduleId::from("s")].revision;
+        assert!(
+            state.runs[&ScheduleRunId::from("first")].claim_revision
+                < state.runs[&ScheduleRunId::from("second")].claim_revision
+        );
+        state
+            .record_failed(&"first".into(), "old launcher failed".into(), 103)
+            .unwrap();
+        assert_eq!(state.schedules[&ScheduleId::from("s")].revision, revision);
+        assert_eq!(
+            state.runs[&ScheduleRunId::from("first")].state,
+            ScheduleRunState::Failed
+        );
+        assert_eq!(
+            state.runs[&ScheduleRunId::from("second")].state,
+            ScheduleRunState::Sent
+        );
+        state.validate().unwrap();
     }
 }
