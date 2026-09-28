@@ -41,7 +41,7 @@ fn instructions_for_mode(role: Role, user: &str, v2: bool) -> String {
     };
     let common = format!("Alondra domain protocol 2. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every mutation needs a fresh expected_revision and a stable command_id; retry the same exact payload with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant domain authority.");
     match role {
-        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result, wait for explicit User acceptance, then call complete_task; ending a Claude turn does not complete it. The current MCP has no exact merge authorization read adapter; do not execute a domain v2 merge until one is available. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions."),
+        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. Ending a Claude turn does not complete it. The current MCP has no exact merge authorization read adapter; do not execute a domain v2 merge until one is available. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions."),
         Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
     }
 }
@@ -134,7 +134,7 @@ fn tools(role: Role, user: &str) -> Value {
 
 fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
     let mut list = vec![
-        json!({"name":"domain_command", "description":"Submit a typed domain v2 command. The daemon derives Agent or Orchestrator identity from a private capability and verifies assignment and revision. Publication never completes a task; use complete_task after accepted delivery.",
+        json!({"name":"domain_command", "description":"Submit a typed domain v2 command. The daemon derives Agent or Orchestrator identity from a private capability and verifies assignment and revision. Publication never completes a task; use complete_task after accepted delivery and, for a PR target, confirmed merge of the presented head.",
             "inputSchema":{"type":"object","properties":{
                 "protocol_version":{"type":"integer","const":2},"data_epoch":{"type":"string"},
                 "command_id":{"type":"string","description":"Stable unique id; reuse unchanged only for retrying this exact command"},
@@ -839,6 +839,12 @@ mod tests {
         assert!(domain_envelope("register_pr", &json!({"task_id":"task-a"})).is_err());
         assert!(tools_for_mode(Role::Node, "User", true).as_array().unwrap().iter()
             .any(|tool| tool["name"] == "register_pr"));
+        let instructions = instructions_for_mode(Role::Node, "User", true);
+        assert!(instructions.contains("confirmed merge of its presented head"));
+        let catalog = tools_for_mode(Role::Node, "User", true);
+        let command = catalog.as_array().unwrap().iter()
+            .find(|tool| tool["name"] == "domain_command").unwrap();
+        assert!(command["description"].as_str().unwrap().contains("confirmed merge of the presented head"));
     }
 
     #[test]
