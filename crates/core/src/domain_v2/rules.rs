@@ -608,12 +608,21 @@ impl DomainState {
                     run_id,
                     request.id.clone(),
                     task.id.clone(),
+                    launch.clone(),
                     *finished_at,
                 )?;
                 self.requests.insert(request.id.clone(), request.clone());
                 self.tasks.insert(task.id.clone(), task.clone());
                 created.push(request.id.0.clone());
                 created.push(task.id.0.clone());
+            }
+            Command::ClaimScheduleLaunch { run_id, now } => {
+                system(actor)?;
+                self.schedule.claim_launch(run_id, *now)?;
+            }
+            Command::RecordScheduleLaunchHanded { run_id, session_id, finished_at } => {
+                system(actor)?;
+                self.schedule.record_launch_handed(run_id, session_id.clone(), *finished_at)?;
             }
             Command::RecordScheduleRunFailed {
                 run_id,

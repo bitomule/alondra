@@ -40,6 +40,15 @@ pub enum Command {
         launch: ScheduleLaunchIntent,
         finished_at: i64,
     },
+    ClaimScheduleLaunch {
+        run_id: ScheduleRunId,
+        now: i64,
+    },
+    RecordScheduleLaunchHanded {
+        run_id: ScheduleRunId,
+        session_id: Option<String>,
+        finished_at: i64,
+    },
     RecordScheduleRunFailed {
         run_id: ScheduleRunId,
         reason: String,

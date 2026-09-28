@@ -225,6 +225,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::DeleteSchedule { .. }
         | Command::ClaimScheduleRun { .. }
         | Command::RecordScheduleRunSent { .. }
+        | Command::ClaimScheduleLaunch { .. }
+        | Command::RecordScheduleLaunchHanded { .. }
         | Command::RecordScheduleRunFailed { .. }
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::RegisterAgent { .. }

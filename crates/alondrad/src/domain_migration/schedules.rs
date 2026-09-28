@@ -273,6 +273,7 @@ pub(crate) fn read_legacy_schedules_readonly(
                         task_id,
                         error,
                         definition_snapshot: None,
+                        launch: None,
                     };
                     run.validate().map_err(anyhow::Error::new)?;
                     Some(run)

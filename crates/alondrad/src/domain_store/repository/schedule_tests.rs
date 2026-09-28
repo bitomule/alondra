@@ -61,6 +61,7 @@ fn run() -> ScheduleRun {
             options: BTreeMap::new(),
             disallowed_tools: vec!["Bash".into()],
         }),
+        launch: None,
     }
 }
 
@@ -114,6 +115,7 @@ fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
             task_id: Some("task-2".into()),
             error: None,
             definition_snapshot: None,
+            launch: None,
         },
     );
     save_schedule_state(&c, &state).unwrap();

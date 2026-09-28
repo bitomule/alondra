@@ -77,6 +77,54 @@ impl ScheduleLaunchIntent {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum ScheduleLaunchState {
+    Pending,
+    Dispatching,
+    Handed,
+    Failed,
+    Uncertain,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleLaunch {
+    pub intent: ScheduleLaunchIntent,
+    pub state: ScheduleLaunchState,
+    pub claimed_at: Option<i64>,
+    pub finished_at: Option<i64>,
+    pub session_id: Option<String>,
+    pub error: Option<String>,
+}
+
+impl ScheduleLaunch {
+    fn validate(&self, definition: &ScheduleDefinitionSnapshot) -> Result<(), DomainError> {
+        self.intent.validate(definition)?;
+        if self.claimed_at.is_some_and(|at| at < 0)
+            || self.finished_at.is_some_and(|at| at < 0)
+            || self.claimed_at.zip(self.finished_at).is_some_and(|(claim, finish)| finish < claim)
+            || self.session_id.as_ref().is_some_and(|id| id.is_empty() || id.len() > 256)
+            || self.error.as_ref().is_some_and(|error| error.is_empty())
+        {
+            return Err(invalid("invalid scheduled launch result"));
+        }
+        let valid = match self.state {
+            ScheduleLaunchState::Pending => self.claimed_at.is_none()
+                && self.finished_at.is_none() && self.session_id.is_none() && self.error.is_none(),
+            ScheduleLaunchState::Dispatching => self.claimed_at.is_some()
+                && self.finished_at.is_none() && self.session_id.is_none() && self.error.is_none(),
+            ScheduleLaunchState::Handed => self.claimed_at.is_some()
+                && self.finished_at.is_some() && self.error.is_none(),
+            ScheduleLaunchState::Failed => self.finished_at.is_some()
+                && self.session_id.is_none() && self.error.is_some(),
+            ScheduleLaunchState::Uncertain => self.claimed_at.is_some()
+                && self.finished_at.is_none() && self.session_id.is_none() && self.error.is_some(),
+        };
+        if !valid { return Err(invalid("invalid scheduled launch lifecycle")); }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ScheduleRunOrigin {
     Due,
     Manual,
@@ -107,6 +155,10 @@ pub struct ScheduleRun {
     pub task_id: Option<TaskId>,
     pub error: Option<String>,
     pub definition_snapshot: Option<ScheduleDefinitionSnapshot>,
+    /// Present only for a v2 run whose Request and Task were atomically saved.
+    /// Imported legacy runs cannot acquire an invented launch intent.
+    #[serde(default)]
+    pub launch: Option<ScheduleLaunch>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -223,6 +275,7 @@ impl ScheduleRun {
             if self.claimed_at.is_some()
                 || self.claim_revision.is_some()
                 || self.definition_snapshot.is_some()
+                || self.launch.is_some()
             {
                 return Err(invalid(
                     "legacy last run cannot invent claim or definition snapshot",
@@ -251,6 +304,10 @@ impl ScheduleRun {
                 "schedule run Request and Task must be linked together",
             ));
         }
+        if self.origin != ScheduleRunOrigin::LegacyLastObserved
+            && self.request_id.is_some() && self.launch.is_none() {
+            return Err(invalid("new sent run needs a durable launch intent"));
+        }
         if self.state == ScheduleRunState::Launching
             && (self.finished_at.is_some() || self.error.is_some() || self.request_id.is_some())
         {
@@ -261,6 +318,19 @@ impl ScheduleRun {
                 && self.error.as_deref().is_none_or(str::is_empty)
         {
             return Err(invalid("failed or interrupted run needs a reason"));
+        }
+        if let Some(launch) = &self.launch {
+            if self.request_id.is_none() || self.task_id.is_none() {
+                return Err(invalid("launch intent needs Request and Task links"));
+            }
+            launch.validate(self.definition_snapshot.as_ref().ok_or_else(|| invalid("launch intent needs claim snapshot"))?)?;
+            if self.state == ScheduleRunState::Sent && launch.state == ScheduleLaunchState::Failed
+                || self.state == ScheduleRunState::Failed && launch.state != ScheduleLaunchState::Failed
+                || self.state == ScheduleRunState::Failed && launch.error != self.error
+                || !matches!(self.state, ScheduleRunState::Sent | ScheduleRunState::Failed)
+            {
+                return Err(invalid("launch state disagrees with Run result"));
+            }
         }
         Ok(())
     }
@@ -381,6 +451,7 @@ impl ScheduleState {
             task_id: None,
             error: None,
             definition_snapshot: Some(schedule.snapshot()),
+            launch: None,
         };
         schedule.next_run = next_after_now;
         self.runs.insert(run_id, run.clone());
@@ -394,6 +465,7 @@ impl ScheduleState {
         run_id: &ScheduleRunId,
         request_id: RequestId,
         task_id: TaskId,
+        intent: ScheduleLaunchIntent,
         finished_at: i64,
     ) -> Result<(), DomainError> {
         if request_id.0.is_empty() || task_id.0.is_empty() || finished_at < 0 {
@@ -432,6 +504,53 @@ impl ScheduleState {
         run.finished_at = Some(finished_at);
         run.request_id = Some(request_id);
         run.task_id = Some(task_id);
+        run.launch = Some(ScheduleLaunch {
+            intent,
+            state: ScheduleLaunchState::Pending,
+            claimed_at: None,
+            finished_at: None,
+            session_id: None,
+            error: None,
+        });
+        Ok(())
+    }
+
+    /// One durable claim must precede the external Claude call. A second
+    /// dispatcher, including one after restart, cannot claim this intent.
+    pub fn claim_launch(&mut self, run_id: &ScheduleRunId, now: i64) -> Result<(), DomainError> {
+        if now < 0 { return Err(invalid("invalid launch claim time")); }
+        let run = self.runs.get_mut(run_id)
+            .ok_or_else(|| DomainError::new("not_found", "Schedule run not found"))?;
+        if run.state != ScheduleRunState::Sent { return Err(DomainError::new("conflict", "Run is not sent")); }
+        let launch = run.launch.as_mut()
+            .ok_or_else(|| DomainError::new("conflict", "Run has no v2 launch intent"))?;
+        if launch.state != ScheduleLaunchState::Pending {
+            return Err(DomainError::new("conflict", "Schedule launch was already claimed"));
+        }
+        launch.state = ScheduleLaunchState::Dispatching;
+        launch.claimed_at = Some(now);
+        Ok(())
+    }
+
+    pub fn record_launch_handed(
+        &mut self, run_id: &ScheduleRunId, session_id: Option<String>, finished_at: i64,
+    ) -> Result<(), DomainError> {
+        if finished_at < 0 || session_id.as_ref().is_some_and(|id| id.is_empty() || id.len() > 256) {
+            return Err(invalid("invalid launch handoff result"));
+        }
+        let run = self.runs.get_mut(run_id)
+            .ok_or_else(|| DomainError::new("not_found", "Schedule run not found"))?;
+        let launch = run.launch.as_mut()
+            .ok_or_else(|| DomainError::new("conflict", "Run has no v2 launch intent"))?;
+        if run.state != ScheduleRunState::Sent || launch.state != ScheduleLaunchState::Dispatching {
+            return Err(DomainError::new("conflict", "Schedule launch was not dispatching"));
+        }
+        if launch.claimed_at.is_some_and(|claim| finished_at < claim) {
+            return Err(invalid("launch finish precedes its claim"));
+        }
+        launch.state = ScheduleLaunchState::Handed;
+        launch.finished_at = Some(finished_at);
+        launch.session_id = session_id;
         Ok(())
     }
 
@@ -459,6 +578,14 @@ impl ScheduleState {
                 "schedule run already resolved",
             ));
         }
+        if run.launch.as_ref().is_some_and(|launch| !matches!(launch.state,
+            ScheduleLaunchState::Pending | ScheduleLaunchState::Dispatching)) {
+            return Err(DomainError::new("conflict", "Schedule launch outcome is already final or uncertain"));
+        }
+        if run.launch.as_ref().and_then(|launch| launch.claimed_at)
+            .is_some_and(|claim| finished_at < claim) {
+            return Err(invalid("launch failure precedes its claim"));
+        }
         let newer_run_exists = self.runs.values().any(|other| {
             other.schedule_id == run.schedule_id
                 && other.id != run.id
@@ -482,11 +609,22 @@ impl ScheduleState {
         }
         run.state = ScheduleRunState::Failed;
         run.error = Some(reason);
+        if let Some(launch) = run.launch.as_mut() {
+            launch.state = ScheduleLaunchState::Failed;
+            launch.finished_at = Some(finished_at);
+            launch.error = run.error.clone();
+        }
         Ok(())
     }
 
     /// Startup recovery never restores a consumed due slot or invents a Request.
     pub fn interrupt_on_restart(&mut self) {
+        for launch in self.runs.values_mut().filter_map(|run| run.launch.as_mut()) {
+            if launch.state == ScheduleLaunchState::Dispatching {
+                launch.state = ScheduleLaunchState::Uncertain;
+                launch.error = Some("Alondra stopped after claiming the Claude launch".into());
+            }
+        }
         for run in self
             .runs
             .values_mut()
@@ -529,6 +667,16 @@ mod tests {
             .schedules
             .insert("s".into(), schedule(enabled, next_run));
         state
+    }
+
+    fn intent() -> ScheduleLaunchIntent {
+        ScheduleLaunchIntent {
+            name: "scheduled/run-1".into(),
+            cwd: "/synthetic/Projects/alondra".into(),
+            prompt: "Review project".into(),
+            options_json: serde_json::to_string(&crate::options::OptionsFile::default()
+                .resolve(Some("alondra"), &BTreeMap::new()).unwrap()).unwrap(),
+        }
     }
 
     #[test]
@@ -604,7 +752,7 @@ mod tests {
                 .is_err()
         );
         state
-            .record_sent(&"run-1".into(), "r1".into(), "t1".into(), 102)
+            .record_sent(&"run-1".into(), "r1".into(), "t1".into(), intent(), 102)
             .unwrap();
         assert_eq!(
             state.runs[&ScheduleRunId::from("run-1")].state,
@@ -613,7 +761,7 @@ mod tests {
         assert_eq!(state.schedules[&ScheduleId::from("s")].revision, 3);
         assert!(
             state
-                .record_sent(&"run-1".into(), "r1".into(), "t1".into(), 103)
+                .record_sent(&"run-1".into(), "r1".into(), "t1".into(), intent(), 103)
                 .is_err()
         );
         let second = state
@@ -628,14 +776,60 @@ mod tests {
         assert_eq!(second.state, ScheduleRunState::Launching);
         assert!(
             state
-                .record_sent(&"run-2".into(), "r1".into(), "t2".into(), 105)
+                .record_sent(&"run-2".into(), "r1".into(), "t2".into(), intent(), 105)
                 .is_err()
         );
         state
-            .record_sent(&"run-2".into(), "r2".into(), "t2".into(), 105)
+            .record_sent(&"run-2".into(), "r2".into(), "t2".into(), intent(), 105)
             .unwrap();
         assert_eq!(state.schedules[&ScheduleId::from("s")].revision, 5);
         state.validate().unwrap();
+    }
+
+    #[test]
+    fn technical_launch_is_one_shot_and_restart_leaves_dispatch_uncertain() {
+        let mut state = state(false, None);
+        state.claim(&"s".into(), "first".into(), ScheduleRunOrigin::Manual, 100, None).unwrap();
+        state.record_sent(&"first".into(), "r1".into(), "t1".into(), intent(), 101).unwrap();
+        assert_eq!(state.runs[&ScheduleRunId::from("first")].launch.as_ref().unwrap().state,
+            ScheduleLaunchState::Pending);
+        state.claim_launch(&"first".into(), 102).unwrap();
+        assert!(state.claim_launch(&"first".into(), 103).is_err());
+        state.interrupt_on_restart();
+        let run = &state.runs[&ScheduleRunId::from("first")];
+        assert_eq!(run.state, ScheduleRunState::Sent);
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Uncertain);
+        assert!(state.claim_launch(&"first".into(), 104).is_err());
+        assert!(state.record_failed(&"first".into(), "guess".into(), 104).is_err());
+        state.validate().unwrap();
+
+        state.claim(&"s".into(), "second".into(), ScheduleRunOrigin::Manual, 105, None).unwrap();
+        state.record_sent(&"second".into(), "r2".into(), "t2".into(), intent(), 106).unwrap();
+        state.interrupt_on_restart();
+        assert_eq!(state.runs[&ScheduleRunId::from("second")].launch.as_ref().unwrap().state,
+            ScheduleLaunchState::Pending);
+        state.claim_launch(&"second".into(), 107).unwrap();
+        state.record_launch_handed(&"second".into(), Some("session-1".into()), 108).unwrap();
+        assert!(state.record_failed(&"second".into(), "late".into(), 109).is_err());
+        state.validate().unwrap();
+    }
+
+    #[test]
+    fn returned_launcher_failure_changes_run_and_launch_together() {
+        let mut state = state(false, None);
+        state.claim(&"s".into(), "failed".into(), ScheduleRunOrigin::Manual, 100, None).unwrap();
+        state.record_sent(&"failed".into(), "request".into(), "task".into(), intent(), 101).unwrap();
+        state.claim_launch(&"failed".into(), 102).unwrap();
+        state.record_failed(&"failed".into(), "Claude refused".into(), 103).unwrap();
+        let run = &state.runs[&ScheduleRunId::from("failed")];
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        let launch = run.launch.as_ref().unwrap();
+        assert_eq!(launch.state, ScheduleLaunchState::Failed);
+        assert_eq!(launch.error.as_deref(), Some("Claude refused"));
+        state.validate().unwrap();
+        state.runs.get_mut(&ScheduleRunId::from("failed")).unwrap()
+            .launch.as_mut().unwrap().error = Some("different failure".into());
+        assert!(state.validate().is_err());
     }
 
     #[test]
@@ -669,7 +863,7 @@ mod tests {
             )
             .unwrap();
         state
-            .record_sent(&"late".into(), "request".into(), "task".into(), 201)
+            .record_sent(&"late".into(), "request".into(), "task".into(), intent(), 201)
             .unwrap();
         state
             .record_failed(&"late".into(), "launcher unavailable".into(), 202)
@@ -701,6 +895,7 @@ mod tests {
                 task_id: Some("t".into()),
                 error: None,
                 definition_snapshot: None,
+                launch: None,
             },
         );
         state.validate().unwrap();
@@ -771,7 +966,7 @@ mod tests {
             )
             .unwrap();
         state
-            .record_sent(&"first".into(), "r1".into(), "t1".into(), 101)
+            .record_sent(&"first".into(), "r1".into(), "t1".into(), intent(), 101)
             .unwrap();
         state
             .claim(
@@ -783,7 +978,7 @@ mod tests {
             )
             .unwrap();
         state
-            .record_sent(&"second".into(), "r2".into(), "t2".into(), 102)
+            .record_sent(&"second".into(), "r2".into(), "t2".into(), intent(), 102)
             .unwrap();
         let revision = state.schedules[&ScheduleId::from("s")].revision;
         assert!(
