@@ -221,8 +221,20 @@ fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
 }
 
 fn v2_tool_allowed(role: Role, name: &str) -> bool {
-    matches!(name, "domain_command" | "ask")
-        || (role == Role::Node && name == "register_pr")
+    matches!(name, "domain_cursor" | "domain_command" | "ask")
+        || (role == Role::Node && matches!(name, "register_pr" | "merge_authorization"))
+}
+
+fn v2_read_path(role: Role, name: &str, args: &Value) -> Result<String> {
+    match name {
+        "domain_cursor" => Ok("/v2/domain/capabilities".into()),
+        "merge_authorization" if role == Role::Node => {
+            let id = args.get("authorization_id").and_then(Value::as_str)
+                .filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("authorization_id is required"))?;
+            Ok(format!("/v2/domain/merge-authorizations/{}", urlencode(id)))
+        }
+        _ => anyhow::bail!("domain read is unavailable to this role"),
+    }
 }
 
 pub fn caller() -> Value {
@@ -322,16 +334,9 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
             }
             serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
         }
-        "domain_cursor" => {
+        "domain_cursor" | "merge_authorization" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&client.domain_get("/v2/domain/capabilities", &bearer)?)?
-        }
-        "merge_authorization" if role == Role::Node => {
-            let bearer = domain_bearer()?;
-            let id = args.get("authorization_id").and_then(Value::as_str)
-                .filter(|id| !id.is_empty()).ok_or_else(|| anyhow::anyhow!("authorization_id is required"))?;
-            serde_json::to_string_pretty(&client.domain_get(
-                &format!("/v2/domain/merge-authorizations/{}", urlencode(id)), &bearer)?)?
+            serde_json::to_string_pretty(&client.domain_get(&v2_read_path(role, name, args)?, &bearer)?)?
         }
         "domain_command" | "register_pr" => {
             let bearer = domain_bearer()?;
@@ -877,11 +882,33 @@ mod tests {
             }
         }
         assert!(v2_tool_allowed(Role::Node, "register_pr"));
+        assert!(v2_tool_allowed(Role::Node, "domain_cursor"));
+        assert!(v2_tool_allowed(Role::Orchestrator, "domain_cursor"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "register_pr"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "launch"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "fleet"));
-        assert!(!v2_tool_allowed(Role::Node, "merge_authorization"));
+        assert!(v2_tool_allowed(Role::Node, "merge_authorization"));
+        assert!(!v2_tool_allowed(Role::Orchestrator, "merge_authorization"));
         assert!(!v2_tool_allowed(Role::Node, "launch"));
+    }
+
+    #[test]
+    fn v2_reads_use_existing_get_routes_and_keep_authorization_node_only() {
+        let empty = json!({});
+        for role in [Role::Node, Role::Orchestrator] {
+            assert_eq!(v2_read_path(role, "domain_cursor", &empty).unwrap(), "/v2/domain/capabilities");
+            let catalog = tools_for_mode(role, "User", true);
+            assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "domain_cursor"));
+        }
+        let authorization = json!({"authorization_id":"auth/one"});
+        assert_eq!(v2_read_path(Role::Node, "merge_authorization", &authorization).unwrap(),
+            "/v2/domain/merge-authorizations/auth%2Fone");
+        assert!(v2_read_path(Role::Orchestrator, "merge_authorization", &authorization).is_err());
+        assert!(v2_read_path(Role::Node, "merge_authorization", &empty).is_err());
+        assert!(tools_for_mode(Role::Node, "User", true).as_array().unwrap()
+            .iter().any(|tool| tool["name"] == "merge_authorization"));
+        assert!(tools_for_mode(Role::Orchestrator, "User", true).as_array().unwrap()
+            .iter().all(|tool| tool["name"] != "merge_authorization"));
     }
 
     #[test]
