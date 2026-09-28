@@ -957,8 +957,18 @@ pub(crate) fn run(live: &Path, work: &Path, legacy: &Path) -> Result<Report> {
         report.fail("rehearsal stopped", &error);
     }
     let calls = sandbox.stub_calls();
-    report.check("no external command was run", calls.is_empty(), calls.trim().replace('\n', "; "));
+    let effectful: Vec<_> = calls.lines().filter(|call| !read_only_github_query(call)).collect();
+    report.numbers.insert("intercepted_commands".into(), json!(calls.lines().collect::<Vec<_>>()));
+    report.check("nothing but read-only GitHub queries was attempted, and none left the sandbox",
+        effectful.is_empty(), effectful.join("; "));
     Ok(report)
+}
+
+/// The v2 daemon observes the state of open PRs; that is the only outside call it may try.
+fn read_only_github_query(call: &str) -> bool {
+    let words: Vec<_> = call.split_whitespace().collect();
+    matches!(words.as_slice(), ["gh", "pr", "view" | "list" | "checks", ..])
+        || (words.starts_with(&["gh", "api"]) && !words.iter().any(|word| matches!(*word, "-X" | "--method" | "-f" | "-F")))
 }
 
 /// Writes `<prefix>.json` and `<prefix>.txt`, prints the text, and returns whether every check passed.
@@ -1137,6 +1147,15 @@ mod tests {
         assert!(snapshot_live_home(&live, &live.join("inside")).is_err());
         drop(writer);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn only_read_only_github_queries_are_tolerated_from_the_rehearsal_daemon() {
+        assert!(read_only_github_query("gh pr view https://github.com/o/r/pull/1 --json state,headRefOid"));
+        assert!(read_only_github_query("gh api repos/o/r/pulls/1"));
+        for call in ["gh pr merge 1 --squash", "gh api -X PATCH repos/o/r/pulls/1", "claude --bg x", "tmux send-keys", "git push"] {
+            assert!(!read_only_github_query(call), "{call}");
+        }
     }
 
     #[test]
