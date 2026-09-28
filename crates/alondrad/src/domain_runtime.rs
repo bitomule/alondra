@@ -15,6 +15,17 @@ pub struct DomainRuntime {
     changed: watch::Sender<Revision>,
 }
 impl DomainRuntime {
+    pub(crate) fn transport_receipt(
+        &self,
+        identity: TransportIdentity<'_>,
+        authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
+    ) -> Result<Option<CommandOutcome>, StoreError> {
+        let mut store = self.store.lock().expect("domain store poisoned");
+        let _approval = crate::approval_lease::ApprovalLease::shared(&self.approval_home)?;
+        authorize()?;
+        store.transport_receipt(identity)
+    }
+
     pub fn open(home: &Path) -> Result<Self> {
         let mut store = DomainStore::open(&home.join("domain-v2.db"))?;
         let state = store.load()?;
@@ -90,7 +101,7 @@ impl DomainRuntime {
         let mut store = self.store.lock().expect("domain store poisoned");
         // Lock order is domain store → approval lease. Revocation takes only the
         // exclusive approval lease and never waits for the domain store.
-        let _approval = if matches!(actor, Actor::User { .. }) {
+        let _approval = if matches!(actor, Actor::User { .. }) || transport.is_some() {
             Some(crate::approval_lease::ApprovalLease::shared(
                 &self.approval_home,
             )?)

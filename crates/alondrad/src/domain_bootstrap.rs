@@ -60,6 +60,9 @@ impl V2Only {
 pub(crate) fn router(state: Arc<V2Only>) -> Router {
     Router::new()
         .route("/v2/domain", get(projection))
+        .route("/v2/domain/schedules", get(schedule_list).post(schedule_write_blocked))
+        .route("/v2/domain/schedules/{id}", get(schedule_detail).put(schedule_write_blocked).delete(schedule_write_blocked))
+        .route("/v2/domain/schedules/{id}/run", post(schedule_write_blocked))
         .route("/v2/domain/capabilities", get(capabilities))
         .route("/v2/domain/changes", get(changes))
         .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization))
@@ -72,6 +75,22 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
             post(command).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
         )
         .with_state(state)
+}
+async fn schedule_list(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signed>>) -> Response {
+    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
+    let response = crate::domain_schedule_api::response(crate::domain_schedule_api::read(&state.domain, "/v2/domain/schedules"));
+    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
+    response
+}
+async fn schedule_detail(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signed>>, RoutePath(id): RoutePath<String>) -> Response {
+    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
+    let path = format!("/v2/domain/schedules/{id}");
+    let response = crate::domain_schedule_api::response(crate::domain_schedule_api::read(&state.domain, &path));
+    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
+    response
+}
+async fn schedule_write_blocked() -> Response {
+    crate::domain_schedule_api::local_write_blocked()
 }
 
 async fn merge_authorization(
@@ -400,6 +419,8 @@ mod tests {
         assert_eq!(client.get(format!("{base}/v2/domain/capabilities"))
             .bearer_auth("invalid").send().await.unwrap().status(), StatusCode::FORBIDDEN);
         for (path, expected) in [
+            ("/v2/domain/schedules", StatusCode::OK),
+            ("/v2/domain/schedules/missing", StatusCode::NOT_FOUND),
             ("/v2/domain/delivery-attempts?after=0", StatusCode::OK),
             ("/v2/domain/tasks/missing/actions", StatusCode::NOT_FOUND),
             ("/v2/domain/document-revisions/missing/content?offset=0", StatusCode::NOT_FOUND),

@@ -21,6 +21,9 @@ use tokio::io::AsyncReadExt;
 pub fn routes() -> Router<Arc<Hub>> {
     Router::new()
         .route("/v2/domain", get(projection))
+        .route("/v2/domain/schedules", get(schedule_list).post(schedule_write_blocked))
+        .route("/v2/domain/schedules/{id}", get(schedule_detail).put(schedule_write_blocked).delete(schedule_write_blocked))
+        .route("/v2/domain/schedules/{id}/run", post(schedule_write_blocked))
         .route("/v2/domain/capabilities", get(capabilities))
         .route("/v2/domain/delivery-attempts", get(delivery_evidence))
         .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization))
@@ -35,6 +38,18 @@ pub fn routes() -> Router<Arc<Hub>> {
             "/v2/domain/commands",
             post(command).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
         )
+}
+async fn schedule_list(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>) -> Response {
+    if !signed_read(&hub, &signed) { return unsigned_read(); }
+    domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority"))
+}
+async fn schedule_detail(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed>>, Path(id): Path<String>) -> Response {
+    if !signed_read(&hub, &signed) { return unsigned_read(); }
+    let _ = id;
+    domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority"))
+}
+async fn schedule_write_blocked() -> Response {
+    crate::domain_schedule_api::local_write_blocked()
 }
 async fn merge_authorization(
     State(hub): State<Arc<Hub>>,
@@ -478,6 +493,10 @@ fn projection_inner(domain: &DomainRuntime) -> Response {
 pub(crate) async fn encrypted_read(
     hub: Arc<Hub>, approved: &crate::service::ApprovedDevice<'_>, path: &str,
 ) -> anyhow::Result<Response> {
+    if crate::domain_schedule_api::approved_read_path(path) {
+        approved.recheck()?;
+        return Ok(domain_error(DomainError::new("incompatible_protocol", "Schedule v2 requires v2-only domain authority")));
+    }
     encrypted_read_runtime(&hub.domain, &hub.home, approved, path).await
 }
 
@@ -488,6 +507,8 @@ pub(crate) async fn encrypted_read_runtime(
     approved.recheck()?;
     let response = if path == "/v2/domain" {
         projection_inner(domain)
+    } else if crate::domain_schedule_api::approved_read_path(path) {
+        crate::domain_schedule_api::response(crate::domain_schedule_api::read(domain, path))
     } else if path == "/v2/domain/capabilities" {
         capabilities_inner(domain)
     } else if let Some(query) = path.strip_prefix("/v2/domain/delivery-attempts?") {

@@ -285,7 +285,8 @@ impl Service {
     fn atomic_local(&self, request: &LocalRequest) -> bool {
         if self.domain.is_some() {
             return request.method == "POST" && (request.path == "/v2/domain/commands"
-                || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some());
+                || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some())
+                || crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some());
         }
         request.method == "POST" && (request.path == "/v1/service/push-binding" || self.hub.is_some() &&
             (request.path == "/v2/domain/commands" || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some()))
@@ -320,6 +321,11 @@ impl Service {
                     &envelope.sender, attempt_id, request.body.as_ref(),
                     (&envelope.sender, &envelope.request_id, digest),
                     || self.require_device_approval(&envelope.sender, device))?
+            } else if crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()) {
+                crate::domain_schedule_api::encrypted_mutation(domain, &self.home,
+                    &envelope.sender, &request.method, &request.path, request.body.as_ref(),
+                    (&envelope.sender, &envelope.request_id, digest),
+                    || self.require_device_approval(&envelope.sender, device))
             } else {
                 bail!("v2-only service command path is not approved");
             };
@@ -849,6 +855,16 @@ impl Service {
         if let Some(domain) = &self.domain {
             return self.dispatch_v2(domain, sender, request).await;
         }
+        if request.path == "/v2/domain/schedules" || request.path.starts_with("/v2/domain/schedules/") {
+            approved_method(request)?;
+            let device = self.devices.get(sender).context("unapproved device")?;
+            self.require_device_approval(sender, device)?;
+            return Ok(json!({"status":409,"body":{
+                "code":"incompatible_protocol",
+                "message":"Schedule v2 requires v2-only domain authority",
+                "current_revision":null,"subject":null
+            }}));
+        }
         if crate::service_overview::route(&request.method, &request.path) && request.body.is_none() {
             let device = self.devices.get(sender).context("unapproved device")?;
             if self.require_device_approval(sender, device).is_err() {
@@ -1157,6 +1173,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     if request.path.starts_with("/v2/") {
         let allowed = match request.method.as_str() {
             "GET" if request.body.is_none() => matches!(request.path.as_str(), "/v2/domain" | "/v2/domain/capabilities")
+                || crate::domain_schedule_api::approved_read_path(&request.path)
                 || request.path.strip_prefix("/v2/domain/delivery-attempts?").is_some_and(|query| crate::domain_api::delivery_evidence_query(query).is_some())
                 || request.path.strip_prefix("/v2/domain/changes?").is_some_and(|query| crate::domain_api::changes_query(query).is_some())
                 || request.path.strip_prefix("/v2/domain/pull-requests/")
@@ -1168,8 +1185,11 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || request.path.strip_prefix("/v2/domain/document-revisions/")
                     .and_then(|suffix| suffix.split_once("/content?"))
                     .is_some_and(|(id, query)| v2_read_id(id) && crate::domain_api::document_content_query(query).is_some()),
-            "POST" if request.body.is_some() => request.path == "/v2/domain/commands"
+            "POST" if request.body.is_some() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, true)
+                || request.path == "/v2/domain/commands"
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some(),
+            "POST" if request.body.is_none() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, false),
+            "PUT" | "DELETE" => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()),
             _ => false,
         };
         if !allowed { bail!("local operation is not approved for service access"); }

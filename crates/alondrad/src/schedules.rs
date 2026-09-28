@@ -113,7 +113,7 @@ impl Draft {
 
 /// Uses the Mac's local calendar, including its daylight-saving rules. Search days rather
 /// than adding 24 hours, which would drift across a clock change.
-fn next_after(frequency: Frequency, hour: u8, minute: u8, weekday: Option<u8>, interval: Option<u32>, start_at: Option<i64>, after: i64) -> Option<i64> {
+pub(crate) fn next_after(frequency: Frequency, hour: u8, minute: u8, weekday: Option<u8>, interval: Option<u32>, start_at: Option<i64>, after: i64) -> Option<i64> {
     if frequency == Frequency::Once { return start_at.filter(|at| *at > after); }
     if frequency == Frequency::EveryHours {
         let start = start_at?;

@@ -63,6 +63,26 @@ pub(crate) struct Commit {
 }
 
 impl DomainStore {
+    /// Schedule route adapters must check the transport receipt before parsing a
+    /// draft or reading current options. A retry returns the original outcome.
+    pub(crate) fn transport_receipt(
+        &mut self,
+        (sender, request_id, digest): TransportIdentity<'_>,
+    ) -> std::result::Result<Option<CommandOutcome>, StoreError> {
+        let stored: Option<(Vec<u8>, String)> = self.conn.query_row(
+            "SELECT digest,result FROM local_command_results WHERE sender=?1 AND request_id=?2",
+            params![sender, request_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        ).optional()?;
+        match stored {
+            Some((previous, _)) if previous != digest => Err(DomainError::new(
+                "idempotency_conflict", "request ID reused with different encrypted bytes",
+            ).into()),
+            Some((_, result)) => Ok(Some(serde_json::from_str(&result)?)),
+            None => Ok(None),
+        }
+    }
+
     pub(crate) fn open(path: &Path) -> Result<Self> {
         let (mut conn, _) = connection::open(path)?;
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;

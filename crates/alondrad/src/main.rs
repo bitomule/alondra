@@ -10,6 +10,7 @@ mod domain_migration;
 mod domain_runtime;
 mod domain_store;
 mod domain_api;
+mod domain_schedule_api;
 mod domain_bootstrap;
 mod classify;
 mod http;

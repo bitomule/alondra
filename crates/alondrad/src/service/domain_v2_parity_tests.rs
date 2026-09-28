@@ -330,6 +330,23 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         .await;
         assert_eq!(remote, local, "local/encrypted mismatch for {path}");
     }
+    // This fixture intentionally has a v1 local Hub and a v2-only encrypted
+    // service. Schedule reads must expose the active authority of each mode.
+    let local_schedule = local_get(&client, &base, &phone_key, device_id,
+        "/v2/domain/schedules").await;
+    assert_eq!(local_schedule["status"], 409);
+    let remote_schedule = encrypted(&service, &phone_key, &phone_agreement, &responses,
+        "schedule-v2-read", json!({"method":"GET","path":"/v2/domain/schedules"})).await;
+    assert_eq!(remote_schedule["status"], 200);
+    let legacy_service = Service::open(&home, 0, auth.clone()).unwrap().unwrap().with_hub(hub.clone());
+    let before_schedule = domain.state().unwrap();
+    let blocked = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
+        "schedule-mixed-blocked", json!({"method":"POST","path":"/v2/domain/schedules",
+            "body":{"title":"Review","text":"Review project","frequency":"daily",
+                "hour":9,"minute":0}})).await;
+    assert_eq!(blocked["status"], 409);
+    assert_eq!(blocked["body"]["code"], "incompatible_protocol");
+    assert_eq!(domain.state().unwrap(), before_schedule);
 
     let state = domain.state().unwrap();
     let command = CommandEnvelope {
