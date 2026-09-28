@@ -158,8 +158,17 @@ fn live_shaped_home_rehearses_with_its_counts_and_reports_command_latency() {
         ACTIVE_TASKS,
         "only the 17 in-flight Tasks stay open; historical open questions block nothing"
     );
+    // Cost is pinned by what a command reads and writes, never by the wall clock:
+    // no full-table load once the store is warm, and a handful of row writes.
+    const MAX_WRITES_PER_COMMAND: u64 = 12;
+    let counts = || crate::domain_store::statement_counts();
+    let rows_written = || runtime.store.lock().unwrap().rows_written();
     let mut latencies = vec![];
+    let mut max_statements = 0;
+    let mut max_rows = 0;
     for index in 0..20u32 {
+        let (writes_before, scans_before) = counts();
+        let rows_before = rows_written();
         let revision = runtime.state().unwrap().revision;
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -189,17 +198,31 @@ fn live_shaped_home_rehearses_with_its_counts_and_reports_command_latency() {
         let started = Instant::now();
         runtime.execute(&actor, &envelope, None, || Ok(())).unwrap();
         latencies.push(started.elapsed().as_millis());
+        let (writes_after, scans_after) = counts();
+        assert_eq!(scans_after, scans_before, "command {index} reloaded a table from SQL");
+        let statements = writes_after - writes_before;
+        let rows = rows_written() - rows_before;
+        assert!(statements <= MAX_WRITES_PER_COMMAND, "command {index} issued {statements} writing statements");
+        assert!(rows <= MAX_WRITES_PER_COMMAND, "command {index} wrote {rows} rows");
+        max_statements = max_statements.max(statements);
+        max_rows = max_rows.max(rows);
     }
+    let (_, scans_before) = counts();
     let started = Instant::now();
-    let projection_bytes = runtime.snapshot(crate::service_overview::MAX_BYTES).unwrap().len();
+    let projection = runtime.snapshot(crate::service_overview::MAX_BYTES).unwrap();
     let projection_ms = started.elapsed().as_millis();
+    assert_eq!(counts().1, scans_before, "the projection reloaded a table from SQL");
+    let (writes_before, _) = counts();
+    assert_eq!(runtime.snapshot(crate::service_overview::MAX_BYTES).unwrap(), projection,
+        "an unchanged revision serves the cached projection");
+    assert_eq!(counts().0, writes_before);
     let max = latencies.iter().copied().max().unwrap();
     let average = latencies.iter().sum::<u128>() / latencies.len() as u128;
     eprintln!(
-        "live-shaped HOME: rehearse {rehearse_ms} ms; command latency avg {average} ms, max {max} ms over {} commands; projection {projection_bytes} bytes in {projection_ms} ms",
-        latencies.len()
+        "live-shaped HOME: rehearse {rehearse_ms} ms; command latency avg {average} ms, max {max} ms over {} commands (at most {max_statements} writing statements and {max_rows} rows per command); projection {} bytes in {projection_ms} ms",
+        latencies.len(),
+        projection.len()
     );
-    assert!(max < 2_000, "command latency {max} ms exceeds the measurement guard");
     drop(runtime);
     fs::remove_dir_all(root).unwrap();
 }
