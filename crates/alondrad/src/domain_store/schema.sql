@@ -74,3 +74,112 @@ CREATE TABLE interaction_attachments(
  CHECK((kind='feedback' AND feedback_ordinal IS NOT NULL) OR (kind IN('interaction','answer') AND feedback_ordinal IS NULL))
 );
 CREATE UNIQUE INDEX interaction_attachments_no_feedback ON interaction_attachments(interaction_id,kind,ordinal) WHERE feedback_ordinal IS NULL;
+
+-- Schedule definitions and observed claims share the Request/Task database.
+-- Historical launch policy can exist without a reconstructible ScheduleRun.
+CREATE UNIQUE INDEX tasks_request_id_id ON tasks(request_id,id);
+
+CREATE TABLE schedules (
+ id TEXT PRIMARY KEY CHECK(length(id)>0),
+ title TEXT NOT NULL CHECK(length(trim(title)) BETWEEN 1 AND 120),
+ text TEXT NOT NULL CHECK(length(trim(text)) BETWEEN 1 AND 20000),
+ project TEXT CHECK(project IS NULL OR length(trim(project))>0),
+ options TEXT NOT NULL CHECK(json_valid(options) AND json_type(options)='object'),
+ disallowed_tools TEXT NOT NULL CHECK(json_valid(disallowed_tools) AND json_type(disallowed_tools)='array'),
+ frequency TEXT NOT NULL CHECK(frequency IN ('daily','weekly','every_hours','every_days','every_months','once')),
+ hour INTEGER NOT NULL CHECK(hour BETWEEN 0 AND 23),
+ minute INTEGER NOT NULL CHECK(minute BETWEEN 0 AND 59),
+ weekday INTEGER CHECK(weekday IS NULL OR weekday BETWEEN 0 AND 255),
+ interval INTEGER CHECK(interval IS NULL OR interval BETWEEN 0 AND 4294967295),
+ start_at INTEGER,
+ enabled INTEGER NOT NULL CHECK(enabled IN (0,1)),
+ next_run INTEGER,
+ revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 9007199254740991),
+ deleted_at INTEGER,
+ CHECK(frequency!='weekly' OR (weekday IS NOT NULL AND weekday BETWEEN 0 AND 6)),
+ CHECK(frequency NOT IN ('every_hours','every_days','every_months') OR
+       (interval IS NOT NULL AND interval BETWEEN 1 AND 365 AND
+        start_at IS NOT NULL AND start_at BETWEEN 0 AND 4102444800000)),
+ CHECK(frequency!='once' OR (start_at IS NOT NULL AND start_at BETWEEN 0 AND 4102444800000)),
+ CHECK(enabled=1 OR next_run IS NULL),
+ CHECK(deleted_at IS NULL OR enabled=0)
+);
+
+CREATE TABLE schedule_runs (
+ id TEXT PRIMARY KEY CHECK(length(id)>0),
+ schedule_id TEXT NOT NULL REFERENCES schedules(id),
+ origin TEXT NOT NULL CHECK(origin IN ('due','manual','legacy_last_observed')),
+ claim_revision INTEGER CHECK(claim_revision BETWEEN 1 AND 9007199254740991),
+ due_at INTEGER,
+ claimed_at INTEGER,
+ finished_at INTEGER,
+ state TEXT NOT NULL CHECK(state IN ('launching','sent','failed','interrupted')),
+ request_id TEXT UNIQUE REFERENCES requests(id),
+ task_id TEXT UNIQUE REFERENCES tasks(id),
+ error TEXT,
+ definition_snapshot TEXT CHECK(definition_snapshot IS NULL OR (json_valid(definition_snapshot) AND json_type(definition_snapshot)='object')),
+ UNIQUE(schedule_id,claim_revision),
+ FOREIGN KEY(request_id,task_id) REFERENCES tasks(request_id,id),
+ CHECK((request_id IS NULL)=(task_id IS NULL)),
+ CHECK(origin!='due' OR due_at IS NOT NULL),
+ CHECK(origin!='manual' OR due_at IS NULL),
+ CHECK(origin!='legacy_last_observed' OR (claim_revision IS NULL AND due_at IS NULL AND claimed_at IS NULL AND definition_snapshot IS NULL)),
+ CHECK(origin='legacy_last_observed' OR (claim_revision IS NOT NULL AND claimed_at IS NOT NULL AND definition_snapshot IS NOT NULL)),
+ CHECK(state!='sent' OR (request_id IS NOT NULL AND finished_at IS NOT NULL AND error IS NULL)),
+ CHECK(state!='launching' OR (finished_at IS NULL AND error IS NULL AND request_id IS NULL)),
+ CHECK(state NOT IN ('failed','interrupted') OR (error IS NOT NULL AND length(error)>0))
+);
+CREATE INDEX schedule_runs_recent ON schedule_runs(schedule_id,claim_revision DESC);
+CREATE UNIQUE INDEX schedule_one_launching ON schedule_runs(schedule_id) WHERE state='launching';
+CREATE TRIGGER schedule_run_claim_revision_guard BEFORE INSERT ON schedule_runs
+ WHEN NEW.claim_revision IS NOT NULL AND
+      NEW.claim_revision > (SELECT revision FROM schedules WHERE id=NEW.schedule_id)
+ BEGIN SELECT RAISE(ABORT,'schedule run claim revision exceeds Schedule revision'); END;
+CREATE TRIGGER retain_schedule BEFORE DELETE ON schedules
+ BEGIN SELECT RAISE(ABORT,'schedule identity is retained'); END;
+CREATE TRIGGER immutable_schedule_run_links BEFORE UPDATE ON schedule_runs
+ WHEN NEW.id<>OLD.id OR NEW.schedule_id<>OLD.schedule_id OR NEW.origin<>OLD.origin
+   OR NEW.claim_revision IS NOT OLD.claim_revision
+   OR NEW.due_at IS NOT OLD.due_at OR NEW.claimed_at IS NOT OLD.claimed_at
+   OR (OLD.request_id IS NOT NULL AND NEW.request_id IS NOT OLD.request_id)
+   OR (OLD.task_id IS NOT NULL AND NEW.task_id IS NOT OLD.task_id)
+   OR NEW.definition_snapshot IS NOT OLD.definition_snapshot
+ BEGIN SELECT RAISE(ABORT,'schedule run identity and claim are immutable'); END;
+CREATE TRIGGER schedule_run_result_transition BEFORE UPDATE ON schedule_runs
+ WHEN NOT (
+   (NEW.state=OLD.state AND NEW.finished_at IS OLD.finished_at
+      AND NEW.error IS OLD.error AND NEW.request_id IS OLD.request_id
+      AND NEW.task_id IS OLD.task_id)
+   OR (OLD.state='launching' AND NEW.state IN ('sent','failed','interrupted'))
+   OR (OLD.state='sent' AND NEW.state='failed'
+      AND NEW.finished_at IS OLD.finished_at
+      AND NEW.request_id IS OLD.request_id AND NEW.task_id IS OLD.task_id)
+ )
+ BEGIN SELECT RAISE(ABORT,'schedule run result transition is invalid'); END;
+CREATE TRIGGER retain_schedule_run BEFORE DELETE ON schedule_runs
+ BEGIN SELECT RAISE(ABORT,'schedule run is retained'); END;
+
+CREATE TABLE schedule_request_tools (
+ request_id TEXT PRIMARY KEY REFERENCES requests(id),
+ patterns TEXT NOT NULL CHECK(json_valid(patterns) AND json_type(patterns)='array')
+);
+CREATE TRIGGER immutable_schedule_request_tools BEFORE UPDATE ON schedule_request_tools
+ BEGIN SELECT RAISE(ABORT,'schedule request tools are immutable'); END;
+CREATE TRIGGER retain_schedule_request_tools BEFORE DELETE ON schedule_request_tools
+ BEGIN SELECT RAISE(ABORT,'schedule request tools are retained'); END;
+
+-- Legacy schedule mutation receipts are namespaced away from v2 command receipts.
+CREATE TABLE legacy_schedule_receipts (
+ sender TEXT NOT NULL,
+ request_id TEXT NOT NULL,
+ digest BLOB NOT NULL,
+ result TEXT NOT NULL,
+ PRIMARY KEY(sender,request_id)
+);
+CREATE TRIGGER immutable_legacy_schedule_receipt BEFORE UPDATE ON legacy_schedule_receipts
+ BEGIN SELECT RAISE(ABORT,'legacy schedule receipt is retained'); END;
+CREATE TRIGGER retain_legacy_schedule_receipt BEFORE DELETE ON legacy_schedule_receipts
+ BEGIN SELECT RAISE(ABORT,'legacy schedule receipt is retained'); END;
+CREATE TABLE schedule_failed_launches (
+ request_id TEXT PRIMARY KEY REFERENCES requests(id)
+);
