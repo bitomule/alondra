@@ -40,4 +40,8 @@ public enum DomainV2 {
     public typealias CommandId = ID<CommandIdTag>
     public enum DataEpochTag: Sendable {}
     public typealias DataEpoch = ID<DataEpochTag>
+    public enum ScheduleIdTag: Sendable {}
+    public typealias ScheduleId = ID<ScheduleIdTag>
+    public enum ScheduleRunIdTag: Sendable {}
+    public typealias ScheduleRunId = ID<ScheduleRunIdTag>
 }

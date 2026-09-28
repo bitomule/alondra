@@ -117,6 +117,7 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
               (path.hasPrefix("/v1/") || (method == "GET" && path == "/v2/domain/capabilities")
                || (method == "POST" && path == "/v2/domain/commands")
                || Self.validDomainDeliveryPath(method: method, path: path)
+               || Self.validDomainSchedulePath(method: method, path: path, hasBody: body != nil)
                || (method == "GET" && (path.hasPrefix("/v2/domain/pull-requests/") && path.hasSuffix("/diff")
                    || path.hasPrefix("/v2/domain/document-revisions/") && path.contains("/content?offset=")
                    || path.hasPrefix("/v2/domain/tasks/") && path.hasSuffix("/actions")))),
@@ -163,6 +164,25 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         return components.count == 5 && components[0] == "v2" && components[1] == "domain"
             && components[2] == "delivery-attempts" && components[4] == "resolve"
             && Int64(components[3]).map { $0 > 0 } == true
+    }
+
+    /// Mirror the Mac's exact Schedule v2 operation shapes before sealing.
+    static func validDomainSchedulePath(method: String, path: String, hasBody: Bool) -> Bool {
+        if path == "/v2/domain/schedules" {
+            return (method == "GET" && !hasBody) || (method == "POST" && hasBody)
+        }
+        let prefix = "/v2/domain/schedules/"
+        guard path.hasPrefix(prefix) else { return false }
+        let suffix = String(path.dropFirst(prefix.count))
+        let isRun = suffix.hasSuffix("/run")
+        let id = isRun ? String(suffix.dropLast(4)) : String(suffix)
+        guard (1...256).contains(id.utf8.count), id.utf8.allSatisfy({ byte in
+            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
+                || (byte >= 48 && byte <= 57) || byte == 45 || byte == 95
+        }) else { return false }
+        if isRun { return method == "POST" && !hasBody }
+        return (method == "GET" && !hasBody) || (method == "PUT" && hasBody)
+            || (method == "DELETE" && !hasBody)
     }
 
     private func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> EnvelopeV1 {
