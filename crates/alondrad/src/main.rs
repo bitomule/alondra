@@ -10,6 +10,7 @@ mod domain_migration;
 mod domain_runtime;
 mod domain_store;
 mod domain_api;
+mod domain_bootstrap;
 mod classify;
 mod http;
 mod hook_socket;
@@ -42,6 +43,7 @@ mod watcher;
 mod worktree;
 
 use std::net::SocketAddr;
+use std::path::Path;
 use std::sync::Arc;
 
 use alondra_core::config::Config;
@@ -97,6 +99,16 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     let _home_lock = alondra_core::home_lock::HomeLock::shared(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
+    // Select durable protocol mode before opening the legacy Hub or starting
+    // any watcher, delivery worker, schedule, hook or v1 HTTP route.
+    match protocol_mode(&config.home)? {
+        ProtocolMode::Legacy => (),
+        ProtocolMode::Prepared => anyhow::bail!("domain cutover is prepared but not committed"),
+        ProtocolMode::Committed(epoch) => {
+            anyhow::ensure!(diagnostic.is_none(), "legacy diagnostic push is unavailable after domain cutover");
+            return run_v2_only(&config, &epoch).await;
+        }
+    }
     if let Some(device) = diagnostic {
         let auth = Arc::new(auth::Auth::open(&config.home)?);
         let service = service::Service::open(&config.home, config.port, auth)?
@@ -163,6 +175,44 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     Ok(())
 }
 
+enum ProtocolMode {
+    Legacy,
+    Prepared,
+    Committed(String),
+}
+
+fn protocol_mode(home: &Path) -> Result<ProtocolMode> {
+    match domain_cutover::read_marker(home)? {
+        Some(marker) if marker.phase == domain_cutover::Phase::Prepared => Ok(ProtocolMode::Prepared),
+        Some(marker) => Ok(ProtocolMode::Committed(marker.data_epoch)),
+        None => {
+            anyhow::ensure!(
+                !home.join("domain-v2.db").exists(),
+                "domain database exists without cutover marker; refusing legacy startup"
+            );
+            Ok(ProtocolMode::Legacy)
+        }
+    }
+}
+
+/// First vertical v2-only boot path. The encrypted relay adapter is a separate
+/// cutover requirement, so a HOME configured for it fails closed for now.
+async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
+    anyhow::ensure!(
+        !config.home.join("service.toml").exists(),
+        "v2-only encrypted service adapter is not installed; committed HOME cannot start"
+    );
+    let state = domain_bootstrap::V2Only::open(&config.home, expected_epoch)?;
+    let auth = Arc::new(auth::Auth::open(&config.home)?);
+    let addr = SocketAddr::new(config.listen, config.port);
+    let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
+    let app = domain_bootstrap::router(state)
+        .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
+    log!("v2-only domain listener on http://{addr}, data in {}", config.home.display());
+    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
+    Ok(())
+}
+
 fn diagnostic_device(args: Vec<String>) -> Result<Option<String>> {
     match args.as_slice() {
         [] => Ok(None),
@@ -182,6 +232,39 @@ mod argument_tests {
         for args in [vec!["--test-service-push"], vec!["--test-service-push", ""], vec!["--test-service-push", "--all"], vec!["--test-service-push", "phone-1", "extra"], vec!["--unknown"]] {
             assert!(diagnostic_device(args.into_iter().map(String::from).collect()).is_err());
         }
+    }
+
+    #[test]
+    fn staged_database_without_marker_never_falls_back_to_legacy() {
+        let home = std::env::temp_dir().join(format!("alondra-mode-{}", auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        assert!(matches!(protocol_mode(&home).unwrap(), ProtocolMode::Legacy));
+        std::fs::write(home.join("domain-v2.db"), b"stage left behind").unwrap();
+        assert!(protocol_mode(&home).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn prepared_and_committed_markers_select_only_v2_paths() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("alondra-mode-marker-{}", auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        let path = home.join(domain_cutover::MARKER);
+        let mut marker = domain_cutover::Marker {
+            format: 1,
+            phase: domain_cutover::Phase::Prepared,
+            backup_manifest_sha256: "a".repeat(64),
+            source_seq: 42,
+            data_epoch: "b".repeat(64),
+        };
+        std::fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(matches!(protocol_mode(&home).unwrap(), ProtocolMode::Prepared));
+        marker.phase = domain_cutover::Phase::Committed;
+        std::fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        assert!(matches!(protocol_mode(&home).unwrap(), ProtocolMode::Committed(epoch) if epoch == marker.data_epoch));
+        assert!(!home.join("alondra.db").exists(), "mode selection must not construct the legacy store");
+        std::fs::remove_dir_all(home).unwrap();
     }
 }
 
