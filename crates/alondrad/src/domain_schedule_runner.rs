@@ -267,6 +267,7 @@ pub(crate) async fn run_cycle(
                 schedule_id: schedule.id.clone(), run_id: run_id.clone(),
                 origin: ScheduleRunOrigin::Due, now,
                 next_after_now: next_after(&schedule, now),
+                expected_schedule_revision: None,
             });
             match claim {
                 Ok(_) => finish_claim(domain, home, &run_id)?,
@@ -381,6 +382,7 @@ mod tests {
                 schedule_id: "schedule-1".into(), run_id: id.into(),
                 origin: ScheduleRunOrigin::Manual, now: alondra_core::now_millis(),
                 next_after_now: None,
+                expected_schedule_revision: None,
             }).unwrap();
         }
     }

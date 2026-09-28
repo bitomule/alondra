@@ -1650,4 +1650,49 @@ mod tests {
         assert_eq!(run.task_id, Some(d::TaskId("task-sched".into())));
         fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn import_reports_running_tasks_that_d02_holds_on_a_dependency_in_review() {
+        let root = std::env::temp_dir().join(format!(
+            "alondra-import-d02-{}",
+            crate::auth::random_hex(8)
+        ));
+        let source = root.join("source");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&source).unwrap();
+        let mut view = View::default();
+        view.seq = 1;
+        view.board.recorded_since = Some(1);
+        view.board.requests.insert(
+            "request-1".into(),
+            serde_json::from_value(json!({"id":"request-1","text":"Two steps","created_at":1}))
+                .unwrap(),
+        );
+        for (id, state, depends_on) in [
+            ("task-upstream", "in_review", json!([])),
+            ("task-downstream", "running", json!(["task-upstream"])),
+            ("task-free", "running", json!([])),
+        ] {
+            view.board.tasks.insert(
+                id.into(),
+                serde_json::from_value(json!({
+                    "id":id,"request":"request-1","title":id,"state":state,
+                    "state_since":1,"created_at":1,"recorded":true,"depends_on":depends_on
+                }))
+                .unwrap(),
+            );
+        }
+        let db = Connection::open(source.join("alondra.db")).unwrap();
+        db.execute_batch("CREATE TABLE event_log(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);").unwrap();
+        db.execute(
+            "INSERT INTO snapshots(seq,at,body) VALUES(1,1,?1)",
+            [serde_json::to_string(&view).unwrap()],
+        )
+        .unwrap();
+        drop(db);
+
+        let result = rehearse(&source, &root.join("stage")).unwrap();
+        assert_eq!(result.imported.d02_waiting_dependency, vec!["task-downstream".to_owned()]);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -230,6 +230,7 @@ pub(crate) fn encrypted_mutation(
                 origin: d::ScheduleRunOrigin::Manual,
                 now,
                 next_after_now: crate::domain_schedule_runner::next_after(schedule, now),
+                expected_schedule_revision: Some(schedule.revision),
             },
         };
         let outcome = match domain.execute(&d::Actor::System, &envelope, Some(identity), || {
@@ -255,8 +256,11 @@ pub(crate) fn encrypted_mutation(
     };
     let command = if method == "DELETE" {
         let (schedule_id, _) = schedule_path(path).expect("approved Schedule path");
+        let schedule_id = d::ScheduleId(schedule_id.into());
+        let expected_schedule_revision =
+            state.schedule.schedules.get(&schedule_id).map(|schedule| schedule.revision);
         d::Command::DeleteSchedule {
-            schedule_id: schedule_id.into(), deleted_at: now_millis(),
+            schedule_id, deleted_at: now_millis(), expected_schedule_revision,
         }
     } else {
         let draft: ScheduleDraft = match body.cloned().and_then(|body| serde_json::from_value(body).ok()) {

@@ -165,6 +165,7 @@ fn schedule_commands_preserve_claim_and_result_history() {
             origin: ScheduleRunOrigin::Due,
             now: 100,
             next_after_now: Some(200),
+            expected_schedule_revision: None,
         },
         "forbidden",
     );
@@ -177,6 +178,7 @@ fn schedule_commands_preserve_claim_and_result_history() {
             origin: ScheduleRunOrigin::Due,
             now: 100,
             next_after_now: Some(200),
+            expected_schedule_revision: None,
         },
     )
     .unwrap();
@@ -266,6 +268,7 @@ fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
             origin: ScheduleRunOrigin::Due,
             now: 100,
             next_after_now: Some(200),
+            expected_schedule_revision: None,
         },
     )
     .unwrap();
@@ -284,6 +287,7 @@ fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
         Command::DeleteSchedule {
             schedule_id: "schedule-1".into(),
             deleted_at: 150,
+            expected_schedule_revision: None,
         },
         "conflict",
     );
@@ -303,6 +307,7 @@ fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
             origin: ScheduleRunOrigin::Due,
             now: 100,
             next_after_now: Some(200),
+            expected_schedule_revision: None,
         },
         "conflict",
     );
@@ -312,6 +317,7 @@ fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
         Command::DeleteSchedule {
             schedule_id: "schedule-1".into(),
             deleted_at: 150,
+            expected_schedule_revision: None,
         },
     )
     .unwrap();
@@ -325,6 +331,7 @@ fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
             origin: ScheduleRunOrigin::Manual,
             now: 150,
             next_after_now: None,
+            expected_schedule_revision: None,
         },
         "not_found",
     );
@@ -346,6 +353,7 @@ fn schedule_state_deserializes_old_snapshots_and_rejects_broken_links() {
     exec(&mut state, Actor::System, Command::ClaimScheduleRun {
         schedule_id: "schedule-1".into(), run_id: "run-1".into(),
         origin: ScheduleRunOrigin::Due, now: 100, next_after_now: Some(200),
+        expected_schedule_revision: None,
     }).unwrap();
     let (request, mut task) = scheduled_request_task("scheduled-request", "scheduled-task");
     task.title = "Daily review".into();
@@ -2502,9 +2510,11 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
     let list = vec![
         (Command::CreateSchedule { schedule }, true),
         (Command::UpdateSchedule { schedule: updated }, false),
-        (Command::DeleteSchedule { schedule_id: ids.schedule.into(), deleted_at: 1 }, false),
+        (Command::DeleteSchedule { schedule_id: ids.schedule.into(), deleted_at: 1,
+            expected_schedule_revision: None }, false),
         (Command::ClaimScheduleRun { schedule_id: ids.schedule.into(), run_id: ids.run.into(),
-            origin: ScheduleRunOrigin::Manual, now: 1, next_after_now: None }, false),
+            origin: ScheduleRunOrigin::Manual, now: 1, next_after_now: None,
+            expected_schedule_revision: None }, false),
         (Command::RecordScheduleRunSent { run_id: ids.run.into(), request, task,
             launch: scheduled_launch(), finished_at: 1 }, false),
         (Command::ClaimScheduleLaunch { run_id: ids.run.into(), now: 1 }, false),

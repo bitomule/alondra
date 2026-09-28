@@ -26,6 +26,9 @@ pub(crate) struct ImportReport {
     /// Open PRs whose base is another open PR's head, as (upper, lower) legacy ids.
     /// Stacks are reported, not converted: D02 requires explicit readiness.
     pub stacked_prs: Vec<(u64, u64)>,
+    /// Tasks legacy let run that D02 holds as WaitingDependency (a dependency
+    /// in review or closing, or no stack readiness): they need a manual decision.
+    pub d02_waiting_dependency: Vec<String>,
     pub reports: usize,
     pub messages: usize,
     pub documents: usize,
@@ -91,6 +94,7 @@ pub(crate) fn materialize_legacy(
         open_questions_reopened: 0,
         final_presentations: 0,
         stacked_prs: vec![],
+        d02_waiting_dependency: vec![],
         reports: 0,
         messages: 0,
         documents: 0,
@@ -829,7 +833,21 @@ pub(crate) fn materialize_legacy(
             .insert(interaction.id.clone(), interaction);
     }
     state.revision = state.revision.max(state.interactions.len() as u64);
+    let legacy_states: BTreeMap<_, _> = state
+        .tasks
+        .iter()
+        .map(|(id, task)| (id.clone(), task.state))
+        .collect();
     state.derive_states();
+    report.d02_waiting_dependency = state
+        .tasks
+        .values()
+        .filter(|task| {
+            task.state == d::TaskState::WaitingDependency
+                && legacy_states[&task.id] != d::TaskState::WaitingDependency
+        })
+        .map(|task| task.id.0.clone())
+        .collect();
     state.validate().map_err(anyhow::Error::new)?;
     ensure!(
         report.questions == view.questions.len()

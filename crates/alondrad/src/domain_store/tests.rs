@@ -1158,6 +1158,82 @@ fn import_replaces_a_projection_cached_before_it() {
 }
 
 #[test]
+fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    present(&mut store);
+    let e = acceptance(&mut store);
+    let accepted_at = store
+        .execute_authenticated(&user(), &e, None)
+        .unwrap()
+        .outcome
+        .revision;
+    let mut represent = envelope(
+        &mut store,
+        "represent-without-reading",
+        Command::PresentResult {
+            task_id: "task-1".into(),
+            interaction_id: "delivery-2".into(),
+            body: "A different answer".into(),
+            targets: vec![DeliveryTarget::Text {
+                text: "Another answer".into(),
+            }],
+            is_final: true,
+            attachments: vec![],
+        },
+    );
+    represent.expected_revision = 0;
+    let superseded = SupersededAcceptance {
+        task_id: "task-1".into(),
+        presentation_id: "delivery-1".into(),
+        user_id: "user-1".into(),
+        accepted_at,
+    };
+    let committed = store.execute_filling_revision(&agent(), &represent).unwrap();
+    assert_eq!(committed.outcome.superseded_acceptances, vec![superseded.clone()]);
+    assert_eq!(store.project().unwrap().superseded_acceptances, vec![superseded]);
+    let audited: String = store
+        .conn
+        .query_row(
+            "SELECT r.result FROM command_audit a JOIN semantic_receipts r
+               USING(actor,command_id,data_epoch) WHERE a.revision=?1",
+            [committed.outcome.revision as i64],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert!(audited.contains("\"superseded_acceptances\""), "{audited}");
+
+    let accept_again = envelope(
+        &mut store,
+        "accept-new-final",
+        Command::AcceptDelivery {
+            presentation_id: "delivery-2".into(),
+            targets: vec![DeliveryTarget::Text {
+                text: "Another answer".into(),
+            }],
+        },
+    );
+    store.execute_authenticated(&user(), &accept_again, None).unwrap();
+    assert!(store.project().unwrap().superseded_acceptances.is_empty());
+    let feedback = envelope(
+        &mut store,
+        "user-withdraws",
+        Command::SubmitFeedback {
+            attachments: vec![],
+            presentation_id: "delivery-2".into(),
+            targets: vec![DeliveryTarget::Text {
+                text: "Another answer".into(),
+            }],
+            body: "Not quite".into(),
+        },
+    );
+    let withdrawn = store.execute_authenticated(&user(), &feedback, None).unwrap();
+    assert!(withdrawn.outcome.superseded_acceptances.is_empty());
+    assert!(store.project().unwrap().superseded_acceptances.is_empty());
+}
+
+#[test]
 fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
