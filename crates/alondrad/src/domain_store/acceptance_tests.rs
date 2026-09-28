@@ -10,11 +10,12 @@ use std::collections::BTreeSet;
 
 const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
 const CASES: &[&str] = &[
-    "V01", "V03", "V06", "V07", "V09", "V23", "V24", "V25", "V45",
+    "V01", "V03", "V06", "V07", "V09", "V10", "V23", "V24", "V25", "V45",
 ];
 fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
     match (case_id, step) {
         ("V07", 1) => Some("acceptance_missing"),
+        ("V10", 0) => Some("acceptance_stale"),
         ("V23", 0) => Some("not_assigned"),
         ("V45", 1) => Some("acceptance_stale"),
         _ => None,
@@ -258,7 +259,10 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
 }
 fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
     let variant = field(variants, name);
-    if let Some(parent) = variant.get("extends") {
+    if let Some(parent) = variant
+        .get("extends")
+        .filter(|_| name != "mixed-text-document-final")
+    {
         setup_variant(store, variants, string(parent));
         if field(variant, "accepted") == true {
             let targets = variant_targets(store, variants, name);
@@ -275,11 +279,11 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
         } else {
             panic!("unsupported variant extension {name}");
         }
-    } else if name == "document-v1" {
-        assert_eq!(field(variant, "accepted"), false);
-        let document = field(variant, "document");
-        let revision = field(variant, "revision");
-        let task_id = string(field(variant, "task_id"));
+    } else if matches!(name, "document-v1" | "mixed-text-document-final") {
+        assert_eq!(variant_field(variants, name, "accepted"), false);
+        let document = variant_field(variants, name, "document");
+        let revision = variant_field(variants, name, "revision");
+        let task_id = string(variant_field(variants, name, "task_id"));
         let content = string(field(revision, "content"));
         assert_eq!(
             string(field(revision, "content_hash")),
@@ -320,10 +324,15 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
             Command::PresentResult {
                 attachments: vec![],
                 task_id: task_id.into(),
-                interaction_id: string(field(variant, "presentation_id")).into(),
-                body: "Synthetic document".into(),
+                interaction_id: string(variant_field(variants, name, "presentation_id")).into(),
+                body: if name == "document-v1" {
+                    "Synthetic document"
+                } else {
+                    "Synthetic answer"
+                }
+                .into(),
                 targets,
-                is_final: field(variant, "final") == true,
+                is_final: variant_field(variants, name, "final") == true,
             },
         );
     } else if name == "unaccepted-text-final" {
@@ -350,7 +359,7 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
     let task = &state.tasks[&TaskId::from(string(task_id))];
     assert_eq!(
         serde_json::to_value(task.state).unwrap(),
-        field(variant, "task_status").clone(),
+        variant_field(variants, name, "task_status").clone(),
         "variant {name} status"
     );
 }
@@ -364,7 +373,10 @@ fn measured(
     let state = store.load().unwrap();
     let mut tasks = serde_json::Map::new();
     for (id, task) in &state.tasks {
-        tasks.insert(id.0.clone(), json!({"status":task.state}));
+        tasks.insert(
+            id.0.clone(),
+            json!({"status":task.state,"current_final_id":task.final_presentation}),
+        );
     }
     let mut interactions = serde_json::Map::new();
     for (id, interaction) in &state.interactions {
@@ -388,7 +400,10 @@ fn measured(
         if let InteractionPayload::Delivery { acceptance, .. } = &interaction.payload {
             presentations.insert(
                 id.0.clone(),
-                json!({"accepted":acceptance.as_ref().is_some_and(|a|a.valid)}),
+                json!({
+                    "acceptance_recorded":acceptance.is_some(),
+                    "acceptance_valid":acceptance.as_ref().is_some_and(|a|a.valid)
+                }),
             );
         }
     }

@@ -32,6 +32,10 @@ assertion paths describe measured adapter outputs, not assumed wire field paths.
 For example `tasks.task-1.status` maps to P1 Task.state; `delta.rows` counts all
 relevant durable mutations, and `delta.messages/outbox/delivery_attempts` must be
 queried/countable even when the expected count is zero.
+`presentations.<id>.acceptance_recorded` observes the historical decision;
+`presentations.<id>.acceptance_valid` observes whether that decision is still
+usable for completion. A new final presentation or feedback can make the latter
+false without erasing the former.
 
 Fixtures with `https://...example.invalid` are references only. No external
 request should be made to them. `head-a`, `sha256-v1` and similar values are
@@ -53,7 +57,7 @@ parser or schema check proves fixture structure only. Do not mark V01–V53 or P
 passed until their required layers have actually run.
 
 `cargo test -p alondrad --bin alondrad domain_store::acceptance_tests` executes
-V01, V03, V06, V07, V23, V24, V25 and V45 against fresh SQLite stores. It sends
+V01, V03, V06, V07, V10, V23, V24, V25 and V45 against fresh SQLite stores. It sends
 the catalog's command steps through the production domain command/store path,
 compares every listed assertion for those cases, checks rejected writes and SQL
 integrity, then reloads each store. This is C/S coverage only. It does not exercise

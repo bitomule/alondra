@@ -724,7 +724,12 @@
           "value": "docrev-1"
         },
         {
-          "path": "presentations.final-2.accepted",
+          "path": "presentations.final-2.acceptance_recorded",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "presentations.final-2.acceptance_valid",
           "op": "eq",
           "value": false
         },
@@ -774,7 +779,12 @@
       ],
       "assert": [
         {
-          "path": "presentations.final-1.accepted",
+          "path": "presentations.final-1.acceptance_recorded",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "presentations.final-1.acceptance_valid",
           "op": "eq",
           "value": true
         },
@@ -807,6 +817,20 @@
         }
       ],
       "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "accept_delivery",
+            "presentation_id": "final-1",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Synthetic answer"
+              }
+            ]
+          }
+        },
         {
           "type": "command",
           "actor": "user-a",
@@ -851,12 +875,22 @@
       ],
       "assert": [
         {
-          "path": "presentations.final-1.accepted",
+          "path": "presentations.final-1.acceptance_recorded",
           "op": "eq",
           "value": true
         },
         {
-          "path": "presentations.final-2.accepted",
+          "path": "presentations.final-1.acceptance_valid",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "presentations.final-2.acceptance_recorded",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "presentations.final-2.acceptance_valid",
           "op": "eq",
           "value": false
         },
@@ -1534,7 +1568,12 @@
           "value": "merged"
         },
         {
-          "path": "presentations.final-1.accepted",
+          "path": "presentations.final-1.acceptance_recorded",
+          "op": "eq",
+          "value": false
+        },
+        {
+          "path": "presentations.final-1.acceptance_valid",
           "op": "eq",
           "value": false
         },
@@ -2872,7 +2911,12 @@
           "value": "acceptance_stale"
         },
         {
-          "path": "presentations.final-1.accepted",
+          "path": "presentations.final-1.acceptance_recorded",
+          "op": "eq",
+          "value": true
+        },
+        {
+          "path": "presentations.final-1.acceptance_valid",
           "op": "eq",
           "value": false
         },
