@@ -1,8 +1,16 @@
 //! Local v2-only HTTP bootstrap. This path never constructs a legacy Hub;
 //! the routes are the shared domain handlers with a committed host.
+use crate::auth::is_local;
 use crate::domain_runtime::DomainRuntime;
+use alondra_core::domain_v2::DomainError;
 use anyhow::{Context, Result, ensure};
-use axum::Router;
+use axum::extract::{ConnectInfo, State};
+use axum::http::HeaderMap;
+use axum::response::{IntoResponse, Response};
+use axum::routing::get;
+use axum::{Json, Router};
+use serde_json::json;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -50,7 +58,19 @@ impl crate::domain_api::DomainHost for V2Only {
 }
 
 pub(crate) fn router(state: Arc<V2Only>) -> Router {
-    crate::domain_api::routes().with_state(state)
+    Router::new()
+        .route("/v2/daemon", get(daemon))
+        .merge(crate::domain_api::routes())
+        .with_state(state)
+}
+
+/// The running version and update state, for `alondra update` and `alondra doctor` on this Mac.
+async fn daemon(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if !is_local(&peer, &headers) {
+        return crate::domain_api::domain_error(DomainError::new("forbidden", "local request required"));
+    }
+    Json(json!({"version": env!("CARGO_PKG_VERSION"), "update": crate::updates::status(&state.home),
+        "preflight_rejected": crate::relaunch::rejected()})).into_response()
 }
 
 #[cfg(test)]
@@ -105,6 +125,9 @@ mod tests {
             .unwrap();
         });
         let client = reqwest::Client::new();
+        let daemon: serde_json::Value = client.get(format!("{base}/v2/daemon")).send().await.unwrap().json().await.unwrap();
+        assert_eq!(daemon["version"], env!("CARGO_PKG_VERSION"));
+        assert_eq!(daemon["update"]["current"], env!("CARGO_PKG_VERSION"));
         assert_eq!(
             client
                 .get(format!("{base}/v1/overview"))

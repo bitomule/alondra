@@ -17,6 +17,7 @@ mod setup_projects;
 mod statusline;
 mod state;
 mod tui;
+mod update;
 
 use std::time::Duration;
 
@@ -89,6 +90,14 @@ enum Cmd {
     Doctor {
         #[arg(long, help = tr!("Machine-readable output", "Salida para máquinas"))]
         json: bool,
+    },
+    #[command(about = tr!(
+        "Install the newest release with Homebrew and wait until the daemon runs it",
+        "Instala la última versión con Homebrew y espera a que el servidor la ejecute"
+    ))]
+    Update {
+        #[arg(long, help = tr!("Only say whether a newer release exists", "Solo dice si hay una versión más nueva"))]
+        check: bool,
     },
     #[command(about = tr!("Audit or safely rebuild the local event-derived state", "Audita o reconstruye de forma segura el estado local derivado de eventos"))]
     State {
@@ -193,6 +202,7 @@ fn main() -> Result<()> {
         },
         Some(Cmd::Devices { revoke }) => devices(revoke),
         Some(Cmd::Doctor { json }) => doctor::run(json),
+        Some(Cmd::Update { check }) => update::run(check),
         Some(Cmd::State { command }) => {
             let home = client::config().home.clone();
             match command {
@@ -232,6 +242,7 @@ fn show_config(get: Option<&str>) -> Result<()> {
         ("compact_idle_nodes_at", c.compact_idle_nodes_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("compact_orchestrator_at", c.compact_orchestrator_at.map(|p| format!("{p}%")).unwrap_or_else(|| "off".into())),
         ("archived_tasks_days", c.archived_tasks_days.to_string()),
+        ("auto_update", c.auto_update.to_string()),
     ];
     match get {
         Some(key) => match rows.iter().find(|(k, _)| *k == key) {

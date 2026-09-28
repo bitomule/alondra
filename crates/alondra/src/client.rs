@@ -152,6 +152,14 @@ where
     Ok(values.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
 }
 
+fn lenient_one<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: DeserializeOwned,
+{
+    Ok(serde_json::from_value(Value::deserialize(d)?).ok())
+}
+
 impl std::ops::Deref for FleetNode {
     type Target = Node;
     fn deref(&self) -> &Node {
@@ -182,6 +190,8 @@ pub struct Overview {
     pub requests: Vec<ClientRequest>,
     #[serde(default, deserialize_with = "lenient")]
     pub tasks: Vec<ClientTask>,
+    #[serde(default, deserialize_with = "lenient_one")]
+    pub update: Option<alondra_core::update::Status>,
 }
 
 /// An open question, with the PR card it belongs to when that card is waiting on the user.
@@ -618,5 +628,26 @@ mod orchestrator_contract_tests {
         assert!(!node.alive);
         assert_eq!(node.orchestrator_runtime.as_ref().unwrap().queue_depth, 2);
         assert_eq!(node.status_label(), tr!("available", "disponible"));
+    }
+}
+
+#[cfg(test)]
+mod lenient_update_tests {
+    use super::*;
+
+    #[derive(Deserialize)]
+    struct Carrier {
+        #[serde(default, deserialize_with = "lenient_one")]
+        update: Option<alondra_core::update::Status>,
+    }
+
+    #[test]
+    fn an_update_block_this_client_cannot_read_is_dropped_not_fatal() {
+        let odd: Carrier = serde_json::from_value(serde_json::json!({"update": {"current": 5}})).unwrap();
+        assert!(odd.update.is_none());
+        let absent: Carrier = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert!(absent.update.is_none());
+        let read: Carrier = serde_json::from_value(serde_json::json!({"update": {"current": "0.1.13"}})).unwrap();
+        assert_eq!(read.update.unwrap().current, "0.1.13");
     }
 }

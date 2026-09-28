@@ -40,20 +40,33 @@ pub async fn bind(home: &Path) -> Result<UnixListener> {
     Ok(listener)
 }
 
-pub async fn serve(listener: UnixListener, hub: Arc<Hub>) {
+/// Serves hooks until `drain` turns true, then stops accepting and drops every hook still
+/// waiting, which releases a held question exactly as a disconnecting Claude would.
+pub async fn serve(listener: UnixListener, hub: Arc<Hub>, mut drain: tokio::sync::watch::Receiver<bool>) {
+    let mut hooks = tokio::task::JoinSet::new();
     loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                let hub = hub.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle(stream, hub).await {
-                        log!("local hook failed: {e}");
-                    }
-                });
-            }
-            Err(e) => log!("local hook accept failed: {e}"),
+        tokio::select! {
+            accepted = listener.accept() => match accepted {
+                Ok((stream, _)) => {
+                    let hub = hub.clone();
+                    hooks.spawn(async move {
+                        if let Err(e) = handle(stream, hub).await {
+                            log!("local hook failed: {e}");
+                        }
+                    });
+                }
+                Err(e) => log!("local hook accept failed: {e}"),
+            },
+            Some(_) = hooks.join_next(), if !hooks.is_empty() => (),
+            _ = drain.wait_for(|draining| *draining) => break,
         }
     }
+    drop(listener);
+    if !hooks.is_empty() {
+        log!("releasing {} hooks still waiting before restart", hooks.len());
+    }
+    hooks.abort_all();
+    while hooks.join_next().await.is_some() {}
 }
 
 async fn handle(mut stream: UnixStream, hub: Arc<Hub>) -> Result<()> {
@@ -282,6 +295,38 @@ mod tests {
         assert_eq!(hub.read(|v| v.questions[&id].status), QuestionStatus::Orphaned);
         assert_ne!(hub.read(|v| v.board.tasks.values().next().unwrap().state), TaskState::NeedsYou);
         drop(listener);
+        drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[tokio::test]
+    async fn draining_stops_accepting_and_releases_a_held_hook_like_a_disconnect() {
+        let home = std::env::temp_dir().join(format!("alondra-drain-hook-{}", crate::auth::random_hex(6)));
+        let sid = "12345678-drain";
+        let job = home.join("claude/jobs/12345678");
+        std::fs::create_dir_all(&job).unwrap();
+        std::fs::write(job.join("state.json"), format!("{{\"sessionId\":\"{sid}\"}}")).unwrap();
+        let config = Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
+        let hub = Arc::new(Hub::open(config, true).unwrap().with_claude_home(home.join("claude")));
+        let listener = bind(&home).await.unwrap();
+        let (drain, draining) = tokio::sync::watch::channel(false);
+        let served = tokio::spawn(serve(listener, hub.clone(), draining));
+        let mut client = UnixStream::connect(home.join("hooks.sock")).await.unwrap();
+        let body = format!("{{\"launched\":true,\"payload\":{{\"session_id\":\"{sid}\",\"hook_event_name\":\"PermissionRequest\",\"tool_name\":\"Bash\",\"tool_use_id\":\"tool-1\",\"tool_input\":{{\"command\":\"echo hi\"}}}}}}");
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(body.as_bytes()).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while hub.holds_count() == 0 { tokio::task::yield_now().await; }
+        }).await.unwrap();
+        let id = hub.read(|v| *v.questions.keys().next().unwrap());
+        assert_eq!(hub.read(|v| v.board.tasks.values().next().unwrap().state), TaskState::NeedsYou);
+        drain.send(true).unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), served).await.unwrap().unwrap();
+        assert_eq!(hub.holds_count(), 0);
+        assert_eq!(hub.read(|v| v.questions[&id].status), QuestionStatus::Orphaned);
+        assert_ne!(hub.read(|v| v.board.tasks.values().next().unwrap().state), TaskState::NeedsYou);
+        let mut rest = vec![];
+        assert_eq!(client.read_to_end(&mut rest).await.unwrap(), 0, "the hook gets no decision, as on disconnect");
+        assert!(UnixStream::connect(home.join("hooks.sock")).await.is_err(), "no new hook is accepted");
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }

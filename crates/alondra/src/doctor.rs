@@ -112,6 +112,50 @@ pub fn daemon_check(health: Result<Value, String>, local: &Config) -> Check {
     }
 }
 
+/// Why the daemon is down, when launchd keeps failing to start it.
+pub fn startup_check(record: Option<&alondra_core::startup::Record>, up: bool, home: &Path) -> Option<Check> {
+    let record = record.filter(|_| !up)?;
+    let (failures, reason) = (record.failures, &record.reason);
+    let log = home.join("alondrad.log");
+    let log = log.display();
+    let detail = if record.looping() {
+        trf!("the last {failures} starts failed, now retried every few minutes: {reason}",
+            "los últimos {failures} arranques fallaron; ahora se reintenta cada pocos minutos: {reason}")
+    } else {
+        trf!("the last start failed: {reason}", "el último arranque falló: {reason}")
+    };
+    Some(check("startup", Status::Fail, detail, trf!("see {log}; alondra update installs a fixed release", "mira {log}; alondra update instala una versión corregida")))
+}
+
+/// A newer binary was installed but failed its startup check, so the daemon stayed on its own.
+pub fn preflight_check(health: &Value) -> Option<Check> {
+    let rejected = health.get("preflight_rejected").filter(|v| !v.is_null())?;
+    let version = rejected.get("version").and_then(Value::as_str).unwrap_or("?");
+    let reason = rejected.get("reason").and_then(Value::as_str).unwrap_or("?");
+    let running = health.get("version").and_then(Value::as_str).unwrap_or("?");
+    Some(check("upgrade", Status::Warn,
+        trf!("installed {version} failed its startup check, so {running} keeps running: {reason}",
+            "la versión instalada {version} no pasó la comprobación de arranque; sigue {running}: {reason}"),
+        tr!("wait for a fixed release, then alondra update", "espera a una versión corregida y ejecuta alondra update")))
+}
+
+/// Whether a newer release exists, as the daemon last saw it, and how an automatic update went.
+pub fn update_check(health: &Value) -> Option<Check> {
+    let status: alondra_core::update::Status = serde_json::from_value(health.get("update")?.clone()).ok()?;
+    let current = &status.current;
+    if let Some(attempt) = status.last_auto_update.as_ref().filter(|a| !a.ok && status.available && status.latest.as_deref() == Some(a.version.as_str())) {
+        let (version, detail) = (&attempt.version, &attempt.detail);
+        return Some(check("update", Status::Warn,
+            trf!("automatic update to {version} failed: {detail}", "la actualización automática a {version} falló: {detail}"), "alondra update"));
+    }
+    Some(match status.latest.as_deref() {
+        Some(latest) if status.available => check("update", Status::Warn,
+            trf!("{latest} is available; this is {current}", "hay una versión {latest}; esta es {current}"), "alondra update"),
+        Some(_) => check("update", Status::Pass, trf!("{current} is the latest release", "{current} es la última versión"), ""),
+        None => check("update", Status::Pass, trf!("{current}; releases not checked yet", "{current}; aún no se han consultado las versiones"), ""),
+    })
+}
+
 pub fn state_integrity_check(health: &Value) -> Check {
     let Some(issues) = health.get("integrity_issues").and_then(Value::as_array) else {
         return check("state", Status::Warn, tr!("daemon does not report state integrity", "el servidor no informa de la integridad del estado"), "alondra setup");
@@ -328,6 +372,11 @@ pub fn run(json_out: bool) -> Result<()> {
             Err(e) => check("state", Status::Fail, format!("{e:#}"), "alondra state repair (only with a complete event log and the daemon stopped)"),
         });
     }
+    checks.extend(startup_check(alondra_core::startup::read(&home).as_ref(), up, &home));
+    if let Ok(value) = &health {
+        checks.extend(preflight_check(value));
+        checks.extend(update_check(value));
+    }
     checks.push(daemon_check(health, &local));
     checks.extend(hooks_port_check(local.port));
 
@@ -519,5 +568,46 @@ mod orchestrator_tests {
         assert_eq!(orchestrator_capability_check(Some(help)).status, Status::Pass);
         assert_eq!(orchestrator_capability_check(Some(&help.replace("auto", "default"))).status, Status::Fail);
         assert_eq!(orchestrator_capability_check(None).status, Status::Fail);
+    }
+}
+
+#[cfg(test)]
+mod startup_tests {
+    use super::*;
+    use alondra_core::startup::Record;
+
+    #[test]
+    fn a_failing_start_is_reported_only_while_the_daemon_is_down() {
+        let home = Path::new("/h");
+        let record = Record { failures: 3, last_at: 1, reason: "bootstrap failed integrity audit: t1".into(), version: "0.1.12".into() };
+        assert!(startup_check(Some(&record), true, home).is_none());
+        assert!(startup_check(None, false, home).is_none());
+        let down = startup_check(Some(&record), false, home).unwrap();
+        assert_eq!(down.status, Status::Fail);
+        assert!(down.detail.contains("bootstrap failed integrity audit: t1") && down.detail.contains('3'), "{}", down.detail);
+        assert!(down.fix.contains("/h/alondrad.log"));
+    }
+
+    #[test]
+    fn a_newer_release_or_a_failed_automatic_update_is_a_warning() {
+        let health = |update: Value| json!({"version": "0.1.12", "update": update});
+        assert!(update_check(&json!({"version": "0.1.12"})).is_none(), "an older daemon reports nothing");
+        let newer = update_check(&health(json!({"current": "0.1.12", "latest": "0.1.13", "available": true}))).unwrap();
+        assert_eq!((newer.status, newer.fix.as_str()), (Status::Warn, "alondra update"));
+        assert!(newer.detail.contains("0.1.13"));
+        let latest = update_check(&health(json!({"current": "0.1.13", "latest": "0.1.13", "available": false}))).unwrap();
+        assert_eq!(latest.status, Status::Pass);
+        let failed = update_check(&health(json!({"current": "0.1.12", "latest": "0.1.13", "available": true,
+            "last_auto_update": {"version": "0.1.13", "at": 1, "ok": false, "detail": "Error: no bottle"}}))).unwrap();
+        assert_eq!(failed.status, Status::Warn);
+        assert!(failed.detail.contains("Error: no bottle"), "{}", failed.detail);
+    }
+
+    #[test]
+    fn a_rejected_upgrade_names_the_version_and_why() {
+        assert!(preflight_check(&json!({"version": "0.1.12", "preflight_rejected": null})).is_none());
+        let warned = preflight_check(&json!({"version": "0.1.12", "preflight_rejected": {"version": "0.1.13", "reason": "preflight failed: audit"}})).unwrap();
+        assert_eq!(warned.status, Status::Warn);
+        assert!(warned.detail.contains("0.1.13") && warned.detail.contains("0.1.12") && warned.detail.contains("preflight failed: audit"), "{}", warned.detail);
     }
 }

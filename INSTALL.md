@@ -159,6 +159,9 @@ the two IDs above, with **Push Notifications** checked on the app one; Devices �
 iPhone's UDID; Profiles → + → iOS App Development, once per ID, with your Apple Development
 certificate and the iPhone; download both into `signing/` with the file names above.
 
+The profiles already in `signing/` are the maintainers' team profiles. Yours replace them
+in your checkout; don't commit that change.
+
 A signing certificate with its private key must be in the login keychain. If there is none:
 Xcode → Settings → Accounts → your team → Manage Certificates → + → Apple Development.
 
@@ -293,6 +296,42 @@ command that fixes it. It exits with 1 when any check is ✗.
 | `apns` | ! no `apns.json`: no notifications. ✗ invalid file or the `.p8` is missing | step 4b |
 | `apns push` | Apple rejects the key (403) or answers oddly | check key ID, team ID and topic; rerun the step 4b setup command with `--force` |
 | `pairing` | no paired device | step 5 |
+| `startup` | ✗ the daemon is down because its last starts failed; after 3 failures in a row launchd retries every few minutes instead of every 10 seconds | read the reason and `~/.alondra/alondrad.log`; installing a fixed binary (`alondra update`) retries at once |
+| `upgrade` | ! a newer binary was installed but failed its startup check (`alondrad --preflight`), so the running version was kept | wait for a fixed release, then `alondra update` |
+| `update` | ! a newer release exists, or an automatic update (`auto_update`) failed | `alondra update` |
+
+### Upgrades restart the daemon by themselves
+
+When launchd runs the daemon, it checks every minute whether the file at the path launchd
+started (for Homebrew, `/opt/homebrew/opt/alondra/bin/alondrad`) was replaced. The new binary
+first runs `alondrad --preflight`, which loads the configuration and replays the stored state
+on a private copy of `~/.alondra`, changing nothing. Only if that passes does the daemon release
+the hooks it holds and exit, and launchd starts the new version. A binary that fails preflight
+is not started: the old daemon keeps running and `alondra doctor` shows why. A daemon started
+by hand, outside launchd, is never restarted.
+
+### Staying up to date
+
+With a Homebrew install (`brew install bitomule/tap/alondra`), `alondra update` runs
+`brew upgrade bitomule/tap/alondra`, says so when there was nothing newer, waits up to 90
+seconds until the daemon reports the new version (or reports why the new binary failed its
+startup check) and ends with the `alondra doctor` lines. `alondra update --check` only says
+whether a newer release exists. A daemon from before self-restart is checked with
+`alondrad --preflight` and restarted through launchd once. A source install (`make install`)
+is updated from its checkout instead.
+
+The daemon looks for new releases (the `alondra-v*` releases of `bitomule/homebrew-tap`) when
+it starts and every 6 hours; `alondra doctor`, the TUI header and the overview JSON (`update`)
+show the running version, the newest release and any binary that failed preflight. To install
+new releases without asking, add to `~/.alondra/config.toml`:
+
+```toml
+auto_update = true
+```
+
+The daemon then runs `brew upgrade bitomule/tap/alondra` itself, at most once per new version,
+logs the outcome in `~/.alondra/alondrad.log` (`alondra doctor` shows a failure) and restarts
+into the new binary as described above. It only does this when launchd runs a Homebrew install.
 
 Other problems:
 

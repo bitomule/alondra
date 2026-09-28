@@ -640,6 +640,7 @@ impl<M: Serialize, U: Serialize> Serialize for Snapshot<'_, M, U> {
             &Seq(v.board.tasks.values().map(|t| Item::Task(v, t, self.now))),
         )?;
         m.serialize_entry("user", &self.hub.config.name)?;
+        m.serialize_entry("update", &crate::updates::status(&self.hub.home))?;
         m.end()
     }
 }

@@ -1,7 +1,6 @@
 target/
 .bazel_vendored/
 bazel-*
-signing/*.mobileprovision
 signing/signing.bzl
 .claude/
 
@@ -11,7 +10,6 @@ signing/signing.bzl
 # Python release tooling
 __pycache__/
 
-signing/*.provisionprofile
 
 # musts: per-machine state; MUSTS.yml and .musts/ledger.lock.yaml stay tracked
 .musts/state.sqlite

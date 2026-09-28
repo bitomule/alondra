@@ -773,7 +773,7 @@ fn status_for(error: &DomainError) -> StatusCode {
         _ => StatusCode::CONFLICT,
     }
 }
-fn domain_error(error: DomainError) -> Response {
+pub(crate) fn domain_error(error: DomainError) -> Response {
     (status_for(&error), Json(error)).into_response()
 }
 fn unsigned_read() -> Response {
