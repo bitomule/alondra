@@ -5,10 +5,13 @@
 //! effect tables. Unsupported catalog operations are an error, never a pass.
 use super::*;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
 const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
-const CASES: &[&str] = &["V01", "V03", "V06", "V07", "V23", "V24", "V25", "V45"];
+const CASES: &[&str] = &[
+    "V01", "V03", "V06", "V07", "V09", "V23", "V24", "V25", "V45",
+];
 fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
     match (case_id, step) {
         ("V07", 1) => Some("acceptance_missing"),
@@ -55,7 +58,8 @@ fn variant_field<'a>(variants: &'a Value, name: &str, key: &str) -> &'a Value {
         variant_field(variants, parent, key)
     })
 }
-fn variant_targets(variants: &Value, name: &str) -> Vec<DeliveryTarget> {
+fn variant_targets(store: &mut DomainStore, variants: &Value, name: &str) -> Vec<DeliveryTarget> {
+    let state = store.load().unwrap();
     field(variants, name)
         .get("targets")
         .unwrap_or_else(|| variant_field(variants, name, "targets"))
@@ -66,6 +70,14 @@ fn variant_targets(variants: &Value, name: &str) -> Vec<DeliveryTarget> {
             "text" => DeliveryTarget::Text {
                 text: string(field(target, "content")).into(),
             },
+            "document_revision" => {
+                let revision_id = string(field(target, "revision_id"));
+                let revision = &state.document_revisions[&DocumentRevisionId::from(revision_id)];
+                DeliveryTarget::DocumentRevision {
+                    document_id: revision.document_id.clone(),
+                    revision_id: revision.id.clone(),
+                }
+            }
             other => panic!("unsupported semantic variant target {other}"),
         })
         .collect()
@@ -249,23 +261,74 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
     if let Some(parent) = variant.get("extends") {
         setup_variant(store, variants, string(parent));
         if field(variant, "accepted") == true {
-            let presentation = string(variant_field(variants, name, "presentation_id"));
-            let targets = variant_targets(variants, name);
+            let targets = variant_targets(store, variants, name);
             setup_command(
                 store,
                 &format!("setup-accept-{name}"),
                 actor("user-a"),
                 Command::AcceptDelivery {
-                    presentation_id: presentation.into(),
+                    presentation_id: string(variant_field(variants, name, "presentation_id"))
+                        .into(),
                     targets,
                 },
             );
         } else {
             panic!("unsupported variant extension {name}");
         }
+    } else if name == "document-v1" {
+        assert_eq!(field(variant, "accepted"), false);
+        let document = field(variant, "document");
+        let revision = field(variant, "revision");
+        let task_id = string(field(variant, "task_id"));
+        let content = string(field(revision, "content"));
+        assert_eq!(
+            string(field(revision, "content_hash")),
+            format!("sha256-{content}"),
+            "{name}: fixture digest alias"
+        );
+        let digest = Sha256::digest(content.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        setup_command(
+            store,
+            &format!("setup-document-{name}"),
+            actor("agent-a"),
+            Command::CreateDocument {
+                task_id: task_id.into(),
+                document_id: string(field(document, "id")).into(),
+                title: "Synthetic document".into(),
+                revision_id: string(field(revision, "id")).into(),
+                content_digest: digest.clone(),
+                content_reference: string(field(document, "url")).into(),
+                role: "result".into(),
+            },
+        );
+        let saved = store.load().unwrap();
+        let saved_revision =
+            &saved.document_revisions[&DocumentRevisionId::from(string(field(revision, "id")))];
+        assert_eq!(saved_revision.content_digest, digest);
+        assert_eq!(
+            saved_revision.content_reference,
+            string(field(document, "url"))
+        );
+        let targets = variant_targets(store, variants, name);
+        setup_command(
+            store,
+            &format!("setup-present-{name}"),
+            actor("agent-a"),
+            Command::PresentResult {
+                attachments: vec![],
+                task_id: task_id.into(),
+                interaction_id: string(field(variant, "presentation_id")).into(),
+                body: "Synthetic document".into(),
+                targets,
+                is_final: field(variant, "final") == true,
+            },
+        );
     } else if name == "unaccepted-text-final" {
         assert_eq!(field(variant, "accepted"), false);
-        let targets = variant_targets(variants, name);
+        let targets = variant_targets(store, variants, name);
         setup_command(
             store,
             &format!("setup-present-{name}"),
@@ -329,6 +392,15 @@ fn measured(
             );
         }
     }
+    let mut documents: serde_json::Map<String, Value> = state
+        .documents
+        .iter()
+        .map(|(id, document)| {
+            let revision = &state.document_revisions[&document.current_revision];
+            (id.0.clone(), json!({"url":revision.content_reference}))
+        })
+        .collect();
+    documents.insert("count".into(), json!(state.documents.len()));
     let messages = count(store, "domain_messages");
     let outbox = count(store, "domain_outbox");
     let attempts = count(store, "delivery_attempts");
@@ -342,7 +414,7 @@ fn measured(
         .unwrap();
     json!({
         "tasks":tasks, "agents":agents, "interactions":interactions, "presentations":presentations,
-        "documents":{"count":state.documents.len()}, "pull_requests":{"count":state.pull_requests.len()},
+        "documents":documents, "pull_requests":{"count":state.pull_requests.len()},
         "delta":{"messages":messages-before.0,"outbox":outbox-before.1,"delivery_attempts":attempts-before.2,
             "tasks":count(store,"tasks")-tasks_before},
         "delivery":{"execution_confirmed":handed>0},
