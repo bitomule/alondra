@@ -962,3 +962,128 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
     assert!(matches!(result, Err(StoreError::Domain(error)) if error.code == "not_found"));
     assert_eq!(reopened.load().unwrap(), before);
 }
+
+fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
+    execute(
+        store,
+        &agent(),
+        "document",
+        Command::CreateDocument {
+            task_id: "task-1".into(),
+            document_id: "doc-1".into(),
+            title: "Design".into(),
+            revision_id: "revision-1".into(),
+            content_digest: "a".repeat(64),
+            content_reference: "file:///synthetic/design.md".into(),
+            role: "design".into(),
+        },
+    );
+    let mut targets = vec![DeliveryTarget::DocumentRevision {
+        document_id: "doc-1".into(),
+        revision_id: "revision-1".into(),
+    }];
+    if pr {
+        execute(
+            store,
+            &agent(),
+            "pr",
+            Command::RegisterPr {
+                task_id: "task-1".into(),
+                pr_id: "pr-1".into(),
+                host: "github.com".into(),
+                repository: "owner/repository".into(),
+                number: 1,
+                head: "aaa".into(),
+                base: "main".into(),
+                allowed_methods: vec![MergeMethod::Squash, MergeMethod::Rebase],
+            },
+        );
+        targets.push(DeliveryTarget::PullRequest {
+            pr_id: "pr-1".into(),
+            head: "aaa".into(),
+        });
+    } else {
+        targets.push(DeliveryTarget::Text {
+            text: "The answer".into(),
+        });
+    }
+    execute(
+        store,
+        &agent(),
+        "present",
+        Command::PresentResult {
+            task_id: "task-1".into(),
+            interaction_id: "delivery-1".into(),
+            body: "Finished the design".into(),
+            targets: targets.clone(),
+            is_final: true,
+            attachments: vec![],
+        },
+    );
+    targets
+}
+
+#[test]
+fn acceptance_from_a_snapshot_older_than_a_rejection_is_stale() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let targets = document_package(&mut store, false);
+    let reject = envelope(
+        &mut store,
+        "reject-on-device-a",
+        Command::DecideDocumentReview {
+            task_id: "task-1".into(),
+            document_id: "doc-1".into(),
+            revision_id: "revision-1".into(),
+            accepted: false,
+        },
+    );
+    let accept = envelope(
+        &mut store,
+        "accept-on-device-b",
+        Command::AcceptDelivery {
+            presentation_id: "delivery-1".into(),
+            targets,
+        },
+    );
+    store.execute_authenticated(&user(), &reject, None).unwrap();
+    let rejected = store.load().unwrap();
+    assert!(matches!(
+        store.execute_authenticated(&user(), &accept, None),
+        Err(StoreError::Domain(error)) if error.code == "stale_revision"
+    ));
+    assert_eq!(store.load().unwrap(), rejected);
+}
+
+#[test]
+fn second_merge_authorization_from_the_same_snapshot_is_stale() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    document_package(&mut store, true);
+    let authorize = |store: &mut DomainStore, id: &str, method| {
+        envelope(
+            store,
+            id,
+            Command::AuthorizeMerge {
+                authorization_id: id.into(),
+                presentation_id: "delivery-1".into(),
+                pr_id: "pr-1".into(),
+                expected_head: "aaa".into(),
+                method,
+            },
+        )
+    };
+    let squash = authorize(&mut store, "squash-on-device-a", MergeMethod::Squash);
+    let rebase = authorize(&mut store, "rebase-on-device-b", MergeMethod::Rebase);
+    store.execute_authenticated(&user(), &squash, None).unwrap();
+    let authorized = store.load().unwrap();
+    assert!(matches!(
+        store.execute_authenticated(&user(), &rebase, None),
+        Err(StoreError::Domain(error)) if error.code == "stale_revision"
+    ));
+    assert_eq!(store.load().unwrap(), authorized);
+    let kept = &authorized.merge_authorizations[&"squash-on-device-a".into()];
+    assert!(kept.valid && kept.method == MergeMethod::Squash);
+}

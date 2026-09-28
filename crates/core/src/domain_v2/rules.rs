@@ -270,8 +270,18 @@ impl DomainState {
         );
         Ok(())
     }
+    /// §5: a decision on a delivery is judged against the presentation's
+    /// revision, so every decision or invalidation on it must move that revision.
+    fn decided(&mut self, presentation: &InteractionId) {
+        if let Some(p) = self.interactions.get_mut(presentation) {
+            p.revision = self.revision + 1;
+        }
+    }
     fn invalidate(&mut self, task: &TaskId) {
         let next = self.revision + 1;
+        if let Some(presentation) = self.tasks.get(task).and_then(|t| t.final_presentation.clone()) {
+            self.decided(&presentation);
+        }
         for p in self.interactions.values_mut() {
             if p.scope
                 == (Scope::Task {
@@ -1317,6 +1327,7 @@ impl DomainState {
                 if !accepted {
                     self.invalidate(task_id);
                 } else if let Some(presentation) = &presentation {
+                    self.decided(presentation);
                     self.settle(presentation, &u);
                 }
                 self.notify(task_id, None, "Document decision recorded", effects)?;
@@ -1581,6 +1592,7 @@ impl DomainState {
                         at_revision: self.revision + 1,
                     });
                 }
+                self.decided(presentation_id);
                 self.settle(presentation_id, &u);
                 self.notify(
                     &task,
