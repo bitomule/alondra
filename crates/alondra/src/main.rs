@@ -65,6 +65,19 @@ enum Cmd {
     Answer { id: u64, text: Vec<String> },
     #[command(about = tr!("Send a message to a node (name, short id or session_id)", "Manda un mensaje a un nodo (nombre, id corto o session_id)"))]
     Send { node: String, text: Vec<String> },
+    #[command(about = tr!("Cancel tasks by id", "Cancela tareas por su id"))]
+    Cancel {
+        #[arg(required = true)]
+        tasks: Vec<String>,
+        #[arg(long, help = tr!("Why, shown with each task", "Por qué, se muestra en cada tarea"))]
+        reason: Option<String>,
+    },
+    #[command(about = tr!("Close a node (name, short id or session_id)", "Cierra un nodo (nombre, id corto o session_id)"))]
+    Close {
+        node: String,
+        #[arg(long, help = tr!("Close even with unpushed work or open questions", "Cierra aunque tenga trabajo sin subir o preguntas abiertas"))]
+        force: bool,
+    },
     #[command(about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
     Attach { node: String },
     #[command(about = tr!(
@@ -184,6 +197,26 @@ fn main() -> Result<()> {
             let r = Client::for_user(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" ")}))?;
             let msg = r.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
             println!("{}", trf!("Message {msg} is in {node}'s inbox", "Mensaje {msg} en la bandeja de {node}"));
+            Ok(())
+        }
+        Some(Cmd::Cancel { tasks, reason }) => {
+            let client = Client::for_user(Duration::from_secs(10));
+            let mut failed = 0;
+            for task in &tasks {
+                match client.post(&format!("/v1/tasks/{}/cancel", mcp::urlencode(task)), &json!({"reason": reason})) {
+                    Ok(_) => println!("{}", trf!("Cancelled {task}", "Cancelada {task}")),
+                    Err(error) => {
+                        failed += 1;
+                        eprintln!("{}", trf!("{task} not cancelled: {error:#}", "{task} no se canceló: {error:#}"));
+                    }
+                }
+            }
+            anyhow::ensure!(failed == 0, "{failed} of {} tasks not cancelled", tasks.len());
+            Ok(())
+        }
+        Some(Cmd::Close { node, force }) => {
+            Client::for_user(Duration::from_secs(90)).post(&format!("/v1/nodes/{}/close", mcp::urlencode(&node)), &json!({"force": force}))?;
+            println!("{}", trf!("Closed {node}", "Cerrado {node}"));
             Ok(())
         }
         Some(Cmd::Attach { node }) => {
@@ -504,6 +537,15 @@ mod mcp_entrypoint_tests {
         assert!(matches!(Cli::try_parse_from(["alondra", "mcp-orchestrator"]).unwrap().command, Some(Cmd::McpOrchestrator)));
         assert!(Cli::try_parse_from(["alondra", "mcp", "--role", "orchestrator"]).is_err());
         assert!(Cli::try_parse_from(["alondra", "mcp-node", "--role", "orchestrator"]).is_err());
+    }
+
+    #[test]
+    fn cancel_takes_several_tasks_and_close_one_node() {
+        let Some(Cmd::Cancel { tasks, reason }) = Cli::try_parse_from(["alondra", "cancel", "t-1", "t-2", "--reason", "done elsewhere"]).unwrap().command
+            else { panic!("cancel did not parse") };
+        assert_eq!((tasks, reason.as_deref()), (vec!["t-1".to_string(), "t-2".to_string()], Some("done elsewhere")));
+        assert!(Cli::try_parse_from(["alondra", "cancel"]).is_err());
+        assert!(matches!(Cli::try_parse_from(["alondra", "close", "node", "--force"]).unwrap().command, Some(Cmd::Close { force: true, .. })));
     }
 }
 
