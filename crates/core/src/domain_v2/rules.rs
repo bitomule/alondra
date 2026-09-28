@@ -894,9 +894,24 @@ impl DomainState {
                 }
                 self.schedule.claim_launch(run_id, *now)?;
             }
-            Command::RecordScheduleLaunchHanded { run_id, session_id, finished_at } => {
+            Command::RecordScheduleLaunchHanded { run_id, session_id, agent_id, finished_at } => {
                 system(actor)?;
-                self.schedule.record_launch_handed(run_id, session_id.clone(), *finished_at)?;
+                if let Some(agent_id) = agent_id {
+                    if !self.agents.contains_key(agent_id) {
+                        return fail("not_found", "Agent missing");
+                    }
+                    let task_id = self.schedule.runs.get(run_id)
+                        .and_then(|run| run.task_id.clone())
+                        .ok_or_else(|| DomainError::new("conflict", "Scheduled Run has no Task"))?;
+                    let task = self.active(&task_id)?;
+                    if task.agent_id.is_some() {
+                        return fail("conflict", "Scheduled Task is already assigned");
+                    }
+                    self.schedule.record_launch_handed(run_id, session_id.clone(), Some(agent_id.clone()), *finished_at)?;
+                    self.tasks.get_mut(&task_id).unwrap().agent_id = Some(agent_id.clone());
+                } else {
+                    self.schedule.record_launch_handed(run_id, session_id.clone(), None, *finished_at)?;
+                }
             }
             Command::RecordScheduleRunFailed {
                 run_id,

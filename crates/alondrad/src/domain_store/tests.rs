@@ -521,7 +521,7 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
                 .resolve(None, &Default::default()).unwrap()).unwrap(),
         },
         state: ScheduleLaunchState::Pending, claimed_at: None, finished_at: None,
-        session_id: None, error: None,
+        session_id: None, agent_id: None, error: None,
     }).unwrap();
     let valid_run = format!(r#"INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot,launch)

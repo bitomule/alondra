@@ -12,6 +12,8 @@ mod domain_runtime;
 mod domain_schedule_runner;
 mod domain_store;
 mod domain_transport;
+#[cfg(test)]
+mod domain_e2e_tests;
 mod domain_api;
 mod domain_schedule_api;
 mod domain_bootstrap;

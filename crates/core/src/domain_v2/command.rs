@@ -50,9 +50,13 @@ pub enum Command {
         run_id: ScheduleRunId,
         now: i64,
     },
+    /// `agent_id` is the launched Claude session the daemon registered before
+    /// spawning it; the scheduled Task is assigned to it in this same commit.
     RecordScheduleLaunchHanded {
         run_id: ScheduleRunId,
         session_id: Option<String>,
+        #[serde(default)]
+        agent_id: Option<AgentId>,
         finished_at: i64,
     },
     RecordScheduleRunFailed {

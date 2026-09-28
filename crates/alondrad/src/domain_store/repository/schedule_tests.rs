@@ -67,6 +67,7 @@ fn run() -> ScheduleRun {
 
 fn launch() -> ScheduleLaunch {
     ScheduleLaunch {
+        agent_id: None,
         intent: ScheduleLaunchIntent {
             name: "scheduled/run-1".into(),
             cwd: "/synthetic/Projects/Alondra".into(),
