@@ -3590,13 +3590,13 @@
     },
     {
       "id": "V61",
-      "title": "Cutover guard remains closed while Schedule runner is incomplete",
+      "title": "Prepare and promote import the populated Schedule store and verify it against the backup",
       "layers": ["S", "A", "U"],
       "base": "synthetic_offline_backup",
-      "cs_expected": {"guard_blocks": true},
-      "cs_evidence": ["domain_migration::tests::cutover_rejects_unmigrated_schedules_and_receipts_before_creating_stage"],
+      "cs_expected": {"schedule_rows": 2, "run_rows": 1, "tool_rows": 1, "receipt_rows": 1, "failed_launch_rows": 1, "tampered_stage_blocks": true, "unknown_table_blocks": true},
+      "cs_evidence": ["domain_migration::tests::backup_rehearsal_and_rollback_preserve_tail_cards_and_content", "domain_migration::tests::populated_schedule_store_is_readable_and_unsafe_or_unknown_stores_are_refused"],
       "cs_evidence_status": "passed",
-      "remaining": ["runner and consumer validation", "locked cutover", "rollback smoke"],
+      "remaining": ["runner and consumer validation", "rollback smoke"],
       "execution_status": "specified_not_executed"
     },
     {
