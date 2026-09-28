@@ -1,3 +1,5 @@
+import AlondraConnectionFeature
+import AlondraContracts
 import SwiftUI
 
 /// Shown when neither this Mac's daemon nor a remote Mac is available. The window keeps
@@ -7,9 +9,11 @@ struct MacLocalDaemonMissingView: View {
 
     var body: some View {
         ContentUnavailableView {
-            Label("Alondra isn’t running on this Mac", systemImage: "bolt.horizontal.circle")
+            Label { Text(ConnectionProblem.alondraNotRunning.title) } icon: {
+                Image(systemName: ConnectionProblem.alondraNotRunning.systemImage)
+            }
         } description: {
-            Text("Run `alondra setup` in Terminal to start it. This window connects as soon as it answers.")
+            Text(ConnectionProblem.alondraNotRunning.detail)
         } actions: {
             Button("Connect to Another Mac…", action: connectToAnotherMac)
         }

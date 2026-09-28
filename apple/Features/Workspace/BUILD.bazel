@@ -6,6 +6,7 @@ swift_library(
     module_name = "AlondraWorkspaceFeature",
     visibility = ["//visibility:public"],
     deps = [
+        "//apple/Features/Connection:AlondraConnectionFeature",
         "//apple:AlondraShared",
         "//apple/Domain:AlondraDomain",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",

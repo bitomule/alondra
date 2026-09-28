@@ -35,6 +35,7 @@ struct MacServiceSettingsScene: View {
             guard let owner else { throw CancellationError() }
             try await owner.selectMac(choice: id, expectedSession: services)
         }
+        client.problem = { services.connectionProblem(for: $0) }
         guard !Task.isCancelled else { return }
         var state = ServiceSettingsFeature.State(service: api.base.host() ?? api.base.absoluteString,
             device: api.device, supportsNotifications: false, usesAccount: owner != nil)

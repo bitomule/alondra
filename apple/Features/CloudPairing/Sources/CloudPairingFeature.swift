@@ -1,3 +1,4 @@
+import AlondraContracts
 import ComposableArchitecture
 import Foundation
 
@@ -9,6 +10,7 @@ public enum CloudRestoreError: Error, Sendable {
 public struct CloudPairingService: Sendable {
     public var hasSavedConfiguration: @Sendable () async throws -> Bool = { false }
     public var prepareCamera: @Sendable () async -> Bool = { false }
+    public var classify: @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }
     public var restore: @Sendable () async throws -> Bool
     public var login: @Sendable () async throws -> Void
     public var begin: @Sendable (String) async throws -> String
@@ -38,6 +40,10 @@ public struct CloudPairingFeature {
         public let additionalMac: Bool
         public var configuration: Configuration = .unknown
         public var restorationInFlight = false
+        /// Why the saved workspace could not be restored. Set only after a failure, and kept while
+        /// the automatic retries run so the connection screen does not flicker.
+        public var restoreProblem: ConnectionProblem?
+        public var restoreFailures = 0
         public var reauthenticationRequired = false
         public var logoutIncomplete = false
         public var showsWorkspace: Bool { configuration != .missing }
@@ -54,14 +60,16 @@ public struct CloudPairingFeature {
     public enum Phase: Equatable { case restoring, signedOut, signingOut, loggingIn, scanning, submitting, cancelling, pending(String), approved }
     public enum Action: BindableAction {
         case binding(BindingAction<State>), appeared, login, submit, scanned(String), cancel, logout, camera, cameraReady(Bool)
-        case configurationLoaded(Int, Bool), retryRestore, reauthenticate
-        case restorationFailed(Int, String, reauthenticationRequired: Bool)
+        case configurationLoaded(Int, Bool), retryRestore, retryNow, reauthenticate
+        case restorationFailed(Int, ConnectionProblem)
         case revocationRequired(Int, String)
         case cancelled(Int)
         case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String)
     }
     @Dependency(\.cloudPairing) var service
-    private enum CancelID { case operation }
+    @Dependency(\.continuousClock) var clock
+    @Dependency(\.withRandomNumberGenerator) var random
+    private enum CancelID { case operation, restoreRetry }
     public init() {}
     public var body: some ReducerOf<Self> {
         BindingReducer()
@@ -88,10 +96,10 @@ public struct CloudPairingFeature {
                         else { await send(.restored(generation, false)) }
                     } catch CloudRestoreError.revocationRequired(let message) {
                         await send(.revocationRequired(generation, message))
-                    } catch CloudRestoreError.reauthenticationRequired(let message) {
-                        await send(.restorationFailed(generation, message, reauthenticationRequired: true))
+                    } catch CloudRestoreError.reauthenticationRequired {
+                        await send(.restorationFailed(generation, .sessionExpired))
                     } catch {
-                        await send(.restorationFailed(generation, error.localizedDescription, reauthenticationRequired: false))
+                        await send(.restorationFailed(generation, service.classify(error)))
                     }
                 }.cancellable(id: CancelID.operation, cancelInFlight: true)
             case .configurationLoaded(let generation, let saved):
@@ -105,13 +113,18 @@ public struct CloudPairingFeature {
                 state.phase = .restoring
                 state.restorationInFlight = false
                 state.reauthenticationRequired = false
+                state.restoreProblem = .unexpected
                 state.error = message
                 return .none
             case .retryRestore:
                 if state.logoutIncomplete { return .send(.logout) }
                 guard !state.restorationInFlight else { return .none }
                 state.phase = .restoring; state.error = nil; state.reauthenticationRequired = false
-                return .send(.appeared)
+                return .concatenate(.cancel(id: CancelID.restoreRetry), .send(.appeared))
+            case .retryNow:
+                guard let problem = state.restoreProblem, !problem.needsAction,
+                      !state.restorationInFlight, !state.logoutIncomplete else { return .none }
+                return .send(.retryRestore)
             case .reauthenticate:
                 guard state.configuration == .saved, !state.restorationInFlight, !state.logoutIncomplete else { return .none }
                 state.restorationInFlight = true; state.error = nil
@@ -122,21 +135,31 @@ public struct CloudPairingFeature {
                         await send(.restored(generation, try await service.restore()))
                     } catch CloudRestoreError.revocationRequired(let message) {
                         await send(.revocationRequired(generation, message))
-                    } catch CloudRestoreError.reauthenticationRequired(let message) {
-                        await send(.restorationFailed(generation, message, reauthenticationRequired: true))
+                    } catch CloudRestoreError.reauthenticationRequired {
+                        await send(.restorationFailed(generation, .sessionExpired))
                     } catch {
-                        await send(.restorationFailed(generation, error.localizedDescription, reauthenticationRequired: false))
+                        await send(.restorationFailed(generation, service.classify(error)))
                     }
                 }.cancellable(id: CancelID.operation, cancelInFlight: true)
-            case .restorationFailed(let generation, let message, let reauthenticate):
+            case .restorationFailed(let generation, let problem):
                 guard generation == state.generation else { return .none }
-                state.restorationInFlight = false; state.error = message
-                state.reauthenticationRequired = reauthenticate
-                return .none
+                state.restorationInFlight = false
+                state.restoreProblem = problem
+                state.reauthenticationRequired = problem == .sessionExpired
+                guard !problem.needsAction else { return .none }
+                let delay = ConnectionBackoff.standard.delay(attempt: state.restoreFailures,
+                    random: random { Double($0.next() >> 11) / Double(1 << 53) })
+                state.restoreFailures += 1
+                return .run { send in
+                    try await clock.sleep(for: delay)
+                    await send(.retryRestore)
+                }.cancellable(id: CancelID.restoreRetry, cancelInFlight: true)
             case .restored(let generation, let approved):
                 guard generation == state.generation else { return .none }
                 state.restorationInFlight = false
                 state.reauthenticationRequired = false
+                state.restoreProblem = nil
+                state.restoreFailures = 0
                 state.configuration = approved ? .saved : .missing
                 state.phase = approved ? .approved : .signedOut
                 return .none
@@ -215,9 +238,11 @@ public struct CloudPairingFeature {
                 }
                 guard state.phase != .signingOut else { return .none }
                 state.restorationInFlight = false
+                state.restoreProblem = nil
+                state.restoreFailures = 0
                 state.generation += 1; state.phase = .signingOut; state.payload = ""; state.error = nil
                 let generation = state.generation
-                return .concatenate(.cancel(id: CancelID.operation), .run { send in
+                return .concatenate(.cancel(id: CancelID.operation), .cancel(id: CancelID.restoreRetry), .run { send in
                     await service.cancel()
                     do { try await service.logout(); await send(.loggedOut(generation)) }
                     catch { await send(.failed(generation, error.localizedDescription)) }
