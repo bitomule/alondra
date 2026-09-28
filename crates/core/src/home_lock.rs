@@ -8,7 +8,14 @@ use std::{
 };
 pub const RECOVERY: &str = "service-recovery.json";
 pub struct HomeLock {
-    _file: File,
+    file: File,
+}
+/// A forked child holds a duplicate of this descriptor until it execs, and closing only
+/// our copy would keep the lock alive in it. Unlocking releases every duplicate.
+impl Drop for HomeLock {
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 impl HomeLock {
     pub fn shared(home: &Path) -> io::Result<Self> {
@@ -38,7 +45,7 @@ impl HomeLock {
         result.map_err(|_| {
             io::Error::other("Alondra HOME is busy; stop its daemon before service recovery")
         })?;
-        Ok(Self { _file: file })
+        Ok(Self { file })
     }
 }
 /// Call only after holding a home lock and before loading any local trust.
@@ -82,6 +89,49 @@ mod tests {
         fs::write(home.join(RECOVERY), br#"{"version":1,"phase":"committed"}"#).unwrap();
         ensure_ready(&home).unwrap();
         drop(recovery);
+        fs::remove_dir_all(home).unwrap();
+    }
+    /// Holds a child between fork and exec, where it owns duplicates of every descriptor
+    /// in this process, including other threads' close-on-exec lock descriptors.
+    fn paused_fork() -> (std::thread::JoinHandle<()>, libc::c_int) {
+        use std::os::unix::process::CommandExt;
+        let (mut forked, mut release) = ([0; 2], [0; 2]);
+        assert_eq!(unsafe { libc::pipe(forked.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0);
+        let (forked_write, release_read) = (forked[1], release[0]);
+        let child = std::thread::spawn(move || {
+            let mut command = std::process::Command::new("/usr/bin/true");
+            unsafe {
+                command.pre_exec(move || {
+                    let mut byte = 0u8;
+                    libc::write(forked_write, (&raw const byte).cast(), 1);
+                    libc::read(release_read, (&raw mut byte).cast(), 1);
+                    Ok(())
+                });
+            }
+            assert!(command.status().unwrap().success());
+        });
+        let mut byte = 0u8;
+        assert_eq!(unsafe { libc::read(forked[0], (&raw mut byte).cast(), 1) }, 1);
+        for fd in [forked[0], forked[1], release[0]] {
+            unsafe { libc::close(fd) };
+        }
+        (child, release[1])
+    }
+
+    #[test]
+    fn dropped_lock_is_free_while_another_thread_is_forking() {
+        let home = std::env::temp_dir().join(format!("alondra-home-lock-fork-{}", std::process::id()));
+        let recovery = HomeLock::recovery(&home).unwrap();
+        let (child, release) = paused_fork();
+        drop(recovery);
+        let reacquired = HomeLock::recovery(&home);
+        unsafe {
+            libc::write(release, [0u8].as_ptr().cast(), 1);
+            libc::close(release);
+        }
+        child.join().unwrap();
+        reacquired.unwrap();
         fs::remove_dir_all(home).unwrap();
     }
 }
