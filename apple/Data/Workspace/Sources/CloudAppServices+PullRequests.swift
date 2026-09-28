@@ -24,7 +24,7 @@ public extension CloudAppServices {
                 }
             },
             review: { id, text, attachments, kind, headSHA in
-                guard headSHA.count == 40, headSHA.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
+                if let headSHA, !Self.isCommitSHA(headSHA) {
                     return .rejected("Load the PR diff before sending a review")
                 }
                 var stored: [String] = []
@@ -37,9 +37,9 @@ public extension CloudAppServices {
                 let attachmentIDs = stored
                 let command: CommandKind = kind == .ask ? .askOnPullRequest(id) : .requestChanges(id)
                 return await self.performPRCommand(command, prID: id) { api, operationID in
-                    let body = try JSONSerialization.data(withJSONObject: [
-                        "text": text, "attachments": attachmentIDs, "expected_head_sha": headSHA
-                    ])
+                    var fields: [String: Any] = ["text": text, "attachments": attachmentIDs]
+                    fields["expected_head_sha"] = headSHA
+                    let body = try JSONSerialization.data(withJSONObject: fields)
                     let endpoint = Endpoint<Data>.data(.post,
                         path: ["v1", "prs", String(id), kind == .ask ? "ask" : "changes"],
                         body: body, contentType: "application/json")
@@ -54,12 +54,12 @@ public extension CloudAppServices {
         let data = try await api.send(Endpoint<Data>.data(.get, path: ["v1", "prs", String(id), "diff-snapshot"]))
         try checkActive()
         let snapshot = try JSONDecoder().decode(WirePRDiffSnapshot.self, from: data)
-        guard !snapshot.truncated else { throw PRDiffLoadError.responseTooLarge }
-        guard snapshot.headSHA.count == 40,
-              snapshot.headSHA.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
-            throw PRSnapshotError.invalidHead
-        }
-        return PRDiffSnapshot(diff: snapshot.diff, headSHA: snapshot.headSHA)
+        guard Self.isCommitSHA(snapshot.headSHA) else { throw PRSnapshotError.invalidHead }
+        return PRDiffSnapshot(diff: snapshot.diff, headSHA: snapshot.headSHA, truncated: snapshot.truncated)
+    }
+
+    private static func isCommitSHA(_ value: String) -> Bool {
+        value.count == 40 && value.utf8.allSatisfy { (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }
     }
 
     private func performPRCommand(_ kind: CommandKind, prID: UInt64,

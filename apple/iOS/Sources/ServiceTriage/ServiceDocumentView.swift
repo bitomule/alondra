@@ -19,7 +19,7 @@ struct ServiceDocumentView: View {
     private var commentedBlocks: [MarkdownBlock] { blocks.filter { comments[$0.draftKey] != nil } }
     private var composing: MarkdownBlock? { blocks.first { $0.draftKey == store.composingAnchor } }
     private var hasFeedback: Bool { store.hasFeedback }
-    private var sending: Bool { store.isSubmitting || store.needsReconciliation || store.completed || store.pendingSubmission != nil || !store.attachmentPicker.canPrepareSubmission }
+    private var sending: Bool { !store.canReview || !store.attachmentPicker.canPrepareSubmission }
     private func number(of block: MarkdownBlock) -> Int {
         (commentedBlocks.firstIndex(of: block) ?? 0) + 1
     }

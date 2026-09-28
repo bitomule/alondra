@@ -21,6 +21,13 @@ struct ServiceNewRequestView: View {
                 if let error = store.inlineSubmissionError {
                     Text(error).font(.footnote).foregroundStyle(Palette.rose)
                 }
+                if store.submissionUncertain {
+                    HStack(spacing: 12) {
+                        Button("Edit Again") { store.send(.editUncertainDraft) }
+                        Button("Discard Draft", role: .destructive) { store.send(.discardUncertainDraft) }
+                    }
+                    .buttonStyle(.bordered)
+                }
                 if !store.sentMessages.isEmpty { history }
             }.padding(20)
         }
@@ -61,7 +68,7 @@ struct ServiceNewRequestView: View {
             .background(Palette.card.opacity(0.8), in: .rect(cornerRadius: 18, style: .continuous))
         }
         .buttonStyle(.plain)
-        .disabled(!store.catalogIsCurrent)
+        .disabled(store.isLoadingOptions)
         .accessibilityHint(Text("Changes the options for this request"))
     }
 

@@ -296,12 +296,17 @@ struct PullRequestFeatureTests {
     }
 
     @Test
-    func oversizedDiffBlocksReviewAndKeepsGeneralNote() async {
+    func failedDiffStillSendsAGeneralNoteWithoutAReviewedHead() async {
+        let sent = LockIsolated<[String?]>([])
         let store = TestStore(initialState: DiffReviewFeature.State(prID: 4)) { DiffReviewFeature() } withDependencies: {
             $0.pullRequestOperations = .init(
                 diff: { _ in throw PRDiffLoadError.responseTooLarge }, merge: { _, _ in .obsolete },
                 resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
-                review: { _, _, _, _, _ in Issue.record("review sent without verified diff"); return .confirmed }
+                review: { _, text, _, kind, head in
+                    #expect(text.contains("Please summarize the large diff") && kind == .requestChanges)
+                    sent.withValue { $0.append(head) }
+                    return .confirmed
+                }
             )
         }
         await store.send(.appeared) { $0.isLoading = true; $0.loadGeneration = 1 }
@@ -311,8 +316,48 @@ struct PullRequestFeatureTests {
             $0.loadError = "This diff is too large to review on this device"
         }
         await store.send(.noteChanged("Please summarize the large diff")) { $0.note = "Please summarize the large diff" }
-        await store.send(.askTapped)
-        #expect(store.state.note == "Please summarize the large diff")
+        #expect(store.state.canReview)
+        await store.send(.requestChangesTapped) {
+            $0.isSending = true
+            $0.submittedNote = "Please summarize the large diff"
+            $0.submittedComments = [:]
+            $0.submittedAttachments = []
+        }
+        await store.receive(\.reviewFinished) {
+            $0.isSending = false
+            $0.mutationOutcome = .confirmed
+            $0.note = ""
+            $0.successfulActionCount = 1
+            $0.shouldDismiss = true
+            $0.submittedNote = nil
+            $0.submittedComments = nil
+            $0.submittedAttachments = nil
+        }
+        #expect(sent.value == [nil])
+        await store.finish()
+    }
+
+    @Test
+    func truncatedDiffLoadsAndBindsTheReviewToItsHead() async {
+        let head = String(repeating: "c", count: 40)
+        let snapshot = PRDiffSnapshot(diff: "diff --git a/a b/a\n--- a/a\n+++ b/a\n@@ -1 +1 @@\n-old\n+new\n", headSHA: head, truncated: true)
+        let sent = LockIsolated<[String?]>([])
+        let store = TestStore(initialState: DiffReviewFeature.State(prID: 4)) { DiffReviewFeature() } withDependencies: {
+            $0.pullRequestOperations = .init(
+                diff: { _ in snapshot }, merge: { _, _ in .obsolete },
+                resolveConflicts: { _ in .obsolete }, setAside: { _ in .obsolete },
+                review: { _, _, _, _, head in sent.withValue { $0.append(head) }; return .confirmed }
+            )
+        }
+        store.exhaustivity = .off
+        await store.send(.appeared)
+        await store.receive(\.diffLoaded)
+        #expect(store.state.diffTruncated)
+        #expect(store.state.loadError == nil && store.state.files?.isEmpty == false)
+        await store.send(.noteChanged("Looks off"))
+        await store.send(.requestChangesTapped)
+        await store.receive(\.reviewFinished)
+        #expect(sent.value == [head])
         await store.finish()
     }
 

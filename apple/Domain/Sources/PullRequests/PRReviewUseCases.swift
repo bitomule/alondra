@@ -60,8 +60,9 @@ public struct SubmitPRReviewUseCase: Sendable {
 
     public func execute(
         prID: UInt64, text: String, attachments: [PRReviewAttachment],
-        kind: PRReviewKind, expected: PRDiffSnapshot
+        kind: PRReviewKind, expected: PRDiffSnapshot?
     ) async throws -> SubmitPRReviewResult {
+        guard let expected else { return .finished(await operations.review(prID, text, attachments, kind, nil)) }
         let current = try await operations.diff(prID)
         try Task.checkCancellation()
         guard current == expected else { return .diffChanged(current) }

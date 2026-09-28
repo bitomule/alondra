@@ -30,8 +30,37 @@ struct ServiceNewRequestView: View {
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
     var body: some View {
-        @Bindable var presentation = presentation
         VStack(alignment: .leading, spacing: 14) {
+            form(presentation: presentation)
+            if let error = store.submissionError { Text(error).foregroundStyle(store.submissionUncertain ? .orange : .red) }
+            if store.submissionUncertain {
+                HStack {
+                    Button("Edit Again") { store.send(.editUncertainDraft) }
+                    Button("Discard Draft", role: .destructive) { store.send(.discardUncertainDraft) }
+                }
+            }
+            HStack {
+                ServiceAttachFilesButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
+                    .disabled(locked)
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button { store.send(.submitTapped) } label: {
+                    if store.isSubmissionInFlight { ProgressView().controlSize(.small) } else { Text("Send") }
+                }.buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
+                    .help(Text(verbatim: "\(String(localized: "Send")) (⌘↩)")).disabled(!store.submitEnabled)
+            }
+        }.padding(22)
+            .onAppear { focused = true }
+            .task { await store.send(.appeared).finish() }
+            .onDisappear { store.send(.disappeared) }
+            .onChange(of: store.successfulSubmissionCount) { _, _ in dismiss() }
+    }
+
+    private var locked: Bool { store.isSubmissionInFlight || store.submissionUncertain }
+
+    private func form(presentation: StoreOf<MacNewRequestPresentation>) -> some View {
+        @Bindable var presentation = presentation
+        return VStack(alignment: .leading, spacing: 14) {
             Text("What do you want done?").font(.title3.weight(.semibold))
             TextEditor(text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }))
                 .font(.body).scrollContentBackground(.hidden).padding(8)
@@ -87,22 +116,7 @@ struct ServiceNewRequestView: View {
                     }
                 }
             }.opacity(store.isLoadingOptions ? 0.4 : 1).animation(.default, value: store.isLoadingOptions)
-            if let error = store.submissionError { Text(error).foregroundStyle(store.submissionUncertain ? .orange : .red) }
-            HStack {
-                ServiceAttachFilesButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                Spacer()
-                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
-                Button { store.send(.submitTapped) } label: {
-                    if store.isSubmissionInFlight { ProgressView().controlSize(.small) } else { Text("Send") }
-                }.buttonStyle(.borderedProminent).keyboardShortcut(.return, modifiers: .command)
-                    .help(Text(verbatim: "\(String(localized: "Send")) (⌘↩)")).disabled(!store.submitEnabled)
-            }
-        }.padding(22)
-            .disabled(store.isSubmissionInFlight || store.submissionUncertain)
-            .onAppear { focused = true }
-            .task { await store.send(.appeared).finish() }
-            .onDisappear { store.send(.disappeared) }
-            .onChange(of: store.successfulSubmissionCount) { _, _ in dismiss() }
+        }.disabled(locked)
     }
 }
 

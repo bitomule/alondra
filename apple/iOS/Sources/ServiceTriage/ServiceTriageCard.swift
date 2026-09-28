@@ -541,6 +541,7 @@ struct ServiceTriageCard: View {
                             .frame(maxWidth: .infinity, minHeight: 50)
                     }
                     .buttonStyle(ServiceFilledStyle(tint: actionTint))
+                    .disabled(!store.reviewReady)
                     HStack(spacing: 24) {
                         Button {
                             replyFocused = false
@@ -550,6 +551,7 @@ struct ServiceTriageCard: View {
                                 .font(.subheadline.weight(.medium))
                                 .frame(minHeight: 30)
                         }
+                        .disabled(!store.reviewReady)
                         Button {
                             replyFocused = false
                             store.send(.markRead)

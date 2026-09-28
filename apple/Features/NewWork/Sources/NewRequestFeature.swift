@@ -44,8 +44,10 @@ public struct NewRequestFeature {
         public var visibleIssues: [IssueSummary] { issues.filter { $0.matches(issueQuery) } }
         public var pastedIssue: String? { IssueSummary.pasted(in: issueQuery, besides: issues) }
         public var isSubmissionInFlight: Bool { pendingSubmission != nil || isSubmitting }
+        /// A failed catalog sends the server's defaults instead of blocking the request.
+        public var catalogSettled: Bool { !isLoadingOptions && (catalogIsCurrent || optionsError != nil) }
         public var submitEnabled: Bool {
-            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && canSubmit && !isSubmitting && catalogIsCurrent && !isLoadingOptions && !submissionUncertain
+            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && canSubmit && !isSubmitting && catalogSettled && !submissionUncertain
                 && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
         }
     }
@@ -79,6 +81,7 @@ public struct NewRequestFeature {
         case submitFinished(CreateRequestResult, UInt64)
         case commandResolved(UUID, rejection: String?)
         case discardUncertainDraft
+        case editUncertainDraft
     }
 
     @Dependency(\.newWorkOperations) var operations
@@ -288,6 +291,13 @@ public struct NewRequestFeature {
                 state.text = ""
                 state.attachments = []
                 state.attachmentPicker = AttachmentFeature.State()
+                state.submissionError = nil
+                state.submissionErrorIsTerminal = false
+                state.uncertainCommandID = nil
+                state.submissionUncertain = false
+                return .none
+            case .editUncertainDraft:
+                guard state.submissionUncertain else { return .none }
                 state.submissionError = nil
                 state.submissionErrorIsTerminal = false
                 state.uncertainCommandID = nil

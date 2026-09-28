@@ -20,7 +20,6 @@ public enum AlondraEndpoints {
     }
     public static func projects() -> Endpoint<Data> { .data(.get, path: ["v1", "projects"]) }
     public static func search(_ query: String) -> Endpoint<Data> { .data(.get, path: ["v1", "search"], query: [("q", query)]) }
-    public static func fileText(_ path: String) -> Endpoint<Data> { .data(.get, path: ["v1", "file"], query: [("path", path)]) }
 
     public static func answer(_ question: UInt64, text: String, option: String?, attachments: [String], device: String) throws -> Endpoint<Data> {
         var body: [String: Any] = ["text": text, "device": device, "attachments": attachments]
