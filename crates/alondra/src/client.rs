@@ -2,7 +2,9 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use alondra_core::config::Config;
-use alondra_core::domain_v2::{Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainProjection, PROTOCOL_VERSION, Revision};
+use alondra_core::domain_v2::reads::{Changes, Item, Page, Summary, TextChunk};
+use alondra_core::domain_v2::{Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainProjection, Interaction, InteractionId, PROTOCOL_VERSION, Revision};
+use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
 use serde_json::Value;
@@ -92,6 +94,13 @@ impl Client {
             .build()
             .into();
         Client { base: format!("http://{host}:{port}"), agent, signer: None, service: None, timeout }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn at(base: String) -> Self {
+        let mut client = Self::new(Duration::from_secs(5));
+        client.base = base;
+        client
     }
 
     /// A client whose requests are signed as the user: for the TUI and the commands the user
@@ -184,15 +193,83 @@ impl Client {
         answer(resp)
     }
 
-    /// The whole domain as the daemon projects it: roots, children, actions and their revisions.
+    /// The domain assembled from its sections, without interactions: those are read one
+    /// by one as the user opens them (`interaction`).
     pub fn domain(&self) -> Result<DomainProjection> {
-        self.get("/v2/domain")
+        self.sync(&mut Sections::default())
+    }
+
+    pub fn summary(&self) -> Result<Summary> {
+        self.get("/v2/domain/summary")
+    }
+
+    /// Every row of a section, page after page.
+    pub fn walk<T: DeserializeOwned>(&self, base: &str) -> Result<(Vec<T>, Revision)> {
+        let mut rows = vec![];
+        let mut cursor: Option<String> = None;
+        loop {
+            let path = match &cursor {
+                Some(c) => format!("{base}{}cursor={c}", if base.contains('?') { "&" } else { "?" }),
+                None => base.to_owned(),
+            };
+            let page: Page<T> = self.get(&path)?;
+            rows.extend(page.items);
+            match page.next_cursor {
+                Some(next) => cursor = Some(next),
+                None => return Ok((rows, page.revision)),
+            }
+        }
+    }
+
+    /// Refreshes only the sections whose token moved since `cache` last saw them and
+    /// assembles the projection at one revision.
+    pub fn sync(&self, cache: &mut Sections) -> Result<DomainProjection> {
+        let mut summary = self.summary()?;
+        for attempt in 0.. {
+            let mut moved = false;
+            for (section, base) in SECTION_ROUTES {
+                let token = &summary.sections[*section].revision;
+                if cache.rows.get(*section).is_some_and(|(seen, _)| seen == token) {
+                    continue;
+                }
+                let (rows, revision) = self.walk::<Value>(base)?;
+                if revision != summary.revision {
+                    moved = true;
+                    break;
+                }
+                cache.rows.insert((*section).to_owned(), (token.clone(), rows));
+            }
+            if !moved {
+                break;
+            }
+            anyhow::ensure!(attempt < 8, "the domain kept changing while it was being read");
+            summary = self.summary()?;
+        }
+        cache.assemble(&summary)
+    }
+
+    /// The whole interaction, reassembled from chunks when its body did not fit one answer.
+    pub fn interaction(&self, id: &InteractionId) -> Result<Interaction> {
+        let id = crate::mcp::urlencode(&id.0);
+        let detail: Item<Interaction> = self.get(&format!("/v2/domain/interactions/{id}"))?;
+        let mut interaction = detail.item;
+        if detail.truncated {
+            let mut body = String::new();
+            loop {
+                let chunk: TextChunk = self.get(&format!("/v2/domain/interactions/{id}/body?offset={}", body.len()))?;
+                body.push_str(&chunk.data);
+                if !chunk.has_more {
+                    break;
+                }
+            }
+            interaction.body = body;
+        }
+        Ok(interaction)
     }
 
     /// Waits up to `wait` seconds for the domain to move past `revision`.
-    pub fn domain_changed(&self, epoch: &DataEpoch, revision: Revision, wait: u64) -> Result<bool> {
-        let changes: Value = self.get(&format!("/v2/domain/changes?data_epoch={epoch}&after={revision}&wait={wait}"))?;
-        Ok(changes["changed"].as_bool().unwrap_or(true))
+    pub fn domain_changes(&self, epoch: &DataEpoch, revision: Revision, wait: u64) -> Result<Changes> {
+        self.get(&format!("/v2/domain/changes?data_epoch={epoch}&after={revision}&wait={wait}"))
     }
 
     /// A refusal is the daemon's typed answer; anything else leaves the outcome unknown.
@@ -200,6 +277,58 @@ impl Client {
         let body = serde_json::to_value(envelope).map_err(|e| CommandFailure::Uncertain(e.to_string()))?;
         let (status, value) = self.exchange("POST", "/v2/domain/commands", Some(&body)).map_err(|e| CommandFailure::Uncertain(format!("{e:#}")))?;
         classify(status, value)
+    }
+}
+
+const SECTION_ROUTES: &[(&str, &str)] = &[
+    ("inbox", "/v2/domain/inbox"),
+    ("tasks", "/v2/domain/tasks"),
+    ("requests", "/v2/domain/requests"),
+    ("agents", "/v2/domain/agents"),
+    ("pull_requests", "/v2/domain/pull-requests"),
+    ("documents", "/v2/domain/documents"),
+    ("merge_authorizations", "/v2/domain/merge-authorizations"),
+    ("stack_readiness", "/v2/domain/stack-readiness"),
+    ("superseded_acceptances", "/v2/domain/superseded-acceptances"),
+];
+
+/// Section rows by the token they were read at, so an unchanged section is never read twice.
+#[derive(Default)]
+pub struct Sections {
+    rows: BTreeMap<String, (String, Vec<Value>)>,
+}
+
+impl Sections {
+    fn assemble(&self, summary: &Summary) -> Result<DomainProjection> {
+        let rows = |section: &str| -> Result<Vec<Value>> {
+            Ok(self.rows.get(section).with_context(|| format!("section {section} was not read"))?.1.clone())
+        };
+        let documents = rows("documents")?;
+        let mut projection = DomainProjection {
+            protocol_version: summary.protocol_version,
+            data_epoch: summary.data_epoch.clone(),
+            revision: summary.revision,
+            inbox: serde_json::from_value(Value::Array(rows("inbox")?))?,
+            counts: summary.counts.clone(),
+            tasks: serde_json::from_value(Value::Array(rows("tasks")?))?,
+            agents: serde_json::from_value(Value::Array(rows("agents")?))?,
+            requests: serde_json::from_value(Value::Array(rows("requests")?))?,
+            interactions: vec![],
+            pull_requests: serde_json::from_value(Value::Array(rows("pull_requests")?))?,
+            documents: vec![],
+            document_revisions: vec![],
+            document_reviews: vec![],
+            merge_authorizations: serde_json::from_value(Value::Array(rows("merge_authorizations")?))?,
+            stack_readiness: serde_json::from_value(Value::Array(rows("stack_readiness")?))?,
+            superseded_acceptances: serde_json::from_value(Value::Array(rows("superseded_acceptances")?))?,
+        };
+        for bundle in documents {
+            let bundle: alondra_core::domain_v2::reads::DocumentBundle = serde_json::from_value(bundle)?;
+            projection.documents.push(bundle.document);
+            projection.document_revisions.extend(bundle.revisions);
+            projection.document_reviews.extend(bundle.reviews);
+        }
+        Ok(projection)
     }
 }
 
@@ -299,5 +428,172 @@ mod tests {
         let b = envelope(&epoch, 3, Command::MarkRead { interaction_id: "i".into() });
         assert_ne!(a.command_id, b.command_id);
         assert_eq!((a.protocol_version, a.expected_revision), (PROTOCOL_VERSION, 3));
+    }
+}
+
+#[cfg(test)]
+mod section_tests {
+    use super::*;
+    use alondra_core::domain_v2::reads::{DocumentBundle, SectionInfo};
+    use alondra_core::domain_v2::*;
+    use std::collections::BTreeSet;
+
+    fn seeded() -> DomainState {
+        let mut state = DomainState::new("epoch-sections");
+        let mut seq = 0;
+        let mut apply = |state: &mut DomainState, actor: Actor, command: Command| {
+            seq += 1;
+            let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(), command_id: format!("c-{seq}").into(), expected_revision: state.revision, command };
+            state.execute(&actor, &envelope).unwrap();
+        };
+        let user = Actor::User { user_id: "user-a".into() };
+        let agent = Actor::Agent { agent_id: "agent-a".into() };
+        apply(&mut state, user.clone(), Command::CreateRequest { request_id: "request-1".into(), body: "Synthetic request".into() });
+        apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
+        apply(&mut state, user, Command::CreateTask { task_id: "task-1".into(), request_id: "request-1".into(), title: "Synthetic task".into(), agent_id: Some("agent-a".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None });
+        apply(&mut state, agent.clone(), Command::StartTask { task_id: "task-1".into() });
+        apply(&mut state, agent.clone(), Command::CreateDocument { task_id: "task-1".into(), document_id: "doc-1".into(), title: "Design".into(), revision_id: "rev-1".into(), content_digest: "0".repeat(64), content_reference: "files/design.md".into(), role: "result".into() });
+        apply(&mut state, agent.clone(), Command::RegisterPr { task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "owner/repo".into(), number: 7, head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] });
+        apply(&mut state, agent, Command::PresentResult { attachments: vec![], task_id: "task-1".into(), interaction_id: "final-1".into(), body: "Result ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr-1".into(), head: "head1".into() }], is_final: true });
+        state
+    }
+
+    #[test]
+    fn sections_assemble_into_the_projection_the_daemon_serves() {
+        let full = seeded().projection();
+        let rows = |value: Value| value.as_array().unwrap().clone();
+        let bundles: Vec<Value> = full.documents.iter().map(|d| serde_json::to_value(DocumentBundle {
+            document: d.clone(),
+            revisions: full.document_revisions.iter().filter(|r| r.document_id == d.id).cloned().collect(),
+            reviews: full.document_reviews.iter().filter(|r| r.document_id == d.id).cloned().collect(),
+        }).unwrap()).collect();
+        let mut cache = Sections::default();
+        for (section, value) in [
+            ("inbox", serde_json::to_value(&full.inbox).unwrap()),
+            ("tasks", serde_json::to_value(&full.tasks).unwrap()),
+            ("requests", serde_json::to_value(&full.requests).unwrap()),
+            ("agents", serde_json::to_value(&full.agents).unwrap()),
+            ("pull_requests", serde_json::to_value(&full.pull_requests).unwrap()),
+            ("documents", Value::Array(bundles)),
+            ("merge_authorizations", serde_json::to_value(&full.merge_authorizations).unwrap()),
+            ("stack_readiness", serde_json::to_value(&full.stack_readiness).unwrap()),
+            ("superseded_acceptances", serde_json::to_value(&full.superseded_acceptances).unwrap()),
+        ] {
+            cache.rows.insert(section.into(), ("token".into(), rows(value)));
+        }
+        let summary = Summary { protocol_version: PROTOCOL_VERSION, data_epoch: full.data_epoch.clone(), revision: full.revision, counts: full.counts.clone(), open_tasks: 1, connected_agents: 0, sections: BTreeMap::from([("inbox".to_owned(), SectionInfo { revision: "token".into(), count: 1 })]), expansions: BTreeMap::new(), pending: vec![] };
+        let assembled = cache.assemble(&summary).unwrap();
+        let mut expected = full.clone();
+        expected.interactions.clear();
+        assert!(!full.documents.is_empty() && !full.document_revisions.is_empty() && !full.pull_requests.is_empty());
+        assert_eq!(assembled, expected);
+    }
+}
+
+#[cfg(test)]
+mod wire_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::sync::{Arc, Mutex};
+
+    /// A synthetic daemon that answers scripted paths, one request per connection.
+    fn peer(script: Vec<(&'static str, Value)>) -> (Client, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let seen = Arc::new(Mutex::new(vec![]));
+        let log = seen.clone();
+        let server = std::thread::spawn(move || {
+            for (expected, body) in script {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut bytes = Vec::new();
+                loop {
+                    let mut chunk = [0; 4096];
+                    let n = stream.read(&mut chunk).unwrap();
+                    assert!(n > 0);
+                    bytes.extend_from_slice(&chunk[..n]);
+                    if bytes.windows(4).any(|w| w == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                let request = String::from_utf8_lossy(&bytes);
+                let path = request.split_whitespace().nth(1).unwrap().to_owned();
+                log.lock().unwrap().push(path.clone());
+                assert_eq!(path, expected);
+                let body = serde_json::to_vec(&body).unwrap();
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(&body).unwrap();
+            }
+        });
+        (Client::at(base), seen, server)
+    }
+
+    fn page(section: &str, token: &str, revision: u64, items: Vec<Value>, next: Option<&str>) -> Value {
+        let mut page = serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": revision, "section": section,
+            "section_revision": token, "total": items.len(), "items": items, "truncated": []});
+        if let Some(next) = next {
+            page["next_cursor"] = Value::String(next.into());
+        }
+        page
+    }
+
+    fn summary(revision: u64, inbox_token: &str) -> Value {
+        let sections: serde_json::Map<String, Value> = SECTION_ROUTES.iter().map(|(name, _)| {
+            let token = if *name == "inbox" { inbox_token } else { "same" };
+            ((*name).to_owned(), serde_json::json!({"revision": token, "count": 0}))
+        }).collect();
+        serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": revision,
+            "counts": {"roots": 0, "pending": 0, "unread_information": 0}, "open_tasks": 0, "connected_agents": 0,
+            "sections": sections})
+    }
+
+    fn task(id: &str) -> Value {
+        serde_json::json!({"id": id, "request_id": "r-1", "agent_id": null, "title": id, "state": "running", "revision": 1,
+            "started": true, "review_prs": false, "final_presentation": null, "pr_id": null, "dependencies": [],
+            "stack": null, "documents": {}, "archived": false})
+    }
+
+    #[test]
+    fn sync_walks_pages_and_rereads_only_the_sections_whose_token_moved() {
+        let mut script = vec![
+            ("/v2/domain/summary", summary(5, "a")),
+            ("/v2/domain/inbox", page("inbox", "a", 5, vec![], None)),
+            ("/v2/domain/tasks", page("tasks", "same", 5, vec![task("t-1")], Some("eyJpIjoidC0xIn0"))),
+            ("/v2/domain/tasks?cursor=eyJpIjoidC0xIn0", page("tasks", "same", 5, vec![task("t-2")], None)),
+        ];
+        for (section, base) in &SECTION_ROUTES[2..] {
+            script.push((base, page(section, "same", 5, vec![], None)));
+        }
+        script.push(("/v2/domain/summary", summary(6, "a2")));
+        script.push(("/v2/domain/inbox", page("inbox", "a2", 6, vec![], None)));
+        let (client, seen, server) = peer(script);
+        let mut cache = Sections::default();
+        let first = client.sync(&mut cache).unwrap();
+        assert_eq!(first.revision, 5);
+        assert_eq!(first.tasks.iter().map(|t| t.id.0.as_str()).collect::<Vec<_>>(), ["t-1", "t-2"]);
+        let second = client.sync(&mut cache).unwrap();
+        assert_eq!(second.revision, 6);
+        assert_eq!(second.tasks.len(), 2, "an unchanged section is served from the cache");
+        server.join().unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.iter().filter(|p| p.starts_with("/v2/domain/tasks")).count(), 2);
+        assert!(!seen.iter().any(|p| p == "/v2/domain"), "the whole projection is never read");
+    }
+
+    #[test]
+    fn a_truncated_interaction_is_reassembled_from_its_chunks() {
+        let interaction = serde_json::json!({"attachments": [], "id": "i-1", "scope": {"kind": "orchestrator", "request_id": null},
+            "author": {"kind": "system"}, "recipient": {"kind": "user"}, "body": "cut", "blocking": false, "subject": null,
+            "payload": {"kind": "information", "read_by": []}, "revision": 3, "order": 3});
+        let chunk = |offset: usize, data: &str, more: bool| serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3,
+            "id": "i-1", "offset": offset, "total_bytes": 10, "data": data, "has_more": more});
+        let (client, _, server) = peer(vec![
+            ("/v2/domain/interactions/i-1", serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3, "item": interaction, "truncated": true})),
+            ("/v2/domain/interactions/i-1/body?offset=0", chunk(0, "first ", true)),
+            ("/v2/domain/interactions/i-1/body?offset=6", chunk(6, "half", false)),
+        ]);
+        let full = client.interaction(&"i-1".into()).unwrap();
+        assert_eq!(full.body, "first half");
+        server.join().unwrap();
     }
 }

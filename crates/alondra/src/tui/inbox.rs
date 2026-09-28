@@ -109,7 +109,7 @@ impl App {
     }
 
     pub fn interaction(&self, id: &InteractionId) -> Option<&Interaction> {
-        self.domain.as_ref()?.interactions.iter().find(|i| &i.id == id)
+        self.interactions.get(id)
     }
 
     pub fn pull_request(&self, id: &PrId) -> Option<&PullRequest> {
@@ -386,7 +386,8 @@ impl App {
             let (state, title) = (super::tasks::state_label(t.state), md::one_line(&t.title));
             parts.push(trf!("Task: **{title}** · {state}", "Tarea: **{title}** · {state}"));
         }
-        if let Some(body) = item.body.as_ref().filter(|b| !b.trim().is_empty()) {
+        let full = interaction_of(item).and_then(|id| self.interaction(id)).map(|i| &i.body);
+        if let Some(body) = full.or(item.body.as_ref()).filter(|b| !b.trim().is_empty()) {
             parts.push(body.clone());
         }
         match &item.subject {

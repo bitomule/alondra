@@ -292,7 +292,10 @@ impl App {
 
     /// The selected task's controls as the daemon computes them, asked again whenever it changes.
     fn load_task_actions(&mut self) {
-        let Some((id, revision)) = self.selected_task().map(|t| (t.id.clone(), t.revision)) else { return };
+        let Some((id, revision, presentation)) = self.selected_task().map(|t| (t.id.clone(), t.revision, t.final_presentation.clone())) else { return };
+        if let Some(presentation) = presentation {
+            self.load_interaction(presentation, revision);
+        }
         if self.task_actions.get(&id).is_some_and(|(at, _)| *at == revision) || !self.task_actions_asked.insert((id.clone(), revision)) {
             return;
         }
