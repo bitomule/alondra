@@ -463,36 +463,21 @@ fn domain_bearer() -> Result<String> {
     if !domain_v2_mode() {
         anyhow::bail!("incompatible_protocol: this session has no domain v2 MCP channel")
     }
-    domain_mcp_bearer()
+    let bearer = std::env::var("ALONDRA_DOMAIN_CAPABILITY")
+        .map_err(|_| anyhow::anyhow!("incompatible_protocol: domain producer capability unavailable"))?;
+    validate_domain_bearer(&bearer)?;
+    Ok(bearer)
 }
 
 fn domain_v2_mode() -> bool {
     std::env::var("ALONDRA_DOMAIN_PROTOCOL").ok().as_deref() == Some("2")
 }
 
-fn domain_mcp_bearer() -> Result<String> {
-    use std::io::{Read, Write};
-    use std::os::unix::net::UnixStream;
-    use std::sync::OnceLock;
-    static TOKEN: OnceLock<String> = OnceLock::new();
-    if let Some(token) = TOKEN.get() { return Ok(token.clone()); }
-    let home = std::env::var_os("ALONDRA_HOME")
-        .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: missing Alondra HOME"))?;
-    let path = std::path::PathBuf::from(home).join("domain-mcp.sock");
-    let mut stream = UnixStream::connect(path)
-        .map_err(|_| anyhow::anyhow!("incompatible_protocol: domain MCP handoff unavailable"))?;
-    stream.set_read_timeout(Some(Duration::from_secs(2)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    stream.write_all(&[2])?;
-    let mut bytes = [0u8; 64];
-    stream.read_exact(&mut bytes)
-        .map_err(|_| anyhow::anyhow!("incompatible_protocol: domain MCP handoff denied"))?;
-    let token = std::str::from_utf8(&bytes)?;
-    if !token.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
-        anyhow::bail!("incompatible_protocol: invalid domain MCP handoff");
+fn validate_domain_bearer(bearer: &str) -> Result<()> {
+    if bearer.len() != 64 || !bearer.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+        anyhow::bail!("incompatible_protocol: invalid domain producer capability");
     }
-    let _ = TOKEN.set(token.to_owned());
-    Ok(token.to_owned())
+    Ok(())
 }
 
 fn flag(args: &Value, key: &str) -> bool {
@@ -854,6 +839,14 @@ mod tests {
         assert!(domain_envelope("register_pr", &json!({"task_id":"task-a"})).is_err());
         assert!(tools_for_mode(Role::Node, "User", true).as_array().unwrap().iter()
             .any(|tool| tool["name"] == "register_pr"));
+    }
+
+    #[test]
+    fn domain_producer_capability_has_the_existing_bearer_format() {
+        assert!(validate_domain_bearer(&"a".repeat(64)).is_ok());
+        for invalid in ["a".repeat(63), "A".repeat(64), "g".repeat(64), " ".repeat(64)] {
+            assert!(validate_domain_bearer(&invalid).is_err());
+        }
     }
 
     #[test]

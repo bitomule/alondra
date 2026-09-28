@@ -11,7 +11,6 @@ mod domain_runtime;
 mod domain_store;
 mod domain_api;
 mod domain_bootstrap;
-mod domain_mcp_socket;
 mod classify;
 mod http;
 mod hook_socket;
