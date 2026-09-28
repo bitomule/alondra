@@ -446,7 +446,9 @@ impl DomainState {
                 )
         })
     }
-    fn derive_states(&mut self) {
+    /// Waiting and activity states are always recomputed from the facts; an
+    /// import runs this once so the first live command never rewrites every Task.
+    pub fn derive_states(&mut self) {
         let updates: Vec<_> = self
             .tasks
             .values()

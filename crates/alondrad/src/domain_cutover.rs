@@ -455,8 +455,8 @@ pub(crate) fn promote_stage_offline(
         prior.as_ref().map(|_| stage.as_path()),
         false,
     )?;
-    crate::domain_migration::ensure_legacy_schedules_reconciled(&home)?;
     let staged = crate::domain_runtime::DomainRuntime::open(&stage)?.state()?;
+    crate::domain_migration::verify_staged_schedules(&backup, &stage)?;
     ensure!(
         staged.revision > 0,
         "stage contains no imported domain state"

@@ -101,11 +101,16 @@ impl Hub {
         if !bootstrap.is_empty() {
             let at = now_millis();
             let mut next = view.clone();
+            // Orphaning a held question unblocks its task: those go through the same task
+            // derivation as any runtime event.
+            let (orphans, raw): (Vec<Event>, Vec<Event>) = bootstrap.into_iter()
+                .partition(|e| matches!(e, Event::QuestionClosed { .. }));
             store.transaction(|tx| {
-                for event in &bootstrap {
+                for event in &raw {
                     let seq = Store::append_in(tx, at, event)?;
                     next.apply(seq, at, event);
                 }
+                Self::record_events(tx, &mut next, orphans, at)?;
                 let issues = next.integrity_issues();
                 if !issues.is_empty() {
                     bail!("bootstrap failed integrity audit: {}", issues.join("; "));
@@ -537,6 +542,7 @@ impl Drop for Closing<'_> {
 
 #[cfg(test)]
 mod tests {
+
     use super::*;
     use std::sync::Arc;
     use std::sync::mpsc;
@@ -550,6 +556,25 @@ mod tests {
 
     fn prompt(session: &str) -> Event {
         Event::Hook(alondra_core::HookEvent { session_id: session.into(), event: "UserPromptSubmit".into(), ..Default::default() })
+    }
+
+    /// 28-sep 20:15: the first 0.1.12 start orphaned the held cards blocking t-67464 and
+    /// t-67482 without unblocking the tasks, failed its integrity audit and never started.
+    #[test]
+    fn restart_unblocks_the_task_a_held_card_was_blocking() {
+        let hub = hub("held-card-restart");
+        hub.append(prompt("s")).unwrap();
+        let held: alondra_core::Question = serde_json::from_value(serde_json::json!({
+            "id": 0, "session_id": "s", "node_name": null, "title": "Allow Bash?", "blocking": true,
+            "origin": "permission", "tool_use_id": "toolu_1", "status": "open", "asked_at": 1})).unwrap();
+        hub.register_question_hold(|_| held).unwrap();
+        let blocked = |hub: &Hub| hub.read(|v| v.board.tasks.values().any(|t| t.blocker.is_some()));
+        assert!(blocked(&hub));
+        let config = hub.config.clone();
+        drop(hub);
+        let hub = Hub::open(config, false).unwrap();
+        assert!(!blocked(&hub));
+        assert!(hub.read(|v| v.questions.values().all(|q| q.status == alondra_core::QuestionStatus::Orphaned)));
     }
 
     #[test]
