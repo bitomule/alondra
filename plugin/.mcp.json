@@ -1,5 +1,5 @@
 {
   "mcpServers": {
-    "alondra": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra", "args": ["mcp"]}
+    "alondra": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra", "args": ["mcp-node"]}
   }
 }

@@ -132,9 +132,20 @@ impl Stream {
             (Some("system"), Some("init")) => {
                 if v["session_id"] != session { bail!("Claude initialization omitted its session ID"); }
                 if v["permissionMode"] != "auto" { bail!("Claude did not initialize in auto permission mode"); }
-                let connected = v["mcp_servers"].as_array().is_some_and(|servers| servers.iter().any(|s| s["name"].as_str().is_some_and(|n| n.contains("alondra")) && s["status"] == "connected"));
                 let tools = v["tools"].as_array();
-                if !connected || !tools.is_some_and(|tools| ["__fleet", "__ask"].iter().all(|suffix| tools.iter().any(|t| t.as_str().is_some_and(|t| t.starts_with("mcp__") && t.ends_with(suffix))))) {
+                // Claude prefixes plugin MCP names. Accept only the two exact launch forms
+                // observed for this server, paired with their matching tool names.
+                let available = [
+                    ("plugin:alondra-orchestrator:alondra-orchestrator", "mcp__plugin_alondra-orchestrator_alondra-orchestrator"),
+                    ("alondra-orchestrator", "mcp__alondra-orchestrator"),
+                ].iter().any(|(server, prefix)| {
+                    v["mcp_servers"].as_array().is_some_and(|servers| servers.iter().any(|s| s["name"] == *server && s["status"] == "connected"))
+                        && tools.is_some_and(|tools| ["fleet", "ask"].iter().all(|name| {
+                            let expected = format!("{prefix}__{name}");
+                            tools.iter().any(|t| t.as_str() == Some(expected.as_str()))
+                        }))
+                });
+                if !available {
                     bail!("required Alondra MCP tools are unavailable");
                 }
                 self.initialized = true;
@@ -351,6 +362,26 @@ mod tests {
         assert!(s.input_tokens.is_none());
     }
     #[test]
+    fn orchestrator_init_rejects_node_and_accepts_exact_plugin_name() {
+        let mut stream = Stream::default();
+        let node_only = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra:alondra","status":"connected"}],"tools":["mcp__plugin_alondra_alondra__fleet","mcp__plugin_alondra_alondra__ask"]}"#;
+        assert!(stream.accept(node_only, "s").is_err());
+        assert!(!stream.initialized);
+        let orchestrator = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["mcp__plugin_alondra-orchestrator_alondra-orchestrator__fleet","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}"#;
+        assert!(stream.accept(orchestrator, "s").is_ok());
+        assert!(stream.initialized);
+    }
+    #[test]
+    fn orchestrator_init_requires_its_own_mcp_server_and_tools() {
+        let mut stream = Stream::default();
+        let node_only = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra","status":"connected"}],"tools":["mcp__alondra__fleet","mcp__alondra__ask"]}"#;
+        assert!(stream.accept(node_only, "s").is_err());
+        assert!(!stream.initialized);
+        let orchestrator = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask"]}"#;
+        assert!(stream.accept(orchestrator, "s").is_ok());
+        assert!(stream.initialized);
+    }
+    #[test]
     fn ownership_is_exclusive() {
         let dir = std::env::temp_dir().join(uuid().unwrap());
         let a = Ownership::acquire(&dir).unwrap().unwrap();
@@ -375,7 +406,7 @@ mod tests {
         let dir = std::env::temp_dir().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, r#"cat >/dev/null
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"alondra","status":"connected"}],"tools":["mcp__alondra__fleet","mcp__alondra__ask"]}'
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["mcp__plugin_alondra-orchestrator_alondra-orchestrator__fleet","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
 i=0
 while [ "$i" -lt 10000 ]; do printf 'bounded diagnostics\n' >&2; i=$((i+1)); done
 printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":31}}}'

@@ -1,5 +1,5 @@
 {
   "mcpServers": {
-    "alondra": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra", "args": ["mcp", "--role", "orchestrator"]}
+    "alondra-orchestrator": {"command": "${CLAUDE_PLUGIN_ROOT}/bin/alondra", "args": ["mcp-orchestrator"]}
   }
 }
