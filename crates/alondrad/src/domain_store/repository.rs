@@ -116,6 +116,9 @@ pub(super) fn save_schedule_state(c: &Connection, schedule: &ScheduleState) -> R
     }
     for run in schedule.runs.values() {
         upsert(c, "schedule_runs", &["id"], object(run)?)?;
+        if let (Some(request_id), Some(snapshot)) = (&run.request_id, &run.definition_snapshot) {
+            remember_schedule_request_tools(c, request_id, &snapshot.disallowed_tools)?;
+        }
     }
     Ok(())
 }
@@ -515,6 +518,7 @@ pub(super) fn save(c: &Connection, state: &DomainState) -> Result<()> {
     for r in state.stack_readiness.values() {
         upsert(c, "stack_readiness", &["task_id"], object(r)?)?;
     }
+    save_schedule_state(c, &state.schedule)?;
     Ok(())
 }
 
@@ -762,6 +766,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         let x: StackReadiness = decode(row)?;
         state.stack_readiness.insert(x.task_id.clone(), x);
     }
+    state.schedule = load_schedule_state(c)?;
     state.validate()?;
     Ok(state)
 }

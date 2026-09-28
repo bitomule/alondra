@@ -1,5 +1,19 @@
 use super::*;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
+use std::os::unix::fs::DirBuilderExt;
+
+fn temporary_database(label: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+    let directory = std::env::temp_dir().join(format!(
+        "alondra-schedule-{label}-{}",
+        crate::auth::random_hex(16)
+    ));
+    std::fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&directory)
+        .unwrap();
+    let path = directory.join("domain.sqlite");
+    (directory, path)
+}
 
 fn database(c: &Connection) {
     c.pragma_update(None, "foreign_keys", "ON").unwrap();
@@ -58,6 +72,25 @@ fn linked_request_and_task(c: &Connection) {
         .unwrap();
 }
 
+fn execute(
+    store: &mut super::super::DomainStore,
+    id: &str,
+    command: Command,
+) -> std::result::Result<super::super::Commit, super::super::StoreError> {
+    let state = store.load().unwrap();
+    store.execute_authenticated(
+        &Actor::System,
+        &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch,
+            command_id: id.into(),
+            expected_revision: state.revision,
+            command,
+        },
+        None,
+    )
+}
+
 #[test]
 fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
     let c = Connection::open_in_memory().unwrap();
@@ -93,12 +126,26 @@ fn schedule_state_roundtrips_claim_result_and_legacy_observation() {
     claimed.task_id = Some("task-1".into());
     save_schedule_state(&c, &state).unwrap();
     assert_eq!(load_schedule_state(&c).unwrap(), state);
+    assert_eq!(
+        load_schedule_request_tools(&c, &RequestId::from("request-1")).unwrap(),
+        Some(vec!["Bash".into()])
+    );
 
     let sent = state.runs.get_mut(&ScheduleRunId::from("run-1")).unwrap();
     sent.state = ScheduleRunState::Failed;
     sent.error = Some("Task launch failed later".into());
     save_schedule_state(&c, &state).unwrap();
     assert_eq!(load_schedule_state(&c).unwrap(), state);
+    assert!(!was_schedule_launch_failed(&c, &RequestId::from("request-1")).unwrap());
+
+    let legacy = state
+        .runs
+        .get_mut(&ScheduleRunId::from("legacy-run"))
+        .unwrap();
+    legacy.state = ScheduleRunState::Failed;
+    legacy.error = Some("Legacy launch failed later".into());
+    save_schedule_state(&c, &state).unwrap();
+    assert!(!was_schedule_launch_failed(&c, &RequestId::from("request-2")).unwrap());
 }
 
 #[test]
@@ -121,10 +168,7 @@ fn schedule_state_rejects_wrong_request_task_relation() {
 
 #[test]
 fn historical_policy_receipt_and_failed_launch_survive_restart() {
-    let path = std::env::temp_dir().join(format!(
-        "alondra-schedule-repository-{}.sqlite",
-        crate::auth::random_hex(16)
-    ));
+    let (directory, path) = temporary_database("historical");
     let request_id = RequestId::from("request-1");
     let patterns = vec!["Bash".into(), "mcp__danger__*".into()];
     let receipt = LegacyScheduleReceipt {
@@ -176,5 +220,122 @@ fn historical_policy_receipt_and_failed_launch_survive_restart() {
         assert!(was_schedule_launch_failed(&c, &request_id).unwrap());
         assert!(!was_schedule_launch_failed(&c, &RequestId::from("other")).unwrap());
     }
-    std::fs::remove_file(path).unwrap();
+    std::fs::remove_dir_all(directory).unwrap();
+}
+
+#[test]
+fn sent_run_request_task_policy_and_receipt_commit_together() {
+    let (directory, path) = temporary_database("atomic");
+    let mut store = super::super::DomainStore::open(&path).unwrap();
+    let mut definition = schedule();
+    definition.revision = 1;
+    definition.next_run = Some(1_000);
+    execute(
+        &mut store,
+        "create-schedule",
+        Command::CreateSchedule {
+            schedule: definition,
+        },
+    )
+    .unwrap();
+    execute(
+        &mut store,
+        "claim-run",
+        Command::ClaimScheduleRun {
+            schedule_id: "schedule-1".into(),
+            run_id: "run-1".into(),
+            origin: ScheduleRunOrigin::Due,
+            now: 1_000,
+            next_after_now: Some(3_000),
+        },
+    )
+    .unwrap();
+    let before = store.load().unwrap();
+    store
+        .conn
+        .execute_batch("CREATE TRIGGER reject_tools BEFORE INSERT ON schedule_request_tools BEGIN SELECT RAISE(ABORT,'synthetic policy failure'); END;")
+        .unwrap();
+    let sent = Command::RecordScheduleRunSent {
+        run_id: "run-1".into(),
+        request: Request {
+            id: "request-1".into(),
+            body: "Review project".into(),
+            closed: false,
+        },
+        task: Task {
+            id: "task-1".into(),
+            request_id: "request-1".into(),
+            agent_id: None,
+            title: "Review".into(),
+            state: TaskState::NotStarted,
+            revision: 1,
+            started: false,
+            review_prs: false,
+            final_presentation: None,
+            pr_id: None,
+            dependencies: BTreeSet::new(),
+            stack: None,
+            documents: BTreeMap::new(),
+            archived: false,
+        },
+        finished_at: 1_500,
+    };
+    assert!(execute(&mut store, "sent-run", sent.clone()).is_err());
+    assert_eq!(store.load().unwrap(), before);
+    for table in ["requests", "tasks", "schedule_request_tools"] {
+        let count: i64 = store
+            .conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "{table} should roll back");
+    }
+    let receipt_count: i64 = store
+        .conn
+        .query_row(
+            "SELECT count(*) FROM semantic_receipts WHERE command_id='sent-run'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_count, 0);
+    store
+        .conn
+        .execute_batch("DROP TRIGGER reject_tools")
+        .unwrap();
+
+    let commit = execute(&mut store, "sent-run", sent).unwrap();
+    assert_eq!(store.load().unwrap(), commit.state);
+    assert_eq!(
+        commit.state.schedule.runs[&ScheduleRunId::from("run-1")].state,
+        ScheduleRunState::Sent
+    );
+    assert_eq!(
+        load_schedule_request_tools(&store.conn, &RequestId::from("request-1")).unwrap(),
+        Some(vec!["Bash".into()])
+    );
+    let receipt_count: i64 = store
+        .conn
+        .query_row(
+            "SELECT count(*) FROM semantic_receipts WHERE command_id='sent-run'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_count, 1);
+    drop(store);
+    let mut reopened = super::super::DomainStore::open(&path).unwrap();
+    assert_eq!(reopened.load().unwrap(), commit.state);
+    execute(
+        &mut reopened,
+        "late-failure",
+        Command::RecordScheduleRunFailed {
+            run_id: "run-1".into(),
+            reason: "Task launch failed later".into(),
+            finished_at: 2_000,
+        },
+    )
+    .unwrap();
+    assert!(was_schedule_launch_failed(&reopened.conn, &RequestId::from("request-1")).unwrap());
+    drop(reopened);
+    std::fs::remove_dir_all(directory).unwrap();
 }
