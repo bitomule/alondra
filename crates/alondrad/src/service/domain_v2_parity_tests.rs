@@ -2,7 +2,8 @@
 //! domain state. Everything here runs in a synthetic HOME and loopback relay.
 use super::*;
 use alondra_core::domain_v2::{
-    Actor, Command, CommandEnvelope, PROTOCOL_VERSION, Recipient, Scope,
+    Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION, QuestionOption,
+    Recipient, Scope,
 };
 use axum::{Router, body::Bytes, routing::post};
 use base64::engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD};
@@ -10,6 +11,7 @@ use p256::ecdsa::{Signature, signature::Signer};
 use std::{
     collections::BTreeSet,
     net::SocketAddr,
+    sync::Barrier,
     sync::atomic::{AtomicI64, Ordering},
 };
 
@@ -180,6 +182,31 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             attachments: vec![],
         },
     );
+    execute(
+        &hub,
+        Actor::Agent {
+            agent_id: "agent-parity".into(),
+        },
+        "question",
+        Command::AskQuestion {
+            interaction_id: "question-parity".into(),
+            scope: Scope::Task {
+                task_id: "task-parity".into(),
+            },
+            recipient: Recipient::User,
+            body: "Choose one".into(),
+            blocking: true,
+            options: ["alpha", "beta"]
+                .into_iter()
+                .map(|id| QuestionOption {
+                    id: id.into(),
+                    label: id.into(),
+                    inputs: vec![],
+                })
+                .collect(),
+            attachments: vec![],
+        },
+    );
     let source = b"# Synthetic design\n";
     std::fs::create_dir_all(home.join("files")).unwrap();
     std::fs::write(home.join("files/design.md"), source).unwrap();
@@ -316,6 +343,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     };
     let request = json!({"method":"POST","path":"/v2/domain/commands","body":command});
     let work = sealed(&service, &phone_key, "command-once", request.clone());
+    let ciphertext_digest = Sha256::digest(serde_json::to_vec(&work.envelope).unwrap()).to_vec();
     service
         .handle(
             Work {
@@ -333,6 +361,27 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         first_bytes, replay_bytes,
         "sealed retry must reuse the exact durable receipt"
     );
+    let receipts = service.journal.db().unwrap();
+    let persisted: (String, Vec<u8>, String) = receipts
+        .query_row(
+            "SELECT sender,digest,state FROM service_receipts WHERE request_id='command-once'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        persisted,
+        (device_id.into(), ciphertext_digest, "completed".into())
+    );
+    let receipt_count: i64 = receipts
+        .query_row(
+            "SELECT count(*) FROM service_receipts WHERE request_id='command-once'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(receipt_count, 1);
+    drop(receipts);
     let envelope: EnvelopeV1 = serde_json::from_slice(&first_bytes).unwrap();
     let opened = envelope
         .open(
@@ -347,6 +396,143 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let outcome: Value = serde_json::from_slice(&opened).unwrap();
     assert_eq!(outcome["status"], 200);
     assert_eq!(domain.state().unwrap().revision, initial_revision + 1);
+    let pending_after_read = domain
+        .store
+        .lock()
+        .unwrap()
+        .pending_messages()
+        .unwrap()
+        .len();
+    let question_revision = domain.state().unwrap().revision;
+    let barrier = Arc::new(Barrier::new(3));
+    let decisions = ["alpha", "beta"]
+        .into_iter()
+        .map(|option| {
+            let domain = domain.clone();
+            let barrier = barrier.clone();
+            let envelope = CommandEnvelope {
+                protocol_version: PROTOCOL_VERSION,
+                data_epoch: domain.state().unwrap().data_epoch,
+                command_id: format!("answer-{option}").into(),
+                expected_revision: question_revision,
+                command: Command::AnswerQuestion {
+                    interaction_id: "question-parity".into(),
+                    option_id: option.into(),
+                    inputs: Default::default(),
+                    attachments: vec![],
+                },
+            };
+            tokio::task::spawn_blocking(move || {
+                let body = serde_json::to_value(&envelope).unwrap();
+                barrier.wait();
+                let result = crate::domain_api::encrypted_command_runtime(
+                    &domain,
+                    "phone-parity",
+                    Some(&body),
+                    ("phone-parity", option, &[option.len() as u8; 32]),
+                    || Ok(()),
+                )
+                .unwrap();
+                (option, envelope, result)
+            })
+        })
+        .collect::<Vec<_>>();
+    barrier.wait();
+    let mut results = Vec::new();
+    for decision in decisions {
+        results.push(decision.await.unwrap());
+    }
+    let winners = results
+        .iter()
+        .filter(|(_, _, value)| value["status"] == 200)
+        .collect::<Vec<_>>();
+    let losers = results
+        .iter()
+        .filter(|(_, _, value)| value["status"] == 409)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        winners.len(),
+        1,
+        "exactly one competing answer must commit: {results:?}"
+    );
+    assert_eq!(
+        losers.len(),
+        1,
+        "exactly one competing answer must conflict: {results:?}"
+    );
+    assert_eq!(losers[0].2["body"]["code"], "stale_revision");
+    let winner = winners[0];
+    let answered_state = domain.state().unwrap();
+    let answer = &answered_state.interactions[&"question-parity".into()].payload;
+    assert!(
+        matches!(answer, InteractionPayload::Question { answer: Some(a), .. } if a.option_id == winner.0)
+    );
+    assert_eq!(domain.state().unwrap().revision, question_revision + 1);
+    assert_eq!(
+        domain
+            .store
+            .lock()
+            .unwrap()
+            .pending_messages()
+            .unwrap()
+            .len(),
+        pending_after_read + 1
+    );
+    assert!(
+        domain
+            .store
+            .lock()
+            .unwrap()
+            .delivery_evidence()
+            .unwrap()
+            .is_empty()
+    );
+    let winner_body = serde_json::to_value(&winner.1).unwrap();
+    assert_eq!(
+        crate::domain_api::encrypted_command_runtime(
+            &domain,
+            "phone-parity",
+            Some(&winner_body),
+            ("phone-parity", winner.0, &[winner.0.len() as u8; 32]),
+            || Ok(())
+        )
+        .unwrap(),
+        winner.2,
+        "retrying the successful decision must return its receipt without a second effect"
+    );
+    assert_eq!(
+        domain
+            .store
+            .lock()
+            .unwrap()
+            .pending_messages()
+            .unwrap()
+            .len(),
+        pending_after_read + 1
+    );
+    let other_sender = crate::domain_api::encrypted_command_runtime(
+        &domain,
+        "phone-other",
+        Some(&winner_body),
+        ("phone-other", winner.0, &[winner.0.len() as u8; 32]),
+        || Ok(()),
+    )
+    .unwrap();
+    assert_eq!(other_sender["status"], 409);
+    assert_eq!(
+        other_sender["body"]["code"], "stale_revision",
+        "another sender cannot inherit the first sender's semantic receipt"
+    );
+    assert_eq!(
+        domain
+            .store
+            .lock()
+            .unwrap()
+            .pending_messages()
+            .unwrap()
+            .len(),
+        pending_after_read + 1
+    );
     let updated_path = "/v2/domain";
     assert_eq!(
         local_get(&client, &base, &phone_key, device_id, updated_path).await,
@@ -361,12 +547,23 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         .await
     );
 
+    let revision_before_old_clients = domain.state().unwrap().revision;
     let stale = encrypted(&service, &phone_key, &phone_agreement, &responses,
         "stale-epoch", json!({"method":"POST","path":"/v2/domain/commands",
-            "body":{"protocol_version":2,"data_epoch":"wrong-epoch","command_id":"stale",
+            "body":{"protocol_version":2,"data_epoch":"wrong-epoch","command_id":"read-parity-once",
                 "expected_revision":0,"command":{"kind":"mark_read","interaction_id":"info-parity"}}})).await;
     assert_eq!(stale["status"], 409);
-    assert_eq!(domain.state().unwrap().revision, initial_revision + 1);
+    assert_eq!(stale["body"]["code"], "stale_epoch");
+    let old_protocol = encrypted(&service, &phone_key, &phone_agreement, &responses,
+        "old-protocol", json!({"method":"POST","path":"/v2/domain/commands",
+            "body":{"protocol_version":1,"data_epoch":epoch,"command_id":"read-parity-once",
+                "expected_revision":0,"command":{"kind":"mark_read","interaction_id":"info-parity"}}})).await;
+    assert_eq!(old_protocol["status"], 409);
+    assert_eq!(old_protocol["body"]["code"], "incompatible_protocol");
+    assert_eq!(
+        domain.state().unwrap().revision,
+        revision_before_old_clients
+    );
     auth.revoke(device_id).unwrap();
     assert_eq!(
         local_get(&client, &base, &phone_key, device_id, "/v2/domain").await["status"],
