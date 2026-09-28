@@ -134,9 +134,8 @@ tasks starts with "[Task t-… “…”]".
 - Progress. Alondra rejects reports that say you are still working, do not need the user yet,
   or list steps under way, and you lose a turn. While you work on your own, including waiting
   for a build, an upload or a review, there is nothing to send.
-- A question. A report that asks the user to decide, approve, test or fetch something is
-  delivered flagged and the question gets lost in the reading; it belongs in `ask` or
-  `request_action`.
+- A question. A report is always delivered as a report: a decision, an approval, a test or
+  something to fetch in it gets lost in the reading. It belongs in `ask` or `request_action`.
 
 ## Probes and end-to-end tests
 
