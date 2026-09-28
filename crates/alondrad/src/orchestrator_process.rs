@@ -547,7 +547,17 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
         terminate_orphan(&dir, Some("test-run")).unwrap();
         assert!(!child.wait().await.unwrap().success());
         drop(lock);
-        assert!(Ownership::acquire(&dir).unwrap().is_some());
+        // Reaping the group leader can race with the kernel releasing the inherited
+        // lock from the rest of its process group under a parallel test load.
+        let reacquired = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if let Some(ownership) = Ownership::acquire(&dir).unwrap() {
+                    break ownership;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        }).await.expect("orphan process group did not release its execution lock");
+        drop(reacquired);
         std::fs::remove_dir_all(dir).unwrap();
     }
 
