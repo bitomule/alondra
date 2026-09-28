@@ -250,7 +250,7 @@ impl DomainStore {
             }
             .into());
         }
-        let (state, _) = super::state_in(&self.cached, &tx)?;
+        let (state, ..) = super::state_in(&self.cached, &tx)?;
         let projection = state.projection();
         let mut writer = BoundedWriter {
             bytes: Vec::new(),

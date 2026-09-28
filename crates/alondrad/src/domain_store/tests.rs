@@ -1087,3 +1087,86 @@ fn second_merge_authorization_from_the_same_snapshot_is_stale() {
     let kept = &authorized.merge_authorizations[&"squash-on-device-a".into()];
     assert!(kept.valid && kept.method == MergeMethod::Squash);
 }
+
+#[test]
+fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
+    let fixture = Fixture::new();
+    let mut first = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut first);
+    let mut second = DomainStore::open(&fixture.path()).unwrap();
+    let foreign = envelope(
+        &mut second,
+        "foreign-request",
+        Command::CreateRequest {
+            request_id: "request-2".into(),
+            body: "Written by another connection".into(),
+        },
+    );
+    let mut foreign_writer = Some((second, foreign));
+    first.on_commit(move || {
+        if let Some((mut second, foreign)) = foreign_writer.take() {
+            let mut foreign = foreign;
+            foreign.expected_revision += 1;
+            second.execute_authenticated(&user(), &foreign, None).unwrap();
+        }
+    });
+    let own = envelope(
+        &mut first,
+        "own-request",
+        Command::CreateRequest {
+            request_id: "request-3".into(),
+            body: "Written by this connection".into(),
+        },
+    );
+    first.execute_authenticated(&user(), &own, None).unwrap();
+    let served = first.load().unwrap();
+    let persisted = DomainStore::open_readonly(&fixture.path())
+        .unwrap()
+        .load()
+        .unwrap();
+    assert!(persisted.requests.contains_key(&"request-2".into()));
+    assert_eq!(served, persisted);
+}
+
+#[test]
+fn import_replaces_a_projection_cached_before_it() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let empty = store.load().unwrap();
+    let before = store.project_bounded(1 << 20).unwrap();
+    let mut imported = empty.clone();
+    imported.requests.insert(
+        "legacy-request".into(),
+        Request {
+            id: "legacy-request".into(),
+            body: "Imported mission".into(),
+            closed: false,
+        },
+    );
+    assert_eq!(imported.revision, empty.revision);
+    store
+        .import_initial(
+            &imported,
+            &[],
+            1,
+            &crate::domain_migration::LegacyScheduleInventory::default(),
+        )
+        .unwrap();
+    let after = store.project_bounded(1 << 20).unwrap();
+    assert_ne!(after, before);
+    assert_eq!(after, serde_json::to_vec(&imported.projection()).unwrap());
+}
+
+#[test]
+fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let before = store.load().unwrap();
+    let mut after = before.clone();
+    after.agents.remove(&"agent-1".into());
+    after.revision += 1;
+    let tx = store.conn.transaction().unwrap();
+    let error = repository::save_changes(&tx, &before, &after).unwrap_err();
+    assert!(error.to_string().contains("cannot remove agent"), "{error}");
+}
