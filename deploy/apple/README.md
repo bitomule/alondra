@@ -33,8 +33,9 @@ Pass `--bazel-output-user-root` and `--bazel-output-base` to reuse the agreed lo
 cache instead of allocating another worktree cache. Both build and cquery receive
 the same startup paths. Sharing a path does not authorize concurrent builds.
 
-Obtain the appropriate profiles through the separately authorized ASC signing
-workflow. Place the existing CMS profile files in ignored `signing/` paths:
+The team's profiles are versioned in `signing/`, as in the other apps; a profile
+holds no private key (the signing identity stays in the keychain). Replace a file
+there, reviewed, when its profile is renewed:
 
 | Destination | File | Bundle identifier |
 | --- | --- | --- |
@@ -46,7 +47,7 @@ The profiles must belong to team/prefix `658YBSK6MG`, be unexpired, exclude
 development/ad hoc/enterprise devices, and include the selected existing Apple
 Distribution certificate. An existing valid Mac Installer identity is also
 required for the Mac package. Certificate and profile downloads are deliberately
-outside this script. Never commit profiles or private keys.
+outside this script. Never commit private keys or certificates.
 
 Inspect next build numbers immediately before selecting version/build:
 
