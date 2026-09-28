@@ -248,7 +248,7 @@ pub(crate) fn ensure_legacy_schedules_readable(home: &Path) -> Result<()> {
 /// policies, failed launches and receipts that the verified backup holds.
 pub(crate) fn verify_staged_schedules(backup: &Path, stage: &Path) -> Result<()> {
     let view = load_legacy_readonly(&backup.join("alondra.db"))?;
-    let mut store = crate::domain_store::DomainStore::open(&stage.join("domain-v2.db"))?;
+    let mut store = crate::domain_store::DomainStore::open_readonly(&stage.join("domain-v2.db"))?;
     let staged = store.load()?;
     let expected = read_legacy_schedules_readonly(backup, &view, &staged)?;
     let imported = store.legacy_schedule_inventory()?;

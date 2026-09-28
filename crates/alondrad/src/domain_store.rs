@@ -33,20 +33,24 @@ pub(crate) struct DomainStore {
     conn: Connection,
     cached: Option<Cached>,
     projection: Option<(DataEpoch, Revision, usize, Vec<u8>)>,
+    #[cfg(test)]
+    after_commit: Option<Box<dyn FnMut() + Send>>,
 }
 fn data_version(c: &Connection) -> Result<i64> {
     Ok(c.pragma_query_value(None, "data_version", |r| r.get(0))?)
 }
 /// The state as of this transaction: the cached copy when it is still current,
-/// otherwise a full load. The flag says whether the cache served it.
-fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(DomainState, bool)> {
+/// otherwise a full load. Also returns whether the cache served it and the
+/// `data_version` that state corresponds to, read inside the transaction so a
+/// commit by another connection after ours can never be absorbed into it.
+fn state_in(cached: &Option<Cached>, tx: &Connection) -> Result<(DomainState, bool, i64)> {
     let version = data_version(tx)?;
     let changes = tx.total_changes();
     match cached {
         Some(c) if c.data_version == version && c.total_changes == changes => {
-            Ok((c.state.clone(), true))
+            Ok((c.state.clone(), true, version))
         }
-        _ => Ok((repository::load(tx)?, false)),
+        _ => Ok((repository::load(tx)?, false, version)),
     }
 }
 #[derive(Debug)]
@@ -150,22 +154,54 @@ impl DomainStore {
         tx.execute("UPDATE schedule_runs SET state='interrupted',error='Alondra stopped while sending this run' WHERE state='launching'", [])?;
         tx.execute("UPDATE schedule_runs SET launch=json_set(launch,'$.state','uncertain','$.error','Alondra stopped after claiming the Claude launch') WHERE json_extract(launch,'$.state')='dispatching'", [])?;
         tx.commit()?;
-        let store = Self { conn, cached: None, projection: None };
+        let store = Self::from_connection(conn);
         store.integrity_check()?;
         Ok(store)
+    }
+    fn from_connection(conn: Connection) -> Self {
+        Self {
+            conn,
+            cached: None,
+            projection: None,
+            #[cfg(test)]
+            after_commit: None,
+        }
+    }
+    /// For verifying a prepared stage: no schema creation, no restart recovery
+    /// and no write of any kind, so the bytes hashed afterwards are the importer's.
+    pub(crate) fn open_readonly(path: &Path) -> Result<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let parent = std::fs::canonicalize(path.parent().context("database parent required")?)?;
+        let path = parent.join(path.file_name().context("database filename required")?);
+        let meta = std::fs::symlink_metadata(&path)?;
+        ensure!(
+            meta.is_file() && meta.nlink() == 1 && meta.uid() == unsafe { libc::geteuid() },
+            "unsafe domain database path"
+        );
+        let conn = Connection::open_with_flags(
+            &path,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW,
+        )?;
+        conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        conn.pragma_update(None, "query_only", "ON")?;
+        check_schema(&conn)?;
+        Ok(Self::from_connection(conn))
+    }
+    #[cfg(test)]
+    pub(crate) fn on_commit(&mut self, hook: impl FnMut() + Send + 'static) {
+        self.after_commit = Some(Box::new(hook));
     }
     #[cfg(test)]
     /// Rows this connection has written since it was opened.
     pub(crate) fn rows_written(&self) -> u64 {
         self.conn.total_changes()
     }
-    fn remember(&mut self, state: DomainState) -> Result<()> {
+    fn remember(&mut self, state: DomainState, data_version: i64) {
         self.cached = Some(Cached {
             state,
-            data_version: data_version(&self.conn)?,
+            data_version,
             total_changes: self.conn.total_changes(),
         });
-        Ok(())
     }
     /// Delivery and receipt rows are not domain state; writing them keeps the cache.
     fn note_side_write(&mut self) {
@@ -176,10 +212,10 @@ impl DomainStore {
     pub(crate) fn load(&mut self) -> Result<DomainState> {
         let tx = self.conn.transaction()?;
         check_schema(&tx)?;
-        let (state, hit) = state_in(&self.cached, &tx)?;
+        let (state, hit, version) = state_in(&self.cached, &tx)?;
         tx.commit()?;
         if !hit {
-            self.remember(state.clone())?;
+            self.remember(state.clone(), version);
         }
         Ok(state)
     }
@@ -231,8 +267,10 @@ impl DomainStore {
         }
         let mapped: i64 = tx.query_row("SELECT count(*) FROM legacy_import_map", [], |r|r.get(0))?;
         ensure!(mapped as usize == links.len(), "legacy mapping count changed during import");
+        let version = data_version(&tx)?;
         tx.commit()?;
-        self.remember(state.clone())?;
+        self.remember(state.clone(), version);
+        self.projection = None;
         Ok(())
     }
     pub(crate) fn legacy_schedule_inventory(
@@ -332,7 +370,7 @@ impl DomainStore {
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_schema(&tx)?;
-        let (state, hit) = state_in(&self.cached, &tx)?;
+        let (state, hit, version) = state_in(&self.cached, &tx)?;
         if envelope.protocol_version != PROTOCOL_VERSION {
             return Err(
                 DomainError::new("incompatible_protocol", "domain protocol 2 is required").into(),
@@ -363,7 +401,7 @@ impl DomainStore {
                 let outcome = serde_json::from_str(&result)?;
                 tx.commit()?;
                 if !hit {
-                    self.remember(state.clone())?;
+                    self.remember(state.clone(), version);
                 }
                 return Ok(Commit {
                     state,
@@ -390,7 +428,7 @@ impl DomainStore {
                 )?;
             }
             tx.commit()?;
-            self.remember(state.clone())?;
+            self.remember(state.clone(), version);
             return Ok(Commit {
                 state,
                 outcome,
@@ -472,7 +510,11 @@ impl DomainStore {
             )?;
         }
         tx.commit()?;
-        self.remember(next.clone())?;
+        #[cfg(test)]
+        if let Some(hook) = &mut self.after_commit {
+            hook();
+        }
+        self.remember(next.clone(), version);
         Ok(Commit {
             state: next,
             outcome,

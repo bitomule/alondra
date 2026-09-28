@@ -590,9 +590,65 @@ fn save_schedule_changes(c: &Connection, before: &ScheduleState, after: &Schedul
     }
     Ok(())
 }
+fn kept<K: Ord + std::fmt::Debug, V>(
+    what: &str,
+    before: &BTreeMap<K, V>,
+    after: &BTreeMap<K, V>,
+) -> Result<()> {
+    if let Some(lost) = before.keys().find(|k| !after.contains_key(k)) {
+        anyhow::bail!("domain persistence cannot remove {what} {lost:?}");
+    }
+    Ok(())
+}
+/// `save_changes` only inserts and updates. A rule that removed an entry would
+/// leave its row behind, so such a change is refused instead of half-persisted.
+fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<()> {
+    kept("request", &before.requests, &after.requests)?;
+    kept("agent", &before.agents, &after.agents)?;
+    kept("task", &before.tasks, &after.tasks)?;
+    kept("document", &before.documents, &after.documents)?;
+    kept("document revision", &before.document_revisions, &after.document_revisions)?;
+    kept("pull request", &before.pull_requests, &after.pull_requests)?;
+    kept("interaction", &before.interactions, &after.interactions)?;
+    kept("merge authorization", &before.merge_authorizations, &after.merge_authorizations)?;
+    kept("stack readiness", &before.stack_readiness, &after.stack_readiness)?;
+    kept("schedule", &before.schedule.schedules, &after.schedule.schedules)?;
+    kept("schedule run", &before.schedule.runs, &after.schedule.runs)?;
+    for (id, task) in &before.tasks {
+        kept("task document link", &task.documents, &after.tasks[id].documents)?;
+    }
+    for (id, pr) in &before.pull_requests {
+        let (Some(review), Some(next)) = (&pr.review, &after.pull_requests[id].review) else {
+            ensure!(
+                pr.review.is_none(),
+                "domain persistence cannot remove a pull request review"
+            );
+            continue;
+        };
+        ensure!(
+            next.decisions.len() >= review.decisions.len(),
+            "domain persistence cannot remove pull request decisions"
+        );
+    }
+    for review in &before.document_reviews {
+        let Some(next) = after
+            .document_reviews
+            .iter()
+            .find(|r| r.task_id == review.task_id && r.document_id == review.document_id)
+        else {
+            anyhow::bail!("domain persistence cannot remove a document review");
+        };
+        ensure!(
+            next.decisions.len() >= review.decisions.len(),
+            "domain persistence cannot remove document review decisions"
+        );
+    }
+    Ok(())
+}
 /// Write only what changed between two validated states. Rows are never
 /// removed except the per-Task dependency and stack sets, which are replaced.
 pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainState) -> Result<()> {
+    ensure_nothing_removed(before, after)?;
     if before.revision != after.revision
         || before.orchestrator_generation != after.orchestrator_generation
     {

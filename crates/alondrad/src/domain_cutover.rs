@@ -257,6 +257,10 @@ fn verify_stage_provenance(
     Ok(())
 }
 
+fn staged_state(stage: &Path) -> Result<alondra_core::domain_v2::DomainState> {
+    crate::domain_store::DomainStore::open_readonly(&stage.join("domain-v2.db"))?.load()
+}
+
 fn verify_no_stage_effects(database: &Path) -> Result<()> {
     let connection = Connection::open_with_flags(
         database,
@@ -455,7 +459,7 @@ pub(crate) fn promote_stage_offline(
         prior.as_ref().map(|_| stage.as_path()),
         false,
     )?;
-    let staged = crate::domain_runtime::DomainRuntime::open(&stage)?.state()?;
+    let staged = staged_state(&stage)?;
     crate::domain_migration::verify_staged_schedules(&backup, &stage)?;
     ensure!(
         staged.revision > 0,
@@ -684,5 +688,28 @@ mod tests {
         fs::write(home.join(MARKER), b"malformed").unwrap();
         assert!(read_marker(&home).is_err());
         fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn promote_reads_the_stage_without_writing_it() {
+        let stage = std::env::temp_dir().join(format!(
+            "alondra-domain-cutover-stage-{}",
+            crate::auth::random_hex(8)
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&stage).unwrap();
+        let database = stage.join("domain-v2.db");
+        let epoch = crate::domain_store::DomainStore::open(&database)
+            .unwrap()
+            .load()
+            .unwrap()
+            .data_epoch;
+        let imported = fs::read(&database).unwrap();
+        assert_eq!(staged_state(&stage).unwrap().data_epoch, epoch);
+        assert_eq!(
+            fs::read(&database).unwrap(),
+            imported,
+            "the stage hashed for provenance must hold only the importer's writes"
+        );
+        fs::remove_dir_all(stage).unwrap();
     }
 }
