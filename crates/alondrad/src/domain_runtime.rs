@@ -209,6 +209,13 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         }
         Command::CreateRequest { .. }
         | Command::CloseRequest { .. }
+        | Command::CreateSchedule { .. }
+        | Command::UpdateSchedule { .. }
+        | Command::DeleteSchedule { .. }
+        | Command::ClaimScheduleRun { .. }
+        | Command::RecordScheduleRunSent { .. }
+        | Command::RecordScheduleRunFailed { .. }
+        | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::RegisterAgent { .. }
         | Command::ObserveAgent { .. }
         | Command::AdvanceOrchestratorGeneration { .. } => None,
