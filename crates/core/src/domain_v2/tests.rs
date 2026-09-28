@@ -445,6 +445,36 @@ fn lifetime_pr_survives_cancel_reopen_and_register_is_noop() {
     );
 }
 #[test]
+fn closed_request_prevents_reopening_its_terminal_task() {
+    let mut s = fixture();
+    exec(
+        &mut s,
+        user(),
+        Command::CancelTask {
+            task_id: "t".into(),
+        },
+    )
+    .unwrap();
+    exec(
+        &mut s,
+        user(),
+        Command::CloseRequest {
+            request_id: "r".into(),
+        },
+    )
+    .unwrap();
+    reject_unchanged(
+        &mut s,
+        user(),
+        Command::ReopenTask {
+            task_id: "t".into(),
+        },
+        "not_found",
+    );
+    assert!(s.requests[&"r".into()].closed);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Cancelled);
+}
+#[test]
 fn document_revision_invalidates_entire_joint_delivery() {
     let mut s = fixture();
     exec(

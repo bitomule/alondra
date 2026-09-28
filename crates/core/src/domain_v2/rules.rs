@@ -1432,9 +1432,17 @@ impl DomainState {
             }
             Command::ReopenTask { task_id } => {
                 self.manager(actor)?;
-                if !self.task(task_id)?.state.terminal() {
+                let task = self.task(task_id)?;
+                if !task.state.terminal() {
                     return fail("task_not_active", "Only terminal Tasks can be reopened");
                 };
+                if !self
+                    .requests
+                    .get(&task.request_id)
+                    .is_some_and(|r| !r.closed)
+                {
+                    return fail("not_found", "Open Request required to reopen Task");
+                }
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.state = TaskState::Running;

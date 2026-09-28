@@ -765,3 +765,48 @@ fn second_user_read_is_noop_with_independent_receipt_and_zero_delivery() {
     assert_eq!(count(&store, "command_audit"), audit);
     assert_eq!(count(&store, "domain_messages"), 1);
 }
+
+#[test]
+fn closed_request_reopen_rejection_survives_sql_restart() {
+    let fixture = Fixture::new();
+    let path = fixture.path();
+    let mut store = DomainStore::open(&path).unwrap();
+    seeded(&mut store);
+    execute(
+        &mut store,
+        &user(),
+        "cancel-task",
+        Command::CancelTask {
+            task_id: "task-1".into(),
+        },
+    );
+    execute(
+        &mut store,
+        &user(),
+        "close-request",
+        Command::CloseRequest {
+            request_id: "request-1".into(),
+        },
+    );
+    let before = store.load().unwrap();
+    let receipts = count(&store, "semantic_receipts");
+    let audit = count(&store, "command_audit");
+    let attempt = envelope(
+        &mut store,
+        "reopen-closed-request",
+        Command::ReopenTask {
+            task_id: "task-1".into(),
+        },
+    );
+    let result = store.execute_authenticated(&user(), &attempt, None);
+    assert!(matches!(result, Err(StoreError::Domain(error)) if error.code == "not_found"));
+    assert_eq!(store.load().unwrap(), before);
+    assert_eq!(count(&store, "semantic_receipts"), receipts);
+    assert_eq!(count(&store, "command_audit"), audit);
+    drop(store);
+    let mut reopened = DomainStore::open(&path).unwrap();
+    assert_eq!(reopened.load().unwrap(), before);
+    let result = reopened.execute_authenticated(&user(), &attempt, None);
+    assert!(matches!(result, Err(StoreError::Domain(error)) if error.code == "not_found"));
+    assert_eq!(reopened.load().unwrap(), before);
+}
