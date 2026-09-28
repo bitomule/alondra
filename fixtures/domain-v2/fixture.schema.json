@@ -8,8 +8,8 @@
     "contract_version": {
       "const": 2
     },
-    "execution_status": {
-      "const": "specified_not_executed"
+    "execution_status_legend": {
+      "type": "object"
     },
     "base": {
       "type": "object"
@@ -145,7 +145,7 @@
             }
           },
           "execution_status": {
-            "const": "specified_not_executed"
+            "enum": ["store_runner", "schedule_runner", "test_evidence", "store_pending", "producer_pending", "ui_pending"]
           }
         },
         "required": [
@@ -165,7 +165,7 @@
   "required": [
     "schema_version",
     "contract_version",
-    "execution_status",
+    "execution_status_legend",
     "base",
     "variants",
     "scenarios"

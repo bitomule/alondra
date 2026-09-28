@@ -1,8 +1,10 @@
 //! Executable C/S acceptance cases from the shared domain v2 catalog.
 //!
 //! Each case builds its arrangement through real commands in a fresh SQLite
-//! store, executes the catalog's wire commands, and reads both state and durable
-//! effect tables. Unsupported catalog operations are an error, never a pass.
+//! store, executes the catalog's wire commands and the observation
+//! environment steps a trusted adapter would send, and reads both state and
+//! durable effect tables. Unsupported catalog operations are an error, never
+//! a pass; assertions that only a client can observe are skipped explicitly.
 use super::*;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -10,15 +12,60 @@ use std::collections::BTreeSet;
 
 const CATALOG: &str = include_str!("../../../../fixtures/domain-v2/acceptance.json");
 const CASES: &[&str] = &[
-    "V01", "V03", "V06", "V07", "V09", "V10", "V23", "V24", "V25", "V45",
+    "V01", "V03", "V06", "V07", "V08", "V09", "V10", "V11", "V16", "V17", "V18", "V20", "V21",
+    "V23", "V24", "V25", "V45", "V50", "V52",
 ];
+const SCHEDULE_CASES: &[&str] = &["V54", "V55", "V56", "V57", "V58", "V62"];
 fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
     match (case_id, step) {
         ("V07", 1) => Some("acceptance_missing"),
         ("V10", 0) => Some("acceptance_stale"),
+        ("V18", 1) => Some("stale_head"),
+        ("V21", 1) => Some("acceptance_missing"),
         ("V23", 0) => Some("not_assigned"),
         ("V45", 1) => Some("acceptance_stale"),
         _ => None,
+    }
+}
+/// A client-only observation the store layer cannot measure.
+fn client_assertion(path: &str) -> bool {
+    path.starts_with("client.") || path.starts_with("clients.") || path.starts_with("ui.")
+}
+/// The catalog writes `sha256-<content>` for synthetic digests; the wire needs
+/// the real digest of that content.
+fn realize_digests(value: &mut Value) {
+    if let Some(alias) = value
+        .get("content_digest")
+        .and_then(Value::as_str)
+        .and_then(|digest| digest.strip_prefix("sha256-"))
+    {
+        let digest = Sha256::digest(alias.as_bytes())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        value["content_digest"] = json!(digest);
+    }
+}
+fn observation(operation: &str, parameters: &Value, state: &DomainState) -> Command {
+    let pr_id = PrId::from(string(field(parameters, "pr_id")));
+    let head = string(field(parameters, "head")).to_owned();
+    let base = state.pull_requests[&pr_id].base.clone();
+    match operation {
+        "observe_new_head" => Command::ObservePrState {
+            pr_id,
+            head,
+            base,
+            state: PrState::Open,
+            merged_head: None,
+        },
+        "observe_merge" => Command::ObservePrState {
+            pr_id,
+            head: head.clone(),
+            base,
+            state: PrState::Merged,
+            merged_head: Some(head),
+        },
+        other => panic!("unsupported environment operation {other}"),
     }
 }
 
@@ -79,6 +126,10 @@ fn variant_targets(store: &mut DomainStore, variants: &Value, name: &str) -> Vec
                     revision_id: revision.id.clone(),
                 }
             }
+            "pull_request" => DeliveryTarget::PullRequest {
+                pr_id: string(field(target, "pr_id")).into(),
+                head: string(field(target, "head")).into(),
+            },
             other => panic!("unsupported semantic variant target {other}"),
         })
         .collect()
@@ -259,7 +310,55 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
 }
 fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
     let variant = field(variants, name);
-    if let Some(parent) = variant
+    if name == "pr-final" {
+        assert_eq!(field(variant, "accepted"), false);
+        let pr = field(variant, "pr");
+        let task_id = string(field(variant, "task_id"));
+        setup_command(
+            store,
+            &format!("setup-register-{name}"),
+            actor("agent-a"),
+            Command::RegisterPr {
+                task_id: task_id.into(),
+                pr_id: string(field(pr, "id")).into(),
+                host: string(field(pr, "host")).into(),
+                repository: string(field(pr, "repository")).into(),
+                number: field(pr, "number").as_u64().unwrap(),
+                head: string(field(pr, "head")).into(),
+                base: "main".into(),
+                allowed_methods: vec![MergeMethod::Squash],
+            },
+        );
+        let targets = variant_targets(store, variants, name);
+        setup_command(
+            store,
+            &format!("setup-present-{name}"),
+            actor("agent-a"),
+            Command::PresentResult {
+                attachments: vec![],
+                task_id: task_id.into(),
+                interaction_id: string(field(variant, "presentation_id")).into(),
+                body: "Synthetic pull request".into(),
+                targets,
+                is_final: field(variant, "final") == true,
+            },
+        );
+    } else if name == "authorized-pr" {
+        setup_variant(store, variants, string(field(variant, "extends")));
+        let authorization = field(variant, "authorization");
+        setup_command(
+            store,
+            &format!("setup-authorize-{name}"),
+            actor(string(field(authorization, "actor"))),
+            Command::AuthorizeMerge {
+                authorization_id: string(field(authorization, "id")).into(),
+                presentation_id: string(field(authorization, "presentation_id")).into(),
+                pr_id: string(field(authorization, "pr_id")).into(),
+                expected_head: string(field(authorization, "head")).into(),
+                method: serde_json::from_value(field(authorization, "method").clone()).unwrap(),
+            },
+        );
+    } else if let Some(parent) = variant
         .get("extends")
         .filter(|_| name != "mixed-text-document-final")
     {
@@ -363,12 +462,47 @@ fn setup_variant(store: &mut DomainStore, variants: &Value, name: &str) {
         "variant {name} status"
     );
 }
+struct Baseline {
+    messages: i64,
+    outbox: i64,
+    attempts: i64,
+    tasks: i64,
+    state: DomainState,
+}
+fn baseline(store: &mut DomainStore) -> Baseline {
+    Baseline {
+        messages: count(store, "domain_messages"),
+        outbox: count(store, "domain_outbox"),
+        attempts: count(store, "delivery_attempts"),
+        tasks: count(store, "tasks"),
+        state: store.load().unwrap(),
+    }
+}
+fn deliveries(state: &DomainState) -> (usize, usize) {
+    let presentations = state
+        .interactions
+        .values()
+        .filter(|i| matches!(i.payload, InteractionPayload::Delivery { .. }))
+        .count();
+    let acceptances = state
+        .interactions
+        .values()
+        .filter(|i| matches!(i.payload, InteractionPayload::Delivery { acceptance: Some(_), .. }))
+        .count();
+    (presentations, acceptances)
+}
+fn subject_id(subject: &InteractionSubject) -> &str {
+    match subject {
+        InteractionSubject::PullRequest { pr_id } => &pr_id.0,
+        InteractionSubject::DocumentReview { document_id, .. } => &document_id.0,
+    }
+}
 fn measured(
     store: &mut DomainStore,
-    before: (i64, i64, i64),
+    before: &Baseline,
     last_error: Option<&str>,
     rejected_unchanged: bool,
-    tasks_before: i64,
+    touched: &BTreeSet<InteractionId>,
 ) -> Value {
     let state = store.load().unwrap();
     let mut tasks = serde_json::Map::new();
@@ -379,13 +513,28 @@ fn measured(
         );
     }
     let mut interactions = serde_json::Map::new();
+    let mut relinked = 0;
+    let mut closed = 0;
     for (id, interaction) in &state.interactions {
+        let subject = interaction.subject.as_ref().map(|s| json!({"id": subject_id(s)}));
+        let earlier = before.state.interactions.get(id);
         match &interaction.payload {
             InteractionPayload::Information { read_by } => {
                 interactions.insert(id.0.clone(), json!({"read_by": read_by}));
             }
             InteractionPayload::Question { answer, .. } => {
-                interactions.insert(id.0.clone(), json!({"answer":answer,"scope":interaction.scope,"recipient":interaction.recipient}));
+                interactions.insert(id.0.clone(), json!({"answer":answer,"scope":interaction.scope,
+                    "recipient":interaction.recipient,"subject":subject}));
+                if !touched.contains(id) {
+                    if earlier.is_some_and(|e| e.subject != interaction.subject) {
+                        relinked += 1;
+                    }
+                    if answer.is_some()
+                        && earlier.is_some_and(|e| matches!(e.payload, InteractionPayload::Question { answer: None, .. }))
+                    {
+                        closed += 1;
+                    }
+                }
             }
             _ => {}
         }
@@ -416,6 +565,38 @@ fn measured(
         })
         .collect();
     documents.insert("count".into(), json!(state.documents.len()));
+    // The catalog names reviews `doc-review-<n>` in creation order; the domain
+    // keys them by (task, document).
+    let document_reviews: serde_json::Map<String, Value> = state
+        .document_reviews
+        .iter()
+        .enumerate()
+        .map(|(index, review)| {
+            let accepted = review
+                .decisions
+                .iter()
+                .rev()
+                .find(|decision| decision.accepted)
+                .map(|decision| decision.revision_id.clone());
+            (format!("doc-review-{}", index + 1), json!({"accepted_revision_id": accepted}))
+        })
+        .collect();
+    let mut pull_requests: serde_json::Map<String, Value> = state
+        .pull_requests
+        .iter()
+        .map(|(id, pr)| (id.0.clone(), json!({"state": pr.state})))
+        .collect();
+    pull_requests.insert("count".into(), json!(state.pull_requests.len()));
+    let feedback: usize = state
+        .interactions
+        .values()
+        .map(|i| match &i.payload {
+            InteractionPayload::Delivery { feedback, .. } => feedback.len(),
+            _ => 0,
+        })
+        .sum();
+    let (presentations_before, acceptances_before) = deliveries(&before.state);
+    let (presentations_after, acceptances_after) = deliveries(&state);
     let messages = count(store, "domain_messages");
     let outbox = count(store, "domain_outbox");
     let attempts = count(store, "delivery_attempts");
@@ -429,9 +610,19 @@ fn measured(
         .unwrap();
     json!({
         "tasks":tasks, "agents":agents, "interactions":interactions, "presentations":presentations,
-        "documents":documents, "pull_requests":{"count":state.pull_requests.len()},
-        "delta":{"messages":messages-before.0,"outbox":outbox-before.1,"delivery_attempts":attempts-before.2,
-            "tasks":count(store,"tasks")-tasks_before},
+        "documents":documents, "document_reviews":document_reviews, "pull_requests":pull_requests,
+        "task_pr_links":{"count":state.tasks.values().filter(|t| t.pr_id.is_some()).count()},
+        "pull_request_reviews":{"count":state.pull_requests.values().filter(|p| p.review.is_some()).count()},
+        "authorizations":{"count":state.merge_authorizations.len()},
+        "feedback":{"history_count":feedback},
+        "unrelated_questions_relinked":relinked,
+        "unrelated_questions_closed":closed,
+        "delta":{"messages":messages-before.messages,"outbox":outbox-before.outbox,
+            "delivery_attempts":attempts-before.attempts,"tasks":count(store,"tasks")-before.tasks,
+            "presentations":presentations_after as i64-presentations_before as i64,
+            "user_acceptances":acceptances_after as i64-acceptances_before as i64,
+            // The store never calls GitHub; a merge is an Agent effect after a claim.
+            "external_merge_calls":0},
         "delivery":{"execution_confirmed":handed>0},
         "last_error":{"code":last_error},
         "last_rejected":{"delta":{"rows":if rejected_unchanged {0} else {1},
@@ -476,27 +667,37 @@ fn shared_catalog_domain_and_sql_cases() {
                 panic!("{case_id}: unsupported arrangement {arrangement}");
             }
         }
-        let before = (
-            count(&store, "domain_messages"),
-            count(&store, "domain_outbox"),
-            count(&store, "delivery_attempts"),
-        );
-        let tasks_before = count(&store, "tasks");
+        let before = baseline(&mut store);
         let mut last_error = None;
         let mut rejected_unchanged = false;
+        let mut touched = BTreeSet::new();
         for (index, step) in field(case, "steps").as_array().unwrap().iter().enumerate() {
-            assert_eq!(
-                field(step, "type"),
-                "command",
-                "{case_id}: unsupported step {step}"
-            );
-            let command: Command = serde_json::from_value(field(step, "command").clone()).unwrap();
+            let (actor, command) = match string(field(step, "type")) {
+                "command" => {
+                    let mut wire = field(step, "command").clone();
+                    realize_digests(&mut wire);
+                    let command: Command = serde_json::from_value(wire).unwrap();
+                    match &command {
+                        Command::LinkInteractionSubject { interaction_id, .. }
+                        | Command::AnswerQuestion { interaction_id, .. } => {
+                            touched.insert(interaction_id.clone());
+                        }
+                        _ => {}
+                    }
+                    (actor(string(field(step, "actor"))), command)
+                }
+                "environment" => {
+                    let state = store.load().unwrap();
+                    (Actor::System, observation(string(field(step, "operation")), field(step, "parameters"), &state))
+                }
+                other => panic!("{case_id}: unsupported step type {other}"),
+            };
             let before_state = store.load().unwrap();
             let before_rows = row_counts(&store);
             match run(
                 &mut store,
                 &format!("{case_id}-step-{index}"),
-                actor(string(field(step, "actor"))),
+                actor,
                 command,
             ) {
                 Ok(commit) => {
@@ -530,11 +731,12 @@ fn shared_catalog_domain_and_sql_cases() {
         }
         let actual = measured(
             &mut store,
-            before,
+            &before,
             last_error.as_deref(),
             rejected_unchanged,
-            tasks_before,
+            &touched,
         );
+        let layers = field(case, "layers").as_array().unwrap();
         for assertion in field(case, "assert").as_array().unwrap() {
             assert_eq!(
                 field(assertion, "op"),
@@ -542,6 +744,10 @@ fn shared_catalog_domain_and_sql_cases() {
                 "{case_id}: unsupported assertion {assertion}"
             );
             let path = string(field(assertion, "path"));
+            if client_assertion(path) {
+                assert!(layers.iter().any(|layer| layer == "U"), "{case_id}: {path} needs a U layer");
+                continue;
+            }
             let found = path.split('.').fold(&actual, |node, key| {
                 node.get(key)
                     .unwrap_or_else(|| panic!("{case_id}: unmeasured assertion {path} in {actual}"))
@@ -559,4 +765,59 @@ fn shared_catalog_domain_and_sql_cases() {
         );
         restarted.integrity_check().unwrap();
     }
+}
+
+/// Every catalog scenario states how it is executed, and the statement holds:
+/// runner cases are exactly the listed ones, evidence names existing tests, and
+/// pending scenarios say which layer they wait for.
+#[test]
+fn catalog_execution_status_is_explicit_and_evidenced() {
+    let catalog: Value = serde_json::from_str(CATALOG).unwrap();
+    let legend = field(&catalog, "execution_status_legend").as_object().unwrap();
+    let sources = [
+        include_str!("tests.rs"),
+        include_str!("schedule_acceptance_tests.rs"),
+        include_str!("../domain_migration.rs"),
+        include_str!("../domain_migration/schedules.rs"),
+        include_str!("../domain_migration/synthetic.rs"),
+        include_str!("../domain_authority.rs"),
+        include_str!("../domain_api.rs"),
+        include_str!("../service/domain_v2_parity_tests.rs"),
+        include_str!("../../../core/src/domain_v2/tests.rs"),
+    ];
+    let mut runner = BTreeSet::new();
+    let mut schedule_runner = BTreeSet::new();
+    for case in field(&catalog, "scenarios").as_array().unwrap() {
+        let id = string(field(case, "id"));
+        let status = string(field(case, "execution_status"));
+        assert!(legend.contains_key(status), "{id}: status {status} is not in the legend");
+        match status {
+            "store_runner" => {
+                runner.insert(id);
+            }
+            "schedule_runner" => {
+                schedule_runner.insert(id);
+            }
+            "test_evidence" => {
+                let evidence = field(case, "cs_evidence").as_array().unwrap();
+                assert!(!evidence.is_empty(), "{id}: test_evidence needs cs_evidence");
+                for name in evidence {
+                    let function = string(name).rsplit("::").next().unwrap();
+                    assert!(
+                        sources.iter().any(|source| source.contains(&format!("fn {function}("))),
+                        "{id}: evidence {} names no existing test",
+                        string(name)
+                    );
+                }
+            }
+            _ => {
+                assert!(
+                    case.get("cs_evidence").is_none_or(|e| e.as_array().unwrap().is_empty()),
+                    "{id}: a pending scenario cannot also claim evidence"
+                );
+            }
+        }
+    }
+    assert_eq!(runner, CASES.iter().copied().collect::<BTreeSet<_>>());
+    assert_eq!(schedule_runner, SCHEDULE_CASES.iter().copied().collect::<BTreeSet<_>>());
 }

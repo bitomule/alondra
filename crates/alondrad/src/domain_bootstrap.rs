@@ -1,15 +1,14 @@
-//! Local v2-only HTTP bootstrap. This path never constructs a legacy Hub.
-//! The encrypted service adapter is a separate cutover gate.
-use crate::auth::{Auth, Signed, is_local};
+//! Local v2-only HTTP bootstrap. This path never constructs a legacy Hub;
+//! the routes are the shared domain handlers with a committed host.
+use crate::auth::is_local;
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::StoreError;
-use alondra_core::domain_v2::{CommandEnvelope, DomainError, PROTOCOL_VERSION};
+use alondra_core::domain_v2::DomainError;
 use anyhow::{Context, Result, ensure};
-use axum::extract::{ConnectInfo, Path as RoutePath, RawQuery, State, rejection::JsonRejection};
-use axum::http::{HeaderMap, StatusCode, header};
+use axum::extract::{ConnectInfo, State};
+use axum::http::HeaderMap;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use axum::{Extension, Json, Router};
+use axum::routing::get;
+use axum::{Json, Router};
 use serde_json::json;
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -44,302 +43,44 @@ impl V2Only {
     pub(crate) fn domain(&self) -> Arc<DomainRuntime> {
         self.domain.clone()
     }
+}
 
-    fn signed_current(&self, signed: &Option<Extension<Signed>>) -> bool {
-        let Some(Extension(signed)) = signed else {
-            return false;
-        };
-        Auth::open(&self.home).ok().is_some_and(|auth| {
-            auth.list().iter().any(|device| {
-                device.id == signed.device_id && device.public_key == signed.public_key
-            })
-        })
+impl crate::domain_api::DomainHost for V2Only {
+    fn domain(&self) -> &DomainRuntime {
+        &self.domain
+    }
+    fn home(&self) -> &Path {
+        &self.home
+    }
+    fn cutover_committed(&self) -> bool {
+        true
     }
 }
 
 pub(crate) fn router(state: Arc<V2Only>) -> Router {
     Router::new()
         .route("/v2/daemon", get(daemon))
-        .route("/v2/domain", get(projection))
-        .route("/v2/domain/schedules", get(schedule_list).post(schedule_write_blocked))
-        .route("/v2/domain/schedules/{id}", get(schedule_detail).put(schedule_write_blocked).delete(schedule_write_blocked))
-        .route("/v2/domain/schedules/{id}/run", post(schedule_write_blocked))
-        .route("/v2/domain/capabilities", get(capabilities))
-        .route("/v2/domain/changes", get(changes))
-        .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization))
-        .route("/v2/domain/delivery-attempts", get(delivery_attempts))
-        .route("/v2/domain/tasks/{id}/actions", get(task_actions))
-        .route("/v2/domain/document-revisions/{id}/content", get(document_content))
-        .route("/v2/domain/pull-requests/{id}/diff", get(pull_request_diff))
-        .route(
-            "/v2/domain/commands",
-            post(command).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
-        )
+        .merge(crate::domain_api::routes())
         .with_state(state)
-}
-async fn schedule_list(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signed>>) -> Response {
-    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
-    let response = crate::domain_schedule_api::response(crate::domain_schedule_api::read(&state.domain, "/v2/domain/schedules"));
-    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
-    response
-}
-async fn schedule_detail(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signed>>, RoutePath(id): RoutePath<String>) -> Response {
-    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
-    let path = format!("/v2/domain/schedules/{id}");
-    let response = crate::domain_schedule_api::response(crate::domain_schedule_api::read(&state.domain, &path));
-    if !state.signed_current(&signed) { return error("forbidden", "signed user device required"); }
-    response
-}
-async fn schedule_write_blocked() -> Response {
-    crate::domain_schedule_api::local_write_blocked()
-}
-
-async fn merge_authorization(
-    State(state): State<Arc<V2Only>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    RoutePath(id): RoutePath<String>,
-) -> Response {
-    if !is_local(&peer, &headers) {
-        return error("forbidden", "local Agent capability required");
-    }
-    let Some(token) = headers.get("authorization").and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer ")) else {
-        return error("forbidden", "Agent capability required");
-    };
-    crate::domain_api::merge_authorization_inner(&state.domain, token, id)
-}
-
-async fn delivery_attempts(
-    State(state): State<Arc<V2Only>>,
-    signed: Option<Extension<Signed>>,
-    RawQuery(query): RawQuery,
-) -> Response {
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    let response = crate::domain_api::delivery_evidence_inner(
-        &state.domain, query.as_deref().unwrap_or(""));
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    response
-}
-
-async fn task_actions(
-    State(state): State<Arc<V2Only>>,
-    signed: Option<Extension<Signed>>,
-    RoutePath(id): RoutePath<String>,
-) -> Response {
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    let response = crate::domain_api::task_actions_inner(&state.domain, id);
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    response
-}
-
-async fn document_content(
-    State(state): State<Arc<V2Only>>,
-    signed: Option<Extension<Signed>>,
-    RoutePath(id): RoutePath<String>,
-    RawQuery(query): RawQuery,
-) -> Response {
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    let response = crate::domain_api::document_content_inner(
-        &state.domain, &state.home, id, query).await;
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    response
-}
-
-async fn pull_request_diff(
-    State(state): State<Arc<V2Only>>,
-    signed: Option<Extension<Signed>>,
-    RoutePath(id): RoutePath<String>,
-) -> Response {
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    let response = crate::domain_api::pull_request_diff_inner(&state.domain, id).await;
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    response
-}
-
-fn domain_error(domain: DomainError) -> Response {
-    let status = match domain.code.as_str() {
-        "forbidden" | "not_assigned" => StatusCode::FORBIDDEN,
-        "not_found" => StatusCode::NOT_FOUND,
-        "invalid_input" | "invalid_action_for_kind" => StatusCode::UNPROCESSABLE_ENTITY,
-        "payload_too_large" => StatusCode::PAYLOAD_TOO_LARGE,
-        "storage_unavailable" => StatusCode::INTERNAL_SERVER_ERROR,
-        _ => StatusCode::CONFLICT,
-    };
-    (status, Json(domain)).into_response()
-}
-
-fn error(code: &str, message: &str) -> Response {
-    domain_error(DomainError::new(code, message))
-}
-
-fn store_error(error_value: StoreError) -> Response {
-    match error_value {
-        StoreError::Domain(domain) => domain_error(domain),
-        StoreError::Storage(_) => error(
-            "storage_unavailable",
-            "domain transaction could not be completed",
-        ),
-    }
 }
 
 /// The running version and update state, for `alondra update` and `alondra doctor` on this Mac.
 async fn daemon(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
     if !is_local(&peer, &headers) {
-        return error("forbidden", "local request required");
+        return crate::domain_api::domain_error(DomainError::new("forbidden", "local request required"));
     }
     Json(json!({"version": env!("CARGO_PKG_VERSION"), "update": crate::updates::status(&state.home),
         "preflight_rejected": crate::relaunch::rejected()})).into_response()
 }
 
-async fn projection(
-    State(state): State<Arc<V2Only>>,
-    signed: Option<Extension<Signed>>,
-) -> Response {
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    let response = match state.domain.snapshot(crate::service_overview::MAX_BYTES) {
-        Ok(bytes) => ([(header::CONTENT_TYPE, "application/json")], bytes).into_response(),
-        Err(value) if value.is::<crate::http::OverviewTooLarge>() => error(
-            "payload_too_large",
-            "domain projection exceeds snapshot limits",
-        ),
-        Err(_) => error(
-            "storage_unavailable",
-            "domain transaction could not be completed",
-        ),
-    };
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    response
-}
-
-async fn capabilities(
-    State(state): State<Arc<V2Only>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    signed: Option<Extension<Signed>>,
-    headers: HeaderMap,
-) -> Response {
-    let bearer = headers.get("authorization").and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer "));
-    let producer_current = || bearer.is_some_and(|token| signed.is_none()
-        && is_local(&peer, &headers) && state.domain.resolve_bearer(token).is_ok());
-    if !state.signed_current(&signed) && !producer_current() {
-        return error("forbidden", "signed device or local producer capability required");
-    }
-    let response = match state.domain.state() {
-        Ok(domain) => Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":domain.data_epoch,"revision":domain.revision})).into_response(),
-        Err(_) => error("storage_unavailable", "domain transaction could not be completed"),
-    };
-    if !state.signed_current(&signed) && !producer_current() {
-        return error("forbidden", "signed device or local producer capability required");
-    }
-    response
-}
-
-async fn changes(
-    State(state): State<Arc<V2Only>>,
-    signed: Option<Extension<Signed>>,
-    RawQuery(query): RawQuery,
-) -> Response {
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    let Some((epoch, after, wait)) = query.as_deref().and_then(crate::domain_api::changes_query)
-    else {
-        return error(
-            "invalid_input",
-            "changes requires data_epoch, after and wait (0–50) exactly once",
-        );
-    };
-    let mut receiver = state.domain.subscribe();
-    let initial = match state.domain.state() {
-        Ok(value) => value,
-        Err(_) => {
-            return error(
-                "storage_unavailable",
-                "domain transaction could not be completed",
-            );
-        }
-    };
-    if initial.data_epoch.0 == epoch && initial.revision == after && wait > 0 {
-        let _ =
-            tokio::time::timeout(std::time::Duration::from_secs(wait), receiver.changed()).await;
-    }
-    let response = match state.domain.state() {
-        Ok(domain) => Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":domain.data_epoch,
-            "revision":domain.revision,"changed":domain.data_epoch.0 != epoch || domain.revision != after})).into_response(),
-        Err(_) => error("storage_unavailable", "domain transaction could not be completed"),
-    };
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
-    }
-    response
-}
-
-async fn command(
-    State(state): State<Arc<V2Only>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    signed: Option<Extension<Signed>>,
-    headers: HeaderMap,
-    body: std::result::Result<Json<CommandEnvelope>, JsonRejection>,
-) -> Response {
-    let Ok(Json(envelope)) = body else {
-        return error("invalid_input", "invalid domain command envelope");
-    };
-    if headers.contains_key("x-alondra-session")
-        || headers.contains_key("x-alondra-orchestrator-execution")
-    {
-        return error(
-            "incompatible_protocol",
-            "this producer must resume with a domain v2 capability",
-        );
-    }
-    let Some(token) = headers.get("authorization") else {
-        return error(
-            "forbidden",
-            "local user presence is required for domain commands",
-        );
-    };
-    if signed.is_some() || !is_local(&peer, &headers) {
-        return error("forbidden", "producer capabilities are local only");
-    }
-    let Some(token) = token
-        .to_str()
-        .ok()
-        .and_then(|value| value.strip_prefix("Bearer "))
-    else {
-        return error("forbidden", "invalid domain capability");
-    };
-    match state.domain.execute_bearer(token, &envelope) {
-        Ok(outcome) => Json(outcome).into_response(),
-        Err(value) => store_error(value),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::auth::Auth;
+    use axum::http::StatusCode;
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
+    use std::net::SocketAddr;
 
     #[tokio::test]
     async fn standalone_router_reads_real_domain_and_has_no_legacy_routes() {

@@ -45,9 +45,9 @@ fn scenario(id: &str) -> Value {
         .iter()
         .find(|case| case["id"] == id)
         .unwrap_or_else(|| panic!("missing {id} scenario"));
-    assert_eq!(
-        case["execution_status"], "specified_not_executed",
-        "the complete {id} scenario includes untested runner/A/U layers"
+    assert!(
+        matches!(case["execution_status"].as_str(), Some("schedule_runner" | "test_evidence")),
+        "{id} is executed here or by the named tests; its runner/A/U layers stay listed as remaining"
     );
     assert!(case["layers"]
         .as_array()

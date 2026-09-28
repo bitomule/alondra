@@ -56,9 +56,17 @@ flag, adapter/layer, actual assertions, doubles and resource cleanup. A catalog
 parser or schema check proves fixture structure only. Do not mark V01–V53 or P7
 passed until their required layers have actually run.
 
-`cargo test -p alondrad --bin alondrad domain_store::acceptance_tests` executes
-V01, V03, V06, V07, V10, V23, V24, V25 and V45 against fresh SQLite stores. It sends
-the catalog's command steps through the production domain command/store path,
-compares every listed assertion for those cases, checks rejected writes and SQL
-integrity, then reloads each store. This is C/S coverage only. It does not exercise
-HTTP, the encrypted relay, clients, Claude or the other catalog scenarios.
+Every scenario carries an `execution_status` from `execution_status_legend`.
+`domain_store::acceptance_tests` executes the `store_runner` scenarios against
+fresh SQLite stores: it sends the catalog's command steps and the observation
+environment steps (`observe_new_head`, `observe_merge`, as the trusted adapter
+would) through the production domain command/store path, compares every listed
+assertion except client-only paths (`client.*`, `clients.*`, `ui.*`, skipped
+explicitly), checks rejected writes and SQL integrity, then reloads each store.
+`schedule_runner` scenarios run in `domain_store::schedule_acceptance_tests`.
+`test_evidence` scenarios name the Rust tests that cover them in `cs_evidence`;
+`store_pending`, `producer_pending` and `ui_pending` say which layer is missing.
+`catalog_execution_status_is_explicit_and_evidenced` checks that every status
+matches the runner lists and that every evidence name is an existing test. All of
+this is C/S coverage only: it does not exercise HTTP, the encrypted relay,
+clients or Claude.

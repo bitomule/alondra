@@ -1,7 +1,14 @@
 {
   "schema_version": 1,
   "contract_version": 2,
-  "execution_status": "specified_not_executed",
+  "execution_status_legend": {
+    "store_runner": "executed by domain_store::acceptance_tests against the real command/store path",
+    "schedule_runner": "executed by domain_store::schedule_acceptance_tests",
+    "test_evidence": "covered by the named Rust tests in cs_evidence, not by the catalog runner",
+    "store_pending": "store-layer behaviour without an executing test yet",
+    "producer_pending": "needs the P4 producer, GitHub adapter or agent lifecycle",
+    "ui_pending": "needs the Apple/TUI consumer"
+  },
   "base": {
     "data_epoch": "fixture-epoch-2",
     "revision": 1,
@@ -296,7 +303,7 @@
           "value": "running"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V02",
@@ -354,7 +361,7 @@
           "value": []
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "ui_pending"
     },
     {
       "id": "V03",
@@ -404,7 +411,7 @@
           "value": false
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V04",
@@ -483,7 +490,9 @@
           "value": "stale_revision"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_store::tests::sql_restart_roundtrip_receipts_and_read_has_no_communication", "domain_store::tests::two_connections_compete_by_revision_and_domain_rejection_writes_nothing"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V05",
@@ -540,7 +549,9 @@
           "value": 1
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_store::tests::two_connections_compete_by_revision_and_domain_rejection_writes_nothing", "service::domain_v2_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts", "domain_v2::tests::revision_checks_are_per_subject_and_invalidation_dates_decisions"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V06",
@@ -620,7 +631,7 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V07",
@@ -682,7 +693,7 @@
           "value": "in_review"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V08",
@@ -707,7 +718,7 @@
       "steps": [
         {
           "type": "command",
-          "actor": "user-a",
+          "actor": "agent-a",
           "command": {
             "kind": "revise_document",
             "document_id": "doc-1",
@@ -758,7 +769,7 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V09",
@@ -813,7 +824,7 @@
           "value": "https://docs.example.invalid/design/1"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V10",
@@ -919,7 +930,7 @@
           "value": "final-2"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V11",
@@ -988,7 +999,7 @@
           "value": 1
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V12",
@@ -1043,7 +1054,9 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_store::tests::lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V13",
@@ -1113,7 +1126,9 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::lifetime_pr_survives_cancel_reopen_and_register_is_noop", "domain_store::tests::lifetime_pr_sql_constraints_reject_second_pr_reparent_delete_and_bad_targets"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V14",
@@ -1173,7 +1188,7 @@
           "value": "synthetic/b"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_pending"
     },
     {
       "id": "V15",
@@ -1225,7 +1240,9 @@
           "value": false
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::review_off_does_not_authorize_and_external_merge_does_not_complete"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V16",
@@ -1313,7 +1330,7 @@
           "value": "final-2"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V17",
@@ -1375,7 +1392,7 @@
           "value": "authorization_recorded"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V18",
@@ -1433,7 +1450,7 @@
           "value": "in_review"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V19",
@@ -1498,7 +1515,9 @@
           "value": false
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::authorization_merge_and_completion_are_three_distinct_steps"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V20",
@@ -1540,7 +1559,7 @@
           "value": "closing"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V21",
@@ -1607,7 +1626,7 @@
           "value": "in_review"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V22",
@@ -1661,7 +1680,9 @@
           "value": "agent_unavailable"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::explicit_acceptance_then_agent_completion_and_feedback_revocation"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V23",
@@ -1703,7 +1724,7 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V24",
@@ -1756,7 +1777,7 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V25",
@@ -1818,7 +1839,7 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V26",
@@ -1876,7 +1897,9 @@
           "value": 1
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::recipient_scope_and_generation_preserve_logical_coordination"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V27",
@@ -1932,7 +1955,7 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "producer_pending"
     },
     {
       "id": "V28",
@@ -1980,7 +2003,7 @@
           "value": false
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "producer_pending"
     },
     {
       "id": "V29",
@@ -2044,7 +2067,9 @@
           }
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::cross_task_delivery_and_dependency_cycle_roll_back"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V30",
@@ -2119,7 +2144,9 @@
           ]
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V31",
@@ -2179,7 +2206,9 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_store::tests::receipt_failure_rolls_back_decision_audit_outbox_and_revision"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V32",
@@ -2234,7 +2263,9 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_store::tests::sql_restart_roundtrip_receipts_and_read_has_no_communication"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V33",
@@ -2281,7 +2312,9 @@
           "value": "reconcile_delivery"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_store::tests::claimed_delivery_restart_is_uncertain_until_explicit_reconciliation", "domain_store::tests::encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisions"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V34",
@@ -2336,7 +2369,9 @@
           ]
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_store::tests::restart_preserves_decisions_documents_and_relations", "domain_store::tests::restart_preserves_existing_outbox_and_user_notifications_claim_normally"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V35",
@@ -2388,7 +2423,7 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_pending"
     },
     {
       "id": "V36",
@@ -2442,7 +2477,9 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::old_epoch_revision_generation_and_actor_rejected", "domain_v2::tests::recipient_scope_and_generation_preserve_logical_coordination"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V37",
@@ -2491,7 +2528,7 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "ui_pending"
     },
     {
       "id": "V38",
@@ -2536,7 +2573,7 @@
           "value": "question-1"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "ui_pending"
     },
     {
       "id": "V39",
@@ -2596,7 +2633,7 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "ui_pending"
     },
     {
       "id": "V40",
@@ -2655,7 +2692,7 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "ui_pending"
     },
     {
       "id": "V41",
@@ -2711,7 +2748,9 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["service::domain_v2_parity_tests::signed_loopback_and_sealed_service_share_reads_errors_and_command_receipts"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V42",
@@ -2770,7 +2809,9 @@
           "value": false
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::old_epoch_revision_generation_and_actor_rejected", "domain_store::tests::incompatible_schema_and_legacy_writer_are_rejected_without_rewriting_rows"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V43",
@@ -2817,66 +2858,22 @@
           "value": false
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::free_text_response_with_or_without_options_and_attachment_bounds", "domain_api::tests::serialized_diff_fits_encrypted_relay_budget_and_reports_truncation"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V44",
-      "rules": [
-        "R03",
-        "R11"
-      ],
-      "title": "Future migration preserves existing decisions",
-      "layers": [
-        "S"
-      ],
-      "base": "synthetic-base",
-      "arrange": [
-        {
-          "fixture": "accepted-document-v1"
-        }
-      ],
-      "steps": [
-        {
-          "type": "environment",
-          "operation": "apply_next_schema_migration",
-          "parameters": {}
-        },
-        {
-          "type": "environment",
-          "operation": "run_sql_integrity_checks",
-          "parameters": {}
-        }
-      ],
-      "assert": [
-        {
-          "path": "decisions.equal_before",
-          "op": "eq",
-          "value": true
-        },
-        {
-          "path": "relations.equal_before",
-          "op": "eq",
-          "value": true
-        },
-        {
-          "path": "new_field.backfill_complete",
-          "op": "eq",
-          "value": true
-        },
-        {
-          "path": "pragma.foreign_key_check",
-          "op": "eq",
-          "value": []
-        },
-        {
-          "path": "pragma.integrity_check",
-          "op": "eq",
-          "value": [
-            "ok"
-          ]
-        }
-      ],
-      "execution_status": "specified_not_executed"
+      "rules": [],
+      "title": "Fresh v2 base and legacy import with data",
+      "layers": ["S"],
+      "base": "synthetic_offline_backup",
+      "cs_expected": {"schema_created_once": true, "cards_lost": 0, "partial_state_published": false, "foreign_key_check": [], "integrity_check": ["ok"]},
+      "cs_evidence_status": "passed",
+      "remaining": ["rehearsal of the live HOME at cutover"],
+      "cs_evidence": ["domain_migration::tests::backup_rehearsal_and_rollback_preserve_tail_cards_and_content", "domain_migration::synthetic::live_shaped_home_rehearses_with_its_counts_and_reports_command_latency"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V45",
@@ -2950,7 +2947,7 @@
           "value": "running"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V46",
@@ -3041,7 +3038,9 @@
           "value": true
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::typed_option_ids_and_open_question_guard"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V47",
@@ -3110,7 +3109,9 @@
           "value": "stale_generation"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_authority::tests::epoch_restart_and_execution_revocation_fence_old_tokens", "domain_v2::tests::recipient_scope_and_generation_preserve_logical_coordination"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V48",
@@ -3172,7 +3173,9 @@
           "value": "in_review"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::authorization_merge_and_completion_are_three_distinct_steps"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V49",
@@ -3232,7 +3235,9 @@
           "value": false
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::cancellation_during_merge_preserves_observation_without_completion"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V50",
@@ -3293,7 +3298,7 @@
           "value": "final-1"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V51",
@@ -3353,7 +3358,9 @@
           "value": "running"
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::only_a_manager_can_link_another_tasks_document"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V52",
@@ -3434,7 +3441,7 @@
           "value": 0
         }
       ],
-      "execution_status": "specified_not_executed"
+      "execution_status": "store_runner"
     },
     {
       "id": "V53",
@@ -3509,7 +3516,9 @@
           "value": []
         }
       ],
-      "execution_status": "specified_not_executed"
+      "cs_evidence": ["domain_v2::tests::typed_option_ids_and_open_question_guard", "domain_v2::tests::partial_delivery_and_unread_information_do_not_replace_final_or_block"],
+      "cs_evidence_status": "passed",
+      "execution_status": "test_evidence"
     },
     {
       "id": "V54",
@@ -3520,7 +3529,7 @@
       "cs_evidence": ["domain_store::schedule_acceptance_tests::v54_cs_crud_revision_and_transport_receipts"],
       "cs_evidence_status": "passed",
       "remaining": ["API transport matrix", "Apple client", "runner"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "schedule_runner"
     },
     {
       "id": "V55",
@@ -3531,7 +3540,7 @@
       "cs_evidence": ["domain_store::schedule_acceptance_tests::v55_cs_overdue_claim_consumes_one_observed_slot"],
       "cs_evidence_status": "passed",
       "remaining": ["local calendar and DST adapter", "poller runner"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "schedule_runner"
     },
     {
       "id": "V56",
@@ -3542,7 +3551,7 @@
       "cs_evidence": ["domain_store::schedule_acceptance_tests::v56_cs_manual_disabled_runs_have_distinct_links"],
       "cs_evidence_status": "passed",
       "remaining": ["manual run API", "runner", "Apple client"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "schedule_runner"
     },
     {
       "id": "V57",
@@ -3553,7 +3562,7 @@
       "cs_evidence": ["domain_store::schedule_acceptance_tests::v57_cs_restart_interrupts_claim_without_replaying_due_slot"],
       "cs_evidence_status": "passed",
       "remaining": ["runner restart under process crash"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "schedule_runner"
     },
     {
       "id": "V58",
@@ -3564,7 +3573,7 @@
       "cs_evidence": ["domain_store::schedule_acceptance_tests::v58_cs_sent_links_policy_and_receipt_commit_together"],
       "cs_evidence_status": "passed",
       "remaining": ["runner launch receipt", "process crash windows"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "schedule_runner"
     },
     {
       "id": "V59",
@@ -3575,7 +3584,7 @@
       "cs_evidence": ["domain_migration::schedules::tests::offline_import_roundtrips_schedule_rows_and_exact_side_tables"],
       "cs_evidence_status": "passed",
       "remaining": ["live cutover with runner and consumers"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "test_evidence"
     },
     {
       "id": "V60",
@@ -3586,7 +3595,7 @@
       "cs_evidence": ["domain_migration::schedules::tests::orphan_ambiguous_and_uncertain_links_fail_without_rewriting_source"],
       "cs_evidence_status": "passed",
       "remaining": ["full offline cutover rehearsal"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "test_evidence"
     },
     {
       "id": "V61",
@@ -3597,7 +3606,7 @@
       "cs_evidence": ["domain_migration::tests::backup_rehearsal_and_rollback_preserve_tail_cards_and_content", "domain_migration::tests::populated_schedule_store_is_readable_and_unsafe_or_unknown_stores_are_refused"],
       "cs_evidence_status": "passed",
       "remaining": ["runner and consumer validation", "rollback smoke"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "test_evidence"
     },
     {
       "id": "V62",
@@ -3608,7 +3617,7 @@
       "cs_evidence": ["domain_store::schedule_acceptance_tests::v62_cs_older_launch_failure_does_not_replace_latest_run"],
       "cs_evidence_status": "passed",
       "remaining": ["runner late failure ordering"],
-      "execution_status": "specified_not_executed"
+      "execution_status": "schedule_runner"
     }
   ]
 }

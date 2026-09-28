@@ -16,6 +16,7 @@ rust_test(
     compile_data = [
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
         "//crates/core:fixtures/quill.jsonl",
+        "//crates/core:src/domain_v2/tests.rs",
         "//fixtures/domain-v2:acceptance.json",
     ],
     crate = ":alondrad",
