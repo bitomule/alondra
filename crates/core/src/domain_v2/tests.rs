@@ -2034,6 +2034,258 @@ fn one_authorization_accepts_exact_joint_pr_text_and_document_delivery() {
     .unwrap();
 }
 
+struct Ids {
+    task: &'static str,
+    agent: &'static str,
+    interaction: &'static str,
+    document: &'static str,
+    revision: &'static str,
+    pr: &'static str,
+    request: &'static str,
+    authorization: &'static str,
+    schedule: &'static str,
+    run: &'static str,
+}
+fn variant_index(c: &Command) -> usize {
+    match c {
+        Command::CreateSchedule { .. } => 0,
+        Command::UpdateSchedule { .. } => 1,
+        Command::DeleteSchedule { .. } => 2,
+        Command::ClaimScheduleRun { .. } => 3,
+        Command::RecordScheduleRunSent { .. } => 4,
+        Command::ClaimScheduleLaunch { .. } => 5,
+        Command::RecordScheduleLaunchHanded { .. } => 6,
+        Command::RecordScheduleRunFailed { .. } => 7,
+        Command::InterruptScheduleRunsOnRestart => 8,
+        Command::CreateRequest { .. } => 9,
+        Command::CloseRequest { .. } => 10,
+        Command::RegisterAgent { .. } => 11,
+        Command::ObserveAgent { .. } => 12,
+        Command::AdvanceOrchestratorGeneration { .. } => 13,
+        Command::CreateTask { .. } => 14,
+        Command::AssignTask { .. } => 15,
+        Command::SetDependencies { .. } => 16,
+        Command::StartTask { .. } => 17,
+        Command::PublishInformation { .. } => 18,
+        Command::AskQuestion { .. } => 19,
+        Command::RequestAction { .. } => 20,
+        Command::MarkRead { .. } => 21,
+        Command::AnswerQuestion { .. } => 22,
+        Command::CreateDocument { .. } => 23,
+        Command::ReviseDocument { .. } => 24,
+        Command::LinkTaskDocument { .. } => 25,
+        Command::DecideDocumentReview { .. } => 26,
+        Command::RegisterPr { .. } => 27,
+        Command::LinkInteractionSubject { .. } => 28,
+        Command::PresentResult { .. } => 29,
+        Command::SubmitFeedback { .. } => 30,
+        Command::AcceptDelivery { .. } => 31,
+        Command::AuthorizeMerge { .. } => 32,
+        Command::ClaimMergeAuthorization { .. } => 33,
+        Command::ObserveMergeAttempt { .. } => 34,
+        Command::ObservePrState { .. } => 35,
+        Command::PublishStackReadiness { .. } => 36,
+        Command::CompleteTask { .. } => 37,
+        Command::CancelTask { .. } => 38,
+        Command::ReopenTask { .. } => 39,
+        Command::ArchiveTask { .. } => 40,
+    }
+}
+const COMMAND_KINDS: usize = 41;
+/// Every command kind naming the given ids. The flag marks commands that only
+/// create a fresh entity and therefore may succeed with an unknown id.
+fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
+    let scope = Scope::Task {
+        task_id: ids.task.into(),
+    };
+    let (request, task) = scheduled_request_task(ids.request, ids.task);
+    let mut schedule = schedule();
+    schedule.id = ids.schedule.into();
+    let mut updated = schedule.clone();
+    updated.revision = 2;
+    let option = QuestionOption {
+        id: "yes".into(),
+        label: "Yes".into(),
+        inputs: vec![],
+    };
+    let list = vec![
+        (Command::CreateSchedule { schedule }, true),
+        (Command::UpdateSchedule { schedule: updated }, false),
+        (Command::DeleteSchedule { schedule_id: ids.schedule.into(), deleted_at: 1 }, false),
+        (Command::ClaimScheduleRun { schedule_id: ids.schedule.into(), run_id: ids.run.into(),
+            origin: ScheduleRunOrigin::Manual, now: 1, next_after_now: None }, false),
+        (Command::RecordScheduleRunSent { run_id: ids.run.into(), request, task,
+            launch: scheduled_launch(), finished_at: 1 }, false),
+        (Command::ClaimScheduleLaunch { run_id: ids.run.into(), now: 1 }, false),
+        (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, finished_at: 1 }, false),
+        (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
+        (Command::InterruptScheduleRunsOnRestart, true),
+        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into() }, true),
+        (Command::CloseRequest { request_id: ids.request.into() }, false),
+        (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into() }, true),
+        (Command::ObserveAgent { agent_id: ids.agent.into(), connected: true }, false),
+        (Command::AdvanceOrchestratorGeneration { generation: 1 }, true),
+        (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),
+            title: "Fresh".into(), agent_id: Some(ids.agent.into()), review_prs: false,
+            dependencies: BTreeSet::new(), stack: None }, false),
+        (Command::AssignTask { task_id: ids.task.into(), agent_id: ids.agent.into() }, false),
+        (Command::SetDependencies { task_id: ids.task.into(), dependencies: BTreeSet::new(), stack: None }, false),
+        (Command::StartTask { task_id: ids.task.into() }, false),
+        (Command::PublishInformation { attachments: vec![], interaction_id: "fresh-info".into(),
+            scope: scope.clone(), recipient: Recipient::User, body: "Info".into() }, false),
+        (Command::AskQuestion { attachments: vec![], interaction_id: "fresh-question".into(),
+            scope: scope.clone(), recipient: Recipient::User, body: "Q?".into(), blocking: true,
+            options: vec![option.clone()] }, false),
+        (Command::RequestAction { attachments: vec![], interaction_id: "fresh-action".into(),
+            scope, recipient: Recipient::User, body: "Do".into(), blocking: true,
+            options: vec![option] }, false),
+        (Command::MarkRead { interaction_id: ids.interaction.into() }, false),
+        (Command::AnswerQuestion { attachments: vec![], interaction_id: ids.interaction.into(),
+            option_id: "yes".into(), inputs: BTreeMap::new() }, false),
+        (Command::CreateDocument { task_id: ids.task.into(), document_id: "fresh-doc".into(),
+            title: "Doc".into(), revision_id: "fresh-rev".into(), content_digest: "a".repeat(64),
+            content_reference: "files/a".into(), role: "spec".into() }, false),
+        (Command::ReviseDocument { task_id: ids.task.into(), document_id: ids.document.into(),
+            revision_id: "fresh-rev".into(), content_digest: "b".repeat(64),
+            content_reference: "files/b".into() }, false),
+        (Command::LinkTaskDocument { task_id: ids.task.into(), document_id: ids.document.into(),
+            role: "spec".into() }, false),
+        (Command::DecideDocumentReview { task_id: ids.task.into(), document_id: ids.document.into(),
+            revision_id: ids.revision.into(), accepted: true }, false),
+        (Command::RegisterPr { task_id: ids.task.into(), pr_id: "fresh-pr".into(),
+            host: "github.com".into(), repository: "owner/repo".into(), number: 9,
+            head: "head9".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] }, false),
+        (Command::LinkInteractionSubject { interaction_id: ids.interaction.into(),
+            subject: InteractionSubject::PullRequest { pr_id: ids.pr.into() } }, false),
+        (Command::PresentResult { attachments: vec![], task_id: ids.task.into(),
+            interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
+            is_final: true }, false),
+        (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
+            targets: text(), body: "Change".into() }, false),
+        (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
+        (Command::AuthorizeMerge { authorization_id: "fresh-auth".into(),
+            presentation_id: ids.interaction.into(), pr_id: ids.pr.into(),
+            expected_head: "head1".into(), method: MergeMethod::Squash }, false),
+        (Command::ClaimMergeAuthorization { authorization_id: ids.authorization.into(),
+            remote_head: "head1".into(), remote_base: "main".into(), base_verified: true }, false),
+        (Command::ObserveMergeAttempt { authorization_id: ids.authorization.into(),
+            state: MergeAttemptState::Failed }, false),
+        (Command::ObservePrState { pr_id: ids.pr.into(), head: "head1".into(), base: "main".into(),
+            state: PrState::Closed, merged_head: None }, false),
+        (Command::PublishStackReadiness { task_id: ids.task.into(),
+            presentation_id: ids.interaction.into(), pr_id: ids.pr.into(), head: "head1".into(),
+            ready: true }, false),
+        (Command::CompleteTask { task_id: ids.task.into(), presentation_id: ids.interaction.into() }, false),
+        (Command::CancelTask { task_id: ids.task.into() }, false),
+        (Command::ReopenTask { task_id: ids.task.into() }, false),
+        (Command::ArchiveTask { task_id: ids.task.into(), archived: false }, false),
+    ];
+    let mut covered = vec![false; COMMAND_KINDS];
+    for (command, _) in &list {
+        covered[variant_index(command)] = true;
+    }
+    assert!(covered.iter().all(|c| *c), "every command kind must be exercised");
+    list
+}
+fn assert_all_rejected(base: &DomainState, actors: &[Actor], ids: &Ids) {
+    for (command, creates) in commands_naming(ids) {
+        if creates {
+            continue;
+        }
+        for actor in actors {
+            let mut s = base.clone();
+            let error = exec(&mut s, actor.clone(), command.clone())
+                .expect_err(&format!("{actor:?} with {command:?} must be rejected"));
+            assert!(!error.code.is_empty(), "rejection needs a typed code");
+            assert_eq!(s, *base, "rejected {command:?} changed state");
+        }
+    }
+}
+#[test]
+fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
+    let actors = [
+        user(),
+        agent(),
+        Actor::Agent {
+            agent_id: "ghost".into(),
+        },
+        Actor::Orchestrator { generation: 0 },
+        Actor::System,
+    ];
+    let unknown = Ids {
+        task: "missing-task",
+        agent: "missing-agent",
+        interaction: "missing-interaction",
+        document: "missing-document",
+        revision: "missing-revision",
+        pr: "missing-pr",
+        request: "missing-request",
+        authorization: "missing-authorization",
+        schedule: "missing-schedule",
+        run: "missing-run",
+    };
+    assert_all_rejected(&DomainState::new("epoch"), &actors, &unknown);
+    let mut s = fixture();
+    assert_all_rejected(&s, &actors, &unknown);
+
+    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() }).unwrap();
+    exec(&mut s, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(),
+        title: "Other".into(), agent_id: Some("b".into()), review_prs: true,
+        dependencies: BTreeSet::new(), stack: None }).unwrap();
+    let b = Actor::Agent { agent_id: "b".into() };
+    exec(&mut s, b.clone(), Command::StartTask { task_id: "t2".into() }).unwrap();
+    exec(&mut s, b.clone(), Command::RegisterPr { task_id: "t2".into(), pr_id: "pr2".into(),
+        host: "github.com".into(), repository: "owner/repo".into(), number: 2,
+        head: "head1".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash] }).unwrap();
+    exec(&mut s, b.clone(), Command::CreateDocument { task_id: "t2".into(), document_id: "doc2".into(),
+        title: "Doc".into(), revision_id: "rev2".into(), content_digest: "c".repeat(64),
+        content_reference: "files/c".into(), role: "spec".into() }).unwrap();
+    exec(&mut s, b.clone(), Command::PresentResult { attachments: vec![], task_id: "t2".into(),
+        interaction_id: "pres2".into(), body: "Done".into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: "pr2".into(), head: "head1".into() }],
+        is_final: true }).unwrap();
+    exec(&mut s, b.clone(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(),
+        scope: Scope::Task { task_id: "t2".into() }, recipient: Recipient::User, body: "Q?".into(),
+        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }] }).unwrap();
+    exec(&mut s, user(), Command::AuthorizeMerge { authorization_id: "auth2".into(),
+        presentation_id: "pres2".into(), pr_id: "pr2".into(), expected_head: "head1".into(),
+        method: MergeMethod::Squash }).unwrap();
+    let foreign = Ids {
+        task: "t2",
+        agent: "b",
+        interaction: "pres2",
+        document: "doc2",
+        revision: "rev2",
+        pr: "pr2",
+        request: "r",
+        authorization: "auth2",
+        schedule: "missing-schedule",
+        run: "missing-run",
+    };
+    let outsiders = [agent(), Actor::Agent { agent_id: "ghost".into() }];
+    for (command, creates) in commands_naming(&foreign) {
+        if creates || !matches!(command, Command::StartTask { .. } | Command::PublishInformation { .. }
+            | Command::AskQuestion { .. } | Command::RequestAction { .. } | Command::AnswerQuestion { .. }
+            | Command::CreateDocument { .. } | Command::ReviseDocument { .. } | Command::RegisterPr { .. }
+            | Command::LinkInteractionSubject { .. } | Command::PresentResult { .. }
+            | Command::ClaimMergeAuthorization { .. } | Command::PublishStackReadiness { .. }
+            | Command::CompleteTask { .. }) {
+            continue;
+        }
+        for actor in &outsiders {
+            let mut next = s.clone();
+            let error = exec(&mut next, actor.clone(), command.clone())
+                .expect_err(&format!("{actor:?} must not act on another Agent's Task with {command:?}"));
+            assert!(matches!(error.code.as_str(), "not_assigned" | "forbidden"), "{command:?}: {}", error.code);
+            assert_eq!(next, s);
+        }
+    }
+    for (command, _) in commands_naming(&foreign) {
+        for actor in &actors {
+            let _ = exec(&mut s.clone(), actor.clone(), command.clone());
+        }
+    }
+}
 #[test]
 fn external_merge_requires_explicit_delivery_acceptance_not_retroactive_authorization() {
     let mut s = fixture();
