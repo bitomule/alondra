@@ -271,6 +271,7 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
             origin: ScheduleRunOrigin::Due,
             now: 1_000,
             next_after_now: Some(3_000),
+            expected_schedule_revision: None,
         },
     )
     .unwrap();
