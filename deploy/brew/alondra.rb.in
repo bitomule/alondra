@@ -4,19 +4,13 @@ class Alondra < Formula
   version "@VERSION@"
 
   depends_on macos: :sonoma
+  depends_on arch: :arm64
 
   # Signed bytes must survive Homebrew cleaning unchanged.
   skip_clean "bin/alondra", "bin/alondrad"
 
-  on_arm do
-    url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-aarch64-apple-darwin.tar.gz"
-    sha256 "@ARM_SHA256@"
-  end
-
-  on_intel do
-    url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-x86_64-apple-darwin.tar.gz"
-    sha256 "@INTEL_SHA256@"
-  end
+  url "https://github.com/bitomule/homebrew-tap/releases/download/alondra-v#{version}/alondra-#{version}-aarch64-apple-darwin.tar.gz"
+  sha256 "@ARM_SHA256@"
 
   def install
     bin.install "alondra", "alondrad"

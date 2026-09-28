@@ -16,9 +16,9 @@ python3 - "$version" "$archive" "$formula" <<'PY'
 import hashlib, pathlib, re, sys
 version, archive, output = sys.argv[1:]
 text = pathlib.Path('deploy/brew/alondra.rb.in').read_text().replace('@VERSION@', version)
-text = re.sub(r'    url ".*"', f'    url "{pathlib.Path(archive).as_uri()}"', text)
+text = re.sub(r'  url ".*"', f'  url "{pathlib.Path(archive).as_uri()}"', text)
 checksum = hashlib.sha256(pathlib.Path(archive).read_bytes()).hexdigest()
-text = text.replace('@ARM_SHA256@', checksum).replace('@INTEL_SHA256@', checksum)
+text = text.replace('@ARM_SHA256@', checksum)
 pathlib.Path(output).write_text(text)
 PY
 trap 'brew uninstall --force alondra/release-test/alondra >/dev/null 2>&1 || true; brew untap alondra/release-test >/dev/null 2>&1 || true' EXIT

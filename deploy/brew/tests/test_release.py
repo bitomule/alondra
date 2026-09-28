@@ -111,7 +111,7 @@ class PublicationTests(unittest.TestCase):
         if '/contents/' in endpoint:
             if payload:
                 self.assertFalse(self.remote['draft'])
-                self.assertEqual(len(self.assets), 2)
+                self.assertEqual(len(self.assets), len(r.TARGETS))
                 if self.formula:
                     self.assertEqual(payload.get('sha'), self.formula['sha'], 'formula updates must use original blob CAS')
                 if self.fail_formula_once:
@@ -130,7 +130,7 @@ class PublicationTests(unittest.TestCase):
         if endpoint == f'repos/{r.REPO}/releases/42':
             if method == 'PATCH':
                 self.assertEqual(payload, {'draft': False, 'make_latest': 'false'})
-                self.assertEqual(len(self.assets), 2)
+                self.assertEqual(len(self.assets), len(r.TARGETS))
                 self.remote['draft'] = False
             return dict(self.remote, id=42, tag_name='alondra-v0.1.0')
         self.fail(f'Unexpected REST call: {endpoint} {method}')
@@ -193,22 +193,22 @@ class PublicationTests(unittest.TestCase):
         self.fail_formula_once = True
         with self.assertRaises(RuntimeError):
             r.publish(self.ver, self.path)
-        self.assertEqual(self.uploads, 2)
+        self.assertEqual(self.uploads, len(r.TARGETS))
         self.assertIsNone(self.formula)
         r.publish(self.ver, self.path)
         r.publish(self.ver, self.path)
-        self.assertEqual(self.uploads, 2)
+        self.assertEqual(self.uploads, len(r.TARGETS))
         formula = base64.b64decode(self.formula['content']).decode()
         self.assertNotIn('@VERSION@', formula)
         for target in r.TARGETS:
             self.assertIn(r.sha(self.path / f'alondra-{self.ver}-{target}.tar.gz'), formula)
 
-    def test_retry_after_partial_upload_completes_without_replacing(self):
+    def test_retry_after_uploaded_asset_completes_without_reuploading(self):
         self.remote = {'draft': True}
         first = self.path / f'alondra-{self.ver}-{r.TARGETS[0]}.tar.gz'
         self.assets[first.name] = first.read_bytes()
         r.publish(self.ver, self.path)
-        self.assertEqual(self.uploads, 1)
+        self.assertEqual(self.uploads, 0)
         self.assertFalse(self.remote['draft'])
 
     def test_different_existing_asset_fails_before_formula_or_replacement(self):
@@ -258,7 +258,7 @@ class PublicationTests(unittest.TestCase):
         self.assertIsNone(self.formula)
 
     def test_bad_payload_rejected_before_any_public_mutation(self):
-        archive(self.path / f'alondra-{self.ver}-{r.TARGETS[1]}.tar.gz', tarfile.TarInfo('Cargo.toml'))
+        archive(self.path / f'alondra-{self.ver}-{r.TARGETS[0]}.tar.gz', tarfile.TarInfo('Cargo.toml'))
         with self.assertRaises(ValueError):
             r.publish(self.ver, self.path)
         self.assertIsNone(self.remote)
