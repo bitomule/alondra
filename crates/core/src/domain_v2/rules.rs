@@ -1643,7 +1643,8 @@ impl DomainState {
             }
             Command::ArchiveTask { task_id, archived } => {
                 user(actor)?;
-                if *archived && !self.task(task_id)?.state.terminal() {
+                let task = self.task(task_id)?;
+                if *archived && !task.state.terminal() {
                     return fail("task_not_active", "Only terminal Tasks can be archived");
                 };
                 self.tasks.get_mut(task_id).unwrap().archived = *archived;

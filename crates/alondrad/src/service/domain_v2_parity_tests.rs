@@ -347,6 +347,31 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     assert_eq!(blocked["status"], 409);
     assert_eq!(blocked["body"]["code"], "incompatible_protocol");
     assert_eq!(domain.state().unwrap(), before_schedule);
+    // A legacy daemon must never write its v2 sidecar: a non-empty store blocks
+    // both cutover and legacy startup. Reads stay open, writes are typed rejections.
+    let legacy_command = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: before_schedule.data_epoch.clone(),
+        command_id: "legacy-read-once".into(),
+        expected_revision: before_schedule.revision,
+        command: Command::MarkRead {
+            interaction_id: "info-parity".into(),
+        },
+    };
+    let blocked_command = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
+        "legacy-command-blocked", json!({"method":"POST","path":"/v2/domain/commands",
+            "body":legacy_command})).await;
+    assert_eq!(blocked_command["status"], 409);
+    assert_eq!(blocked_command["body"]["code"], "incompatible_protocol");
+    let blocked_resolve = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
+        "legacy-resolve-blocked", json!({"method":"POST",
+            "path":"/v2/domain/delivery-attempts/1/resolve",
+            "body":{"protocol_version":2,"data_epoch":before_schedule.data_epoch,
+                "expected_version":1,"decision":"retry"}})).await;
+    assert_eq!(blocked_resolve["status"], 409);
+    assert_eq!(blocked_resolve["body"]["code"], "incompatible_protocol");
+    assert_eq!(domain.state().unwrap(), before_schedule);
+    assert_eq!(local_get(&client, &base, &phone_key, device_id, "/v2/domain").await["status"], 200);
 
     let state = domain.state().unwrap();
     let command = CommandEnvelope {

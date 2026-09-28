@@ -1,0 +1,21 @@
+load("@crates//:defs.bzl", "all_crate_deps")
+load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
+
+rust_binary(
+    name = "alondra-relay",
+    srcs = glob(["src/**/*.rs"]),
+    compile_data = glob(["migrations/*.sql"]),
+    crate_name = "alondra_relay",
+    edition = "2024",
+    version = "0.1.0",
+    visibility = ["//visibility:public"],
+    deps = all_crate_deps(normal = True) + ["//crates/e2e:alondra_e2e"],
+)
+
+rust_test(
+    name = "alondra_relay_test",
+    compile_data = glob(["tests/fixtures/**"]),
+    crate = ":alondra-relay",
+    edition = "2024",
+    deps = all_crate_deps(normal_dev = True),
+)

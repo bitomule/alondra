@@ -38,6 +38,7 @@ crate.from_cargo(
         "//crates/alondrad:Cargo.toml",
         "//crates/e2e:Cargo.toml",
         "//crates/alondra:Cargo.toml",
+        "//crates/relay:Cargo.toml",
     ],
 )
 use_repo(crate, "crates")

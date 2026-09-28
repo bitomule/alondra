@@ -334,13 +334,9 @@ impl Service {
             return Ok(bytes);
         }
         let hub = self.hub.as_ref().context("atomic local executor unavailable")?;
-        let result = if request.path == "/v2/domain/commands" {
-            crate::domain_api::encrypted_command(hub, &envelope.sender, request.body.as_ref(),
-                (&envelope.sender, &envelope.request_id, digest), || self.require_device_approval(&envelope.sender, device))?
-        } else if let Some(attempt_id) = crate::domain_api::resolve_delivery_attempt_id(&request.path) {
-            crate::domain_api::encrypted_resolve_delivery(hub, &envelope.sender, attempt_id,
-                request.body.as_ref(), (&envelope.sender, &envelope.request_id, digest),
-                || self.require_device_approval(&envelope.sender, device))?
+        let result = if request.path == "/v2/domain/commands"
+            || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some() {
+            json!({"status":409,"body":crate::domain_api::legacy_write_blocked()})
         } else if crate::schedules::atomic_local_path(&request.method, &request.path) {
             crate::schedules::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
                 &request.method, &request.path, request.body.as_ref())?
@@ -1072,8 +1068,10 @@ impl Service {
             bail!("device push binding changed while preparing delivery");
         }
         let response = self.signed(Method::POST, "/v1/mac/push", body, &current_epoch).await?;
-        if response.status() != reqwest::StatusCode::ACCEPTED {
-            bail!("relay did not accept encrypted push (HTTP {})", response.status());
+        let status = response.status();
+        if status != reqwest::StatusCode::ACCEPTED {
+            let code = relay_error_code(&response.bytes().await.unwrap_or_default());
+            bail!("relay did not accept encrypted push (HTTP {status}, error {code})");
         }
         Ok(())
     }
@@ -1136,6 +1134,12 @@ fn response_size_detail(request: &LocalRequest) -> &'static str {
     } else {
         "Mac response exceeded the encrypted relay limit; an action may already have completed"
     }
+}
+
+fn relay_error_code(body: &[u8]) -> String {
+    serde_json::from_slice::<Value>(body).ok()
+        .and_then(|value| value["error"].as_str().filter(|code| code.len() <= 64 && id(code)).map(str::to_owned))
+        .unwrap_or_else(|| "unknown".into())
 }
 
 fn id(s: &str) -> bool {
@@ -1598,6 +1602,14 @@ mod tests {
         Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize, Ordering},
     };
+    #[test]
+    fn relay_error_code_is_read_from_the_relay_error_body() {
+        assert_eq!(relay_error_code(br#"{"error":"push_registration_gone"}"#), "push_registration_gone");
+        assert_eq!(relay_error_code(br#"{"error":"apns_delivery_failed"}"#), "apns_delivery_failed");
+        assert_eq!(relay_error_code(b"<html>bad gateway</html>"), "unknown");
+        assert_eq!(relay_error_code(br#"{"error":"forged\nline"}"#), "unknown");
+        assert_eq!(relay_error_code(b""), "unknown");
+    }
     #[tokio::test]
     async fn revocation_waits_until_approved_response_ack_finishes() {
         use std::sync::mpsc;
