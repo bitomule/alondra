@@ -228,6 +228,15 @@ where
     deliver().await
 }
 
+/// For a local durable write, hold the same approval lease from the final
+/// check through the SQLite commit. Revocation takes this lease exclusively.
+fn approval_bound_commit<T>(home: &Path, check: impl FnOnce() -> Result<()>,
+    commit: impl FnOnce() -> Result<T>) -> Result<T> {
+    let _lease = crate::approval_lease::ApprovalLease::shared(home)?;
+    check()?;
+    commit()
+}
+
 fn decoded(s: &str) -> Result<Vec<u8>> {
     Ok(URL_SAFE_NO_PAD.decode(s.trim())?)
 }
@@ -281,8 +290,10 @@ impl Service {
                     return Ok(bytes);
                 }
             };
-            return self.journal.complete_push_preferences(&envelope.sender, &envelope.request_id, digest,
-                &binding, quiet, revision, |result| self.encode_response(envelope, device, &result, request));
+            return approval_bound_commit(&self.home,
+                || self.require_device_approval(&envelope.sender, device),
+                || self.journal.complete_push_preferences(&envelope.sender, &envelope.request_id, digest,
+                    &binding, quiet, revision, |result| self.encode_response(envelope, device, &result, request)));
         }
         approved_method(request)?;
         let hub = self.hub.as_ref().context("atomic local executor unavailable")?;
@@ -1523,6 +1534,62 @@ mod tests {
                 Ok(())
             }).await.is_err());
         assert!(!started.load(Ordering::SeqCst), "revoked response was uploaded");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn push_binding_commit_cannot_follow_completed_revocation() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let home = std::env::temp_dir().join(format!("alondra-push-lease-{}", crate::auth::random_hex(16)));
+        std::fs::create_dir_all(&home).unwrap();
+        let phone = SigningKey::from_slice(&[35u8; 32]).unwrap();
+        std::fs::write(home.join("devices.json"), serde_json::to_vec(&json!([{
+            "id":"phone-push","name":"Phone",
+            "public_key":STANDARD.encode(phone.verifying_key().to_sec1_bytes()),
+            "created_at":0,"last_seen":null
+        }])).unwrap()).unwrap();
+        let path = home.join("service-receipts.sqlite");
+        let journal = Journal::open(path.clone()).unwrap();
+        journal.reserve_enrollment("phone-push", &[1u8; 33]).unwrap();
+        journal.activate_enrollment("phone-push").unwrap();
+        let digest = [1u8; 32];
+        assert!(matches!(journal.accept("phone-push", "binding-work", &digest).unwrap(), Disposition::Accepted));
+        journal.executing_local("phone-push", "binding-work", &digest).unwrap();
+        let binding = URL_SAFE_NO_PAD.encode([8u8; 32]);
+        let (checked_tx, checked_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let writer_home = home.clone();
+        let writer = std::thread::spawn(move || approval_bound_commit(&writer_home,
+            || {
+                anyhow::ensure!(Auth::open(&writer_home)?.list().iter().any(|device| device.id == "phone-push"));
+                checked_tx.send(()).unwrap();
+                resume_rx.recv().unwrap();
+                Ok(())
+            },
+            || Journal::open(path)?.complete_push_preferences("phone-push", "binding-work", &digest,
+                &binding, None, None, |result| Ok(serde_json::to_vec(&result)?))));
+        checked_rx.recv().unwrap();
+        let (revoked_tx, revoked_rx) = mpsc::channel();
+        let revoker_home = home.clone();
+        let revoker = std::thread::spawn(move || {
+            revoked_tx.send(Auth::open(&revoker_home).unwrap().revoke("phone-push").unwrap()).unwrap();
+        });
+        assert!(revoked_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "revocation returned before push-binding commit");
+        resume_tx.send(()).unwrap();
+        let receipt = writer.join().unwrap().unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&receipt).unwrap()["status"], 204);
+        assert!(revoked_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        revoker.join().unwrap();
+        let attempted = AtomicBool::new(false);
+        assert!(approval_bound_commit(&home,
+            || {
+                anyhow::ensure!(Auth::open(&home)?.list().iter().any(|device| device.id == "phone-push"));
+                Ok(())
+            },
+            || { attempted.store(true, Ordering::SeqCst); Ok(()) }).is_err());
+        assert!(!attempted.load(Ordering::SeqCst));
         std::fs::remove_dir_all(home).unwrap();
     }
     #[test]
