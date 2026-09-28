@@ -40,8 +40,8 @@ def preflight(ver, retry_source=None):
     data = tomllib.loads((ROOT / 'Cargo.toml').read_text())
     if data['workspace']['package']['version'] != ver:
         raise RuntimeError('Bump Cargo version in a reviewed PR first')
-    if retry_source is None and run('git', 'branch', '--show-current', capture=True).strip() != 'main':
-        raise RuntimeError('Release from main only')
+    if retry_source is None and not run('git', 'branch', '--show-current', capture=True).strip():
+        raise RuntimeError('Release from a named branch at origin/main')
     if run('git', 'status', '--porcelain', capture=True).strip():
         raise RuntimeError('Working tree must be clean')
     run('git', 'fetch', 'origin', 'main')
@@ -51,7 +51,7 @@ def preflight(ver, retry_source=None):
             raise RuntimeError('Retry from a clean checkout of the original manifest source commit')
         run('git', 'merge-base', '--is-ancestor', 'HEAD', 'origin/main')
     elif source != run('git', 'rev-parse', 'origin/main', capture=True).strip():
-        raise RuntimeError('main must equal origin/main')
+        raise RuntimeError('Release HEAD must equal origin/main')
     workflow_guard()
     return source
 

@@ -42,8 +42,17 @@ class LocalReleaseTests(unittest.TestCase):
                   ('git', 'rev-parse', 'origin/main'): 'source'}
         return values.get(args, '')
 
-    def test_preflight_rejects_dirty_branch_diverged_and_wrong_version_before_mutations(self):
-        for failing, answer in [(('git', 'branch', '--show-current'), 'feature/change'),
+    def test_preflight_accepts_clean_worktree_at_origin_main(self):
+        def feature_branch(*args, **kwargs):
+            if args == ('git', 'branch', '--show-current'):
+                return 'feature/release-worktree'
+            return self.git(*args, **kwargs)
+        with patch.object(l, 'run', side_effect=feature_branch) as runner:
+            self.assertEqual(l.preflight('0.1.2'), 'source')
+            runner.assert_any_call('git', 'branch', '--show-current', capture=True)
+
+    def test_preflight_rejects_detached_dirty_diverged_and_wrong_version_before_mutations(self):
+        for failing, answer in [(('git', 'branch', '--show-current'), ''),
                                 (('git', 'status', '--porcelain'), ' M file'),
                                 (('git', 'rev-parse', 'origin/main'), 'other')]:
             with self.subTest(failing=failing), patch.object(l, 'run', side_effect=lambda *a, **k: answer if a == failing else self.git(*a, **k)) as runner:
