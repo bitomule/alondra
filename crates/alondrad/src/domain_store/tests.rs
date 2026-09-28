@@ -518,7 +518,7 @@ fn v2_migration_preserves_existing_outbox_and_user_notifications_claim_normally(
 }
 
 #[test]
-fn documents_questions_pr_reviews_and_authorizations_roundtrip_relations() {
+fn v2_migration_preserves_decisions_documents_and_relations() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
@@ -638,9 +638,29 @@ fn documents_questions_pr_reviews_and_authorizations_roundtrip_relations() {
             .len(),
         1
     );
+    let audits = count(&store, "command_audit");
+    let receipts = count(&store, "semantic_receipts");
+    let mut pending = store.pending_messages().unwrap();
+    for message in &mut pending {
+        if message.recipient_kind == "user" {
+            message.recipient_kind = "orchestrator".into();
+        }
+    }
+    // These decisions and cross-entity references were already valid in v2.
+    // Its user notifications used the underlying orchestrator recipient; only
+    // v3 introduced the user-target relation that changes their projection.
+    store
+        .conn
+        .execute_batch("DROP TABLE domain_message_user_targets; PRAGMA user_version=2;")
+        .unwrap();
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(store.load().unwrap(), before);
+    assert_eq!(store.pending_messages().unwrap(), pending);
+    assert_eq!(count(&store, "command_audit"), audits);
+    assert_eq!(count(&store, "semantic_receipts"), receipts);
+    assert_eq!(count(&store, "domain_message_user_targets"), 0);
+    assert!(fixture.0.join("domain.sqlite.migration-backups").is_dir());
     store.integrity_check().unwrap();
     assert!(
         store
