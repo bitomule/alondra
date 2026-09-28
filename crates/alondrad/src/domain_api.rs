@@ -47,6 +47,10 @@ impl DomainHost for Hub {
     }
 }
 
+/// A local command carries what the producer or the terminal sends, not what
+/// fits one relay response; the relay path keeps its own budget.
+const LOCAL_COMMAND_BYTES: usize = 8 * 1024 * 1024;
+
 pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
     let router = Router::new()
         .route("/v2/domain", get(projection::<H>))
@@ -65,7 +69,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         )
         .route(
             "/v2/domain/commands",
-            post(command::<H>).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
+            post(command::<H>).layer(axum::extract::DefaultBodyLimit::max(LOCAL_COMMAND_BYTES)),
         );
     let sectioned = [
         "/v2/domain/summary",

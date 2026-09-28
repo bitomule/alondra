@@ -474,7 +474,7 @@ fn status_text(d: &alondra_core::domain_v2::DomainProjection) -> String {
 
 fn pair(url: &str) -> Result<()> {
     let client = Client::new(Duration::from_secs(10));
-    let r = client.post("/v1/pairing", &json!({}))?;
+    let r = client.post("/v2/pairing", &json!({}))?;
     let code = r.get("code").and_then(|c| c.as_str()).unwrap_or_default();
     let payload = json!({"url": url.trim_end_matches('/'), "code": code}).to_string();
     let qr = qrcode::QrCode::new(payload.as_bytes())?;
@@ -488,12 +488,12 @@ fn pair(url: &str) -> Result<()> {
 fn devices(revoke: Option<String>) -> Result<()> {
     let client = Client::new(Duration::from_secs(10));
     if let Some(id) = revoke {
-        let path = format!("/v1/devices/{}", mcp::urlencode(&id));
+        let path = format!("/v2/devices/{}", mcp::urlencode(&id));
         client.delete(&path)?;
         println!("{}", trf!("Device {id} unpaired.", "Dispositivo {id} desvinculado."));
         return Ok(());
     }
-    let v: serde_json::Value = client.get("/v1/devices")?;
+    let v: serde_json::Value = client.get("/v2/devices")?;
     let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
     if list.is_empty() {
         println!("{}", tr!("No paired devices. Use: alondra pair --url <public URL>", "No hay dispositivos vinculados. Usa: alondra pair --url <URL pública>"));

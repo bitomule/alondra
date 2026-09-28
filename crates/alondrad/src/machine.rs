@@ -10,6 +10,19 @@ use crate::hub::Hub;
 const UNRELIABLE_LOAD: f64 = 50.0;
 
 pub async fn run(hub: Arc<Hub>) {
+    sample_loop(|machine, usage| hub.set_machine(machine, usage)).await
+}
+
+/// The latest gauges of a v2-only daemon, read by `/v2/daemon` for the TUI header.
+pub(crate) type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>)>>>;
+
+pub(crate) async fn run_v2(gauges: Gauges) {
+    sample_loop(|machine, usage| {
+        *gauges.lock().expect("machine gauges poisoned") = Some((machine, usage.cloned()));
+    }).await
+}
+
+async fn sample_loop(mut publish: impl FnMut(Machine, Option<&alondra_core::usage::Usage>)) {
     let mut sys = System::new();
     let mut disks = Disks::new_with_refreshed_list();
     let mut pressure: Option<u32> = None;
@@ -40,7 +53,7 @@ pub async fn run(hub: Arc<Hub>) {
             unreliable: load.one > UNRELIABLE_LOAD,
         };
         let usage = crate::usage::current(&crate::watcher::claude_home());
-        hub.set_machine(machine, usage.as_ref());
+        publish(machine, usage.as_ref());
         round += 1;
         tokio::time::sleep(Duration::from_secs(10)).await;
     }
