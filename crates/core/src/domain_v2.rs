@@ -2,6 +2,7 @@
 mod command;
 mod model;
 mod projection;
+pub mod reads;
 mod rules;
 mod schedule;
 #[cfg(test)]

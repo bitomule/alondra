@@ -21,7 +21,7 @@ pub(super) const DOCUMENTS: u64 = 24;
 pub(super) const MESSAGES: u64 = 805;
 
 /// Writes `alondra.db` under `source` and returns the View it holds.
-pub(super) fn write_live_shaped_home(source: &Path) -> View {
+pub(crate) fn write_live_shaped_home(source: &Path) -> View {
     let mut view = View::default();
     view.seq = 1;
     view.board.recorded_since = Some(1);

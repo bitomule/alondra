@@ -13,6 +13,7 @@ pub struct DomainRuntime {
     approval_home: PathBuf,
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
+    pub(crate) reads: crate::domain_reads::Cache,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -37,6 +38,7 @@ impl DomainRuntime {
             approval_home: home.to_path_buf(),
             authority: Mutex::new(authority),
             changed,
+            reads: Default::default(),
         })
     }
     pub fn projection(&self) -> Result<DomainProjection> {

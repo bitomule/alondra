@@ -40,7 +40,7 @@ mod import;
 pub(crate) mod rehearsal;
 mod schedules;
 #[cfg(test)]
-mod synthetic;
+pub(crate) mod synthetic;
 pub(crate) use import::{ImportLink, ImportReport, materialize_legacy};
 pub(crate) use schedules::{LegacyScheduleInventory, LegacyScheduleReceiptRow, read_legacy_schedules_readonly};
 

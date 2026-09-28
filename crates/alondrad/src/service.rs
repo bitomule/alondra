@@ -1202,7 +1202,8 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                     .is_some_and(v2_read_id)
                 || request.path.strip_prefix("/v2/domain/document-revisions/")
                     .and_then(|suffix| suffix.split_once("/content?"))
-                    .is_some_and(|(id, query)| v2_read_id(id) && crate::domain_api::document_content_query(query).is_some()),
+                    .is_some_and(|(id, query)| v2_read_id(id) && crate::domain_api::document_content_query(query).is_some())
+                || crate::domain_reads::approved_read_path(&request.path),
             "POST" if request.body.is_some() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, true)
                 || request.path == "/v2/domain/commands"
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some(),
@@ -2898,6 +2899,14 @@ agreement_key = "{}"
         assert!(accepts("POST", "/v2/domain/delivery-attempts/1/resolve", Some(json!({}))));
         assert!(!accepts("GET", "/v2/domain/delivery-attempts?after=0&all=1", None));
         assert!(!accepts("POST", "/v2/domain/delivery-attempts/../resolve", Some(json!({}))));
+        for path in ["/v2/domain/summary?include=inbox,tasks", "/v2/domain/inbox?cursor=eyJvIjoxLCJpIjoieCJ9&limit=50",
+            "/v2/domain/tasks/t-1", "/v2/domain/tasks/t-1/interactions", "/v2/domain/interactions/i-1/body?offset=0"] {
+            assert!(accepts("GET", path, None), "{path}");
+            assert!(!accepts("GET", path, Some(json!({}))), "{path}");
+            assert!(!accepts("POST", path, None), "{path}");
+        }
+        assert!(!accepts("GET", "/v2/domain/inbox?filter=all", None));
+        assert!(!accepts("GET", "/v2/domain/interactions", None));
         for path in [
             "/v1/questions/123/answer", "/v1/questions/123/more-context",
             "/v1/prs/7/merge", "/v1/prs/7/changes", "/v1/prs/7/ask",
