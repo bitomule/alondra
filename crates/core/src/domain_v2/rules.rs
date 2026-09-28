@@ -638,6 +638,15 @@ impl DomainState {
                     },
                 )?;
                 created.push(interaction_id.0.clone());
+                if matches!(recipient, Recipient::User) {
+                    effects.push(DomainEffect::NotifyUser {
+                        task_id: match scope {
+                            Scope::Task { task_id } => Some(task_id.clone()),
+                            Scope::Orchestrator { .. } => None,
+                        },
+                        interaction_id: interaction_id.clone(),
+                    });
+                }
             }
             Command::AskQuestion {
                 attachments,
@@ -680,6 +689,15 @@ impl DomainState {
                     payload,
                 )?;
                 created.push(interaction_id.0.clone());
+                if matches!(recipient, Recipient::User) {
+                    effects.push(DomainEffect::NotifyUser {
+                        task_id: match scope {
+                            Scope::Task { task_id } => Some(task_id.clone()),
+                            Scope::Orchestrator { .. } => None,
+                        },
+                        interaction_id: interaction_id.clone(),
+                    });
+                }
                 if matches!(recipient, Recipient::Orchestrator) {
                     effects.push(DomainEffect::NotifyOrchestrator {
                         interaction_id: interaction_id.clone(),
@@ -1060,6 +1078,10 @@ impl DomainState {
                         Some(interaction_id.clone());
                 }
                 created.push(interaction_id.0.clone());
+                effects.push(DomainEffect::NotifyUser {
+                    task_id: Some(task_id.clone()),
+                    interaction_id: interaction_id.clone(),
+                });
             }
             Command::SubmitFeedback {
                 attachments,

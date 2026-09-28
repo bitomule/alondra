@@ -4,6 +4,7 @@ mod auth;
 mod approval_lease;
 mod domain_authority;
 mod domain_content;
+mod domain_delivery;
 mod domain_runtime;
 mod domain_store;
 mod domain_api;
@@ -118,6 +119,7 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
         tokio::spawn(async move { service.run().await });
     }
     let push = Arc::new(push::Push::open(&config.home)?);
+    tokio::spawn(domain_delivery::run(hub.clone(), push.clone(), service.clone()));
     tokio::spawn(push::run(hub.clone(), push.clone(), service));
     log!("listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",
         config.home.display(),

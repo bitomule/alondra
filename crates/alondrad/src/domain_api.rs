@@ -8,6 +8,7 @@ use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
+use serde::Deserialize;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::process::Stdio;
@@ -427,6 +428,8 @@ pub(crate) async fn encrypted_read(
         projection_inner(hub)
     } else if path == "/v2/domain/capabilities" {
         capabilities_inner(hub)
+    } else if let Some(query) = path.strip_prefix("/v2/domain/delivery-attempts?") {
+        delivery_evidence_inner(hub, query)
     } else if let Some(query) = path.strip_prefix("/v2/domain/changes?") {
         changes_inner(hub, Some(query.to_owned())).await
     } else if let Some(id) = path
@@ -449,6 +452,86 @@ pub(crate) async fn encrypted_read(
     };
     approved.recheck()?;
     Ok(response)
+}
+
+pub(crate) fn delivery_evidence_query(query: &str) -> Option<i64> {
+    let value = query.strip_prefix("after=")?;
+    if value.is_empty() || value.len() > 19 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<i64>().ok()
+}
+
+pub(crate) fn resolve_delivery_attempt_id(path: &str) -> Option<i64> {
+    let value = path.strip_prefix("/v2/domain/delivery-attempts/")?
+        .strip_suffix("/resolve")?;
+    if value.is_empty() || value.len() > 19 || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    value.parse::<i64>().ok().filter(|id| *id > 0)
+}
+
+fn delivery_evidence_inner(hub: Arc<Hub>, query: &str) -> Response {
+    let Some(after) = delivery_evidence_query(query) else {
+        return domain_error(DomainError::new("invalid_input", "after cursor is invalid"));
+    };
+    let mut store = hub.domain.store.lock().expect("domain store poisoned");
+    let state = match store.load() {
+        Ok(state) => state,
+        Err(_) => return storage_error(),
+    };
+    let mut items = match store.delivery_evidence_page(after) {
+        Ok(items) => items,
+        Err(_) => return storage_error(),
+    };
+    let has_more = items.len() > 100;
+    items.truncate(100);
+    let next_after = items.last().map_or(after, |item| item.attempt_id);
+    Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,
+        "revision":state.revision,"attempts":items,"next_after":next_after,"has_more":has_more})).into_response()
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "snake_case", deny_unknown_fields)]
+enum DeliveryDecision { Retry, Discard }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResolveDelivery {
+    protocol_version: u32,
+    data_epoch: DataEpoch,
+    expected_version: u64,
+    decision: DeliveryDecision,
+}
+
+pub(crate) fn encrypted_resolve_delivery(
+    hub: &Hub, sender: &str, attempt_id: i64, body: Option<&Value>,
+    identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<Value> {
+    if sender != identity.0 || attempt_id < 1 {
+        return Ok(json!({"status":422,"body":DomainError::new("invalid_input", "invalid delivery identity")}));
+    }
+    let Some(body) = body.cloned().and_then(|value| serde_json::from_value::<ResolveDelivery>(value).ok()) else {
+        return Ok(json!({"status":422,"body":DomainError::new("invalid_input", "invalid delivery resolution")}));
+    };
+    if body.protocol_version != PROTOCOL_VERSION {
+        return Ok(json!({"status":409,"body":DomainError::new("incompatible_protocol", "domain protocol 2 is required")}));
+    }
+    let mut store = hub.domain.store.lock().expect("domain store poisoned");
+    // Match DomainRuntime's lock order: domain store → approval lease. A
+    // revocation cannot complete after this check but before the resolution
+    // and its transport receipt commit.
+    let _approval = crate::approval_lease::ApprovalLease::shared(&hub.home)?;
+    if authorize().is_err() {
+        return Ok(json!({"status":403,"body":DomainError::new("forbidden", "device approval was revoked")}));
+    }
+    let result = store.resolve_uncertain_authenticated(attempt_id, body.expected_version,
+        &body.data_epoch.0, matches!(body.decision, DeliveryDecision::Retry), identity);
+    Ok(match result {
+        Ok(value) => json!({"status":200,"body":value}),
+        Err(StoreError::Domain(error)) => json!({"status":status_for(&error).as_u16(),"body":error}),
+        Err(StoreError::Storage(error)) => return Err(error),
+    })
 }
 async fn command(
     State(hub): State<Arc<Hub>>,
@@ -599,6 +682,107 @@ mod tests {
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use sha2::{Digest as _, Sha256};
     use std::collections::BTreeSet;
+    #[test]
+    fn delivery_recovery_routes_accept_only_bounded_exact_ids_and_cursors() {
+        assert_eq!(delivery_evidence_query("after=0"), Some(0));
+        assert_eq!(delivery_evidence_query("after=42"), Some(42));
+        assert_eq!(resolve_delivery_attempt_id("/v2/domain/delivery-attempts/42/resolve"), Some(42));
+        for query in ["", "after=-1", "after=1&other=2", "after=999999999999999999999"] {
+            assert_eq!(delivery_evidence_query(query), None);
+        }
+        for path in ["/v2/domain/delivery-attempts/0/resolve",
+            "/v2/domain/delivery-attempts/1/resolve?retry=1",
+            "/v2/domain/delivery-attempts/../resolve"] {
+            assert_eq!(resolve_delivery_attempt_id(path), None);
+        }
+    }
+    #[test]
+    fn encrypted_delivery_resolution_requires_authorized_exact_decision_and_replays() {
+        let (home, hub) = fixture();
+        let mut store = hub.domain.store.lock().unwrap();
+        let message = store.pending_messages().unwrap().into_iter()
+            .find(|item| item.recipient_kind == "user").unwrap();
+        let claim = store.claim_message(message.id).unwrap().unwrap();
+        store.finish_message(claim.attempt_id, claim.version,
+            alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
+        drop(store);
+        let epoch = hub.domain.state().unwrap().data_epoch;
+        let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
+            "decision":"retry"});
+        let digest = [31u8; 32];
+        let denied = encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+            Some(&body), ("phone-a", "work-a", &digest), || anyhow::bail!("revoked")).unwrap();
+        assert_eq!(denied["status"], 403);
+        let first = encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+            Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap();
+        assert_eq!(first["status"], 200);
+        assert_eq!(first["body"]["state"], "retryable");
+        assert_eq!(first, encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+            Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap());
+        let changed = encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+            Some(&json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
+                "decision":"discard"})), ("phone-a", "work-a", &[32u8; 32]), || Ok(())).unwrap();
+        assert_eq!(changed["body"]["code"], "idempotency_conflict");
+        let response = delivery_evidence_inner(hub.clone(), "after=0");
+        assert_eq!(response.status(), StatusCode::OK);
+        drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn revocation_waits_for_delivery_resolution_receipt_commit() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (home, hub) = fixture();
+        let auth = crate::auth::Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[77u8; 32]).unwrap();
+        let code = auth.new_pairing_code();
+        let device = auth.pair(&code, "Recovery phone",
+            &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let mut store = hub.domain.store.lock().unwrap();
+        let message = store.pending_messages().unwrap().into_iter()
+            .find(|item| item.recipient_kind == "user").unwrap();
+        let claim = store.claim_message(message.id).unwrap().unwrap();
+        store.finish_message(claim.attempt_id, claim.version,
+            alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
+        drop(store);
+        let epoch = hub.domain.state().unwrap().data_epoch;
+        let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
+            "decision":"retry"});
+        let (checked_tx, checked_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let writer_home = home.clone();
+        let writer_hub = hub.clone();
+        let writer_id = device.id.clone();
+        let writer = std::thread::spawn(move || {
+            encrypted_resolve_delivery(&writer_hub, &writer_id, claim.attempt_id,
+                Some(&body), (&writer_id, "recovery-work", &[31u8; 32]), || {
+                    anyhow::ensure!(crate::auth::Auth::open(&writer_home)?.list().iter()
+                        .any(|entry| entry.id == writer_id));
+                    checked_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    Ok(())
+                }).unwrap()
+        });
+        checked_rx.recv().unwrap();
+        let (revoked_tx, revoked_rx) = mpsc::channel();
+        let revoker_home = home.clone();
+        let revoke_id = device.id.clone();
+        let revoker = std::thread::spawn(move || {
+            revoked_tx.send(crate::auth::Auth::open(&revoker_home).unwrap()
+                .revoke(&revoke_id).unwrap()).unwrap();
+        });
+        assert!(revoked_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "revocation returned before the recovery commit");
+        resume_tx.send(()).unwrap();
+        assert_eq!(writer.join().unwrap()["status"], 200);
+        assert!(revoked_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        revoker.join().unwrap();
+        assert!(!crate::auth::Auth::open(&home).unwrap().list().iter()
+            .any(|entry| entry.id == device.id));
+        drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
     #[test]
     fn serialized_diff_fits_encrypted_relay_budget_and_reports_truncation() {
         let mut body = json!({"pr_id":"pr-a","host":"github.com","repository":"owner/repo",
@@ -848,6 +1032,7 @@ mod tests {
             )
             .unwrap()
         );
+        let pending_before_mismatch = hub.domain.store.lock().unwrap().pending_messages().unwrap();
         let mismatch = encrypted_command(
             &hub,
             "phone-a",
@@ -857,14 +1042,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(mismatch["body"]["code"], "idempotency_conflict");
-        assert!(
-            hub.domain
-                .store
-                .lock()
-                .unwrap()
-                .pending_messages()
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            hub.domain.store.lock().unwrap().pending_messages().unwrap(),
+            pending_before_mismatch,
         );
         assert!(
             hub.domain

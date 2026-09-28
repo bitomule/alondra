@@ -274,7 +274,8 @@ impl Service {
     }
 
     fn atomic_local(&self, request: &LocalRequest) -> bool {
-        request.method == "POST" && (request.path == "/v1/service/push-binding" || self.hub.is_some() && request.path == "/v2/domain/commands")
+        request.method == "POST" && (request.path == "/v1/service/push-binding" || self.hub.is_some() &&
+            (request.path == "/v2/domain/commands" || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some()))
             || self.hub.is_some() && (crate::http::atomic_local_path(&request.method, &request.path)
                 || crate::schedules::atomic_local_path(&request.method, &request.path))
     }
@@ -300,6 +301,10 @@ impl Service {
         let result = if request.path == "/v2/domain/commands" {
             crate::domain_api::encrypted_command(hub, &envelope.sender, request.body.as_ref(),
                 (&envelope.sender, &envelope.request_id, digest), || self.require_device_approval(&envelope.sender, device))?
+        } else if let Some(attempt_id) = crate::domain_api::resolve_delivery_attempt_id(&request.path) {
+            crate::domain_api::encrypted_resolve_delivery(hub, &envelope.sender, attempt_id,
+                request.body.as_ref(), (&envelope.sender, &envelope.request_id, digest),
+                || self.require_device_approval(&envelope.sender, device))?
         } else if crate::schedules::atomic_local_path(&request.method, &request.path) {
             crate::schedules::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
                 &request.method, &request.path, request.body.as_ref())?
@@ -901,18 +906,29 @@ impl Service {
     /// Send one opaque notification per enrolled phone. The relay can see only
     /// routing metadata, a random binding, and the generic APNs alert.
     pub async fn broadcast_push(&self, payload: &Value, with_sound: bool) -> Result<()> {
+        let _ = self.broadcast_push_report(payload, with_sound).await?;
+        Ok(())
+    }
+
+    /// Count relay acknowledgements for durable domain outbox handoff.
+    pub async fn broadcast_push_report(&self, payload: &Value, with_sound: bool) -> Result<(usize, usize)> {
         let mut epoch = None;
+        let mut attempted = 0;
+        let mut accepted = 0;
         for (id, device) in &self.devices {
             if !self.auth.approved_key_matches(id, &device.signing)
                 || !self.journal.enrollment_active(id)? {
                 continue;
             }
             let Some(binding) = self.journal.push_binding(id)? else { continue };
+            attempted += 1;
             if let Err(error) = self.send_device_push(id, device, &binding, payload, with_sound, &mut epoch).await {
                 log!("service push for {id} failed: {error:#}");
+            } else {
+                accepted += 1;
             }
         }
-        Ok(())
+        Ok((attempted, accepted))
     }
 
     /// An explicit local diagnostic: no Hub, task, report or legacy APNs sender.
@@ -1068,6 +1084,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     if request.path.starts_with("/v2/") {
         let allowed = match request.method.as_str() {
             "GET" if request.body.is_none() => matches!(request.path.as_str(), "/v2/domain" | "/v2/domain/capabilities")
+                || request.path.strip_prefix("/v2/domain/delivery-attempts?").is_some_and(|query| crate::domain_api::delivery_evidence_query(query).is_some())
                 || request.path.strip_prefix("/v2/domain/changes?").is_some_and(|query| crate::domain_api::changes_query(query).is_some())
                 || request.path.strip_prefix("/v2/domain/pull-requests/")
                     .and_then(|suffix| suffix.strip_suffix("/diff"))
@@ -1078,7 +1095,8 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || request.path.strip_prefix("/v2/domain/document-revisions/")
                     .and_then(|suffix| suffix.split_once("/content?"))
                     .is_some_and(|(id, query)| v2_read_id(id) && crate::domain_api::document_content_query(query).is_some()),
-            "POST" if request.body.is_some() => request.path == "/v2/domain/commands",
+            "POST" if request.body.is_some() => request.path == "/v2/domain/commands"
+                || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some(),
             _ => false,
         };
         if !allowed { bail!("local operation is not approved for service access"); }
@@ -2437,6 +2455,22 @@ agreement_key = "{}"
         }
     }
 
+    #[tokio::test]
+    async fn domain_push_report_counts_relay_rejections() {
+        let (mut service, _) = push_fixture();
+        activate_push(&service);
+        let router = Router::new()
+            .route("/v1/bootstrap", get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([1u8;16])})) }))
+            .route("/v1/mac/push", post(|| async { StatusCode::INTERNAL_SERVER_ERROR }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let report = service.broadcast_push_report(&json!({"aps":{"alert":"hint"},"alondra":{}}), true).await.unwrap();
+        assert_eq!(report, (1, 0));
+        server.abort();
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
     fn changes_work(service: &Service, request_id: &str, request: Value) -> Work {
         let envelope = EnvelopeV1::seal_random(
             EnvelopeContext { route: "mac-1", sender: "phone-1", recipient: "mac-1",
@@ -2737,6 +2771,10 @@ agreement_key = "{}"
         ] {
             assert!(accepts("GET", path, None), "{path}");
         }
+        assert!(accepts("GET", "/v2/domain/delivery-attempts?after=0", None));
+        assert!(accepts("POST", "/v2/domain/delivery-attempts/1/resolve", Some(json!({}))));
+        assert!(!accepts("GET", "/v2/domain/delivery-attempts?after=0&all=1", None));
+        assert!(!accepts("POST", "/v2/domain/delivery-attempts/../resolve", Some(json!({}))));
         for path in [
             "/v1/questions/123/answer", "/v1/questions/123/more-context",
             "/v1/prs/7/merge", "/v1/prs/7/changes", "/v1/prs/7/ask",
