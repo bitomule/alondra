@@ -278,6 +278,17 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
             documents: BTreeMap::new(),
             archived: false,
         },
+        launch: ScheduleLaunchIntent {
+            name: "scheduled/run-1".into(),
+            cwd: "/synthetic/Projects/Alondra".into(),
+            prompt: "Review project".into(),
+            options_json: serde_json::to_string(
+                &alondra_core::options::OptionsFile::default()
+                    .resolve(Some("Alondra"), &BTreeMap::new())
+                    .unwrap(),
+            )
+            .unwrap(),
+        },
         finished_at: 1_500,
     };
     assert!(execute(&mut store, "sent-run", sent.clone()).is_err());

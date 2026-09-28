@@ -8,6 +8,7 @@ mod domain_content;
 mod domain_delivery;
 mod domain_migration;
 mod domain_runtime;
+mod domain_schedule_runner;
 mod domain_store;
 mod domain_api;
 mod domain_schedule_api;

@@ -4,6 +4,7 @@ use super::{DomainError, MAX_REVISION, RequestId, ScheduleId, ScheduleRunId, Tas
 use crate::options::Choice;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::Path;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -43,6 +44,35 @@ pub struct ScheduleDefinitionSnapshot {
     pub project: Option<String>,
     pub options: BTreeMap<String, Choice>,
     pub disallowed_tools: Vec<String>,
+}
+
+/// Technical new-node launch recorded with the Run, Request, and Task before
+/// any external process is invoked. `options_json` is the resolved launch
+/// configuration captured at that moment, not a future options.toml lookup.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScheduleLaunchIntent {
+    pub name: String,
+    pub cwd: String,
+    pub prompt: String,
+    pub options_json: String,
+}
+
+impl ScheduleLaunchIntent {
+    pub fn validate(&self, definition: &ScheduleDefinitionSnapshot) -> Result<(), DomainError> {
+        if !self.name.starts_with("scheduled/")
+            || self.name.len() > 128
+            || !Path::new(&self.cwd).is_absolute()
+            || self.prompt != definition.text
+        {
+            return Err(invalid("invalid scheduled launch intent"));
+        }
+        let options: crate::options::Resolved = serde_json::from_str(&self.options_json)
+            .map_err(|_| invalid("invalid resolved launch options"))?;
+        if options.project != definition.project {
+            return Err(invalid("launch project differs from claimed Schedule"));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]

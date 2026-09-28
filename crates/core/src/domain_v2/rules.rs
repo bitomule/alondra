@@ -567,6 +567,7 @@ impl DomainState {
                 run_id,
                 request,
                 task,
+                launch,
                 finished_at,
             } => {
                 system(actor)?;
@@ -583,6 +584,7 @@ impl DomainState {
                     .definition_snapshot
                     .as_ref()
                     .ok_or_else(|| DomainError::new("invalid_input", "Run has no claimed definition"))?;
+                launch.validate(definition)?;
                 if request.body != definition.text
                     || task.title != definition.title
                     || task.request_id != request.id

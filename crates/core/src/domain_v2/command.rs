@@ -37,6 +37,7 @@ pub enum Command {
         run_id: ScheduleRunId,
         request: Request,
         task: Task,
+        launch: ScheduleLaunchIntent,
         finished_at: i64,
     },
     RecordScheduleRunFailed {
