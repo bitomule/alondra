@@ -12,3 +12,9 @@ signing/signing.bzl
 __pycache__/
 
 signing/*.provisionprofile
+
+# musts: per-machine state; MUSTS.yml and .musts/ledger.lock.yaml stay tracked
+.musts/state.sqlite
+.musts/state.sqlite-*
+.musts/.lock
+.musts/evidence/

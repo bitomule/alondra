@@ -1,0 +1,4 @@
+version: 1
+satisfied:
+- {check: "root/bazel-build", scope_hash: "b9419cc913807c69cd57664cd8ffecbf03c8a85a8160851ae6c7237a8ddebc72"}
+- {check: "root/bazel-test", scope_hash: "4c78d0babbf27b8dccba85d5ddb9c9270f56fce4f791a0958915245ffcff47b8"}

@@ -15,4 +15,5 @@ rust_test(
     name = "alondra_e2e_test",
     crate = ":alondra_e2e",
     edition = "2024",
+    deps = all_crate_deps(normal_dev = True),
 )
