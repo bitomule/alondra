@@ -202,11 +202,11 @@ class LocalReleaseTests(unittest.TestCase):
             name, selected = l.rust_toolchain()
         self.assertEqual(selected, tools)
         self.assertEqual(name, 'stable-aarch64-apple-darwin')
-        (self.root / 'pinned/lib/rustlib/x86_64-apple-darwin/lib/libcore-fixture.rlib').unlink()
-        with patch.object(l, 'run', side_effect=resolve), self.assertRaisesRegex(RuntimeError, 'Missing target libraries for x86_64'):
+        (self.root / 'pinned/lib/rustlib/aarch64-apple-darwin/lib/libcore-fixture.rlib').unlink()
+        with patch.object(l, 'run', side_effect=resolve), self.assertRaisesRegex(RuntimeError, 'Missing target libraries for aarch64'):
             l.rust_toolchain()
 
-    def test_both_arch_build_and_isolated_home_tests_use_same_pinned_tools(self):
+    def test_build_and_isolated_home_tests_use_same_pinned_tools(self):
         tools, _ = self.toolchain_fixture()
         output, target_dir = self.root / 'artifacts', self.root / 'target'
         rust_calls = []
@@ -227,7 +227,7 @@ class LocalReleaseTests(unittest.TestCase):
              patch.object(l, 'rust_toolchain', return_value=('pinned', tools)), patch.object(l, 'disk_guard'), \
              patch.object(l, 'sign'), patch.object(l, 'smoke'), patch.object(l, 'run', side_effect=fake):
             l.prepare('0.1.2', 'source', output, target_dir)
-        self.assertEqual(len(rust_calls), 4)
+        self.assertEqual(len(rust_calls), 2 * len(l.release.TARGETS))
         self.assertEqual({args[args.index('--target') + 1] for args, _ in rust_calls}, set(l.release.TARGETS))
         for args, environment in rust_calls:
             self.assertEqual(args[0], tools['cargo'])
@@ -321,13 +321,13 @@ class LocalReleaseTests(unittest.TestCase):
     def test_ephemeral_caches_are_freed_per_stage_and_exact_signed_archives_survive(self):
         output, target, sentinel, caches, stages, originals, guards = self.ephemeral_fixture()
         l.prepare('0.1.2', 'source', output, target, ephemeral_build_cache=True)
-        self.assertEqual(stages, ['test', 'build', 'test', 'build'])
-        self.assertEqual(len(set(caches)), 4)
+        self.assertEqual(stages, ['test', 'build'] * len(l.release.TARGETS))
+        self.assertEqual(len(set(caches)), 2 * len(l.release.TARGETS))
         self.assertTrue(all(not cache.exists() for cache in caches))
         self.assertEqual(sentinel.read_bytes(), b'preserve user cache')
         self.assertEqual(list(target.iterdir()), [sentinel])
-        self.assertEqual(len(guards), 6, 'initial target/output plus every heavy stage')
-        self.assertEqual(len(originals), 2)
+        self.assertEqual(len(guards), 2 + 2 * len(l.release.TARGETS), 'initial target/output plus every heavy stage')
+        self.assertEqual(len(originals), len(l.release.TARGETS))
         for name, original in originals.items():
             self.assertEqual((output / name).read_bytes(), original)
         l.verify_prepared('0.1.2', 'source', output)
