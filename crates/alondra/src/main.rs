@@ -443,29 +443,33 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
 }
 
 fn status() -> Result<()> {
-    let o = Client::new(Duration::from_secs(10)).overview()?;
-    let m = &o.machine;
-    let mb = m.memory_available / 1_048_576;
-    let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{mb} MB available", "{mb} MB disponibles"));
-    let (l1, l5, l15) = (m.load[0], m.load[1], m.load[2]);
-    let shaky = if m.unreliable { tr!(" (unreliable readings)", " (medidas poco fiables)") } else { "" };
-    println!("{}", trf!("Machine: memory {mem} · load {l1:.1} {l5:.1} {l15:.1}{shaky}", "Máquina: memoria {mem} · carga {l1:.1} {l5:.1} {l15:.1}{shaky}"));
-    let waiting = o.open_questions.len();
-    println!("\n{}", trf!("Waiting for you ({waiting}):", "Te esperan ({waiting}):"));
-    for q in &o.open_questions {
-        println!("  #{:<4} {}  · {}", q.id, q.title, q.node_name.clone().unwrap_or_default());
-    }
-    let fleet = o.nodes.len();
-    println!("\n{}", trf!("Fleet ({fleet}):", "Flota ({fleet}):"));
-    for n in &o.nodes {
-        let mins = (now_millis() - n.state_since) / 60_000;
-        println!("  {:<24} {:<34} {:>5}m", n.status_label(), n.display_name(), mins);
-        if let Some(runtime) = &n.orchestrator_runtime {
-            if let Some(error) = &runtime.last_error { println!("    {error}"); }
-            if let Some(run) = &runtime.active_run_id { println!("    execution: {run} · queue: {}", runtime.queue_depth); }
-        }
-    }
+    print!("{}", status_text(&Client::for_user(Duration::from_secs(10)).domain()?));
     Ok(())
+}
+
+/// The inbox roots still pending, the open tasks and the agents, as the daemon projects them.
+fn status_text(d: &alondra_core::domain_v2::DomainProjection) -> String {
+    let agent = |id: Option<&alondra_core::domain_v2::AgentId>| id.map_or_else(|| tr!("orchestrator", "orquestador").to_string(), |id| d.agents.iter().find(|a| &a.id == id).map_or_else(|| id.0.clone(), |a| a.name.clone()));
+    let pending: Vec<_> = d.inbox.iter().filter(|i| i.pending).collect();
+    let n = pending.len();
+    let mut out = trf!("Waiting for you ({n}):\n", "Te esperan ({n}):\n");
+    for i in pending {
+        let text = i.body.as_deref().filter(|b| !b.trim().is_empty()).unwrap_or(&i.title).lines().next().unwrap_or_default().to_string();
+        out.push_str(&format!("  {:<16} {text}  · {}\n", i.kind, agent(i.agent_id.as_ref())));
+    }
+    let open: Vec<_> = d.tasks.iter().filter(|t| !t.state.terminal() && !t.archived).collect();
+    let n = open.len();
+    out.push_str(&trf!("\nOpen tasks ({n}):\n", "\nTareas abiertas ({n}):\n"));
+    for t in open {
+        out.push_str(&format!("  {:<20} {}  · {}\n", tui::state_label(t.state), t.title, agent(t.agent_id.as_ref())));
+    }
+    let n = d.agents.len();
+    out.push_str(&trf!("\nAgents ({n}):\n", "\nAgentes ({n}):\n"));
+    for a in &d.agents {
+        let state = if a.connected { tr!("connected", "conectado") } else { tr!("not connected", "no conectado") };
+        out.push_str(&format!("  {:<14} {}\n", state, a.name));
+    }
+    out
 }
 
 fn pair(url: &str) -> Result<()> {
@@ -561,6 +565,31 @@ mod destination_tests {
         assert!(Cli::try_parse_from(["alondra", "--mac", "mac-a", "--remote"]).is_err());
         let connect = Cli::try_parse_from(["alondra", "connect", "mac-a"]).unwrap();
         assert!(connect.mac.is_none() && !connect.remote);
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+    use alondra_core::domain_v2::*;
+
+    #[test]
+    fn status_lists_what_waits_the_open_tasks_and_the_agents_from_the_projection() {
+        i18n::set_for_this_thread(i18n::Lang::En);
+        let mut s = DomainState::new("e");
+        let mut run = |actor: Actor, command: Command| {
+            let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c{}", s.revision).into(), expected_revision: s.revision, command };
+            s.execute(&actor, &envelope).unwrap();
+        };
+        let user = || Actor::User { user_id: "u".into() };
+        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into() });
+        run(Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Instance A".into() });
+        run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("a".into()), review_prs: false, dependencies: Default::default(), stack: None });
+        run(Actor::Agent { agent_id: "a".into() }, Command::PublishInformation { attachments: vec![], interaction_id: "i".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Halfway there".into() });
+        let text = status_text(&s.projection());
+        assert!(text.contains("Waiting for you (1):") && text.contains("information") && text.contains("Halfway there  · Instance A"), "{text}");
+        assert!(text.contains("Open tasks (1):") && text.contains("not started") && text.contains("Build  · Instance A"), "{text}");
+        assert!(text.contains("Agents (1):") && text.contains("not connected  Instance A"), "{text}");
     }
 }
 

@@ -14,7 +14,7 @@ rust_binary(
 rust_test(
     name = "alondra_test",
     crate = ":alondra",
-    data = ["//fixtures/markdown"],
+    data = ["//fixtures/markdown", "//fixtures/domain-v2:text-completion.commands.json"],
     edition = "2024",
 )
 

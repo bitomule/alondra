@@ -17,7 +17,6 @@ pub enum Kind {
     Quote,
     Row { header: bool, aligns: Vec<Alignment> },
     Rule,
-    Label,
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -52,17 +51,6 @@ impl Block {
         Block { kind, depth, lines }
     }
 
-    fn plain_text(kind: Kind, text: &str) -> Self {
-        Block { kind, depth: 0, lines: vec![vec![Run { text: text.to_string(), fmt: Fmt::default() }]] }
-    }
-
-    pub fn label(text: &str) -> Self {
-        Block::plain_text(Kind::Label, text)
-    }
-
-    pub fn para(text: &str) -> Self {
-        Block::plain_text(Kind::Para, text)
-    }
 
     pub fn plain(&self) -> String {
         let (sep, lines): (&str, Vec<String>) = match self.kind {
@@ -78,7 +66,7 @@ impl Block {
     }
 
     pub fn commentable(&self) -> bool {
-        !matches!(self.kind, Kind::Rule | Kind::Label)
+        !matches!(self.kind, Kind::Rule)
     }
 }
 
@@ -654,12 +642,6 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
             out
         }
         Kind::Rule => vec![Line::styled("─".repeat(width), Style::new().fg(DIM))],
-        Kind::Label => {
-            let text = b.plain();
-            let head = format!("── {} ", truncate(&text, width.saturating_sub(4)));
-            let fill = width.saturating_sub(str_width(&head));
-            vec![Line::styled(format!("{head}{}", "─".repeat(fill)), Style::new().fg(Color::Cyan))]
-        }
     }
 }
 
