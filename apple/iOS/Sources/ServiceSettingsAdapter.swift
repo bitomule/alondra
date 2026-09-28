@@ -39,6 +39,7 @@ extension ServiceNotificationRuntime {
         client.selectMac = { id in
             try await owner.selectMac(choice: id, expectedSession: services)
         }
+        client.problem = { services.connectionProblem(for: $0) }
         return client
     }
 }

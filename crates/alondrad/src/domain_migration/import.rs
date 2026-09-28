@@ -21,6 +21,11 @@ pub(crate) struct ImportReport {
     pub reference_only_prs: Vec<u64>,
     pub questions: usize,
     pub open_questions_requiring_reconciliation: usize,
+    pub open_questions_reopened: usize,
+    pub final_presentations: usize,
+    /// Open PRs whose base is another open PR's head, as (upper, lower) legacy ids.
+    /// Stacks are reported, not converted: D02 requires explicit readiness.
+    pub stacked_prs: Vec<(u64, u64)>,
     pub reports: usize,
     pub messages: usize,
     pub documents: usize,
@@ -83,6 +88,9 @@ pub(crate) fn materialize_legacy(
         reference_only_prs: vec![],
         questions: 0,
         open_questions_requiring_reconciliation: 0,
+        open_questions_reopened: 0,
+        final_presentations: 0,
+        stacked_prs: vec![],
         reports: 0,
         messages: 0,
         documents: 0,
@@ -127,7 +135,9 @@ pub(crate) fn materialize_legacy(
         if node.is_orchestrator || Some(session.as_str()) == orchestrator_session {
             continue;
         }
-        let agent_id = d::AgentId(format!("legacy-session-{session}"));
+        // R01: the Agent is the Claude session, so a live session keeps acting on
+        // its imported Tasks under the same identity.
+        let agent_id = d::AgentId(session.clone());
         state.agents.insert(
             agent_id.clone(),
             d::Agent {
@@ -171,7 +181,7 @@ pub(crate) fn materialize_legacy(
         let agent_id = task
             .assignee
             .as_ref()
-            .map(|a| d::AgentId(format!("legacy-session-{}", a.session_id)));
+            .map(|a| d::AgentId(a.session_id.clone()));
         if let Some(agent_id) = &agent_id {
             state
                 .agents
@@ -219,9 +229,7 @@ pub(crate) fn materialize_legacy(
             .push(link(task, "task", &task.id, "entity", "task", &task.id)?);
         report.tasks += 1;
     }
-    // Preserve the Claude conversation identifiers as import provenance. The
-    // imported Agent rows use a prefixed ID, so a later protocol adapter can
-    // look up the original session without replaying legacy commands.
+    // Preserve the Claude conversation identifiers as import provenance.
     let sessions: BTreeSet<_> = view
         .board
         .tasks
@@ -238,7 +246,7 @@ pub(crate) fn materialize_legacy(
         .collect();
     for session in sessions {
         report.links.push(link(&session, "session", session, "agent_conversation",
-            "agent", format!("legacy-session-{session}"))?);
+            "agent", session)?);
     }
     if let Some(session) = view.orchestrator.as_ref().and_then(|runtime| runtime.session_id.as_deref()) {
         report.links.push(link(&session, "session", session, "orchestrator_conversation",
@@ -371,6 +379,17 @@ pub(crate) fn materialize_legacy(
             format!("legacy-pr-{}", pr.id),
         )?);
         report.formal_prs += 1;
+    }
+    for pr in view.prs.values() {
+        let Some(below) = view.stack_below(pr) else { continue };
+        let formal = |id: u64| state.pull_requests.contains_key(&d::PrId(format!("legacy-pr-{id}")));
+        if !formal(pr.id) {
+            continue;
+        }
+        report.stacked_prs.push((pr.id, below.id));
+        if formal(below.id) {
+            report.links.push(link(pr, "pr", pr.id, "stacked_on", "pr", format!("legacy-pr-{}", below.id))?);
+        }
     }
     // Legacy metadata is retained on an Information card even when a PR was
     // imported formally. Old approvals are deliberately not transferred.
@@ -528,29 +547,57 @@ pub(crate) fn materialize_legacy(
             body.push_str("\nLegacy answer (including selected option and provenance): ");
             body.push_str(&serde_json::to_string(answer)?);
         }
-        if q.status == old::QuestionStatus::Open {
-            body.push_str("\nRequires reconciliation: the former Agent session cannot receive a v2 answer to this historical question.");
-            report.open_questions_requiring_reconciliation += 1;
-        }
-        // Legacy Agent sessions are disconnected at cutover. A System-authored
-        // v2 Question would accept an answer but have nobody to receive it.
-        // Preserve the exact old question/answer as a visible historical record.
-        let payload = d::InteractionPayload::Information {
-            read_by: if q.status == old::QuestionStatus::Open {
-                BTreeSet::new()
-            } else {
-                BTreeSet::from(["legacy-import".into()])
-            },
+        let author_session = d::AgentId(q.session_id.clone());
+        let live = q.status == old::QuestionStatus::Open
+            && matches!(scope, d::Scope::Task { .. })
+            && view.nodes.get(&q.session_id).is_some_and(|node| node.alive)
+            && state.agents.contains_key(&author_session);
+        // A question whose session is still alive stays answerable: the answer
+        // reaches the Task's current Agent. Any other open question has nobody
+        // to receive a v2 answer and is preserved as a historical record.
+        let (author, blocking, payload) = if live {
+            report.open_questions_reopened += 1;
+            let options = q
+                .options
+                .iter()
+                .enumerate()
+                .map(|(index, option)| d::QuestionOption {
+                    id: format!("legacy-option-{}", index + 1),
+                    label: nonempty(&option.label, "Option"),
+                    inputs: vec![],
+                })
+                .collect();
+            (
+                d::Author::Agent { agent_id: author_session },
+                q.blocking,
+                d::InteractionPayload::Question { options, answer: None },
+            )
+        } else {
+            if q.status == old::QuestionStatus::Open {
+                body.push_str("\nRequires reconciliation: the former Agent session cannot receive a v2 answer to this historical question.");
+                report.open_questions_requiring_reconciliation += 1;
+            }
+            (
+                d::Author::System,
+                false,
+                d::InteractionPayload::Information {
+                    read_by: if q.status == old::QuestionStatus::Open {
+                        BTreeSet::new()
+                    } else {
+                        BTreeSet::from(["legacy-import".into()])
+                    },
+                },
+            )
         };
         ordered.push((
             q.asked_at,
             d::Interaction {
                 id: d::InteractionId(format!("legacy-question-{}", q.id)),
                 scope,
-                author: d::Author::System,
+                author,
                 recipient,
                 body,
-                blocking: false,
+                blocking,
                 subject: None,
                 payload,
                 attachments,
@@ -615,6 +662,19 @@ pub(crate) fn materialize_legacy(
                 "document_revision",
                 format!("legacy-document-revision-{}", r.id),
             )?);
+            if let d::Scope::Task { task_id } = &scope {
+                state
+                    .tasks
+                    .get_mut(task_id)
+                    .context("document Task missing")?
+                    .documents
+                    .insert(document_id.clone(), "document".into());
+                state.document_reviews.push(d::DocumentReview {
+                    task_id: task_id.clone(),
+                    document_id: document_id.clone(),
+                    decisions: vec![],
+                });
+            }
             report.documents += 1;
             Some(document_id)
         } else {
@@ -686,6 +746,81 @@ pub(crate) fn materialize_legacy(
         )?);
         report.messages += 1;
     }
+    // Work in flight keeps its review context: an open lifetime PR and/or the
+    // legacy final report become the Task's current final presentation, so the
+    // user can decide on it and the live Agent can complete the Task in v2.
+    let active: Vec<_> = state
+        .tasks
+        .values()
+        .filter(|task| !task.state.terminal())
+        .map(|task| task.id.clone())
+        .collect();
+    for task_id in active {
+        let mut targets = vec![];
+        let mut at = 0;
+        let task = &state.tasks[&task_id];
+        if let Some(pr) = task.pr_id.as_ref().map(|id| &state.pull_requests[id]) {
+            if pr.state == d::PrState::Open {
+                targets.push(d::DeliveryTarget::PullRequest {
+                    pr_id: pr.id.clone(),
+                    head: pr.head.clone(),
+                });
+            }
+        }
+        let final_report = view
+            .board
+            .tasks
+            .get(&task_id.0)
+            .and_then(|task| task.final_report)
+            .and_then(|id| view.reports.get(&id))
+            .filter(|r| r.task.as_deref() == Some(task_id.0.as_str()));
+        if let Some(r) = final_report {
+            at = r.created_at;
+            let document_id = d::DocumentId(format!("legacy-document-{}", r.id));
+            if r.kind == old::ReportKind::Document && task.documents.contains_key(&document_id) {
+                targets.push(d::DeliveryTarget::DocumentRevision {
+                    document_id,
+                    revision_id: d::DocumentRevisionId(format!("legacy-document-revision-{}", r.id)),
+                });
+            } else {
+                targets.push(d::DeliveryTarget::Text {
+                    text: nonempty(r.body.as_deref().unwrap_or_default(), &nonempty(&r.title, "Legacy final report")),
+                });
+            }
+        }
+        if targets.is_empty() {
+            continue;
+        }
+        let interaction_id = format!("legacy-final-{}", task_id.0);
+        ordered.push((
+            at,
+            d::Interaction {
+                id: d::InteractionId(interaction_id.clone()),
+                scope: d::Scope::Task { task_id: task_id.clone() },
+                author: match &task.agent_id {
+                    Some(agent_id) => d::Author::Agent { agent_id: agent_id.clone() },
+                    None => d::Author::System,
+                },
+                recipient: d::Recipient::User,
+                body: format!("[Legacy final presentation for Task {}] {}", task_id.0, task.title),
+                blocking: false,
+                subject: None,
+                payload: d::InteractionPayload::Delivery {
+                    targets,
+                    is_final: true,
+                    acceptance: None,
+                    feedback: vec![],
+                },
+                attachments: vec![],
+                revision: state.revision,
+                order: 0,
+            },
+        ));
+        state.tasks.get_mut(&task_id).unwrap().final_presentation =
+            Some(d::InteractionId(interaction_id.clone()));
+        report.links.push(link(&task_id.0, "task", &task_id.0, "final_presentation", "interaction", &interaction_id)?);
+        report.final_presentations += 1;
+    }
     ordered.sort_by(|a, b| (a.0, &a.1.id).cmp(&(b.0, &b.1.id)));
     for (index, (_, mut interaction)) in ordered.into_iter().enumerate() {
         interaction.order = index as u64 + 1;
@@ -694,6 +829,7 @@ pub(crate) fn materialize_legacy(
             .insert(interaction.id.clone(), interaction);
     }
     state.revision = state.revision.max(state.interactions.len() as u64);
+    state.derive_states();
     state.validate().map_err(anyhow::Error::new)?;
     ensure!(
         report.questions == view.questions.len()

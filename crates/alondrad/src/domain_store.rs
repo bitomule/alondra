@@ -184,6 +184,38 @@ impl DomainStore {
         tx.commit()?;
         Ok(())
     }
+    pub(crate) fn legacy_schedule_inventory(
+        &mut self,
+    ) -> Result<crate::domain_migration::LegacyScheduleInventory> {
+        let tx = self.conn.transaction()?;
+        check_schema(&tx)?;
+        let state = repository::load(&tx)?.schedule;
+        let mut request_tools = std::collections::BTreeMap::new();
+        for row in tx.prepare("SELECT request_id,patterns FROM schedule_request_tools ORDER BY request_id")?
+            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        {
+            let (request_id, patterns) = row?;
+            request_tools.insert(RequestId(request_id), serde_json::from_str(&patterns)?);
+        }
+        let mut legacy_schedule_receipts = Vec::new();
+        for row in tx.prepare("SELECT sender,request_id,digest,result FROM legacy_schedule_receipts ORDER BY sender,request_id")?
+            .query_map([], |r| Ok(crate::domain_migration::LegacyScheduleReceiptRow {
+                sender: r.get(0)?, request_id: r.get(1)?, digest: r.get(2)?, result: r.get(3)?,
+            }))?
+        {
+            legacy_schedule_receipts.push(row?);
+        }
+        let mut failed_launches = std::collections::BTreeSet::new();
+        for row in tx.prepare("SELECT request_id FROM schedule_failed_launches ORDER BY request_id")?
+            .query_map([], |r| r.get::<_, String>(0))?
+        {
+            failed_launches.insert(RequestId(row?));
+        }
+        tx.commit()?;
+        Ok(crate::domain_migration::LegacyScheduleInventory {
+            state, request_tools, legacy_schedule_receipts, failed_launches,
+        })
+    }
     pub(crate) fn project(&mut self) -> Result<DomainProjection> {
         Ok(self.load()?.projection())
     }
@@ -218,6 +250,25 @@ impl DomainStore {
         actor: &Actor,
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
+    ) -> std::result::Result<Commit, StoreError> {
+        self.execute_envelope(actor, envelope, transport, false)
+    }
+    /// Producers have no protocol read for the cursor: an expected_revision of
+    /// zero is filled with the current revision under the writer lock, while
+    /// the semantic receipt still keys on the bytes the producer sent.
+    pub(crate) fn execute_filling_revision(
+        &mut self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+    ) -> std::result::Result<Commit, StoreError> {
+        self.execute_envelope(actor, envelope, None, true)
+    }
+    fn execute_envelope(
+        &mut self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        transport: Option<TransportIdentity<'_>>,
+        fill_revision: bool,
     ) -> std::result::Result<Commit, StoreError> {
         let actor_key = String::from_utf8(canonical::bytes(&match actor {
             Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}),
@@ -290,6 +341,16 @@ impl DomainStore {
                 replayed: true,
             });
         }
+        let filled;
+        let envelope = if fill_revision && envelope.expected_revision == 0 {
+            filled = CommandEnvelope {
+                expected_revision: state.revision,
+                ..envelope.clone()
+            };
+            &filled
+        } else {
+            envelope
+        };
         let mut next = state.clone();
         let outcome = next.execute(actor, envelope)?;
         if outcome.changed {

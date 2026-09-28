@@ -256,6 +256,43 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
 }
 
 #[test]
+fn producer_zero_revision_is_filled_and_replays_by_the_bytes_it_sent() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    let mut e = envelope(
+        &mut store,
+        "producer-info",
+        Command::PublishInformation {
+            attachments: vec![],
+            interaction_id: "info-1".into(),
+            scope: Scope::Task { task_id: "task-1".into() },
+            recipient: Recipient::User,
+            body: "Progress".into(),
+        },
+    );
+    e.expected_revision = 0;
+    let revision = store.load().unwrap().revision;
+    let first = store.execute_filling_revision(&agent(), &e).unwrap();
+    assert!(!first.replayed && first.outcome.changed);
+    assert_eq!(first.outcome.revision, revision + 1);
+    let replay = store.execute_filling_revision(&agent(), &e).unwrap();
+    assert!(replay.replayed);
+    assert_eq!(replay.outcome, first.outcome);
+    assert_eq!(store.load().unwrap().revision, revision + 1);
+    let mut user_zero = envelope(
+        &mut store,
+        "user-zero",
+        Command::CreateRequest { request_id: "request-2".into(), body: "More".into() },
+    );
+    user_zero.expected_revision = 0;
+    assert!(matches!(
+        store.execute_authenticated(&user(), &user_zero, None),
+        Err(StoreError::Domain(error)) if error.code == "stale_revision"
+    ), "only producers get a server-filled revision");
+}
+
+#[test]
 fn two_connections_compete_by_revision_and_domain_rejection_writes_nothing() {
     let fixture = Fixture::new();
     let mut first = DomainStore::open(&fixture.path()).unwrap();

@@ -47,6 +47,7 @@ swift_library(
     srcs = glob(["macOS/Sources/**/*.swift"]),
     module_name = "AlondraMac",
     deps = [
+        "//apple/Features/Connection:AlondraConnectionFeature",
         ":AlondraShared",
         "//apple/Features/Fleet:AlondraFleetFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",
@@ -80,6 +81,7 @@ swift_test(
         exclude = ["macOS/Sources/AlondraMacApp.swift"],
     ),
     deps = [
+        "//apple/Features/Connection:AlondraConnectionFeature",
         ":AlondraShared",
         "//apple/Features/Fleet:AlondraFleetFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",
@@ -144,6 +146,8 @@ swift_library(
     srcs = glob(["iOS/Sources/**/*.swift"]),
     module_name = "AlondraiOS",
     deps = [
+        "//apple/Features/Connection:AlondraConnectionFeature",
+        "//apple/Data/Sync:AlondraSync",
         ":AlondraShared",
         "//apple/Features/Fleet:AlondraFleetFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",
@@ -167,7 +171,6 @@ swift_library(
         "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/Data/PushBinding:AlondraPushBinding",
-        "//apple/Data/Sync:AlondraSync",
         "//apple/NotificationPayload:AlondraNotificationPayload",
         "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -219,6 +222,7 @@ swift_library(
     srcs = glob(["iOS/Sources/**/*.swift"], exclude = ["iOS/Sources/AlondraApp.swift"]) + ["VisualHarness/Main.swift", "VisualHarness/VisualFixture.swift"],
     copts = ["-swift-version", "6", "-strict-concurrency=complete"],
     deps = [
+        "//apple/Features/Connection:AlondraConnectionFeature",
         ":AlondraShared",
         "//apple/Features/Fleet:AlondraFleetFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",
@@ -267,6 +271,7 @@ swift_library(
     srcs = glob(["macOS/Sources/**/*.swift"], exclude = ["macOS/Sources/AlondraMacApp.swift"]) + ["VisualHarness/Main.swift", "VisualHarness/VisualFixture.swift"],
     copts = ["-swift-version", "6", "-strict-concurrency=complete"],
     deps = [
+        "//apple/Features/Connection:AlondraConnectionFeature",
         ":AlondraShared",
         "//apple/Features/Fleet:AlondraFleetFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",

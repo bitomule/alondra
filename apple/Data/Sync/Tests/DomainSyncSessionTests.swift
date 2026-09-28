@@ -151,7 +151,7 @@ final class DomainSyncSessionTests: XCTestCase {
 
     func testIncompatibleChangeResponseClearsProjection() async throws {
         let transport = ControlledDomainTransport()
-        let session = DomainSyncSession(transport: transport, identity: identity("one"), retryDelay: .seconds(60))
+        let session = DomainSyncSession(transport: transport, identity: identity("one"), backoff: ConnectionBackoff(initial: .seconds(60)))
         var updates = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
         try await transport.respondProjection(0, epoch: "epoch", revision: 4)
@@ -167,7 +167,7 @@ final class DomainSyncSessionTests: XCTestCase {
 
     func testRefetchCannotPublishLowerRevisionWithinSameEpoch() async throws {
         let transport = ControlledDomainTransport()
-        let session = DomainSyncSession(transport: transport, identity: identity("one"), retryDelay: .seconds(60))
+        let session = DomainSyncSession(transport: transport, identity: identity("one"), backoff: ConnectionBackoff(initial: .seconds(60)))
         var updates = await session.subscribe().makeAsyncIterator()
         await transport.waitForRequests(1)
         try await transport.respondProjection(0, epoch: "epoch", revision: 8)

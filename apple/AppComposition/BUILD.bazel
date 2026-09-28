@@ -8,6 +8,7 @@ swift_library(
     deps = [
         "//apple/Data/Workspace:AlondraWorkspace",
         "//apple/Data/LoopbackSession:AlondraLoopbackSession",
+        "//apple/Data/Sync:AlondraSync",
         "//apple/Data/Attachments:AlondraAttachmentsData",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple/Domain:AlondraDomain",

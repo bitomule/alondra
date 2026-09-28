@@ -1,3 +1,4 @@
+import AlondraConnectionFeature
 import AlondraWorkspaceFeature
 import AlondraShared
 import AlondraTasksFeature
@@ -91,8 +92,8 @@ struct ServiceTasksView: View {
             Text("Tasks")
                 .font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink)
-            if case .offline(let reason) = store.connection {
-                Label(reason, systemImage: "wifi.slash")
+            if let problem = store.connection.problem {
+                Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(Palette.rose)
                     .lineLimit(1)

@@ -209,17 +209,7 @@ private struct MacServiceHome: View {
     let presentation: StoreOf<MacPresentationFeature>
     var body: some View {
         if !store.triage.triage.hasSnapshot {
-            if store.triage.triage.connection == .online {
-                ProgressView()
-            } else {
-                ContentUnavailableView {
-                    Label("No connection to alondrad", systemImage: "bolt.horizontal.circle")
-                } description: {
-                    Text("Retrying every few seconds.")
-                } actions: {
-                    ProgressView().controlSize(.small)
-                }
-            }
+            ProgressView("Connecting to the fleet…")
         } else if store.triage.triage.queue.isEmpty {
             ContentUnavailableView {
                 Label("All caught up", systemImage: "checkmark.circle")

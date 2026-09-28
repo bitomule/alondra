@@ -6,6 +6,8 @@ import AlondraFleetFeature
 import AlondraNewWorkFeature
 import AlondraAppComposition
 import AlondraCloudPairingFeature
+import AlondraConnectionFeature
+import AlondraSync
 import AlondraPullRequestsFeature
 import AlondraQuestionsFeature
 import AlondraTasksFeature
@@ -17,7 +19,6 @@ import SwiftUI
 struct MacServiceRoot: View {
     let owner: MacWorkspaceOwner
     @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
-    @State private var restoring = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
     @State private var connectingRemote = false
     private var account: CloudPairingOwner { owner.account }
     var body: some View {
@@ -43,7 +44,7 @@ struct MacServiceRoot: View {
                             .id(ObjectIdentifier(services))
                     }
                 } restoring: {
-                    MacRestoringWorkspace(store: restoring, pairing: account.store)
+                    RestoreConnectionView(store: account.store, networkChanges: { NetworkReachability.shared.changes() })
                 } onboarding: {
                     if connectingRemote || account.store.phase != .signedOut {
                         MacServicePairingScreen(store: account.store)
@@ -58,16 +59,6 @@ struct MacServiceRoot: View {
             }
         }
         }.task { await owner.run() }
-    }
-}
-
-struct MacRestoringWorkspace: View {
-    let store: StoreOf<ServiceRootFeature>
-    let pairing: StoreOf<CloudPairingFeature>
-    var body: some View {
-        MacServiceWorkspace(store: store, accountContent: EmptyView(), isActive: false)
-            .disabled(true)
-            .safeAreaInset(edge: .bottom) { WorkspaceRestorationView(store: pairing) }
     }
 }
 
@@ -121,9 +112,20 @@ private struct MacServiceWindow: View {
         Group {
             if let store = context.store {
                 MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account))
+                    .connectionLostOverlay(store: store, retry: retry,
+                                           signIn: account.map { account in { account.store.send(.reauthenticate) } })
             } else {
                 ProgressView("Opening workspace…")
             }
-        }.task { await context.connect(services) }
+        }
+        .task { await context.connect(services) }
+        .retriesConnection(networkChanges: { NetworkReachability.shared.changes() }) { retry() }
+        .onChange(of: account?.store.restorationInFlight) { wasSigningIn, signingIn in
+            if wasSigningIn == true && signingIn == false { retry() }
+        }
+    }
+
+    private func retry() {
+        Task { await services.retryConnection() }
     }
 }

@@ -61,7 +61,7 @@ public actor CloudAppServices {
     public static let localDeviceID = "mac"
     public static let localMacID = "local"
 
-    public var isLocal: Bool { operations is LoopbackSession }
+    public nonisolated var isLocal: Bool { operations is LoopbackSession }
 
     private init(operations: any WorkspaceOperations, server: URL, deviceID: String, macID: String,
                  revision: String, directory: URL, bindingSecret: Data) {
@@ -71,8 +71,12 @@ public actor CloudAppServices {
         self.macID = macID
         self.operations = operations
         api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: operations)
-        sync = SyncSession(transport: api, identity: identity)
-        domainSync = DomainSyncSession(transport: api, identity: identity)
+        let local = operations is LoopbackSession
+        let classify: @Sendable (any Error) -> ConnectionProblem = { error in
+            ConnectionClassifier.problem(for: error, local: local, networkOffline: NetworkReachability.shared.isOffline)
+        }
+        sync = SyncSession(transport: api, identity: identity, classify: classify)
+        domainSync = DomainSyncSession(transport: api, identity: identity, classify: classify)
         gate = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory.appendingPathComponent("commands")))
         reportFeedback = ReportFeedbackCoordinator(directory: directory.appendingPathComponent("feedback"), gate: gate,
             scope: scope, api: api, recoveryStatus: { try await operations.recoveryStatus(requestID: $0) },
@@ -103,6 +107,17 @@ public actor CloudAppServices {
         await domainSync.stop()
         await gate.use(CommandScope(server: scope.server, deviceID: scope.deviceID,
                                     credentialRevision: scope.credentialRevision, generation: scope.generation + 1))
+    }
+
+    /// Retries now instead of waiting out the backoff: the network came back or the app returned
+    /// to the foreground.
+    public func retryConnection() async {
+        guard active else { return }
+        await sync.retryNow()
+    }
+
+    public nonisolated func connectionProblem(for error: any Error) -> ConnectionProblem {
+        ConnectionClassifier.problem(for: error, local: isLocal, networkOffline: NetworkReachability.shared.isOffline)
     }
 
     public func startRecovery() {
@@ -165,8 +180,8 @@ public actor CloudAppServices {
                     switch update.connection {
                     case .connecting: connection = .connecting
                     case .online: connection = .online
-                    case .offline(let reason), .invalidConfiguration(let reason): connection = .offline(reason)
-                    case .unpaired: connection = .unpaired
+                    case .offline(let problem): connection = .offline(problem)
+                    case .invalidConfiguration: connection = .offline(.unexpected)
                     }
                     continuation.yield(TriageInboxUpdate(identity: triageIdentity, overview: overview, connection: connection))
                 }

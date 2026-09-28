@@ -159,6 +159,9 @@ the two IDs above, with **Push Notifications** checked on the app one; Devices �
 iPhone's UDID; Profiles → + → iOS App Development, once per ID, with your Apple Development
 certificate and the iPhone; download both into `signing/` with the file names above.
 
+The profiles already in `signing/` are the maintainers' team profiles. Yours replace them
+in your checkout; don't commit that change.
+
 A signing certificate with its private key must be in the login keychain. If there is none:
 Xcode → Settings → Accounts → your team → Manage Certificates → + → Apple Development.
 

@@ -2291,6 +2291,113 @@ fn answer_reaches_the_current_assignee_after_reassignment() {
     );
 }
 
+#[test]
+fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
+    let mut s = fixture();
+    let run = |s: &mut DomainState, actor: Actor, id: &str, expected: Revision, command: Command| {
+        s.execute(
+            &actor,
+            &CommandEnvelope {
+                protocol_version: 2,
+                data_epoch: s.data_epoch.clone(),
+                command_id: id.into(),
+                expected_revision: expected,
+                command,
+            },
+        )
+    };
+    let info = |id: &str| Command::PublishInformation {
+        attachments: vec![],
+        interaction_id: id.into(),
+        scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User,
+        body: "Progress".into(),
+    };
+    let answer = |text: &str| Command::AnswerQuestion {
+        attachments: vec![],
+        interaction_id: "q".into(),
+        option_id: String::new(),
+        inputs: BTreeMap::from([("text".into(), InputValue::Text(text.into()))]),
+    };
+    exec(
+        &mut s,
+        agent(),
+        Command::AskQuestion {
+            attachments: vec![],
+            interaction_id: "q".into(),
+            scope: Scope::Task { task_id: "t".into() },
+            recipient: Recipient::User,
+            body: "Which colour?".into(),
+            blocking: false,
+            options: vec![],
+        },
+    )
+    .unwrap();
+    let seen = s.revision;
+    exec(&mut s, agent(), info("i1")).unwrap();
+    assert!(s.revision > seen);
+    // A snapshot older than unrelated information still decides this question once.
+    run(&mut s, user(), "a1", seen, answer("Blue")).unwrap();
+    let lost = run(&mut s, user(), "a2", seen, answer("Red")).unwrap_err();
+    assert_eq!(lost.code, "stale_revision");
+    assert_eq!(lost.current_revision, Some(s.revision));
+    let future = s.revision + 1;
+    assert_eq!(
+        run(&mut s, agent(), "future", future, info("i2")).unwrap_err().code,
+        "stale_revision"
+    );
+    // Information neither blocks nor dates a Task decision.
+    let seen = s.revision;
+    exec(&mut s, agent(), info("i3")).unwrap();
+    run(&mut s, agent(), "start", seen, Command::StartTask { task_id: "t".into() }).unwrap();
+    // Invalidating a delivery dates every decision taken on it.
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    let seen = s.revision;
+    exec(
+        &mut s,
+        Actor::System,
+        Command::ObservePrState {
+            pr_id: "pr".into(),
+            head: "head2".into(),
+            base: "main".into(),
+            state: PrState::Open,
+            merged_head: None,
+        },
+    )
+    .unwrap();
+    assert_eq!(
+        run(&mut s, user(), "late-accept", seen, Command::AcceptDelivery {
+            presentation_id: "d".into(),
+            targets: pr_targets(),
+        })
+        .unwrap_err()
+        .code,
+        "stale_revision"
+    );
+    // Two managers deciding the same Task from one snapshot: one winner.
+    for id in ["b", "c"] {
+        exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: id.into() }).unwrap();
+    }
+    let seen = s.revision;
+    run(&mut s, user(), "assign-b", seen, Command::AssignTask { task_id: "t".into(), agent_id: "b".into() }).unwrap();
+    assert_eq!(
+        run(&mut s, user(), "assign-c", seen, Command::AssignTask { task_id: "t".into(), agent_id: "c".into() })
+            .unwrap_err()
+            .code,
+        "stale_revision"
+    );
+    assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
+    // Commands without a narrower subject still need the current revision.
+    assert_eq!(
+        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into() })
+            .unwrap_err()
+            .code,
+        "stale_revision"
+    );
+}
+
 struct Ids {
     task: &'static str,
     agent: &'static str,
