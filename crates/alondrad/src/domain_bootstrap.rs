@@ -5,7 +5,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain_v2::{CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use anyhow::{Context, Result, ensure};
-use axum::extract::{ConnectInfo, RawQuery, State, rejection::JsonRejection};
+use axum::extract::{ConnectInfo, Path as RoutePath, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -62,11 +62,95 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/domain", get(projection))
         .route("/v2/domain/capabilities", get(capabilities))
         .route("/v2/domain/changes", get(changes))
+        .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization))
+        .route("/v2/domain/delivery-attempts", get(delivery_attempts))
+        .route("/v2/domain/tasks/{id}/actions", get(task_actions))
+        .route("/v2/domain/document-revisions/{id}/content", get(document_content))
+        .route("/v2/domain/pull-requests/{id}/diff", get(pull_request_diff))
         .route(
             "/v2/domain/commands",
             post(command).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
         )
         .with_state(state)
+}
+
+async fn merge_authorization(
+    State(state): State<Arc<V2Only>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    if !is_local(&peer, &headers) {
+        return error("forbidden", "local Agent capability required");
+    }
+    let Some(token) = headers.get("authorization").and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer ")) else {
+        return error("forbidden", "Agent capability required");
+    };
+    crate::domain_api::merge_authorization_inner(&state.domain, token, id)
+}
+
+async fn delivery_attempts(
+    State(state): State<Arc<V2Only>>,
+    signed: Option<Extension<Signed>>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    let response = crate::domain_api::delivery_evidence_inner(
+        &state.domain, query.as_deref().unwrap_or(""));
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    response
+}
+
+async fn task_actions(
+    State(state): State<Arc<V2Only>>,
+    signed: Option<Extension<Signed>>,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    let response = crate::domain_api::task_actions_inner(&state.domain, id);
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    response
+}
+
+async fn document_content(
+    State(state): State<Arc<V2Only>>,
+    signed: Option<Extension<Signed>>,
+    RoutePath(id): RoutePath<String>,
+    RawQuery(query): RawQuery,
+) -> Response {
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    let response = crate::domain_api::document_content_inner(
+        &state.domain, &state.home, id, query).await;
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    response
+}
+
+async fn pull_request_diff(
+    State(state): State<Arc<V2Only>>,
+    signed: Option<Extension<Signed>>,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    let response = crate::domain_api::pull_request_diff_inner(&state.domain, id).await;
+    if !state.signed_current(&signed) {
+        return error("forbidden", "signed user device required");
+    }
+    response
 }
 
 fn domain_error(domain: DomainError) -> Response {
@@ -121,17 +205,23 @@ async fn projection(
 
 async fn capabilities(
     State(state): State<Arc<V2Only>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     signed: Option<Extension<Signed>>,
+    headers: HeaderMap,
 ) -> Response {
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
+    let bearer = headers.get("authorization").and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer "));
+    let producer_current = || bearer.is_some_and(|token| signed.is_none()
+        && is_local(&peer, &headers) && state.domain.resolve_bearer(token).is_ok());
+    if !state.signed_current(&signed) && !producer_current() {
+        return error("forbidden", "signed device or local producer capability required");
     }
     let response = match state.domain.state() {
         Ok(domain) => Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":domain.data_epoch,"revision":domain.revision})).into_response(),
         Err(_) => error("storage_unavailable", "domain transaction could not be completed"),
     };
-    if !state.signed_current(&signed) {
-        return error("forbidden", "signed user device required");
+    if !state.signed_current(&signed) && !producer_current() {
+        return error("forbidden", "signed device or local producer capability required");
     }
     response
 }
@@ -244,6 +334,11 @@ mod tests {
             .unwrap();
         let state = V2Only::open(&home, &epoch).unwrap();
         assert!(V2Only::open(&home, "wrong-epoch").is_err());
+        let domain = state.domain();
+        let capability = domain.issue(crate::domain_authority::Principal::Agent {
+            session_id: "test-agent".into(), task_binding: None, provider_agent_id: None,
+        }).unwrap();
+        let bearer = capability.expose_for_child_environment().to_owned();
         let auth = Arc::new(Auth::open(&home).unwrap());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let base = format!("http://{}", listener.local_addr().unwrap());
@@ -297,6 +392,51 @@ mod tests {
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(body["protocol_version"], 2);
         assert_eq!(body["data_epoch"].as_str(), Some(epoch.as_str()));
+        let producer = client.get(format!("{base}/v2/domain/capabilities"))
+            .bearer_auth(&bearer).send().await.unwrap();
+        assert_eq!(producer.status(), StatusCode::OK);
+        let cursor: serde_json::Value = producer.json().await.unwrap();
+        assert_eq!(cursor["data_epoch"].as_str(), Some(epoch.as_str()));
+        assert_eq!(client.get(format!("{base}/v2/domain/capabilities"))
+            .bearer_auth("invalid").send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        for (path, expected) in [
+            ("/v2/domain/delivery-attempts?after=0", StatusCode::OK),
+            ("/v2/domain/tasks/missing/actions", StatusCode::NOT_FOUND),
+            ("/v2/domain/document-revisions/missing/content?offset=0", StatusCode::NOT_FOUND),
+            ("/v2/domain/pull-requests/missing/diff", StatusCode::NOT_FOUND),
+        ] {
+            assert_eq!(client.get(format!("{base}{path}")).send().await.unwrap().status(),
+                StatusCode::FORBIDDEN, "unsigned {path}");
+            let timestamp = alondra_core::now_millis().to_string();
+            let message = crate::auth::signed_message("GET", path, &timestamp, b"");
+            let signature: Signature = key.sign(message.as_bytes());
+            let response = client.get(format!("{base}{path}"))
+                .header("x-alondra-device", &device.id)
+                .header("x-alondra-timestamp", timestamp)
+                .header("x-alondra-signature", STANDARD.encode(signature.to_der().as_bytes()))
+                .send().await.unwrap();
+            assert_eq!(response.status(), expected, "signed {path}");
+            if expected == StatusCode::NOT_FOUND {
+                let body: serde_json::Value = response.json().await.unwrap();
+                assert_eq!(body["code"], "not_found", "handler must answer {path}");
+            }
+        }
+        let merge_path = "/v2/domain/merge-authorizations/missing";
+        assert_eq!(client.get(format!("{base}{merge_path}"))
+            .header("authorization", format!("Bearer {}", "a".repeat(64)))
+            .send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        let response = client.get(format!("{base}{merge_path}"))
+            .header("authorization", format!("Bearer {bearer}"))
+            .send().await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let body: serde_json::Value = response.json().await.unwrap();
+        assert_eq!(body["code"], "not_found", "handler must answer merge authorization read");
+        domain.revoke_agent("test-agent");
+        assert_eq!(client.get(format!("{base}{merge_path}"))
+            .header("authorization", format!("Bearer {bearer}"))
+            .send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        assert_eq!(client.get(format!("{base}/v2/domain/capabilities"))
+            .bearer_auth(&bearer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
         server.abort();
         let _ = server.await;
         std::fs::remove_dir_all(home).unwrap();
