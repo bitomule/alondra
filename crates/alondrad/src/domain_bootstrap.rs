@@ -478,3 +478,6 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
 }
+
+#[cfg(test)]
+mod vertical_tests;
