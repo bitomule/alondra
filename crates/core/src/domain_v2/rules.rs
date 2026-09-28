@@ -517,7 +517,7 @@ impl DomainState {
                     Agent {
                         id: agent_id.clone(),
                         name: name.clone(),
-                        connected: true,
+                        connected: false,
                     },
                 );
                 created.push(agent_id.0.clone());
