@@ -17,3 +17,29 @@ rust_test(
     data = ["//fixtures/markdown"],
     edition = "2024",
 )
+
+# Cargo integration tests. Paths are runfiles-relative: Bazel runs tests from the
+# workspace root inside runfiles.
+[rust_test(
+    name = name + "_test",
+    srcs = ["tests/" + name + ".rs"],
+    data = [":alondra"],
+    edition = "2024",
+    rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath :alondra)"},
+    deps = all_crate_deps(normal = True, normal_dev = True),
+) for name in [
+    "domain_mcp",
+    "hook_transport",
+]]
+
+[rust_test(
+    name = name + "_test",
+    srcs = ["tests/" + name + ".rs"],
+    data = glob(["src/**/*.rs"]),
+    edition = "2024",
+    rustc_env = {"CARGO_MANIFEST_DIR": "crates/alondra"},
+    deps = all_crate_deps(normal = True, normal_dev = True),
+) for name in [
+    "english_quotes",
+    "no_sleep_wording",
+]]

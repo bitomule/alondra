@@ -33,6 +33,9 @@ checks:
       - "Cargo.toml"
       - "Cargo.lock"
       - "Makefile"
+      - "apple/**/*.xcstrings"
+      - "apple/no_sleep_wording_test.sh"
     with:
       targets:
         - //crates/...
+        - //apple:no_sleep_wording_test

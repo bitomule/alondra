@@ -26,13 +26,3 @@ fn the_tui_and_cli_never_say_awake_or_asleep_again() {
         check(rel, &text);
     }
 }
-
-#[test]
-fn the_apple_localization_catalogs_never_say_awake_or_asleep_again() {
-    let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    for rel in ["apple/macOS/Resources/Localizable.xcstrings", "apple/iOS/Resources/Localizable.xcstrings", "apple/Shared/Resources/AlondraShared.xcstrings"] {
-        let path = repo_root.join(rel);
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("reading {}: {e}", path.display()));
-        check(rel, &text);
-    }
-}
