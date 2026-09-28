@@ -61,6 +61,13 @@ pub fn signed_message(method: &str, path_and_query: &str, timestamp: &str, body:
 }
 
 impl Auth {
+    fn persisted(&self) -> Result<Vec<Device>> {
+        match std::fs::read_to_string(&self.path) {
+            Ok(text) => serde_json::from_str(&text).context("devices.json ilegible"),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(vec![]),
+            Err(error) => Err(error.into()),
+        }
+    }
     pub fn open(home: &std::path::Path) -> Result<Self> {
         let path = home.join("devices.json");
         let devices = match std::fs::read_to_string(&path) {
@@ -108,8 +115,10 @@ impl Auth {
             created_at: now_millis(),
             last_seen: None,
         };
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().ok_or("approval home missing")?)
+            .map_err(|error| error.to_string())?;
         let mut devices = self.devices.lock().expect("devices lock poisoned");
-        let mut next = devices.clone();
+        let mut next = self.persisted().map_err(|error| error.to_string())?;
         next.push(device.clone());
         self.save(&next).map_err(|e| e.to_string())?;
         *devices = next;
@@ -129,11 +138,15 @@ impl Auth {
             return Err("noncanonical service signing key".into());
         }
         let public_key = B64.encode(key.to_sec1_bytes());
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().ok_or("approval home missing")?)
+            .map_err(|error| error.to_string())?;
         let mut devices = self.devices.lock().expect("devices lock poisoned");
-        if let Some(existing) = devices.iter().find(|d| d.id == id) {
-            return if existing.public_key == public_key { Ok(()) } else { Err("device ID already has another key".into()) };
+        let mut next = self.persisted().map_err(|error| error.to_string())?;
+        if let Some(existing) = next.iter().find(|d| d.id == id) {
+            let same_key = existing.public_key == public_key;
+            *devices = next;
+            return if same_key { Ok(()) } else { Err("device ID already has another key".into()) };
         }
-        let mut next = devices.clone();
         next.push(Device { id: id.into(), name: name.into(), public_key,
             created_at: now_millis(), last_seen: None });
         self.save(&next).map_err(|e| e.to_string())?;
@@ -171,14 +184,16 @@ impl Auth {
     }
 
     pub fn revoke(&self, id: &str) -> Result<bool> {
+        let _lease = crate::approval_lease::ApprovalLease::exclusive(self.path.parent().context("approval home missing")?)?;
         let mut devices = self.devices.lock().expect("devices lock poisoned");
-        let mut next = devices.clone();
+        let mut next = self.persisted()?;
+        let previous_len = next.len();
         next.retain(|d| d.id != id);
-        let changed = next.len() != devices.len();
+        let changed = next.len() != previous_len;
         if changed {
             self.save(&next)?;
-            *devices = next;
         }
+        *devices = next;
         Ok(changed)
     }
 
@@ -204,7 +219,7 @@ impl Auth {
             devices.iter().find(|d| d.id == device_id).map(|d| d.public_key.clone())
         }
         .ok_or("device not paired")?;
-        let key = B64.decode(key_b64).ok().and_then(|raw| VerifyingKey::from_sec1_bytes(&raw).ok()).ok_or("stored key is corrupt")?;
+        let key = B64.decode(&key_b64).ok().and_then(|raw| VerifyingKey::from_sec1_bytes(&raw).ok()).ok_or("stored key is corrupt")?;
         let der = B64.decode(signature_b64).map_err(|_| "signature badly encoded")?;
         let signature = Signature::from_der(&der).map_err(|_| "malformed signature")?;
         let message = signed_message(method, path_and_query, timestamp, body);
@@ -221,13 +236,17 @@ impl Auth {
         let mut devices = self.devices.lock().expect("devices lock poisoned");
         let device = devices.iter_mut().find(|d| d.id == device_id).ok_or("device not paired")?;
         device.last_seen = Some(now_millis());
-        Ok(Signed { name: device.name.clone() })
+        Ok(Signed { device_id: device.id.clone(), name: device.name.clone(), public_key: key_b64 })
     }
 }
 
 #[derive(Clone, Debug)]
 pub struct Signed {
+    /// Verified device identity; display names are not command receipt scopes.
+    pub device_id: String,
     pub name: String,
+    /// Exact key verified by middleware; handler compares it with persisted approval.
+    pub public_key: String,
 }
 
 pub fn is_local(peer: &SocketAddr, headers: &HeaderMap) -> bool {
@@ -290,7 +309,9 @@ mod tests {
         let msg = signed_message("POST", "/v1/questions/1/answer", &ts.to_string(), b"{\"text\":\"yes\"}");
         let sig: Signature = key.sign(msg.as_bytes());
         let h = headers(&id, ts, &sig);
-        assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap().name, "iPhone");
+        let signed = auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap();
+        assert_eq!(signed.name, "iPhone");
+        assert_eq!(signed.device_id, id);
         assert_eq!(auth.verify(&h, "POST", "/v1/questions/1/answer", b"{\"text\":\"yes\"}").unwrap_err(), "replayed request");
     }
 
