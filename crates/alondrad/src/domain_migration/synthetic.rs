@@ -14,6 +14,8 @@ pub(super) const PRS: u64 = 121;
 pub(super) const FORMAL_PRS: u64 = 112;
 pub(super) const QUESTIONS: u64 = 274;
 pub(super) const OPEN_QUESTIONS: u64 = 4;
+/// Open, asked by a live session, on a Task that is already done.
+pub(super) const CLOSED_TASK_QUESTION: u64 = 3;
 pub(super) const REPORTS: u64 = 287;
 pub(super) const DOCUMENTS: u64 = 24;
 pub(super) const MESSAGES: u64 = 805;
@@ -29,14 +31,17 @@ pub(super) fn write_live_shaped_home(source: &Path) -> View {
         node.alive = index + 1 < NODES;
         view.nodes.insert(node.session_id.clone(), node);
     }
+    fs::DirBuilder::new().mode(0o700).create(source.join("files")).unwrap();
+    fs::write(source.join("files").join("brief.txt"), b"brief").unwrap();
     for index in 0..REQUESTS {
-        view.board.requests.insert(
-            format!("r-{index}"),
-            serde_json::from_value(json!({
-                "id":format!("r-{index}"),"text":format!("Synthetic request {index}"),"created_at":index
-            }))
-            .unwrap(),
-        );
+        let mut request = json!({
+            "id":format!("r-{index}"),"text":format!("Synthetic request {index}"),"created_at":index
+        });
+        if index == 0 {
+            request["attachments"] = json!([{"name":"brief.txt","source_path":"/synthetic/brief.txt",
+                "stored_path":source.join("files").join("brief.txt").to_str().unwrap(),"bytes":5}]);
+        }
+        view.board.requests.insert(format!("r-{index}"), serde_json::from_value(request).unwrap());
     }
     for index in 0..ORIGINAL_TASKS {
         let active = index < ACTIVE_TASKS;
@@ -80,7 +85,7 @@ pub(super) fn write_live_shaped_home(source: &Path) -> View {
             "id":id,"session_id":format!("node-{session}"),"node_name":null,
             "title":format!("Synthetic question {id}"),"blocking":open,"origin":"ask",
             "status":if open { "open" } else { "answered" },"asked_at":id,
-            "task":format!("t-{}", id as usize % ORIGINAL_TASKS),
+            "task":format!("t-{}", if id == CLOSED_TASK_QUESTION { ORIGINAL_TASKS - 1 } else { id as usize % ORIGINAL_TASKS }),
             "options":[{"label":"Yes"},{"label":"No"}]
         });
         if !open {
@@ -109,6 +114,18 @@ pub(super) fn write_live_shaped_home(source: &Path) -> View {
             message["about"] = json!({"kind":"task","task":format!("t-{}", id as usize % ORIGINAL_TASKS)});
         }
         view.messages.insert(id, serde_json::from_value(message).unwrap());
+    }
+    for (id, session, state, reason) in [
+        (1, "node-1", alondra_core::delivery::State::Retryable, "terminal_not_ready"),
+        (2, "node-2", alondra_core::delivery::State::Uncertain, "process_restarted"),
+        (3, "node-3", alondra_core::delivery::State::Dispatching, "in_flight"),
+        (4, "session-never-imported", alondra_core::delivery::State::Retryable, "terminal_not_ready"),
+    ] {
+        view.delivery_attempts.insert(id, alondra_core::delivery::Attempt {
+            id, session_id: session.into(), channel: alondra_core::delivery::Channel::Terminal,
+            message_ids: vec![id], question_id: None, state, version: 2, reason: Some(reason.into()),
+            created_at: 1, updated_at: 1, resolved_from_version: None,
+        });
     }
     let db = Connection::open(source.join("alondra.db")).unwrap();
     db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE event_log(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL); CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);").unwrap();
@@ -144,8 +161,12 @@ fn live_shaped_home_rehearses_with_its_counts_and_reports_command_latency() {
     assert_eq!(imported.formal_prs, FORMAL_PRS as usize);
     assert_eq!(imported.reference_only_prs.len(), (PRS - FORMAL_PRS) as usize);
     assert_eq!(imported.questions, QUESTIONS as usize);
-    assert_eq!(imported.open_questions_reopened, OPEN_QUESTIONS as usize - 1);
-    assert_eq!(imported.open_questions_requiring_reconciliation, 1);
+    assert_eq!(imported.open_questions_reopened, OPEN_QUESTIONS as usize - 2);
+    assert_eq!(imported.open_questions_requiring_reconciliation, 2);
+    assert_eq!(
+        (imported.conserved_undelivered, imported.conserved_uncertain, imported.conserved_historical),
+        (1, 2, 1)
+    );
     assert_eq!(imported.reports, REPORTS as usize);
     assert_eq!(imported.documents, DOCUMENTS as usize);
     assert_eq!(imported.messages, MESSAGES as usize);

@@ -37,6 +37,7 @@ fn destination_outside(home: &Path, destination: &Path) -> Result<()> {
 }
 
 mod import;
+pub(crate) mod rehearsal;
 mod schedules;
 #[cfg(test)]
 mod synthetic;
@@ -174,24 +175,10 @@ pub(crate) fn load_legacy_readonly(path: &Path) -> Result<View> {
     Ok(view)
 }
 
-fn ensure_legacy_delivery_reconciled(view: &View) -> Result<()> {
+/// A delivery the legacy daemon had not settled: the importer conserves it.
+pub(crate) fn unresolved_delivery(attempt: &alondra_core::delivery::Attempt) -> bool {
     use alondra_core::delivery::State;
-    let unresolved: Vec<_> = view
-        .delivery_attempts
-        .values()
-        .filter(|attempt| {
-            matches!(
-                attempt.state,
-                State::Dispatching | State::Uncertain | State::Retryable
-            )
-        })
-        .map(|attempt| attempt.id)
-        .collect();
-    ensure!(
-        unresolved.is_empty(),
-        "legacy deliveries require explicit reconciliation before migration: {unresolved:?}"
-    );
-    Ok(())
+    matches!(attempt.state, State::Dispatching | State::Uncertain | State::Retryable)
 }
 
 /// The legacy schedule store is imported at cutover. Before any backup is
@@ -276,6 +263,30 @@ pub(crate) struct BackupManifest {
     pub files: Vec<BackupFile>,
 }
 
+pub(crate) const BACKUP_DATABASES: [&str; 4] = [
+    "alondra.db",
+    "schedules.db",
+    "service-receipts.sqlite",
+    "service-upload-attempts.sqlite",
+];
+pub(crate) const BACKUP_FILES: [&str; 14] = [
+    "config.toml",
+    "service.toml",
+    "service.toml.staged",
+    "options.toml",
+    "config.toml.pre-loopback-service-20260926",
+    "devices.json",
+    "push.json",
+    "tui-key.pem",
+    "tui-device",
+    "terminal-service.json",
+    "legacy-questions.json",
+    "flagged-reports.jsonl",
+    "rejected-reports.jsonl",
+    "brew-keg-path",
+];
+pub(crate) const BACKUP_TREES: [&str; 4] = ["service-keys", "files", "candidates", "soak"];
+
 /// Caller must have stopped the daemon, jobs and legacy producers. The
 /// exclusive HOME lock makes daemon startup impossible during the backup.
 /// The destination must be new and private; no secret enters public output.
@@ -285,16 +296,20 @@ pub(crate) fn backup_offline(
     legacy_daemon: &Path,
 ) -> Result<BackupManifest> {
     let lock = alondra_core::home_lock::HomeLock::recovery(home)?;
-    backup_locked(&lock, home, destination, legacy_daemon)
+    backup_locked(&lock, home, home, destination, legacy_daemon)
 }
 
+/// `recorded_home` is the HOME the legacy events were written in, which is
+/// where their absolute attachment paths point. It differs from `home` only
+/// when preparing a copy, as the cutover rehearsal does.
 fn backup_locked(
     _lock: &alondra_core::home_lock::HomeLock,
     home: &Path,
+    recorded_home: &Path,
     destination: &Path,
     legacy_daemon: &Path,
 ) -> Result<BackupManifest> {
-    ensure!(home.is_absolute(), "source HOME must be absolute");
+    ensure!(home.is_absolute() && recorded_home.is_absolute(), "source HOME must be absolute");
     destination_outside(home, destination)?;
     fs::DirBuilder::new().mode(0o700).create(destination)?;
     let meta = fs::symlink_metadata(destination)?;
@@ -303,14 +318,8 @@ fn backup_locked(
         "backup destination must be private and owner-only"
     );
     let view = load_legacy_readonly(&home.join("alondra.db"))?;
-    ensure_legacy_delivery_reconciled(&view)?;
     let mut files = Vec::new();
-    for name in [
-        "alondra.db",
-        "schedules.db",
-        "service-receipts.sqlite",
-        "service-upload-attempts.sqlite",
-    ] {
+    for name in BACKUP_DATABASES {
         let source = home.join(name);
         if source.exists() {
             let target = destination.join(name);
@@ -318,22 +327,7 @@ fn backup_locked(
             files.push(describe_file(destination, &target)?);
         }
     }
-    for name in [
-        "config.toml",
-        "service.toml",
-        "service.toml.staged",
-        "options.toml",
-        "config.toml.pre-loopback-service-20260926",
-        "devices.json",
-        "push.json",
-        "tui-key.pem",
-        "tui-device",
-        "terminal-service.json",
-        "legacy-questions.json",
-        "flagged-reports.jsonl",
-        "rejected-reports.jsonl",
-        "brew-keg-path",
-    ] {
+    for name in BACKUP_FILES {
         let source = home.join(name);
         if source.exists() {
             let target = destination.join(name);
@@ -344,7 +338,7 @@ fn backup_locked(
     let legacy_binary = destination.join("legacy-alondrad");
     copy_regular(legacy_daemon, &legacy_binary)?;
     files.push(describe_file(destination, &legacy_binary)?);
-    for directory in ["service-keys", "files", "candidates", "soak"] {
+    for directory in BACKUP_TREES {
         let source = home.join(directory);
         if source.exists() {
             copy_tree(
@@ -358,7 +352,7 @@ fn backup_locked(
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let manifest = BackupManifest {
         format: 1,
-        source_home: home.to_string_lossy().into_owned(),
+        source_home: recorded_home.to_string_lossy().into_owned(),
         canonical_source_home: home.canonicalize()?.to_string_lossy().into_owned(),
         source_seq: view.seq,
         files,
@@ -584,7 +578,7 @@ pub(crate) fn verify_current_source_matches_backup(
         crate::auth::random_hex(8)
     ));
     let result = (|| {
-        let current = backup_locked(lock, home, &check, &backup.join("legacy-alondrad"))?;
+        let current = backup_locked(lock, home, home, &check, &backup.join("legacy-alondrad"))?;
         let expected_files: std::collections::BTreeMap<_, _> = expected
             .files
             .iter()
@@ -713,11 +707,25 @@ pub(crate) fn prepare_cutover_offline(
     stage: &Path,
     legacy_daemon: &Path,
 ) -> Result<CutoverPreparation> {
+    let recorded = std::env::var_os(RECORDED_HOME).map(PathBuf::from);
+    prepare_cutover_recorded(home, recorded.as_deref().unwrap_or(home), backup, stage, legacy_daemon)
+}
+
+/// Set by the cutover rehearsal on a copy of a live HOME: the live HOME's path.
+pub(crate) const RECORDED_HOME: &str = "ALONDRA_CUTOVER_RECORDED_HOME";
+
+pub(crate) fn prepare_cutover_recorded(
+    home: &Path,
+    recorded_home: &Path,
+    backup: &Path,
+    stage: &Path,
+    legacy_daemon: &Path,
+) -> Result<CutoverPreparation> {
     destination_outside(home, backup)?;
     destination_outside(home, stage)?;
     let lock = alondra_core::home_lock::HomeLock::recovery(home)?;
     ensure_legacy_schedules_readable(home)?;
-    let manifest = backup_locked(&lock, home, backup, legacy_daemon)?;
+    let manifest = backup_locked(&lock, home, recorded_home, backup, legacy_daemon)?;
     let digest = backup_manifest_digest(backup)?;
     let rehearsal = rehearse(backup, stage)?;
     verify_backup_expected(backup, &digest)?;
@@ -775,9 +783,7 @@ pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehears
         None
     };
     fs::DirBuilder::new().mode(0o700).create(target_home)?;
-    let view = load_legacy_readonly(&source_home.join("alondra.db"))?;
-    ensure_legacy_delivery_reconciled(&view)?;
-    let source = inventory(&view);
+    let view = load_legacy_readonly(&source_home.join("alondra.db"))?;    let source = inventory(&view);
     let mut store = crate::domain_store::DomainStore::open(&target_home.join("domain-v2.db"))?;
     let epoch = store.load()?.data_epoch;
     let (state, imported, schedules) =
@@ -933,33 +939,6 @@ mod tests {
 
     #[test]
     fn backup_rehearsal_and_rollback_preserve_tail_cards_and_content() {
-        let mut unresolved = View::default();
-        for state in [
-            alondra_core::delivery::State::Dispatching,
-            alondra_core::delivery::State::Uncertain,
-            alondra_core::delivery::State::Retryable,
-        ] {
-            unresolved.delivery_attempts.insert(
-                1,
-                alondra_core::delivery::Attempt {
-                    id: 1,
-                    session_id: "old-session".into(),
-                    channel: alondra_core::delivery::Channel::Terminal,
-                    message_ids: vec![],
-                    question_id: None,
-                    state,
-                    version: 1,
-                    reason: None,
-                    created_at: 1,
-                    updated_at: 1,
-                    resolved_from_version: None,
-                },
-            );
-            assert!(ensure_legacy_delivery_reconciled(&unresolved).is_err());
-        }
-        unresolved.delivery_attempts.get_mut(&1).unwrap().state =
-            alondra_core::delivery::State::Discarded;
-        ensure_legacy_delivery_reconciled(&unresolved).unwrap();
         let root = std::env::temp_dir().join(format!(
             "alondra-domain-migration-{}",
             crate::auth::random_hex(8)

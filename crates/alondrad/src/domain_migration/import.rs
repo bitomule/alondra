@@ -34,6 +34,12 @@ pub(crate) struct ImportReport {
     pub documents: usize,
     pub attachments: usize,
     pub attachment_size_discrepancies: usize,
+    /// Legacy deliveries still unresolved at cutover, conserved as Interactions
+    /// and never resent: retryable ones wait unread for their imported Agent,
+    /// uncertain or dispatching ones are shown to the user, the rest are history.
+    pub conserved_undelivered: usize,
+    pub conserved_uncertain: usize,
+    pub conserved_historical: usize,
     pub mapping_rows: usize,
     #[serde(skip_serializing)]
     pub links: Vec<ImportLink>,
@@ -100,6 +106,9 @@ pub(crate) fn materialize_legacy(
         documents: 0,
         attachments: 0,
         attachment_size_discrepancies: 0,
+        conserved_undelivered: 0,
+        conserved_uncertain: 0,
+        conserved_historical: 0,
         mapping_rows: 0,
         links: vec![],
     };
@@ -553,12 +562,14 @@ pub(crate) fn materialize_legacy(
         }
         let author_session = d::AgentId(q.session_id.clone());
         let live = q.status == old::QuestionStatus::Open
-            && matches!(scope, d::Scope::Task { .. })
+            && matches!(&scope, d::Scope::Task { task_id }
+                if state.tasks.get(task_id).is_some_and(|task| !task.state.terminal()))
             && view.nodes.get(&q.session_id).is_some_and(|node| node.alive)
             && state.agents.contains_key(&author_session);
-        // A question whose session is still alive stays answerable: the answer
-        // reaches the Task's current Agent. Any other open question has nobody
-        // to receive a v2 answer and is preserved as a historical record.
+        // A question whose session is still alive on an active Task stays
+        // answerable: the answer reaches the Task's current Agent. Any other
+        // open question has nobody to receive a v2 answer (v2 refuses answers
+        // on a closed Task) and is preserved as a historical record.
         let (author, blocking, payload) = if live {
             report.open_questions_reopened += 1;
             let options = q
@@ -578,7 +589,7 @@ pub(crate) fn materialize_legacy(
             )
         } else {
             if q.status == old::QuestionStatus::Open {
-                body.push_str("\nRequires reconciliation: the former Agent session cannot receive a v2 answer to this historical question.");
+                body.push_str("\nRequires reconciliation: no active Task Agent can receive a v2 answer to this historical question.");
                 report.open_questions_requiring_reconciliation += 1;
             }
             (
@@ -750,6 +761,63 @@ pub(crate) fn materialize_legacy(
         )?);
         report.messages += 1;
     }
+    for attempt in view.delivery_attempts.values().filter(|attempt| super::unresolved_delivery(attempt)) {
+        let agent_id = d::AgentId(attempt.session_id.clone());
+        let task = state
+            .tasks
+            .values()
+            .find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.state.terminal())
+            .map(|task| task.id.clone());
+        let retryable = attempt.state == alondra_core::delivery::State::Retryable;
+        let (recipient, unread, outcome) = if retryable && state.agents.contains_key(&agent_id) {
+            report.conserved_undelivered += 1;
+            (d::Recipient::Agent { agent_id }, true,
+                "never reached the session and waits for its Agent; it is not resent automatically")
+        } else if retryable {
+            report.conserved_historical += 1;
+            (d::Recipient::User, false, "never reached the session, which was not imported")
+        } else {
+            report.conserved_uncertain += 1;
+            (d::Recipient::User, true,
+                "may already have reached the session; it is never resent automatically")
+        };
+        let mut body = format!(
+            "[Legacy delivery #{}; state={:?}; channel={:?}; reason={}; session={}] This delivery {outcome}.",
+            attempt.id,
+            attempt.state,
+            attempt.channel,
+            attempt.reason.as_deref().unwrap_or("none"),
+            attempt.session_id
+        );
+        for message in attempt.message_ids.iter().filter_map(|id| view.messages.get(id)) {
+            body.push_str(&format!("\nLegacy message #{}: {}", message.id, message.text));
+        }
+        if let Some(question) = attempt.question_id {
+            body.push_str(&format!("\nTerminal decision for legacy question #{question}."));
+        }
+        let id = format!("legacy-delivery-{}", attempt.id);
+        ordered.push((
+            attempt.updated_at,
+            d::Interaction {
+                id: d::InteractionId(id.clone()),
+                scope: task
+                    .map(|task_id| d::Scope::Task { task_id })
+                    .unwrap_or(d::Scope::Orchestrator { request_id: None }),
+                author: d::Author::System,
+                recipient,
+                body,
+                blocking: false,
+                subject: None,
+                payload: d::InteractionPayload::Information {
+                    read_by: if unread { BTreeSet::new() } else { BTreeSet::from(["legacy-import".into()]) },
+                },
+                attachments: vec![],
+                revision: state.revision,
+                order: 0,
+            },
+        ));
+        report.links.push(link(attempt, "delivery_attempt", attempt.id, "conserved", "interaction", id)?);
+    }
     // Work in flight keeps its review context: an open lifetime PR and/or the
     // legacy final report become the Task's current final presentation, so the
     // user can decide on it and the live Agent can complete the Task in v2.
@@ -873,7 +941,9 @@ pub(crate) fn materialize_legacy(
             && coverage("question", "entity") == view.questions.len()
             && coverage("report", "entity") == view.reports.len()
             && coverage("message", "entity") == view.messages.len()
-            && coverage("attachment", "content") == report.attachments,
+            && coverage("attachment", "content") == report.attachments
+            && coverage("delivery_attempt", "conserved")
+                == view.delivery_attempts.values().filter(|a| super::unresolved_delivery(a)).count(),
         "legacy provenance mapping lacks source coverage"
     );
     report.mapping_rows = report.links.len();
