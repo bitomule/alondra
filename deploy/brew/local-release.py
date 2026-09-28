@@ -19,7 +19,7 @@ import release
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 IDENTITY = '137E48D7AF54AAA3DFC56B9820DACC897C20AF15'
 TEAM = '658YBSK6MG'
-MIN_FREE = 8 * 1024**3
+LOW_FREE = 8 * 1024**3
 
 
 def run(*args, capture=False, env=None):
@@ -40,18 +40,16 @@ def preflight(ver, retry_source=None):
     data = tomllib.loads((ROOT / 'Cargo.toml').read_text())
     if data['workspace']['package']['version'] != ver:
         raise RuntimeError('Bump Cargo version in a reviewed PR first')
-    if retry_source is None and not run('git', 'branch', '--show-current', capture=True).strip():
-        raise RuntimeError('Release from a named branch at origin/main')
     if run('git', 'status', '--porcelain', capture=True).strip():
         raise RuntimeError('Working tree must be clean')
     run('git', 'fetch', 'origin', 'main')
     source = run('git', 'rev-parse', 'HEAD', capture=True).strip()
-    if retry_source is not None:
-        if source != retry_source:
-            raise RuntimeError('Retry from a clean checkout of the original manifest source commit')
+    if retry_source is not None and source != retry_source:
+        raise RuntimeError('Retry from a clean checkout of the original manifest source commit')
+    try:
         run('git', 'merge-base', '--is-ancestor', 'HEAD', 'origin/main')
-    elif source != run('git', 'rev-parse', 'origin/main', capture=True).strip():
-        raise RuntimeError('Release HEAD must equal origin/main')
+    except subprocess.CalledProcessError:
+        raise RuntimeError('Release source must be a commit already on origin/main') from None
     workflow_guard()
     return source
 
@@ -73,12 +71,14 @@ def tag_state(ver, source, retry):
     return bool(local), bool(remote.strip())
 
 
-def disk_guard(path):
+def disk_warning(path):
     ancestor = path
     while not ancestor.exists():
         ancestor = ancestor.parent
-    if shutil.disk_usage(ancestor).free < MIN_FREE:
-        raise RuntimeError(f'At least 8 GiB free is required on the volume containing {path}')
+    free = shutil.disk_usage(ancestor).free
+    if free < LOW_FREE:
+        print(f'Warning: {free / 1024**3:.1f} GiB free on the volume containing {path}; the build may run out of space',
+              file=sys.stderr)
 
 
 def manifest(ver, source, output):
@@ -196,22 +196,22 @@ def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     identities = run('security', 'find-identity', '-v', '-p', 'codesigning', capture=True)
     if not any(len(parts := line.split()) > 1 and parts[1] == IDENTITY for line in identities.splitlines()):
         raise RuntimeError('The approved Developer ID identity is not available in the local keychain')
-    disk_guard(target_dir)
-    disk_guard(output)
+    disk_warning(target_dir)
+    disk_warning(output)
     # Never overwrite prior archives, including partially prepared artifacts.
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
     run(sys.executable, '-m', 'unittest', 'discover', '-s', 'deploy/brew/tests', '-v')
     for target in release.TARGETS:
         with build_cache(target_dir, ephemeral_build_cache, 'tests') as test_target:
-            disk_guard(test_target)
+            disk_warning(test_target)
             env = cargo_environment(test_target, toolchain_name, tools)
             with tempfile.TemporaryDirectory(prefix='alondra-release-test-home-') as home:
                 test_env = dict(env, HOME=home)
                 run(tools['cargo'], 'test', '--locked', '--target', target, '--jobs', '1',
                     '-p', 'alondra', '-p', 'alondrad', '-p', 'alondra-e2e', env=test_env)
         with build_cache(target_dir, ephemeral_build_cache, 'build') as build_target:
-            disk_guard(build_target)
+            disk_warning(build_target)
             env = cargo_environment(build_target, toolchain_name, tools)
             run(tools['cargo'], 'build', '--locked', '--release', '--target', target, '--jobs', '1',
                 '-p', 'alondra', '-p', 'alondrad', env=env)

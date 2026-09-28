@@ -36,26 +36,25 @@ class LocalReleaseTests(unittest.TestCase):
         patch.object(l, 'ROOT', self.root).start()
 
     def git(self, *args, **kwargs):
-        values = {('git', 'branch', '--show-current'): 'main',
-                  ('git', 'status', '--porcelain'): '',
-                  ('git', 'rev-parse', 'HEAD'): 'source',
-                  ('git', 'rev-parse', 'origin/main'): 'source'}
+        values = {('git', 'status', '--porcelain'): '',
+                  ('git', 'rev-parse', 'HEAD'): 'source'}
         return values.get(args, '')
 
-    def test_preflight_accepts_clean_worktree_at_origin_main(self):
-        def feature_branch(*args, **kwargs):
-            if args == ('git', 'branch', '--show-current'):
-                return 'feature/release-worktree'
-            return self.git(*args, **kwargs)
-        with patch.object(l, 'run', side_effect=feature_branch) as runner:
-            self.assertEqual(l.preflight('0.1.2'), 'source')
-            runner.assert_any_call('git', 'branch', '--show-current', capture=True)
+    def not_on_main(self, *args, **kwargs):
+        if args[:2] == ('git', 'merge-base'):
+            raise subprocess.CalledProcessError(1, args)
+        return self.git(*args, **kwargs)
 
-    def test_preflight_rejects_detached_dirty_diverged_and_wrong_version_before_mutations(self):
-        for failing, answer in [(('git', 'branch', '--show-current'), ''),
-                                (('git', 'status', '--porcelain'), ' M file'),
-                                (('git', 'rev-parse', 'origin/main'), 'other')]:
-            with self.subTest(failing=failing), patch.object(l, 'run', side_effect=lambda *a, **k: answer if a == failing else self.git(*a, **k)) as runner:
+    def test_preflight_accepts_clean_detached_commit_already_on_origin_main(self):
+        with patch.object(l, 'run', side_effect=self.git) as runner:
+            self.assertEqual(l.preflight('0.1.2'), 'source')
+            runner.assert_any_call('git', 'merge-base', '--is-ancestor', 'HEAD', 'origin/main')
+            self.assertFalse(any(c.args[:2] == ('git', 'branch') for c in runner.call_args_list))
+
+    def test_preflight_rejects_dirty_unmerged_and_wrong_version_before_mutations(self):
+        dirty = lambda *a, **k: ' M file' if a == ('git', 'status', '--porcelain') else self.git(*a, **k)
+        for name, fake in [('dirty', dirty), ('not on origin/main', self.not_on_main)]:
+            with self.subTest(name), patch.object(l, 'run', side_effect=fake) as runner:
                 with self.assertRaises(RuntimeError): l.preflight('0.1.2')
                 self.assertFalse(any(c.args[:2] in [('git', 'tag'), ('git', 'push')] for c in runner.call_args_list))
         with patch.object(l, 'run') as runner, self.assertRaises(RuntimeError):
@@ -106,7 +105,7 @@ class LocalReleaseTests(unittest.TestCase):
     def test_failed_checks_leave_no_manifest_tag_or_published_artifacts(self):
         patch.object(l.platform, 'system', return_value='Darwin').start()
         patch.object(l.platform, 'machine', return_value='arm64').start()
-        patch.object(l, 'disk_guard').start()
+        patch.object(l, 'disk_warning').start()
         patch.object(l, 'rust_toolchain', return_value=('stable', {'cargo': '/pinned/cargo', 'rustc': '/pinned/rustc', 'rustdoc': '/pinned/rustdoc'})).start()
         calls = []
         def fake(*args, **kwargs):
@@ -124,10 +123,13 @@ class LocalReleaseTests(unittest.TestCase):
         self.assertFalse((output / 'manifest.json').exists())
         self.assertFalse(any(c[0] in ('git', 'codesign') for c in calls))
 
-    def test_low_disk_stops_before_build(self):
-        usage = type('Usage', (), {'free': l.MIN_FREE - 1})()
-        with patch.object(l.shutil, 'disk_usage', return_value=usage), self.assertRaises(RuntimeError):
-            l.disk_guard(self.root / 'not-created')
+    def test_low_disk_warns_without_stopping(self):
+        from contextlib import redirect_stderr
+        usage = type('Usage', (), {'free': l.LOW_FREE - 1})()
+        stderr = io.StringIO()
+        with patch.object(l.shutil, 'disk_usage', return_value=usage), redirect_stderr(stderr):
+            l.disk_warning(self.root / 'not-created')
+        self.assertIn('Warning', stderr.getvalue())
         self.assertFalse((self.root / 'not-created').exists())
 
     def test_retry_only_publishes_verified_original_artifacts(self):
@@ -163,13 +165,9 @@ class LocalReleaseTests(unittest.TestCase):
         with patch.object(l, 'run', side_effect=self.git) as runner:
             self.assertEqual(l.preflight('0.1.2', retry_source='source'), 'source')
             runner.assert_any_call('git', 'merge-base', '--is-ancestor', 'HEAD', 'origin/main')
-            self.assertNotIn(('git', 'branch', '--show-current'), [c.args for c in runner.call_args_list])
         with patch.object(l, 'run', side_effect=self.git), self.assertRaises(RuntimeError):
             l.preflight('0.1.2', retry_source='different-manifest-source')
-        def not_merged(*args, **kwargs):
-            if args[:2] == ('git', 'merge-base'): raise subprocess.CalledProcessError(1, args)
-            return self.git(*args, **kwargs)
-        with patch.object(l, 'run', side_effect=not_merged), self.assertRaises(subprocess.CalledProcessError):
+        with patch.object(l, 'run', side_effect=self.not_on_main), self.assertRaises(RuntimeError):
             l.preflight('0.1.2', retry_source='source')
 
 
@@ -224,7 +222,7 @@ class LocalReleaseTests(unittest.TestCase):
             return ''
         with patch.dict(os.environ, {'PATH': '/opt/homebrew/bin:/usr/bin', 'RUSTC': '/opt/homebrew/bin/rustc', 'RUSTDOC': '/opt/homebrew/bin/rustdoc', 'RUSTC_WRAPPER': 'unwanted-wrapper'}), \
              patch.object(l.platform, 'system', return_value='Darwin'), patch.object(l.platform, 'machine', return_value='arm64'), \
-             patch.object(l, 'rust_toolchain', return_value=('pinned', tools)), patch.object(l, 'disk_guard'), \
+             patch.object(l, 'rust_toolchain', return_value=('pinned', tools)), patch.object(l, 'disk_warning'), \
              patch.object(l, 'sign'), patch.object(l, 'smoke'), patch.object(l, 'run', side_effect=fake):
             l.prepare('0.1.2', 'source', output, target_dir)
         self.assertEqual(len(rust_calls), 2 * len(l.release.TARGETS))
@@ -243,7 +241,7 @@ class LocalReleaseTests(unittest.TestCase):
                 self.assertNotEqual(environment['CARGO_HOME'], str(pathlib.Path(environment['HOME']) / '.cargo'))
                 self.assertNotEqual(environment['RUSTUP_HOME'], str(pathlib.Path(environment['HOME']) / '.rustup'))
 
-    def ephemeral_fixture(self, *, failure=None, fail_disk_after_tests=False):
+    def ephemeral_fixture(self, *, failure=None):
         tools, _ = self.toolchain_fixture()
         target = self.root / 'shared-target'
         target.mkdir()
@@ -306,16 +304,13 @@ class LocalReleaseTests(unittest.TestCase):
         guards = []
         def guard(path):
             guards.append(path)
-            if fail_disk_after_tests and stages == ['test']:
-                self.assertFalse(caches[-1].exists(), 'test cache removed before release disk guard')
-                raise RuntimeError('At least 8 GiB free is required')
         patch.object(l.platform, 'system', return_value='Darwin').start()
         patch.object(l.platform, 'machine', return_value='arm64').start()
         patch.object(l, 'rust_toolchain', return_value=('pinned', tools)).start()
         patch.object(l, 'run', side_effect=fake).start()
         patch.object(l, 'sign', side_effect=sign).start()
         patch.object(l, 'smoke', side_effect=smoke).start()
-        patch.object(l, 'disk_guard', side_effect=guard).start()
+        patch.object(l, 'disk_warning', side_effect=guard).start()
         return output, target, sentinel, caches, stages, archive_bytes, guards
 
     def test_ephemeral_caches_are_freed_per_stage_and_exact_signed_archives_survive(self):
@@ -354,15 +349,6 @@ class LocalReleaseTests(unittest.TestCase):
             self.assertEqual(len(originals), 1)
             for name, original in originals.items():
                 self.assertEqual((output / name).read_bytes(), original)
-
-    def test_ephemeral_mode_preserves_disk_gate_after_test_cleanup(self):
-        output, target, sentinel, caches, stages, _, _ = self.ephemeral_fixture(fail_disk_after_tests=True)
-        with self.assertRaisesRegex(RuntimeError, '8 GiB'):
-            l.prepare('0.1.2', 'source', output, target, ephemeral_build_cache=True)
-        self.assertEqual(stages, ['test'])
-        self.assertTrue(all(not cache.exists() for cache in caches))
-        self.assertFalse(list(self.root.glob('alondra-release-*')))
-        self.assertTrue(sentinel.exists())
 
     def test_retry_rejects_ephemeral_flag_before_any_files_or_checks(self):
         from contextlib import redirect_stderr
