@@ -518,6 +518,10 @@ pub(crate) fn encrypted_resolve_delivery(
         return Ok(json!({"status":409,"body":DomainError::new("incompatible_protocol", "domain protocol 2 is required")}));
     }
     let mut store = hub.domain.store.lock().expect("domain store poisoned");
+    // Match DomainRuntime's lock order: domain store → approval lease. A
+    // revocation cannot complete after this check but before the resolution
+    // and its transport receipt commit.
+    let _approval = crate::approval_lease::ApprovalLease::shared(&hub.home)?;
     if authorize().is_err() {
         return Ok(json!({"status":403,"body":DomainError::new("forbidden", "device approval was revoked")}));
     }
@@ -721,6 +725,61 @@ mod tests {
         assert_eq!(changed["body"]["code"], "idempotency_conflict");
         let response = delivery_evidence_inner(hub.clone(), "after=0");
         assert_eq!(response.status(), StatusCode::OK);
+        drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+    #[test]
+    fn revocation_waits_for_delivery_resolution_receipt_commit() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        let (home, hub) = fixture();
+        let auth = crate::auth::Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[77u8; 32]).unwrap();
+        let code = auth.new_pairing_code();
+        let device = auth.pair(&code, "Recovery phone",
+            &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let mut store = hub.domain.store.lock().unwrap();
+        let message = store.pending_messages().unwrap().into_iter()
+            .find(|item| item.recipient_kind == "user").unwrap();
+        let claim = store.claim_message(message.id).unwrap().unwrap();
+        store.finish_message(claim.attempt_id, claim.version,
+            alondra_core::delivery::State::Uncertain, Some("push_unknown")).unwrap();
+        drop(store);
+        let epoch = hub.domain.state().unwrap().data_epoch;
+        let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
+            "decision":"retry"});
+        let (checked_tx, checked_rx) = mpsc::channel();
+        let (resume_tx, resume_rx) = mpsc::channel();
+        let writer_home = home.clone();
+        let writer_hub = hub.clone();
+        let writer_id = device.id.clone();
+        let writer = std::thread::spawn(move || {
+            encrypted_resolve_delivery(&writer_hub, &writer_id, claim.attempt_id,
+                Some(&body), (&writer_id, "recovery-work", &[31u8; 32]), || {
+                    anyhow::ensure!(crate::auth::Auth::open(&writer_home)?.list().iter()
+                        .any(|entry| entry.id == writer_id));
+                    checked_tx.send(()).unwrap();
+                    resume_rx.recv().unwrap();
+                    Ok(())
+                }).unwrap()
+        });
+        checked_rx.recv().unwrap();
+        let (revoked_tx, revoked_rx) = mpsc::channel();
+        let revoker_home = home.clone();
+        let revoke_id = device.id.clone();
+        let revoker = std::thread::spawn(move || {
+            revoked_tx.send(crate::auth::Auth::open(&revoker_home).unwrap()
+                .revoke(&revoke_id).unwrap()).unwrap();
+        });
+        assert!(revoked_rx.recv_timeout(Duration::from_millis(50)).is_err(),
+            "revocation returned before the recovery commit");
+        resume_tx.send(()).unwrap();
+        assert_eq!(writer.join().unwrap()["status"], 200);
+        assert!(revoked_rx.recv_timeout(Duration::from_secs(2)).unwrap());
+        revoker.join().unwrap();
+        assert!(!crate::auth::Auth::open(&home).unwrap().list().iter()
+            .any(|entry| entry.id == device.id));
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }
