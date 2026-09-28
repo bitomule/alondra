@@ -11,7 +11,17 @@ const MAX_DIAGNOSTIC: usize = 8192;
 
 /// This lock remains inherited by Claude across an abrupt daemon exit. A replacement
 /// daemon must not act on the same conversation until the old process has exited.
-pub struct Ownership(std::fs::File);
+pub struct Ownership { file: std::fs::File, lent: std::sync::atomic::AtomicBool }
+/// A forked child holds a duplicate of this descriptor until it execs, and closing only
+/// our copy would keep the lock alive in it. Unlocking releases every duplicate, so it is
+/// only done while no orchestrator child has been handed the lock.
+impl Drop for Ownership {
+    fn drop(&mut self) {
+        if !self.lent.load(std::sync::atomic::Ordering::SeqCst) {
+            unsafe { libc::flock(self.file.as_raw_fd(), libc::LOCK_UN); }
+        }
+    }
+}
 impl Ownership {
     pub fn acquire(directory: &Path) -> Result<Option<Self>> {
         std::fs::create_dir_all(directory)?;
@@ -21,7 +31,7 @@ impl Ownership {
             if e.kind() == std::io::ErrorKind::WouldBlock { return Ok(None); }
             return Err(e.into());
         }
-        Ok(Some(Self(file)))
+        Ok(Some(Self { file, lent: false.into() }))
     }
 }
 
@@ -265,7 +275,8 @@ impl Invocation<'_> {
         cmd.env_remove("ALONDRA_DOMAIN_CAPABILITY");
         if self.domain_v2 { cmd.env("ALONDRA_DOMAIN_PROTOCOL", "2"); }
         else { cmd.env_remove("ALONDRA_DOMAIN_PROTOCOL"); }
-        let fd = self.ownership.0.as_raw_fd();
+        self.ownership.lent.store(true, std::sync::atomic::Ordering::SeqCst);
+        let fd = self.ownership.file.as_raw_fd();
         // Only async-signal-safe libc operations may run between fork and exec.
         unsafe { cmd.pre_exec(move || {
             let flags = libc::fcntl(fd, libc::F_GETFD);
@@ -449,6 +460,48 @@ mod tests {
         assert!(Ownership::acquire(&dir).unwrap().is_none());
         drop(a);
         assert!(Ownership::acquire(&dir).unwrap().is_some());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+    /// Holds a child between fork and exec, where it owns duplicates of every descriptor
+    /// in this process, including other threads' close-on-exec lock descriptors.
+    fn paused_fork() -> (std::thread::JoinHandle<()>, libc::c_int) {
+        use std::os::unix::process::CommandExt;
+        let (mut forked, mut release) = ([0; 2], [0; 2]);
+        assert_eq!(unsafe { libc::pipe(forked.as_mut_ptr()) }, 0);
+        assert_eq!(unsafe { libc::pipe(release.as_mut_ptr()) }, 0);
+        let (forked_write, release_read) = (forked[1], release[0]);
+        let child = std::thread::spawn(move || {
+            let mut command = std::process::Command::new("/usr/bin/true");
+            unsafe {
+                command.pre_exec(move || {
+                    let mut byte = 0u8;
+                    libc::write(forked_write, (&raw const byte).cast(), 1);
+                    libc::read(release_read, (&raw mut byte).cast(), 1);
+                    Ok(())
+                });
+            }
+            assert!(command.status().unwrap().success());
+        });
+        let mut byte = 0u8;
+        assert_eq!(unsafe { libc::read(forked[0], (&raw mut byte).cast(), 1) }, 1);
+        for fd in [forked[0], forked[1], release[0]] {
+            unsafe { libc::close(fd) };
+        }
+        (child, release[1])
+    }
+    #[test]
+    fn dropped_ownership_is_free_while_another_thread_is_forking() {
+        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let ownership = Ownership::acquire(&dir).unwrap().unwrap();
+        let (child, release) = paused_fork();
+        drop(ownership);
+        let reacquired = Ownership::acquire(&dir).unwrap();
+        unsafe {
+            libc::write(release, [0u8].as_ptr().cast(), 1);
+            libc::close(release);
+        }
+        child.join().unwrap();
+        assert!(reacquired.is_some(), "a forked sibling must not keep a released ownership alive");
         std::fs::remove_dir_all(dir).unwrap();
     }
     fn fake(dir: &Path, body: &str) -> std::path::PathBuf {
