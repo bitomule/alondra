@@ -129,6 +129,7 @@ pub struct Service {
     snapshots: Arc<crate::service_overview::Snapshots>,
     inflight: InFlight,
     hub: Option<Arc<crate::hub::Hub>>,
+    domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
 }
 
 /// A verified encrypted sender with persisted approval and enrollment.
@@ -264,16 +265,28 @@ fn resolve(home: &Path, path: &Path) -> PathBuf {
 
 impl Service {
     pub fn with_hub(mut self, hub: Arc<crate::hub::Hub>) -> Self { self.hub = Some(hub); self }
+    pub fn with_domain(mut self, domain: Arc<crate::domain_runtime::DomainRuntime>) -> Self {
+        self.domain = Some(domain);
+        self
+    }
 
     fn snapshot_route_binding(&self, sender: &str, device: &Device, path: &str) -> Result<String> {
         let binding = self.snapshot_binding(sender, device)?;
         if path == "/v2/domain" || path.starts_with("/v2/domain/") {
-            let epoch = self.hub.as_ref().context("domain snapshot requires hub")?.domain.state()?.data_epoch;
+            let epoch = if let Some(domain) = &self.domain {
+                domain.state()?.data_epoch
+            } else {
+                self.hub.as_ref().context("domain snapshot requires hub")?.domain.state()?.data_epoch
+            };
             Ok(format!("{binding}:domain-v2:{epoch}"))
         } else { Ok(binding) }
     }
 
     fn atomic_local(&self, request: &LocalRequest) -> bool {
+        if self.domain.is_some() {
+            return request.method == "POST" && (request.path == "/v2/domain/commands"
+                || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some());
+        }
         request.method == "POST" && (request.path == "/v1/service/push-binding" || self.hub.is_some() &&
             (request.path == "/v2/domain/commands" || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some()))
             || self.hub.is_some() && (crate::http::atomic_local_path(&request.method, &request.path)
@@ -297,6 +310,23 @@ impl Service {
                     &binding, quiet, revision, |result| self.encode_response(envelope, device, &result, request)));
         }
         approved_method(request)?;
+        if let Some(domain) = &self.domain {
+            let result = if request.path == "/v2/domain/commands" {
+                crate::domain_api::encrypted_command_runtime(domain, &envelope.sender, request.body.as_ref(),
+                    (&envelope.sender, &envelope.request_id, digest),
+                    || self.require_device_approval(&envelope.sender, device))?
+            } else if let Some(attempt_id) = crate::domain_api::resolve_delivery_attempt_id(&request.path) {
+                crate::domain_api::encrypted_resolve_delivery_runtime(domain, &self.home,
+                    &envelope.sender, attempt_id, request.body.as_ref(),
+                    (&envelope.sender, &envelope.request_id, digest),
+                    || self.require_device_approval(&envelope.sender, device))?
+            } else {
+                bail!("v2-only service command path is not approved");
+            };
+            let bytes = self.encode_response(envelope, device, &result, request)?;
+            self.journal.complete(&envelope.sender, &envelope.request_id, &bytes)?;
+            return Ok(bytes);
+        }
         let hub = self.hub.as_ref().context("atomic local executor unavailable")?;
         let result = if request.path == "/v2/domain/commands" {
             crate::domain_api::encrypted_command(hub, &envelope.sender, request.body.as_ref(),
@@ -392,7 +422,7 @@ impl Service {
             local_port,
             home: home.to_path_buf(),
             transfers: Arc::default(), snapshots: Arc::default(),
-            inflight: Arc::default(), hub: None,
+            inflight: Arc::default(), hub: None, domain: None,
         }))
     }
 
@@ -622,6 +652,10 @@ impl Service {
             )
             .map_err(|error| anyhow!("invalid encrypted work: {error}"))?;
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
+        if self.domain.is_some() {
+            anyhow::ensure!(request.path.starts_with("/v2/domain") && approved_method(&request).is_ok(),
+                "v2-only service route is not approved");
+        }
         let body = serde_json::to_vec(e)?;
         let approval_bound_read = request.body.is_none() && (crate::service_overview::route(&request.method,&request.path)
             || request.method == "GET" && request.path.starts_with("/v2/domain"));
@@ -774,8 +808,47 @@ impl Service {
         self.dispatch_with(sender, request, &crate::prs::GhCli, &crate::http::LiveReviewHead).await
     }
 
+    async fn dispatch_v2(&self, domain: &Arc<crate::domain_runtime::DomainRuntime>,
+        sender: &str, request: &LocalRequest) -> Result<Value> {
+        approved_method(request)?;
+        let device = self.devices.get(sender).context("unapproved device")?;
+        let approved = self.approved_device(sender, device)?;
+        if crate::service_overview::route(&request.method, &request.path) && request.body.is_none() {
+            let binding = self.snapshot_route_binding(sender, device, &request.path)?;
+            if request.path == "/v2/domain/snapshot" {
+                let snapshots = self.snapshots.clone();
+                let domain = domain.clone();
+                let owner = sender.to_owned();
+                let binding_copy = binding.clone();
+                let result = tokio::task::spawn_blocking(move || snapshots.begin(&owner, &binding_copy,
+                    |limit| domain.snapshot(limit), || Ok(()))).await?;
+                approved.recheck()?;
+                return Ok(result);
+            }
+            let suffix = request.path.strip_prefix("/v2/domain/snapshot/").context("invalid snapshot route")?;
+            let result = if request.method == "DELETE" {
+                self.snapshots.release(sender, &binding, suffix)
+            } else {
+                let (id, offset) = suffix.split_once("?offset=").context("invalid snapshot offset")?;
+                self.snapshots.get(sender, &binding, id, offset.parse()?)
+            };
+            approved.recheck()?;
+            return Ok(result);
+        }
+        anyhow::ensure!(request.method == "GET" && request.body.is_none(), "v2-only read must be GET");
+        let response = crate::domain_api::encrypted_read_runtime(domain, &self.home, &approved, &request.path).await?;
+        let status = response.status().as_u16();
+        let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
+        approved.recheck()?;
+        let body: Value = serde_json::from_slice(&bytes)?;
+        Ok(json!({"status":status,"body":body}))
+    }
+
     async fn dispatch_with(&self, sender: &str, request: &LocalRequest,
         gh: &impl crate::prs::Gh, reader: &impl crate::http::ReviewHead) -> Result<Value> {
+        if let Some(domain) = &self.domain {
+            return self.dispatch_v2(domain, sender, request).await;
+        }
         if crate::service_overview::route(&request.method, &request.path) && request.body.is_none() {
             let device = self.devices.get(sender).context("unapproved device")?;
             if self.require_device_approval(sender, device).is_err() {
@@ -2833,7 +2906,7 @@ agreement_key = "{}"
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None,
+            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
         };
@@ -3091,7 +3164,7 @@ agreement_key = "{}"
                     signing_wire: URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None,
+            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
             local_port: 0,
@@ -3246,7 +3319,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None,
+            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None,
             auth: auth.clone(),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -3275,7 +3348,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None,
+            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -3431,7 +3504,7 @@ agreement_key = "{}"
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None,
+            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
             local_port,
@@ -3475,4 +3548,55 @@ agreement_key = "{}"
         local_task.abort();
         relay_task.abort();
     }
+    #[tokio::test]
+    async fn committed_service_accepts_only_encrypted_v2_routes_and_fences_revoked_reader() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("alondra-v2-service-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
+        let signing_wire = URL_SAFE_NO_PAD.encode(phone_signing.verifying_key().to_sec1_bytes());
+        let agreement_wire = URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_bytes());
+        for (name, secret) in [("mac-signing.key", [1u8; 32]), ("mac-agreement.key", [2u8; 32])] {
+            let path = home.join(name);
+            std::fs::write(&path, URL_SAFE_NO_PAD.encode(secret)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        std::fs::write(home.join("service.toml"), format!(
+            "relay_url = \"http://127.0.0.1:1/\"\nmac_id = \"mac-1\"\nowner_sub = \"owner\"\nsigning_key_path = \"mac-signing.key\"\nagreement_key_path = \"mac-agreement.key\"\n[[devices]]\ndevice_id = \"phone-a\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n"
+        )).unwrap();
+        let auth = Arc::new(Auth::open(&home).unwrap());
+        auth.approve_service("phone-a", "Test", &signing_wire).unwrap();
+        let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap().with_domain(domain.clone());
+        service.journal.reserve_enrollment("phone-a", &phone_signing.verifying_key().to_sec1_bytes()).unwrap();
+        service.journal.activate_enrollment("phone-a").unwrap();
+        let sealed = |request_id: &str, path: &str| Work {
+            request_id: request_id.into(),
+            envelope: EnvelopeV1::seal_random(EnvelopeContext {
+                route: "mac-1", sender: "phone-a", recipient: "mac-1", request_id,
+                kind: "request", expires_at_ms: now_ms() + 60_000,
+            }, serde_json::to_vec(&json!({"method":"GET","path":path})).unwrap().as_slice(),
+            &phone_signing, &service.agreement.public_key()).unwrap(),
+        };
+        assert!(service.prepare_work(&sealed("old", "/v1/overview")).is_err());
+        assert!(service.prepare_work(&sealed("pair", "/v1/pair")).is_err());
+        let valid = sealed("domain", "/v2/domain/capabilities");
+        assert!(service.prepare_work(&valid).unwrap().is_some());
+        let read = service.dispatch("phone-a", &LocalRequest {
+            method: "GET".into(), path: "/v2/domain/capabilities".into(), body: None,
+        }).await.unwrap();
+        assert_eq!(read["status"], 200);
+        assert_eq!(read["body"]["protocol_version"], 2);
+        auth.revoke("phone-a").unwrap();
+        assert!(service.prepare_work(&sealed("revoked", "/v2/domain")).is_err());
+        assert!(service.dispatch("phone-a", &LocalRequest {
+            method: "GET".into(), path: "/v2/domain".into(), body: None,
+        }).await.is_err());
+        drop(service);
+        drop(domain);
+        drop(auth);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
 }

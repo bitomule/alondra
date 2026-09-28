@@ -41,6 +41,10 @@ impl V2Only {
         }))
     }
 
+    pub(crate) fn domain(&self) -> Arc<DomainRuntime> {
+        self.domain.clone()
+    }
+
     fn signed_current(&self, signed: &Option<Extension<Signed>>) -> bool {
         let Some(Extension(signed)) = signed else {
             return false;

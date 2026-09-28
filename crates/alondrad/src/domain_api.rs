@@ -2,6 +2,8 @@
 use crate::auth::{Signed, is_local};
 use crate::domain_store::{StoreError, TransportIdentity};
 use crate::hub::Hub;
+use crate::domain_runtime::DomainRuntime;
+use std::path::Path as FsPath;
 use alondra_core::domain_v2::*;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
@@ -40,21 +42,21 @@ async fn document_content(
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    let response = document_content_inner(hub.clone(), id, query).await;
+    let response = document_content_inner(&hub.domain, &hub.home, id, query).await;
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
     response
 }
 
-async fn document_content_inner(hub: Arc<Hub>, id: String, query: Option<String>) -> Response {
+async fn document_content_inner(domain: &DomainRuntime, home: &FsPath, id: String, query: Option<String>) -> Response {
     let Some((offset, version)) = query.as_deref().and_then(document_content_query) else {
         return domain_error(DomainError::new(
             "invalid_input",
             "offset and version query are invalid",
         ));
     };
-    let state = match hub.domain.state() {
+    let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
     };
@@ -68,7 +70,7 @@ async fn document_content_inner(hub: Arc<Hub>, id: String, query: Option<String>
     let digest = revision.content_digest.clone();
     let response_digest = digest.clone();
     let revision_id = revision.id.clone();
-    let home = hub.home.clone();
+    let home = home.to_path_buf();
     let chunk = tokio::task::spawn_blocking(move || {
         crate::service_files::read_verified_domain_chunk(&home, &reference, &digest, offset, version)
     })
@@ -123,11 +125,11 @@ async fn task_actions(
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    task_actions_inner(hub, id)
+    task_actions_inner(&hub.domain, id)
 }
 
-fn task_actions_inner(hub: Arc<Hub>, id: String) -> Response {
-    let state = match hub.domain.state() {
+fn task_actions_inner(domain: &DomainRuntime, id: String) -> Response {
+    let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
     };
@@ -150,15 +152,15 @@ async fn pull_request_diff(
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    let response = pull_request_diff_inner(hub.clone(), id).await;
+    let response = pull_request_diff_inner(&hub.domain, id).await;
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
     response
 }
 
-async fn pull_request_diff_inner(hub: Arc<Hub>, id: String) -> Response {
-    let state = match hub.domain.state() {
+async fn pull_request_diff_inner(domain: &DomainRuntime, id: String) -> Response {
+    let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
     };
@@ -349,22 +351,22 @@ async fn changes(
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    let response = changes_inner(hub.clone(), query).await;
+    let response = changes_inner(&hub.domain, query).await;
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
     response
 }
 
-async fn changes_inner(hub: Arc<Hub>, query: Option<String>) -> Response {
+async fn changes_inner(domain: &DomainRuntime, query: Option<String>) -> Response {
     let Some((epoch, after, wait)) = query.as_deref().and_then(changes_query) else {
         return domain_error(DomainError::new(
             "invalid_input",
             "changes requires data_epoch, after and wait (0–50) exactly once",
         ));
     };
-    let mut receiver = hub.domain.subscribe();
-    let initial = match hub.domain.state() {
+    let mut receiver = domain.subscribe();
+    let initial = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
     };
@@ -372,7 +374,7 @@ async fn changes_inner(hub: Arc<Hub>, query: Option<String>) -> Response {
         let _ =
             tokio::time::timeout(std::time::Duration::from_secs(wait), receiver.changed()).await;
     }
-    let state = match hub.domain.state() {
+    let state = match domain.state() {
         Ok(state) => state,
         Err(_) => return storage_error(),
     };
@@ -383,11 +385,11 @@ async fn capabilities(State(hub): State<Arc<Hub>>, signed: Option<Extension<Sign
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    capabilities_inner(hub)
+    capabilities_inner(&hub.domain)
 }
 
-fn capabilities_inner(hub: Arc<Hub>) -> Response {
-    match hub.domain.state() {
+fn capabilities_inner(domain: &DomainRuntime) -> Response {
+    match domain.state() {
         Ok(state) => Json(json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch, "revision": state.revision})).into_response(),
         Err(_) => storage_error(),
     }
@@ -396,11 +398,11 @@ async fn projection(State(hub): State<Arc<Hub>>, signed: Option<Extension<Signed
     if !signed_read(&hub, &signed) {
         return unsigned_read();
     }
-    projection_inner(hub)
+    projection_inner(&hub.domain)
 }
 
-fn projection_inner(hub: Arc<Hub>) -> Response {
-    match hub.domain.snapshot(crate::service_overview::MAX_BYTES) {
+fn projection_inner(domain: &DomainRuntime) -> Response {
+    match domain.snapshot(crate::service_overview::MAX_BYTES) {
         Ok(bytes) => (
             [(axum::http::header::CONTENT_TYPE, "application/json")],
             bytes,
@@ -419,34 +421,33 @@ fn projection_inner(hub: Arc<Hub>) -> Response {
 /// Encrypted reads enter through a verified, still-approved device proof. They
 /// never round-trip over the unsigned loopback HTTP listener.
 pub(crate) async fn encrypted_read(
-    hub: Arc<Hub>,
-    approved: &crate::service::ApprovedDevice<'_>,
-    path: &str,
+    hub: Arc<Hub>, approved: &crate::service::ApprovedDevice<'_>, path: &str,
+) -> anyhow::Result<Response> {
+    encrypted_read_runtime(&hub.domain, &hub.home, approved, path).await
+}
+
+pub(crate) async fn encrypted_read_runtime(
+    domain: &DomainRuntime, home: &FsPath,
+    approved: &crate::service::ApprovedDevice<'_>, path: &str,
 ) -> anyhow::Result<Response> {
     approved.recheck()?;
     let response = if path == "/v2/domain" {
-        projection_inner(hub)
+        projection_inner(domain)
     } else if path == "/v2/domain/capabilities" {
-        capabilities_inner(hub)
+        capabilities_inner(domain)
     } else if let Some(query) = path.strip_prefix("/v2/domain/delivery-attempts?") {
-        delivery_evidence_inner(hub, query)
+        delivery_evidence_inner(domain, query)
     } else if let Some(query) = path.strip_prefix("/v2/domain/changes?") {
-        changes_inner(hub, Some(query.to_owned())).await
-    } else if let Some(id) = path
-        .strip_prefix("/v2/domain/pull-requests/")
-        .and_then(|suffix| suffix.strip_suffix("/diff"))
-    {
-        pull_request_diff_inner(hub, id.to_owned()).await
-    } else if let Some(id) = path
-        .strip_prefix("/v2/domain/tasks/")
-        .and_then(|suffix| suffix.strip_suffix("/actions"))
-    {
-        task_actions_inner(hub, id.to_owned())
-    } else if let Some((id, query)) = path
-        .strip_prefix("/v2/domain/document-revisions/")
-        .and_then(|suffix| suffix.split_once("/content?"))
-    {
-        document_content_inner(hub, id.to_owned(), Some(query.to_owned())).await
+        changes_inner(domain, Some(query.to_owned())).await
+    } else if let Some(id) = path.strip_prefix("/v2/domain/pull-requests/")
+        .and_then(|suffix| suffix.strip_suffix("/diff")) {
+        pull_request_diff_inner(domain, id.to_owned()).await
+    } else if let Some(id) = path.strip_prefix("/v2/domain/tasks/")
+        .and_then(|suffix| suffix.strip_suffix("/actions")) {
+        task_actions_inner(domain, id.to_owned())
+    } else if let Some((id, query)) = path.strip_prefix("/v2/domain/document-revisions/")
+        .and_then(|suffix| suffix.split_once("/content?")) {
+        document_content_inner(domain, home, id.to_owned(), Some(query.to_owned())).await
     } else {
         anyhow::bail!("unapproved encrypted domain read path")
     };
@@ -471,11 +472,11 @@ pub(crate) fn resolve_delivery_attempt_id(path: &str) -> Option<i64> {
     value.parse::<i64>().ok().filter(|id| *id > 0)
 }
 
-fn delivery_evidence_inner(hub: Arc<Hub>, query: &str) -> Response {
+fn delivery_evidence_inner(domain: &DomainRuntime, query: &str) -> Response {
     let Some(after) = delivery_evidence_query(query) else {
         return domain_error(DomainError::new("invalid_input", "after cursor is invalid"));
     };
-    let mut store = hub.domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock().expect("domain store poisoned");
     let state = match store.load() {
         Ok(state) => state,
         Err(_) => return storage_error(),
@@ -508,6 +509,13 @@ pub(crate) fn encrypted_resolve_delivery(
     hub: &Hub, sender: &str, attempt_id: i64, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<Value> {
+    encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, sender, attempt_id, body, identity, authorize)
+}
+
+pub(crate) fn encrypted_resolve_delivery_runtime(
+    domain: &DomainRuntime, home: &FsPath, sender: &str, attempt_id: i64, body: Option<&Value>,
+    identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<Value> {
     if sender != identity.0 || attempt_id < 1 {
         return Ok(json!({"status":422,"body":DomainError::new("invalid_input", "invalid delivery identity")}));
     }
@@ -517,11 +525,11 @@ pub(crate) fn encrypted_resolve_delivery(
     if body.protocol_version != PROTOCOL_VERSION {
         return Ok(json!({"status":409,"body":DomainError::new("incompatible_protocol", "domain protocol 2 is required")}));
     }
-    let mut store = hub.domain.store.lock().expect("domain store poisoned");
+    let mut store = domain.store.lock().expect("domain store poisoned");
     // Match DomainRuntime's lock order: domain store → approval lease. A
     // revocation cannot complete after this check but before the resolution
     // and its transport receipt commit.
-    let _approval = crate::approval_lease::ApprovalLease::shared(&hub.home)?;
+    let _approval = crate::approval_lease::ApprovalLease::shared(home)?;
     if authorize().is_err() {
         return Ok(json!({"status":403,"body":DomainError::new("forbidden", "device approval was revoked")}));
     }
@@ -599,6 +607,16 @@ pub fn encrypted_command(
     identity: TransportIdentity<'_>,
     authorize: impl FnOnce() -> anyhow::Result<()>,
 ) -> anyhow::Result<Value> {
+    encrypted_command_runtime(&hub.domain, sender, body, identity, authorize)
+}
+
+pub(crate) fn encrypted_command_runtime(
+    domain: &DomainRuntime, sender: &str, body: Option<&Value>,
+    identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
+) -> anyhow::Result<Value> {
+    if sender != identity.0 {
+        return Ok(json!({"status":422,"body":DomainError::new("invalid_input", "invalid encrypted sender identity")}));
+    }
     let envelope: CommandEnvelope = match body
         .cloned()
         .and_then(|value| serde_json::from_value(value).ok())
@@ -610,7 +628,7 @@ pub fn encrypted_command(
             );
         }
     };
-    let result = hub.domain.execute(
+    let result = domain.execute(
         &Actor::User {
             user_id: format!("device:{sender}"),
         },
@@ -723,7 +741,7 @@ mod tests {
             Some(&json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
                 "decision":"discard"})), ("phone-a", "work-a", &[32u8; 32]), || Ok(())).unwrap();
         assert_eq!(changed["body"]["code"], "idempotency_conflict");
-        let response = delivery_evidence_inner(hub.clone(), "after=0");
+        let response = delivery_evidence_inner(&hub.domain, "after=0");
         assert_eq!(response.status(), StatusCode::OK);
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
@@ -1291,6 +1309,66 @@ mod tests {
         server.abort();
         let _ = server.await;
         drop(hub);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod v2_only_encrypted_tests {
+    use super::*;
+    use crate::auth::Auth;
+    use crate::domain_runtime::DomainRuntime;
+
+    #[test]
+    fn encrypted_user_command_replays_receipt_and_revocation_fences_write_without_hub() {
+        let home = std::env::temp_dir().join(format!("alondra-v2-relay-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = DomainRuntime::open(&home).unwrap();
+        let epoch = domain.state().unwrap().data_epoch;
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: epoch,
+            command_id: "encrypted-request".into(),
+            expected_revision: 0,
+            command: Command::CreateRequest {
+                request_id: "request-from-phone".into(),
+                body: "Synthetic encrypted request".into(),
+            },
+        };
+        let body = serde_json::to_value(&envelope).unwrap();
+        let digest = [7u8; 32];
+        let authorized = || Ok(());
+        let first = encrypted_command_runtime(&domain, "phone-a", Some(&body),
+            ("phone-a", "sealed-request-1", &digest), authorized).unwrap();
+        assert_eq!(first["status"], 200);
+        assert_eq!(first["body"]["revision"], 1);
+        let replay = encrypted_command_runtime(&domain, "phone-a", Some(&body),
+            ("phone-a", "sealed-request-1", &digest), || Ok(())).unwrap();
+        assert_eq!(replay, first);
+        assert_eq!(domain.state().unwrap().revision, 1);
+        let forged_identity = encrypted_command_runtime(&domain, "phone-a", Some(&body),
+            ("phone-b", "sealed-request-forged", &digest), || Ok(())).unwrap();
+        assert_eq!(forged_identity["status"], 422);
+        let wrong_sender = encrypted_command_runtime(&domain, "phone-b", Some(&body),
+            ("phone-b", "sealed-request-1", &digest), || Ok(())).unwrap();
+        assert_eq!(wrong_sender["status"], 409);
+        let revoked = CommandEnvelope {
+            command_id: "encrypted-request-2".into(),
+            expected_revision: 1,
+            command: Command::CreateRequest {
+                request_id: "request-after-revocation".into(),
+                body: "Must not commit".into(),
+            },
+            ..envelope
+        };
+        let revoked_body = serde_json::to_value(revoked).unwrap();
+        let denied = encrypted_command_runtime(&domain, "phone-a", Some(&revoked_body),
+            ("phone-a", "sealed-request-2", &[8u8; 32]),
+            || anyhow::bail!("device revoked")).unwrap();
+        assert_eq!(denied["status"], 403);
+        assert!(!domain.state().unwrap().requests.contains_key(&"request-after-revocation".into()));
+        drop(Auth::open(&home).unwrap());
+        drop(domain);
         std::fs::remove_dir_all(home).unwrap();
     }
 }

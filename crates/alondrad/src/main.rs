@@ -195,22 +195,56 @@ fn protocol_mode(home: &Path) -> Result<ProtocolMode> {
     }
 }
 
-/// First vertical v2-only boot path. The encrypted relay adapter is a separate
-/// cutover requirement, so a HOME configured for it fails closed for now.
+/// A configured encrypted connector is part of committed v2 availability.
+/// Its unexpected exit or panic must stop the local listener as well.
+async fn supervise_v2_connector<S>(server: S, connector: tokio::task::JoinHandle<()>) -> Result<()>
+where S: std::future::Future<Output = std::io::Result<()>> {
+    tokio::select! {
+        result = server => {
+            result?;
+            anyhow::bail!("v2-only domain listener stopped unexpectedly")
+        },
+        result = connector => {
+            match result {
+                Ok(()) => anyhow::bail!("v2 encrypted service connector stopped unexpectedly"),
+                Err(error) => anyhow::bail!("v2 encrypted service connector failed: {error}"),
+            }
+        },
+    }
+}
+
+/// A committed HOME has one SQL authority shared by local and encrypted adapters.
 async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
-    anyhow::ensure!(
-        !config.home.join("service.toml").exists(),
-        "v2-only encrypted service adapter is not installed; committed HOME cannot start"
-    );
     let state = domain_bootstrap::V2Only::open(&config.home, expected_epoch)?;
     let auth = Arc::new(auth::Auth::open(&config.home)?);
+    let service = service::Service::open(&config.home, config.port, auth.clone())?
+        .map(|service| Arc::new(service.with_domain(state.domain())));
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
     let app = domain_bootstrap::router(state)
         .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     log!("v2-only domain listener on http://{addr}, data in {}", config.home.display());
-    axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await?;
-    Ok(())
+    let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).into_future();
+    if let Some(service) = service {
+        supervise_v2_connector(server, tokio::spawn(async move { service.run().await })).await
+    } else {
+        server.await?;
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod v2_connector_supervision_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn unexpected_connector_exit_and_panic_stop_the_listener() {
+        let server = || std::future::pending::<std::io::Result<()>>();
+        let exit = supervise_v2_connector(server(), tokio::spawn(async {})).await.unwrap_err();
+        assert!(exit.to_string().contains("stopped unexpectedly"));
+        let panic = supervise_v2_connector(server(), tokio::spawn(async { panic!("synthetic failure") })).await.unwrap_err();
+        assert!(panic.to_string().contains("connector failed"));
+    }
 }
 
 fn diagnostic_device(args: Vec<String>) -> Result<Option<String>> {
