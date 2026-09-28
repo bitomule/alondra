@@ -4,10 +4,10 @@ import Foundation
 public struct FleetNode: Equatable, Sendable, Identifiable {
     public var id: String { node.sessionId }
     public let node: Node
-    public let tasks: [WorkTask]
+    public let tasks: [DomainV2.Task]
     public let pendingCount: Int
 
-    public init(node: Node, tasks: [WorkTask], pendingCount: Int) {
+    public init(node: Node, tasks: [DomainV2.Task], pendingCount: Int) {
         self.node = node
         self.tasks = tasks
         self.pendingCount = pendingCount

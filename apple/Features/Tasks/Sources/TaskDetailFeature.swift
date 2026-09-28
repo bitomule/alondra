@@ -1,17 +1,23 @@
+import AlondraContracts
 import AlondraDomain
+import AlondraDomainDependency
 import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
 
+/// One Task resolved by explicit IDs. Cancel, reopen and archive are offered only when the
+/// server's task actions say so, and each sends exactly that command.
 @Reducer
 public struct TaskDetailFeature {
     @ObservableState
     public struct State: Equatable {
         public var downloads = AttachmentDownloadFeature.State()
-        public let taskID: String
-        public var task: WorkTask?
-        public var detail: TaskInFull?
+        public let taskID: DomainV2.TaskId
+        public var detail: DomainTaskDetail?
+        public var workspace: DomainWorkspace?
+        public var actions: [DomainV2.AvailableAction] = []
+        public var actionsRevision: DomainV2.Revision?
         public var isActing = false
         public var confirmation: Confirmation?
         public var mutationOutcome: TaskMutationOutcome?
@@ -20,32 +26,35 @@ public struct TaskDetailFeature {
         public let effectID = UUID()
         public let mutationID = UUID()
 
-        public init(taskID: String) { self.taskID = taskID }
+        public init(taskID: DomainV2.TaskId) { self.taskID = taskID }
 
-        public static func == (lhs: Self, rhs: Self) -> Bool {
-            lhs.downloads == rhs.downloads && lhs.taskID == rhs.taskID && lhs.task == rhs.task &&
-                lhs.detail?.task == rhs.detail?.task &&
-                lhs.detail?.documents?.map(\.id) == rhs.detail?.documents?.map(\.id) &&
-                lhs.isActing == rhs.isActing && lhs.confirmation == rhs.confirmation &&
-                lhs.mutationOutcome == rhs.mutationOutcome &&
-                lhs.successfulActionCount == rhs.successfulActionCount &&
-                lhs.presentationEpoch == rhs.presentationEpoch && lhs.effectID == rhs.effectID &&
-                lhs.mutationID == rhs.mutationID
+        public var task: DomainV2.Task? { detail?.task }
+
+        public func action(_ kind: DomainV2.ActionKind) -> DomainV2.AvailableAction? {
+            actions.first { $0.actionKind == kind }
+        }
+
+        public var canAct: Bool {
+            !isActing && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
+        }
+
+        public func canPerform(_ kind: DomainV2.ActionKind) -> Bool {
+            canAct && action(kind)?.enabled == true
         }
     }
 
     public enum Confirmation: Equatable, Sendable { case cancel }
-    public enum Mutation: Equatable, Sendable { case cancel, reopen }
 
     public enum Action: Sendable {
         case downloads(AttachmentDownloadFeature.Action)
-        case taskChanged(WorkTask?)
-        case detailLoaded(TaskInFull?, Int64, UInt64)
+        case taskChanged(DomainTaskDetail?, DomainWorkspace?)
+        case actionsLoaded([DomainV2.AvailableAction], DomainV2.Revision, UInt64)
         case cancelTapped
         case cancelConfirmationDismissed
         case cancelConfirmed
         case reopenTapped
-        case mutationFinished(TaskMutationOutcome, Mutation, UInt64)
+        case archiveTapped(Bool)
+        case mutationFinished(TaskMutationOutcome, UInt64)
         /// Sent only by the scoped journal owner after it reconciles this exact command ID.
         case commandResolved(UUID, rejection: String?)
         case commandReconciled(UUID)
@@ -53,7 +62,7 @@ public struct TaskDetailFeature {
         case disappeared
     }
 
-    @Dependency(\.taskOperations) var operations
+    @Dependency(\.domainWorkspace) var client
     public init() {}
 
     public var body: some ReducerOf<Self> {
@@ -61,64 +70,53 @@ public struct TaskDetailFeature {
         Reduce { state, action in
             switch action {
             case .downloads: return .none
-            case .taskChanged(let task):
-                guard task?.id == state.taskID || task == nil else { return .none }
-                let previous = state.task?.historyKey
-                if state.mutationOutcome == .confirmed, task?.historyKey != previous { state.mutationOutcome = nil }
-                state.task = task
-                if task == nil {
-                    state.detail = nil
+            case let .taskChanged(detail, workspace):
+                guard detail?.task.id == state.taskID || detail == nil else { return .none }
+                let previous = state.detail?.task.revision
+                if state.mutationOutcome == .confirmed, detail?.task.revision != previous { state.mutationOutcome = nil }
+                state.detail = detail
+                state.workspace = workspace
+                guard let detail, let workspace else {
+                    state.actions = []
+                    state.actionsRevision = nil
                     state.confirmation = nil
                     return .cancel(id: state.effectID)
                 }
-                guard let task, task.historyKey != previous else { return .none }
-                state.detail = nil
-                // A newer history entry can be unrelated to this command. The journal resolves it.
+                guard state.actionsRevision != detail.task.revision else { return .none }
+                let id = state.taskID
+                let revision = detail.task.revision
                 let epoch = state.presentationEpoch
                 return .run { send in
-                    await send(.detailLoaded(await operations.details(task), task.historyKey, epoch))
+                    let actions = (try? await client.taskActions(id, workspace.epoch)) ?? []
+                    await send(.actionsLoaded(actions, revision, epoch))
                 }
                 .cancellable(id: state.effectID, cancelInFlight: true)
-            case .detailLoaded(let loaded, let key, let epoch):
-                guard epoch == state.presentationEpoch, state.task?.historyKey == key else { return .none }
-                if let loaded, loaded.task.id == state.taskID { state.detail = loaded }
+            case let .actionsLoaded(actions, revision, epoch):
+                guard epoch == state.presentationEpoch, state.detail?.task.revision == revision else { return .none }
+                state.actions = actions
+                state.actionsRevision = revision
                 return .none
             case .cancelTapped:
-                guard state.task?.state.isFinished == false, !state.isActing,
-                    state.mutationOutcome?.uncertainID == nil, state.mutationOutcome != .confirmed else { return .none }
+                guard state.canPerform(.cancelTask) else { return .none }
                 state.confirmation = .cancel
                 return .none
             case .cancelConfirmationDismissed:
                 state.confirmation = nil
                 return .none
             case .cancelConfirmed:
-                guard state.confirmation == .cancel, let task = state.task,
-                    !task.state.isFinished, !state.isActing,
-                    state.mutationOutcome?.uncertainID == nil, state.mutationOutcome != .confirmed else { return .none }
+                guard state.confirmation == .cancel else { return .none }
                 state.confirmation = nil
-                state.isActing = true
-                state.mutationOutcome = nil
-                let epoch = state.presentationEpoch
-                return .run { send in
-                    await send(.mutationFinished(await operations.cancel(task), .cancel, epoch))
-                }
-                .cancellable(id: state.mutationID)
+                return perform(.cancelTask(state.taskID), kind: .cancelTask, &state)
             case .reopenTapped:
-                guard let task = state.task, task.state.isFinished, !state.isActing,
-                    state.mutationOutcome?.uncertainID == nil, state.mutationOutcome != .confirmed else { return .none }
-                state.isActing = true
-                state.mutationOutcome = nil
-                let epoch = state.presentationEpoch
-                return .run { send in
-                    await send(.mutationFinished(await operations.reopen(task), .reopen, epoch))
-                }
-                .cancellable(id: state.mutationID)
-            case .mutationFinished(let outcome, _, let epoch):
+                return perform(.reopenTask(state.taskID), kind: .reopenTask, &state)
+            case .archiveTapped(let archived):
+                return perform(.archiveTask(state.taskID, archived: archived), kind: archived ? .archiveTask : .unarchiveTask, &state)
+            case .mutationFinished(let outcome, let epoch):
                 guard epoch == state.presentationEpoch else { return .none }
                 state.isActing = false
                 state.mutationOutcome = outcome
                 if outcome == .confirmed { state.successfulActionCount += 1 }
-                // The next sync projection owns the task state. A successful POST does not.
+                // The next projection owns the task state. A recorded command does not.
                 return .none
             case .commandResolved(let id, let rejection):
                 guard state.mutationOutcome?.uncertainID == id else { return .none }
@@ -129,8 +127,10 @@ public struct TaskDetailFeature {
                 return .none
             case .identityChanged:
                 state.presentationEpoch &+= 1
-                state.task = nil
                 state.detail = nil
+                state.workspace = nil
+                state.actions = []
+                state.actionsRevision = nil
                 state.confirmation = nil
                 state.isActing = false
                 state.mutationOutcome = nil
@@ -138,6 +138,30 @@ public struct TaskDetailFeature {
             case .disappeared:
                 return .cancel(id: state.effectID)
             }
+        }
+    }
+
+    private func perform(_ intent: DomainIntent, kind: DomainV2.ActionKind, _ state: inout State) -> Effect<Action> {
+        guard state.canPerform(kind), let workspace = state.workspace else { return .none }
+        state.isActing = true
+        state.mutationOutcome = nil
+        let actions = state.actions
+        let epoch = state.presentationEpoch
+        return .run { send in
+            let result = await client.perform(intent, workspace, actions)
+            await send(.mutationFinished(TaskMutationOutcome(result), epoch))
+        }
+        .cancellable(id: state.mutationID)
+    }
+}
+
+extension TaskMutationOutcome {
+    public init(_ result: DomainCommandResult) {
+        switch result {
+        case .recorded: self = .confirmed
+        case .rejected(let rejection): self = .rejected(rejection.localizedMessage)
+        case .uncertain(let id): self = .unknown(id)
+        case .obsolete: self = .obsolete
         }
     }
 }

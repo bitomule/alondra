@@ -4,26 +4,21 @@ import Foundation
 public enum NodeMutationOutcome: Equatable, Sendable {
     case confirmed
     case rejected(String)
-    case unknown(UUID)
+    case unknown
     case obsolete
-
-    public var uncertainID: UUID? {
-        if case .unknown(let id) = self { return id }
-        return nil
-    }
 }
 
 public struct NodeFile: Equatable, Sendable, Identifiable {
     public let id: UUID
     public let name: String
     public let data: Data
-    public let storedID: String?
+    public let stored: DomainV2.AttachmentRef?
 
-    public init(id: UUID = UUID(), name: String, data: Data, storedID: String? = nil) {
+    public init(id: UUID = UUID(), name: String, data: Data, stored: DomainV2.AttachmentRef? = nil) {
         self.id = id
         self.name = name
         self.data = data
-        self.storedID = storedID
+        self.stored = stored
     }
 }
 
@@ -38,22 +33,25 @@ public struct NodeMessage: Equatable, Sendable {
 }
 
 /// Composition root installs an identity-scoped adapter over CommandGate and the upload service.
-/// The adapter must reserve the send command before uploading files or dispatching transport.
+/// The String is the Agent ID (the instance's session). Messages, closing and the orchestrator
+/// controls are v2 client contracts (`message_agent`, `close_agent`, `*_orchestrator_run`).
+/// The last String of every mutation is its command ID: a retry after an unknown outcome
+/// reuses it and the server returns the first outcome.
 public struct NodeOperations: Sendable {
-    public var send: @Sendable (String, NodeMessage) async -> NodeMutationOutcome
-    public var acknowledgeOrchestrator: @Sendable (String) async -> NodeMutationOutcome
-    public var cancelOrchestrator: @Sendable (String) async -> NodeMutationOutcome
-    public var retryOrchestrator: @Sendable (String) async -> NodeMutationOutcome
-    public var close: @Sendable (String) async -> NodeMutationOutcome
+    public var send: @Sendable (String, NodeMessage, String) async -> NodeMutationOutcome
+    public var acknowledgeOrchestrator: @Sendable (String, String) async -> NodeMutationOutcome
+    public var cancelOrchestrator: @Sendable (String, String) async -> NodeMutationOutcome
+    public var retryOrchestrator: @Sendable (String, String) async -> NodeMutationOutcome
+    public var close: @Sendable (String, String) async -> NodeMutationOutcome
     public var threads: @Sendable (String) async throws -> [NodeActivity]?
 
     public init(
-        send: @escaping @Sendable (String, NodeMessage) async -> NodeMutationOutcome,
-        close: @escaping @Sendable (String) async -> NodeMutationOutcome,
+        send: @escaping @Sendable (String, NodeMessage, String) async -> NodeMutationOutcome,
+        close: @escaping @Sendable (String, String) async -> NodeMutationOutcome,
         threads: @escaping @Sendable (String) async throws -> [NodeActivity]?,
-        retryOrchestrator: @escaping @Sendable (String) async -> NodeMutationOutcome = { _ in .obsolete },
-        cancelOrchestrator: @escaping @Sendable (String) async -> NodeMutationOutcome = { _ in .obsolete },
-        acknowledgeOrchestrator: @escaping @Sendable (String) async -> NodeMutationOutcome = { _ in .obsolete }
+        retryOrchestrator: @escaping @Sendable (String, String) async -> NodeMutationOutcome = { _, _ in .obsolete },
+        cancelOrchestrator: @escaping @Sendable (String, String) async -> NodeMutationOutcome = { _, _ in .obsolete },
+        acknowledgeOrchestrator: @escaping @Sendable (String, String) async -> NodeMutationOutcome = { _, _ in .obsolete }
     ) {
         self.send = send
         self.close = close

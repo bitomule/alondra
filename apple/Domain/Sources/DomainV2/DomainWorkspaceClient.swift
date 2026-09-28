@@ -26,24 +26,28 @@ public struct DomainCommandRejection: Error, Equatable, Sendable {
 }
 
 /// A recorded command is a decision the server stored, never proof of an external effect.
+/// `uncertain` means the response was lost: the caller keeps its draft and command ID, and a
+/// retry with that ID returns the first outcome instead of applying the command twice.
 public enum DomainCommandResult: Equatable, Sendable {
     case recorded(DomainV2.CommandOutcome)
     case rejected(DomainCommandRejection)
-    case uncertain(UUID)
+    case uncertain
     case obsolete
 }
 
 /// The single v2 boundary every feature uses: one projection stream and one command path.
 public struct DomainWorkspaceClient: Sendable {
     public var observe: @Sendable () async -> AsyncStream<DomainWorkspaceUpdate>
-    public var perform: @Sendable (DomainIntent, DomainWorkspace, [DomainV2.AvailableAction]) async -> DomainCommandResult
+    /// The String is the command ID. The first call builds the envelope from the workspace;
+    /// a retry with the same ID after an unknown outcome resends that same envelope.
+    public var perform: @Sendable (DomainIntent, DomainWorkspace, [DomainV2.AvailableAction], String) async -> DomainCommandResult
     public var taskActions: @Sendable (DomainV2.TaskId, DomainV2.DataEpoch) async throws -> [DomainV2.AvailableAction]
     public var pullRequestDiff: @Sendable (DomainV2.PrId, String) async throws -> DomainV2.PullRequestDiff
     public var documentContent: @Sendable (DomainV2.DocumentRevisionId, String) async throws -> String
 
     public init(
         observe: @escaping @Sendable () async -> AsyncStream<DomainWorkspaceUpdate>,
-        perform: @escaping @Sendable (DomainIntent, DomainWorkspace, [DomainV2.AvailableAction]) async -> DomainCommandResult,
+        perform: @escaping @Sendable (DomainIntent, DomainWorkspace, [DomainV2.AvailableAction], String) async -> DomainCommandResult,
         taskActions: @escaping @Sendable (DomainV2.TaskId, DomainV2.DataEpoch) async throws -> [DomainV2.AvailableAction],
         pullRequestDiff: @escaping @Sendable (DomainV2.PrId, String) async throws -> DomainV2.PullRequestDiff,
         documentContent: @escaping @Sendable (DomainV2.DocumentRevisionId, String) async throws -> String
@@ -58,7 +62,7 @@ public struct DomainWorkspaceClient: Sendable {
     /// Neither observes nor sends anything: an unconfigured feature stays inert.
     public static let inert = DomainWorkspaceClient(
         observe: { AsyncStream { $0.finish() } },
-        perform: { _, _, _ in .obsolete },
+        perform: { _, _, _, _ in .obsolete },
         taskActions: { _, _ in throw CancellationError() },
         pullRequestDiff: { _, _ in throw CancellationError() },
         documentContent: { _, _ in throw CancellationError() }

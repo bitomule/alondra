@@ -2,12 +2,14 @@ import AlondraAPIClient
 import AlondraContracts
 import Foundation
 
-/// The v2 domain cursor is (data_epoch, revision), independent of the v1
-/// process-local overview tick. No v1 projection is synthesized from it.
+/// The read seam for the whole app: every screen reads what this transport returns, so moving
+/// from one projection to sectioned reads changes only its implementation. The cursor is
+/// (data_epoch, revision).
 public protocol DomainSyncTransport: Sendable {
     func domainProjection() async throws -> DomainV2.DomainProjection
     func domainChanges(epoch: DomainV2.DataEpoch, after revision: DomainV2.Revision,
                        wait seconds: UInt) async throws -> DomainV2.Changes
+    func domainRuntime(epoch: DomainV2.DataEpoch) async throws -> DomainV2.Runtime
 }
 
 extension AlondraAPIClient: DomainSyncTransport {}
@@ -18,10 +20,12 @@ public struct DomainSyncState: Equatable, Sendable {
     public let publicationRevision: UInt64
     public let connection: SyncConnection
     public let projection: DomainV2.DomainProjection?
+    /// Telemetry and remote observations of the same epoch; nil until the Mac serves them.
+    public let runtime: DomainV2.Runtime?
 }
 
-/// A data-only v2 subscription. It starts on first subscription and never
-/// changes the UI-facing v1 SyncSession or its mutation routes.
+/// One subscription per identity. It starts with the first subscriber and republishes the
+/// projection on every server revision and the runtime on every idle wait.
 public actor DomainSyncSession {
     private var transport: any DomainSyncTransport
     private let backoff: ConnectionBackoff
@@ -43,7 +47,7 @@ public actor DomainSyncSession {
         self.classify = classify
         self.random = random
         state = DomainSyncState(identity: identity, generation: 0,
-                                publicationRevision: 0, connection: .connecting, projection: nil)
+                                publicationRevision: 0, connection: .connecting, projection: nil, runtime: nil)
     }
 
     public func subscribe() -> AsyncStream<DomainSyncState> {
@@ -63,6 +67,13 @@ public actor DomainSyncSession {
         self.transport = transport
         publish(identity: identity, connection: .connecting, projection: nil)
         startIfNeeded()
+    }
+
+    /// Skips the rest of the current backoff wait, for when the network returns or the app comes
+    /// back to the foreground. A healthy session keeps its long poll.
+    public func retryNow() {
+        guard case .offline = state.connection else { return }
+        refresh()
     }
 
     public func refresh() {
@@ -100,11 +111,12 @@ public actor DomainSyncSession {
     }
 
     private func publish(identity: SyncIdentity, connection: SyncConnection,
-                         projection: DomainV2.DomainProjection?) {
+                         projection: DomainV2.DomainProjection?, runtime: DomainV2.Runtime? = nil) {
         publicationRevision &+= 1
+        let runtime = projection.flatMap { projection in runtime?.dataEpoch == projection.dataEpoch ? runtime : nil }
         state = DomainSyncState(identity: identity, generation: generation,
                                 publicationRevision: publicationRevision,
-                                connection: connection, projection: projection)
+                                connection: connection, projection: projection, runtime: runtime)
         for continuation in subscribers.values { continuation.yield(state) }
     }
 
@@ -126,12 +138,20 @@ public actor DomainSyncSession {
                         currentRevision: projection.revision, subject: nil)
                 }
                 failures = 0
-                publish(identity: state.identity, connection: .online, projection: projection)
+                var runtime = await Self.runtime(transport, projection.dataEpoch) ?? state.runtime
+                guard !Task.isCancelled, generation == current else { return }
+                publish(identity: state.identity, connection: .online, projection: projection, runtime: runtime)
                 while !Task.isCancelled && generation == current && !subscribers.isEmpty {
                     let changes = try await transport.domainChanges(
                         epoch: projection.dataEpoch, after: projection.revision, wait: 10)
                     guard !Task.isCancelled, generation == current else { return }
                     if changes.changed || changes.revision != projection.revision { break }
+                    // Telemetry moves without a domain revision; refresh it on each idle wait.
+                    if let fresh = await Self.runtime(transport, projection.dataEpoch), fresh != runtime {
+                        guard !Task.isCancelled, generation == current else { return }
+                        runtime = fresh
+                        publish(identity: state.identity, connection: .online, projection: projection, runtime: fresh)
+                    }
                 }
             } catch is CancellationError {
                 return
@@ -147,9 +167,14 @@ public actor DomainSyncSession {
             } catch {
                 guard !Task.isCancelled, generation == current else { return }
                 publish(identity: state.identity, connection: .offline(classify(error)),
-                        projection: state.projection)
+                        projection: state.projection, runtime: state.runtime)
                 do { try await Task.sleep(for: nextDelay()) } catch { return }
             }
         }
+    }
+
+    /// The runtime is display-only; a daemon that does not serve it yet leaves it empty.
+    private static func runtime(_ transport: any DomainSyncTransport, _ epoch: DomainV2.DataEpoch) async -> DomainV2.Runtime? {
+        try? await transport.domainRuntime(epoch: epoch)
     }
 }

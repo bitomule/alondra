@@ -10,7 +10,8 @@ public struct PRCheck: Codable, Hashable, Sendable {
     public var running: Bool { state == "running" }
 }
 
-/// A pull request a node opened, to merge or send back from its card.
+/// What GitHub reports about a registered pull request: title, checks, mergeability and stack.
+/// Served as the runtime observation of a domain PR; it never decides merge or completion.
 public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
     public let id: UInt64
     public let url: String
@@ -65,11 +66,4 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
         return (lhs.trainPosition, lhs.id) < (rhs.trainPosition, rhs.id)
     }
 
-}
-
-/// How a PR's card leaves the inbox without going back to its node with changes.
-public enum PullRequestOutcome: Hashable, Sendable {
-    case merged(method: String)
-    case conflictsSent
-    case setAside
 }

@@ -5,15 +5,27 @@ import Foundation
 /// semantic command; reading never replies and authorizing a merge never merges.
 public enum DomainIntent: Equatable, Sendable {
     case markRead(DomainV2.InteractionId)
-    case answer(DomainV2.InteractionId, optionID: String, inputs: [String: DomainV2.InputValue])
+    case answer(DomainV2.InteractionId, optionID: String, inputs: [String: DomainV2.InputValue], attachments: [DomainV2.AttachmentRef] = [])
     case acceptDelivery(DomainV2.InteractionId)
-    case submitFeedback(DomainV2.InteractionId, body: String)
+    case submitFeedback(DomainV2.InteractionId, body: String, attachments: [DomainV2.AttachmentRef] = [])
     case authorizeMerge(DomainV2.InteractionId, method: DomainV2.MergeMethod)
     case cancelTask(DomainV2.TaskId)
     case reopenTask(DomainV2.TaskId)
     case archiveTask(DomainV2.TaskId, archived: Bool)
-    case createRequest(body: String)
+    case createRequest(body: String, project: String? = nil, options: [String: OptionChoice] = [:],
+                       issue: String? = nil, attachments: [DomainV2.AttachmentRef] = [])
     case closeRequest(DomainV2.RequestId)
+    // Client contracts the daemon does not accept yet; see DomainV2.Command.
+    case requestMoreContext(DomainV2.InteractionId, body: String, attachments: [DomainV2.AttachmentRef] = [])
+    case replyToInformation(DomainV2.InteractionId, body: String, attachments: [DomainV2.AttachmentRef] = [])
+    case setAsidePullRequest(DomainV2.PrId)
+    case askAboutPullRequest(DomainV2.PrId, head: String, body: String, attachments: [DomainV2.AttachmentRef] = [])
+    case requestConflictResolution(DomainV2.PrId, head: String)
+    case messageAgent(DomainV2.AgentId, body: String, attachments: [DomainV2.AttachmentRef] = [])
+    case closeAgent(DomainV2.AgentId, force: Bool)
+    case retryOrchestratorRun(String)
+    case cancelOrchestratorRun(String)
+    case acknowledgeOrchestratorRun(String)
 
     public var actionKind: DomainV2.ActionKind? {
         switch self {
@@ -25,18 +37,44 @@ public enum DomainIntent: Equatable, Sendable {
         case .cancelTask: .cancelTask
         case .reopenTask: .reopenTask
         case .archiveTask(_, let archived): archived ? .archiveTask : .unarchiveTask
-        case .createRequest, .closeRequest: nil
+        default: nil
+        }
+    }
+
+    /// The wire command kind, used to describe a pending or uncertain command.
+    public var commandKind: String {
+        if let actionKind { return actionKind == .unarchiveTask ? "archive_task" : actionKind.rawValue }
+        return switch self {
+        case .createRequest: "create_request"
+        case .closeRequest: "close_request"
+        case .requestMoreContext: "request_more_context"
+        case .replyToInformation: "reply_to_information"
+        case .setAsidePullRequest: "set_aside_pull_request"
+        case .askAboutPullRequest: "ask_about_pull_request"
+        case .requestConflictResolution: "request_conflict_resolution"
+        case .messageAgent: "message_agent"
+        case .closeAgent: "close_agent"
+        case .retryOrchestratorRun: "retry_orchestrator_run"
+        case .cancelOrchestratorRun: "cancel_orchestrator_run"
+        case .acknowledgeOrchestratorRun: "acknowledge_orchestrator_run"
+        default: ""
         }
     }
 
     /// The durable subject a pending or uncertain command blocks until it resolves.
     public var subject: String {
         switch self {
-        case .markRead(let id), .answer(let id, _, _), .acceptDelivery(let id),
-             .submitFeedback(let id, _), .authorizeMerge(let id, _): "interaction:" + id.rawValue
+        case .markRead(let id), .answer(let id, _, _, _), .acceptDelivery(let id), .submitFeedback(let id, _, _),
+             .authorizeMerge(let id, _), .requestMoreContext(let id, _, _), .replyToInformation(let id, _, _):
+            "interaction:" + id.rawValue
         case .cancelTask(let id), .reopenTask(let id), .archiveTask(let id, _): "task:" + id.rawValue
         case .createRequest: "request:new"
         case .closeRequest(let id): "request:" + id.rawValue
+        case .setAsidePullRequest(let id), .askAboutPullRequest(let id, _, _, _), .requestConflictResolution(let id, _):
+            "pr:" + id.rawValue
+        case .messageAgent(let id, _, _), .closeAgent(let id, _): "agent:" + id.rawValue
+        case .retryOrchestratorRun(let id), .cancelOrchestratorRun(let id), .acknowledgeOrchestratorRun(let id):
+            "orchestrator:" + id
         }
     }
 }
@@ -77,7 +115,7 @@ public struct DomainCommandFactory: Sendable {
         case .markRead(let id):
             let action = try available(.markRead, for: id, in: workspace)
             return (.markRead(interactionId: id), action.expectedRevision)
-        case let .answer(id, optionID, inputs):
+        case let .answer(id, optionID, inputs, attachments):
             let action = try available(.answerQuestion, for: id, in: workspace)
             guard let interaction = workspace.interaction(id) else { throw DomainIntentError.notFound }
             let options: [DomainV2.QuestionOption]
@@ -87,17 +125,17 @@ public struct DomainCommandFactory: Sendable {
             }
             guard let option = options.first(where: { $0.id == optionID }) else { throw DomainIntentError.optionRequired }
             let checked = try AnswerForm(option: option).validated(inputs)
-            return (.answerQuestion(attachments: [], interactionId: id, optionId: optionID, inputs: checked),
+            return (.answerQuestion(attachments: attachments, interactionId: id, optionId: optionID, inputs: checked),
                     action.expectedRevision)
         case .acceptDelivery(let id):
             let action = try available(.acceptDelivery, for: id, in: workspace)
             return (.acceptDelivery(presentationId: try presentation(action, id), targets: try targets(id, in: workspace)),
                     action.expectedRevision)
-        case let .submitFeedback(id, body):
+        case let .submitFeedback(id, body, attachments):
             let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw DomainIntentError.feedbackRequired }
             let action = try available(.submitFeedback, for: id, in: workspace)
-            return (.submitFeedback(attachments: [], presentationId: try presentation(action, id),
+            return (.submitFeedback(attachments: attachments, presentationId: try presentation(action, id),
                                     targets: try targets(id, in: workspace), body: text), action.expectedRevision)
         case let .authorizeMerge(id, method):
             let action = try available(.authorizeMerge, for: id, in: workspace)
@@ -119,15 +157,51 @@ public struct DomainCommandFactory: Sendable {
             let kind: DomainV2.ActionKind = archived ? .archiveTask : .unarchiveTask
             return (.archiveTask(taskId: id, archived: archived),
                     try taskAction(kind, id, workspace, taskActions).expectedRevision)
-        case .createRequest(let body):
+        case let .createRequest(body, project, options, issue, attachments):
             let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw DomainIntentError.requestRequired }
-            return (.createRequest(requestId: DomainV2.RequestId(rawValue: newID()), body: text),
-                    workspace.revision)
+            let id = DomainV2.RequestId(rawValue: newID())
+            if project == nil, options.isEmpty, issue == nil, attachments.isEmpty {
+                return (.createRequest(requestId: id, body: text), workspace.revision)
+            }
+            return (.createRequestWithContext(requestId: id, body: text, project: project, options: options,
+                                              issue: issue, attachments: attachments), workspace.revision)
         case .closeRequest(let id):
             guard let request = workspace.request(id) else { throw DomainIntentError.notFound }
             guard !request.closed else { throw DomainIntentError.unavailable(reason: nil) }
             return (.closeRequest(requestId: id), workspace.revision)
+        case let .requestMoreContext(id, body, attachments):
+            guard workspace.interaction(id) != nil else { throw DomainIntentError.notFound }
+            return (.requestMoreContext(attachments: attachments, interactionId: id,
+                                        body: body.trimmingCharacters(in: .whitespacesAndNewlines)), workspace.revision)
+        case let .replyToInformation(id, body, attachments):
+            let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty || !attachments.isEmpty else { throw DomainIntentError.feedbackRequired }
+            guard workspace.interaction(id) != nil else { throw DomainIntentError.notFound }
+            return (.replyToInformation(attachments: attachments, interactionId: id, body: text), workspace.revision)
+        case .setAsidePullRequest(let id):
+            guard workspace.pullRequest(id) != nil else { throw DomainIntentError.notFound }
+            return (.setAsidePullRequest(prId: id), workspace.revision)
+        case let .askAboutPullRequest(id, head, body, attachments):
+            let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty else { throw DomainIntentError.feedbackRequired }
+            guard workspace.pullRequest(id) != nil else { throw DomainIntentError.notFound }
+            return (.askAboutPullRequest(attachments: attachments, prId: id, head: head, body: text), workspace.revision)
+        case let .requestConflictResolution(id, head):
+            guard workspace.pullRequest(id) != nil else { throw DomainIntentError.notFound }
+            return (.requestConflictResolution(prId: id, head: head), workspace.revision)
+        case let .messageAgent(id, body, attachments):
+            let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !text.isEmpty || !attachments.isEmpty else { throw DomainIntentError.feedbackRequired }
+            return (.messageAgent(attachments: attachments, agentId: id, body: text), workspace.revision)
+        case let .closeAgent(id, force):
+            return (.closeAgent(agentId: id, force: force), workspace.revision)
+        case .retryOrchestratorRun(let id):
+            return (.retryOrchestratorRun(runId: id), workspace.revision)
+        case .cancelOrchestratorRun(let id):
+            return (.cancelOrchestratorRun(runId: id), workspace.revision)
+        case .acknowledgeOrchestratorRun(let id):
+            return (.acknowledgeOrchestratorRun(runId: id), workspace.revision)
         }
     }
 

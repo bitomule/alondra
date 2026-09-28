@@ -9,6 +9,7 @@ swift_library(
         "//apple:AlondraShared",
         "//apple/Contracts:AlondraContracts",
         "//apple/Domain:AlondraDomain",
+        "//apple/Features/DomainDependency:AlondraDomainDependency",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

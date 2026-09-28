@@ -1,4 +1,4 @@
-import AlondraCommands
+import AlondraDomain
 import AlondraNotificationPayload
 import Foundation
 
@@ -15,6 +15,7 @@ public final class NotificationRoutingCoordinator {
     }
     public struct Authorized {
         public let item: NotificationPayload.Item
+        public let question: NotificationPayload.Question?
         public let binding: NotificationPayload.Binding
         fileprivate let capability: UUID
     }
@@ -54,15 +55,16 @@ public final class NotificationRoutingCoordinator {
 
     /// The outer binding is only a lookup hint. No authority escapes before signature,
     /// recipient, route, expiry and inner binding have all been checked by the decoder.
-    public func authorize(_ raw: Data, nowMilliseconds: UInt64) throws -> Authorized {
+    public func authorize(_ raw: Data) throws -> Authorized {
         let hint = try ServiceNotificationDecoder.bindingHint(raw)
         guard let live = entries[hint] else { throw NotificationDecryptionError.invalidPayload }
-        let plaintext = try ServiceNotificationDecoder.decrypt(raw, context: live.entry.context, nowMilliseconds: nowMilliseconds)
+        let plaintext = try ServiceNotificationDecoder.decrypt(raw, context: live.entry.context)
         guard let payload = try JSONSerialization.jsonObject(with: plaintext) as? [AnyHashable: Any],
               let bound = NotificationPayload.BoundItem(userInfo: payload), bound.binding == hint else {
             throw NotificationDecryptionError.invalidPayload
         }
-        return Authorized(item: bound.item, binding: hint, capability: live.capability)
+        return Authorized(item: bound.item, question: NotificationPayload.Question(userInfo: payload), binding: hint,
+                          capability: live.capability)
     }
 
     public func isValid(_ authorized: Authorized) -> Bool {
@@ -76,10 +78,11 @@ public final class NotificationRoutingCoordinator {
         guard !Task.isCancelled, isValid(authorized), selected == authorized.binding else { throw CancellationError() }
     }
 
-    public func submit(_ authorized: Authorized, actionID: String, text: String?) async -> CommandResult? {
+    public func submit(_ authorized: Authorized, actionID: String, text: String?) async -> DomainCommandResult? {
         guard isValid(authorized), let client = entries[authorized.binding]?.entry.client,
-              let action = NotificationAction(item: authorized.item, action: actionID, text: text) else { return nil }
-        let result = await client.submit(action, authorized.item.inboxID)
+              let action = NotificationAction(item: authorized.item, question: authorized.question,
+                                              action: actionID, text: text) else { return nil }
+        let result = await client.submit(action, authorized.item)
         guard isValid(authorized), !Task.isCancelled else { return nil }
         return result
     }

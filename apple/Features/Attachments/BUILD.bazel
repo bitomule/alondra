@@ -4,7 +4,7 @@ swift_library(
     module_name = "AlondraAttachmentsFeature",
     srcs = glob(["Sources/*.swift"]),
     visibility = ["//visibility:public"],
-    deps = ["//apple:AlondraShared", "//apple/Domain:AlondraDomain", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+    deps = ["//apple:AlondraShared", "//apple/Contracts:AlondraContracts", "//apple/Domain:AlondraDomain", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
 )
 
 swift_test(
@@ -14,6 +14,7 @@ swift_test(
     srcs = glob(["Tests/*.swift"]),
     deps = [
         ":AlondraAttachmentsFeature",
+        "//apple/Contracts:AlondraContracts",
         "//apple/Domain:AlondraDomain",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",

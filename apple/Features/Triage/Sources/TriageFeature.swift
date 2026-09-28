@@ -1,22 +1,9 @@
 import AlondraContracts
 import AlondraDomain
+@_exported import AlondraDomainDependency
 import AlondraShared
 import ComposableArchitecture
 import Foundation
-
-private enum DomainWorkspaceClientKey: DependencyKey {
-    /// The scene boundary installs the process-owned client. An unconfigured feature neither
-    /// observes nor sends a command.
-    static let liveValue = DomainWorkspaceClient.inert
-    static let testValue = liveValue
-}
-
-extension DependencyValues {
-    public var domainWorkspace: DomainWorkspaceClient {
-        get { self[DomainWorkspaceClientKey.self] }
-        set { self[DomainWorkspaceClientKey.self] = newValue }
-    }
-}
 
 public enum TriageMutationOutcome: Equatable, Sendable {
     case confirmed
@@ -27,7 +14,7 @@ public enum TriageMutationOutcome: Equatable, Sendable {
     public init(_ result: DomainCommandResult) {
         switch result {
         case .recorded: self = .confirmed
-        case .rejected(let rejection): self = .rejected(rejection.message)
+        case .rejected(let rejection): self = .rejected(rejection.localizedMessage)
         case .uncertain(let id): self = .unknownCommand(id)
         case .obsolete: self = .obsolete
         }

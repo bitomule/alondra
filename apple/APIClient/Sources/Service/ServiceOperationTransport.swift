@@ -4,7 +4,6 @@ import Foundation
 /// AlondraAPIClient; they do not see encrypted envelopes or manage transport reconciliation.
 public protocol ServiceOperationTransport: Sendable {
     func perform(_ request: ServiceRequest) async throws -> ServiceResponse
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws
 }
 
 public enum ServiceResponse: Sendable, Equatable {
@@ -39,7 +38,8 @@ public struct ServiceRequest: Sendable, Equatable {
                 && (Int64(endpoint.path[3]).map { $0 > 0 } ?? false) && endpoint.path[4] == "resolve")
         let domainSchedule = endpoint.query.isEmpty && Self.validDomainScheduleRoute(method: endpoint.method,
             path: endpoint.path, hasBody: endpoint.body != nil)
-        guard !operationID.isEmpty, (endpoint.path.first == "v1" || domainV2 || domainDetail || domainDelivery || domainSchedule),
+        let clientContract = Self.validClientContractRoute(method: endpoint.method, path: endpoint.path)
+        guard !operationID.isEmpty, (domainV2 || domainDetail || domainDelivery || domainSchedule || clientContract),
               endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ServiceAPIError.invalidEndpoint
         }
@@ -54,6 +54,25 @@ public struct ServiceRequest: Sendable, Equatable {
         self.method = endpoint.method.rawValue
         self.path = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
         self.body = endpoint.body
+    }
+
+    /// Routes defined by the Apple client contract that the daemon adds after cutover.
+    public static func validClientContractRoute(method: HTTPMethod, path: [String]) -> Bool {
+        guard path.starts(with: ["v2"]), path.count >= 3 else { return false }
+        switch (method, Array(path.dropFirst())) {
+        case (.get, ["domain", "runtime"]), (.get, ["domain", "search"]),
+             (.get, ["domain", "catalog", "projects"]), (.get, ["domain", "catalog", "options"]),
+             (.get, ["domain", "catalog", "issues"]), (.post, ["device", "push-binding"]):
+            return true
+        case (.get, let rest) where rest.count == 4 && rest[0] == "domain" && rest[3] == "activity" && rest[1] == "agents":
+            return true
+        case (.get, let rest) where rest.count == 4 && rest[0] == "domain" && rest[1] == "attachments" && rest[3] == "content":
+            return true
+        case (.post, let rest) where rest.count == 3 && rest[0] == "domain" && rest[1] == "uploads":
+            return ["start", "chunk", "finish", "cancel"].contains(rest[2])
+        default:
+            return false
+        }
     }
 
     private static func validDomainScheduleRoute(method: HTTPMethod, path: [String], hasBody: Bool) -> Bool {

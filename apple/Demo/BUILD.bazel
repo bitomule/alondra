@@ -8,7 +8,6 @@ swift_library(
         "//apple:AlondraShared",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple/Data/Attachments:AlondraAttachmentsData",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Features/Triage:AlondraTriageFeature",
         "//apple/Features/Questions:AlondraQuestionsFeature",
         "//apple/Features/PullRequests:AlondraPullRequestsFeature",
@@ -24,5 +23,5 @@ swift_test(
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraDemoWorkspaceTests",
     srcs = glob(["Tests/*.swift"]),
-    deps = ["//apple/Contracts:AlondraContracts", "//apple/Data/Recovery:AlondraRecovery", "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport", "//apple/Domain:AlondraDomain", "//apple/Features/Fleet:AlondraFleetFeature", "//apple/Features/NewWork:AlondraNewWorkFeature", "//apple/Features/Attachments:AlondraAttachmentsFeature", "//apple/Features/PullRequests:AlondraPullRequestsFeature", ":AlondraDemoWorkspace", "//apple/Data/Commands:AlondraCommands", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "//apple/Features/Triage:AlondraTriageFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+    deps = ["//apple/Contracts:AlondraContracts", "//apple/Data/Recovery:AlondraRecovery", "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport", "//apple/Domain:AlondraDomain", "//apple/Features/Fleet:AlondraFleetFeature", "//apple/Features/NewWork:AlondraNewWorkFeature", "//apple/Features/Attachments:AlondraAttachmentsFeature", "//apple/Features/PullRequests:AlondraPullRequestsFeature", ":AlondraDemoWorkspace", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "//apple/Features/Triage:AlondraTriageFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
 )

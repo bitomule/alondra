@@ -43,31 +43,6 @@ extension Node {
     }
 }
 
-extension Question {
-    public var kindLabel: String? {
-        switch origin {
-        case "permission": String(localized: "Permission", table: "AlondraShared", bundle: #bundle)
-        case "plan": String(localized: "Plan", table: "AlondraShared", bundle: #bundle)
-        case "ask_user_question": String(localized: "Menu", table: "AlondraShared", bundle: #bundle)
-        default: nil
-        }
-    }
-}
-
-extension Report {
-    public static var seemsToAskLabel: String {
-        String(localized: "Seems to ask for something", table: "AlondraShared", bundle: #bundle)
-    }
-    public var kindLabel: String {
-        switch kind {
-        case "notice": String(localized: "Notice", table: "AlondraShared", bundle: #bundle)
-        case "document": String(localized: "Document", table: "AlondraShared", bundle: #bundle)
-        case "final": String(localized: "Finished", table: "AlondraShared", bundle: #bundle)
-        default: String(localized: "Progress", table: "AlondraShared", bundle: #bundle)
-        }
-    }
-}
-
 extension Usage {
     public var summary: String {
         let week = Int(weekPercent.rounded())
@@ -87,21 +62,6 @@ public func ago(_ millis: Int64) -> String {
     default: return String(localized: "\(seconds / 86400) d", table: "AlondraShared", bundle: #bundle)
     }
 }
-
-extension InboxItem {
-    /// The opening of the node's mission, on cards Alondra built from its terminal.
-    public var missionExcerpt: String? {
-        let mission: String? = switch self {
-        case .question(let q): q.mission
-        case .report(let r): r.mission
-        case .pullRequest: nil
-        }
-        let flat = (mission ?? "").split(whereSeparator: \.isWhitespace).joined(separator: " ")
-        guard !flat.isEmpty else { return nil }
-        return flat.count <= 240 ? flat : String(flat.prefix(240)).trimmingCharacters(in: .whitespaces) + "…"
-    }
-}
-
 
 extension OrchestratorRuntime {
     public var label: String {

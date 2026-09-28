@@ -1,25 +1,29 @@
 import Foundation
 
 extension DomainV2 {
-    public struct Request: Codable, Equatable, Sendable {
+    public struct Request: Codable, Hashable, Sendable {
         public var id: RequestId
         public var body: String
         public var closed: Bool
+        /// Client contract: the files attached when the request was created.
+        public var attachments: [AttachmentRef]?
 
-        public init(id: RequestId, body: String, closed: Bool) {
+        public init(id: RequestId, body: String, closed: Bool, attachments: [AttachmentRef]? = nil) {
             self.id = id
             self.body = body
             self.closed = closed
+            self.attachments = attachments
         }
 
         enum CodingKeys: String, CodingKey {
             case id = "id"
             case body = "body"
             case closed = "closed"
+            case attachments = "attachments"
         }
     }
 
-    public struct Agent: Codable, Equatable, Sendable {
+    public struct Agent: Codable, Hashable, Sendable {
         public var id: AgentId
         public var name: String
         public var connected: Bool
@@ -37,7 +41,7 @@ extension DomainV2 {
         }
     }
 
-    public struct Task: Codable, Equatable, Sendable {
+    public struct Task: Codable, Hashable, Sendable {
         public var id: TaskId
         public var requestId: RequestId
         public var agentId: AgentId?
@@ -88,7 +92,7 @@ extension DomainV2 {
         }
     }
 
-    public struct StackDependency: Codable, Equatable, Sendable {
+    public struct StackDependency: Codable, Hashable, Sendable {
         public var upstreamTask: TaskId
         public var presentationId: InteractionId
         public var prId: PrId
@@ -331,7 +335,7 @@ extension DomainV2 {
         }
     }
 
-    public struct AttachmentRef: Codable, Equatable, Sendable {
+    public struct AttachmentRef: Codable, Hashable, Sendable {
         public var id: String
         public var name: String
         public var contentDigest: String

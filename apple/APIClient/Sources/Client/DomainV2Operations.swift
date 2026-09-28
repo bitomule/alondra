@@ -2,9 +2,10 @@ import AlondraContracts
 import Foundation
 
 extension AlondraAPIClient {
-    /// The semantic command ID is also the durable operation identity. A retry must
-    /// reuse the whole envelope; callers must not invent a fresh ID after uncertainty.
-    public func executeDomainCommand(_ envelope: DomainV2.CommandEnvelope) async throws -> DomainV2.CommandOutcome {
+    /// The command ID is the semantic idempotency key: a retry resends the whole envelope
+    /// unchanged. `transportID` identifies one transmission and is new for every attempt.
+    public func executeDomainCommand(_ envelope: DomainV2.CommandEnvelope,
+                                     transportID: String = UUID().uuidString) async throws -> DomainV2.CommandOutcome {
         guard envelope.protocolVersion == DomainV2.protocolVersion else {
             throw DomainV2.DomainError(code: "incompatible_protocol", message: "Unsupported domain protocol", currentRevision: nil, subject: nil)
         }
@@ -17,7 +18,7 @@ extension AlondraAPIClient {
             body: try DomainV2.encode(envelope), contentType: "application/json",
             requiresJSONObjectResponse: true
         ) { try DomainV2.decode(DomainV2.CommandOutcome.self, from: $0) }
-        return try await send(endpoint, operationID: envelope.commandId.rawValue)
+        return try await send(endpoint, operationID: transportID)
     }
 }
 

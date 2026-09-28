@@ -1,74 +1,82 @@
 import AlondraContracts
 import AlondraDomain
+import AlondraDomainDependency
 import AlondraAttachmentsFeature
 import AlondraShared
 import ComposableArchitecture
 import Foundation
 
-public enum DocumentSubject: Equatable, Sendable {
-    case question(Question)
-    case report(Report)
+/// What the server presented, read as a document: information, a delivery with its exact
+/// targets, or a question whose body is long enough to review. Document content is the
+/// immutable DocumentRevision a delivery names, never a URL.
+public struct DocumentSubject: Equatable, Sendable {
+    public let item: DomainV2.InboxItem
+    public let interaction: DomainV2.Interaction
+    public let revisions: [RevisionSource]
 
-    public var id: String {
-        switch self {
-        case .question(let question): "q\(question.id)"
-        case .report(let report): "r\(report.id)"
-        }
+    public struct RevisionSource: Equatable, Sendable {
+        public let title: String
+        public let revision: DomainV2.DocumentRevision
     }
 
-    public var attachments: [Attachment] {
-        switch self {
-        case .question(let question): question.attachments
-        case .report(let report): report.attachments
+    public init?(item: DomainV2.InboxItem, in workspace: DomainWorkspace) {
+        guard let interaction = workspace.interaction(of: item) else { return nil }
+        switch interaction.payload {
+        case .information, .question, .actionRequest: revisions = []
+        case .delivery(let targets, _, _, _):
+            revisions = targets.compactMap { target in
+                guard case let .documentRevision(documentID, revisionID) = target,
+                      let revision = workspace.documentRevision(revisionID) else { return nil }
+                return RevisionSource(title: workspace.document(documentID)?.title ?? documentID.rawValue, revision: revision)
+            }
         }
+        self.item = item
+        self.interaction = interaction
+    }
+
+    public var id: String { item.id }
+    public var title: String { item.title }
+    public var isDelivery: Bool {
+        if case .delivery = interaction.payload { return true }
+        return false
+    }
+    public var isInformation: Bool {
+        if case .information = interaction.payload { return true }
+        return false
+    }
+    public var question: DomainQuestion? {
+        switch interaction.payload {
+        case .question, .actionRequest: DomainQuestion(item: item, interaction: interaction)
+        default: nil
+        }
+    }
+    public var attachments: [DomainV2.AttachmentRef] { interaction.attachments }
+
+    public func action(_ kind: DomainV2.ActionKind) -> DomainV2.AvailableAction? {
+        item.availableActions.first { $0.actionKind == kind }
     }
 
     public var sources: [DocumentSource] {
-        switch self {
-        case .question(let question):
-            let attachments = question.attachments.filter(\.isText).compactMap { attachment in
-                attachment.storedPath.map { DocumentSource.stored(name: attachment.name, path: $0) }
-            }
-            if question.isPlan, let detail = question.detail { return [.inline(detail)] + attachments }
-            let detail = question.readableDetail ?? ""
-            return detail.isEmpty && !attachments.isEmpty ? attachments : [.inline(detail)] + attachments
-        case .report(let report):
-            let attachments = report.attachments.filter { report.kind == "document" && $0.isText }.compactMap { attachment in
-                attachment.storedPath.map { DocumentSource.stored(name: attachment.name, path: $0) }
-            }
-            let body = report.body ?? ""
-            return body.isEmpty && !attachments.isEmpty ? attachments : [.inline(body)] + attachments
+        var sources: [DocumentSource] = interaction.body.isEmpty ? [] : [.inline(interaction.body)]
+        if case .delivery(let targets, _, _, _) = interaction.payload {
+            for case .text(let text) in targets where !text.isEmpty { sources.append(.inline(text)) }
         }
-    }
-}
-
-public enum DocumentSourcePolicy: Equatable, Sendable {
-    case allSections
-    case phone
-}
-
-extension DocumentSubject {
-    public func sources(for policy: DocumentSourcePolicy) -> [DocumentSource] {
-        guard policy == .phone else { return sources }
-        switch self {
-        case .question(let question):
-            if question.origin == "plan", let detail = question.detail { return [.inline(detail)] }
-            if let attachment = question.attachments.first(where: { $0.storedPath != nil }), let path = attachment.storedPath {
-                return [.stored(name: attachment.name, path: path)]
-            }
-            return [.inline(question.readableDetail ?? "")]
-        case .report(let report):
-            if let attachment = report.attachments.first(where: { $0.storedPath != nil }), let path = attachment.storedPath {
-                return [.stored(name: attachment.name, path: path)]
-            }
-            return [.inline(report.body ?? "")]
-        }
+        let texts = attachments.filter(\.isText).map(DocumentSource.attachment)
+        return sources + revisions.map { .revision(name: $0.title, id: $0.revision.id, digest: $0.revision.contentDigest) } + texts
     }
 }
 
 public enum DocumentSource: Equatable, Sendable {
     case inline(String)
-    case stored(name: String, path: String)
+    case revision(name: String, id: DomainV2.DocumentRevisionId, digest: String)
+    case attachment(DomainV2.AttachmentRef)
+}
+
+extension DomainV2.AttachmentRef {
+    /// Text attachments render inline as part of the document.
+    public var isText: Bool {
+        ["md", "markdown", "txt", "text", ""].contains((name as NSString).pathExtension.lowercased())
+    }
 }
 
 public struct DocumentSection: Equatable, Sendable, Identifiable {
@@ -77,7 +85,11 @@ public struct DocumentSection: Equatable, Sendable, Identifiable {
     public var isLoading: Bool
     public var error: String?
     public var id: String {
-        switch source { case .inline: "body"; case .stored(_, let path): path }
+        switch source {
+        case .inline(let text): "inline:\(text.hashValue)"
+        case .revision(_, let id, _): id.rawValue
+        case .attachment(let attachment): "attachment:" + attachment.id
+        }
     }
     public init(source: DocumentSource, text: String, isLoading: Bool = false, error: String? = nil) {
         self.source = source; self.text = text; self.isLoading = isLoading; self.error = error
@@ -87,22 +99,26 @@ public struct DocumentSection: Equatable, Sendable, Identifiable {
 public struct DocumentDraft: Equatable, Sendable {
     public var comments: [ReviewComment] = []
     public var general = ""
-    public var selectedOption: String?
-    public var attachmentIDs: [String] = []
     public init() {}
 }
 
+/// Reads and reviews one presented item as a document:
+/// - a delivery is accepted with `accept_delivery` or answered with one `submit_feedback`;
+/// - information is replied to with `reply_to_information`; reading alone never replies;
+/// - a question is answered with one of its server options, or its Agent is asked for context.
 @Reducer
 public struct DocumentReviewFeature {
-    public enum PendingReview: Equatable, Sendable { case feedback(String), moreContext(String) }
+    public enum PendingReview: Equatable, Sendable {
+        case feedback(String), accept, reply(String), answer(option: String, text: String), moreContext(String)
+    }
+
     @ObservableState
     public struct State: Equatable, Identifiable {
         public var id: String { subject.id }
         public var downloads = AttachmentDownloadFeature.State()
         public var attachmentPicker = AttachmentFeature.State()
         public var subject: DocumentSubject
-        public var sourcePolicy: DocumentSourcePolicy = .allSections
-        public var explanationPolicy: QuestionExplanationPolicy { sourcePolicy == .phone ? .phone : .desktop }
+        public var workspace: DomainWorkspace
         public var identity: QuestionWorkIdentity?
         public var sourceText: String?
         public var sections: [DocumentSection] = []
@@ -115,34 +131,13 @@ public struct DocumentReviewFeature {
         public var composingText = ""
         public var commentPositions: [String: String] = [:]
         public var generalFocusRequest: UInt64 = 0
-        /// Feedback anchors on the loaded document, so review actions wait for it.
-        public var canReview: Bool {
-            !isLoading && loadError == nil && sourceText != nil &&
-                !isSubmitting && pendingSubmission == nil && !completed && !needsReconciliation
-        }
-        public var hasFeedback: Bool {
-            !draft.comments.isEmpty || !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachmentPicker.entries.isEmpty
-        }
-        public var approveOption: String? {
-            guard case .question(let question) = subject else { return nil }
-            return DocumentReviewChoices().approveOption(question)
-        }
-        public var changeOption: String? {
-            guard case .question(let question) = subject else { return nil }
-            return DocumentReviewChoices().changeOption(question)
-        }
         public var isSubmitting = false
-        public var pendingSubmission: AttachmentSubmissionIntent?
+        /// Waiting for attachment uploads before sending; never a retry of a sent command.
         public var pendingReview: PendingReview?
         public var keyboardReady = false
         public var completed = false
         public var uncertainCommandID: UUID?
-        public var feedbackReadRetryAvailable = false
-        public var isRetryingFeedbackRead = false
         public var needsReconciliation = false
-        public var deliveryUnconfirmed = false
-        public var deliveryDiscarded = false
-        public var deliveryAttemptID: UInt64?
         public var conflict: String?
         public var notice: String?
         /// Only terminal command failures use the card toast; local/recovery warnings stay inline.
@@ -150,15 +145,28 @@ public struct DocumentReviewFeature {
         public var revision: UInt64 = 0
         public var loadRevision: UInt64 = 0
 
-        /// Drops only an upload-waiting gesture; drafts, receipts and dispatched commands remain intact.
-        public mutating func cancelPendingSubmission() {
-            pendingSubmission = nil
-            pendingReview = nil
+        /// Feedback anchors on the loaded document, so review actions wait for it.
+        public var canReview: Bool {
+            !isLoading && loadError == nil && sourceText != nil && !isSubmitting && pendingReview == nil
+                && !completed && !needsReconciliation && attachmentPicker.canPrepareSubmission
+        }
+        public var canAccept: Bool { canReview && subject.action(.acceptDelivery)?.enabled == true }
+        public var canSendFeedback: Bool { canReview && subject.action(.submitFeedback)?.enabled == true }
+        public var canReply: Bool { canReview && subject.isInformation }
+        public var canAnswer: Bool { canReview && subject.question?.canAnswer == true }
+        public var hasFeedback: Bool {
+            !draft.comments.isEmpty || !draft.general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                || !attachmentPicker.entries.isEmpty
         }
 
-        public init(subject: DocumentSubject, identity: QuestionWorkIdentity? = nil, feedbackAuthor: String = "") {
+        /// Drops only an upload-waiting gesture; drafts, receipts and dispatched commands remain intact.
+        public mutating func cancelPendingSubmission() { pendingReview = nil }
+
+        public init(subject: DocumentSubject, workspace: DomainWorkspace, identity: QuestionWorkIdentity? = nil,
+                    feedbackAuthor: String = "") {
             self.feedbackAuthor = feedbackAuthor
             self.subject = subject
+            self.workspace = workspace
             self.identity = identity
         }
     }
@@ -170,41 +178,28 @@ public struct DocumentReviewFeature {
         case appeared
         case phoneAppeared
         case disappeared
-        case refreshed(DocumentSubject)
+        case refreshed(DocumentSubject, DomainWorkspace)
         case identityChanged(QuestionWorkIdentity?)
         case loaded(UInt64, Result<String, DocumentLoadFailure>, sections: [DocumentSection] = [])
         case sectionLoaded(UInt64, source: DocumentSource, Result<String, DocumentLoadFailure>)
-        case chooseReviewOption(QuestionOption, author: String)
-        case submitFeedback(author: String)
-        case approveQuestion
-        case moreContextTapped(author: String)
         case composeComment(String?)
         case composingTextChanged(String)
         case saveComposedComment(anchor: String, quote: String, position: String)
         case generalChanged(String)
         case commentChanged(anchor: String, quote: String, text: String)
-        case optionSelected(String?)
-        case attachmentsChanged([String])
         case sendFeedbackTapped(author: String)
         case reviewTapped(ReviewVerdict)
-        /// H sends this only after journal and snapshot reconciliation, never merely on refresh.
-        case feedbackReadRejected(UUID, String)
-        case retryFeedbackRead
-        case feedbackReadRetryFinished(UUID)
+        case chooseReviewOption(String, author: String)
+        case moreContextTapped(author: String)
         case commandResolved(UUID, rejection: String?)
-        case commandDeliveryUnconfirmed(UUID, attemptID: UInt64?)
-        case deliveryDecisionResolved(retry: Bool, discarded: Bool = false)
-        case reconciled(cardStillOpen: Bool)
-        case submissionFinished(UInt64, QuestionOperation, QuestionWorkOutcome)
-        case reportFeedbackFinished(UInt64, QuestionWorkOutcome)
+        case submissionFinished(UInt64, DomainCommandResult)
         case dismissNotice
     }
 
     @Dependency(\.continuousClock) var clock
-    @Dependency(\.questionWorkService) var service
-    private let answerUseCase = AnswerQuestionUseCase()
-    private let reviewUseCase = ReviewDocumentUseCase()
-    private enum CancelID { case keyboard, load, submit, retryRead }
+    @Dependency(\.domainWorkspace) var client
+    @Dependency(\.attachmentDownload) var attachments
+    private enum CancelID { case keyboard, load, submit }
 
     public init() {}
 
@@ -227,51 +222,45 @@ public struct DocumentReviewFeature {
                 return .none
             case .downloads: return .none
             case .attachmentPicker(let action):
-                state.draft.attachmentIDs = state.attachmentPicker.storedIDs
-                if action.invalidatesPendingSubmission { clearPending(&state); return .none }
-                guard state.pendingSubmission != nil else { return .none }
+                if action.invalidatesPendingSubmission { state.cancelPendingSubmission(); return .none }
+                guard let review = state.pendingReview else { return .none }
                 if case .uploaded(_, .failure(let error)) = action {
-                    clearPending(&state)
+                    state.cancelPendingSubmission()
                     state.noticeIsSubmissionFailure = true
                     state.notice = error.message
                     return .none
                 }
-                guard state.attachmentPicker.allReady, let review = state.pendingReview else { return .none }
-                clearPending(&state)
-                return submitReady(review, state: &state)
-            case .phoneAppeared:
-                state.sourcePolicy = .phone
-                return load(&state)
-            case .appeared:
+                guard state.attachmentPicker.allReady else { return .none }
+                state.cancelPendingSubmission()
+                return submit(review, &state)
+            case .appeared, .phoneAppeared:
                 return load(&state)
             case .disappeared:
-                clearPending(&state)
+                state.cancelPendingSubmission()
                 return .cancel(id: CancelID.load)
-            case .refreshed(let subject):
+            case let .refreshed(subject, workspace):
                 guard state.subject.id == subject.id else {
                     let revision = state.revision &+ 1
                     let loadRevision = state.loadRevision &+ 1
-                    let sourcePolicy = state.sourcePolicy
-                    state = State(subject: subject, identity: state.identity)
-                    state.sourcePolicy = sourcePolicy
+                    state = State(subject: subject, workspace: workspace, identity: state.identity,
+                                  feedbackAuthor: state.feedbackAuthor)
                     state.revision = revision
                     state.loadRevision = loadRevision
-                    // load() replaces the prior load through cancelInFlight. Cancel submission
-                    // first so an old card's acknowledgement cannot race this card's new load.
                     return .concatenate(.cancel(id: CancelID.submit), load(&state))
                 }
-                if state.subject != subject { clearPending(&state) }
-                let oldSource = state.subject.sources(for: state.sourcePolicy)
+                if state.subject != subject { state.cancelPendingSubmission() }
+                let oldSources = state.subject.sources
                 state.subject = subject
-                if oldSource != subject.sources(for: state.sourcePolicy) {
+                state.workspace = workspace
+                if oldSources != subject.sources {
                     state.draft.comments = []
                     state.noticeIsSubmissionFailure = false
-                    state.notice = "The document changed. Review it again before sending comments."
+                    state.notice = String(localized: "The document changed. Review it again before sending comments.")
                     return load(&state)
                 }
                 return .none
             case .identityChanged(let identity):
-                clearPending(&state)
+                state.cancelPendingSubmission()
                 state.attachmentPicker = AttachmentFeature.State()
                 state.identity = identity
                 state.feedbackAuthor = ""
@@ -283,17 +272,14 @@ public struct DocumentReviewFeature {
                 state.loadError = nil
                 state.isSubmitting = false
                 state.completed = false
-                state.feedbackReadRetryAvailable = false
-                state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
-                state.deliveryUnconfirmed = false; state.deliveryDiscarded = false; state.deliveryAttemptID = nil
                 state.conflict = nil
                 state.noticeIsSubmissionFailure = false
                 state.notice = nil
                 state.revision &+= 1
                 state.loadRevision &+= 1
-                return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.submit), .cancel(id: CancelID.retryRead))
+                return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.submit))
             case .sectionLoaded(let revision, let source, let result):
                 guard state.loadRevision == revision, state.isLoading,
                       let index = state.sections.firstIndex(where: { $0.source == source }) else { return .none }
@@ -312,46 +298,22 @@ public struct DocumentReviewFeature {
                     if let previous = state.previousTextForComparison, previous != text {
                         state.draft.comments = []
                         state.noticeIsSubmissionFailure = false
-                        state.notice = "The document changed. Review it again before sending comments."
+                        state.notice = String(localized: "The document changed. Review it again before sending comments.")
                     }
                     state.sourceText = text
-                    state.sections = sections
                     state.previousTextForComparison = nil
                     state.loadError = nil
                 case .failure(let error):
                     state.loadError = error.message
                 }
                 return .none
-            case .chooseReviewOption(let option, let author):
-                guard state.canReview else { return .none }
-                state.draft.selectedOption = option.label
-                let hasExplanation = state.explanationPolicy == .phone ? state.hasFeedback
-                    : !ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author).isEmpty
-                if DocumentReviewChoices().requiresText(option, policy: state.explanationPolicy), !hasExplanation {
-                    state.generalFocusRequest &+= 1
-                    return .none
-                }
-                state.draft.selectedOption = option.label
-                return .send(.sendFeedbackTapped(author: author))
-            case .submitFeedback(let author):
-                guard state.canReview, state.hasFeedback else { return .none }
-                state.draft.selectedOption = state.draft.selectedOption ?? state.changeOption
-                return .send(.sendFeedbackTapped(author: author))
-            case .moreContextTapped(let author):
-                return prepare(.moreContext(author), state: &state)
-            case .approveQuestion:
-                guard state.canReview, case .question(let question) = state.subject, let option = state.approveOption else { return .none }
-                var draft = QuestionDraft()
-                draft.selectedOption = option
-                do { return submit(try answerUseCase.answer(question, draft: draft, explanationPolicy: state.explanationPolicy), state: &state) }
-                catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
             case .composeComment(let anchor):
-                clearPending(&state)
+                state.cancelPendingSubmission()
                 state.composingAnchor = anchor
                 state.composingText = state.draft.comments.first { $0.anchor == anchor }?.text ?? ""
                 return .none
             case .saveComposedComment(let anchor, let quote, let position):
-                clearPending(&state)
+                state.cancelPendingSubmission()
                 guard !state.isSubmitting, !state.needsReconciliation, state.composingAnchor == anchor else { return .none }
                 state.commentPositions[anchor] = position
                 state.draft.comments = DocumentCommentUseCase().updating(state.draft.comments, anchor: anchor, quote: quote, text: state.composingText, positions: state.commentPositions)
@@ -359,76 +321,61 @@ public struct DocumentReviewFeature {
                 state.composingText = ""
                 return .none
             case .composingTextChanged(let value):
-                clearPending(&state)
+                state.cancelPendingSubmission()
                 state.composingText = value
                 return .none
             case .generalChanged(let value):
-                clearPending(&state)
+                state.cancelPendingSubmission()
                 guard !state.isSubmitting, !state.needsReconciliation else { return .none }
                 state.draft.general = value
                 return .none
             case .commentChanged(let anchor, let quote, let text):
-                clearPending(&state)
+                state.cancelPendingSubmission()
                 guard !state.isSubmitting, !state.needsReconciliation else { return .none }
                 state.draft.comments = DocumentCommentUseCase().updating(state.draft.comments, anchor: anchor, quote: quote, text: text, positions: state.commentPositions)
                 return .none
-            case .optionSelected(let option):
-                clearPending(&state)
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
-                state.draft.selectedOption = option
-                return .none
-            case .attachmentsChanged(let ids):
-                clearPending(&state)
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
-                state.draft.attachmentIDs = ids
-                return .none
             case .sendFeedbackTapped(let author):
-                return prepare(.feedback(author), state: &state)
-            case .reviewTapped(let verdict):
-                guard state.attachmentPicker.allReady else { return .none }
-                guard state.draft.attachmentIDs.isEmpty else {
-                    state.noticeIsSubmissionFailure = false
-                    state.notice = "Send feedback to include your attachments before approving the artifact."
+                let body = ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)
+                if state.subject.isInformation {
+                    guard state.canReply else { return .none }
+                    guard !body.isEmpty || !state.attachmentPicker.entries.isEmpty else {
+                        state.generalFocusRequest &+= 1
+                        return .none
+                    }
+                    return prepare(.reply(body), &state)
+                }
+                guard state.canSendFeedback else { return .none }
+                guard !body.isEmpty else {
+                    state.generalFocusRequest &+= 1
                     return .none
                 }
-                guard state.canReview else { return .none }
-                guard case .report(let report) = state.subject else { return .none }
-                do { return submit(try reviewUseCase.review(report, verdict: verdict), state: &state) }
-                catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
-            case .feedbackReadRejected(let id, let message):
-                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
-                state.noticeIsSubmissionFailure = false
-                state.notice = message
-                state.feedbackReadRetryAvailable = true
-                return .none
-            case .retryFeedbackRead:
-                guard let id = state.uncertainCommandID, state.needsReconciliation,
-                      state.feedbackReadRetryAvailable, !state.isRetryingFeedbackRead else { return .none }
-                state.isRetryingFeedbackRead = true
-                return .run { send in
-                    await service.retryReportRead(id)
-                    await send(.feedbackReadRetryFinished(id))
-                }.cancellable(id: CancelID.retryRead, cancelInFlight: true)
-            case .feedbackReadRetryFinished(let id):
-                guard state.uncertainCommandID == id else { return .none }
-                state.isRetryingFeedbackRead = false
-                return .none
-            case .commandDeliveryUnconfirmed(let id, let attemptID):
-                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
-                state.uncertainCommandID = nil
-                state.deliveryUnconfirmed = true; state.deliveryAttemptID = attemptID
-                state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message + " Your draft has been kept."
-                return .none
-            case .deliveryDecisionResolved(let retry, let discarded):
-                guard state.deliveryUnconfirmed else { return .none }
-                state.deliveryDiscarded = discarded
-                state.deliveryUnconfirmed = false; state.deliveryAttemptID = nil; state.needsReconciliation = false
-                state.notice = nil; state.noticeIsSubmissionFailure = false; state.completed = !retry
-                return .none
+                return prepare(.feedback(body), &state)
+            case .reviewTapped(let verdict):
+                switch verdict {
+                case .approved:
+                    guard state.canAccept else { return .none }
+                    guard !state.hasFeedback else {
+                        state.noticeIsSubmissionFailure = false
+                        state.notice = String(localized: "Send your comments or clear them before accepting.")
+                        return .none
+                    }
+                    return prepare(.accept, &state)
+                case .comments:
+                    return .send(.sendFeedbackTapped(author: state.feedbackAuthor))
+                }
+            case let .chooseReviewOption(optionID, author):
+                guard state.canAnswer, let option = state.subject.question?.option(optionID) else { return .none }
+                let text = ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)
+                if AnswerForm(option: option).requiresText, text.isEmpty {
+                    state.generalFocusRequest &+= 1
+                    return .none
+                }
+                return prepare(.answer(option: option.id, text: text), &state)
+            case .moreContextTapped(let author):
+                guard state.canReview, state.subject.question != nil else { return .none }
+                return prepare(.moreContext(ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)), &state)
             case .commandResolved(let id, let rejection):
                 guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
-                state.feedbackReadRetryAvailable = false
-                state.isRetryingFeedbackRead = false
                 state.uncertainCommandID = nil
                 state.needsReconciliation = false
                 state.noticeIsSubmissionFailure = rejection != nil
@@ -439,39 +386,26 @@ public struct DocumentReviewFeature {
                     state.attachmentPicker = AttachmentFeature.State()
                 }
                 return .none
-            case .reconciled(let cardStillOpen):
-                guard state.needsReconciliation, !state.deliveryUnconfirmed else { return .none }
-                state.feedbackReadRetryAvailable = false
-                state.isRetryingFeedbackRead = false
-                state.uncertainCommandID = nil
-                state.needsReconciliation = false
-                state.completed = !cardStillOpen
-                state.noticeIsSubmissionFailure = false
-                state.notice = nil
-                if !cardStillOpen { state.draft = DocumentDraft() }
-                return .none
-            case .submissionFinished(let revision, _, let outcome), .reportFeedbackFinished(let revision, let outcome):
+            case .submissionFinished(let revision, let result):
                 guard state.revision == revision, state.isSubmitting else { return .none }
                 state.isSubmitting = false
-                switch outcome {
-                case .confirmed:
+                switch result {
+                case .recorded:
                     state.completed = true
                     state.draft = DocumentDraft()
                     state.attachmentPicker = AttachmentFeature.State()
-                case .conflict(let reason): state.conflict = reason; state.noticeIsSubmissionFailure = true
-                case .forbidden(let reason), .failed(let reason): state.notice = reason; state.noticeIsSubmissionFailure = true
-                case .uncertainCommand(let id):
+                case .rejected(let rejection):
+                    if rejection.errorCode == .staleRevision || rejection.errorCode == .acceptanceStale {
+                        state.conflict = rejection.localizedMessage
+                    } else {
+                        state.notice = rejection.localizedMessage
+                    }
+                    state.noticeIsSubmissionFailure = true
+                case .uncertain(let id):
                     state.uncertainCommandID = id
                     state.noticeIsSubmissionFailure = false
-                    state.notice = "The result is uncertain. Checking its status…"
+                    state.notice = String(localized: "The result is uncertain. Checking its status…")
                     state.needsReconciliation = true
-                case .uncertain:
-                    state.noticeIsSubmissionFailure = false
-                    state.notice = "We couldn’t confirm the result. Your draft has been kept."
-                    state.needsReconciliation = true
-                case .deliveryUnconfirmed(let attemptID):
-                    state.deliveryUnconfirmed = true; state.deliveryAttemptID = attemptID; state.needsReconciliation = true
-                    state.noticeIsSubmissionFailure = false; state.notice = DeliveryHandoffUnconfirmed.message + " Your draft has been kept."
                 case .obsolete: break
                 }
                 return .none
@@ -488,23 +422,21 @@ public struct DocumentReviewFeature {
     }
 
     private func load(_ state: inout State) -> Effect<Action> {
-        clearPending(&state)
         state.isLoading = true
         // A failed reload has no sourceText, but its last successful body remains the
-        // comparison baseline for the next retry. Otherwise V2 could retain V1 anchors.
+        // comparison baseline for the next retry, so old anchors are never kept.
         state.previousTextForComparison = state.sourceText ?? state.previousTextForComparison
         state.sourceText = nil
-        state.sections = state.subject.sources(for: state.sourcePolicy).map { source in
+        let sources = state.subject.sources
+        state.sections = sources.map { source in
             switch source {
             case .inline(let text): DocumentSection(source: source, text: text)
-            case .stored: DocumentSection(source: source, text: "", isLoading: true)
+            case .revision, .attachment: DocumentSection(source: source, text: "", isLoading: true)
             }
         }
         state.loadError = nil
         state.loadRevision &+= 1
         let revision = state.loadRevision
-        let sources = state.subject.sources(for: state.sourcePolicy)
-        let sourcePolicy = state.sourcePolicy
         return .run { send in
             do {
                 var documents: [String] = []
@@ -512,24 +444,34 @@ public struct DocumentReviewFeature {
                 var firstError: DocumentLoadFailure?
                 for source in sources {
                     try Task.checkCancellation()
+                    let named: (String, () async throws -> String)?
                     switch source {
                     case .inline(let inline):
                         documents.append(inline)
                         sections.append(DocumentSection(source: source, text: inline))
-                    case .stored(let name, let path):
-                        do {
-                            let text = try await service.document(path)
-                            try Task.checkCancellation()
-                            documents.append(sourcePolicy == .phone ? text : "# \(name)\n\n" + text)
-                            sections.append(DocumentSection(source: source, text: text))
-                            await send(.sectionLoaded(revision, source: source, .success(text)))
-                        } catch is CancellationError { throw CancellationError() }
-                        catch {
-                            let failure = DocumentLoadFailure(message: error.localizedDescription)
-                            firstError = firstError ?? failure
-                            sections.append(DocumentSection(source: source, text: "", error: failure.message))
-                            await send(.sectionLoaded(revision, source: source, .failure(failure)))
-                        }
+                        named = nil
+                    case let .revision(name, id, digest):
+                        named = (name, { try await client.documentContent(id, digest) })
+                    case .attachment(let attachment):
+                        named = (attachment.name, {
+                            let file = try await attachments.download(attachment, UUID())
+                            defer { Task { await attachments.release(file) } }
+                            return String(decoding: try Data(contentsOf: file.url), as: UTF8.self)
+                        })
+                    }
+                    guard let (name, read) = named else { continue }
+                    do {
+                        let text = try await read()
+                        try Task.checkCancellation()
+                        documents.append("# \(name)\n\n" + text)
+                        sections.append(DocumentSection(source: source, text: text))
+                        await send(.sectionLoaded(revision, source: source, .success(text)))
+                    } catch is CancellationError { throw CancellationError() }
+                    catch {
+                        let failure = DocumentLoadFailure(message: error.localizedDescription)
+                        firstError = firstError ?? failure
+                        sections.append(DocumentSection(source: source, text: "", error: failure.message))
+                        await send(.sectionLoaded(revision, source: source, .failure(failure)))
                     }
                 }
                 if let firstError { await send(.loaded(revision, .failure(firstError), sections: sections)) }
@@ -541,71 +483,43 @@ public struct DocumentReviewFeature {
         }.cancellable(id: CancelID.load, cancelInFlight: true)
     }
 
-    private func clearPending(_ state: inout State) { state.cancelPendingSubmission() }
-
-    private func prepare(_ review: PendingReview, state: inout State) -> Effect<Action> {
-        guard state.canReview, state.attachmentPicker.canPrepareSubmission else { return .none }
+    /// Uploads finish before the command is built, so the command carries every attachment.
+    private func prepare(_ review: PendingReview, _ state: inout State) -> Effect<Action> {
+        guard state.canReview else { return .none }
         if !state.attachmentPicker.allReady {
-            state.pendingSubmission = .awaitingReceipts
             state.pendingReview = review
             return .send(.attachmentPicker(.prepareForSubmission))
         }
-        return submitReady(review, state: &state)
+        return submit(review, &state)
     }
 
-    private func submitReady(_ review: PendingReview, state: inout State) -> Effect<Action> {
-        guard state.canReview, state.attachmentPicker.allReady else { return .none }
+    private func submit(_ review: PendingReview, _ state: inout State) -> Effect<Action> {
+        let id = state.subject.interaction.id
+        let attachments = state.attachmentPicker.stored
+        let intent: DomainIntent
         switch review {
-        case .moreContext(let author):
-            guard case .question(let question) = state.subject else { return .none }
-            var draft = QuestionDraft()
-            draft.text = ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)
-            draft.attachmentIDs = state.attachmentPicker.storedIDs
-            do { return submit(try answerUseCase.checkedMoreContext(question, draft: draft), state: &state) }
-            catch { state.noticeIsSubmissionFailure = false; state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription; return .none }
-        case .feedback(let author):
+        case .feedback(let body): intent = .submitFeedback(id, body: body, attachments: attachments)
+        case .accept: intent = .acceptDelivery(id)
+        case .reply(let body): intent = .replyToInformation(id, body: body, attachments: attachments)
+        case let .answer(option, text):
+            guard let spec = state.subject.question?.option(option) else { return .none }
             do {
-                switch state.subject {
-                case .question(let question):
-                    var answer = QuestionDraft()
-                    answer.text = ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)
-                    answer.selectedOption = state.draft.selectedOption
-                    answer.attachmentIDs = state.draft.attachmentIDs
-                    return submit(try answerUseCase.answer(question, draft: answer, explanationPolicy: state.explanationPolicy), state: &state)
-                case .report(let report):
-                    guard let identity = state.identity else {
-                        state.noticeIsSubmissionFailure = false
-                        state.notice = "Connect a paired device before sending feedback."
-                        return .none
-                    }
-                    let request = try reviewUseCase.feedback(for: report, comments: state.draft.comments,
-                                                             general: state.draft.general, author: author,
-                                                             attachmentIDs: state.draft.attachmentIDs)
-                    state.isSubmitting = true
-                    state.noticeIsSubmissionFailure = false
-                    state.notice = nil
-                    state.conflict = nil
-                    let revision = state.revision
-                    return .run { send in
-                        await send(.reportFeedbackFinished(revision, await service.submitReportFeedback(request, identity)))
-                    }.cancellable(id: CancelID.submit)
-                }
-            } catch {
+                intent = .answer(id, optionID: option, inputs: try AnswerForm(option: spec).inputs(text: text), attachments: attachments)
+            } catch let error as DomainIntentError {
                 state.noticeIsSubmissionFailure = false
-                state.notice = (error as? QuestionWorkError)?.message ?? error.localizedDescription
+                state.notice = error.formMessage
                 return .none
-            }
+            } catch { return .none }
+        case .moreContext(let body): intent = .requestMoreContext(id, body: body, attachments: attachments)
         }
-    }
-
-    private func submit(_ operation: QuestionOperation, state: inout State) -> Effect<Action> {
         state.isSubmitting = true
         state.noticeIsSubmissionFailure = false
         state.notice = nil
         state.conflict = nil
         let revision = state.revision
+        let workspace = state.workspace
         return .run { send in
-            await send(.submissionFinished(revision, operation, await service.submit(operation)))
+            await send(.submissionFinished(revision, await client.perform(intent, workspace, [])))
         }.cancellable(id: CancelID.submit)
     }
 }

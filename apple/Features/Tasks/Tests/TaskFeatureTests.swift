@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraShared
 import AlondraTasksFeature
 import ComposableArchitecture
@@ -45,26 +46,6 @@ struct TaskFeatureTests {
     }
 
     @Test
-    func detailDoesNotAssumeServerTransitionAfterSuccessfulReopen() async throws {
-        let task = try makeTask(state: "done")
-        let store = TestStore(initialState: TaskDetailFeature.State(taskID: task.id)) { TaskDetailFeature() } withDependencies: {
-            $0.taskOperations = TaskOperations(
-                cancel: { _ in .rejected("refused") }, reopen: { _ in .confirmed }, archiveCompleted: { .obsolete }, details: { _ in nil }
-            )
-        }
-        await store.send(.taskChanged(task)) { $0.task = task }
-        await store.receive(\.detailLoaded)
-        await store.send(.reopenTapped) { $0.isActing = true }
-        await store.receive(\.mutationFinished) {
-            $0.isActing = false
-            $0.mutationOutcome = .confirmed
-            $0.successfulActionCount = 1
-        }
-        #expect(store.state.task?.state == .done)
-        await store.finish()
-    }
-
-    @Test
     func scheduleRunFailureStaysVisibleThroughReconciliationThenClearsOnManualRefresh() async throws {
         let schedule = try makeSchedule()
         let store = TestStore(initialState: ScheduleFeature.State()) { ScheduleFeature() } withDependencies: {
@@ -91,62 +72,6 @@ struct TaskFeatureTests {
         await store.send(.refresh) { $0.isLoading = true; $0.mutationError = nil }
         await store.receive(\.loaded) { $0.isLoading = false }
         #expect(store.state.error == nil)
-        await store.finish()
-    }
-
-    @Test
-    func unrelatedHistoryCannotResolveUncertainReopen() async throws {
-        let task = try makeTask(state: "done")
-        let unrelatedUpdate = try makeTask(state: "done", stateSince: 200)
-        let commandID = UUID()
-        let store = TestStore(initialState: TaskDetailFeature.State(taskID: task.id)) { TaskDetailFeature() } withDependencies: {
-            $0.taskOperations = TaskOperations(
-                cancel: { _ in .rejected("refused") }, reopen: { _ in .unknown(commandID) }, archiveCompleted: { .obsolete }, details: { _ in nil }
-            )
-        }
-        await store.send(.taskChanged(task)) { $0.task = task }
-        await store.receive(\.detailLoaded)
-        await store.send(.reopenTapped) { $0.isActing = true }
-        await store.receive(\.mutationFinished) {
-            $0.isActing = false
-            $0.mutationOutcome = .unknown(commandID)
-        }
-        await store.send(.reopenTapped)
-        #expect(store.state.mutationOutcome == .unknown(commandID))
-        #expect(store.state.successfulActionCount == 0)
-        await store.send(.taskChanged(unrelatedUpdate)) { $0.task = unrelatedUpdate }
-        await store.receive(\.detailLoaded)
-        await store.send(.reopenTapped)
-        #expect(store.state.mutationOutcome == .unknown(commandID))
-        await store.send(.commandReconciled(UUID()))
-        #expect(store.state.mutationOutcome == .unknown(commandID))
-        await store.send(.commandReconciled(commandID)) { $0.mutationOutcome = nil }
-        await store.finish()
-    }
-
-    @Test
-    func archiveUnknownRequiresItsExactJournalResolution() async {
-        let commandID = UUID()
-        var state = TaskBoardFeature.State()
-        state.canArchive = true
-        let store = TestStore(initialState: state) { TaskBoardFeature() } withDependencies: {
-            $0.taskOperations = TaskOperations(
-                cancel: { _ in .obsolete }, reopen: { _ in .obsolete },
-                archiveCompleted: { .unknown(commandID) }, details: { _ in nil }
-            )
-        }
-        await store.send(.archiveTapped) { $0.isArchiving = true }
-        await store.receive(\.archiveFinished) {
-            $0.isArchiving = false
-            $0.archiveOutcome = .unknown(commandID)
-        }
-        await store.send(.boardChanged(TaskBoardProjection(board: .empty, canArchive: true, hasSnapshot: true))) {
-            $0.hasSnapshot = true
-        }
-        await store.send(.archiveTapped)
-        await store.send(.commandReconciled(UUID()))
-        #expect(store.state.archiveOutcome == .unknown(commandID))
-        await store.send(.commandReconciled(commandID)) { $0.archiveOutcome = nil }
         await store.finish()
     }
 
@@ -326,41 +251,6 @@ struct TaskFeatureTests {
     }
 
     @Test
-    func missingTaskClearsPreviouslyLoadedDetail() async throws {
-        let task = try makeTask(state: "running")
-        let full = try makeFullTask()
-        let store = TestStore(initialState: TaskDetailFeature.State(taskID: task.id)) { TaskDetailFeature() } withDependencies: {
-            $0.taskOperations = TaskOperations(
-                cancel: { _ in .obsolete }, reopen: { _ in .obsolete }, archiveCompleted: { .obsolete }, details: { _ in full }
-            )
-        }
-        await store.send(.taskChanged(task)) { $0.task = task }
-        await store.receive(\.detailLoaded) { $0.detail = full }
-        await store.send(.taskChanged(nil)) { $0.task = nil; $0.detail = nil }
-        #expect(store.state.detail == nil)
-        await store.finish()
-    }
-
-    @Test
-    func newHistoryKeyDropsOldDetailWhileNewDetailsLoad() async throws {
-        let previous = try makeTask(state: "running")
-        let updated = try makeTask(state: "done", stateSince: 200)
-        let full = try makeFullTask()
-        let store = TestStore(initialState: TaskDetailFeature.State(taskID: previous.id)) { TaskDetailFeature() } withDependencies: {
-            $0.taskOperations = TaskOperations(
-                cancel: { _ in .obsolete }, reopen: { _ in .obsolete }, archiveCompleted: { .obsolete },
-                details: { task in task.historyKey == 100 ? full : nil }
-            )
-        }
-        await store.send(.taskChanged(previous)) { $0.task = previous }
-        await store.receive(\.detailLoaded) { $0.detail = full }
-        await store.send(.taskChanged(updated)) { $0.task = updated; $0.detail = nil }
-        await store.receive(\.detailLoaded)
-        #expect(store.state.detail == nil)
-        await store.finish()
-    }
-
-    @Test
     func switchingEditorsClearsOldCatalogAndCannotSaveBeforeNewOptionsLoad() async throws {
         let a = try makeSchedule(id: "a", project: "A")
         let b = try makeSchedule(id: "b", project: "B")
@@ -417,21 +307,9 @@ struct TaskFeatureTests {
         await store.finish()
     }
 
-    private func makeTask(state: String, stateSince: Int = 100) throws -> WorkTask {
-        let data = Data(#"{"id":"t1","request":"r1","title":"Do work","dependsOn":[],"prs":[],"documents":[],"notices":[],"state":"\#(state)","stateSince":\#(stateSince),"createdAt":100}"#.utf8)
-        return try JSONDecoder().decode(WorkTask.self, from: data)
-    }
-
-    private func makeFullTask() throws -> TaskInFull {
-        let data = Data(#"{"task":{"id":"t1","request":"r1","title":"Do work","dependsOn":[],"prs":[],"documents":[],"notices":[],"state":"running","stateSince":100,"createdAt":100}}"#.utf8)
-        return try JSONDecoder().decode(TaskInFull.self, from: data)
-    }
-
     private func makeSchedule(id: String = "s1", project: String? = nil) throws -> ScheduledTask {
-        let data = Data(#"{"id":"\#(id)","title":"Daily","text":"Do it","project":"\#(project ?? "A")","options":{},"disallowed_tools":[],"frequency":"daily","hour":9,"minute":0,"start_at":1790321400000,"enabled":true,"status":"never_run","revision":1}"#.utf8)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(ScheduledTask.self, from: data)
+        let data = Data(#"{"id":"\#(id)","title":"Daily","text":"Do it","project":"\#(project ?? "A")","options":{},"disallowed_tools":[],"frequency":"daily","hour":9,"minute":0,"weekday":null,"interval":null,"start_at":1790321400000,"enabled":true,"next_run":null,"status":"never_run","last_run":null,"last_request":null,"last_error":null,"last_run_id":null,"revision":1}"#.utf8)
+        return ScheduledTask(try DomainV2.decode(DomainV2.Schedule.self, from: data))
     }
 }
 

@@ -11,10 +11,9 @@ public extension CloudAppServices {
             try await self.checkActive()
             try await self.api.registerServicePush(token: token, environment: environment, binding: binding.value, preferencesRevision: revision, quietStart: quietStart, quietEnd: quietEnd)
             try await self.checkActive()
-        }, submit: { action, itemID in
-            await self.submitCommand(action.commandKind, itemID: itemID) { api, id in
-                try await action.execute(using: api, operationID: id)
-            }
+        }, submit: { action, item in
+            do { return await self.send(try action.envelope(for: item)) }
+            catch { return .rejected(Self.rejection(error)) }
         })
     }
 }

@@ -6,6 +6,8 @@ import Foundation
 /// infers ownership from URLs, titles, dates or arrays.
 public struct DomainWorkspace: Equatable, Sendable {
     public let projection: DomainV2.DomainProjection
+    /// Telemetry and remote observations for display, from the same epoch. Never authority.
+    public private(set) var runtime: DomainV2.Runtime?
     private let tasks: [DomainV2.TaskId: DomainV2.Task]
     private let agents: [DomainV2.AgentId: DomainV2.Agent]
     private let requests: [DomainV2.RequestId: DomainV2.Request]
@@ -16,8 +18,9 @@ public struct DomainWorkspace: Equatable, Sendable {
     private let items: [String: DomainV2.InboxItem]
     private let rootOfItem: [String: String]
 
-    public init(_ projection: DomainV2.DomainProjection) {
+    public init(_ projection: DomainV2.DomainProjection, runtime: DomainV2.Runtime? = nil) {
         self.projection = projection
+        self.runtime = runtime?.dataEpoch == projection.dataEpoch ? runtime : nil
         tasks = Self.index(projection.tasks, by: \.id)
         agents = Self.index(projection.agents, by: \.id)
         requests = Self.index(projection.requests, by: \.id)
@@ -41,7 +44,7 @@ public struct DomainWorkspace: Equatable, Sendable {
         Dictionary(values.map { ($0[keyPath: key], $0) }, uniquingKeysWith: { first, _ in first })
     }
 
-    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.projection == rhs.projection }
+    public static func == (lhs: Self, rhs: Self) -> Bool { lhs.projection == rhs.projection && lhs.runtime == rhs.runtime }
 
     public var epoch: DomainV2.DataEpoch { projection.dataEpoch }
     public var revision: DomainV2.Revision { projection.revision }

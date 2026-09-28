@@ -20,7 +20,7 @@ public enum RelayRecoveryStatus: Sendable, Equatable {
 public enum RelaySessionError: Error { case invalidRequest, invalidResponse, operationIdentityConflict, outcomeUnknown, localStatus(Int) }
 
 /// One immutable approved pairing. Replace the entire service when identity or keys change.
-public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePushTransport {
+public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     private let client: any ServiceTransport
     private let makeSnapshotClient: @Sendable () async throws -> (any ServiceTransport, @Sendable () async throws -> String)
     private let outbox: RelayOutbox
@@ -30,7 +30,7 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
     private let waitForReadDeadline: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var active = true
 
-    public init(journalFile: URL, scope: RelayOutboxScope,
+    public init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
                 cachedBearer: @escaping @Sendable () async throws -> @Sendable () async throws -> String = { throw RelaySessionError.outcomeUnknown },
                 transport: (any ServiceHTTPTransport)? = nil,
@@ -38,12 +38,12 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
-        try self.init(journalFile: journalFile, scope: scope, bearer: bearer, cachedBearer: cachedBearer, transport: transport,
+        try self.init(scope: scope, bearer: bearer, cachedBearer: cachedBearer, transport: transport,
             signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
             now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
     }
 
-    init(journalFile: URL, scope: RelayOutboxScope,
+    init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
                 cachedBearer: @escaping @Sendable () async throws -> @Sendable () async throws -> String = { throw RelaySessionError.outcomeUnknown },
                 transport: (any ServiceHTTPTransport)? = nil,
@@ -60,7 +60,7 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
             return (try AlondraAPIClient.makeServiceTransport(base: scope.relay, deviceID: scope.deviceID,
                 signing: signing, bearer: lease, transport: transport), lease)
         }
-        outbox = RelayOutbox(file: journalFile, scope: scope, transport: client)
+        outbox = RelayOutbox(scope: scope, transport: client)
         codec = ServiceEnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
         self.sleep = sleep
@@ -81,9 +81,6 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
     /// Product callers use AlondraAPIClient. This capability preserves the caller's durable
     /// operation identity through encrypted dispatch and status-only reconciliation.
     public func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
-        if request.method == "GET", request.path == "/v1/overview", request.body == nil {
-            return .completed(status: 200, body: try await fetchOverview())
-        }
         if request.method == "GET", request.path == "/v2/domain", request.body == nil {
             return .completed(status: 200, body: try await fetchDomainProjection())
         }
@@ -114,10 +111,11 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
                         statusPolls: Int = 10) async throws -> RelayOperationResult {
         guard active else { throw CancellationError() }
         guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
-              (path.hasPrefix("/v1/") || (method == "GET" && path == "/v2/domain/capabilities")
+              ((method == "GET" && path == "/v2/domain/capabilities")
                || (method == "POST" && path == "/v2/domain/commands")
                || Self.validDomainDeliveryPath(method: method, path: path)
                || Self.validDomainSchedulePath(method: method, path: path, hasBody: body != nil)
+               || Self.validClientContractPath(method: method, path: path)
                || (method == "GET" && (path.hasPrefix("/v2/domain/pull-requests/") && path.hasSuffix("/diff")
                    || path.hasPrefix("/v2/domain/document-revisions/") && path.contains("/content?offset=")
                    || path.hasPrefix("/v2/domain/tasks/") && path.hasSuffix("/actions")))),
@@ -164,6 +162,13 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         return components.count == 5 && components[0] == "v2" && components[1] == "domain"
             && components[2] == "delivery-attempts" && components[4] == "resolve"
             && Int64(components[3]).map { $0 > 0 } == true
+    }
+
+    static func validClientContractPath(method: String, path: String) -> Bool {
+        guard let method = HTTPMethod(rawValue: method), path.hasPrefix("/") else { return false }
+        let route = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
+        let segments = route.split(separator: "/", omittingEmptySubsequences: false).dropFirst().map(String.init)
+        return ServiceRequest.validClientContractRoute(method: method, path: segments)
     }
 
     /// Mirror the Mac's exact Schedule v2 operation shapes before sealing.
@@ -283,18 +288,6 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
                   revision: revision, response: response), requestID: requestID)
         else { throw RelaySessionError.outcomeUnknown }
         try await outbox.retireAppliedResponse(requestID: requestID, revision: revision, verifiedResponse: response)
-    }
-
-    public func fetchOverview() async throws -> Data {
-        let requestID = UUID().uuidString
-        let result = try await read(requestID: "read-" + requestID, path: "/v1/overview", body: nil, statusPolls: 10, allowOverviewTooLarge: true)
-        guard case let .completed(status, body) = result else { throw RelaySessionError.outcomeUnknown }
-        if status == 502 { return try await fetchSnapshot(root: OverviewSnapshotAssembly.root) { _ = try SyncSnapshot(body: $0) } }
-        guard status == 200 else { throw RelaySessionError.localStatus(status) }
-        try Task.checkCancellation()
-        guard active else { throw CancellationError() }
-        _ = try SyncSnapshot(body: body)
-        return body
     }
 
     private func fetchDomainProjection() async throws -> Data {
@@ -476,19 +469,4 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         catch { return .unknown }
     }
 
-    public func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
-        guard active else { throw CancellationError() }
-        let duration = max(0, min(seconds, 50))
-        // Wait on daemon content changes inside the encrypted service request. Relay job
-        // lifecycle events include our own reads and cannot be used as content invalidation.
-        let result = try await waitForReadCompletion(requestID: "read-" + UUID().uuidString,
-            path: "/v1/changes?after=\(afterSnapshotTick)&wait=\(duration)", seconds: duration)
-        try Task.checkCancellation()
-        guard active else { throw CancellationError() }
-        switch result {
-        case .completed(let status, _) where (200..<300).contains(status): return
-        case .completed(let status, _): throw RelaySessionError.localStatus(status)
-        case .unknown: throw RelaySessionError.outcomeUnknown
-        }
-    }
 }

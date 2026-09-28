@@ -11,8 +11,11 @@ public enum ScheduleDraftRules {
         (!draft.frequency.hasPrefix("every_") || draft.interval.map { (1...365).contains($0) } == true)
     }
 
+    /// Without an options catalog nothing can be checked here, so every stored choice is kept
+    /// for the server to validate rather than silently dropped.
     public static func validOverrides(_ choices: [String: OptionChoice], in specs: [OptionSpec]) -> [String: OptionChoice] {
-        choices.filter { id, choice in
+        guard !specs.isEmpty else { return choices }
+        return choices.filter { id, choice in
             guard let spec = specs.first(where: { $0.id == id }), choice != spec.default else { return false }
             switch (spec.kind, choice) {
             case (.toggle, .toggle): return true

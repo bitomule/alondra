@@ -23,8 +23,6 @@ public actor LoopbackSession: ServiceOperationTransport {
     private let now: @Sendable () -> Date
     private var pairing: Task<String, Error>?
     private var outcomes: [String: LoopbackOutcome] = [:]
-    var uploads: [String: LoopbackUpload] = [:]
-    var downloads: [String: LoopbackDownload] = [:]
     private var active = true
 
     public init(base: URL = LoopbackSession.defaultBase, identity: LoopbackIdentityStore, deviceName: String,
@@ -45,7 +43,7 @@ public actor LoopbackSession: ServiceOperationTransport {
 
     /// Unsigned and side-effect free, so it answers before this Mac has paired with the daemon.
     public static func isDaemonRunning(at base: URL = defaultBase, urlSession: URLSession = makeURLSession()) async -> Bool {
-        let request = URLRequest(url: base.appending(path: "v1/health"), timeoutInterval: 2)
+        let request = URLRequest(url: base.appending(path: "v2/daemon"), timeoutInterval: 2)
         guard let (_, response) = try? await urlSession.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
@@ -64,28 +62,12 @@ public actor LoopbackSession: ServiceOperationTransport {
 
     public func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
         guard active else { throw CancellationError() }
-        let result: LoopbackOutcome
-        switch (request.method, request.path) {
-        case ("POST", let path) where path.hasPrefix("/v1/service/uploads/"):
-            result = try await upload(String(path.dropFirst("/v1/service/uploads/".count)), request: request)
-        case ("POST", "/v1/service/files/chunk"):
-            result = try await downloadChunk(request.body ?? Data())
-        default:
-            result = try await exchange(method: request.method, target: request.path, body: request.body,
+        let result = try await exchange(method: request.method, target: request.path, body: request.body,
                                         operationID: request.operationID)
-        }
         switch result {
         case let .completed(status, body): return .completed(status: status, body: body)
         case .unknown: return .unknown
         }
-    }
-
-    public func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
-        let wait = max(0, min(seconds, 50))
-        let result = try await exchange(method: "GET", target: "/v1/changes?after=\(afterSnapshotTick)&wait=\(wait)",
-                                        body: nil, operationID: nil, timeout: TimeInterval(wait + 15))
-        guard case .completed(let status, _) = result else { throw LoopbackSessionError.invalidResponse }
-        guard (200..<300).contains(status) else { throw LoopbackSessionError.status(status) }
     }
 
     /// A 401 comes from the daemon's signature guard, before any handler runs, so pairing again
@@ -167,17 +149,18 @@ public actor LoopbackSession: ServiceOperationTransport {
         if await identity.deviceID() == device { await identity.forgetDeviceID() }
     }
 
-    /// `/v1/pairing` answers only loopback callers, so the Mac pairs itself without asking anyone.
+    /// The pairing routes answer only loopback callers, so the Mac pairs itself without asking
+    /// anyone. `/v2/daemon/pairing` and `/v2/daemon/pair` are client contracts with the v1 bodies.
     private func pair() async throws -> String {
         struct Invitation: Decodable { let code: String }
         struct Paired: Decodable { let device_id: String }
-        var invite = URLRequest(url: base.appending(path: "v1/pairing"), timeoutInterval: 10)
+        var invite = URLRequest(url: base.appending(path: "v2/daemon/pairing"), timeoutInterval: 10)
         invite.httpMethod = "POST"
         let (inviteStatus, inviteBody) = try await send(invite)
         guard inviteStatus == 200 else { throw LoopbackSessionError.pairingRefused(inviteStatus) }
         let code = try JSONDecoder().decode(Invitation.self, from: inviteBody).code
         let publicKey = try await identity.signingKey().publicKey.x963Representation.base64EncodedString()
-        var pair = URLRequest(url: base.appending(path: "v1/pair"), timeoutInterval: 10)
+        var pair = URLRequest(url: base.appending(path: "v2/daemon/pair"), timeoutInterval: 10)
         pair.httpMethod = "POST"
         pair.setValue("application/json", forHTTPHeaderField: "Content-Type")
         pair.httpBody = try JSONSerialization.data(withJSONObject: [

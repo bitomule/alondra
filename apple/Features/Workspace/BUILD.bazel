@@ -12,7 +12,6 @@ swift_library(
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple/Features/Fleet:AlondraFleetFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Recovery:AlondraRecovery",
         "//apple/Contracts:AlondraContracts",
         "//apple/Features/Triage:AlondraTriageFeature",

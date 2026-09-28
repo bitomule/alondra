@@ -28,7 +28,6 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = [
         "//apple/APIClient:AlondraAPIClient",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Contracts:AlondraContracts",
         "//apple/Domain:AlondraDomain",
         "@swiftpkg_highlightswift//:HighlightSwift",
@@ -39,7 +38,7 @@ swift_test(
     name = "AlondraSharedTests",
     srcs = glob(["Shared/Tests/**/*.swift"]),
     data = ["//fixtures/markdown"],
-    deps = [":AlondraShared", "//apple/APIClient:AlondraAPIClient", "//apple/Data/Commands:AlondraCommands"],
+    deps = [":AlondraShared", "//apple/APIClient:AlondraAPIClient"],
 )
 
 swift_library(
@@ -65,7 +64,6 @@ swift_library(
         "//apple/AppComposition:AlondraAppComposition",
         "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/APIClient:AlondraAPIClient",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Sync:AlondraSync",
         "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -98,7 +96,6 @@ swift_test(
         "//apple/AppComposition:AlondraAppComposition",
         "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/APIClient:AlondraAPIClient",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Sync:AlondraSync",
         "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
@@ -168,7 +165,6 @@ swift_library(
         "//apple/Data/RelaySession:AlondraRelaySession",
         "//apple/Data/RelayOutbox:AlondraRelayOutbox",
         "//apple/APIClient:AlondraAPIClient",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/Data/PushBinding:AlondraPushBinding",
         "//apple/NotificationPayload:AlondraNotificationPayload",
@@ -243,7 +239,6 @@ swift_library(
         "//apple/Data/RelaySession:AlondraRelaySession",
         "//apple/Data/RelayOutbox:AlondraRelayOutbox",
         "//apple/APIClient:AlondraAPIClient",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/Data/PushBinding:AlondraPushBinding",
         "//apple/Data/Sync:AlondraSync",
@@ -289,7 +284,6 @@ swift_library(
         "//apple/AppComposition:AlondraAppComposition",
         "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
         "//apple/APIClient:AlondraAPIClient",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Sync:AlondraSync",
         "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

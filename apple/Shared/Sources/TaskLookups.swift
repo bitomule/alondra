@@ -1,3 +1,4 @@
+import AlondraContracts
 import Foundation
 
 extension PullRequest {
@@ -25,39 +26,28 @@ extension PullRequest {
     }
 }
 
-extension WorkTask.Transition {
+extension DomainV2.TaskTransition {
     /// What moved the task, in a few words.
     public var summary: String {
-        switch event.kind {
+        switch cause {
         case "dependency_ready": String(localized: "a task it builds on has its PR open", table: "AlondraShared", bundle: #bundle)
-        case "awaits_merge": String(localized: "the node has nothing left but the merge of a PR it builds on", table: "AlondraShared", bundle: #bundle)
         case "blocker_raised":
-            switch event.blocker?.kind {
+            switch blockerKind {
             case "permission": String(localized: "the node needs a permission", table: "AlondraShared", bundle: #bundle)
             case "action": String(localized: "the node asked you to do something", table: "AlondraShared", bundle: #bundle)
             default: String(localized: "the node asked you something", table: "AlondraShared", bundle: #bundle)
             }
-        case "pr_opened": String(localized: "the node opened a PR", table: "AlondraShared", bundle: #bundle)
-        case "document_sent": String(localized: "the node sent a document for review", table: "AlondraShared", bundle: #bundle)
-        case "auto_merged": String(localized: "Alondra merged its PR", table: "AlondraShared", bundle: #bundle)
-        case "final_report": String(localized: "the node reported it finished", table: "AlondraShared", bundle: #bundle)
-        case "answered": String(localized: "you answered", table: "AlondraShared", bundle: #bundle)
-        case "changes_requested": String(localized: "you asked for changes", table: "AlondraShared", bundle: #bundle)
-        case "node_updated": String(localized: "the node pushed changes and let you know again", table: "AlondraShared", bundle: #bundle)
+        case "pr_registered": String(localized: "the node opened a PR", table: "AlondraShared", bundle: #bundle)
+        case "result_presented": String(localized: "the node presented a result", table: "AlondraShared", bundle: #bundle)
+        case "delivery_accepted": String(localized: "you accepted the result", table: "AlondraShared", bundle: #bundle)
+        case "merge_authorized": String(localized: "you authorized the merge", table: "AlondraShared", bundle: #bundle)
         case "merged": String(localized: "merged", table: "AlondraShared", bundle: #bundle)
-        case "review_closed": String(localized: "the review closed without a merge", table: "AlondraShared", bundle: #bundle)
+        case "answered": String(localized: "you answered", table: "AlondraShared", bundle: #bundle)
+        case "feedback": String(localized: "you asked for changes", table: "AlondraShared", bundle: #bundle)
+        case "completed": String(localized: "the node declared it finished", table: "AlondraShared", bundle: #bundle)
         case "reopen": String(localized: "reopened", table: "AlondraShared", bundle: #bundle)
         case "cancel": String(localized: "cancelled", table: "AlondraShared", bundle: #bundle)
-        default: event.kind
+        default: cause
         }
-    }
-}
-
-extension WorkRequest {
-    /// The first line of what the user asked, shortened.
-    public var headline: String? {
-        let line = (text ?? "").split(whereSeparator: \.isNewline).first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
-        guard !line.isEmpty else { return nil }
-        return line.count <= 90 ? line : String(line.prefix(89)).trimmingCharacters(in: .whitespaces) + "…"
     }
 }

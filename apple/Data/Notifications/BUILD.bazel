@@ -6,11 +6,11 @@ swift_library(
     module_name = "AlondraNotificationActions",
     features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Data/Commands:AlondraCommands", "//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Contracts:AlondraContracts", "//apple/Domain:AlondraDomain", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )
 
 swift_test(
     name = "AlondraNotificationActionsTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = ["//apple/ServicePairing:AlondraServicePairing", ":AlondraNotificationActions", "//apple/APIClient:AlondraAPIClient", "//apple/Data/Commands:AlondraCommands", "//apple/NotificationPayload:AlondraNotificationPayload"],
+    deps = ["//apple/ServicePairing:AlondraServicePairing", ":AlondraNotificationActions", "//apple/APIClient:AlondraAPIClient", "//apple/Contracts:AlondraContracts", "//apple/Domain:AlondraDomain", "//apple/NotificationPayload:AlondraNotificationPayload"],
 )
