@@ -596,13 +596,6 @@ struct ResolveDelivery {
     decision: DeliveryDecision,
 }
 
-pub(crate) fn encrypted_resolve_delivery(
-    hub: &Hub, sender: &str, attempt_id: i64, body: Option<&Value>,
-    identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<Value> {
-    encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, sender, attempt_id, body, identity, authorize)
-}
-
 pub(crate) fn encrypted_resolve_delivery_runtime(
     domain: &DomainRuntime, home: &FsPath, sender: &str, attempt_id: i64, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
@@ -632,75 +625,54 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
         Err(StoreError::Storage(error)) => return Err(error),
     })
 }
+/// The legacy daemon keeps v2 reads but never writes its sidecar: a v2 write
+/// here would make the store non-empty and block both cutover and legacy startup.
+pub(crate) fn legacy_write_blocked() -> DomainError {
+    DomainError::new("incompatible_protocol", "domain v2 writes require the committed cutover")
+}
 async fn command(
-    State(hub): State<Arc<Hub>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     signed: Option<Extension<Signed>>,
     headers: HeaderMap,
     body: Result<Json<CommandEnvelope>, JsonRejection>,
 ) -> Response {
-    let envelope = match body {
-        Ok(Json(value)) => value,
-        Err(_) => {
-            return domain_error(DomainError::new(
-                "invalid_input",
-                "invalid domain command envelope",
-            ));
-        }
-    };
-    let result = if let Some(header) = headers.get("authorization") {
+    if body.is_err() {
+        return domain_error(DomainError::new(
+            "invalid_input",
+            "invalid domain command envelope",
+        ));
+    }
+    if headers.contains_key("authorization") {
         if signed.is_some() || !is_local(&peer, &headers) {
             return domain_error(DomainError::new(
                 "forbidden",
                 "producer capabilities are local only",
             ));
         }
-        let Some(token) = header
-            .to_str()
-            .ok()
-            .and_then(|value| value.strip_prefix("Bearer "))
-        else {
-            return domain_error(DomainError::new("forbidden", "invalid domain capability"));
-        };
-        hub.domain.execute_bearer(token, &envelope)
-    } else {
-        if headers.contains_key("x-alondra-session")
-            || headers.contains_key("x-alondra-orchestrator-execution")
-        {
-            return domain_error(DomainError::new(
-                "incompatible_protocol",
-                "this producer must resume with a domain v2 capability",
-            ));
-        }
-        // A same-UID Agent can call local pairing and create its own signing
-        // key. Signed loopback writes must remain closed until a user-presence
-        // enrollment channel exists. Apps use the encrypted service path.
-        let Some(Extension(_signed)) = signed else {
-            return domain_error(DomainError::new("forbidden", "signed user device required"));
-        };
-        return domain_error(DomainError::new(
-            "forbidden",
-            "local user presence is required for domain commands",
-        ));
-    };
-    match result {
-        Ok(outcome) => Json(outcome).into_response(),
-        Err(error) => store_error(error),
+        return domain_error(legacy_write_blocked());
     }
+    if headers.contains_key("x-alondra-session")
+        || headers.contains_key("x-alondra-orchestrator-execution")
+    {
+        return domain_error(DomainError::new(
+            "incompatible_protocol",
+            "this producer must resume with a domain v2 capability",
+        ));
+    }
+    // A same-UID Agent can call local pairing and create its own signing
+    // key. Signed loopback writes must remain closed until a user-presence
+    // enrollment channel exists. Apps use the encrypted service path.
+    if signed.is_none() {
+        return domain_error(DomainError::new("forbidden", "signed user device required"));
+    }
+    domain_error(DomainError::new(
+        "forbidden",
+        "local user presence is required for domain commands",
+    ))
 }
 
 /// Sender is the verified envelope identity; a body cannot change this principal.
 /// The caller retains its ciphertext journal and rechecks device approval at commit.
-pub fn encrypted_command(
-    hub: &Hub,
-    sender: &str,
-    body: Option<&Value>,
-    identity: TransportIdentity<'_>,
-    authorize: impl FnOnce() -> anyhow::Result<()>,
-) -> anyhow::Result<Value> {
-    encrypted_command_runtime(&hub.domain, sender, body, identity, authorize)
-}
-
 pub(crate) fn encrypted_command_runtime(
     domain: &DomainRuntime, sender: &str, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl FnOnce() -> anyhow::Result<()>,
@@ -773,13 +745,6 @@ fn storage_error() -> Response {
     )
         .into_response()
 }
-fn store_error(error: StoreError) -> Response {
-    match error {
-        StoreError::Domain(error) => domain_error(error),
-        StoreError::Storage(_) => storage_error(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -819,16 +784,16 @@ mod tests {
         let body = json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
             "decision":"retry"});
         let digest = [31u8; 32];
-        let denied = encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+        let denied = encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || anyhow::bail!("revoked")).unwrap();
         assert_eq!(denied["status"], 403);
-        let first = encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+        let first = encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap();
         assert_eq!(first["status"], 200);
         assert_eq!(first["body"]["state"], "retryable");
-        assert_eq!(first, encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+        assert_eq!(first, encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
             Some(&body), ("phone-a", "work-a", &digest), || Ok(())).unwrap());
-        let changed = encrypted_resolve_delivery(&hub, "phone-a", claim.attempt_id,
+        let changed = encrypted_resolve_delivery_runtime(&hub.domain, &hub.home, "phone-a", claim.attempt_id,
             Some(&json!({"protocol_version":2,"data_epoch":epoch,"expected_version":2,
                 "decision":"discard"})), ("phone-a", "work-a", &[32u8; 32]), || Ok(())).unwrap();
         assert_eq!(changed["body"]["code"], "idempotency_conflict");
@@ -864,7 +829,7 @@ mod tests {
         let writer_hub = hub.clone();
         let writer_id = device.id.clone();
         let writer = std::thread::spawn(move || {
-            encrypted_resolve_delivery(&writer_hub, &writer_id, claim.attempt_id,
+            encrypted_resolve_delivery_runtime(&writer_hub.domain, &writer_hub.home, &writer_id, claim.attempt_id,
                 Some(&body), (&writer_id, "recovery-work", &[31u8; 32]), || {
                     anyhow::ensure!(crate::auth::Auth::open(&writer_home)?.list().iter()
                         .any(|entry| entry.id == writer_id));
@@ -1093,8 +1058,8 @@ mod tests {
             .unwrap();
         assert_eq!(first.status(), reqwest::StatusCode::FORBIDDEN);
         let body = serde_json::to_value(&request).unwrap();
-        let result = encrypted_command(
-            &hub,
+        let result = encrypted_command_runtime(
+            &hub.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-one", &[1; 32]),
@@ -1104,8 +1069,8 @@ mod tests {
         assert_eq!(result["status"], 200);
         assert_eq!(
             result,
-            encrypted_command(
-                &hub,
+            encrypted_command_runtime(
+                &hub.domain,
                 "phone-a",
                 Some(&body),
                 ("phone-a", "request-one", &[1; 32]),
@@ -1113,8 +1078,8 @@ mod tests {
             )
             .unwrap()
         );
-        let conflict = encrypted_command(
-            &hub,
+        let conflict = encrypted_command_runtime(
+            &hub.domain,
             "phone-b",
             Some(&body),
             ("phone-b", "request-one", &[1; 32]),
@@ -1133,8 +1098,8 @@ mod tests {
             },
         );
         let body = serde_json::to_value(remote).unwrap();
-        let result = encrypted_command(
-            &hub,
+        let result = encrypted_command_runtime(
+            &hub.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-two", &[2; 32]),
@@ -1144,8 +1109,8 @@ mod tests {
         assert_eq!(result["status"], 200);
         assert_eq!(
             result,
-            encrypted_command(
-                &hub,
+            encrypted_command_runtime(
+                &hub.domain,
                 "phone-a",
                 Some(&body),
                 ("phone-a", "request-two", &[2; 32]),
@@ -1154,8 +1119,8 @@ mod tests {
             .unwrap()
         );
         let pending_before_mismatch = hub.domain.store.lock().unwrap().pending_messages().unwrap();
-        let mismatch = encrypted_command(
-            &hub,
+        let mismatch = encrypted_command_runtime(
+            &hub.domain,
             "phone-a",
             Some(&body),
             ("phone-a", "request-two", &[3; 32]),
@@ -1259,7 +1224,9 @@ mod tests {
                 .send()
                 .await
                 .unwrap();
-            assert_eq!(response.status(), reqwest::StatusCode::FORBIDDEN);
+            assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
+            assert_eq!(response.json::<Value>().await.unwrap()["code"], "incompatible_protocol",
+                "the legacy daemon never writes its v2 sidecar");
         }
         let response = client
             .post(format!("{base}/v2/domain/commands"))
@@ -1279,8 +1246,8 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::UNPROCESSABLE_ENTITY);
         assert_eq!(before, hub.domain.state().unwrap());
-        let revoked = encrypted_command(
-            &hub,
+        let revoked = encrypted_command_runtime(
+            &hub.domain,
             "phone-a",
             Some(&serde_json::to_value(&request).unwrap()),
             ("phone-a", "revoked", &[4; 32]),

@@ -334,13 +334,9 @@ impl Service {
             return Ok(bytes);
         }
         let hub = self.hub.as_ref().context("atomic local executor unavailable")?;
-        let result = if request.path == "/v2/domain/commands" {
-            crate::domain_api::encrypted_command(hub, &envelope.sender, request.body.as_ref(),
-                (&envelope.sender, &envelope.request_id, digest), || self.require_device_approval(&envelope.sender, device))?
-        } else if let Some(attempt_id) = crate::domain_api::resolve_delivery_attempt_id(&request.path) {
-            crate::domain_api::encrypted_resolve_delivery(hub, &envelope.sender, attempt_id,
-                request.body.as_ref(), (&envelope.sender, &envelope.request_id, digest),
-                || self.require_device_approval(&envelope.sender, device))?
+        let result = if request.path == "/v2/domain/commands"
+            || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some() {
+            json!({"status":409,"body":crate::domain_api::legacy_write_blocked()})
         } else if crate::schedules::atomic_local_path(&request.method, &request.path) {
             crate::schedules::atomic_local_request(hub, &envelope.sender, &envelope.request_id, digest,
                 &request.method, &request.path, request.body.as_ref())?
