@@ -695,4 +695,155 @@ mod tests {
             .contains("rollback-journal backup"));
         assert_eq!(entries(&fixture.home), before);
     }
+
+    #[test]
+    fn offline_import_roundtrips_schedule_rows_and_exact_side_tables() {
+        let fixture = Fixture::new();
+        let original_result = r#"{"status": 409, "body": {"error": "same reply"}}"#;
+        fixture.db().execute(
+            "INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('phone','old-command',?1,?2)",
+            rusqlite::params![vec![9u8; 32], original_result],
+        ).unwrap();
+        fixture
+            .db()
+            .execute(
+                "INSERT INTO schedule_failed_launches(request) VALUES('request-5')",
+                [],
+            )
+            .unwrap();
+        fixture.db().execute(
+            "INSERT INTO schedule_launch_tools(request,patterns) VALUES('request-5','[\"Read\"]')", [],
+        ).unwrap();
+        let source_before = entries(&fixture.home);
+        let stage = fixture.root.join("stage");
+        fs::create_dir(&stage).unwrap();
+        let path = stage.join("domain-v2.db");
+        let mut store = crate::domain_store::DomainStore::open(&path).unwrap();
+        let epoch = store.load().unwrap().data_epoch;
+        let (state, report, schedules) =
+            super::super::materialize_with_schedules(&fixture.view, &fixture.home, &stage, epoch)
+                .unwrap();
+        assert_eq!(schedules.counts(), (11, 5, 6, 1, 1));
+        store
+            .import_initial(&state, &report.links, fixture.view.seq, &schedules)
+            .unwrap();
+        store.integrity_check().unwrap();
+        assert_eq!(store.load().unwrap(), state);
+        assert_eq!(entries(&fixture.home), source_before);
+
+        let target = Connection::open(&path).unwrap();
+        let counts: (i64, i64, i64, i64, i64) = target
+            .query_row(
+                "SELECT (SELECT count(*) FROM schedules), (SELECT count(*) FROM schedule_runs),
+                (SELECT count(*) FROM schedule_request_tools),
+                (SELECT count(*) FROM legacy_schedule_receipts),
+                (SELECT count(*) FROM schedule_failed_launches)",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(counts, (11, 5, 6, 1, 1));
+        let (digest, result): (Vec<u8>, String) = target.query_row(
+            "SELECT digest,result FROM legacy_schedule_receipts WHERE sender='phone' AND request_id='old-command'",
+            [], |row| Ok((row.get(0)?, row.get(1)?)),
+        ).unwrap();
+        assert_eq!(digest, vec![9u8; 32]);
+        assert_eq!(result, original_result);
+        let patterns: String = target
+            .query_row(
+                "SELECT patterns FROM schedule_request_tools WHERE request_id='request-0'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&patterns).unwrap(),
+            vec!["Bash"]
+        );
+        let historical_patterns: String = target
+            .query_row(
+                "SELECT patterns FROM schedule_request_tools WHERE request_id='request-5'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&historical_patterns).unwrap(),
+            vec!["Read"]
+        );
+        let invented_run: i64 = target
+            .query_row(
+                "SELECT count(*) FROM schedule_runs WHERE request_id='request-5'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(invented_run, 0);
+        let historical_marker: String = target
+            .query_row(
+                "SELECT request_id FROM schedule_failed_launches",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(historical_marker, "request-5");
+        let foreign_keys: i64 = target
+            .query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(foreign_keys, 0);
+    }
+
+    #[test]
+    fn rejected_historical_marker_rolls_back_state_and_side_tables() {
+        let fixture = Fixture::new();
+        fixture.db().execute(
+            "INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('phone','old-command',?1,'{}')",
+            rusqlite::params![vec![4u8; 32]],
+        ).unwrap();
+        let stage = fixture.root.join("stage");
+        fs::create_dir(&stage).unwrap();
+        let path = stage.join("domain-v2.db");
+        let mut store = crate::domain_store::DomainStore::open(&path).unwrap();
+        let epoch = store.load().unwrap().data_epoch;
+        let (state, report, mut schedules) =
+            super::super::materialize_with_schedules(&fixture.view, &fixture.home, &stage, epoch)
+                .unwrap();
+        schedules
+            .failed_launches
+            .insert(d::RequestId("orphan-marker".into()));
+        assert!(store
+            .import_initial(&state, &report.links, fixture.view.seq, &schedules)
+            .is_err());
+        store.integrity_check().unwrap();
+        let target = Connection::open(&path).unwrap();
+        let counts: (i64, i64, i64, i64, i64) = target
+            .query_row(
+                "SELECT (SELECT count(*) FROM requests), (SELECT count(*) FROM schedules),
+                (SELECT count(*) FROM schedule_request_tools),
+                (SELECT count(*) FROM legacy_schedule_receipts),
+                (SELECT count(*) FROM schedule_failed_launches)",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(counts, (0, 0, 0, 0, 0));
+    }
 }

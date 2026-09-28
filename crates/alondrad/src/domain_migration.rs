@@ -1,7 +1,7 @@
 //! Offline domain cutover preparation. Nothing here executes a legacy event or
 //! a queued effect against a real producer. The original event database is an
 //! audit source and rollback artifact, never the authority of domain v2.
-use alondra_core::{Event, View};
+use alondra_core::{Event, View, domain_v2 as d};
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OpenFlags, OptionalExtension};
 use serde::{Deserialize, Serialize};
@@ -39,7 +39,7 @@ fn destination_outside(home: &Path, destination: &Path) -> Result<()> {
 mod import;
 mod schedules;
 pub(crate) use import::{ImportLink, ImportReport, materialize_legacy};
-pub(crate) use schedules::{LegacyScheduleInventory, LegacyScheduleReceiptRow, read_legacy_schedules_readonly};
+pub(crate) use schedules::{LegacyScheduleInventory, read_legacy_schedules_readonly};
 
 #[derive(Debug, Serialize)]
 pub(crate) struct LegacyInventory {
@@ -718,6 +718,16 @@ pub(crate) fn prepare_cutover_offline(
     })
 }
 
+fn materialize_with_schedules(
+    view: &View, source_home: &Path, target_home: &Path, epoch: d::DataEpoch,
+) -> Result<(d::DomainState, ImportReport, LegacyScheduleInventory)> {
+    let (mut state, imported) = materialize_legacy(view, source_home, target_home, epoch)?;
+    let schedules = read_legacy_schedules_readonly(source_home, view, &state)?;
+    state.schedule = schedules.state.clone();
+    state.validate().map_err(anyhow::Error::new)?;
+    Ok((state, imported, schedules))
+}
+
 /// Rehearse against a source copy and a brand-new target HOME. The function
 /// never writes the legacy source, and leaves the target for human inspection.
 pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehearsal> {
@@ -736,8 +746,9 @@ pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehears
     let source = inventory(&view);
     let mut store = crate::domain_store::DomainStore::open(&target_home.join("domain-v2.db"))?;
     let epoch = store.load()?.data_epoch;
-    let (state, imported) = materialize_legacy(&view, source_home, target_home, epoch.clone())?;
-    store.import_initial(&state, &imported.links, view.seq)?;
+    let (state, imported, schedules) =
+        materialize_with_schedules(&view, source_home, target_home, epoch.clone())?;
+    store.import_initial(&state, &imported.links, view.seq, &schedules)?;
     store.integrity_check()?;
     let loaded = store.load()?;
     ensure!(
@@ -1156,7 +1167,7 @@ mod tests {
                 .contains_key(&PrId("legacy-pr-2".into()))
         );
         assert!(
-            domain.import_initial(&imported, &[], 2).is_err(),
+            domain.import_initial(&imported, &[], 2, &LegacyScheduleInventory::default()).is_err(),
             "a populated target cannot be reimported"
         );
         drop(domain);

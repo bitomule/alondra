@@ -115,8 +115,11 @@ impl DomainStore {
     /// Offline one-shot cutover. The imported state carries a freshly created
     /// epoch from this empty store; no legacy command or delivery is replayed.
     pub(crate) fn import_initial(&mut self, state: &DomainState,
-        links: &[crate::domain_migration::ImportLink], source_seq: u64) -> Result<()> {
+        links: &[crate::domain_migration::ImportLink], source_seq: u64,
+        schedules: &crate::domain_migration::LegacyScheduleInventory) -> Result<()> {
         state.validate()?;
+        ensure!(state.schedule == schedules.state,
+            "imported Schedule state differs from legacy inventory");
         let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_schema(&tx)?;
         let (epoch, revision): (String, i64) = tx.query_row(
@@ -125,9 +128,25 @@ impl DomainStore {
         )?;
         ensure!(revision == 0 && epoch == state.data_epoch.0,
             "domain import requires an empty store and its fresh data epoch");
-        let existing: i64 = tx.query_row("SELECT count(*) FROM requests", [], |r| r.get(0))?;
+        let existing: i64 = tx.query_row(
+            "SELECT (SELECT count(*) FROM requests) + (SELECT count(*) FROM schedules)
+                + (SELECT count(*) FROM schedule_runs) + (SELECT count(*) FROM schedule_request_tools)
+                + (SELECT count(*) FROM legacy_schedule_receipts)
+                + (SELECT count(*) FROM schedule_failed_launches)", [], |r| r.get(0))?;
         ensure!(existing == 0, "domain import target already has business rows");
         repository::save(&tx, state)?;
+        for (request_id, patterns) in &schedules.request_tools {
+            repository::remember_schedule_request_tools(&tx, request_id, patterns)?;
+        }
+        for receipt in &schedules.legacy_schedule_receipts {
+            repository::save_legacy_schedule_receipt(&tx, &repository::LegacyScheduleReceipt {
+                sender: receipt.sender.clone(), request_id: receipt.request_id.clone(),
+                digest: receipt.digest.clone(), result: receipt.result.clone(),
+            })?;
+        }
+        for request_id in &schedules.failed_launches {
+            repository::remember_schedule_failed_launch(&tx, request_id)?;
+        }
         tx.execute_batch("CREATE TABLE IF NOT EXISTS legacy_import_map (
             source_kind TEXT NOT NULL,source_id TEXT NOT NULL,role TEXT NOT NULL,
             target_kind TEXT NOT NULL,target_id TEXT NOT NULL,
