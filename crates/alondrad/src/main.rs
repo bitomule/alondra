@@ -112,6 +112,9 @@ fn main() -> Result<()> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
+    if let Some(kept) = retire_empty_older_sidecar(&config.home)? {
+        log!("set aside an empty domain database from an older build; copy kept in {}", kept.display());
+    }
     let _home_lock = alondra_core::home_lock::HomeLock::shared(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
     // Select durable protocol mode before opening the legacy Hub or starting
@@ -255,6 +258,40 @@ pub(crate) fn legacy_sidecar_is_empty(path: &Path) -> Result<bool> {
     empty_domain_sidecar(path, false)
 }
 
+/// A pre-release build left an empty domain database on an older schema. Legacy
+/// startup refuses unknown schemas, so under the exclusive HOME lock it is copied
+/// aside and removed; the legacy Hub then creates the current empty one. Anything
+/// holding rows, or not recognisable as ours, is left for `protocol_mode` to refuse.
+fn retire_empty_older_sidecar(home: &Path) -> Result<Option<std::path::PathBuf>> {
+    let database = home.join("domain-v2.db");
+    if !database.exists() || domain_cutover::read_marker(home)?.is_some() { return Ok(None); }
+    let Ok(_lock) = alondra_core::home_lock::HomeLock::recovery(home) else { return Ok(None) };
+    if legacy_sidecar_is_empty(&database).unwrap_or(false)
+        || !replaceable_cutover_sidecar_is_empty(&database).unwrap_or(false) {
+        return Ok(None);
+    }
+    let kept = home.join(format!("domain-v2-retired-{}", unix_seconds()));
+    std::fs::create_dir(&kept)?;
+    let files = ["domain-v2.db", "domain-v2.db-wal", "domain-v2.db-shm"];
+    for name in files {
+        let source = home.join(name);
+        if source.exists() { std::fs::copy(&source, kept.join(name))?; }
+    }
+    anyhow::ensure!(replaceable_cutover_sidecar_is_empty(&kept.join("domain-v2.db"))?,
+        "copy of the old domain database does not verify; leaving it in place");
+    for name in files {
+        match std::fs::remove_file(home.join(name)) {
+            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(error.into()),
+            _ => (),
+        }
+    }
+    Ok(Some(kept))
+}
+
+fn unix_seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
 /// Cutover may replace a markerless experimental sidecar only after proving it
 /// contains no business, receipt, delivery, or migration rows. The final store
 /// is installed from the verified legacy backup, not upgraded in place.
@@ -386,6 +423,53 @@ mod argument_tests {
         let conn = rusqlite::Connection::open(home.join("domain-v2.db")).unwrap();
         conn.execute("UPDATE domain_meta SET revision=1 WHERE singleton=1", []).unwrap();
         assert!(protocol_mode(&home).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn older_empty_sidecar(home: &Path) -> rusqlite::Connection {
+        let conn = rusqlite::Connection::open(home.join("domain-v2.db")).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA application_id=1095517234; PRAGMA user_version=3;
+            CREATE TABLE domain_meta(singleton INTEGER PRIMARY KEY,revision INTEGER NOT NULL,
+                orchestrator_generation INTEGER NOT NULL);
+            INSERT INTO domain_meta VALUES(1,0,0);
+            CREATE TABLE command_receipts(id TEXT PRIMARY KEY);").unwrap();
+        conn
+    }
+
+    #[test]
+    fn an_empty_sidecar_from_an_older_build_is_kept_aside_and_legacy_starts() {
+        let home = std::env::temp_dir().join(format!("alondra-retire-{}", auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        drop(older_empty_sidecar(&home));
+        assert!(protocol_mode(&home).is_err());
+        let kept = retire_empty_older_sidecar(&home).unwrap().unwrap();
+        assert!(!home.join("domain-v2.db").exists());
+        assert!(replaceable_cutover_sidecar_is_empty(&kept.join("domain-v2.db")).unwrap());
+        assert!(matches!(protocol_mode(&home).unwrap(), ProtocolMode::Legacy));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn an_older_sidecar_with_rows_is_never_moved_and_startup_refuses() {
+        let home = std::env::temp_dir().join(format!("alondra-retire-rows-{}", auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        let conn = older_empty_sidecar(&home);
+        conn.execute("INSERT INTO command_receipts(id) VALUES('existing')", []).unwrap();
+        drop(conn);
+        assert!(retire_empty_older_sidecar(&home).unwrap().is_none());
+        assert!(home.join("domain-v2.db").exists());
+        assert!(protocol_mode(&home).is_err());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_busy_home_leaves_the_sidecar_alone() {
+        let home = std::env::temp_dir().join(format!("alondra-retire-busy-{}", auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        drop(older_empty_sidecar(&home));
+        let _running = alondra_core::home_lock::HomeLock::shared(&home).unwrap();
+        assert!(retire_empty_older_sidecar(&home).unwrap().is_none());
+        assert!(home.join("domain-v2.db").exists());
         std::fs::remove_dir_all(home).unwrap();
     }
 
