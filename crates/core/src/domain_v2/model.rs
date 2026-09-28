@@ -1,3 +1,4 @@
+use super::ScheduleState;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -342,6 +343,8 @@ pub struct DomainState {
     pub interactions: BTreeMap<InteractionId, Interaction>,
     pub merge_authorizations: BTreeMap<AuthorizationId, MergeAuthorization>,
     pub stack_readiness: BTreeMap<TaskId, StackReadiness>,
+    #[serde(default)]
+    pub schedule: ScheduleState,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -359,6 +362,7 @@ impl DomainState {
             interactions: BTreeMap::new(),
             merge_authorizations: BTreeMap::new(),
             stack_readiness: BTreeMap::new(),
+            schedule: ScheduleState::default(),
         }
     }
 }

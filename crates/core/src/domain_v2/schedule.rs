@@ -79,7 +79,7 @@ pub struct ScheduleRun {
     pub definition_snapshot: Option<ScheduleDefinitionSnapshot>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ScheduleState {
     pub schedules: BTreeMap<ScheduleId, Schedule>,
     pub runs: BTreeMap<ScheduleRunId, ScheduleRun>,

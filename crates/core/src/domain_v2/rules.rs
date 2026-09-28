@@ -477,6 +477,155 @@ impl DomainState {
         created: &mut Vec<String>,
     ) -> Result<()> {
         match c {
+            Command::CreateSchedule { schedule } => {
+                system(actor)?;
+                id(&schedule.id.0)?;
+                schedule.validate()?;
+                if schedule.revision != 1 || schedule.deleted_at.is_some() {
+                    return fail("invalid_input", "New Schedule needs revision one and no deletion");
+                }
+                if self.schedule.schedules.contains_key(&schedule.id) {
+                    return fail("idempotency_conflict", "Schedule ID already exists");
+                }
+                self.schedule
+                    .schedules
+                    .insert(schedule.id.clone(), schedule.clone());
+                created.push(schedule.id.0.clone());
+            }
+            Command::UpdateSchedule { schedule } => {
+                system(actor)?;
+                id(&schedule.id.0)?;
+                schedule.validate()?;
+                let current = self
+                    .schedule
+                    .schedules
+                    .get(&schedule.id)
+                    .ok_or_else(|| DomainError::new("not_found", "Schedule does not exist"))?;
+                if current.deleted_at.is_some() || schedule.deleted_at.is_some() {
+                    return fail("not_found", "Schedule was deleted");
+                }
+                if self.schedule.runs.values().any(|run| {
+                    run.schedule_id == schedule.id && run.state == ScheduleRunState::Launching
+                }) {
+                    return fail("conflict", "Schedule run is being sent");
+                }
+                if current.revision.checked_add(1) != Some(schedule.revision) {
+                    return fail("stale_revision", "Schedule revision must advance by one");
+                }
+                self.schedule
+                    .schedules
+                    .insert(schedule.id.clone(), schedule.clone());
+            }
+            Command::DeleteSchedule {
+                schedule_id,
+                deleted_at,
+            } => {
+                system(actor)?;
+                if *deleted_at < 0 {
+                    return fail("invalid_input", "Invalid deletion time");
+                }
+                let schedule = self
+                    .schedule
+                    .schedules
+                    .get_mut(schedule_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Schedule does not exist"))?;
+                if schedule.deleted_at.is_some() {
+                    return fail("not_found", "Schedule was deleted");
+                }
+                if self.schedule.runs.values().any(|run| {
+                    &run.schedule_id == schedule_id && run.state == ScheduleRunState::Launching
+                }) {
+                    return fail("conflict", "Schedule run is being sent");
+                }
+                if schedule.revision >= MAX_REVISION as i64 {
+                    return fail("invalid_input", "Schedule revision limit reached");
+                }
+                schedule.revision += 1;
+                schedule.enabled = false;
+                schedule.next_run = None;
+                schedule.deleted_at = Some(*deleted_at);
+            }
+            Command::ClaimScheduleRun {
+                schedule_id,
+                run_id,
+                origin,
+                now,
+                next_after_now,
+            } => {
+                system(actor)?;
+                id(&run_id.0)?;
+                self.schedule.claim(
+                    schedule_id,
+                    run_id.clone(),
+                    *origin,
+                    *now,
+                    *next_after_now,
+                )?;
+                created.push(run_id.0.clone());
+            }
+            Command::RecordScheduleRunSent {
+                run_id,
+                request,
+                task,
+                finished_at,
+            } => {
+                system(actor)?;
+                id(&request.id.0)?;
+                id(&task.id.0)?;
+                nonempty(&request.body)?;
+                nonempty(&task.title)?;
+                let run = self
+                    .schedule
+                    .runs
+                    .get(run_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Schedule run not found"))?;
+                let definition = run
+                    .definition_snapshot
+                    .as_ref()
+                    .ok_or_else(|| DomainError::new("invalid_input", "Run has no claimed definition"))?;
+                if request.body != definition.text
+                    || task.title != definition.title
+                    || task.request_id != request.id
+                    || request.closed
+                    || task.agent_id.is_some()
+                    || task.state != TaskState::NotStarted
+                    || task.started
+                    || task.final_presentation.is_some()
+                    || task.pr_id.is_some()
+                    || !task.dependencies.is_empty()
+                    || task.stack.is_some()
+                    || !task.documents.is_empty()
+                    || task.archived
+                {
+                    return fail("invalid_input", "Request and Task must match the claimed Schedule definition and initial Task state");
+                }
+                if self.requests.contains_key(&request.id) || self.tasks.contains_key(&task.id) {
+                    return fail("idempotency_conflict", "Scheduled Request or Task ID already exists");
+                }
+                self.schedule.record_sent(
+                    run_id,
+                    request.id.clone(),
+                    task.id.clone(),
+                    *finished_at,
+                )?;
+                self.requests.insert(request.id.clone(), request.clone());
+                self.tasks.insert(task.id.clone(), task.clone());
+                created.push(request.id.0.clone());
+                created.push(task.id.0.clone());
+            }
+            Command::RecordScheduleRunFailed {
+                run_id,
+                reason,
+                finished_at,
+            } => {
+                system(actor)?;
+                self.schedule
+                    .record_failed(run_id, reason.clone(), *finished_at)?;
+            }
+            Command::InterruptScheduleRunsOnRestart => {
+                system(actor)?;
+                self.schedule.interrupt_on_restart();
+            }
             Command::CreateRequest { request_id, body } => {
                 self.manager(actor)?;
                 id(&request_id.0)?;
@@ -1556,6 +1705,19 @@ impl DomainState {
         if self.revision > MAX_REVISION || self.orchestrator_generation > MAX_REVISION {
             return fail("invalid_input", "Unsafe revision or generation");
         };
+        self.schedule.validate()?;
+        for run in self.schedule.runs.values() {
+            if let (Some(request_id), Some(task_id)) = (&run.request_id, &run.task_id) {
+                if !self.requests.contains_key(request_id)
+                    || !self
+                        .tasks
+                        .get(task_id)
+                        .is_some_and(|task| &task.request_id == request_id)
+                {
+                    return fail("invalid_input", "Schedule run has mismatched Request or Task");
+                }
+            }
+        }
         for (k, r) in &self.requests {
             id(&k.0)?;
             if k != &r.id {
