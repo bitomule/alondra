@@ -3,8 +3,10 @@ mod command;
 mod model;
 mod projection;
 mod rules;
+mod schedule;
 #[cfg(test)]
 mod tests;
 pub use command::*;
 pub use model::*;
 pub use projection::*;
+pub use schedule::*;

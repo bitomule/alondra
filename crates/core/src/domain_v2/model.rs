@@ -19,7 +19,9 @@ ids!(
     RequestId,
     AuthorizationId,
     CommandId,
-    DataEpoch
+    DataEpoch,
+    ScheduleId,
+    ScheduleRunId
 );
 pub type Revision = u64;
 pub const MAX_REVISION: Revision = 9_007_199_254_740_991;
