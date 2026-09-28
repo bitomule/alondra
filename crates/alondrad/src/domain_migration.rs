@@ -190,6 +190,57 @@ fn ensure_legacy_delivery_reconciled(view: &View) -> Result<()> {
     Ok(())
 }
 
+/// The v2-only daemon does not yet open the legacy schedule store. Until its
+/// jobs, run links and command receipts have a v2 home, a cutover must not
+/// strand even a disabled schedule or a receipt in this separate database.
+pub(crate) fn ensure_legacy_schedules_reconciled(home: &Path) -> Result<()> {
+    let path = home.join("schedules.db");
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    ensure!(
+        metadata.is_file() && metadata.nlink() == 1 && metadata.uid() == unsafe { libc::geteuid() },
+        "unsafe schedules.db path"
+    );
+    let path = canonical_leaf(&path)?;
+    let database = Connection::open_with_flags(
+        &path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )?;
+    database.execute_batch("PRAGMA query_only=ON; BEGIN")?;
+    let integrity: String = database.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
+    ensure!(integrity == "ok", "schedules.db integrity check failed");
+    let mut tables = database.prepare(
+        "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+    )?;
+    let names = tables.query_map([], |row| row.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    drop(tables);
+    let mut occupied = Vec::new();
+    for name in names {
+        let count_sql = match name.as_str() {
+            "schedules" => "SELECT COUNT(*) FROM schedules",
+            "local_command_results" => "SELECT COUNT(*) FROM local_command_results",
+            "schedule_failed_launches" => "SELECT COUNT(*) FROM schedule_failed_launches",
+            "schedule_launch_tools" => "SELECT COUNT(*) FROM schedule_launch_tools",
+            _ => anyhow::bail!("schedules.db contains an unknown table: {name}"),
+        };
+        let count: i64 = database.query_row(count_sql, [], |row| row.get(0))?;
+        if count > 0 {
+            occupied.push(format!("{name}={count}"));
+        }
+    }
+    database.execute_batch("COMMIT")?;
+    ensure!(
+        occupied.is_empty(),
+        "schedules.db contains {}; migrate schedules, run links and receipts before v2 cutover",
+        occupied.join(", ")
+    );
+    Ok(())
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct BackupFile {
     pub path: String,
@@ -645,6 +696,7 @@ pub(crate) fn prepare_cutover_offline(
     destination_outside(home, backup)?;
     destination_outside(home, stage)?;
     let lock = alondra_core::home_lock::HomeLock::recovery(home)?;
+    ensure_legacy_schedules_reconciled(home)?;
     let manifest = backup_locked(&lock, home, backup, legacy_daemon)?;
     let digest = backup_manifest_digest(backup)?;
     let rehearsal = rehearse(backup, stage)?;
@@ -668,6 +720,7 @@ pub(crate) fn prepare_cutover_offline(
 /// never writes the legacy source, and leaves the target for human inspection.
 pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehearsal> {
     destination_outside(source_home, target_home)?;
+    ensure_legacy_schedules_reconciled(source_home)?;
     let backup_digest = if source_home.join("manifest.json").exists() {
         let digest = backup_manifest_digest(source_home)?;
         verify_backup_expected(source_home, &digest)?;
@@ -781,6 +834,57 @@ mod tests {
     use super::*;
     use alondra_core::{domain_v2::PrId, pr};
     use serde_json::json;
+
+    #[test]
+    fn cutover_rejects_unmigrated_schedules_and_receipts_before_creating_stage() {
+        let root = std::env::temp_dir().join(format!(
+            "alondra-schedule-cutover-{}",
+            crate::auth::random_hex(8)
+        ));
+        let source = root.join("source");
+        let stage = root.join("stage");
+        fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
+        fs::DirBuilder::new().mode(0o700).create(&source).unwrap();
+        ensure_legacy_schedules_reconciled(&source).unwrap();
+
+        let database = Connection::open(source.join("schedules.db")).unwrap();
+        database.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);
+            CREATE TABLE local_command_results(sender TEXT,request_id TEXT,digest BLOB,result TEXT);
+            CREATE TABLE schedule_failed_launches(request TEXT PRIMARY KEY);
+            CREATE TABLE schedule_launch_tools(request TEXT PRIMARY KEY,patterns TEXT NOT NULL);").unwrap();
+        ensure_legacy_schedules_reconciled(&source).unwrap();
+
+        database.execute("INSERT INTO schedules(id,body) VALUES('disabled','{\"enabled\":false}')", []).unwrap();
+        let error = rehearse(&source, &stage).unwrap_err().to_string();
+        assert!(error.contains("schedules=1"), "{error}");
+        assert!(!stage.exists(), "failed rehearsal must leave no stage");
+        let backup = root.join("backup");
+        let error = prepare_cutover_offline(&source, &backup, &stage, &source.join("legacy-daemon"))
+            .unwrap_err().to_string();
+        assert!(error.contains("schedules=1"), "{error}");
+        assert!(!backup.exists(), "failed preparation must leave no backup");
+        database.execute("DELETE FROM schedules", []).unwrap();
+
+        database.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('phone','old',X'00','{}')", []).unwrap();
+        let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
+        assert!(error.contains("local_command_results=1"), "{error}");
+        database.execute("DELETE FROM local_command_results", []).unwrap();
+        database.execute("INSERT INTO schedule_failed_launches(request) VALUES('request-1')", []).unwrap();
+        let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
+        assert!(error.contains("schedule_failed_launches=1"), "{error}");
+        database.execute("DELETE FROM schedule_failed_launches", []).unwrap();
+        database.execute("INSERT INTO schedule_launch_tools(request,patterns) VALUES('request-1','[]')", []).unwrap();
+        let error = ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string();
+        assert!(error.contains("schedule_launch_tools=1"), "{error}");
+        database.execute("DELETE FROM schedule_launch_tools", []).unwrap();
+        database.execute("CREATE TABLE unexpected_schedule_data(value TEXT)", []).unwrap();
+        assert!(ensure_legacy_schedules_reconciled(&source).unwrap_err().to_string().contains("unknown table"));
+        drop(database);
+        fs::remove_file(source.join("schedules.db")).unwrap();
+        fs::write(source.join("schedules.db"), b"not a SQLite database").unwrap();
+        assert!(ensure_legacy_schedules_reconciled(&source).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn backup_rehearsal_and_rollback_preserve_tail_cards_and_content() {
@@ -1066,6 +1170,20 @@ mod tests {
             2,
             "the runtime must open the same filename populated by migration"
         );
+        let late_schedules = Connection::open(source.join("schedules.db")).unwrap();
+        late_schedules.execute_batch("CREATE TABLE schedules(id TEXT PRIMARY KEY,body TEXT NOT NULL);
+            INSERT INTO schedules(id,body) VALUES('late','{\"enabled\":true}');").unwrap();
+        drop(late_schedules);
+        let error = crate::domain_cutover::promote_stage_offline(
+            &source,
+            &backup,
+            &manifest_digest,
+            &target,
+        )
+        .unwrap_err().to_string();
+        assert!(error.contains("current HOME differs from verified cutover backup"), "{error}");
+        assert!(crate::domain_cutover::read_marker(&source).unwrap().is_none());
+        fs::remove_file(source.join("schedules.db")).unwrap();
         let provenance = target.join("domain-v2-stage.json");
         let original_provenance = fs::read(&provenance).unwrap();
         fs::write(&provenance, b"mismatched backup").unwrap();
