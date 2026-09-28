@@ -2,9 +2,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use alondra_core::config::Config;
-use alondra_core::{Machine, Node, Question, Report};
+use alondra_core::domain_v2::{Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainProjection, PROTOCOL_VERSION, Revision};
 use anyhow::{Context, Result, anyhow};
-use serde::Deserialize;
 use serde::de::DeserializeOwned;
 use serde_json::Value;
 
@@ -14,326 +13,6 @@ static CONFIG: OnceLock<Config> = OnceLock::new();
 /// reported by `alondra doctor`.
 pub fn config() -> &'static Config {
     CONFIG.get_or_init(|| Config::load().unwrap_or_else(|_| Config::defaults()))
-}
-
-#[derive(Deserialize, Clone)]
-pub struct FleetNode {
-    #[serde(default)]
-    pub orchestrator_runtime: Option<OrchestratorRuntime>,
-    #[serde(flatten)]
-    pub node: Node,
-    #[serde(default)]
-    pub project: Option<String>,
-}
-
-/// Public status only; Claude conversation and execution identities stay internal.
-#[derive(Deserialize, Clone, Default)]
-pub struct OrchestratorRuntime {
-    pub phase: String,
-    #[serde(default)]
-    pub can_retry: bool,
-    #[serde(default)]
-    pub can_cancel: bool,
-    #[serde(default)]
-    pub cancel_requested: bool,
-    pub active_run_id: Option<String>,
-    #[serde(default)]
-    pub queue_depth: usize,
-    pub last_error: Option<String>,
-    pub retry_at: Option<i64>,
-}
-
-impl FleetNode {
-    pub fn status_label(&self) -> &'static str {
-        match self.orchestrator_runtime.as_ref() {
-            Some(runtime) if runtime.cancel_requested => tr!("stopping", "deteniendo"),
-            Some(runtime) => match runtime.phase.as_str() {
-                "idle" => tr!("available", "disponible"),
-                "starting" => tr!("starting", "iniciando"),
-                "running" => tr!("handling a request", "atendiendo una petición"),
-                "compacting" => tr!("compacting context", "compactando contexto"),
-                "failed" if runtime.retry_at.is_some() => tr!("retrying", "reintentando"),
-                "failed" => tr!("needs attention", "requiere atención"),
-                _ => tr!("unknown", "desconocido"),
-            },
-            None => crate::i18n::fleet_state(&self.node),
-        }
-    }
-}
-
-/// One thread of a node, the main one (no `agent_id`) or a subagent, and what it does now.
-#[derive(Deserialize, Clone, Debug, PartialEq, Default)]
-pub struct Activity {
-    #[serde(default)]
-    pub agent_id: Option<String>,
-    #[serde(default)]
-    pub agent_type: Option<String>,
-    #[serde(default)]
-    pub task: Option<String>,
-    #[serde(default)]
-    pub tool: Option<String>,
-    #[serde(default)]
-    pub summary: Option<String>,
-    pub since: i64,
-}
-
-impl Activity {
-    pub fn is_main(&self) -> bool {
-        self.agent_id.is_none()
-    }
-
-    /// `main` for the node's own thread, the subagent's type otherwise.
-    pub fn thread(&self) -> String {
-        match (&self.agent_id, &self.agent_type) {
-            (None, _) => tr!("main", "principal").into(),
-            (Some(_), Some(t)) => t.clone(),
-            (Some(_), None) => tr!("subagent", "subagente").into(),
-        }
-    }
-}
-
-/// A request with the state its tasks give it and their ids.
-#[derive(Deserialize, Clone)]
-pub struct ClientRequest {
-    #[serde(flatten)]
-    pub request: alondra_core::tasks::Request,
-    pub state: alondra_core::tasks::RequestState,
-    #[serde(default)]
-    pub tasks: Vec<String>,
-    /// The title the orchestrator gave it.
-    #[serde(default)]
-    pub title: Option<String>,
-}
-
-impl std::ops::Deref for ClientRequest {
-    type Target = alondra_core::tasks::Request;
-    fn deref(&self) -> &alondra_core::tasks::Request {
-        &self.request
-    }
-}
-
-#[derive(Deserialize, Clone)]
-pub struct ClientTask {
-    #[serde(flatten)]
-    pub task: alondra_core::tasks::Task,
-    /// Alondra merges its PR by itself once the checks pass.
-    #[serde(default)]
-    pub auto_merge_pending: bool,
-    /// When anything last happened to it, its history included.
-    #[serde(default)]
-    pub last_change: Option<i64>,
-}
-
-impl std::ops::Deref for ClientTask {
-    type Target = alondra_core::tasks::Task;
-    fn deref(&self) -> &alondra_core::tasks::Task {
-        &self.task
-    }
-}
-
-impl ClientTask {
-    /// This task's title next to its own node in the Fleet list or detail: itself, unless the
-    /// title is only the node's own name repeated — the fallback a task gets until something
-    /// names it for real (`TaskTitled`, t-47118). Then it reads as the node's main task, not the
-    /// name shown twice.
-    pub fn fleet_title(&self, node: &FleetNode) -> String {
-        if self.title == node.display_name() { tr!("main task", "tarea principal").to_string() } else { self.title.clone() }
-    }
-}
-
-/// Keeps every entry this build understands, so a state it does not know yet costs that entry,
-/// not the whole overview.
-fn lenient<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    let values = Vec::<Value>::deserialize(d)?;
-    Ok(values.into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect())
-}
-
-fn lenient_one<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: DeserializeOwned,
-{
-    Ok(serde_json::from_value(Value::deserialize(d)?).ok())
-}
-
-impl std::ops::Deref for FleetNode {
-    type Target = Node;
-    fn deref(&self) -> &Node {
-        &self.node
-    }
-}
-
-#[derive(Deserialize, Clone, Default)]
-pub struct Overview {
-    #[serde(default)]
-    pub delivery_attempts: Vec<crate::delivery::Attempt>,
-    #[serde(default)]
-    pub orchestrator: Option<OrchestratorRuntime>,
-    pub tick: u64,
-    pub nodes: Vec<FleetNode>,
-    pub open_questions: Vec<OpenQuestion>,
-    #[serde(default)]
-    pub news: Vec<NewsReport>,
-    pub machine: Machine,
-    #[serde(default)]
-    pub usage: Option<alondra_core::usage::Usage>,
-    #[serde(default)]
-    pub prs: Vec<PrCard>,
-    /// The newest reports, read or not; a task's documents are looked up here.
-    #[serde(default)]
-    pub reports: Vec<Report>,
-    #[serde(default, deserialize_with = "lenient")]
-    pub requests: Vec<ClientRequest>,
-    #[serde(default, deserialize_with = "lenient")]
-    pub tasks: Vec<ClientTask>,
-    #[serde(default, deserialize_with = "lenient_one")]
-    pub update: Option<alondra_core::update::Status>,
-}
-
-/// An open question, with the PR card it belongs to when that card is waiting on the user.
-#[derive(Deserialize, Clone)]
-pub struct OpenQuestion {
-    #[serde(flatten)]
-    pub question: Question,
-    #[serde(default)]
-    pub pr_id: Option<u64>,
-    /// The task this question blocks.
-    #[serde(default)]
-    pub task: Option<String>,
-    /// The report this question is about; it is shown inside the question, not as its own card.
-    #[serde(default)]
-    pub report: Option<Report>,
-    /// Every report the question takes in, oldest first: its task's unread reports outside its PR
-    /// card and its review cards.
-    #[serde(default)]
-    pub reports: Vec<Report>,
-}
-
-impl OpenQuestion {
-    /// The reports shown inside the question; an older alondrad sends only `report`.
-    pub fn about(&self) -> Vec<&Report> {
-        if self.reports.is_empty() { self.report.iter().collect() } else { self.reports.iter().collect() }
-    }
-}
-
-impl From<Question> for OpenQuestion {
-    fn from(question: Question) -> Self {
-        OpenQuestion { question, pr_id: None, task: None, report: None, reports: vec![] }
-    }
-}
-
-impl std::ops::Deref for OpenQuestion {
-    type Target = Question;
-    fn deref(&self) -> &Question {
-        &self.question
-    }
-}
-
-/// An unread report, with the PR card it is shown inside when it links a PR that has one.
-#[derive(Deserialize, Clone)]
-pub struct NewsReport {
-    #[serde(flatten)]
-    pub report: Report,
-    #[serde(default)]
-    pub pr_id: Option<u64>,
-    /// The task this report belongs to.
-    #[serde(default)]
-    pub task: Option<String>,
-    /// The other unread reports of its task that no question carries, oldest first; this card
-    /// carries them.
-    #[serde(default)]
-    pub earlier: Vec<Report>,
-}
-
-impl From<Report> for NewsReport {
-    fn from(report: Report) -> Self {
-        NewsReport { report, pr_id: None, task: None, earlier: vec![] }
-    }
-}
-
-impl std::ops::Deref for NewsReport {
-    type Target = Report;
-    fn deref(&self) -> &Report {
-        &self.report
-    }
-}
-
-#[derive(Deserialize, Clone)]
-pub struct PrCard {
-    #[serde(flatten)]
-    pub pr: alondra_core::pr::PullRequest,
-    #[serde(default)]
-    pub preferred_method: Option<alondra_core::pr::MergeMethod>,
-    /// The number of the open PR this one is stacked on, which has to be merged first.
-    #[serde(default)]
-    pub below_number: Option<u64>,
-    #[serde(default)]
-    pub below_set_aside: bool,
-    #[serde(default)]
-    pub stack_bottom: Option<u64>,
-    #[serde(default)]
-    pub stack_opened_at: Option<i64>,
-    #[serde(default)]
-    pub stack_position: usize,
-    /// The task this PR belongs to.
-    #[serde(default)]
-    pub task: Option<String>,
-}
-
-impl PrCard {
-    /// Why it cannot be merged yet: the PR under it is still open on GitHub.
-    pub fn merge_blocked(&self) -> Option<String> {
-        let below = self.below_number?;
-        Some(if self.below_set_aside {
-            trf!("PR #{below} is still open on GitHub: merge or close it first", "El PR #{below} sigue abierto en GitHub: fusiónalo o ciérralo antes")
-        } else {
-            trf!("Merge PR #{below} first", "Fusiona antes el PR #{below}")
-        })
-    }
-
-    /// Sorts trains together, bottom card first, trains by when their bottom card was opened.
-    pub fn train_place(&self) -> (i64, u64, usize, u64) {
-        (self.stack_opened_at.unwrap_or(self.pr.opened_at), self.stack_bottom.unwrap_or(self.pr.id), self.stack_position, self.pr.id)
-    }
-
-    /// The methods offered, the repo's preferred one first; all three when the repo was not read.
-    pub fn methods(&self) -> Vec<alondra_core::pr::MergeMethod> {
-        use alondra_core::pr::MergeMethod;
-        let allowed = if self.pr.merge_methods.is_empty() { vec![MergeMethod::Merge, MergeMethod::Squash, MergeMethod::Rebase] } else { self.pr.merge_methods.clone() };
-        let preferred = self.preferred_method.filter(|m| allowed.contains(m)).unwrap_or(allowed[0]);
-        std::iter::once(preferred).chain(allowed.into_iter().filter(|m| *m != preferred)).collect()
-    }
-
-    /// The numbered actions of the card: merging in each method, or, while the branch conflicts
-    /// with its base, only asking its node to resolve that.
-    pub fn actions(&self) -> Vec<PrAction> {
-        if self.pr.conflicts() {
-            return vec![PrAction::ResolveConflicts];
-        }
-        self.methods().into_iter().map(PrAction::Merge).collect()
-    }
-}
-
-/// alondrad answered 404 without saying why: it does not have that route yet.
-#[derive(Debug)]
-pub struct NotFound;
-
-impl std::fmt::Display for NotFound {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(tr!("alondrad does not have this yet", "alondrad todavía no tiene esto"))
-    }
-}
-
-impl std::error::Error for NotFound {}
-
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum PrAction {
-    Merge(alondra_core::pr::MergeMethod),
-    ResolveConflicts,
 }
 
 pub struct Client {
@@ -435,97 +114,64 @@ impl Client {
         } else { Self::for_user(timeout) }
     }
 
-    fn service_result(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
-        let (status, value) = self.service.as_ref().context("no service destination")?.request(method, path, body, self.timeout)?;
-        if status >= 400 { return Err(Self::failure(status, serde_json::to_string(&value)?)); }
-        Ok((status, value))
-    }
-
-    fn signed(&self, req: ureq::RequestBuilder<ureq::typestate::WithoutBody>, method: &str, path: &str) -> ureq::RequestBuilder<ureq::typestate::WithoutBody> {
-        let mut req = req;
+    fn headers<B>(&self, mut req: ureq::RequestBuilder<B>, method: &str, path: &str, body: &[u8]) -> ureq::RequestBuilder<B> {
         if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
         if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
         match &self.signer {
-            Some(s) => s.sign(method, path, b"").into_iter().fold(req, |r, (k, v)| r.header(k, v)),
+            Some(s) => s.sign(method, path, body).into_iter().fold(req, |r, (k, v)| r.header(k, v)),
             None => req,
         }
     }
 
-    fn check(mut resp: ureq::http::Response<ureq::Body>) -> Result<(u16, String)> {
+    /// The raw answer, a refusal included: domain commands read their typed error from it.
+    fn exchange(&self, method: &str, path: &str, body: Option<&Value>) -> Result<(u16, Value)> {
+        if let Some(service) = &self.service {
+            return service.request(method, path, body, self.timeout);
+        }
+        let url = format!("{}{path}", self.base);
+        let not_responding = tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)");
+        let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
+        let mut resp = match method {
+            "POST" => self.headers(self.agent.post(url).header("content-type", "application/json"), method, path, &bytes).send(&bytes[..]),
+            "PUT" => self.headers(self.agent.put(url).header("content-type", "application/json"), method, path, &bytes).send(&bytes[..]),
+            "DELETE" => self.headers(self.agent.delete(url), method, path, b"").call(),
+            _ => self.headers(self.agent.get(url), method, path, b"").call(),
+        }
+        .context(not_responding)?;
         let status = resp.status().as_u16();
-        let body = resp.body_mut().read_to_string().unwrap_or_default();
+        let text = resp.body_mut().read_to_string().unwrap_or_default();
+        Ok((status, serde_json::from_str(&text).unwrap_or(Value::Null)))
+    }
+
+    fn call(&self, method: &str, path: &str, body: Option<&Value>) -> Result<Value> {
+        let (status, value) = self.exchange(method, path, body)?;
         if status >= 400 {
-            return Err(Self::failure(status, body));
+            return Err(failure(status, &value));
         }
-        Ok((status, body))
-    }
-
-    /// Why alondrad said no, in the user's language where the reason is one the apps know.
-    fn failure(status: u16, body: String) -> anyhow::Error {
-        let parsed = serde_json::from_str::<Value>(&body).ok();
-        if status == 404 && parsed.as_ref().and_then(|v| v.get("error")).is_none() {
-            return anyhow::Error::new(NotFound);
-        }
-        if status == 404 {
-            return anyhow!(tr!("Alondra no longer has it", "Alondra ya no lo tiene"));
-        }
-        if parsed.as_ref().and_then(|v| v.get("kind")).and_then(Value::as_str) == Some("task_refused") {
-            return anyhow!(tr!("The task’s state does not allow that now", "El estado de la tarea no lo permite ahora"));
-        }
-        let reasons: Vec<String> = parsed
-            .as_ref()
-            .and_then(|v| v.get("reasons"))
-            .and_then(Value::as_array)
-            .map(|rs| {
-                rs.iter()
-                    .map(|r| crate::i18n::close_reason(r.get("kind").and_then(Value::as_str).unwrap_or_default(), r.get("detail").and_then(Value::as_str)))
-                    .collect()
-            })
-            .unwrap_or_default();
-        if !reasons.is_empty() {
-            let text = match reasons.as_slice() {
-                [one] => one.clone(),
-                many => many.iter().map(|r| format!("- {r}")).collect::<Vec<_>>().join("\n"),
-            };
-            return anyhow!(text);
-        }
-        let msg = parsed.as_ref().and_then(|v| v.get("error").and_then(Value::as_str).map(str::to_string)).unwrap_or(body);
-        anyhow!(trf!("alondrad answered: {msg}", "alondrad respondió: {msg}"))
-    }
-
-    pub fn get_text(&self, path: &str) -> Result<(u16, String)> {
-        if self.service.is_some() {
-            let (status, value) = self.service_result("GET", path, None)?;
-            let text = if path.starts_with("/v1/file?") { value["text"].as_str().context("file text missing")?.to_string() } else { serde_json::to_string(&value)? };
-            return Ok((status, text));
-        }
-        let resp = self.signed(self.agent.get(format!("{}{path}", self.base)), "GET", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
-        Self::check(resp)
-    }
-
-    /// The raw body, for files that may not be text (images, PDFs).
-    pub fn get_bytes(&self, path: &str) -> Result<Vec<u8>> {
-        if let Some(service) = &self.service { return service.file(path, self.timeout); }
-        let mut resp = self.signed(self.agent.get(format!("{}{path}", self.base)), "GET", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
-        if resp.status().as_u16() >= 400 {
-            return Self::check(resp).map(|(_, body)| body.into_bytes());
-        }
-        Ok(resp.body_mut().with_config().limit(64 * 1024 * 1024).read_to_vec()?)
+        Ok(value)
     }
 
     pub fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
-        let (_, body) = self.get_text(path)?;
-        Ok(serde_json::from_str(&body)?)
+        Ok(serde_json::from_value(self.call("GET", path, None)?)?)
+    }
+
+    pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
+        self.call("POST", path, Some(body))
+    }
+
+    pub fn put(&self, path: &str, body: &Value) -> Result<Value> {
+        self.call("PUT", path, Some(body))
+    }
+
+    pub fn delete(&self, path: &str) -> Result<()> {
+        self.call("DELETE", path, None).map(|_| ())
     }
 
     /// Domain producers use their daemon-issued bearer, never a locally paired User key.
     pub fn domain_get(&self, path: &str, bearer: &str) -> Result<Value> {
         let url = format!("http://127.0.0.1:{}{path}", config().port);
-        let resp = self.agent.get(url)
-            .header("authorization", format!("Bearer {bearer}"))
-            .call()?;
-        let (_, body) = Self::check(resp)?;
-        Ok(serde_json::from_str(&body)?)
+        let resp = self.agent.get(url).header("authorization", format!("Bearer {bearer}")).call()?;
+        answer(resp)
     }
 
     pub fn domain_post(&self, path: &str, bearer: &str, body: &Value) -> Result<Value> {
@@ -535,66 +181,88 @@ impl Client {
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {bearer}"))
             .send(&bytes[..])?;
-        let (_, body) = Self::check(resp)?;
-        Ok(serde_json::from_str(&body)?)
+        answer(resp)
     }
 
-    pub fn post(&self, path: &str, body: &Value) -> Result<Value> {
-        if self.service.is_some() { return self.service_result("POST", path, Some(body)).map(|(_, v)| v); }
-        let bytes = serde_json::to_vec(body)?;
-        let mut req = self.agent.post(format!("{}{path}", self.base)).header("content-type", "application/json");
-        if let Ok(run) = std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION") { req = req.header("x-alondra-orchestrator-execution", run); }
-        if let Ok(sid) = std::env::var("ALONDRA_SESSION_ID").or_else(|_| std::env::var("CLAUDE_CODE_SESSION_ID")) { req = req.header("x-alondra-session", sid); }
-        if let Some(s) = &self.signer {
-            for (k, v) in s.sign("POST", path, &bytes) {
-                req = req.header(k, v);
-            }
+    /// The whole domain as the daemon projects it: roots, children, actions and their revisions.
+    pub fn domain(&self) -> Result<DomainProjection> {
+        self.get("/v2/domain")
+    }
+
+    /// Waits up to `wait` seconds for the domain to move past `revision`.
+    pub fn domain_changed(&self, epoch: &DataEpoch, revision: Revision, wait: u64) -> Result<bool> {
+        let changes: Value = self.get(&format!("/v2/domain/changes?data_epoch={epoch}&after={revision}&wait={wait}"))?;
+        Ok(changes["changed"].as_bool().unwrap_or(true))
+    }
+
+    /// A refusal is the daemon's typed answer; anything else leaves the outcome unknown.
+    pub fn command(&self, envelope: &CommandEnvelope) -> Result<CommandOutcome, CommandFailure> {
+        let body = serde_json::to_value(envelope).map_err(|e| CommandFailure::Uncertain(e.to_string()))?;
+        let (status, value) = self.exchange("POST", "/v2/domain/commands", Some(&body)).map_err(|e| CommandFailure::Uncertain(format!("{e:#}")))?;
+        classify(status, value)
+    }
+}
+
+fn answer(mut resp: ureq::http::Response<ureq::Body>) -> Result<Value> {
+    let status = resp.status().as_u16();
+    let value = serde_json::from_str(&resp.body_mut().read_to_string().unwrap_or_default()).unwrap_or(Value::Null);
+    if status >= 400 {
+        return Err(failure(status, &value));
+    }
+    Ok(value)
+}
+
+/// Why alondrad said no, in the user's language where the reason is a domain error it names.
+fn failure(status: u16, body: &Value) -> anyhow::Error {
+    if let Ok(error) = serde_json::from_value::<DomainError>(body.clone()) {
+        return anyhow!(refusal(&error));
+    }
+    let msg = body.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string());
+    anyhow!(trf!("alondrad answered {status}: {msg}", "alondrad respondió {status}: {msg}"))
+}
+
+/// How a domain command ended when it did not succeed.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CommandFailure {
+    /// The daemon refused it: nothing was written.
+    Rejected(DomainError),
+    /// The request left but no answer says whether it was applied.
+    Uncertain(String),
+}
+
+fn classify(status: u16, value: Value) -> Result<CommandOutcome, CommandFailure> {
+    if status < 300 {
+        return serde_json::from_value(value).map_err(|e| CommandFailure::Uncertain(e.to_string()));
+    }
+    match serde_json::from_value::<DomainError>(value) {
+        Ok(error) if status < 500 || error.code == "storage_unavailable" => Err(CommandFailure::Rejected(error)),
+        Ok(error) => Err(CommandFailure::Uncertain(error.to_string())),
+        Err(_) => Err(CommandFailure::Uncertain(trf!("alondrad answered {status}", "alondrad respondió {status}"))),
+    }
+}
+
+/// A fresh identifier for a command or for an entity the command creates.
+pub fn new_id(prefix: &str) -> String {
+    let bytes = crate::service_client::random::<16>().unwrap_or_default();
+    let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    format!("{prefix}-{hex}")
+}
+
+pub fn envelope(epoch: &DataEpoch, expected_revision: Revision, command: Command) -> CommandEnvelope {
+    CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: epoch.clone(), command_id: new_id("tui").into(), expected_revision, command }
+}
+
+/// What a refusal means to the user; the code decides, the daemon's English message is the fallback.
+pub fn refusal(error: &DomainError) -> String {
+    match error.code.as_str() {
+        "stale_revision" | "stale_epoch" => tr!("It changed since you saw it: check it and try again", "Ha cambiado desde que lo viste: revísalo y vuelve a intentarlo").into(),
+        "not_found" => tr!("Alondra no longer has it", "Alondra ya no lo tiene").into(),
+        "task_not_active" => tr!("The task is no longer active", "La tarea ya no está activa").into(),
+        "incompatible_protocol" => tr!("This alondrad does not accept this domain request", "Este alondrad no acepta esta petición del dominio").into(),
+        _ => {
+            let (code, why) = (&error.code, &error.message);
+            trf!("{why} ({code})", "{why} ({code})")
         }
-        let resp = req.send(&bytes[..]).context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
-        let (_, text) = Self::check(resp)?;
-        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
-    }
-
-    pub fn put(&self, path: &str, body: &Value) -> Result<Value> {
-        if self.service.is_some() { return self.service_result("PUT", path, Some(body)).map(|(_, v)| v); }
-        let bytes = serde_json::to_vec(body)?;
-        let mut req = self.agent.put(format!("{}{path}", self.base)).header("content-type", "application/json");
-        if let Some(s) = &self.signer {
-            for (k, v) in s.sign("PUT", path, &bytes) { req = req.header(k, v); }
-        }
-        let resp = req.send(&bytes[..]).context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
-        let (_, text) = Self::check(resp)?;
-        Ok(serde_json::from_str(&text).unwrap_or(Value::Null))
-    }
-
-    /// Copies a file into Alondra's storage; the answer carries the upload's id.
-    pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<Value> {
-        if let Some(service) = &self.service { return service.upload(name, bytes, self.timeout); }
-        let path = format!("/v1/uploads?name={}", crate::mcp::urlencode(name));
-        let mut req = self.agent.post(format!("{}{path}", self.base)).header("content-type", "application/octet-stream");
-        if let Some(s) = &self.signer {
-            for (k, v) in s.sign("POST", &path, bytes) {
-                req = req.header(k, v);
-            }
-        }
-        let resp = req.send(bytes).context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
-        let (_, text) = Self::check(resp)?;
-        Ok(serde_json::from_str(&text)?)
-    }
-
-    pub fn delete(&self, path: &str) -> Result<()> {
-        if self.service.is_some() { return self.service_result("DELETE", path, None).map(|_| ()); }
-        let resp = self.signed(self.agent.delete(format!("{}{path}", self.base)), "DELETE", path).call().context(tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)"))?;
-        Self::check(resp).map(|_| ())
-    }
-
-    pub fn overview(&self) -> Result<Overview> {
-        if let Some(service) = &self.service {
-            let (status, value) = crate::overview_snapshot::read_transport(service.as_ref(), self.timeout)?;
-            if status >= 400 { return Err(Self::failure(status, serde_json::to_string(&value)?)); }
-            return Ok(serde_json::from_value(value)?);
-        }
-        self.get("/v1/overview")
     }
 }
 
@@ -602,52 +270,34 @@ impl Client {
 mod tests {
     use super::*;
     use crate::i18n::{Lang, set_for_this_thread};
+    use serde_json::json;
 
     #[test]
-    fn a_refused_task_action_and_something_gone_read_in_the_users_language() {
+    fn a_refusal_is_typed_and_a_lost_answer_is_uncertain() {
+        let stale = classify(409, json!({"code": "stale_revision", "message": "Refresh", "current_revision": 7, "subject": null}));
+        assert!(matches!(stale, Err(CommandFailure::Rejected(e)) if e.code == "stale_revision" && e.current_revision == Some(7)));
+        assert!(matches!(classify(502, json!({"error": "bad gateway"})), Err(CommandFailure::Uncertain(_))));
+        assert!(matches!(classify(500, json!({"code": "storage_unavailable", "message": "x", "current_revision": null, "subject": null})), Err(CommandFailure::Rejected(_))));
+        let ok = classify(200, json!({"revision": 8, "changed": true, "effects": [], "created_ids": []}));
+        assert!(matches!(ok, Ok(o) if o.revision == 8));
+    }
+
+    #[test]
+    fn a_refusal_reads_in_the_users_language() {
         set_for_this_thread(Lang::Es);
-        let said = |status, body: &str| Client::failure(status, body.to_string()).to_string();
-        assert_eq!(said(409, r#"{"error":"the task is already done","kind":"task_refused"}"#), "El estado de la tarea no lo permite ahora");
-        assert_eq!(said(404, r#"{"error":"task t-9 does not exist"}"#), "Alondra ya no lo tiene");
-        assert!(Client::failure(404, String::new()).downcast_ref::<NotFound>().is_some(), "a bare 404 is a route this alondrad lacks");
-        assert_eq!(said(409, r#"{"error":"something new"}"#), "alondrad respondió: something new");
-    }
-}
-
-#[cfg(test)]
-mod orchestrator_contract_tests {
-    use super::*;
-
-    #[test]
-    fn idle_runtime_decodes_without_a_claude_session_and_is_not_offline() {
-        let mut value = serde_json::to_value(Node::new("alondra-orchestrator", 1)).unwrap();
-        value["is_orchestrator"] = serde_json::json!(true);
-        value["alive"] = serde_json::json!(false);
-        value["orchestrator_runtime"] = serde_json::json!({"phase": "idle", "queue_depth": 2});
-        let node: FleetNode = serde_json::from_value(value).unwrap();
-        assert!(!node.alive);
-        assert_eq!(node.orchestrator_runtime.as_ref().unwrap().queue_depth, 2);
-        assert_eq!(node.status_label(), tr!("available", "disponible"));
-    }
-}
-
-#[cfg(test)]
-mod lenient_update_tests {
-    use super::*;
-
-    #[derive(Deserialize)]
-    struct Carrier {
-        #[serde(default, deserialize_with = "lenient_one")]
-        update: Option<alondra_core::update::Status>,
+        let said = |code: &str| refusal(&DomainError::new(code, "english detail"));
+        assert_eq!(said("stale_revision"), "Ha cambiado desde que lo viste: revísalo y vuelve a intentarlo");
+        assert_eq!(said("not_found"), "Alondra ya no lo tiene");
+        assert_eq!(said("something_new"), "english detail (something_new)");
+        assert_eq!(failure(409, &json!({"code": "not_found", "message": "gone", "current_revision": null, "subject": null})).to_string(), "Alondra ya no lo tiene");
     }
 
     #[test]
-    fn an_update_block_this_client_cannot_read_is_dropped_not_fatal() {
-        let odd: Carrier = serde_json::from_value(serde_json::json!({"update": {"current": 5}})).unwrap();
-        assert!(odd.update.is_none());
-        let absent: Carrier = serde_json::from_value(serde_json::json!({})).unwrap();
-        assert!(absent.update.is_none());
-        let read: Carrier = serde_json::from_value(serde_json::json!({"update": {"current": "0.1.13"}})).unwrap();
-        assert_eq!(read.update.unwrap().current, "0.1.13");
+    fn every_command_gets_its_own_identifier() {
+        let epoch = DataEpoch::from("e");
+        let a = envelope(&epoch, 3, Command::MarkRead { interaction_id: "i".into() });
+        let b = envelope(&epoch, 3, Command::MarkRead { interaction_id: "i".into() });
+        assert_ne!(a.command_id, b.command_id);
+        assert_eq!((a.protocol_version, a.expected_revision), (PROTOCOL_VERSION, 3));
     }
 }
