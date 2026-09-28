@@ -16,6 +16,7 @@ swift_library(
         "//apple/Data/Recovery:AlondraRecovery",
         "//apple/Data/RelayOutbox:AlondraRelayOutbox",
         "//apple/Data/RelaySession:AlondraRelaySession",
+        "//apple/Data/LoopbackSession:AlondraLoopbackSession",
         "//apple/Data/Sync:AlondraSync",
         "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/NotificationPayload:AlondraNotificationPayload",

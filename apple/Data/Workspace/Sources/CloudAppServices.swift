@@ -4,6 +4,7 @@ import AlondraAPIClient
 import AlondraAttachmentStorage
 import AlondraAuth
 import AlondraCommands
+import AlondraLoopbackSession
 import AlondraRecovery
 import AlondraRelayOutbox
 import AlondraRelaySession
@@ -17,7 +18,7 @@ public actor CloudAppServices {
     public let api: AlondraAPIClient
     public let sync: SyncSession
     public let domainSync: DomainSyncSession
-    private let operations: RelaySession
+    private let operations: any WorkspaceOperations
     private let gate: CommandGate
     private let deliveryStatus: DeliveryStatusService
     private let commandRecovery: CommandRecovery
@@ -37,31 +38,52 @@ public actor CloudAppServices {
             .map { String(format: "%02x", $0) }.joined()
         let directory = storageDirectory
             .appendingPathComponent("service-" + revision, isDirectory: true)
-        let scope = CommandScope(server: approved.relayURL, deviceID: approved.deviceID,
-                                 credentialRevision: revision, generation: 0)
-        self.scope = scope
-        self.macID = approved.macID
-        operations = try RelaySession(journalFile: directory.appendingPathComponent("outbox.json"),
+        let relay = try RelaySession(journalFile: directory.appendingPathComponent("outbox.json"),
             scope: RelayOutboxScope(relay: approved.relayURL, macID: approved.macID,
                                    deviceID: approved.deviceID, credentialRevision: revision),
             bearer: { try await auth.bearerToken() }, cachedBearer: { try await auth.cachedBearerLease() }, signing: signing, agreement: agreement,
             macSigning: approved.macSigningPublicKey(),
             macAgreement: approved.macAgreementPublicKey())
-        api = AlondraAPIClient(serviceURL: approved.relayURL, deviceID: approved.deviceID, operations: operations)
-        sync = SyncSession(transport: api,
-            identity: SyncIdentity(server: approved.relayURL, deviceID: approved.deviceID, credentialRevision: revision))
-        domainSync = DomainSyncSession(transport: api,
-            identity: SyncIdentity(server: approved.relayURL, deviceID: approved.deviceID, credentialRevision: revision))
+        self.init(operations: relay, server: approved.relayURL, deviceID: approved.deviceID, macID: approved.macID,
+                  revision: revision, directory: directory, bindingSecret: approved.signingPrivateKey)
+    }
+
+    /// The daemon on this Mac, reached over loopback. No account, relay or pairing QR involved.
+    public static func local(_ session: LoopbackSession, identity: LoopbackIdentityStore,
+                             storageDirectory: URL) async throws -> CloudAppServices {
+        let revision = try await identity.credentialRevision()
+        return CloudAppServices(operations: session, server: session.base, deviceID: Self.localDeviceID,
+            macID: Self.localMacID, revision: revision,
+            directory: storageDirectory.appendingPathComponent("local-" + revision, isDirectory: true),
+            bindingSecret: try await identity.bindingSecret())
+    }
+
+    public static let localDeviceID = "mac"
+    public static let localMacID = "local"
+
+    public var isLocal: Bool { operations is LoopbackSession }
+
+    private init(operations: any WorkspaceOperations, server: URL, deviceID: String, macID: String,
+                 revision: String, directory: URL, bindingSecret: Data) {
+        let scope = CommandScope(server: server, deviceID: deviceID, credentialRevision: revision, generation: 0)
+        let identity = SyncIdentity(server: server, deviceID: deviceID, credentialRevision: revision)
+        self.scope = scope
+        self.macID = macID
+        self.operations = operations
+        api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: operations)
+        sync = SyncSession(transport: api, identity: identity)
+        domainSync = DomainSyncSession(transport: api, identity: identity)
         gate = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory.appendingPathComponent("commands")))
-        reportFeedback = ReportFeedbackCoordinator(directory: directory.appendingPathComponent("feedback"), gate: gate, scope: scope, api: api, operations: operations, bindingSecret: approved.signingPrivateKey)
+        reportFeedback = ReportFeedbackCoordinator(directory: directory.appendingPathComponent("feedback"), gate: gate,
+            scope: scope, api: api, recoveryStatus: { try await operations.recoveryStatus(requestID: $0) },
+            bindingSecret: bindingSecret)
         let feedbackCoordinator = reportFeedback
         deliveryStatus = DeliveryStatusService(gate: gate, scope: scope,
             storage: .file(directory.appendingPathComponent("delivery-warnings.json")),
             feedback: { await feedbackCoordinator.recoveryEvents() })
-        let serviceOperations = operations
         commandRecovery = CommandRecovery(gate: gate, scope: scope,
             file: directory.appendingPathComponent("command-resolutions-v2.json"), response: { id in
-                switch try await serviceOperations.resume(requestID: id.uuidString, statusPolls: 1) {
+                switch try await operations.latestOutcome(requestID: id.uuidString) {
                 case .completed(let status, let body): return CommandResponse(status: status, body: body)
                 case .unknown: return nil
                 }
@@ -182,8 +204,10 @@ public actor CloudAppServices {
         guard active else { return .obsolete }
         let api = api
         let witness = CommandDispatchWitness()
+        let local = isLocal
         let result = await gate.submitIdentified(kind, itemID: itemID, in: scope,
             isUnknown: { error in
+                if local, LoopbackSession.neverSent(error) { return false }
                 if let error = error as? ServiceAPIError { return error == .outcomeUnknown }
                 if error is APIError { return false }
                 if error is DeliveryHandoffUnconfirmed { return false }

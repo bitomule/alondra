@@ -11,13 +11,14 @@ public struct ReportFeedbackCoordinator: Sendable {
     private let transaction: ReportFeedbackTransaction
     private let scope: CommandScope
     private let api: AlondraAPIClient
-    private let operations: RelaySession
+    private let recoveryStatus: @Sendable (String) async throws -> RelayRecoveryStatus
     private let bindingKey: SymmetricKey
 
     public init(directory: URL, gate: CommandGate, scope: CommandScope,
-                api: AlondraAPIClient, operations: RelaySession, bindingSecret: Data) {
+                api: AlondraAPIClient, recoveryStatus: @escaping @Sendable (String) async throws -> RelayRecoveryStatus,
+                bindingSecret: Data) {
         transaction = ReportFeedbackTransaction(directory: directory, gate: gate, scope: scope)
-        self.scope = scope; self.api = api; self.operations = operations
+        self.scope = scope; self.api = api; self.recoveryStatus = recoveryStatus
         bindingKey = HKDF<SHA256>.deriveKey(inputKeyMaterial: SymmetricKey(data: bindingSecret),
             salt: Data(), info: Data("alondra-feedback-binding-v1".utf8), outputByteCount: 32)
     }
@@ -30,7 +31,7 @@ public struct ReportFeedbackCoordinator: Sendable {
         try await transaction.recover(retryingReadFor: operationID,
             markRead: { report, id in try await api.markRead(report, operationID: id) },
             reconcile: { id in
-                switch try await operations.recoveryStatus(requestID: id) {
+                switch try await recoveryStatus(id) {
                 case .notDispatched: return .notDispatched
                 case .unknown: return .unknown
                 case .completed(let status, _): return (200..<300).contains(status) ? .confirmed : .rejected(status)
@@ -56,7 +57,7 @@ public struct ReportFeedbackCoordinator: Sendable {
         }, markRead: { id in
             try await api.markRead(request.reportID, operationID: id)
         }, reconcile: { id in
-            switch try await operations.recoveryStatus(requestID: id) {
+            switch try await recoveryStatus(id) {
             case .notDispatched: return .notDispatched
             case .unknown: return .unknown
             case .completed(let status, _):

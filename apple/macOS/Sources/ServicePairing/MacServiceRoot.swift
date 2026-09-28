@@ -15,9 +15,11 @@ import Observation
 import SwiftUI
 
 struct MacServiceRoot: View {
-    let account: CloudPairingOwner
+    let owner: MacWorkspaceOwner
     @State private var demo = Store(initialState: DemoModeFeature.State()) { DemoModeFeature() }
     @State private var restoring = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
+    @State private var connectingRemote = false
+    private var account: CloudPairingOwner { owner.account }
     var body: some View {
         Group {
         if demo.sessionID != nil {
@@ -25,21 +27,37 @@ struct MacServiceRoot: View {
                 MacServiceWorkspace(store: store, accountContent: DemoAccountView())
             }
         } else {
-            CloudWorkspaceGate(store: account.store, hasServices: account.services != nil) {
-                if let services = account.services {
-                    MacServiceWindow(services: services, account: account)
+            switch owner.route {
+            case .searching:
+                ProgressView("Looking for Alondra on this Mac…")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            case .local:
+                if let services = owner.services {
+                    MacServiceWindow(services: services, account: nil)
                         .id(ObjectIdentifier(services))
                 }
-            } restoring: {
-                MacRestoringWorkspace(store: restoring, pairing: account.store)
-            } onboarding: {
-                MacServicePairingScreen(store: account.store)
-                    .safeAreaInset(edge: .bottom) {
-                        if account.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+            case .remote:
+                CloudWorkspaceGate(store: account.store, hasServices: account.services != nil) {
+                    if let services = account.services {
+                        MacServiceWindow(services: services, account: account)
+                            .id(ObjectIdentifier(services))
                     }
+                } restoring: {
+                    MacRestoringWorkspace(store: restoring, pairing: account.store)
+                } onboarding: {
+                    if connectingRemote || account.store.phase != .signedOut {
+                        MacServicePairingScreen(store: account.store)
+                            .safeAreaInset(edge: .bottom) {
+                                if account.store.phase == .signedOut { DemoEntryButton(store: demo).padding() }
+                            }
+                    } else {
+                        MacLocalDaemonMissingView { connectingRemote = true }
+                            .safeAreaInset(edge: .bottom) { DemoEntryButton(store: demo).padding() }
+                    }
+                }
             }
         }
-        }.task { await account.store.send(.appeared).finish() }
+        }.task { await owner.run() }
     }
 }
 
@@ -97,7 +115,7 @@ private final class MacServiceWindowContext {
 
 private struct MacServiceWindow: View {
     let services: CloudAppServices
-    let account: CloudPairingOwner
+    let account: CloudPairingOwner?
     @State private var context = MacServiceWindowContext()
     var body: some View {
         Group {

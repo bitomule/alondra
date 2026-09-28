@@ -1,6 +1,14 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Looking for Alondra on this Mac…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscando Alondra en este Mac…"}}}},
+    "Alondra isn’t running on this Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra no está en marcha en este Mac"}}}},
+    "Run `alondra setup` in Terminal to start it. This window connects as soon as it answers.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ejecuta `alondra setup` en Terminal para ponerlo en marcha. Esta ventana se conecta en cuanto responda."}}}},
+    "Connect to Another Mac…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectar con otro Mac…"}}}},
+    "Connected to": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conectado a"}}}},
+    "Alondra on this Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra en este Mac"}}}},
+    "Connection": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Conexión"}}}},
+    "This Mac talks to its own Alondra directly. No account is needed.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este Mac habla directamente con su propio Alondra. No hace falta ninguna cuenta."}}}},
     "Continue without repeating": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir"}}}},
     "Review the activity before continuing.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Revisa la actividad antes de continuar."}}}},
     "View details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ver detalles"}}}},

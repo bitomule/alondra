@@ -15,42 +15,16 @@ public struct ServiceSettingsView<PairingContent: View>: View {
     }
     public var body: some View {
         Form {
-            Section {
-                LabeledContent("Service") {
-                    Text(store.service)
-                        .font(.system(.subheadline, design: .monospaced))
-                        .foregroundStyle(ink)
+            if store.usesAccount {
+                account
+            } else {
+                Section {
+                    LabeledContent("Connected to") { Text("Alondra on this Mac") }
+                } header: {
+                    Text("Connection")
+                } footer: {
+                    Text("This Mac talks to its own Alondra directly. No account is needed.")
                 }
-                LabeledContent("Device") {
-                    Text(store.device)
-                        .font(.system(.caption, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .textSelection(.enabled)
-                }
-                ForEach(store.macs) { mac in
-                    Button { store.send(.selectMac(mac.id)) } label: {
-                        HStack {
-                            Label("Mac \(mac.macID.prefix(8))", systemImage: "desktopcomputer")
-                            Spacer()
-                            if store.selectingMacID == mac.id { ProgressView() }
-                            else if store.selectedMacID == mac.id {
-                                Image(systemName: "checkmark").foregroundStyle(success).accessibilityHidden(true)
-                            }
-                        }
-                    }
-                    .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
-                    .accessibilityLabel("Mac \(mac.macID)")
-                    .accessibilityValue(store.selectedMacID == mac.id ? "Selected" : "")
-                }
-                if let error = store.macError { Text(error).foregroundStyle(failure) }
-                Button("Link another Mac", systemImage: "plus") { store.send(.linkMac) }
-                    .disabled(store.selectingMacID != nil || store.pairingCleanup)
-                Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
-            } header: {
-                Text("Account")
-            } footer: {
-                Text("Encrypted between your devices")
             }
             if store.supportsNotifications {
                 notifications
@@ -103,6 +77,46 @@ public struct ServiceSettingsView<PairingContent: View>: View {
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
         .onChange(of: phase) { _, phase in if phase == .active { store.send(.refreshPermission) } }
+    }
+
+    private var account: some View {
+        Section {
+            LabeledContent("Service") {
+                Text(store.service)
+                    .font(.system(.subheadline, design: .monospaced))
+                    .foregroundStyle(ink)
+            }
+            LabeledContent("Device") {
+                Text(store.device)
+                    .font(.system(.caption, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .textSelection(.enabled)
+            }
+            ForEach(store.macs) { mac in
+                Button { store.send(.selectMac(mac.id)) } label: {
+                    HStack {
+                        Label("Mac \(mac.macID.prefix(8))", systemImage: "desktopcomputer")
+                        Spacer()
+                        if store.selectingMacID == mac.id { ProgressView() }
+                        else if store.selectedMacID == mac.id {
+                            Image(systemName: "checkmark").foregroundStyle(success).accessibilityHidden(true)
+                        }
+                    }
+                }
+                .disabled(store.selectingMacID != nil || store.selectedMacID == mac.id)
+                .accessibilityLabel("Mac \(mac.macID)")
+                .accessibilityValue(store.selectedMacID == mac.id ? "Selected" : "")
+            }
+            if let error = store.macError { Text(error).foregroundStyle(failure) }
+            Button("Link another Mac", systemImage: "plus") { store.send(.linkMac) }
+                .disabled(store.selectingMacID != nil || store.pairingCleanup)
+            Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
+        } header: {
+            Text("Account")
+        } footer: {
+            Text("Encrypted between your devices")
+        }
     }
 
     private var notifications: some View {
