@@ -26,8 +26,9 @@ private func card(_ workspace: DomainWorkspace) throws -> DomainPullRequestCard 
 
 private actor Recorder {
     var intents: [DomainIntent] = []
+    var commandIDs: [String] = []
     var diffs: [String] = []
-    func record(_ intent: DomainIntent) { intents.append(intent) }
+    func record(_ intent: DomainIntent, _ commandID: String) { intents.append(intent); commandIDs.append(commandID) }
     func diff(_ head: String) { diffs.append(head) }
 }
 
@@ -35,8 +36,8 @@ private let diffText = "diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.s
 
 private func client(_ recorder: Recorder, result: DomainCommandResult, head: String = "head1") -> DomainWorkspaceClient {
     var client = DomainWorkspaceClient.inert
-    client.perform = { intent, _, _ in
-        await recorder.record(intent)
+    client.perform = { intent, _, _, commandID in
+        await recorder.record(intent, commandID)
         return result
     }
     client.pullRequestDiff = { id, expected in
@@ -73,6 +74,7 @@ struct PullRequestFeatureTests {
         let initial = PullRequestFeature.State(card: try card(workspace), workspace: workspace)
         let store = TestStore(initialState: initial) { PullRequestFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.mergeMethodConfirmed(.merge))
@@ -85,20 +87,44 @@ struct PullRequestFeatureTests {
     }
 
     @Test
-    func uncertainAuthorizationBlocksASecondOne() async throws {
+    func authorizingAgainAfterAnUnknownOutcomeReusesTheCommandID() async throws {
         let recorder = Recorder()
-        let command = UUID()
         let workspace = try workspace()
         let initial = PullRequestFeature.State(card: try card(workspace), workspace: workspace)
         let store = TestStore(initialState: initial) { PullRequestFeature() } withDependencies: {
-            $0.domainWorkspace = client(recorder, result: .uncertain(command))
+            $0.domainWorkspace = client(recorder, result: .uncertain)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.mergeMethodConfirmed(.squash))
         await store.receive(\.mutationFinished)
-        #expect(!store.state.canAct)
+        #expect(store.state.mutationOutcome == .unknown)
         await store.send(.mergeMethodConfirmed(.squash))
-        #expect(await recorder.intents.count == 1)
+        await store.receive(\.mutationFinished)
+        await store.send(.setAsideTapped)
+        await store.receive(\.mutationFinished)
+        let ids = await recorder.commandIDs
+        #expect(ids[0] == ids[1])
+        #expect(ids[2] != ids[0], "A different action is a different command")
+        #expect(await recorder.intents.last == .setAsidePullRequest("pr"))
+    }
+
+    @Test
+    func askingSendsTheNoteToTheAgentWithoutRequestingChanges() async throws {
+        let recorder = Recorder()
+        let workspace = try workspace()
+        let initial = DiffReviewFeature.State(card: try card(workspace), workspace: workspace)
+        let store = TestStore(initialState: initial) { DiffReviewFeature() } withDependencies: {
+            $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        await store.send(.appeared)
+        await store.receive(\.diffLoaded)
+        await store.send(.noteChanged("Why this change?"))
+        await store.send(.askTapped)
+        await store.receive(\.reviewFinished)
+        #expect(await recorder.intents == [.askAboutPullRequest("pr", head: "head1", body: "Why this change?")])
     }
 
     @Test
@@ -108,6 +134,7 @@ struct PullRequestFeatureTests {
         let initial = DiffReviewFeature.State(card: try card(workspace), workspace: workspace)
         let store = TestStore(initialState: initial) { DiffReviewFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.appeared)

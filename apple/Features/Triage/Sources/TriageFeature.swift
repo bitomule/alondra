@@ -8,14 +8,14 @@ import Foundation
 public enum TriageMutationOutcome: Equatable, Sendable {
     case confirmed
     case rejected(String)
-    case unknownCommand(UUID)
+    case unknown
     case obsolete
 
     public init(_ result: DomainCommandResult) {
         switch result {
         case .recorded: self = .confirmed
         case .rejected(let rejection): self = .rejected(rejection.localizedMessage)
-        case .uncertain(let id): self = .unknownCommand(id)
+        case .uncertain: self = .unknown
         case .obsolete: self = .obsolete
         }
     }
@@ -33,7 +33,9 @@ public struct TriageFeature {
         public var hiddenIDs: Set<String> = []
         public var pendingIDs: Set<String> = []
         public var deferredReadIDs: Set<String> = []
-        public var uncertainByItem: [String: UUID] = [:]
+        /// The command ID of an attempt whose outcome is unknown, by card. Trying again reuses
+        /// it, so the server returns the first outcome instead of reading twice.
+        public var commandIDs: [String: String] = [:]
         public var cursor: InboxPlace?
         public var presentedID: String?
         public var noticeIsMutationFailure = false
@@ -83,12 +85,12 @@ public struct TriageFeature {
         case readAcknowledged(String, confirmed: Bool)
         case readPresentationFinished(String)
         case mutationFinished(String, TriageIdentity, TriageMutationOutcome)
-        case commandResolved(UUID, rejection: String?)
         case dismissReview
         case dismissNotice
     }
 
     @Dependency(\.domainWorkspace) var client
+    @Dependency(\.uuid) var uuid
 
     public init() {}
 
@@ -168,30 +170,32 @@ public struct TriageFeature {
                 guard let item = state.queue.first(where: { $0.id == id }),
                       let intent = readIntent(for: item), let workspace = state.workspace,
                       let identity = state.identity, !state.pendingIDs.contains(id),
-                      !state.deferredReadIDs.contains(id), state.uncertainByItem[id] == nil else { return .none }
+                      !state.deferredReadIDs.contains(id) else { return .none }
                 state.deferredReadIDs.insert(id)
                 state.pendingIDs.insert(id)
+                let commandID = commandID(for: id, &state)
                 return .run { send in
-                    let result = await client.perform(intent, workspace, [])
+                    let result = await client.perform(intent, workspace, [], commandID)
                     await send(.mutationFinished(id, identity, TriageMutationOutcome(result)))
                 }
             case .hide(let id):
                 guard let item = state.queue.first(where: { $0.id == id }),
-                      let intent = readIntent(for: item), let workspace = state.workspace,
-                      let identity = state.identity, !state.pendingIDs.contains(id),
-                      state.uncertainByItem[id] == nil else { return .none }
+                      let intent = readIntent(for: item) ?? setAsideIntent(for: item), let workspace = state.workspace,
+                      let identity = state.identity, !state.pendingIDs.contains(id) else { return .none }
                 var ring = InboxRing(cursor: state.cursor)
                 ring.resolve(item, in: state.items.filter { !state.hiddenIDs.contains($0.id) })
                 state.cursor = ring.cursor
                 state.hiddenIDs.insert(id)
                 state.pendingIDs.insert(id)
                 if state.presentedID == id { state.presentedID = nil }
+                let commandID = commandID(for: id, &state)
                 return .run { send in
-                    let result = await client.perform(intent, workspace, [])
+                    let result = await client.perform(intent, workspace, [], commandID)
                     await send(.mutationFinished(id, identity, TriageMutationOutcome(result)))
                 }
             case .mutationFinished(let id, let identity, let result):
                 guard state.identity == identity, state.pendingIDs.remove(id) != nil else { return .none }
+                if result != .unknown { state.commandIDs[id] = nil }
                 switch result {
                 case .confirmed:
                     if state.deferredReadIDs.contains(id) { return .send(.readAcknowledged(id, confirmed: true)) }
@@ -203,28 +207,16 @@ public struct TriageFeature {
                     state.noticeIsMutationFailure = true
                     state.notice = reason
                     if state.deferredReadIDs.remove(id) != nil { return .send(.readAcknowledged(id, confirmed: false)) }
-                case .unknownCommand(let commandID):
-                    state.uncertainByItem[id] = commandID
+                case .unknown:
                     state.hiddenIDs.remove(id)
                     state.noticeIsMutationFailure = false
-                    state.notice = String(localized: "The result is uncertain. Checking its status…")
+                    state.notice = String(localized: "We couldn’t confirm the result. Try again; it won’t be applied twice.")
+                    if state.deferredReadIDs.remove(id) != nil { return .send(.readAcknowledged(id, confirmed: false)) }
                 case .obsolete:
                     state.hiddenIDs.remove(id)
                     if state.deferredReadIDs.remove(id) != nil { return .send(.readAcknowledged(id, confirmed: false)) }
                 }
                 return .none
-            case .commandResolved(let commandID, let rejection):
-                let matches = state.uncertainByItem.filter { $0.value == commandID }.map(\.key)
-                var effects: [Effect<Action>] = []
-                for id in matches {
-                    state.uncertainByItem[id] = nil
-                    if state.deferredReadIDs.contains(id) {
-                        if rejection != nil { state.deferredReadIDs.remove(id) }
-                        effects.append(.send(.readAcknowledged(id, confirmed: rejection == nil)))
-                    } else if rejection == nil { state.hiddenIDs.insert(id) }
-                }
-                if !matches.isEmpty { state.notice = rejection; state.noticeIsMutationFailure = rejection != nil }
-                return .merge(effects)
             case .dismissReview:
                 state.presentedID = nil
                 return .none
@@ -252,13 +244,25 @@ public struct TriageFeature {
         state.hiddenIDs = []
         state.pendingIDs = []
         state.deferredReadIDs = []
-        state.uncertainByItem = [:]
+        state.commandIDs = [:]
         state.cursor = nil
         state.presentedID = nil
         state.notice = nil
         state.noticeIsMutationFailure = false
         state.hasSnapshot = false
         state.connection = .connecting
+    }
+
+    private func commandID(for item: String, _ state: inout State) -> String {
+        let id = state.commandIDs[item] ?? uuid().uuidString.lowercased()
+        state.commandIDs[item] = id
+        return id
+    }
+
+    /// Setting a pull request aside hides its card without deciding anything about the PR.
+    private func setAsideIntent(for item: DomainV2.InboxItem) -> DomainIntent? {
+        guard case .pullRequest(let id) = item.subject else { return nil }
+        return .setAsidePullRequest(id)
     }
 
     /// Only an information root offered `mark_read` by the server leaves the queue by reading.

@@ -6,6 +6,7 @@ swift_library(
     module_name = "AlondraFleetFeature",
     visibility = ["//visibility:public"],
     deps = [
+        "//apple/Contracts:AlondraContracts",
         "//apple/Domain:AlondraDomain",
         "//apple:AlondraShared",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
@@ -21,6 +22,7 @@ swift_test(
     deps = [
         "//apple/Domain:AlondraDomain",
         ":AlondraFleetFeature",
+        "//apple/Contracts:AlondraContracts",
         "//apple:AlondraShared",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

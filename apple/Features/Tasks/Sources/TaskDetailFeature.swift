@@ -21,6 +21,9 @@ public struct TaskDetailFeature {
         public var isActing = false
         public var confirmation: Confirmation?
         public var mutationOutcome: TaskMutationOutcome?
+        /// The command ID of an attempt whose outcome is unknown; the same action again reuses it.
+        public var commandID: String?
+        public var commandKind: DomainV2.ActionKind?
         public var successfulActionCount = 0
         public var presentationEpoch: UInt64 = 0
         public let effectID = UUID()
@@ -35,7 +38,7 @@ public struct TaskDetailFeature {
         }
 
         public var canAct: Bool {
-            !isActing && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
+            !isActing && mutationOutcome != .confirmed
         }
 
         public func canPerform(_ kind: DomainV2.ActionKind) -> Bool {
@@ -55,14 +58,12 @@ public struct TaskDetailFeature {
         case reopenTapped
         case archiveTapped(Bool)
         case mutationFinished(TaskMutationOutcome, UInt64)
-        /// Sent only by the scoped journal owner after it reconciles this exact command ID.
-        case commandResolved(UUID, rejection: String?)
-        case commandReconciled(UUID)
         case identityChanged
         case disappeared
     }
 
     @Dependency(\.domainWorkspace) var client
+    @Dependency(\.uuid) var uuid
     public init() {}
 
     public var body: some ReducerOf<Self> {
@@ -115,15 +116,9 @@ public struct TaskDetailFeature {
                 guard epoch == state.presentationEpoch else { return .none }
                 state.isActing = false
                 state.mutationOutcome = outcome
+                if outcome != .unknown { state.commandID = nil }
                 if outcome == .confirmed { state.successfulActionCount += 1 }
                 // The next projection owns the task state. A recorded command does not.
-                return .none
-            case .commandResolved(let id, let rejection):
-                guard state.mutationOutcome?.uncertainID == id else { return .none }
-                state.mutationOutcome = rejection.map(TaskMutationOutcome.rejected) ?? .confirmed
-                return .none
-            case .commandReconciled(let id):
-                if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }
                 return .none
             case .identityChanged:
                 state.presentationEpoch &+= 1
@@ -134,6 +129,7 @@ public struct TaskDetailFeature {
                 state.confirmation = nil
                 state.isActing = false
                 state.mutationOutcome = nil
+                state.commandID = nil
                 return .merge(.cancel(id: state.effectID), .cancel(id: state.mutationID))
             case .disappeared:
                 return .cancel(id: state.effectID)
@@ -145,10 +141,14 @@ public struct TaskDetailFeature {
         guard state.canPerform(kind), let workspace = state.workspace else { return .none }
         state.isActing = true
         state.mutationOutcome = nil
+        if state.commandKind != kind { state.commandID = nil }
+        let commandID = state.commandID ?? uuid().uuidString.lowercased()
+        state.commandID = commandID
+        state.commandKind = kind
         let actions = state.actions
         let epoch = state.presentationEpoch
         return .run { send in
-            let result = await client.perform(intent, workspace, actions)
+            let result = await client.perform(intent, workspace, actions, commandID)
             await send(.mutationFinished(TaskMutationOutcome(result), epoch))
         }
         .cancellable(id: state.mutationID)
@@ -160,7 +160,7 @@ extension TaskMutationOutcome {
         switch result {
         case .recorded: self = .confirmed
         case .rejected(let rejection): self = .rejected(rejection.localizedMessage)
-        case .uncertain(let id): self = .unknown(id)
+        case .uncertain: self = .unknown
         case .obsolete: self = .obsolete
         }
     }

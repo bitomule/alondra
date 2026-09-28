@@ -1,4 +1,5 @@
 import AlondraAttachmentsFeature
+import AlondraContracts
 import AlondraNewWorkFeature
 import ComposableArchitecture
 import Foundation
@@ -17,7 +18,7 @@ struct AttachmentLifecycleTests {
                     #expect(bytes == draft.data)
                     return draft
                 })
-            $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { uploaded, progress in
+            $0.attachmentUpload = AttachmentUploadClient(idsWithProgress: { uploaded, progress in
                 #expect(uploaded == draft)
                 progress(1)
                 return "server-receipt"
@@ -36,7 +37,7 @@ struct AttachmentLifecycleTests {
         await store.receive(\.uploadProgress) { $0.entries[0].progress = 1 }
         #expect(!store.state.allReady)
         #expect(store.state.storedIDs.isEmpty)
-        await store.receive(\.uploaded) { $0.entries[0].status = .uploaded("server-receipt") }
+        await store.receive(\.uploaded) { $0.entries[0].status = .uploaded(stored("server-receipt")) }
         await store.receive(\.uploadNext)
         #expect(store.state.allReady)
         #expect(store.state.storedIDs == ["server-receipt"])
@@ -49,7 +50,7 @@ struct AttachmentLifecycleTests {
         let rejected = AttachmentDraft(name: "second", data: Data([4, 5, 6]))
         let batch = UUID()
         var initial = AttachmentFeature.State()
-        initial.entries = [.init(draft: first, status: .uploaded("stored-first"))]
+        initial.entries = [.init(draft: first, status: .uploaded(stored("stored-first")))]
         initial.importID = batch
         initial.isImporting = true
         let store = TestStore(initialState: initial) { AttachmentFeature() } withDependencies: {
@@ -78,7 +79,7 @@ struct AttachmentLifecycleTests {
         var initial = AttachmentFeature.State()
         initial.entries = [.init(draft: draft)]
         let store = TestStore(initialState: initial) { AttachmentFeature() } withDependencies: {
-            $0.attachmentUpload = AttachmentUploadClient(upload: { try await uploads.send($0) })
+            $0.attachmentUpload = AttachmentUploadClient(ids: { try await uploads.send($0) })
         }
         await store.send(.uploadNext) { $0.entries[0].status = .uploading }
         await store.receive(\.uploaded) { $0.entries[0].status = .failed("Lost upload receipt") }
@@ -89,7 +90,7 @@ struct AttachmentLifecycleTests {
         #expect(await uploads.drafts == [draft], "A failed transfer must not automatically retry")
         await store.send(.retry(draft.id)) { $0.entries[0].status = .queued }
         await store.receive(\.uploadNext) { $0.entries[0].status = .uploading }
-        await store.receive(\.uploaded) { $0.entries[0].status = .uploaded("stored-notes") }
+        await store.receive(\.uploaded) { $0.entries[0].status = .uploaded(stored("stored-notes")) }
         await store.receive(\.uploadNext)
         await store.send(.retry(draft.id))
         #expect(store.state.entries.map(\.draft) == [draft])
@@ -108,7 +109,7 @@ struct AttachmentLifecycleTests {
             $0.attachmentImport = AttachmentImportClient(file: { try await gate.read($0) }, photo: { _ in
                 throw AttachmentFailure(message: "Unexpected photo import")
             })
-            $0.attachmentUpload = AttachmentUploadClient(upload: { _ in
+            $0.attachmentUpload = AttachmentUploadClient(ids: { _ in
                 Issue.record("An obsolete import must not upload")
                 return "unexpected"
             })

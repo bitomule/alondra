@@ -29,7 +29,10 @@ public struct QuestionFeature {
         public var noticeIsSubmissionFailure = false
         public var conflict: String?
         public var completed = false
-        public var uncertainCommandID: UUID?
+        /// The command ID of an attempt whose outcome is unknown. Sending again reuses it, so the
+        /// server applies the answer once; editing the draft starts a new command.
+        public var commandID: String?
+        public var commandSubmission: PendingSubmission?
         public var needsReconciliation = false
         public var revision: UInt64 = 0
         public var replyFocusRequest: UInt64 = 0
@@ -57,13 +60,12 @@ public struct QuestionFeature {
         case answerTapped
         case moreContextTapped
         case submissionFinished(UInt64, DomainCommandResult)
-        /// Sent only after the command journal reconciled an uncertain command.
-        case commandResolved(UUID, rejection: String?)
         case dismissNotice
     }
 
     @Dependency(\.continuousClock) var clock
     @Dependency(\.domainWorkspace) var client
+    @Dependency(\.uuid) var uuid
 
     public init() {}
 
@@ -86,7 +88,11 @@ public struct QuestionFeature {
                 return .none
             case .downloads: return .none
             case .attachmentPicker(let action):
-                if action.invalidatesPendingSubmission { state.cancelPendingSubmission(); return .none }
+                if action.invalidatesPendingSubmission {
+                    state.cancelPendingSubmission()
+                    startNewCommand(&state)
+                    return .none
+                }
                 guard let pending = state.pendingSubmission else { return .none }
                 if case .uploaded(_, .failure(let error)) = action {
                     state.cancelPendingSubmission()
@@ -124,23 +130,26 @@ public struct QuestionFeature {
                 state.notice = nil
                 state.conflict = nil
                 state.completed = false
-                state.uncertainCommandID = nil
+                state.commandID = nil
                 state.needsReconciliation = false
                 state.revision &+= 1
                 return .cancel(id: CancelID.submit)
             case .textChanged(let text):
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                guard !state.isSubmitting else { return .none }
                 state.cancelPendingSubmission()
+                if state.draft.text != text { startNewCommand(&state) }
                 state.draft.text = text
                 return .none
             case .optionSelected(let option):
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                guard !state.isSubmitting else { return .none }
                 state.cancelPendingSubmission()
+                if state.draft.selectedOption != option { startNewCommand(&state) }
                 state.draft.selectedOption = option
                 return .none
             case .optionTapped(let id):
-                guard !state.isSubmitting, !state.completed, !state.needsReconciliation, state.pendingSubmission == nil,
+                guard !state.isSubmitting, !state.completed, state.pendingSubmission == nil,
                       let option = state.question.option(id) else { return .none }
+                if state.draft.selectedOption != option.id { startNewCommand(&state) }
                 state.draft.selectedOption = option.id
                 if AnswerForm(option: option).requiresText,
                    state.draft.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -155,6 +164,7 @@ public struct QuestionFeature {
             case .submissionFinished(let revision, let result):
                 guard state.revision == revision, state.isSubmitting else { return .none }
                 state.isSubmitting = false
+                if result != .uncertain { state.commandID = nil; state.needsReconciliation = false }
                 switch result {
                 case .recorded:
                     state.completed = true
@@ -167,25 +177,12 @@ public struct QuestionFeature {
                         state.notice = rejection.localizedMessage
                     }
                     state.noticeIsSubmissionFailure = true
-                case .uncertain(let id):
-                    state.uncertainCommandID = id
+                case .uncertain:
                     state.noticeIsSubmissionFailure = false
-                    state.notice = String(localized: "The result is uncertain. Checking its status…")
+                    state.notice = String(localized: "We couldn’t confirm the result. Your draft is kept; sending it again won’t apply it twice.")
                     state.needsReconciliation = true
                 case .obsolete:
                     break
-                }
-                return .none
-            case .commandResolved(let id, let rejection):
-                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
-                state.uncertainCommandID = nil
-                state.needsReconciliation = false
-                state.notice = rejection
-                state.noticeIsSubmissionFailure = rejection != nil
-                if rejection == nil {
-                    state.completed = true
-                    state.draft = QuestionDraft()
-                    state.attachmentPicker = AttachmentFeature.State()
                 }
                 return .none
             case .dismissNotice:
@@ -203,7 +200,7 @@ public struct QuestionFeature {
 
     /// Uploads finish before the command is built, so the command carries every attachment.
     private func prepare(_ state: inout State, _ submission: PendingSubmission) -> Effect<Action> {
-        guard !state.isSubmitting, !state.completed, !state.needsReconciliation, state.pendingSubmission == nil,
+        guard !state.isSubmitting, !state.completed, state.pendingSubmission == nil,
               state.attachmentPicker.canPrepareSubmission else { return .none }
         if !state.attachmentPicker.allReady {
             state.pendingSubmission = submission
@@ -235,9 +232,19 @@ public struct QuestionFeature {
         state.conflict = nil
         let revision = state.revision
         let workspace = state.workspace
+        if state.commandSubmission != submission { state.commandID = nil }
+        let commandID = state.commandID ?? uuid().uuidString.lowercased()
+        state.commandID = commandID
+        state.commandSubmission = submission
         return .run { send in
-            await send(.submissionFinished(revision, await client.perform(intent, workspace, [])))
+            await send(.submissionFinished(revision, await client.perform(intent, workspace, [], commandID)))
         }.cancellable(id: CancelID.submit)
+    }
+
+    /// A changed draft is a different command; an unknown earlier attempt is left as it is.
+    private func startNewCommand(_ state: inout State) {
+        state.commandID = nil
+        state.needsReconciliation = false
     }
 
     private enum CancelID { case keyboard, submit }

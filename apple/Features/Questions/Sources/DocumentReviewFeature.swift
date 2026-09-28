@@ -136,7 +136,9 @@ public struct DocumentReviewFeature {
         public var pendingReview: PendingReview?
         public var keyboardReady = false
         public var completed = false
-        public var uncertainCommandID: UUID?
+        /// The command ID of an attempt whose outcome is unknown; sending again reuses it.
+        public var commandID: String?
+        public var commandReview: PendingReview?
         public var needsReconciliation = false
         public var conflict: String?
         public var notice: String?
@@ -148,7 +150,7 @@ public struct DocumentReviewFeature {
         /// Feedback anchors on the loaded document, so review actions wait for it.
         public var canReview: Bool {
             !isLoading && loadError == nil && sourceText != nil && !isSubmitting && pendingReview == nil
-                && !completed && !needsReconciliation && attachmentPicker.canPrepareSubmission
+                && !completed && attachmentPicker.canPrepareSubmission
         }
         public var canAccept: Bool { canReview && subject.action(.acceptDelivery)?.enabled == true }
         public var canSendFeedback: Bool { canReview && subject.action(.submitFeedback)?.enabled == true }
@@ -191,13 +193,13 @@ public struct DocumentReviewFeature {
         case reviewTapped(ReviewVerdict)
         case chooseReviewOption(String, author: String)
         case moreContextTapped(author: String)
-        case commandResolved(UUID, rejection: String?)
         case submissionFinished(UInt64, DomainCommandResult)
         case dismissNotice
     }
 
     @Dependency(\.continuousClock) var clock
     @Dependency(\.domainWorkspace) var client
+    @Dependency(\.uuid) var uuid
     @Dependency(\.attachmentDownload) var attachments
     private enum CancelID { case keyboard, load, submit }
 
@@ -222,7 +224,12 @@ public struct DocumentReviewFeature {
                 return .none
             case .downloads: return .none
             case .attachmentPicker(let action):
-                if action.invalidatesPendingSubmission { state.cancelPendingSubmission(); return .none }
+                if action.invalidatesPendingSubmission {
+                    state.cancelPendingSubmission()
+                    state.commandID = nil
+                    state.needsReconciliation = false
+                    return .none
+                }
                 guard let review = state.pendingReview else { return .none }
                 if case .uploaded(_, .failure(let error)) = action {
                     state.cancelPendingSubmission()
@@ -272,7 +279,7 @@ public struct DocumentReviewFeature {
                 state.loadError = nil
                 state.isSubmitting = false
                 state.completed = false
-                state.uncertainCommandID = nil
+                state.commandID = nil
                 state.needsReconciliation = false
                 state.conflict = nil
                 state.noticeIsSubmissionFailure = false
@@ -314,7 +321,9 @@ public struct DocumentReviewFeature {
                 return .none
             case .saveComposedComment(let anchor, let quote, let position):
                 state.cancelPendingSubmission()
-                guard !state.isSubmitting, !state.needsReconciliation, state.composingAnchor == anchor else { return .none }
+                guard !state.isSubmitting, state.composingAnchor == anchor else { return .none }
+                state.commandID = nil
+                state.needsReconciliation = false
                 state.commentPositions[anchor] = position
                 state.draft.comments = DocumentCommentUseCase().updating(state.draft.comments, anchor: anchor, quote: quote, text: state.composingText, positions: state.commentPositions)
                 state.composingAnchor = nil
@@ -326,12 +335,15 @@ public struct DocumentReviewFeature {
                 return .none
             case .generalChanged(let value):
                 state.cancelPendingSubmission()
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                guard !state.isSubmitting else { return .none }
+                if state.draft.general != value { state.commandID = nil; state.needsReconciliation = false }
                 state.draft.general = value
                 return .none
             case .commentChanged(let anchor, let quote, let text):
                 state.cancelPendingSubmission()
-                guard !state.isSubmitting, !state.needsReconciliation else { return .none }
+                guard !state.isSubmitting else { return .none }
+                state.commandID = nil
+                state.needsReconciliation = false
                 state.draft.comments = DocumentCommentUseCase().updating(state.draft.comments, anchor: anchor, quote: quote, text: text, positions: state.commentPositions)
                 return .none
             case .sendFeedbackTapped(let author):
@@ -374,21 +386,10 @@ public struct DocumentReviewFeature {
             case .moreContextTapped(let author):
                 guard state.canReview, state.subject.question != nil else { return .none }
                 return prepare(.moreContext(ReviewFeedback.format(state.draft.comments, general: state.draft.general, author: author)), &state)
-            case .commandResolved(let id, let rejection):
-                guard state.needsReconciliation, state.uncertainCommandID == id else { return .none }
-                state.uncertainCommandID = nil
-                state.needsReconciliation = false
-                state.noticeIsSubmissionFailure = rejection != nil
-                state.notice = rejection
-                if rejection == nil {
-                    state.completed = true
-                    state.draft = DocumentDraft()
-                    state.attachmentPicker = AttachmentFeature.State()
-                }
-                return .none
             case .submissionFinished(let revision, let result):
                 guard state.revision == revision, state.isSubmitting else { return .none }
                 state.isSubmitting = false
+                if result != .uncertain { state.commandID = nil; state.needsReconciliation = false }
                 switch result {
                 case .recorded:
                     state.completed = true
@@ -401,10 +402,9 @@ public struct DocumentReviewFeature {
                         state.notice = rejection.localizedMessage
                     }
                     state.noticeIsSubmissionFailure = true
-                case .uncertain(let id):
-                    state.uncertainCommandID = id
+                case .uncertain:
                     state.noticeIsSubmissionFailure = false
-                    state.notice = String(localized: "The result is uncertain. Checking its status…")
+                    state.notice = String(localized: "We couldn’t confirm the result. Your draft is kept; sending it again won’t apply it twice.")
                     state.needsReconciliation = true
                 case .obsolete: break
                 }
@@ -518,8 +518,12 @@ public struct DocumentReviewFeature {
         state.conflict = nil
         let revision = state.revision
         let workspace = state.workspace
+        if state.commandReview != review { state.commandID = nil }
+        let commandID = state.commandID ?? uuid().uuidString.lowercased()
+        state.commandID = commandID
+        state.commandReview = review
         return .run { send in
-            await send(.submissionFinished(revision, await client.perform(intent, workspace, [])))
+            await send(.submissionFinished(revision, await client.perform(intent, workspace, [], commandID)))
         }.cancellable(id: CancelID.submit)
     }
 }

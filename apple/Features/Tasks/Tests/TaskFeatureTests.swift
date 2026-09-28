@@ -12,9 +12,10 @@ struct TaskFeatureTests {
         let schedule = try makeSchedule()
         let server = ScheduleListFixture([schedule])
         let store = TestStore(initialState: ScheduleFeature.State()) { ScheduleFeature() } withDependencies: {
+            $0.uuid = .constant(UUID(0))
             $0.scheduleOperations = ScheduleOperations(
-                list: { await server.list() }, save: { _, _ in .confirmed },
-                run: { _ in .confirmed }, delete: { await server.delete($0) },
+                list: { await server.list() }, save: { _, _, _ in .confirmed },
+                run: { _, _ in .confirmed }, delete: { id, _ in await server.delete(id) },
                 projects: { [] }, options: { _ in [] }
             )
         }
@@ -29,9 +30,11 @@ struct TaskFeatureTests {
         await store.send(.inspectorPresented(true)) { $0.inspectorVisible = true }
         await store.send(.deleteConfirmed(schedule.id)) {
             $0.busyIDs.insert(schedule.id); $0.inFlightTargets.insert(.schedule(schedule.id))
+            $0.attempts[.schedule(schedule.id)] = ScheduleAttempt(id: UUID(0).uuidString, operation: .delete)
         }
         await store.receive(\.deleted) {
             $0.busyIDs.remove(schedule.id); $0.inFlightTargets.remove(.schedule(schedule.id))
+            $0.attempts = [:]
             $0.lastMutationOutcome = .confirmed
         }
         await store.receive(\.reconcile) { $0.isLoading = true }
@@ -49,19 +52,24 @@ struct TaskFeatureTests {
     func scheduleRunFailureStaysVisibleThroughReconciliationThenClearsOnManualRefresh() async throws {
         let schedule = try makeSchedule()
         let store = TestStore(initialState: ScheduleFeature.State()) { ScheduleFeature() } withDependencies: {
+            $0.uuid = .constant(UUID(0))
             $0.scheduleOperations = ScheduleOperations(
                 list: { [schedule] },
-                save: { _, _ in .confirmed },
-                run: { _ in .rejected("launchRefused") },
-                delete: { _ in .confirmed },
+                save: { _, _, _ in .confirmed },
+                run: { _, _ in .rejected("launchRefused") },
+                delete: { _, _ in .confirmed },
                 projects: { [] }, options: { _ in [] }
             )
         }
         await store.send(.appeared) { $0.isLoading = true }
         await store.receive(\.loaded) { $0.isLoading = false; $0.tasks = [schedule] }
-        await store.send(.runTapped(schedule.id)) { $0.busyIDs.insert(schedule.id); $0.inFlightTargets.insert(.schedule(schedule.id)) }
+        await store.send(.runTapped(schedule.id)) {
+            $0.busyIDs.insert(schedule.id); $0.inFlightTargets.insert(.schedule(schedule.id))
+            $0.attempts[.schedule(schedule.id)] = ScheduleAttempt(id: UUID(0).uuidString, operation: .run)
+        }
         await store.receive(\.runFinished) {
             $0.busyIDs.remove(schedule.id); $0.inFlightTargets.remove(.schedule(schedule.id))
+            $0.attempts = [:]
             $0.mutationError = "launchRefused"
             $0.lastMutationOutcome = .rejected("launchRefused")
         }
@@ -76,181 +84,6 @@ struct TaskFeatureTests {
     }
 
     @Test
-    func unknownScheduleRunBlocksRunAndDeleteUntilJournalReconciles() async throws {
-        let schedule = try makeSchedule()
-        let runID = UUID()
-        let deleteID = UUID()
-        var state = ScheduleFeature.State()
-        state.tasks = [schedule]
-        let store = TestStore(initialState: state) { ScheduleFeature() } withDependencies: {
-            $0.scheduleOperations = ScheduleOperations(
-                list: { [schedule] }, save: { _, _ in .confirmed },
-                run: { _ in .unknown(runID) }, delete: { _ in .unknown(deleteID) },
-                projects: { [] }, options: { _ in [] }
-            )
-        }
-        await store.send(.runTapped(schedule.id)) { $0.busyIDs.insert(schedule.id); $0.inFlightTargets.insert(.schedule(schedule.id)) }
-        await store.receive(\.runFinished) {
-            $0.busyIDs.remove(schedule.id); $0.inFlightTargets.remove(.schedule(schedule.id))
-            $0.uncertainByTarget[.schedule(schedule.id)] = runID
-            $0.lastMutationOutcome = .unknown(runID)
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        await store.send(.runTapped(schedule.id))
-        await store.send(.deleteConfirmed(schedule.id))
-        await store.send(.commandReconciled(UUID()))
-        await store.send(.commandReconciled(runID)) {
-            $0.uncertainByTarget = [:]
-            $0.lastMutationOutcome = nil
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        await store.send(.deleteConfirmed(schedule.id)) { $0.busyIDs.insert(schedule.id); $0.inFlightTargets.insert(.schedule(schedule.id)) }
-        await store.receive(\.deleted) {
-            $0.busyIDs.remove(schedule.id); $0.inFlightTargets.remove(.schedule(schedule.id))
-            $0.uncertainByTarget[.schedule(schedule.id)] = deleteID
-            $0.lastMutationOutcome = .unknown(deleteID)
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        await store.send(.deleteConfirmed(schedule.id))
-        await store.finish()
-    }
-
-    @Test
-    func unknownScheduleSaveStaysBlockedAfterEditorDismissal() async throws {
-        let schedule = try makeSchedule()
-        let commandID = UUID()
-        var state = ScheduleFeature.State()
-        state.tasks = [schedule]
-        state.editingID = schedule.id
-        state.draft = ScheduledTaskDraft(schedule)
-        state.optionsReady = true
-        let store = TestStore(initialState: state) { ScheduleFeature() } withDependencies: {
-            $0.scheduleOperations = ScheduleOperations(
-                list: { [schedule] }, save: { _, _ in .unknown(commandID) },
-                run: { _ in .confirmed }, delete: { _ in .confirmed },
-                projects: { [] }, options: { _ in [] }
-            )
-        }
-        await store.send(.saveTapped) {
-            $0.submittedDrafts[0] = ScheduledTaskDraft(schedule)
-            $0.isSaving = true
-            $0.inFlightTargets.insert(.schedule(schedule.id))
-        }
-        await store.receive(\.saved) {
-            $0.isSaving = false
-            $0.inFlightTargets.remove(.schedule(schedule.id))
-            $0.uncertainByTarget[.schedule(schedule.id)] = commandID
-            $0.uncertainDraftRevisions[commandID] = 0
-            $0.lastMutationOutcome = .unknown(commandID)
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        await store.send(.saveTapped)
-        await store.send(.editorDismissed) {
-            $0.editorRevision = 1
-            $0.editingID = nil
-            $0.draft = nil
-            $0.optionsReady = false
-            $0.optionsRequest = 1
-        }
-        await store.send(.editTapped(schedule.id)) {
-            $0.editorRevision = 2
-            $0.editingID = schedule.id
-            $0.draft = ScheduledTaskDraft(schedule)
-            $0.optionsRequest = 2
-            $0.optionsLoading = true
-        }
-        await store.receive(\.optionsLoaded) { $0.optionsLoading = false; $0.optionsReady = true }
-        await store.send(.saveTapped)
-        #expect(store.state.uncertainByTarget[.schedule(schedule.id)] == commandID)
-        var nextDraft = ScheduledTaskDraft(schedule)
-        nextDraft.title = "A new edit after reopening"
-        await store.send(.draftChanged(nextDraft)) { $0.draft = nextDraft }
-        await store.send(.commandResolved(commandID, rejection: nil)) {
-            $0.uncertainByTarget = [:]
-            $0.uncertainDraftRevisions = [:]
-            $0.submittedDrafts = [:]
-            $0.lastMutationOutcome = .confirmed
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        #expect(store.state.draft == nextDraft)
-        await store.send(.editorDismissed) {
-            $0.editorRevision = 3
-            $0.editingID = nil
-            $0.draft = nil
-            $0.optionsReady = false
-            $0.optionsRequest = 3
-        }
-        await store.finish()
-    }
-
-    @Test
-    func heldSaveBlocksAllMutationsOnScheduleAndUnknownNeedsExactResolution() async throws {
-        let schedule = try makeSchedule()
-        let commandID = UUID()
-        let gate = MutationGate()
-        var state = ScheduleFeature.State()
-        state.tasks = [schedule]
-        state.editingID = schedule.id
-        state.draft = ScheduledTaskDraft(schedule)
-        state.optionsReady = true
-        let store = TestStore(initialState: state) { ScheduleFeature() } withDependencies: {
-            $0.scheduleOperations = ScheduleOperations(
-                list: { [schedule] }, save: { _, _ in await gate.wait() },
-                run: { _ in .confirmed }, delete: { _ in .confirmed },
-                projects: { [] }, options: { _ in [] }
-            )
-        }
-        await store.send(.saveTapped) {
-            $0.submittedDrafts[0] = ScheduledTaskDraft(schedule)
-            $0.isSaving = true
-            $0.inFlightTargets.insert(.schedule(schedule.id))
-        }
-        await store.send(.runTapped(schedule.id))
-        await store.send(.enabledChanged(schedule.id, false))
-        await store.send(.deleteConfirmed(schedule.id))
-        await gate.release(.unknown(commandID))
-        await store.receive(\.saved) {
-            $0.isSaving = false
-            $0.inFlightTargets.remove(.schedule(schedule.id))
-            $0.uncertainByTarget[.schedule(schedule.id)] = commandID
-            $0.uncertainDraftRevisions[commandID] = 0
-            $0.lastMutationOutcome = .unknown(commandID)
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        await store.send(.runTapped(schedule.id))
-        await store.send(.commandResolved(UUID(), rejection: nil))
-        #expect(store.state.uncertainByTarget[.schedule(schedule.id)] == commandID)
-        await store.send(.commandResolved(commandID, rejection: nil)) {
-            $0.uncertainByTarget = [:]
-            $0.uncertainDraftRevisions = [:]
-            $0.submittedDrafts = [:]
-            $0.draft = nil
-            $0.editingID = nil
-            $0.lastMutationOutcome = .confirmed
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        await store.send(.runTapped(schedule.id)) {
-            $0.busyIDs.insert(schedule.id)
-            $0.inFlightTargets.insert(.schedule(schedule.id))
-        }
-        await store.receive(\.runFinished) {
-            $0.busyIDs.remove(schedule.id)
-            $0.inFlightTargets.remove(.schedule(schedule.id))
-            $0.lastMutationOutcome = .confirmed
-        }
-        await store.receive(\.reconcile) { $0.isLoading = true }
-        await store.receive(\.loaded) { $0.isLoading = false }
-        await store.finish()
-    }
-
-    @Test
     func switchingEditorsClearsOldCatalogAndCannotSaveBeforeNewOptionsLoad() async throws {
         let a = try makeSchedule(id: "a", project: "A")
         let b = try makeSchedule(id: "b", project: "B")
@@ -259,10 +92,11 @@ struct TaskFeatureTests {
         var state = ScheduleFeature.State()
         state.tasks = [a, b]
         let store = TestStore(initialState: state) { ScheduleFeature() } withDependencies: {
+            $0.uuid = .constant(UUID(0))
             $0.scheduleOperations = ScheduleOperations(
                 list: { [a, b] },
-                save: { _, _ in preconditionFailure("Save must wait for the active catalog") },
-                run: { _ in .confirmed }, delete: { _ in .confirmed },
+                save: { _, _, _ in preconditionFailure("Save must wait for the active catalog") },
+                run: { _, _ in .confirmed }, delete: { _, _ in .confirmed },
                 projects: { ["A", "B"] },
                 options: { project in project == "A" ? [spec] : await gate.wait() }
             )
@@ -305,6 +139,33 @@ struct TaskFeatureTests {
             $0.optionsRequest = 3
         }
         await store.finish()
+    }
+
+    @Test
+    func anUnknownRunIsRetriedWithTheSameAttemptID() async throws {
+        let schedule = try makeSchedule()
+        let attempts = AttemptLog()
+        var state = ScheduleFeature.State()
+        state.tasks = [schedule]
+        let store = TestStore(initialState: state) { ScheduleFeature() } withDependencies: {
+            $0.uuid = .incrementing
+            $0.scheduleOperations = ScheduleOperations(
+                list: { [schedule] }, save: { _, _, _ in .confirmed },
+                run: { _, attempt in await attempts.record(attempt); return .unknown },
+                delete: { _, attempt in await attempts.record(attempt); return .confirmed },
+                projects: { [] }, options: { _ in [] })
+        }
+        store.exhaustivity = .off
+        await store.send(.runTapped(schedule.id))
+        await store.receive(\.runFinished)
+        #expect(store.state.mutationError != nil)
+        await store.send(.runTapped(schedule.id))
+        await store.receive(\.runFinished)
+        await store.send(.deleteConfirmed(schedule.id))
+        await store.receive(\.deleted)
+        let ids = await attempts.ids
+        #expect(ids[0] == ids[1], "Running again after an unknown outcome reuses its attempt")
+        #expect(ids[2] != ids[0], "Deleting is a different operation")
     }
 
     private func makeSchedule(id: String = "s1", project: String? = nil) throws -> ScheduledTask {
@@ -367,4 +228,9 @@ private actor ScheduleListFixture {
         tasks.removeAll { $0.id == id }
         return .confirmed
     }
+}
+
+private actor AttemptLog {
+    var ids: [String] = []
+    func record(_ id: String) { ids.append(id) }
 }

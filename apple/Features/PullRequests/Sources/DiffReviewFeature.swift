@@ -6,8 +6,12 @@ import AlondraShared
 import ComposableArchitecture
 import Foundation
 
+/// Reviews the presented head's diff. Requesting changes is one `submit_feedback` on the
+/// presentation; asking is `ask_about_pull_request` and leaves the review open.
 @Reducer
 public struct DiffReviewFeature {
+    public enum ReviewKind: Equatable, Sendable { case ask, requestChanges }
+
     @ObservableState
     public struct State: Equatable {
         public var attachmentPicker = AttachmentFeature.State()
@@ -37,6 +41,11 @@ public struct DiffReviewFeature {
         public var editingAnchor: String?
         public var editingText = ""
         public var isSending = false
+        /// Waiting for attachment uploads before sending; never a retry of a sent command.
+        public var pendingReviewKind: ReviewKind?
+        /// The command ID of an attempt whose outcome is unknown; sending the same review again reuses it.
+        public var commandID: String?
+        public var commandKind: ReviewKind?
         public var mutationOutcome: PRMutationOutcome?
         public var validationError: String?
         public var validationErrorIsSubmissionFailure = false
@@ -47,7 +56,7 @@ public struct DiffReviewFeature {
         public let loadID = UUID()
         public let mutationID = UUID()
 
-        public mutating func cancelPendingSubmission() {}
+        public mutating func cancelPendingSubmission() { pendingReviewKind = nil }
 
         public init(card: DomainPullRequestCard, workspace: DomainWorkspace) {
             prID = card.id
@@ -58,8 +67,11 @@ public struct DiffReviewFeature {
 
         /// Feedback belongs to the presentation; a PR without one takes no review.
         public var canReview: Bool {
-            card?.canSendFeedback == true && isOpen && !isStale && !isLoading && !isSending
-                && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
+            card?.canSendFeedback == true && canAsk
+        }
+        public var canAsk: Bool {
+            attachmentPicker.canPrepareSubmission && pendingReviewKind == nil && isOpen && !isStale && !isLoading
+                && !isSending && mutationOutcome != .confirmed
         }
         public var hasDraft: Bool {
             !comments.isEmpty || !note.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachmentPicker.entries.isEmpty
@@ -91,15 +103,15 @@ public struct DiffReviewFeature {
         case confirmCommentsForCurrentDiff
         case cancelLineComment
         case noteChanged(String)
+        case askTapped
         case requestChangesTapped
         case reviewDiffChanged([DiffFile], PRDiffSnapshot, UInt64)
         case reviewPreflightFailed(String, UInt64)
         case reviewFinished(PRMutationOutcome, UInt64)
-        case commandResolved(UUID, rejection: String?)
-        case commandReconciled(UUID)
     }
 
     @Dependency(\.domainWorkspace) var client
+    @Dependency(\.uuid) var uuid
     @Dependency(\.diffHighlighting) var highlighting
     private let prepareReview = PreparePRReviewUseCase()
 
@@ -109,8 +121,22 @@ public struct DiffReviewFeature {
         Scope(state: \.attachmentPicker, action: \.attachmentPicker) { AttachmentFeature() }
         Reduce { state, action in
             switch action {
-            case .attachmentPicker:
-                return .none
+            case .attachmentPicker(let action):
+                if action.invalidatesPendingSubmission {
+                    state.cancelPendingSubmission()
+                    state.commandID = nil
+                    return .none
+                }
+                guard let kind = state.pendingReviewKind else { return .none }
+                if case .uploaded(_, .failure(let error)) = action {
+                    state.cancelPendingSubmission()
+                    state.validationErrorIsSubmissionFailure = true
+                    state.validationError = error.message
+                    return .none
+                }
+                guard state.attachmentPicker.allReady else { return .none }
+                state.cancelPendingSubmission()
+                return sendReview(&state, kind: kind)
             case .appeared, .retryTapped:
                 guard state.isOpen, !state.isLoading, let head = state.card?.presentedHead else { return .none }
                 state.isLoading = true
@@ -227,11 +253,12 @@ public struct DiffReviewFeature {
                 state.editingText = state.comments[anchor] ?? ""
                 return .none
             case .lineEditorChanged(let text):
-                guard state.editingAnchor != nil, !state.isSending, state.mutationOutcome?.uncertainID == nil else { return .none }
+                guard state.editingAnchor != nil, !state.isSending else { return .none }
                 state.editingText = text
                 return .none
             case .saveEditedLine:
-                guard let anchor = state.editingAnchor, !state.isSending, state.mutationOutcome?.uncertainID == nil else { return .none }
+                guard let anchor = state.editingAnchor, !state.isSending else { return .none }
+                state.commandID = nil
                 return .send(.saveLineComment(anchor, state.editingText))
             case .saveLineComment(let anchor, let text):
                 guard state.editingAnchor == anchor,
@@ -263,10 +290,13 @@ public struct DiffReviewFeature {
                 return .none
             case .noteChanged(let note):
                 guard !state.isSending else { return .none }
+                if state.note != note { state.commandID = nil }
                 state.note = note
                 return .none
+            case .askTapped:
+                return prepare(&state, kind: .ask)
             case .requestChangesTapped:
-                return sendReview(&state)
+                return prepare(&state, kind: .requestChanges)
             case .reviewDiffChanged(let files, let text, let epoch):
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
@@ -296,6 +326,7 @@ public struct DiffReviewFeature {
                 state.mutationOutcome = outcome
                 switch outcome {
                 case .confirmed:
+                    if state.attachmentPicker.allReady { state.attachmentPicker = AttachmentFeature.State() }
                     for (anchor, text) in state.submittedComments ?? [:] where state.comments[anchor] == text {
                         state.comments[anchor] = nil
                     }
@@ -316,17 +347,11 @@ public struct DiffReviewFeature {
                 case .unknown, .obsolete:
                     break
                 }
-                if outcome.uncertainID == nil {
+                if outcome != .unknown {
+                    state.commandID = nil
                     state.submittedComments = nil
                     state.submittedNote = nil
                 }
-                return .none
-            case .commandResolved(let id, let rejection):
-                guard state.mutationOutcome?.uncertainID == id else { return .none }
-                state.isSending = true
-                return .send(.reviewFinished(rejection.map(PRMutationOutcome.rejected) ?? .confirmed, state.presentationEpoch))
-            case .commandReconciled(let id):
-                if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }
                 return .none
             }
         }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
@@ -349,13 +374,18 @@ public struct DiffReviewFeature {
         }.cancellable(id: state.highlightID, cancelInFlight: true)
     }
 
-    private func sendReview(_ state: inout State) -> Effect<Action> {
-        guard state.canReview, let card = state.card, let workspace = state.workspace else { return .none }
-        guard state.attachmentPicker.entries.isEmpty else {
-            state.validationErrorIsSubmissionFailure = false
-            state.validationError = AttachmentAvailability.unsupportedMessage
-            return .none
+    /// Uploads finish before the command is built, so it carries every attachment.
+    private func prepare(_ state: inout State, kind: ReviewKind) -> Effect<Action> {
+        guard kind == .ask ? state.canAsk : state.canReview else { return .none }
+        if !state.attachmentPicker.allReady {
+            state.pendingReviewKind = kind
+            return .send(.attachmentPicker(.prepareForSubmission))
         }
+        return sendReview(&state, kind: kind)
+    }
+
+    private func sendReview(_ state: inout State, kind: ReviewKind) -> Effect<Action> {
+        guard kind == .ask ? state.canAsk : state.canReview, let card = state.card, let workspace = state.workspace else { return .none }
         switch prepareReview.execute(comments: state.comments, note: state.note, files: state.files,
                                      isOpen: state.isOpen, commentsAreCurrent: !state.commentsNeedReview) {
         case .empty:
@@ -381,10 +411,24 @@ public struct DiffReviewFeature {
             state.submittedComments = state.comments
             state.submittedNote = state.note
             let epoch = state.presentationEpoch
+            let attachments = state.attachmentPicker.stored
+            if state.commandKind != kind { state.commandID = nil }
+            let commandID = state.commandID ?? uuid().uuidString.lowercased()
+            state.commandID = commandID
+            state.commandKind = kind
+            if kind == .ask {
+                let head = state.loadedHeadSHA ?? card.presentedHead ?? card.pullRequest.head
+                return .run { send in
+                    let result = await client.perform(.askAboutPullRequest(card.id, head: head, body: text, attachments: attachments),
+                                                      workspace, [], commandID)
+                    await send(.reviewFinished(PRMutationOutcome(result), epoch))
+                }.cancellable(id: state.mutationID)
+            }
             let useCase = SubmitPRReviewUseCase(client: client)
             return .run { send in
                 do {
-                    switch try await useCase.execute(card: card, text: text, expected: expected, in: workspace) {
+                    switch try await useCase.execute(card: card, text: text, attachments: attachments, expected: expected,
+                                                     in: workspace, commandID: commandID) {
                     case .diffChanged(let current):
                         await send(.reviewDiffChanged(UnifiedDiff.parse(current.diff), current, epoch))
                     case .finished(let result):

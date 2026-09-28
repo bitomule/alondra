@@ -48,15 +48,16 @@ enum Fixtures {
 
 actor Recorder {
     var intents: [DomainIntent] = []
+    var commandIDs: [String] = []
     var documents: [DomainV2.DocumentRevisionId] = []
-    func record(_ intent: DomainIntent) { intents.append(intent) }
+    func record(_ intent: DomainIntent, _ commandID: String) { intents.append(intent); commandIDs.append(commandID) }
     func read(_ id: DomainV2.DocumentRevisionId) { documents.append(id) }
 }
 
 func client(_ recorder: Recorder, result: DomainCommandResult) -> DomainWorkspaceClient {
     var client = DomainWorkspaceClient.inert
-    client.perform = { intent, _, _ in
-        await recorder.record(intent)
+    client.perform = { intent, _, _, commandID in
+        await recorder.record(intent, commandID)
         return result
     }
     client.documentContent = { id, _ in
@@ -82,6 +83,7 @@ struct QuestionFeatureTests {
         let initial = try state()
         let store = TestStore(initialState: initial) { QuestionFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
         }
         await store.send(.optionTapped("proceed")) {
             $0.draft.selectedOption = "proceed"
@@ -97,17 +99,15 @@ struct QuestionFeatureTests {
         let initial = try state()
         let store = TestStore(initialState: initial) { QuestionFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
         }
+        store.exhaustivity = .off
         await store.send(.textChanged(" Looks right ")) { $0.draft.text = " Looks right " }
-        await store.send(.optionTapped("proceed")) {
-            $0.draft.selectedOption = "proceed"
-            $0.isSubmitting = true
-        }
-        await store.receive(\.submissionFinished) {
-            $0.isSubmitting = false
-            $0.completed = true
-            $0.draft = QuestionDraft()
-        }
+        await store.send(.optionTapped("proceed"))
+        await store.receive(\.submissionFinished)
+        #expect(store.state.completed)
+        #expect(store.state.draft == QuestionDraft())
+        #expect(store.state.commandID == nil)
         #expect(await recorder.intents == [.answer("q", optionID: "proceed", inputs: ["explanation": .text(value: "Looks right")])])
     }
 
@@ -119,6 +119,7 @@ struct QuestionFeatureTests {
         initial.draft.selectedOption = "proceed"
         let store = TestStore(initialState: initial) { QuestionFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: .rejected(.init(code: "stale_revision", message: "Refresh")))
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.answerTapped)
@@ -129,39 +130,29 @@ struct QuestionFeatureTests {
     }
 
     @Test
-    func uncertainAnswerBlocksAnotherSendUntilRecoveryResolvesIt() async throws {
+    func anUnknownOutcomeKeepsTheDraftAndSendingAgainReusesTheCommandID() async throws {
         let recorder = Recorder()
-        let command = UUID()
         var initial = try state()
         initial.draft.text = "Once"
         initial.draft.selectedOption = "proceed"
         let store = TestStore(initialState: initial) { QuestionFeature() } withDependencies: {
-            $0.domainWorkspace = client(recorder, result: .uncertain(command))
+            $0.domainWorkspace = client(recorder, result: .uncertain)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.answerTapped)
         await store.receive(\.submissionFinished)
         #expect(store.state.needsReconciliation)
+        #expect(store.state.draft.text == "Once")
         await store.send(.answerTapped)
-        #expect(await recorder.intents.count == 1)
-        await store.send(.commandResolved(command, rejection: nil))
-        #expect(store.state.completed)
-    }
-
-    @Test
-    func attachmentsAreRefusedInsteadOfDropped() async throws {
-        let recorder = Recorder()
-        var initial = try state()
-        initial.draft.text = "With file"
-        initial.draft.selectedOption = "proceed"
-        initial.attachmentPicker.entries = [.init(draft: AttachmentDraft(name: "a.txt", data: Data("a".utf8)))]
-        let store = TestStore(initialState: initial) { QuestionFeature() } withDependencies: {
-            $0.domainWorkspace = client(recorder, result: recorded)
-        }
-        store.exhaustivity = .off
+        await store.receive(\.submissionFinished)
+        await store.send(.textChanged("Edited"))
         await store.send(.answerTapped)
-        #expect(store.state.notice == AttachmentAvailability.unsupportedMessage)
-        #expect(await recorder.intents.isEmpty)
+        await store.receive(\.submissionFinished)
+        let ids = await recorder.commandIDs
+        #expect(ids.count == 3)
+        #expect(ids[0] == ids[1], "Sending the same draft again reuses its command ID")
+        #expect(ids[2] != ids[0], "An edited draft is a new command")
     }
 }
 
@@ -178,6 +169,7 @@ struct DocumentReviewFeatureTests {
         let initial = try state(Fixtures.documentDelivery())
         let store = TestStore(initialState: initial) { DocumentReviewFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.appeared)
@@ -196,6 +188,7 @@ struct DocumentReviewFeatureTests {
         let initial = try state(Fixtures.documentDelivery())
         let store = TestStore(initialState: initial) { DocumentReviewFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.appeared)
@@ -209,20 +202,26 @@ struct DocumentReviewFeatureTests {
     }
 
     @Test
-    func informationCanBeReadButNotReviewed() async throws {
+    func informationIsRepliedToButNeverAcceptedOrReviewed() async throws {
         let recorder = Recorder()
         let workspace = try Fixtures.workspace("information")
         let item = try #require(workspace.item(for: "info"))
         let initial = DocumentReviewFeature.State(subject: try #require(DocumentSubject(item: item, in: workspace)), workspace: workspace)
         let store = TestStore(initialState: initial) { DocumentReviewFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: recorded)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.appeared)
         await store.receive(\.loaded)
-        #expect(!store.state.canReview)
+        #expect(!store.state.canAccept)
+        #expect(!store.state.canSendFeedback)
         await store.send(.reviewTapped(.approved))
         await store.send(.sendFeedbackTapped(author: ""))
-        #expect(await recorder.intents.isEmpty)
+        #expect(await recorder.intents.isEmpty, "An empty reply sends nothing")
+        await store.send(.generalChanged("Thanks, go on"))
+        await store.send(.sendFeedbackTapped(author: ""))
+        await store.receive(\.submissionFinished)
+        #expect(await recorder.intents == [.replyToInformation("info", body: "Thanks, go on")])
     }
 }

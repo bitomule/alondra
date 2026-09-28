@@ -5,10 +5,13 @@ import AlondraShared
 import ComposableArchitecture
 import Foundation
 
-/// Authorizes a merge of the presented head. A recorded authorization is pending the agent,
-/// never "merged": only the PR state the server observes from GitHub says that.
+/// Authorizes a merge of the presented head, asks the Agent to resolve conflicts, or sets the
+/// PR aside. A recorded authorization is pending the agent, never "merged": only the PR state
+/// the server observes from GitHub says that.
 @Reducer
 public struct PullRequestFeature {
+    public enum Mutation: Equatable, Sendable { case authorize(DomainV2.MergeMethod), resolveConflicts, setAside }
+
     @ObservableState
     public struct State: Equatable {
         public let id: DomainV2.PrId
@@ -19,6 +22,9 @@ public struct PullRequestFeature {
         public var selectedMergeMethod: DomainV2.MergeMethod?
         public var isSending = false
         public var mutationOutcome: PRMutationOutcome?
+        /// The command ID of an attempt whose outcome is unknown; trying the same action again reuses it.
+        public var commandID: String?
+        public var commandMutation: Mutation?
         public var shouldDismiss = false
         public var successfulActionCount = 0
         public var presentationEpoch: UInt64 = 0
@@ -35,8 +41,11 @@ public struct PullRequestFeature {
         public var mergeMethods: [DomainV2.MergeMethod] { card?.pullRequest.allowedMethods ?? [] }
 
         public var canAct: Bool {
-            card?.canAuthorizeMerge == true && !isStale && !isSending
-                && mutationOutcome?.uncertainID == nil && mutationOutcome != .confirmed
+            card?.canAuthorizeMerge == true && !isStale && !isSending && mutationOutcome != .confirmed
+        }
+
+        public var canManage: Bool {
+            card?.isOpen == true && !isStale && !isSending && mutationOutcome != .confirmed
         }
     }
 
@@ -49,12 +58,13 @@ public struct PullRequestFeature {
         case chooseMergeMethod(DomainV2.MergeMethod)
         case cancelMerge
         case confirmMerge
+        case resolveConflictsTapped
+        case setAsideTapped
         case mutationFinished(PRMutationOutcome, UInt64)
-        case commandResolved(UUID, rejection: String?)
-        case commandReconciled(UUID)
     }
 
     @Dependency(\.domainWorkspace) var client
+    @Dependency(\.uuid) var uuid
 
     public init() {}
 
@@ -82,6 +92,7 @@ public struct PullRequestFeature {
                 state.selectedMergeMethod = nil
                 state.isSending = false
                 state.mutationOutcome = nil
+                state.commandID = nil
                 state.shouldDismiss = false
                 return .cancel(id: state.mutationID)
             case .presentMergeConfirmation(let presented):
@@ -101,37 +112,47 @@ public struct PullRequestFeature {
                 return .none
             case .confirmMerge:
                 guard state.canAct, let method = state.selectedMergeMethod, state.mergeMethods.contains(method),
-                      let presentation = state.card?.presentationID, let workspace = state.workspace else {
+                      let presentation = state.card?.presentationID else {
                     state.selectedMergeMethod = nil
                     return .none
                 }
                 state.selectedMergeMethod = nil
-                state.isSending = true
-                state.mutationOutcome = nil
-                let epoch = state.presentationEpoch
-                return .run { send in
-                    let result = await client.perform(.authorizeMerge(presentation, method: method), workspace, [])
-                    await send(.mutationFinished(PRMutationOutcome(result), epoch))
-                }
-                .cancellable(id: state.mutationID)
+                return perform(.authorizeMerge(presentation, method: method), .authorize(method), &state)
+            case .resolveConflictsTapped:
+                guard state.canManage, let card = state.card, card.hasConflicts,
+                      let head = card.presentedHead ?? state.pr?.head else { return .none }
+                return perform(.requestConflictResolution(card.id, head: head), .resolveConflicts, &state)
+            case .setAsideTapped:
+                guard state.canManage, let id = state.card?.id else { return .none }
+                return perform(.setAsidePullRequest(id), .setAside, &state)
             case .mutationFinished(let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
                 state.mutationOutcome = outcome
+                if outcome != .unknown { state.commandID = nil }
                 if outcome == .confirmed {
                     state.shouldDismiss = true
                     state.successfulActionCount += 1
                 }
                 return .none
-            case .commandResolved(let id, let rejection):
-                guard state.mutationOutcome?.uncertainID == id else { return .none }
-                state.isSending = true
-                return .send(.mutationFinished(rejection.map(PRMutationOutcome.rejected) ?? .confirmed, state.presentationEpoch))
-            case .commandReconciled(let id):
-                if state.mutationOutcome?.uncertainID == id { state.mutationOutcome = nil }
-                return .none
             }
         }
+    }
+
+    private func perform(_ intent: DomainIntent, _ mutation: Mutation, _ state: inout State) -> Effect<Action> {
+        guard let workspace = state.workspace else { return .none }
+        if state.commandMutation != mutation { state.commandID = nil }
+        let commandID = state.commandID ?? uuid().uuidString.lowercased()
+        state.commandID = commandID
+        state.commandMutation = mutation
+        state.isSending = true
+        state.mutationOutcome = nil
+        let epoch = state.presentationEpoch
+        return .run { send in
+            let result = await client.perform(intent, workspace, [], commandID)
+            await send(.mutationFinished(PRMutationOutcome(result), epoch))
+        }
+        .cancellable(id: state.mutationID)
     }
 }
 
@@ -140,7 +161,7 @@ extension PRMutationOutcome {
         switch result {
         case .recorded: self = .confirmed
         case .rejected(let rejection): self = .rejected(rejection.localizedMessage)
-        case .uncertain(let id): self = .unknown(id)
+        case .uncertain: self = .unknown
         case .obsolete: self = .obsolete
         }
     }

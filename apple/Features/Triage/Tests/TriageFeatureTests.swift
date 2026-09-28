@@ -31,7 +31,8 @@ private func workspace(_ roots: [DomainV2.InboxItem], revision: UInt64 = 1, epoc
 
 private actor Recorder {
     var intents: [DomainIntent] = []
-    func record(_ intent: DomainIntent) { intents.append(intent) }
+    var commandIDs: [String] = []
+    func record(_ intent: DomainIntent, _ commandID: String) { intents.append(intent); commandIDs.append(commandID) }
 }
 
 @MainActor
@@ -43,8 +44,8 @@ struct TriageFeatureTests {
                         updates: AsyncStream<DomainWorkspaceUpdate> = AsyncStream { $0.finish() }) -> DomainWorkspaceClient {
         var client = DomainWorkspaceClient.inert
         client.observe = { updates }
-        client.perform = { intent, _, _ in
-            await recorder.record(intent)
+        client.perform = { intent, _, _, commandID in
+            await recorder.record(intent, commandID)
             return result
         }
         return client
@@ -97,12 +98,14 @@ struct TriageFeatureTests {
         initial.items = current.roots
         let store = TestStore(initialState: initial) { TriageFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: .recorded(.init(revision: 2, changed: true, effects: [], createdIds: [])))
+            $0.uuid = .constant(UUID(0))
         }
         await store.send(.readWithPresentation("interaction:info")) {
             $0.pendingIDs = ["interaction:info"]
             $0.deferredReadIDs = ["interaction:info"]
+            $0.commandIDs = ["interaction:info": UUID(0).uuidString.lowercased()]
         }
-        await store.receive(\.mutationFinished) { $0.pendingIDs = [] }
+        await store.receive(\.mutationFinished) { $0.pendingIDs = []; $0.commandIDs = [:] }
         await store.receive(\.readAcknowledged)
         #expect(await recorder.intents == [.markRead("info")])
         await store.send(.workspaceUpdated(.init(identity: a, workspace: workspace([information("other", order: 2)], revision: 2),
@@ -122,7 +125,7 @@ struct TriageFeatureTests {
     }
 
     @Test
-    func questionsAndPullRequestsCannotBeReadOrHiddenAway() async throws {
+    func questionsCannotBeReadOrHiddenAwayAndAPullRequestIsOnlySetAside() async throws {
         let recorder = Recorder()
         var initial = TriageFeature.State()
         initial.identity = a
@@ -134,12 +137,17 @@ struct TriageFeatureTests {
         initial.items = current.roots
         let store = TestStore(initialState: initial) { TriageFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder)
+            $0.uuid = .incrementing
         }
+        store.exhaustivity = .off
         await store.send(.hide("interaction:q"))
-        await store.send(.hide("pr:pr"))
         await store.send(.readWithPresentation("interaction:q"))
+        await store.send(.readWithPresentation("pr:pr"))
         await store.send(.hide("interaction:done"))
         #expect(await recorder.intents.isEmpty)
+        await store.send(.hide("pr:pr"))
+        await store.receive(\.mutationFinished)
+        #expect(await recorder.intents == [.setAsidePullRequest("pr")])
     }
 
     @Test
@@ -150,41 +158,46 @@ struct TriageFeatureTests {
         initial.workspace = current
         initial.items = current.roots
         let store = TestStore(initialState: initial) { TriageFeature() } withDependencies: {
-            $0.domainWorkspace = client(result: .rejected(.init(code: "stale_revision", message: "Refresh first")))
+            $0.domainWorkspace = client(result: .rejected(.init(code: "not_found", message: "Refresh first")))
+            $0.uuid = .constant(UUID(0))
         }
         await store.send(.hide("interaction:info")) {
             $0.cursor = current.roots[0].place
             $0.hiddenIDs = ["interaction:info"]
             $0.pendingIDs = ["interaction:info"]
+            $0.commandIDs = ["interaction:info": UUID(0).uuidString.lowercased()]
         }
         await store.receive(\.mutationFinished) {
             $0.pendingIDs = []
+            $0.commandIDs = [:]
             $0.hiddenIDs = []
             $0.noticeIsMutationFailure = true
-            $0.notice = "Refresh first"
+            $0.notice = "This item is no longer available."
         }
     }
 
     @Test
-    func uncertainReadStaysVisibleUntilRecoveryResolvesIt() async throws {
-        let command = UUID()
+    func anUnknownOutcomeKeepsTheCardAndTryingAgainReusesTheCommandID() async throws {
+        let recorder = Recorder()
         var initial = TriageFeature.State()
         initial.identity = a
         let current = workspace([information("info", order: 1)])
         initial.workspace = current
         initial.items = current.roots
         let store = TestStore(initialState: initial) { TriageFeature() } withDependencies: {
-            $0.domainWorkspace = client(result: .uncertain(command))
+            $0.domainWorkspace = client(recorder, result: .uncertain)
+            $0.uuid = .incrementing
         }
         store.exhaustivity = .off
         await store.send(.hide("interaction:info"))
         await store.receive(\.mutationFinished)
-        #expect(store.state.uncertainByItem == ["interaction:info": command])
         #expect(store.state.queue.map(\.id) == ["interaction:info"])
+        #expect(store.state.notice != nil)
         await store.send(.hide("interaction:info"))
-        #expect(store.state.pendingIDs.isEmpty, "An uncertain command blocks a second send")
-        await store.send(.commandResolved(command, rejection: nil))
-        #expect(store.state.hiddenIDs == ["interaction:info"])
+        await store.receive(\.mutationFinished)
+        let ids = await recorder.commandIDs
+        #expect(ids.count == 2)
+        #expect(Set(ids).count == 1, "A retry must reuse the command ID so the server applies it once")
     }
 
     @Test

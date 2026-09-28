@@ -1,4 +1,5 @@
 import AlondraAttachmentsFeature
+import AlondraContracts
 import AlondraDomain
 import AlondraShared
 import ComposableArchitecture
@@ -14,7 +15,9 @@ public struct NewRequestFeature {
         public var projectQuery = ""
         public var orchestratorName: String?
         public var hasSnapshot = false
-        public var sentMessages: [SentMessage] = []
+        /// The requests already sent, newest first when the Mac reports when each was sent.
+        public var sentRequests: [DomainV2.Request] = []
+        public var sentAt: [DomainV2.RequestId: Int64] = [:]
         public var attachments: [NewRequestAttachment] = []
         public var selection = NewWorkSelection()
         public var projects: [String] = []
@@ -33,7 +36,9 @@ public struct NewRequestFeature {
         /// Completed send failures use the workspace notice, not a persistent editor error.
         public var submissionErrorIsTerminal = false
         public var inlineSubmissionError: String? { submissionErrorIsTerminal ? nil : submissionError }
-        public var uncertainCommandID: UUID?
+        /// The command ID of a submission whose outcome is unknown. Sending the same draft again
+        /// reuses it, so the request is created once; editing the draft starts a new command.
+        public var commandID: String?
         public var submissionUncertain = false
         public var successfulSubmissionCount = 0
         public var presentationEpoch: UInt64 = 0
@@ -47,7 +52,7 @@ public struct NewRequestFeature {
         /// A failed catalog sends the server's defaults instead of blocking the request.
         public var catalogSettled: Bool { !isLoadingOptions && (catalogIsCurrent || optionsError != nil) }
         public var submitEnabled: Bool {
-            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && canSubmit && !isSubmitting && catalogSettled && !submissionUncertain
+            attachmentPicker.canPrepareSubmission && pendingSubmission == nil && canSubmit && !isSubmitting && catalogSettled
                 && (!text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachments.isEmpty)
         }
     }
@@ -59,7 +64,7 @@ public struct NewRequestFeature {
         case optionsPresented(Bool)
         case projectPickerOpened
         case projectQueryChanged(String)
-        case workspaceUpdated(Overview?)
+        case workspaceUpdated(DomainWorkspace?)
         case identityChanged
         case availabilityChanged(Bool)
         case textChanged(String)
@@ -79,12 +84,12 @@ public struct NewRequestFeature {
         case issuesFailed(String, UInt64)
         case submitTapped
         case submitFinished(CreateRequestResult, UInt64)
-        case commandResolved(UUID, rejection: String?)
         case discardUncertainDraft
         case editUncertainDraft
     }
 
     @Dependency(\.newWorkOperations) var operations
+    @Dependency(\.uuid) var uuid
     public init() {}
 
     private enum CancelID { case projects, options, issues, submit }
@@ -94,7 +99,8 @@ public struct NewRequestFeature {
         Reduce { state, action in
             switch action {
             case .attachmentPicker(let event):
-                state.attachments = state.attachmentPicker.entries.map { NewRequestAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                state.attachments = state.attachmentPicker.entries.map { NewRequestAttachment(id: $0.id, name: $0.draft.name, data: $0.draft.data, stored: $0.stored) }
+                if event.invalidatesPendingSubmission { state.commandID = nil }
                 if state.pendingSubmission != nil, case .uploaded(_, .failure) = event,
                    let failure = state.attachmentPicker.failedUploadMessage {
                     state.pendingSubmission = nil
@@ -112,11 +118,18 @@ public struct NewRequestFeature {
             case .optionsPresented(let shown): state.optionsPresented = shown; return .none
             case .projectPickerOpened: state.projectQuery = ""; return .none
             case .projectQueryChanged(let query): state.projectQuery = query; return .none
-            case .workspaceUpdated(let overview):
-                state.hasSnapshot = overview != nil
-                state.orchestratorName = overview?.nodes.filter(\.isOrchestrator).max { $0.stateSince < $1.stateSince }?.displayName
-                state.sentMessages = (overview?.orchestratorMessages ?? []).filter { $0.from == "david" }.sorted { $0.createdAt > $1.createdAt }
-                state.canSubmit = overview?.orchestrator != nil || state.orchestratorName != nil
+            case .workspaceUpdated(let workspace):
+                state.hasSnapshot = workspace != nil
+                state.orchestratorName = workspace?.runtime?.nodes.filter(\.isOrchestrator)
+                    .max { $0.stateSince < $1.stateSince }?.displayName
+                let sentAt = Dictionary((workspace?.projection.requests ?? []).compactMap { request in
+                    workspace?.runtime?.request(request.id)?.createdAt.map { (request.id, $0) }
+                }, uniquingKeysWith: { first, _ in first })
+                state.sentAt = sentAt
+                state.sentRequests = (workspace?.projection.requests ?? []).reversed()
+                    .sorted { (sentAt[$0.id] ?? 0) > (sentAt[$1.id] ?? 0) }
+                // A request is stored by the Mac and picked up when the orchestrator runs.
+                state.canSubmit = workspace != nil
                 if !state.canSubmit { state.pendingSubmission = nil }
                 return .none
             case .appeared:
@@ -258,32 +271,19 @@ public struct NewRequestFeature {
                     state.text = ""
                     state.attachments = []
                     state.attachmentPicker = AttachmentFeature.State()
+                    state.commandID = nil
+                    state.submissionUncertain = false
                     state.successfulSubmissionCount += 1
                 case .failed(let message):
+                    state.commandID = nil
+                    state.submissionUncertain = false
                     state.submissionError = message
                     state.submissionErrorIsTerminal = true
-                case .uncertainCommand(let id, let message):
-                    state.uncertainCommandID = id
-                    state.submissionError = message
-                    state.submissionUncertain = true
                 case .uncertain(let message):
                     state.submissionError = message
                     state.submissionUncertain = true
                 case .cancelled:
                     break
-                }
-                return .none
-            case .commandResolved(let id, let rejection):
-                guard state.submissionUncertain, state.uncertainCommandID == id else { return .none }
-                state.uncertainCommandID = nil
-                state.submissionUncertain = false
-                state.submissionError = rejection
-                state.submissionErrorIsTerminal = rejection != nil
-                if rejection == nil {
-                    state.text = ""
-                    state.attachments = []
-                    state.attachmentPicker = AttachmentFeature.State()
-                    state.successfulSubmissionCount += 1
                 }
                 return .none
             case .discardUncertainDraft:
@@ -293,14 +293,14 @@ public struct NewRequestFeature {
                 state.attachmentPicker = AttachmentFeature.State()
                 state.submissionError = nil
                 state.submissionErrorIsTerminal = false
-                state.uncertainCommandID = nil
+                state.commandID = nil
                 state.submissionUncertain = false
                 return .none
             case .editUncertainDraft:
                 guard state.submissionUncertain else { return .none }
                 state.submissionError = nil
                 state.submissionErrorIsTerminal = false
-                state.uncertainCommandID = nil
+                state.commandID = nil
                 state.submissionUncertain = false
                 return .none
             }
@@ -318,9 +318,11 @@ public struct NewRequestFeature {
         let body = state.selection.body(text: state.text.trimmingCharacters(in: .whitespacesAndNewlines))
         let attachments = state.attachments
         let epoch = state.presentationEpoch
+        let commandID = state.commandID ?? uuid().uuidString.lowercased()
+        state.commandID = commandID
         let useCase = CreateRequestUseCase(operations: operations)
         return .run { send in
-            await send(.submitFinished(await useCase.run(body, attachments), epoch))
+            await send(.submitFinished(await useCase.run(body, attachments, commandID), epoch))
         }.cancellable(id: CancelID.submit)
     }
 
