@@ -2,6 +2,8 @@
 //! business decision, user acceptance, or proof that Claude acted on a turn.
 use crate::domain_store::OutboxMessage;
 use crate::hub::Hub;
+use crate::domain_runtime::DomainRuntime;
+use std::path::Path;
 use crate::push::Push;
 use crate::service::Service;
 use alondra_core::Event;
@@ -41,6 +43,64 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) 
             _ = tokio::time::sleep(Duration::from_secs(10)) => {},
         }
     }
+}
+
+/// V2-only dispatcher: all receipts live in domain-v2.db. Producer transport
+/// has no v2 runner yet, so those attempts stay explicitly retryable instead
+/// of passing through the legacy Hub or reporting a false handoff.
+pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
+    push: Arc<Push>, service: Option<Arc<Service>>) -> Result<()> {
+    let mut changed = domain.subscribe();
+    let mut retry_after: HashMap<i64, Instant> = HashMap::new();
+    loop {
+        retry_after.retain(|_, at| at.elapsed() < RETRY_BACKOFF);
+        let pending = {
+            let store = domain.store.lock().expect("domain store poisoned");
+            store.pending_messages()?
+        };
+        // SQLite errors stop this worker. The daemon supervisor then fails the
+        // committed process instead of silently serving a dead outbox.
+        for message in ready_messages_v2(pending, &retry_after) {
+            let id = message.id;
+            deliver_one_v2(&domain, &home, &push, service.as_deref(), message).await?;
+            retry_after.insert(id, Instant::now());
+        }
+        tokio::select! {
+            _ = changed.changed() => {},
+            _ = tokio::time::sleep(Duration::from_secs(10)) => {},
+        }
+    }
+}
+
+async fn deliver_one_v2(domain: &DomainRuntime, home: &Path, push: &Push,
+    service: Option<&Service>, message: OutboxMessage) -> Result<()> {
+    let claim = {
+        let mut store = domain.store.lock().expect("domain store poisoned");
+        store.claim_message(message.id)?
+    };
+    let Some(claim) = claim else { return Ok(()) };
+    let outcome = match claim.message.recipient_kind.as_str() {
+        "user" => deliver_user_runtime(domain, home, push, service, &claim.message).await,
+        "agent" | "orchestrator" => Err((State::Retryable, "v2_producer_transport_unavailable")),
+        _ => Err((State::Uncertain, "unknown_recipient")),
+    };
+    let (state, reason) = match outcome {
+        Ok(()) => (State::Handed, None),
+        Err((state, reason)) => (state, Some(reason)),
+    };
+    let finished = {
+        let mut store = domain.store.lock().expect("domain store poisoned");
+        store.finish_message(claim.attempt_id, claim.version, state, reason)?
+    };
+    anyhow::ensure!(finished, "domain delivery claim changed while finishing");
+    Ok(())
+}
+
+fn ready_messages_v2(messages: Vec<OutboxMessage>, retry_after: &HashMap<i64, Instant>) -> Vec<OutboxMessage> {
+    let eligible = messages.into_iter()
+        .filter(|message| message.recipient_kind == "user" || message.state == "pending")
+        .collect();
+    ready_messages(eligible, retry_after)
 }
 
 fn ready_messages(
@@ -122,11 +182,16 @@ async fn deliver_user(
     service: Option<&Service>,
     message: &OutboxMessage,
 ) -> std::result::Result<(), (State, &'static str)> {
+    deliver_user_runtime(&hub.domain, &hub.home, push, service, message).await
+}
+
+async fn deliver_user_runtime(
+    domain: &DomainRuntime, home: &Path, push: &Push,
+    service: Option<&Service>, message: &OutboxMessage,
+) -> std::result::Result<(), (State, &'static str)> {
     // DomainProjection is the durable user inbox. APNs is only a generic wake hint;
     // the receipt never means a person read or accepted this interaction.
-    let state = hub
-        .domain
-        .state()
+    let state = domain.state()
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
     let item_id = message.interaction_id.as_ref().map(|id| format!("interaction:{id}"));
     let payload = json!({"aps":{"alert":{"title":"Alondra","body":"Hay actividad nueva en Alondra"},
@@ -140,7 +205,7 @@ async fn deliver_user(
         if attempted != accepted {
             return Err((State::Uncertain, "encrypted_push_partial_or_unknown"));
         }
-    } else if hub.home.join("service.toml").exists() {
+    } else if home.join("service.toml").exists() {
         return Err((State::Retryable, "encrypted_service_unavailable"));
     } else if push.enabled() {
         let (attempted, accepted) = push.broadcast_report(&payload, true).await;
@@ -166,6 +231,99 @@ mod tests {
         let backoff: HashMap<_, _> = (1..=64).map(|id| (id, Instant::now())).collect();
         let ready = ready_messages(messages, &backoff);
         assert_eq!(ready.iter().map(|message| message.id).collect::<Vec<_>>(), vec![65]);
+    }
+
+    #[tokio::test]
+    async fn v2_only_outbox_exits_on_sql_failure() {
+        let home = std::env::temp_dir().join(format!("alondra-v2-outbox-failure-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        rusqlite::Connection::open(home.join("domain-v2.db")).unwrap()
+            .execute_batch("DROP TABLE domain_outbox").unwrap();
+        let push = Arc::new(Push::open(&home).unwrap());
+        let result = tokio::time::timeout(Duration::from_secs(2),
+            run_v2(domain.clone(), home.clone(), push, None)).await.unwrap();
+        assert!(result.is_err(), "SQL failure must terminate the critical outbox worker");
+        drop(domain);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn v2_only_retryable_producers_never_starve_later_user_hints() {
+        let mut messages: Vec<_> = (1..=65).map(|id| OutboxMessage {
+            id, recipient_kind: "agent".into(), agent_id: Some("absent".into()),
+            task_id: None, interaction_id: None, message: String::new(), state: "retryable".into(),
+        }).collect();
+        messages.push(OutboxMessage { id: 66, recipient_kind: "user".into(),
+            agent_id: None, task_id: None, interaction_id: None, message: String::new(), state: "pending".into() });
+        let ready = ready_messages_v2(messages, &HashMap::new());
+        assert_eq!(ready.iter().map(|message| message.id).collect::<Vec<_>>(), vec![66]);
+    }
+
+    fn v2_command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+        let state = domain.state().unwrap();
+        domain.execute(&actor, &CommandEnvelope {
+            protocol_version: 2, data_epoch: state.data_epoch,
+            command_id: id.into(), expected_revision: state.revision, command,
+        }, None, || Ok(())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn v2_only_outbox_hands_user_hint_and_keeps_producer_retryable_without_hub() {
+        let home = std::env::temp_dir().join(format!("alondra-v2-only-outbox-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = DomainRuntime::open(&home).unwrap();
+        v2_command(&domain, Actor::System, "agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "A".into(),
+        });
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request-a".into(), body: "Request".into(),
+        });
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            task_id: "task-a".into(), request_id: "request-a".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false,
+            dependencies: BTreeSet::new(), stack: None,
+        });
+        v2_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question-a".into(),
+            scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
+            body: "Choose".into(), blocking: true,
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }],
+        });
+        let push = Push::open(&home).unwrap();
+        let user = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.recipient_kind == "user").unwrap();
+        deliver_one_v2(&domain, &home, &push, None, user.clone()).await.unwrap();
+        assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().iter()
+            .any(|item| item.message_id == user.id && item.state == "handed"));
+        assert!(matches!(domain.state().unwrap().interactions[&"question-a".into()].payload,
+            InteractionPayload::Question { .. }));
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: "question-a".into(),
+            option_id: "yes".into(), inputs: Default::default(),
+        });
+        let producer = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.recipient_kind == "agent").unwrap();
+        deliver_one_v2(&domain, &home, &push, None, producer.clone()).await.unwrap();
+        let evidence = domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
+        assert!(evidence.iter().any(|item| item.message_id == producer.id
+            && item.state == "retryable" && item.reason.as_deref() == Some("v2_producer_transport_unavailable")));
+        assert!(domain.store.lock().unwrap().pending_messages().unwrap().iter()
+            .any(|message| message.id == producer.id && message.state == "retryable"));
+        // A retry claim has a fresh version. A stale finisher cannot complete it,
+        // and restart makes the ambiguous claim uncertain rather than redelivering.
+        let claim = domain.store.lock().unwrap().claim_message(producer.id).unwrap().unwrap();
+        assert!(!domain.store.lock().unwrap().finish_message(claim.attempt_id,
+            claim.version + 1, State::Handed, None).unwrap());
+        drop(domain);
+        let reopened = DomainRuntime::open(&home).unwrap();
+        let recovered = reopened.store.lock().unwrap().delivery_evidence_page(0).unwrap();
+        assert!(recovered.iter().any(|item| item.attempt_id == claim.attempt_id
+            && item.state == "uncertain" && item.reason.as_deref() == Some("daemon_restarted_after_claim")));
+        assert!(!reopened.store.lock().unwrap().pending_messages().unwrap().iter()
+            .any(|message| message.id == producer.id));
+        drop(reopened);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     fn command(hub: &Hub, actor: Actor, id: &str, command: Command) {

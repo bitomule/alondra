@@ -195,17 +195,29 @@ fn protocol_mode(home: &Path) -> Result<ProtocolMode> {
     }
 }
 
-/// A configured encrypted connector is part of committed v2 availability.
-/// Its unexpected exit or panic must stop the local listener as well.
-async fn supervise_v2_connector<S>(server: S, connector: tokio::task::JoinHandle<()>) -> Result<()>
+/// Critical v2 workers must not disappear while the local listener remains healthy.
+async fn supervise_v2_workers<S>(server: S, outbox: tokio::task::JoinHandle<Result<()>>,
+    connector: Option<tokio::task::JoinHandle<()>>) -> Result<()>
 where S: std::future::Future<Output = std::io::Result<()>> {
     tokio::select! {
         result = server => {
             result?;
             anyhow::bail!("v2-only domain listener stopped unexpectedly")
         },
-        result = connector => {
+        result = outbox => {
             match result {
+                Ok(Ok(())) => anyhow::bail!("v2 outbox worker stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("v2 outbox worker failed: {error:#}"),
+                Err(error) => anyhow::bail!("v2 outbox worker panicked: {error}"),
+            }
+        },
+        result = async {
+            match connector {
+                Some(task) => Some(task.await),
+                None => std::future::pending().await,
+            }
+        } => {
+            match result.expect("connector future has task") {
                 Ok(()) => anyhow::bail!("v2 encrypted service connector stopped unexpectedly"),
                 Err(error) => anyhow::bail!("v2 encrypted service connector failed: {error}"),
             }
@@ -219,32 +231,40 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let auth = Arc::new(auth::Auth::open(&config.home)?);
     let service = service::Service::open(&config.home, config.port, auth.clone())?
         .map(|service| Arc::new(service.with_domain(state.domain())));
+    let domain = state.domain();
+    let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
     let app = domain_bootstrap::router(state)
         .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     log!("v2-only domain listener on http://{addr}, data in {}", config.home.display());
     let server = axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).into_future();
-    if let Some(service) = service {
-        supervise_v2_connector(server, tokio::spawn(async move { service.run().await })).await
-    } else {
-        server.await?;
-        Ok(())
-    }
+    let outbox = tokio::spawn(domain_delivery::run_v2(
+        domain, config.home.clone(), push, service.clone()));
+    let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
+    supervise_v2_workers(server, outbox, connector).await
 }
 
 #[cfg(test)]
-mod v2_connector_supervision_tests {
+mod v2_worker_supervision_tests {
     use super::*;
 
     #[tokio::test]
-    async fn unexpected_connector_exit_and_panic_stop_the_listener() {
+    async fn unexpected_connector_or_outbox_exit_stops_listener() {
         let server = || std::future::pending::<std::io::Result<()>>();
-        let exit = supervise_v2_connector(server(), tokio::spawn(async {})).await.unwrap_err();
-        assert!(exit.to_string().contains("stopped unexpectedly"));
-        let panic = supervise_v2_connector(server(), tokio::spawn(async { panic!("synthetic failure") })).await.unwrap_err();
+        let exit = supervise_v2_workers(server(), tokio::spawn(std::future::pending::<Result<()>>()),
+            Some(tokio::spawn(async {}))).await.unwrap_err();
+        assert!(exit.to_string().contains("connector stopped unexpectedly"));
+        let panic = supervise_v2_workers(server(), tokio::spawn(std::future::pending::<Result<()>>()),
+            Some(tokio::spawn(async { panic!("synthetic failure") }))).await.unwrap_err();
         assert!(panic.to_string().contains("connector failed"));
+        let stopped_outbox = supervise_v2_workers(server(), tokio::spawn(async { Ok(()) }), None).await.unwrap_err();
+        assert!(stopped_outbox.to_string().contains("outbox worker stopped unexpectedly"));
+        let failed_outbox = supervise_v2_workers(server(),
+            tokio::spawn(async { anyhow::bail!("synthetic SQL failure") }), None).await.unwrap_err();
+        assert!(failed_outbox.to_string().contains("synthetic SQL failure"));
     }
+
 }
 
 fn diagnostic_device(args: Vec<String>) -> Result<Option<String>> {
