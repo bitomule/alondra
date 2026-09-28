@@ -5,7 +5,10 @@ swift_library(
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraSync",
     visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraAPIClient"],
+    deps = [
+        "//apple/APIClient:AlondraAPIClient",
+        "//apple/Contracts:AlondraContracts",
+    ],
 )
 
 swift_test(

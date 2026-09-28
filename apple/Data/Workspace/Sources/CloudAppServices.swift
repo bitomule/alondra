@@ -16,6 +16,7 @@ import Foundation
 public actor CloudAppServices {
     public let api: AlondraAPIClient
     public let sync: SyncSession
+    public let domainSync: DomainSyncSession
     private let operations: RelaySession
     private let gate: CommandGate
     private let deliveryStatus: DeliveryStatusService
@@ -49,6 +50,8 @@ public actor CloudAppServices {
         api = AlondraAPIClient(serviceURL: approved.relayURL, deviceID: approved.deviceID, operations: operations)
         sync = SyncSession(transport: api,
             identity: SyncIdentity(server: approved.relayURL, deviceID: approved.deviceID, credentialRevision: revision))
+        domainSync = DomainSyncSession(transport: api,
+            identity: SyncIdentity(server: approved.relayURL, deviceID: approved.deviceID, credentialRevision: revision))
         gate = CommandGate(scope: scope, journal: FileCommandJournal(directory: directory.appendingPathComponent("commands")))
         reportFeedback = ReportFeedbackCoordinator(directory: directory.appendingPathComponent("feedback"), gate: gate, scope: scope, api: api, operations: operations, bindingSecret: approved.signingPrivateKey)
         let feedbackCoordinator = reportFeedback
@@ -75,6 +78,7 @@ public actor CloudAppServices {
         await deliveryStatus.stop()
         await operations.deactivate()
         await sync.stop()
+        await domainSync.stop()
         await gate.use(CommandScope(server: scope.server, deviceID: scope.deviceID,
                                     credentialRevision: scope.credentialRevision, generation: scope.generation + 1))
     }
@@ -111,6 +115,12 @@ public actor CloudAppServices {
 
     public func commandResolutions() async -> AsyncStream<CommandResolution> {
         await commandRecovery.subscribe()
+    }
+
+    /// Opt-in domain-v2 data stream. Existing v1 consumers remain attached to `sync`.
+    public func domainUpdates() async -> AsyncStream<DomainSyncState> {
+        guard active else { return AsyncStream { $0.finish() } }
+        return await domainSync.subscribe()
     }
 
     public func triageService() -> TriageService {
