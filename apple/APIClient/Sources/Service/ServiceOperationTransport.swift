@@ -26,8 +26,18 @@ public struct ServiceRequest: Sendable, Equatable {
     init<Response>(endpoint: Endpoint<Response>, operationID: String) throws {
         let domainV2 = endpoint.path == ["v2", "domain"] && endpoint.method == .get
             || endpoint.path == ["v2", "domain", "capabilities"] && endpoint.method == .get
+            || endpoint.path == ["v2", "domain", "changes"] && endpoint.method == .get
             || endpoint.path == ["v2", "domain", "commands"] && endpoint.method == .post
-        guard !operationID.isEmpty, (endpoint.path.first == "v1" || domainV2),
+        let domainDetail = endpoint.method == .get && endpoint.path.count == 5
+            && endpoint.path.starts(with: ["v2", "domain"])
+            && ((endpoint.path[2] == "pull-requests" && endpoint.path[4] == "diff")
+                || (endpoint.path[2] == "document-revisions" && endpoint.path[4] == "content")
+                || (endpoint.path[2] == "tasks" && endpoint.path[4] == "actions"))
+        let domainDelivery = endpoint.path == ["v2", "domain", "delivery-attempts"] && endpoint.method == .get
+            || (endpoint.method == .post && endpoint.path.count == 5
+                && endpoint.path.starts(with: ["v2", "domain", "delivery-attempts"])
+                && (Int64(endpoint.path[3]).map { $0 > 0 } ?? false) && endpoint.path[4] == "resolve")
+        guard !operationID.isEmpty, (endpoint.path.first == "v1" || domainV2 || domainDetail || domainDelivery),
               endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ServiceAPIError.invalidEndpoint
         }

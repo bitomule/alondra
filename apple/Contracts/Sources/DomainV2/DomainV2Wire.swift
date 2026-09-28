@@ -35,3 +35,21 @@ extension DomainV2 {
         }
     }
 }
+
+extension DomainV2 {
+    public struct Changes: Codable, Equatable, Sendable {
+        public let protocolVersion: UInt32
+        public let dataEpoch: DataEpoch
+        public let revision: Revision
+        public let changed: Bool
+        public init(protocolVersion: UInt32, dataEpoch: DataEpoch, revision: Revision, changed: Bool) {
+            self.protocolVersion = protocolVersion; self.dataEpoch = dataEpoch
+            self.revision = revision; self.changed = changed
+        }
+        enum CodingKeys: String, CodingKey {
+            case protocolVersion = "protocol_version"
+            case dataEpoch = "data_epoch"
+            case revision, changed
+        }
+    }
+}

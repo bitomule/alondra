@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraAPIClient
 import AlondraRelayOutbox
 import AlondraSync
@@ -83,6 +84,22 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         if request.method == "GET", request.path == "/v1/overview", request.body == nil {
             return .completed(status: 200, body: try await fetchOverview())
         }
+        if request.method == "GET", request.path == "/v2/domain", request.body == nil {
+            return .completed(status: 200, body: try await fetchDomainProjection())
+        }
+        if request.method == "GET", request.path.hasPrefix("/v2/domain/changes?"), request.body == nil {
+            guard let components = URLComponents(string: request.path),
+                  let items = components.queryItems,
+                  Set(items.map(\.name)) == ["data_epoch", "after", "wait"], items.count == 3,
+                  let wait = items.first(where: { $0.name == "wait" })?.value.flatMap(Int.init), (0...50).contains(wait),
+                  items.first(where: { $0.name == "data_epoch" })?.value?.isEmpty == false,
+                  items.first(where: { $0.name == "after" })?.value.flatMap(UInt64.init) != nil
+            else { throw RelaySessionError.invalidRequest }
+            switch try await waitForReadCompletion(requestID: "read-" + UUID().uuidString, path: request.path, seconds: wait) {
+            case let .completed(status, body): return .completed(status: status, body: body)
+            case .unknown: return .unknown
+            }
+        }
         switch try await execute(requestID: request.operationID, method: request.method,
                                  path: request.path, body: request.body) {
         case let .completed(status, body): return .completed(status: status, body: body)
@@ -97,7 +114,13 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
                         statusPolls: Int = 10) async throws -> RelayOperationResult {
         guard active else { throw CancellationError() }
         guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
-              path.hasPrefix("/v1/"), !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
+              (path.hasPrefix("/v1/") || (method == "GET" && path == "/v2/domain/capabilities")
+               || (method == "POST" && path == "/v2/domain/commands")
+               || Self.validDomainDeliveryPath(method: method, path: path)
+               || (method == "GET" && (path.hasPrefix("/v2/domain/pull-requests/") && path.hasSuffix("/diff")
+                   || path.hasPrefix("/v2/domain/document-revisions/") && path.contains("/content?offset=")
+                   || path.hasPrefix("/v2/domain/tasks/") && path.hasSuffix("/actions")))),
+              !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
             throw RelaySessionError.invalidRequest
         }
         if method == "GET" {
@@ -125,6 +148,21 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         }
         if case let .accepted(receipt) = submitted, let result = try verified(receipt, requestID: requestID) { return result }
         return try await resume(requestID: requestID, statusPolls: statusPolls)
+    }
+
+    /// Delivery recovery is a separate v2 resource. Keep the direct transport
+    /// allowlist as strict as ServiceRequest so internal callers cannot send a
+    /// similarly prefixed path with an arbitrary method or target.
+    static func validDomainDeliveryPath(method: String, path: String) -> Bool {
+        if method == "GET", path.hasPrefix("/v2/domain/delivery-attempts?after=") {
+            let suffix = path.dropFirst("/v2/domain/delivery-attempts?after=".count)
+            return !suffix.isEmpty && suffix.allSatisfy(\.isNumber) && Int64(suffix) != nil
+        }
+        guard method == "POST" else { return false }
+        let components = path.split(separator: "/")
+        return components.count == 5 && components[0] == "v2" && components[1] == "domain"
+            && components[2] == "delivery-attempts" && components[4] == "resolve"
+            && Int64(components[3]).map { $0 > 0 } == true
     }
 
     private func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> EnvelopeV1 {
@@ -231,11 +269,28 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
         let requestID = UUID().uuidString
         let result = try await read(requestID: "read-" + requestID, path: "/v1/overview", body: nil, statusPolls: 10, allowOverviewTooLarge: true)
         guard case let .completed(status, body) = result else { throw RelaySessionError.outcomeUnknown }
-        if status == 502 { return try await fetchOverviewSnapshot() }
+        if status == 502 { return try await fetchSnapshot(root: OverviewSnapshotAssembly.root) { _ = try SyncSnapshot(body: $0) } }
         guard status == 200 else { throw RelaySessionError.localStatus(status) }
         try Task.checkCancellation()
         guard active else { throw CancellationError() }
         _ = try SyncSnapshot(body: body)
+        return body
+    }
+
+    private func fetchDomainProjection() async throws -> Data {
+        let result = try await read(requestID: "read-" + UUID().uuidString, path: "/v2/domain", body: nil,
+                                    statusPolls: 10, allowOverviewTooLarge: true)
+        guard case let .completed(status, body) = result else { throw RelaySessionError.outcomeUnknown }
+        let validate: @Sendable (Data) throws -> Void = { bytes in
+            let projection = try DomainV2.decode(DomainV2.DomainProjection.self, from: bytes)
+            guard projection.protocolVersion == DomainV2.protocolVersion,
+                  projection.revision <= DomainV2.maximumRevision else { throw RelaySessionError.invalidResponse }
+        }
+        if status == 502 { return try await fetchSnapshot(root: "/v2/domain/snapshot", validate: validate) }
+        guard status == 200 else { throw RelaySessionError.localStatus(status) }
+        try Task.checkCancellation()
+        guard active else { throw CancellationError() }
+        try validate(body)
         return body
     }
 
@@ -262,25 +317,25 @@ public actor RelaySession: SyncTransport, ServiceOperationTransport, ServicePush
 
     /// Each operation has a structured deadline and uses only a cached credential.
     /// The initial ordinary overview read already performed normal authentication.
-    private func fetchOverviewSnapshot() async throws -> Data {
+    private func fetchSnapshot(root: String, validate: @Sendable (Data) throws -> Void) async throws -> Data {
         let deadline = ContinuousClock.now.advanced(by: .seconds(90))
         let (snapshotClient, lease) = try await makeSnapshotClient()
         try checkReadDeadline(deadline)
         var cleanupPath: String?
         do {
-            let first = try await snapshotOperation(client: snapshotClient, method: "GET", path: OverviewSnapshotAssembly.root, deadline: deadline)
+            let first = try await snapshotOperation(client: snapshotClient, method: "GET", path: root, deadline: deadline)
             // Retain a syntactically safe handle even if the remaining metadata is invalid.
             if let header = try? JSONDecoder().decode(OverviewSnapshotAssembly.Chunk.self, from: first),
                OverviewSnapshotAssembly.hex(header.snapshot_id, count: 32) {
-                cleanupPath = OverviewSnapshotAssembly.root + "/" + header.snapshot_id
+                cleanupPath = root + "/" + header.snapshot_id
             }
-            var assembly = try OverviewSnapshotAssembly(first)
+            var assembly = try OverviewSnapshotAssembly(first, root: root)
             while !assembly.complete {
                 let chunk = try await snapshotOperation(client: snapshotClient, method: "GET", path: assembly.path + "?offset=\(assembly.bytes.count)", deadline: deadline)
                 try assembly.append(chunk)
             }
             let result = try assembly.finish()
-            _ = try SyncSnapshot(body: result)
+            try validate(result)
             try checkReadDeadline(deadline)
             let releasePath = cleanupPath
             cleanupPath = nil

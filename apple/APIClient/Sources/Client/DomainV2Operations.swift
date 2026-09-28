@@ -33,3 +33,33 @@ extension AlondraAPIClient {
         return capabilities
     }
 }
+
+extension AlondraAPIClient {
+    public func domainProjection() async throws -> DomainV2.DomainProjection {
+        let endpoint = Endpoint<DomainV2.DomainProjection>(.get, path: ["v2", "domain"]) {
+            try DomainV2.decode(DomainV2.DomainProjection.self, from: $0)
+        }
+        let projection = try await send(endpoint)
+        guard projection.protocolVersion == DomainV2.protocolVersion,
+              projection.revision <= DomainV2.maximumRevision else {
+            throw DomainV2.DomainError(code: "incompatible_protocol", message: "Unsupported domain snapshot", currentRevision: nil, subject: nil)
+        }
+        return projection
+    }
+}
+
+extension AlondraAPIClient {
+    public func domainChanges(epoch: DomainV2.DataEpoch, after revision: DomainV2.Revision, wait seconds: UInt = 50) async throws -> DomainV2.Changes {
+        let endpoint = Endpoint<DomainV2.Changes>(.get, path: ["v2", "domain", "changes"],
+            query: [("data_epoch", epoch.rawValue), ("after", String(revision)), ("wait", String(min(seconds, 50)))]) {
+                try DomainV2.decode(DomainV2.Changes.self, from: $0)
+            }
+        let changes = try await send(endpoint)
+        guard changes.protocolVersion == DomainV2.protocolVersion,
+              changes.dataEpoch == epoch, changes.revision >= revision,
+              changes.revision <= DomainV2.maximumRevision else {
+            throw DomainV2.DomainError(code: "incompatible_protocol", message: "Unsupported domain changes", currentRevision: nil, subject: nil)
+        }
+        return changes
+    }
+}

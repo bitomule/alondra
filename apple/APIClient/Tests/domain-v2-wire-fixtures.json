@@ -1,0 +1,1028 @@
+{
+  "accepted": {
+    "protocol_version": 2,
+    "data_epoch": "epoch",
+    "revision": 8,
+    "inbox": [
+      {
+        "id": "interaction:info",
+        "kind": "information",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "info"
+        },
+        "title": "Result",
+        "body": "Information with Unicode: revisión ✓",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 4,
+        "order": 4,
+        "pending": true,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "mark_read",
+            "enabled": true,
+            "disabled_reason": null,
+            "expected_revision": 8,
+            "presentation_id": null,
+            "expected_head": null
+          }
+        ]
+      },
+      {
+        "id": "interaction:q",
+        "kind": "question",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "q"
+        },
+        "title": "Result",
+        "body": "Choose an option",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 6,
+        "order": 5,
+        "pending": false,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "answer_question",
+            "enabled": false,
+            "disabled_reason": "invalid_action_for_kind",
+            "expected_revision": 8,
+            "presentation_id": null,
+            "expected_head": null
+          }
+        ]
+      },
+      {
+        "id": "interaction:d",
+        "kind": "delivery",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "d"
+        },
+        "title": "Result",
+        "body": "Result ready",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 8,
+        "order": 7,
+        "pending": false,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "accept_delivery",
+            "enabled": true,
+            "disabled_reason": null,
+            "expected_revision": 8,
+            "presentation_id": "d",
+            "expected_head": null
+          },
+          {
+            "kind": "submit_feedback",
+            "enabled": true,
+            "disabled_reason": null,
+            "expected_revision": 8,
+            "presentation_id": "d",
+            "expected_head": null
+          }
+        ]
+      }
+    ],
+    "counts": {
+      "roots": 3,
+      "pending": 1,
+      "unread_information": 1
+    },
+    "tasks": [
+      {
+        "id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "title": "Result",
+        "state": "closing",
+        "revision": 8,
+        "started": false,
+        "review_prs": true,
+        "final_presentation": "d",
+        "pr_id": null,
+        "dependencies": [],
+        "stack": null,
+        "documents": {},
+        "archived": false
+      }
+    ],
+    "agents": [
+      {
+        "id": "a",
+        "name": "Instance A",
+        "connected": true
+      }
+    ],
+    "requests": [
+      {
+        "id": "r",
+        "body": "Build requested result",
+        "closed": false
+      }
+    ],
+    "interactions": [
+      {
+        "attachments": [],
+        "id": "d",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Result ready",
+        "blocking": false,
+        "subject": null,
+        "payload": {
+          "kind": "delivery",
+          "targets": [
+            {
+              "kind": "text",
+              "text": "The result"
+            }
+          ],
+          "is_final": true,
+          "acceptance": {
+            "user_id": "u",
+            "at_revision": 8,
+            "valid": true
+          },
+          "feedback": []
+        },
+        "revision": 8,
+        "order": 7
+      },
+      {
+        "attachments": [
+          {
+            "id": "fixture-file",
+            "name": "Report.pdf",
+            "content_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "content_reference": "files/fixture-file",
+            "bytes": 321
+          }
+        ],
+        "id": "info",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Information with Unicode: revisión ✓",
+        "blocking": false,
+        "subject": null,
+        "payload": {
+          "kind": "information",
+          "read_by": []
+        },
+        "revision": 4,
+        "order": 4
+      },
+      {
+        "attachments": [],
+        "id": "q",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Choose an option",
+        "blocking": true,
+        "subject": null,
+        "payload": {
+          "kind": "question",
+          "options": [
+            {
+              "id": "proceed",
+              "label": "Continuar",
+              "inputs": [
+                {
+                  "id": "explanation",
+                  "kind": "text",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "answer": {
+            "attachments": [],
+            "option_id": "proceed",
+            "inputs": {
+              "explanation": {
+                "kind": "text",
+                "value": "Reviewed"
+              }
+            },
+            "responder": "u",
+            "at_revision": 6
+          }
+        },
+        "revision": 6,
+        "order": 5
+      }
+    ],
+    "pull_requests": [],
+    "documents": [],
+    "document_revisions": [],
+    "document_reviews": [],
+    "merge_authorizations": [],
+    "stack_readiness": []
+  },
+  "completed": {
+    "protocol_version": 2,
+    "data_epoch": "epoch",
+    "revision": 9,
+    "inbox": [
+      {
+        "id": "interaction:info",
+        "kind": "information",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "info"
+        },
+        "title": "Result",
+        "body": "Information with Unicode: revisión ✓",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 4,
+        "order": 4,
+        "pending": true,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "mark_read",
+            "enabled": true,
+            "disabled_reason": null,
+            "expected_revision": 9,
+            "presentation_id": null,
+            "expected_head": null
+          }
+        ]
+      },
+      {
+        "id": "interaction:q",
+        "kind": "question",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "q"
+        },
+        "title": "Result",
+        "body": "Choose an option",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 6,
+        "order": 5,
+        "pending": false,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "answer_question",
+            "enabled": false,
+            "disabled_reason": "task_not_active",
+            "expected_revision": 9,
+            "presentation_id": null,
+            "expected_head": null
+          }
+        ]
+      },
+      {
+        "id": "interaction:d",
+        "kind": "delivery",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "d"
+        },
+        "title": "Result",
+        "body": "Result ready",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 8,
+        "order": 7,
+        "pending": false,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "accept_delivery",
+            "enabled": false,
+            "disabled_reason": "task_not_active",
+            "expected_revision": 9,
+            "presentation_id": "d",
+            "expected_head": null
+          },
+          {
+            "kind": "submit_feedback",
+            "enabled": false,
+            "disabled_reason": "task_not_active",
+            "expected_revision": 9,
+            "presentation_id": "d",
+            "expected_head": null
+          }
+        ]
+      }
+    ],
+    "counts": {
+      "roots": 3,
+      "pending": 1,
+      "unread_information": 1
+    },
+    "tasks": [
+      {
+        "id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "title": "Result",
+        "state": "done",
+        "revision": 9,
+        "started": false,
+        "review_prs": true,
+        "final_presentation": "d",
+        "pr_id": null,
+        "dependencies": [],
+        "stack": null,
+        "documents": {},
+        "archived": false
+      }
+    ],
+    "agents": [
+      {
+        "id": "a",
+        "name": "Instance A",
+        "connected": true
+      }
+    ],
+    "requests": [
+      {
+        "id": "r",
+        "body": "Build requested result",
+        "closed": false
+      }
+    ],
+    "interactions": [
+      {
+        "attachments": [],
+        "id": "d",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Result ready",
+        "blocking": false,
+        "subject": null,
+        "payload": {
+          "kind": "delivery",
+          "targets": [
+            {
+              "kind": "text",
+              "text": "The result"
+            }
+          ],
+          "is_final": true,
+          "acceptance": {
+            "user_id": "u",
+            "at_revision": 8,
+            "valid": true
+          },
+          "feedback": []
+        },
+        "revision": 8,
+        "order": 7
+      },
+      {
+        "attachments": [
+          {
+            "id": "fixture-file",
+            "name": "Report.pdf",
+            "content_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "content_reference": "files/fixture-file",
+            "bytes": 321
+          }
+        ],
+        "id": "info",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Information with Unicode: revisión ✓",
+        "blocking": false,
+        "subject": null,
+        "payload": {
+          "kind": "information",
+          "read_by": []
+        },
+        "revision": 4,
+        "order": 4
+      },
+      {
+        "attachments": [],
+        "id": "q",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Choose an option",
+        "blocking": true,
+        "subject": null,
+        "payload": {
+          "kind": "question",
+          "options": [
+            {
+              "id": "proceed",
+              "label": "Continuar",
+              "inputs": [
+                {
+                  "id": "explanation",
+                  "kind": "text",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "answer": {
+            "attachments": [],
+            "option_id": "proceed",
+            "inputs": {
+              "explanation": {
+                "kind": "text",
+                "value": "Reviewed"
+              }
+            },
+            "responder": "u",
+            "at_revision": 6
+          }
+        },
+        "revision": 6,
+        "order": 5
+      }
+    ],
+    "pull_requests": [],
+    "documents": [],
+    "document_revisions": [],
+    "document_reviews": [],
+    "merge_authorizations": [],
+    "stack_readiness": []
+  },
+  "information": {
+    "protocol_version": 2,
+    "data_epoch": "epoch",
+    "revision": 4,
+    "inbox": [
+      {
+        "id": "interaction:info",
+        "kind": "information",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "info"
+        },
+        "title": "Result",
+        "body": "Information with Unicode: revisión ✓",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 4,
+        "order": 4,
+        "pending": true,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "mark_read",
+            "enabled": true,
+            "disabled_reason": null,
+            "expected_revision": 4,
+            "presentation_id": null,
+            "expected_head": null
+          }
+        ]
+      }
+    ],
+    "counts": {
+      "roots": 1,
+      "pending": 1,
+      "unread_information": 1
+    },
+    "tasks": [
+      {
+        "id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "title": "Result",
+        "state": "not_started",
+        "revision": 3,
+        "started": false,
+        "review_prs": true,
+        "final_presentation": null,
+        "pr_id": null,
+        "dependencies": [],
+        "stack": null,
+        "documents": {},
+        "archived": false
+      }
+    ],
+    "agents": [
+      {
+        "id": "a",
+        "name": "Instance A",
+        "connected": true
+      }
+    ],
+    "requests": [
+      {
+        "id": "r",
+        "body": "Build requested result",
+        "closed": false
+      }
+    ],
+    "interactions": [
+      {
+        "attachments": [
+          {
+            "id": "fixture-file",
+            "name": "Report.pdf",
+            "content_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "content_reference": "files/fixture-file",
+            "bytes": 321
+          }
+        ],
+        "id": "info",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Information with Unicode: revisión ✓",
+        "blocking": false,
+        "subject": null,
+        "payload": {
+          "kind": "information",
+          "read_by": []
+        },
+        "revision": 4,
+        "order": 4
+      }
+    ],
+    "pull_requests": [],
+    "documents": [],
+    "document_revisions": [],
+    "document_reviews": [],
+    "merge_authorizations": [],
+    "stack_readiness": []
+  },
+  "pr_question": {
+    "protocol_version": 2,
+    "data_epoch": "epoch",
+    "revision": 7,
+    "inbox": [
+      {
+        "id": "pr:pr",
+        "kind": "pull_request",
+        "subject": {
+          "kind": "pull_request",
+          "pr_id": "pr"
+        },
+        "title": "owner/repo #1",
+        "body": null,
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 7,
+        "order": 5,
+        "pending": true,
+        "children": [
+          {
+            "id": "interaction:q",
+            "kind": "question",
+            "subject": {
+              "kind": "interaction",
+              "interaction_id": "q"
+            },
+            "title": "Result",
+            "body": "PR question",
+            "task_id": "t",
+            "request_id": "r",
+            "agent_id": "a",
+            "revision": 6,
+            "order": 5,
+            "pending": true,
+            "children": [],
+            "available_actions": [
+              {
+                "kind": "answer_question",
+                "enabled": true,
+                "disabled_reason": null,
+                "expected_revision": 7,
+                "presentation_id": null,
+                "expected_head": null
+              }
+            ]
+          },
+          {
+            "id": "interaction:d",
+            "kind": "delivery",
+            "subject": {
+              "kind": "interaction",
+              "interaction_id": "d"
+            },
+            "title": "Result",
+            "body": "Result ready",
+            "task_id": "t",
+            "request_id": "r",
+            "agent_id": "a",
+            "revision": 7,
+            "order": 7,
+            "pending": true,
+            "children": [],
+            "available_actions": [
+              {
+                "kind": "accept_delivery",
+                "enabled": false,
+                "disabled_reason": "acceptance_missing",
+                "expected_revision": 7,
+                "presentation_id": "d",
+                "expected_head": null
+              },
+              {
+                "kind": "submit_feedback",
+                "enabled": true,
+                "disabled_reason": null,
+                "expected_revision": 7,
+                "presentation_id": "d",
+                "expected_head": null
+              },
+              {
+                "kind": "authorize_merge",
+                "enabled": true,
+                "disabled_reason": null,
+                "expected_revision": 7,
+                "presentation_id": "d",
+                "expected_head": "head1"
+              }
+            ]
+          }
+        ],
+        "available_actions": []
+      }
+    ],
+    "counts": {
+      "roots": 1,
+      "pending": 2,
+      "unread_information": 0
+    },
+    "tasks": [
+      {
+        "id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "title": "Result",
+        "state": "needs_you",
+        "revision": 7,
+        "started": false,
+        "review_prs": true,
+        "final_presentation": "d",
+        "pr_id": "pr",
+        "dependencies": [],
+        "stack": null,
+        "documents": {},
+        "archived": false
+      }
+    ],
+    "agents": [
+      {
+        "id": "a",
+        "name": "Instance A",
+        "connected": true
+      }
+    ],
+    "requests": [
+      {
+        "id": "r",
+        "body": "Build requested result",
+        "closed": false
+      }
+    ],
+    "interactions": [
+      {
+        "attachments": [],
+        "id": "d",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Result ready",
+        "blocking": false,
+        "subject": null,
+        "payload": {
+          "kind": "delivery",
+          "targets": [
+            {
+              "kind": "pull_request",
+              "pr_id": "pr",
+              "head": "head1"
+            }
+          ],
+          "is_final": true,
+          "acceptance": null,
+          "feedback": []
+        },
+        "revision": 7,
+        "order": 7
+      },
+      {
+        "attachments": [],
+        "id": "q",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "PR question",
+        "blocking": true,
+        "subject": {
+          "kind": "pull_request",
+          "pr_id": "pr"
+        },
+        "payload": {
+          "kind": "question",
+          "options": [
+            {
+              "id": "proceed",
+              "label": "Proceed",
+              "inputs": []
+            }
+          ],
+          "answer": null
+        },
+        "revision": 6,
+        "order": 5
+      }
+    ],
+    "pull_requests": [
+      {
+        "id": "pr",
+        "task_id": "t",
+        "host": "github.com",
+        "repository": "owner/repo",
+        "number": 1,
+        "head": "head1",
+        "base": "main",
+        "state": "open",
+        "merged_head": null,
+        "allowed_methods": [
+          "squash"
+        ],
+        "review": {
+          "decisions": []
+        }
+      }
+    ],
+    "documents": [],
+    "document_revisions": [],
+    "document_reviews": [],
+    "merge_authorizations": [],
+    "stack_readiness": []
+  },
+  "question": {
+    "protocol_version": 2,
+    "data_epoch": "epoch",
+    "revision": 5,
+    "inbox": [
+      {
+        "id": "interaction:info",
+        "kind": "information",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "info"
+        },
+        "title": "Result",
+        "body": "Information with Unicode: revisión ✓",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 4,
+        "order": 4,
+        "pending": true,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "mark_read",
+            "enabled": true,
+            "disabled_reason": null,
+            "expected_revision": 5,
+            "presentation_id": null,
+            "expected_head": null
+          }
+        ]
+      },
+      {
+        "id": "interaction:q",
+        "kind": "question",
+        "subject": {
+          "kind": "interaction",
+          "interaction_id": "q"
+        },
+        "title": "Result",
+        "body": "Choose an option",
+        "task_id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "revision": 5,
+        "order": 5,
+        "pending": true,
+        "children": [],
+        "available_actions": [
+          {
+            "kind": "answer_question",
+            "enabled": true,
+            "disabled_reason": null,
+            "expected_revision": 5,
+            "presentation_id": null,
+            "expected_head": null
+          }
+        ]
+      }
+    ],
+    "counts": {
+      "roots": 2,
+      "pending": 2,
+      "unread_information": 1
+    },
+    "tasks": [
+      {
+        "id": "t",
+        "request_id": "r",
+        "agent_id": "a",
+        "title": "Result",
+        "state": "needs_you",
+        "revision": 5,
+        "started": false,
+        "review_prs": true,
+        "final_presentation": null,
+        "pr_id": null,
+        "dependencies": [],
+        "stack": null,
+        "documents": {},
+        "archived": false
+      }
+    ],
+    "agents": [
+      {
+        "id": "a",
+        "name": "Instance A",
+        "connected": true
+      }
+    ],
+    "requests": [
+      {
+        "id": "r",
+        "body": "Build requested result",
+        "closed": false
+      }
+    ],
+    "interactions": [
+      {
+        "attachments": [
+          {
+            "id": "fixture-file",
+            "name": "Report.pdf",
+            "content_digest": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+            "content_reference": "files/fixture-file",
+            "bytes": 321
+          }
+        ],
+        "id": "info",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Information with Unicode: revisión ✓",
+        "blocking": false,
+        "subject": null,
+        "payload": {
+          "kind": "information",
+          "read_by": []
+        },
+        "revision": 4,
+        "order": 4
+      },
+      {
+        "attachments": [],
+        "id": "q",
+        "scope": {
+          "kind": "task",
+          "task_id": "t"
+        },
+        "author": {
+          "kind": "agent",
+          "agent_id": "a"
+        },
+        "recipient": {
+          "kind": "user"
+        },
+        "body": "Choose an option",
+        "blocking": true,
+        "subject": null,
+        "payload": {
+          "kind": "question",
+          "options": [
+            {
+              "id": "proceed",
+              "label": "Continuar",
+              "inputs": [
+                {
+                  "id": "explanation",
+                  "kind": "text",
+                  "required": true
+                }
+              ]
+            }
+          ],
+          "answer": null
+        },
+        "revision": 5,
+        "order": 5
+      }
+    ],
+    "pull_requests": [],
+    "documents": [],
+    "document_revisions": [],
+    "document_reviews": [],
+    "merge_authorizations": [],
+    "stack_readiness": []
+  }
+}

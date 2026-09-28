@@ -314,19 +314,19 @@ extension DomainV2 {
         case assignTask(taskId: TaskId, agentId: AgentId)
         case setDependencies(taskId: TaskId, dependencies: [TaskId], stack: StackDependency?)
         case startTask(taskId: TaskId)
-        case publishInformation(interactionId: InteractionId, scope: Scope, recipient: Recipient, body: String)
-        case askQuestion(interactionId: InteractionId, scope: Scope, recipient: Recipient, body: String, blocking: Bool, options: [QuestionOption])
-        case requestAction(interactionId: InteractionId, scope: Scope, recipient: Recipient, body: String, blocking: Bool, options: [QuestionOption])
+        case publishInformation(attachments: [AttachmentRef], interactionId: InteractionId, scope: Scope, recipient: Recipient, body: String)
+        case askQuestion(attachments: [AttachmentRef], interactionId: InteractionId, scope: Scope, recipient: Recipient, body: String, blocking: Bool, options: [QuestionOption])
+        case requestAction(attachments: [AttachmentRef], interactionId: InteractionId, scope: Scope, recipient: Recipient, body: String, blocking: Bool, options: [QuestionOption])
         case markRead(interactionId: InteractionId)
-        case answerQuestion(interactionId: InteractionId, optionId: String, inputs: [String: InputValue])
+        case answerQuestion(attachments: [AttachmentRef], interactionId: InteractionId, optionId: String, inputs: [String: InputValue])
         case createDocument(taskId: TaskId, documentId: DocumentId, title: String, revisionId: DocumentRevisionId, contentDigest: String, contentReference: String, role: String)
         case reviseDocument(taskId: TaskId, documentId: DocumentId, revisionId: DocumentRevisionId, contentDigest: String, contentReference: String)
         case linkTaskDocument(taskId: TaskId, documentId: DocumentId, role: String)
         case decideDocumentReview(taskId: TaskId, documentId: DocumentId, revisionId: DocumentRevisionId, accepted: Bool)
         case registerPr(taskId: TaskId, prId: PrId, host: String, repository: String, number: UInt64, head: String, base: String, allowedMethods: [MergeMethod])
         case linkInteractionSubject(interactionId: InteractionId, subject: InteractionSubject)
-        case presentResult(taskId: TaskId, interactionId: InteractionId, body: String, targets: [DeliveryTarget], isFinal: Bool)
-        case submitFeedback(presentationId: InteractionId, targets: [DeliveryTarget], body: String)
+        case presentResult(attachments: [AttachmentRef], taskId: TaskId, interactionId: InteractionId, body: String, targets: [DeliveryTarget], isFinal: Bool)
+        case submitFeedback(attachments: [AttachmentRef], presentationId: InteractionId, targets: [DeliveryTarget], body: String)
         case acceptDelivery(presentationId: InteractionId, targets: [DeliveryTarget])
         case authorizeMerge(authorizationId: AuthorizationId, presentationId: InteractionId, prId: PrId, expectedHead: String, method: MergeMethod)
         case claimMergeAuthorization(authorizationId: AuthorizationId, remoteHead: String, remoteBase: String, baseVerified: Bool)
@@ -351,6 +351,7 @@ extension DomainV2 {
             case reviewPrs = "review_prs"
             case dependencies = "dependencies"
             case stack = "stack"
+            case attachments = "attachments"
             case interactionId = "interaction_id"
             case scope = "scope"
             case recipient = "recipient"
@@ -399,19 +400,19 @@ extension DomainV2 {
             case "assign_task": self = .assignTask(taskId: try container.decode(TaskId.self, forKey: .taskId), agentId: try container.decode(AgentId.self, forKey: .agentId))
             case "set_dependencies": self = .setDependencies(taskId: try container.decode(TaskId.self, forKey: .taskId), dependencies: try container.decode([TaskId].self, forKey: .dependencies), stack: try container.decodeIfPresent(StackDependency.self, forKey: .stack))
             case "start_task": self = .startTask(taskId: try container.decode(TaskId.self, forKey: .taskId))
-            case "publish_information": self = .publishInformation(interactionId: try container.decode(InteractionId.self, forKey: .interactionId), scope: try container.decode(Scope.self, forKey: .scope), recipient: try container.decode(Recipient.self, forKey: .recipient), body: try container.decode(String.self, forKey: .body))
-            case "ask_question": self = .askQuestion(interactionId: try container.decode(InteractionId.self, forKey: .interactionId), scope: try container.decode(Scope.self, forKey: .scope), recipient: try container.decode(Recipient.self, forKey: .recipient), body: try container.decode(String.self, forKey: .body), blocking: try container.decode(Bool.self, forKey: .blocking), options: try container.decode([QuestionOption].self, forKey: .options))
-            case "request_action": self = .requestAction(interactionId: try container.decode(InteractionId.self, forKey: .interactionId), scope: try container.decode(Scope.self, forKey: .scope), recipient: try container.decode(Recipient.self, forKey: .recipient), body: try container.decode(String.self, forKey: .body), blocking: try container.decode(Bool.self, forKey: .blocking), options: try container.decode([QuestionOption].self, forKey: .options))
+            case "publish_information": self = .publishInformation(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), scope: try container.decode(Scope.self, forKey: .scope), recipient: try container.decode(Recipient.self, forKey: .recipient), body: try container.decode(String.self, forKey: .body))
+            case "ask_question": self = .askQuestion(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), scope: try container.decode(Scope.self, forKey: .scope), recipient: try container.decode(Recipient.self, forKey: .recipient), body: try container.decode(String.self, forKey: .body), blocking: try container.decode(Bool.self, forKey: .blocking), options: try container.decode([QuestionOption].self, forKey: .options))
+            case "request_action": self = .requestAction(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), scope: try container.decode(Scope.self, forKey: .scope), recipient: try container.decode(Recipient.self, forKey: .recipient), body: try container.decode(String.self, forKey: .body), blocking: try container.decode(Bool.self, forKey: .blocking), options: try container.decode([QuestionOption].self, forKey: .options))
             case "mark_read": self = .markRead(interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
-            case "answer_question": self = .answerQuestion(interactionId: try container.decode(InteractionId.self, forKey: .interactionId), optionId: try container.decode(String.self, forKey: .optionId), inputs: try container.decode([String: InputValue].self, forKey: .inputs))
+            case "answer_question": self = .answerQuestion(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), optionId: try container.decode(String.self, forKey: .optionId), inputs: try container.decode([String: InputValue].self, forKey: .inputs))
             case "create_document": self = .createDocument(taskId: try container.decode(TaskId.self, forKey: .taskId), documentId: try container.decode(DocumentId.self, forKey: .documentId), title: try container.decode(String.self, forKey: .title), revisionId: try container.decode(DocumentRevisionId.self, forKey: .revisionId), contentDigest: try container.decode(String.self, forKey: .contentDigest), contentReference: try container.decode(String.self, forKey: .contentReference), role: try container.decode(String.self, forKey: .role))
             case "revise_document": self = .reviseDocument(taskId: try container.decode(TaskId.self, forKey: .taskId), documentId: try container.decode(DocumentId.self, forKey: .documentId), revisionId: try container.decode(DocumentRevisionId.self, forKey: .revisionId), contentDigest: try container.decode(String.self, forKey: .contentDigest), contentReference: try container.decode(String.self, forKey: .contentReference))
             case "link_task_document": self = .linkTaskDocument(taskId: try container.decode(TaskId.self, forKey: .taskId), documentId: try container.decode(DocumentId.self, forKey: .documentId), role: try container.decode(String.self, forKey: .role))
             case "decide_document_review": self = .decideDocumentReview(taskId: try container.decode(TaskId.self, forKey: .taskId), documentId: try container.decode(DocumentId.self, forKey: .documentId), revisionId: try container.decode(DocumentRevisionId.self, forKey: .revisionId), accepted: try container.decode(Bool.self, forKey: .accepted))
             case "register_pr": self = .registerPr(taskId: try container.decode(TaskId.self, forKey: .taskId), prId: try container.decode(PrId.self, forKey: .prId), host: try container.decode(String.self, forKey: .host), repository: try container.decode(String.self, forKey: .repository), number: try container.decode(UInt64.self, forKey: .number), head: try container.decode(String.self, forKey: .head), base: try container.decode(String.self, forKey: .base), allowedMethods: try container.decode([MergeMethod].self, forKey: .allowedMethods))
             case "link_interaction_subject": self = .linkInteractionSubject(interactionId: try container.decode(InteractionId.self, forKey: .interactionId), subject: try container.decode(InteractionSubject.self, forKey: .subject))
-            case "present_result": self = .presentResult(taskId: try container.decode(TaskId.self, forKey: .taskId), interactionId: try container.decode(InteractionId.self, forKey: .interactionId), body: try container.decode(String.self, forKey: .body), targets: try container.decode([DeliveryTarget].self, forKey: .targets), isFinal: try container.decode(Bool.self, forKey: .isFinal))
-            case "submit_feedback": self = .submitFeedback(presentationId: try container.decode(InteractionId.self, forKey: .presentationId), targets: try container.decode([DeliveryTarget].self, forKey: .targets), body: try container.decode(String.self, forKey: .body))
+            case "present_result": self = .presentResult(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], taskId: try container.decode(TaskId.self, forKey: .taskId), interactionId: try container.decode(InteractionId.self, forKey: .interactionId), body: try container.decode(String.self, forKey: .body), targets: try container.decode([DeliveryTarget].self, forKey: .targets), isFinal: try container.decode(Bool.self, forKey: .isFinal))
+            case "submit_feedback": self = .submitFeedback(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], presentationId: try container.decode(InteractionId.self, forKey: .presentationId), targets: try container.decode([DeliveryTarget].self, forKey: .targets), body: try container.decode(String.self, forKey: .body))
             case "accept_delivery": self = .acceptDelivery(presentationId: try container.decode(InteractionId.self, forKey: .presentationId), targets: try container.decode([DeliveryTarget].self, forKey: .targets))
             case "authorize_merge": self = .authorizeMerge(authorizationId: try container.decode(AuthorizationId.self, forKey: .authorizationId), presentationId: try container.decode(InteractionId.self, forKey: .presentationId), prId: try container.decode(PrId.self, forKey: .prId), expectedHead: try container.decode(String.self, forKey: .expectedHead), method: try container.decode(MergeMethod.self, forKey: .method))
             case "claim_merge_authorization": self = .claimMergeAuthorization(authorizationId: try container.decode(AuthorizationId.self, forKey: .authorizationId), remoteHead: try container.decode(String.self, forKey: .remoteHead), remoteBase: try container.decode(String.self, forKey: .remoteBase), baseVerified: try container.decode(Bool.self, forKey: .baseVerified))
@@ -468,22 +469,25 @@ extension DomainV2 {
             case let .startTask(taskId):
                 try container.encode("start_task", forKey: .kind)
                 try container.encode(taskId, forKey: .taskId)
-            case let .publishInformation(interactionId, scope, recipient, body):
+            case let .publishInformation(attachments, interactionId, scope, recipient, body):
                 try container.encode("publish_information", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
                 try container.encode(interactionId, forKey: .interactionId)
                 try container.encode(scope, forKey: .scope)
                 try container.encode(recipient, forKey: .recipient)
                 try container.encode(body, forKey: .body)
-            case let .askQuestion(interactionId, scope, recipient, body, blocking, options):
+            case let .askQuestion(attachments, interactionId, scope, recipient, body, blocking, options):
                 try container.encode("ask_question", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
                 try container.encode(interactionId, forKey: .interactionId)
                 try container.encode(scope, forKey: .scope)
                 try container.encode(recipient, forKey: .recipient)
                 try container.encode(body, forKey: .body)
                 try container.encode(blocking, forKey: .blocking)
                 try container.encode(options, forKey: .options)
-            case let .requestAction(interactionId, scope, recipient, body, blocking, options):
+            case let .requestAction(attachments, interactionId, scope, recipient, body, blocking, options):
                 try container.encode("request_action", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
                 try container.encode(interactionId, forKey: .interactionId)
                 try container.encode(scope, forKey: .scope)
                 try container.encode(recipient, forKey: .recipient)
@@ -493,8 +497,9 @@ extension DomainV2 {
             case let .markRead(interactionId):
                 try container.encode("mark_read", forKey: .kind)
                 try container.encode(interactionId, forKey: .interactionId)
-            case let .answerQuestion(interactionId, optionId, inputs):
+            case let .answerQuestion(attachments, interactionId, optionId, inputs):
                 try container.encode("answer_question", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
                 try container.encode(interactionId, forKey: .interactionId)
                 try container.encode(optionId, forKey: .optionId)
                 try container.encode(inputs, forKey: .inputs)
@@ -539,15 +544,17 @@ extension DomainV2 {
                 try container.encode("link_interaction_subject", forKey: .kind)
                 try container.encode(interactionId, forKey: .interactionId)
                 try container.encode(subject, forKey: .subject)
-            case let .presentResult(taskId, interactionId, body, targets, isFinal):
+            case let .presentResult(attachments, taskId, interactionId, body, targets, isFinal):
                 try container.encode("present_result", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
                 try container.encode(taskId, forKey: .taskId)
                 try container.encode(interactionId, forKey: .interactionId)
                 try container.encode(body, forKey: .body)
                 try container.encode(targets, forKey: .targets)
                 try container.encode(isFinal, forKey: .isFinal)
-            case let .submitFeedback(presentationId, targets, body):
+            case let .submitFeedback(attachments, presentationId, targets, body):
                 try container.encode("submit_feedback", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
                 try container.encode(presentationId, forKey: .presentationId)
                 try container.encode(targets, forKey: .targets)
                 try container.encode(body, forKey: .body)

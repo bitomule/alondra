@@ -153,6 +153,47 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual((local["body"] as? [String: String])?["text"], "hello")
     }
 
+    func testV2CommandRecoveryReusesExactIdentityAndNeverReposts() async throws {
+        let fixture = try Fixture()
+        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let command = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":7,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
+        let first = try await fixture.session().execute(requestID: "command-1", method: "POST",
+            path: "/v2/domain/commands", body: command, statusPolls: 0)
+        XCTAssertEqual(first, .unknown)
+        let recovered = try await fixture.session().execute(requestID: "command-1", method: "POST",
+            path: "/v2/domain/commands", body: command)
+        XCTAssertEqual(recovered, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+        do {
+            let changed = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":8,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
+            _ = try await fixture.session().execute(requestID: "command-1", method: "POST",
+                path: "/v2/domain/commands", body: changed)
+            XCTFail("A changed v2 envelope reused an existing command identity")
+        } catch RelaySessionError.operationIdentityConflict { }
+        let posts = await fixture.http.mutations
+        XCTAssertEqual(posts.count, 1)
+        let sealed = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(posts.first))
+        let plaintext = try sealed.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
+            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
+        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        XCTAssertEqual(request["path"] as? String, "/v2/domain/commands")
+        let body = try XCTUnwrap(request["body"] as? [String: Any])
+        XCTAssertEqual(body["command_id"] as? String, "command-1")
+    }
+
+    func testV2DeliveryPathsAreExactAndScoped() {
+        XCTAssertTrue(RelaySession.validDomainDeliveryPath(method: "GET", path: "/v2/domain/delivery-attempts?after=0"))
+        XCTAssertTrue(RelaySession.validDomainDeliveryPath(method: "POST", path: "/v2/domain/delivery-attempts/42/resolve"))
+        for (method, path) in [
+            ("GET", "/v2/domain/delivery-attempts?after=0&extra=1"),
+            ("GET", "/v2/domain/delivery-attempts?after=-1"),
+            ("POST", "/v2/domain/delivery-attempts/0/resolve"),
+            ("POST", "/v2/domain/delivery-attempts/42/resolve/extra"),
+            ("DELETE", "/v2/domain/delivery-attempts/42/resolve")
+        ] {
+            XCTAssertFalse(RelaySession.validDomainDeliveryPath(method: method, path: path))
+        }
+    }
+
     func testRestartRefreshesChallengeForStatusWithoutRepostingMutation() async throws {
         let fixture = try Fixture(mode: .restart)
         defer { try? FileManager.default.removeItem(at: fixture.directory) }

@@ -331,13 +331,39 @@ extension DomainV2 {
         }
     }
 
+    public struct AttachmentRef: Codable, Equatable, Sendable {
+        public var id: String
+        public var name: String
+        public var contentDigest: String
+        public var contentReference: String
+        public var bytes: UInt64
+
+        public init(id: String, name: String, contentDigest: String, contentReference: String, bytes: UInt64) {
+            self.id = id
+            self.name = name
+            self.contentDigest = contentDigest
+            self.contentReference = contentReference
+            self.bytes = bytes
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case id = "id"
+            case name = "name"
+            case contentDigest = "content_digest"
+            case contentReference = "content_reference"
+            case bytes = "bytes"
+        }
+    }
+
     public struct Answer: Codable, Equatable, Sendable {
+        public var attachments: [AttachmentRef]
         public var optionId: String
         public var inputs: [String: InputValue]
         public var responder: String
         public var atRevision: Revision
 
-        public init(optionId: String, inputs: [String: InputValue], responder: String, atRevision: Revision) {
+        public init(attachments: [AttachmentRef], optionId: String, inputs: [String: InputValue], responder: String, atRevision: Revision) {
+            self.attachments = attachments
             self.optionId = optionId
             self.inputs = inputs
             self.responder = responder
@@ -345,10 +371,20 @@ extension DomainV2 {
         }
 
         enum CodingKeys: String, CodingKey {
+            case attachments = "attachments"
             case optionId = "option_id"
             case inputs = "inputs"
             case responder = "responder"
             case atRevision = "at_revision"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            attachments = try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? []
+            optionId = try container.decode(String.self, forKey: .optionId)
+            inputs = try container.decode([String: InputValue].self, forKey: .inputs)
+            responder = try container.decode(String.self, forKey: .responder)
+            atRevision = try container.decode(Revision.self, forKey: .atRevision)
         }
     }
 
@@ -371,24 +407,36 @@ extension DomainV2 {
     }
 
     public struct Feedback: Codable, Equatable, Sendable {
+        public var attachments: [AttachmentRef]
         public var userId: String
         public var body: String
         public var atRevision: Revision
 
-        public init(userId: String, body: String, atRevision: Revision) {
+        public init(attachments: [AttachmentRef], userId: String, body: String, atRevision: Revision) {
+            self.attachments = attachments
             self.userId = userId
             self.body = body
             self.atRevision = atRevision
         }
 
         enum CodingKeys: String, CodingKey {
+            case attachments = "attachments"
             case userId = "user_id"
             case body = "body"
             case atRevision = "at_revision"
         }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            attachments = try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? []
+            userId = try container.decode(String.self, forKey: .userId)
+            body = try container.decode(String.self, forKey: .body)
+            atRevision = try container.decode(Revision.self, forKey: .atRevision)
+        }
     }
 
     public struct Interaction: Codable, Equatable, Sendable {
+        public var attachments: [AttachmentRef]
         public var id: InteractionId
         public var scope: Scope
         public var author: Author
@@ -400,7 +448,8 @@ extension DomainV2 {
         public var revision: Revision
         public var order: Revision
 
-        public init(id: InteractionId, scope: Scope, author: Author, recipient: Recipient, body: String, blocking: Bool, subject: InteractionSubject?, payload: InteractionPayload, revision: Revision, order: Revision) {
+        public init(attachments: [AttachmentRef], id: InteractionId, scope: Scope, author: Author, recipient: Recipient, body: String, blocking: Bool, subject: InteractionSubject?, payload: InteractionPayload, revision: Revision, order: Revision) {
+            self.attachments = attachments
             self.id = id
             self.scope = scope
             self.author = author
@@ -414,6 +463,7 @@ extension DomainV2 {
         }
 
         enum CodingKeys: String, CodingKey {
+            case attachments = "attachments"
             case id = "id"
             case scope = "scope"
             case author = "author"
@@ -424,6 +474,21 @@ extension DomainV2 {
             case payload = "payload"
             case revision = "revision"
             case order = "order"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            attachments = try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? []
+            id = try container.decode(InteractionId.self, forKey: .id)
+            scope = try container.decode(Scope.self, forKey: .scope)
+            author = try container.decode(Author.self, forKey: .author)
+            recipient = try container.decode(Recipient.self, forKey: .recipient)
+            body = try container.decode(String.self, forKey: .body)
+            blocking = try container.decode(Bool.self, forKey: .blocking)
+            subject = try container.decodeIfPresent(InteractionSubject.self, forKey: .subject)
+            payload = try container.decode(InteractionPayload.self, forKey: .payload)
+            revision = try container.decode(Revision.self, forKey: .revision)
+            order = try container.decode(Revision.self, forKey: .order)
         }
     }
 
