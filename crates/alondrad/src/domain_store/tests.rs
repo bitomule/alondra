@@ -173,6 +173,10 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
         .unwrap();
     assert_eq!(count(&store, "domain_messages"), 3);
     assert_eq!(count(&store, "domain_outbox"), 3);
+    let audit_count = count(&store, "command_audit");
+    let semantic_count = count(&store, "semantic_receipts");
+    let transport_count = count(&store, "local_command_results");
+    let pending = store.pending_messages().unwrap();
     let expected = store.load().unwrap();
     drop(store);
     let mut restarted = DomainStore::open(&fixture.path()).unwrap();
@@ -182,11 +186,19 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
         .unwrap();
     assert!(recovered.replayed);
     assert_eq!(recovered.outcome, committed.outcome);
+    assert_eq!(restarted.pending_messages().unwrap(), pending);
+    assert_eq!(count(&restarted, "command_audit"), audit_count);
+    assert_eq!(count(&restarted, "semantic_receipts"), semantic_count);
+    assert_eq!(count(&restarted, "local_command_results"), transport_count);
     assert_eq!(count(&restarted, "domain_messages"), 3);
     let reciphered = restarted
         .execute_authenticated(&user(), &e, Some(("phone", "request-y", &[2; 32])))
         .unwrap();
     assert!(reciphered.replayed);
+    assert_eq!(restarted.pending_messages().unwrap(), pending);
+    assert_eq!(count(&restarted, "command_audit"), audit_count);
+    assert_eq!(count(&restarted, "semantic_receipts"), semantic_count);
+    assert_eq!(count(&restarted, "local_command_results"), transport_count + 1);
     assert_eq!(count(&restarted, "domain_messages"), 3);
     assert!(
         matches!(restarted.execute_authenticated(&user(),&e,Some(("phone","request-x",&[3;32]))),Err(StoreError::Domain(e)) if e.code=="idempotency_conflict")
@@ -210,6 +222,8 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
     let before = store.load().unwrap();
     let audits = count(&store, "command_audit");
     let receipts = count(&store, "semantic_receipts");
+    let transport_receipts = count(&store, "local_command_results");
+    let pending = store.pending_messages().unwrap();
     let e = acceptance(&mut store);
     store.conn.execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON local_command_results BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END;").unwrap();
     assert!(matches!(
@@ -221,14 +235,24 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
     assert_eq!(count(&store, "domain_outbox"), 1);
     assert_eq!(count(&store, "command_audit"), audits);
     assert_eq!(count(&store, "semantic_receipts"), receipts);
+    assert_eq!(count(&store, "local_command_results"), transport_receipts);
+    assert_eq!(count(&store, "delivery_attempts"), 0);
+    assert_eq!(store.pending_messages().unwrap(), pending);
     store
         .conn
         .execute_batch("DROP TRIGGER fail_receipt")
         .unwrap();
+    drop(store);
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(store.load().unwrap(), before);
+    assert_eq!(store.pending_messages().unwrap(), pending);
     store
         .execute_authenticated(&user(), &e, Some(("phone", "op", &[1; 32])))
         .unwrap();
     assert_eq!(count(&store, "domain_messages"), 2);
+    assert_eq!(count(&store, "command_audit"), audits + 1);
+    assert_eq!(count(&store, "semantic_receipts"), receipts + 1);
+    assert_eq!(count(&store, "local_command_results"), transport_receipts + 1);
 }
 
 #[test]
