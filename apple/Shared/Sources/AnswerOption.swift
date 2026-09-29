@@ -27,7 +27,7 @@ extension AnswerOption {
     }
 }
 
-extension QuestionOption {
+extension DomainV2.QuestionOption {
+    /// Server labels the app knows are shown in the user's language; any other label as sent.
     public var displayLabel: String { AnswerOption.displayLabel(label) }
-    public var displayDescription: String? { description.map(AnswerOption.displayDescription) }
 }

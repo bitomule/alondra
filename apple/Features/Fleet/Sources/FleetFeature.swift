@@ -19,6 +19,8 @@ public struct FleetFeature {
         }
         public var closingIDs: Set<String> = []
         public var closeOutcomeByID: [String: NodeMutationOutcome] = [:]
+        /// Command IDs of closes whose outcome is unknown; closing again reuses them.
+        public var closeCommandIDs: [String: String] = [:]
         public var presentationEpoch: UInt64 = 0
         public let cancellationID = UUID()
 
@@ -42,11 +44,10 @@ public struct FleetFeature {
         case closeCancelled
         case closeConfirmed
         case closeFinished(String, NodeMutationOutcome, UInt64)
-        case commandResolved(UUID, rejection: String?)
-        case commandReconciled(UUID)
     }
 
     @Dependency(\.nodeOperations) var operations
+    @Dependency(\.uuid) var uuid
     public init() {}
 
     public var body: some ReducerOf<Self> {
@@ -70,6 +71,7 @@ public struct FleetFeature {
                 state.closeConfirmationID = nil
                 state.closingIDs = []
                 state.closeOutcomeByID = [:]
+                state.closeCommandIDs = [:]
                 state.closeRefusal = nil
                 return .cancel(id: state.cancellationID)
             case .searchChanged(let query):
@@ -83,8 +85,7 @@ public struct FleetFeature {
                 return .none
             case .closeRequested(let id):
                 guard !state.isStale, state.snapshot?.node(id)?.node.isOrchestrator == false,
-                      !state.closingIDs.contains(id), state.closeOutcomeByID[id]?.uncertainID == nil,
-                      state.closeOutcomeByID[id] != .confirmed else { return .none }
+                      !state.closingIDs.contains(id), state.closeOutcomeByID[id] != .confirmed else { return .none }
                 state.closeConfirmationID = id
                 return .none
             case .closeCancelled:
@@ -93,30 +94,22 @@ public struct FleetFeature {
             case .closeConfirmed:
                 guard let id = state.closeConfirmationID, !state.isStale,
                       state.snapshot?.node(id)?.node.isOrchestrator == false, !state.closingIDs.contains(id),
-                      state.closeOutcomeByID[id]?.uncertainID == nil,
                       state.closeOutcomeByID[id] != .confirmed else { return .none }
                 state.closeConfirmationID = nil
                 state.closingIDs.insert(id)
                 state.closeOutcomeByID[id] = nil
+                let command = state.closeCommandIDs[id] ?? uuid().uuidString.lowercased()
+                state.closeCommandIDs[id] = command
                 let epoch = state.presentationEpoch
                 return .run { send in
-                    await send(.closeFinished(id, await operations.close(id), epoch))
+                    await send(.closeFinished(id, await operations.close(id, command), epoch))
                 }.cancellable(id: state.cancellationID)
             case .closeFinished(let id, let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.closingIDs.remove(id) != nil else { return .none }
                 state.closeOutcomeByID[id] = outcome
+                if outcome != .unknown { state.closeCommandIDs[id] = nil }
                 if case .rejected(let message) = outcome { state.closeRefusal = message }
                 if outcome == .confirmed, state.selectedNodeID == id { state.selectedNodeID = nil }
-                return .none
-            case .commandResolved(let id, let rejection):
-                for (node, outcome) in state.closeOutcomeByID where outcome.uncertainID == id {
-                    state.closeOutcomeByID[node] = rejection.map(NodeMutationOutcome.rejected) ?? .confirmed
-                    if let rejection { state.closeRefusal = rejection }
-                    if rejection == nil, state.selectedNodeID == node { state.selectedNodeID = nil }
-                }
-                return .none
-            case .commandReconciled(let commandID):
-                state.closeOutcomeByID = state.closeOutcomeByID.filter { $0.value.uncertainID != commandID }
                 return .none
             }
         }

@@ -1,20 +1,13 @@
 import AlondraContracts
 import Foundation
 
-/// Stored attachment identifiers, never local paths or bytes, cross this feature boundary.
-/// H's adapter uploads selected files before inserting their identifiers in a draft.
+/// The reply field and the chosen option ID. Text goes to the option's declared text input;
+/// nothing is inferred from labels or descriptions.
 public struct QuestionDraft: Equatable, Sendable {
     public var text = ""
     public var selectedOption: String?
-    public var attachmentIDs: [String] = []
 
     public init() {}
-}
-
-public enum QuestionOperation: Equatable, Sendable {
-    case answer(id: UInt64, text: String, option: String?, attachments: [String])
-    case moreContext(id: UInt64, note: String, attachments: [String])
-    case reviewReport(id: UInt64, verdict: ReviewVerdict)
 }
 
 public struct QuestionWorkIdentity: Hashable, Sendable {
@@ -31,137 +24,77 @@ public struct QuestionWorkIdentity: Hashable, Sendable {
     }
 }
 
-public struct ReportFeedbackRequest: Equatable, Sendable {
-    public let reportID: UInt64
-    public let sessionID: String
-    public let text: String
-    public let attachmentIDs: [String]
+/// A question or action request as the server projected it, with its own answer action.
+public struct DomainQuestion: Equatable, Sendable, Identifiable {
+    public let item: DomainV2.InboxItem
+    public let interaction: DomainV2.Interaction
 
-    public init(reportID: UInt64, sessionID: String, text: String, attachmentIDs: [String]) {
-        self.reportID = reportID
-        self.sessionID = sessionID
-        self.text = text
-        self.attachmentIDs = attachmentIDs
+    public init?(item: DomainV2.InboxItem, in workspace: DomainWorkspace) {
+        guard let interaction = workspace.interaction(of: item) else { return nil }
+        self.init(item: item, interaction: interaction)
     }
-}
 
-public enum QuestionWorkOutcome: Equatable, Sendable {
-    case confirmed
-    case conflict(String)
-    case forbidden(String)
-    case failed(String)
-    case uncertain
-    case uncertainCommand(UUID)
-    case deliveryUnconfirmed(attemptID: UInt64?)
-    case obsolete
-}
-
-public struct QuestionWorkService: Sendable {
-    public var submit: @Sendable (QuestionOperation) async -> QuestionWorkOutcome
-    /// Must own one durable send-then-read transaction per identity/report. See INTEGRATION.md.
-    public var submitReportFeedback: @Sendable (ReportFeedbackRequest, QuestionWorkIdentity) async -> QuestionWorkOutcome
-    public var document: @Sendable (String) async throws -> String
-    public var retryReportRead: @Sendable (UUID) async -> Void
-
-    public init(
-        submit: @escaping @Sendable (QuestionOperation) async -> QuestionWorkOutcome,
-        submitReportFeedback: @escaping @Sendable (ReportFeedbackRequest, QuestionWorkIdentity) async -> QuestionWorkOutcome = { _, _ in .failed("Durable report feedback is unavailable") },
-        document: @escaping @Sendable (String) async throws -> String,
-        retryReportRead: @escaping @Sendable (UUID) async -> Void = { _ in }
-    ) {
-        self.submit = submit
-        self.submitReportFeedback = submitReportFeedback
-        self.document = document
-        self.retryReportRead = retryReportRead
-    }
-}
-
-public enum QuestionWorkError: Error, Equatable, Sendable {
-    case unavailable
-    case invalidOption
-    case explanationRequired
-    case answerRequired
-    case noFeedback
-    case notReviewable
-    case menuRequiresOption
-    case menuDoesNotAcceptAttachments
-}
-
-/// The daemon's option labels are protocol values. UI translations must not be sent back.
-public enum QuestionExplanationPolicy: Equatable, Sendable { case phone, desktop }
-
-public struct AnswerQuestionUseCase: Sendable {
-    public init() {}
-
-    public func answer(_ question: Question, draft: QuestionDraft, explanationPolicy: QuestionExplanationPolicy = .phone) throws -> QuestionOperation {
-        var text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        // The original desktop option gesture used the selected label as its body
-        // unless the option explicitly requested written explanation.
-        if explanationPolicy == .desktop, text.isEmpty,
-           let label = draft.selectedOption, let selected = question.options.first(where: { $0.label == label }),
-           !Self.needsExplanation(selected, policy: .desktop) { text = label }
-        if question.isTerminalMenu {
-            guard let option = draft.selectedOption,
-                  question.options.contains(where: { $0.label == option }) else {
-                throw QuestionWorkError.menuRequiresOption
-            }
-            guard draft.attachmentIDs.isEmpty else { throw QuestionWorkError.menuDoesNotAcceptAttachments }
-            return .answer(id: question.id, text: option, option: option, attachments: [])
+    public init?(item: DomainV2.InboxItem, interaction: DomainV2.Interaction) {
+        switch interaction.payload {
+        case .question, .actionRequest: break
+        default: return nil
         }
-        if let option = draft.selectedOption {
-            guard question.options.contains(where: { $0.label == option }) ||
-                    (question.isPlan && [AnswerOption.approve, AnswerOption.requestChanges].contains(option))
-            else { throw QuestionWorkError.invalidOption }
-            if let selected = question.options.first(where: { $0.label == option }),
-               Self.needsExplanation(selected, policy: explanationPolicy), text.isEmpty,
-               explanationPolicy == .desktop || draft.attachmentIDs.isEmpty {
-                throw QuestionWorkError.explanationRequired
-            }
-            if (question.isPlan && option == AnswerOption.requestChanges ||
-                question.isAction && option == AnswerOption.cannot),
-               text.isEmpty, draft.attachmentIDs.isEmpty {
-                throw QuestionWorkError.explanationRequired
-            }
+        self.item = item
+        self.interaction = interaction
+    }
+
+    public var id: DomainV2.InteractionId { interaction.id }
+    public var title: String { item.title }
+    public var body: String { interaction.body }
+    public var blocking: Bool { interaction.blocking }
+    public var attachments: [DomainV2.AttachmentRef] { interaction.attachments }
+    public var isActionRequest: Bool {
+        if case .actionRequest = interaction.payload { return true }
+        return false
+    }
+
+    public var options: [DomainV2.QuestionOption] {
+        switch interaction.payload {
+        case .question(let options, _), .actionRequest(let options, _): options
+        default: []
         }
-        guard !text.isEmpty || draft.selectedOption != nil || !draft.attachmentIDs.isEmpty else {
-            throw QuestionWorkError.answerRequired
+    }
+
+    public var answer: DomainV2.Answer? {
+        switch interaction.payload {
+        case .question(_, let answer), .actionRequest(_, let answer): answer
+        default: nil
         }
-        return .answer(id: question.id, text: text.isEmpty && draft.attachmentIDs.isEmpty ? draft.selectedOption ?? "" : text,
-                       option: draft.selectedOption, attachments: draft.attachmentIDs)
     }
 
-    public func moreContext(_ question: Question, draft: QuestionDraft) -> QuestionOperation {
-        .moreContext(id: question.id, note: draft.text.trimmingCharacters(in: .whitespacesAndNewlines),
-                     attachments: draft.attachmentIDs)
+    public var answerAction: DomainV2.AvailableAction? {
+        item.availableActions.first { $0.actionKind == .answerQuestion }
     }
 
-    public func checkedMoreContext(_ question: Question, draft: QuestionDraft) throws -> QuestionOperation {
-        guard !question.isTerminalMenu else { throw QuestionWorkError.menuRequiresOption }
-        return moreContext(question, draft: draft)
-    }
+    public var canAnswer: Bool { answerAction?.enabled == true }
 
-    public static func needsExplanation(_ option: QuestionOption, policy: QuestionExplanationPolicy = .phone) -> Bool {
-        let description = option.description?.lowercased() ?? ""
-        return description.hasPrefix("write") || description.hasPrefix("escribe")
-            || (policy == .phone && [AnswerOption.deny, AnswerOption.requestChanges].contains(option.label))
+    public func option(_ id: String?) -> DomainV2.QuestionOption? { options.first { $0.id == id } }
+
+    /// The intent for this draft, or the form error that keeps it from being sent.
+    public func intent(for draft: QuestionDraft) throws -> DomainIntent {
+        guard let option = option(draft.selectedOption) else { throw DomainIntentError.optionRequired }
+        return .answer(id, optionID: option.id, inputs: try AnswerForm(option: option).inputs(text: draft.text))
     }
 }
 
-public struct ReviewDocumentUseCase: Sendable {
-    public init() {}
+extension AnswerForm {
+    public var acceptsText: Bool { option.inputs.contains { $0.kind == .text } }
+    public var requiresText: Bool { option.inputs.contains { $0.kind == .text && $0.required } }
 
-    public func feedback(
-        for report: Report, comments: [ReviewComment], general: String, author: String,
-        attachmentIDs: [String]
-    ) throws -> ReportFeedbackRequest {
-        let text = ReviewFeedback.format(comments, general: general, author: author)
-        guard !text.isEmpty || !attachmentIDs.isEmpty else { throw QuestionWorkError.noFeedback }
-        return ReportFeedbackRequest(reportID: report.id, sessionID: report.sessionId,
-                                     text: text, attachmentIDs: attachmentIDs)
-    }
-
-    public func review(_ report: Report, verdict: ReviewVerdict) throws -> QuestionOperation {
-        guard !report.artifacts.isEmpty else { throw QuestionWorkError.notReviewable }
-        return .reviewReport(id: report.id, verdict: verdict)
+    /// Written text belongs to the option's first text input. Text for an option that has no
+    /// text input is refused rather than dropped.
+    public func inputs(text: String) throws -> [String: DomainV2.InputValue] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let spec = option.inputs.first(where: { $0.kind == .text }) else {
+            if trimmed.isEmpty { return [:] }
+            throw DomainIntentError.inputInvalid("text")
+        }
+        let inputs: [String: DomainV2.InputValue] = trimmed.isEmpty ? [:] : [spec.id: .text(value: trimmed)]
+        return try validated(inputs)
     }
 }

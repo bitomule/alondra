@@ -12,7 +12,7 @@ import Testing
         let events = await transport.events
         #expect(events == ["registration", "binding"])
         let request = try #require(await transport.request)
-        #expect(request.path == "/v1/service/push-binding")
+        #expect(request.path == "/v2/device/push-binding")
         let body = try #require(request.body)
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(object["push_binding"] as? String == binding)
@@ -76,5 +76,4 @@ private actor PushTransport: ServiceOperationTransport, ServicePushTransport {
         self.request = request
         return response
     }
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {}
 }

@@ -9,65 +9,75 @@ public struct PRDiffSnapshot: Equatable, Sendable {
     public init(diff: String, headSHA: String, truncated: Bool = false) {
         self.diff = diff; self.headSHA = headSHA; self.truncated = truncated
     }
+
+    public init(_ diff: DomainV2.PullRequestDiff) {
+        self.init(diff: diff.diff, headSHA: diff.head, truncated: diff.truncated)
+    }
 }
 
 public enum PRMutationOutcome: Equatable, Sendable {
     case confirmed
     case rejected(String)
     case closed
-    case unknown(UUID)
+    /// The response was lost; the caller keeps its draft and command ID to retry.
+    case unknown
     case obsolete
+}
 
-    public var uncertainID: UUID? {
-        if case .unknown(let id) = self { return id }
-        return nil
+/// A pull request card as the server grouped it: the PR, the presentation that carries its
+/// merge and feedback actions, and the child questions that keep their own IDs.
+public struct DomainPullRequestCard: Equatable, Sendable {
+    public let root: DomainV2.InboxItem
+    public let pullRequest: DomainV2.PullRequest
+    public let presentation: DomainV2.InboxItem?
+    public let questions: [DomainQuestion]
+    public let information: [DomainV2.InboxItem]
+    public let mergeAuthorizations: [DomainV2.MergeAuthorization]
+    /// The head the agent presented. Diffs and feedback are bound to it, never to a newer one.
+    public let presentedHead: String?
+    /// What GitHub last reported: title, checks, mergeability. Display only.
+    public let observation: DomainV2.PullRequestRuntime?
+    /// The open PR this one is stacked on, which merges first.
+    public let stackedOn: DomainV2.PullRequest?
+
+    public init?(root: DomainV2.InboxItem, in workspace: DomainWorkspace) {
+        guard case .pullRequest(let id) = root.subject, let pullRequest = workspace.pullRequest(id) else { return nil }
+        self.root = root
+        self.pullRequest = pullRequest
+        presentation = root.children.last { $0.kind == "delivery" }
+        questions = root.children.compactMap { DomainQuestion(item: $0, in: workspace) }
+        information = root.children.filter { $0.kind == "information" }
+        mergeAuthorizations = workspace.mergeAuthorizations(for: id)
+        observation = workspace.runtime?.pullRequest(id)
+        stackedOn = workspace.stackedOn(pullRequest)
+        if case .delivery(let targets, _, _, _) = presentation.flatMap(workspace.interaction(of:))?.payload {
+            presentedHead = targets.lazy.compactMap { target -> String? in
+                if case let .pullRequest(prId, head) = target, prId == id { return head }
+                return nil
+            }.first
+        } else {
+            presentedHead = nil
+        }
     }
-}
 
-public struct PRReviewAttachment: Equatable, Sendable, Identifiable {
-    public let id: UUID
-    public let name: String
-    public let data: Data
-    public let storedID: String?
+    public var id: DomainV2.PrId { pullRequest.id }
+    public var isOpen: Bool { pullRequest.state == .open }
 
-    public init(id: UUID, name: String, data: Data, storedID: String? = nil) {
-        self.id = id
-        self.name = name
-        self.data = data
-        self.storedID = storedID
+    public func action(_ kind: DomainV2.ActionKind) -> DomainV2.AvailableAction? {
+        presentation?.availableActions.first { $0.actionKind == kind }
     }
-}
 
-public enum PRReviewKind: Sendable { case ask, requestChanges }
+    public var presentationID: DomainV2.InteractionId? {
+        guard case .interaction(let id) = presentation?.subject else { return nil }
+        return id
+    }
 
-/// The Mac may have executed a POST before its encrypted response exceeded the relay cap.
-/// The transport adapter throws this only after dispatch; CommandGate's `isUnknown`
-/// closure must classify it as unknown and keep the reserved command in the journal.
-public struct PRPostDispatchUncertain: Error, Sendable {
-    public init() {}
-}
+    public var canAuthorizeMerge: Bool { isOpen && action(.authorizeMerge)?.enabled == true }
+    public var canSendFeedback: Bool { action(.submitFeedback)?.enabled == true }
+    public var hasConflicts: Bool { observation?.hasConflicts == true }
 
-/// H installs a credential-scoped adapter. Mutations must pass through CommandGate; the
-/// adapter reserves before uploading attachments and never retries an unknown dispatch.
-public struct PullRequestOperations: Sendable {
-    public var diff: @Sendable (UInt64) async throws -> PRDiffSnapshot
-    public var merge: @Sendable (UInt64, String) async -> PRMutationOutcome
-    public var resolveConflicts: @Sendable (UInt64) async -> PRMutationOutcome
-    public var setAside: @Sendable (UInt64) async -> PRMutationOutcome
-    /// A nil head sends a note that is not bound to a reviewed diff.
-    public var review: @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String?) async -> PRMutationOutcome
-
-    public init(
-        diff: @escaping @Sendable (UInt64) async throws -> PRDiffSnapshot,
-        merge: @escaping @Sendable (UInt64, String) async -> PRMutationOutcome,
-        resolveConflicts: @escaping @Sendable (UInt64) async -> PRMutationOutcome,
-        setAside: @escaping @Sendable (UInt64) async -> PRMutationOutcome,
-        review: @escaping @Sendable (UInt64, String, [PRReviewAttachment], PRReviewKind, String?) async -> PRMutationOutcome
-    ) {
-        self.diff = diff
-        self.merge = merge
-        self.resolveConflicts = resolveConflicts
-        self.setAside = setAside
-        self.review = review
+    /// A recorded authorization waits for the agent; only an observed merge makes it merged.
+    public var pendingAuthorization: DomainV2.MergeAuthorization? {
+        mergeAuthorizations.last { $0.valid && $0.attempt != .confirmed && $0.attempt != .failed }
     }
 }

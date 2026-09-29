@@ -2,12 +2,19 @@ import AlondraAPIClient
 import AlondraContracts
 import Foundation
 
-/// The v2 domain cursor is (data_epoch, revision), independent of the v1
-/// process-local overview tick. No v1 projection is synthesized from it.
+/// The read seam for the whole app: sectioned reads (docs/domain-v2-read-endpoints.md) that
+/// DomainSections assembles into one view. The cursor is (data_epoch, revision).
 public protocol DomainSyncTransport: Sendable {
-    func domainProjection() async throws -> DomainV2.DomainProjection
+    func domainSummary() async throws -> DomainV2.Summary
+    func domainPage<Row: Decodable & Sendable & Equatable>(
+        _ section: DomainV2.Section, of row: Row.Type, cursor: String?, pendingOnly: Bool
+    ) async throws -> DomainV2.Page<Row>
+    func domainInteraction(_ id: DomainV2.InteractionId) async throws -> DomainV2.Item<DomainV2.Interaction>
+    func domainRequest(_ id: DomainV2.RequestId) async throws -> DomainV2.Item<DomainV2.Request>
     func domainChanges(epoch: DomainV2.DataEpoch, after revision: DomainV2.Revision,
                        wait seconds: UInt) async throws -> DomainV2.Changes
+    /// Machine telemetry and agent activity: a daemon read outside the domain.
+    func domainRuntime() async throws -> DomainV2.Runtime
 }
 
 extension AlondraAPIClient: DomainSyncTransport {}
@@ -18,10 +25,12 @@ public struct DomainSyncState: Equatable, Sendable {
     public let publicationRevision: UInt64
     public let connection: SyncConnection
     public let projection: DomainV2.DomainProjection?
+    /// Telemetry and remote observations; nil until the Mac serves them.
+    public let runtime: DomainV2.Runtime?
 }
 
-/// A data-only v2 subscription. It starts on first subscription and never
-/// changes the UI-facing v1 SyncSession or its mutation routes.
+/// One subscription per identity. It starts with the first subscriber and republishes the
+/// projection on every server revision and the runtime on every idle wait.
 public actor DomainSyncSession {
     private var transport: any DomainSyncTransport
     private let backoff: ConnectionBackoff
@@ -32,6 +41,7 @@ public actor DomainSyncSession {
     private var publicationRevision: UInt64 = 0
     private var loop: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<DomainSyncState>.Continuation] = [:]
+    private var sections = DomainSections()
     public private(set) var state: DomainSyncState
 
     public init(transport: any DomainSyncTransport, identity: SyncIdentity,
@@ -43,7 +53,7 @@ public actor DomainSyncSession {
         self.classify = classify
         self.random = random
         state = DomainSyncState(identity: identity, generation: 0,
-                                publicationRevision: 0, connection: .connecting, projection: nil)
+                                publicationRevision: 0, connection: .connecting, projection: nil, runtime: nil)
     }
 
     public func subscribe() -> AsyncStream<DomainSyncState> {
@@ -61,8 +71,16 @@ public actor DomainSyncSession {
         loop?.cancel()
         loop = nil
         self.transport = transport
+        sections = DomainSections()
         publish(identity: identity, connection: .connecting, projection: nil)
         startIfNeeded()
+    }
+
+    /// Skips the rest of the current backoff wait, for when the network returns or the app comes
+    /// back to the foreground. A healthy session keeps its long poll.
+    public func retryNow() {
+        guard case .offline = state.connection else { return }
+        refresh()
     }
 
     public func refresh() {
@@ -100,11 +118,12 @@ public actor DomainSyncSession {
     }
 
     private func publish(identity: SyncIdentity, connection: SyncConnection,
-                         projection: DomainV2.DomainProjection?) {
+                         projection: DomainV2.DomainProjection?, runtime: DomainV2.Runtime? = nil) {
         publicationRevision &+= 1
+        let runtime = projection == nil ? nil : runtime
         state = DomainSyncState(identity: identity, generation: generation,
                                 publicationRevision: publicationRevision,
-                                connection: connection, projection: projection)
+                                connection: connection, projection: projection, runtime: runtime)
         for continuation in subscribers.values { continuation.yield(state) }
     }
 
@@ -116,40 +135,53 @@ public actor DomainSyncSession {
     private func run(transport: any DomainSyncTransport, generation current: UInt64) async {
         while !Task.isCancelled && generation == current && !subscribers.isEmpty {
             do {
-                let projection = try await transport.domainProjection()
+                let summary = try await transport.domainSummary()
                 guard !Task.isCancelled, generation == current else { return }
-                if let previous = state.projection,
-                   previous.dataEpoch == projection.dataEpoch,
-                   projection.revision < previous.revision {
-                    throw DomainV2.DomainError(code: "incompatible_protocol",
-                        message: "Domain revision moved backwards within one epoch",
-                        currentRevision: projection.revision, subject: nil)
-                }
+                var next = sections
+                let projection = try await next.refresh(to: summary, from: transport)
+                guard !Task.isCancelled, generation == current else { return }
+                sections = next
                 failures = 0
-                publish(identity: state.identity, connection: .online, projection: projection)
+                var runtime = await Self.runtime(transport) ?? state.runtime
+                guard !Task.isCancelled, generation == current else { return }
+                publish(identity: state.identity, connection: .online, projection: projection, runtime: runtime)
                 while !Task.isCancelled && generation == current && !subscribers.isEmpty {
                     let changes = try await transport.domainChanges(
                         epoch: projection.dataEpoch, after: projection.revision, wait: 10)
                     guard !Task.isCancelled, generation == current else { return }
-                    if changes.changed || changes.revision != projection.revision { break }
+                    if changes.changed || changes.revision != projection.revision
+                        || changes.sections.contains(where: { summary.sections[$0.key]?.revision != $0.value }) { break }
+                    // Telemetry moves without a domain revision; refresh it on each idle wait.
+                    if let fresh = await Self.runtime(transport), fresh != runtime {
+                        guard !Task.isCancelled, generation == current else { return }
+                        runtime = fresh
+                        publish(identity: state.identity, connection: .online, projection: projection, runtime: fresh)
+                    }
                 }
             } catch is CancellationError {
                 return
             } catch let error as DomainV2.DomainError where error.code == "stale_epoch" {
                 guard !Task.isCancelled, generation == current else { return }
-                // The next complete projection establishes the new epoch.
+                // The next summary establishes the new epoch and every section is read again.
+                sections = DomainSections()
                 publish(identity: state.identity, connection: .connecting, projection: nil)
             } catch let error as DomainV2.DomainError where error.code == "incompatible_protocol" {
                 guard !Task.isCancelled, generation == current else { return }
                 // A mismatched 200 response cannot keep an old projection visible.
+                sections = DomainSections()
                 publish(identity: state.identity, connection: .offline(.unexpected), projection: nil)
                 do { try await Task.sleep(for: nextDelay()) } catch { return }
             } catch {
                 guard !Task.isCancelled, generation == current else { return }
                 publish(identity: state.identity, connection: .offline(classify(error)),
-                        projection: state.projection)
+                        projection: state.projection, runtime: state.runtime)
                 do { try await Task.sleep(for: nextDelay()) } catch { return }
             }
         }
+    }
+
+    /// The runtime is display-only; a daemon that does not serve it yet leaves it empty.
+    private static func runtime(_ transport: any DomainSyncTransport) async -> DomainV2.Runtime? {
+        try? await transport.domainRuntime()
     }
 }

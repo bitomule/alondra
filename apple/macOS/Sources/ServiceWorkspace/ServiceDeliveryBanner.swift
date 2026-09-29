@@ -19,21 +19,8 @@ struct ServiceDeliveryBanner: View {
                 .background(.regularMaterial, in: .capsule)
                 .shadow(color: .black.opacity(0.12), radius: 8, y: 2)
                 .padding(.top, 10).transition(.move(edge: .top).combined(with: .opacity))
-            } else if !store.delivery.warnings.isEmpty {
-                HStack(spacing: 10) {
-                    Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                    Text(store.delivery.warningText).lineLimit(2)
-                    Button { store.send(.delivery(.dismissWarnings)) } label: {
-                        Image(systemName: "xmark").font(.caption.weight(.bold))
-                    }
-                    .disabled(store.delivery.isAcknowledging)
-                    .buttonStyle(.borderless).accessibilityLabel("Close")
-                }
-                .padding(.horizontal, 14).padding(.vertical, 9)
-                .background(.regularMaterial, in: .capsule).padding(.top, 10).transition(.opacity)
             }
         }
         .animation(.snappy, value: store.macError)
-        .animation(.snappy, value: store.delivery.warnings)
     }
 }

@@ -6,7 +6,6 @@ public enum PRReviewDecision: Equatable, Sendable {
     case empty
     case closed
     case outdatedDiff
-    case textRequired
 }
 
 /// The diff is the authority for line anchors. A comment on an old revision must never be
@@ -14,10 +13,8 @@ public enum PRReviewDecision: Equatable, Sendable {
 public struct PreparePRReviewUseCase: Sendable {
     public init() {}
 
-    public func execute(
-        comments: [String: String], note: String, attachments: [PRReviewAttachment],
-        files: [DiffFile]?, isOpen: Bool, commentsAreCurrent: Bool
-    ) -> PRReviewDecision {
+    public func execute(comments: [String: String], note: String, files: [DiffFile]?,
+                        isOpen: Bool, commentsAreCurrent: Bool) -> PRReviewDecision {
         guard isOpen else { return .closed }
         let trimmed = note.trimmingCharacters(in: .whitespacesAndNewlines)
         let valid = Set((files ?? []).flatMap(\.lines).compactMap(\.anchor))
@@ -28,44 +25,37 @@ public struct PreparePRReviewUseCase: Sendable {
             let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
             return value.isEmpty ? nil : value
         }
-        guard !normalized.isEmpty || !trimmed.isEmpty else {
-            return attachments.isEmpty ? .empty : .textRequired
-        }
+        guard !normalized.isEmpty || !trimmed.isEmpty else { return .empty }
         let ordered = ReviewExport.ordered(normalized, in: files ?? [])
         return .ready(ReviewExport.text(comments: ordered, general: trimmed))
     }
 }
 
-/// A snapshot can refresh while a merge dialog is open. Validate again at confirmation.
-public struct PRMergeUseCase: Sendable {
-    public init() {}
-
-    public func allows(_ method: String, on pr: PullRequest?) -> Bool {
-        guard let pr, pr.state == "open", !pr.hasConflicts, pr.belowNumber == nil else { return false }
-        return pr.methods.contains(method)
-    }
-}
-
 public enum SubmitPRReviewResult: Equatable, Sendable {
     case diffChanged(PRDiffSnapshot)
-    case finished(PRMutationOutcome)
+    case finished(DomainCommandResult)
 }
 
-/// Verify the revision immediately before dispatch. This boundary can be reused by
-/// non-UI callers without bypassing the same stale-review protection.
+/// Reloads the presented head's diff immediately before sending, so feedback written on one
+/// diff is never sent against another. The server checks the presented head again.
 public struct SubmitPRReviewUseCase: Sendable {
-    private let operations: PullRequestOperations
+    private let client: DomainWorkspaceClient
 
-    public init(operations: PullRequestOperations) { self.operations = operations }
+    public init(client: DomainWorkspaceClient) { self.client = client }
 
-    public func execute(
-        prID: UInt64, text: String, attachments: [PRReviewAttachment],
-        kind: PRReviewKind, expected: PRDiffSnapshot?
-    ) async throws -> SubmitPRReviewResult {
-        guard let expected else { return .finished(await operations.review(prID, text, attachments, kind, nil)) }
-        let current = try await operations.diff(prID)
-        try Task.checkCancellation()
-        guard current == expected else { return .diffChanged(current) }
-        return .finished(await operations.review(prID, text, attachments, kind, expected.headSHA))
+    public func execute(card: DomainPullRequestCard, text: String, attachments: [DomainV2.AttachmentRef] = [],
+                        expected: PRDiffSnapshot?, in workspace: DomainWorkspace,
+                        commandID: String) async throws -> SubmitPRReviewResult {
+        guard let presentation = card.presentationID else {
+            return .finished(.rejected(DomainCommandRejection(code: DomainV2.ErrorCode.invalidActionForKind.rawValue,
+                                                              message: "No presentation to review")))
+        }
+        if let expected {
+            let current = PRDiffSnapshot(try await client.pullRequestDiff(card.id, expected.headSHA))
+            try Task.checkCancellation()
+            guard current == expected else { return .diffChanged(current) }
+        }
+        return .finished(await client.perform(.submitFeedback(presentation, body: text, attachments: attachments),
+                                              workspace, [], commandID))
     }
 }

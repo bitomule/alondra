@@ -10,43 +10,7 @@ private actor WireOperations: ServiceOperationTransport {
         requests.append(request)
         return response
     }
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
-        XCTFail("An endpoint request must not enter the long-poll capability")
-    }
     func recorded() -> [ServiceRequest] { requests }
-}
-
-private actor ControlledChangeWait: ServiceOperationTransport {
-    private var started: (UInt64, Int)?
-    private var startWaiter: CheckedContinuation<Void, Never>?
-    private var response: CheckedContinuation<Void, any Error>?
-    private(set) var cancellations = 0
-
-    func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
-        XCTFail("A service change wait must not be encoded as a daemon operation")
-        return .unknown
-    }
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
-        try await withTaskCancellationHandler {
-            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, any Error>) in
-                guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
-                response = continuation
-                started = (afterSnapshotTick, seconds)
-                startWaiter?.resume()
-                startWaiter = nil
-            }
-        } onCancel: { Task { await self.cancel() } }
-    }
-    func waitUntilStarted() async -> (UInt64, Int) {
-        if started == nil { await withCheckedContinuation { startWaiter = $0 } }
-        return started!
-    }
-    private func cancel() {
-        guard let response else { return }
-        self.response = nil
-        cancellations += 1
-        response.resume(throwing: CancellationError())
-    }
 }
 
 final class APIClientWireTests: XCTestCase {
@@ -70,7 +34,7 @@ final class APIClientWireTests: XCTestCase {
         for (status, body, expected) in cases {
             let operations = WireOperations(status: status, body: Data(body.utf8))
             do {
-                _ = try await client(operations).send(AlondraEndpoints.nodeActivity("node"))
+                _ = try await client(operations).send(Endpoint<Data>.data(.get, path: ["v2", "runtime"]))
                 XCTFail("Expected service response \(status) to fail")
             } catch { XCTAssertEqual(error as? APIError, expected) }
             let requests = await operations.recorded()
@@ -78,68 +42,23 @@ final class APIClientWireTests: XCTestCase {
         }
     }
 
-    func testAnswerKeepsDeviceIdentityAndLogicalPathAndQueryAreEscaped() async throws {
-        let operations = WireOperations(body: Data("{}".utf8))
+    func testClientContractPathsAndQueriesAreEscaped() async throws {
+        let operations = WireOperations(body: Data(#"{"via":"index","sessions":[]}"#.utf8))
         let api = client(operations)
-        try await api.answer(7, text: "yes", option: nil, attachments: ["file-1"], operationID: "answer-7")
-        _ = try await api.task("a/b")
-        _ = try await api.search("a b&c?#é")
+        _ = try await api.domainSearch("a b&c?#é")
+        _ = try? await api.domainAgentActivity("a/b")
         let requests = await operations.recorded()
-        XCTAssertEqual(requests.count, 3)
-        XCTAssertEqual(requests[0].operationID, "answer-7")
-        XCTAssertEqual(requests[0].path, "/v1/questions/7/answer")
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(requests[0].body)) as? [String: Any])
-        XCTAssertEqual(object["device"] as? String, "mac")
-        XCTAssertEqual(object["text"] as? String, "yes")
-        XCTAssertEqual(object["attachments"] as? [String], ["file-1"])
-        XCTAssertNil(object["option"])
-        XCTAssertEqual(requests[1].path, "/v1/tasks/a%2Fb")
-        XCTAssertEqual(requests[2].path, "/v1/search?q=a%20b%26c%3F%23%C3%A9")
+        XCTAssertEqual(requests[0].path, "/v2/agents/search?q=a%20b%26c%3F%23%C3%A9")
+        XCTAssertEqual(requests[1].path, "/v2/agents/a%2Fb/activity")
     }
 
-    func testOrchestratorRecoveryCommandsKeepRunAndOperationIdentity() async throws {
+    func testV1RoutesAreNoLongerAdmitted() async throws {
         let operations = WireOperations()
-        let api = client(operations)
-        _ = try await api.send(AlondraEndpoints.cancelOrchestrator("run-1"), operationID: "stop-1")
-        _ = try await api.send(AlondraEndpoints.retryOrchestrator("run-2"), operationID: "retry-2")
-        _ = try await api.send(AlondraEndpoints.acknowledgeOrchestrator("run-3"), operationID: "ack-3")
-        let requests = await operations.recorded()
-        XCTAssertEqual(requests.map(\.path), ["/v1/orchestrator/cancel", "/v1/orchestrator/retry", "/v1/orchestrator/acknowledge"])
-        XCTAssertEqual(requests.map(\.operationID), ["stop-1", "retry-2", "ack-3"])
-        for (index, request) in requests.enumerated() {
-            let body = try XCTUnwrap(JSONSerialization.jsonObject(with: XCTUnwrap(request.body)) as? [String: String])
-            XCTAssertEqual(body, ["run_id": "run-\(index + 1)"])
-        }
-    }
-
-    func testCloseRefusalKeepsStructuredReasonsAndNeverRepeatsMutation() async throws {
-        let body = Data(#"{"reasons":[{"kind":"worktree","detail":"uncommitted files"},{"kind":"busy"}]}"#.utf8)
-        let operations = WireOperations(status: 409, body: body)
         do {
-            _ = try await client(operations).send(AlondraEndpoints.closeNode("node-1", force: false), operationID: "close-1")
-            XCTFail("Expected close refusal")
-        } catch {
-            XCTAssertEqual(error as? APIError, .conflict(kind: nil, detail: nil, reasons: [
-                .init(kind: "worktree", detail: "uncommitted files"), .init(kind: "busy", detail: nil),
-            ]))
-        }
+            _ = try await client(operations).send(Endpoint<Data>.data(.get, path: ["v1", "overview"]))
+            XCTFail("The v1 data path is gone")
+        } catch { XCTAssertEqual(error as? ServiceAPIError, .invalidEndpoint) }
         let requests = await operations.recorded()
-        XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].operationID, "close-1")
-        XCTAssertEqual(requests[0].body, Data("{}".utf8))
-    }
-
-    func testChangeWaitForwardsCursorAndDurationAndCancelsUnderlyingOperation() async throws {
-        let operations = ControlledChangeWait()
-        let api = client(operations)
-        let task = Task { try await api.waitForChange(afterSnapshotTick: 42, seconds: 10) }
-        let parameters = await operations.waitUntilStarted()
-        XCTAssertEqual(parameters.0, 42)
-        XCTAssertEqual(parameters.1, 10)
-        task.cancel()
-        do { try await task.value; XCTFail("Expected cancellation") }
-        catch is CancellationError {}
-        let cancellations = await operations.cancellations
-        XCTAssertEqual(cancellations, 1)
+        XCTAssertTrue(requests.isEmpty)
     }
 }

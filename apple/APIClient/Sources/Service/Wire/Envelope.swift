@@ -115,11 +115,13 @@ public struct EnvelopeV1: Codable, Sendable, Equatable {
         return bytes
     }
 
+    /// A nil `nowMilliseconds` skips the expiry check: push notifications stay actionable
+    /// whenever they are tapped, and the server rejects a stale decision by revision.
     public func verify(senderKey: P256.Signing.PublicKey, sender expectedSender: String,
                        recipient expectedRecipient: String, route expectedRoute: String,
-                       nowMilliseconds: UInt64) throws {
+                       nowMilliseconds: UInt64?) throws {
         guard sender == expectedSender, recipient == expectedRecipient, route == expectedRoute else { throw RelayWireError.wrongIdentity }
-        guard nowMilliseconds <= expiresAtMilliseconds else { throw RelayWireError.expired }
+        if let nowMilliseconds, nowMilliseconds > expiresAtMilliseconds { throw RelayWireError.expired }
         let signatureBytes = try Base64URL.decode(signature)
         guard signatureBytes.count == 64,
               let sig = try? P256.Signing.ECDSASignature(rawRepresentation: signatureBytes),
@@ -128,7 +130,7 @@ public struct EnvelopeV1: Codable, Sendable, Equatable {
 
     public func open(senderKey: P256.Signing.PublicKey, recipientKey: P256.KeyAgreement.PrivateKey,
                      sender expectedSender: String, recipient expectedRecipient: String,
-                     route expectedRoute: String, nowMilliseconds: UInt64) throws -> Data {
+                     route expectedRoute: String, nowMilliseconds: UInt64?) throws -> Data {
         try verify(senderKey: senderKey, sender: expectedSender, recipient: expectedRecipient,
                    route: expectedRoute, nowMilliseconds: nowMilliseconds)
         let header = try authenticatedHeader()

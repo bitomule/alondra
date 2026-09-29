@@ -143,7 +143,7 @@ private struct ScenarioFixture {
         try RelaySession(journalFile: directory.appendingPathComponent("outbox.json"),
             scope: RelayOutboxScope(relay: URL(string: "https://relay.fixture.invalid")!,
                 macID: "mac-test", deviceID: "phone-test", credentialRevision: "synthetic-generation"),
-            bearer: { try await auth.bearerToken() }, cachedBearer: { try await auth.cachedBearerLease() },
+            bearer: { try await auth.bearerToken() },
             transport: peer, signing: phoneSign, agreement: phoneAgreement,
             macSigning: macSign.publicKey, macAgreement: macAgreement.publicKey, now: { 1000 }, sleep: {})
     }

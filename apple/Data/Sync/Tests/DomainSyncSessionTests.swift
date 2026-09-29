@@ -1,22 +1,85 @@
+@testable import AlondraSync
 import AlondraContracts
-import AlondraSync
 import Foundation
 import XCTest
 
-private actor ControlledDomainTransport: DomainSyncTransport {
+/// Serves sectioned reads from JSON rows; the summary and change feed can be held open.
+private actor SectionServer: DomainSyncTransport {
     enum Request: Equatable {
-        case projection
+        case summary
+        case page(String, cursor: String?)
+        case interaction(String)
+        case request(String)
         case changes(epoch: String, after: UInt64, wait: UInt)
     }
 
-    private var requests: [Request] = []
-    private var pendingProjections: [Int: CheckedContinuation<DomainV2.DomainProjection, Error>] = [:]
+    var epoch = "epoch"
+    var revision: UInt64 = 1
+    var rows: [String: [[String: Any]]] = [:]
+    var tokens: [String: String] = [:]
+    var truncated: [String: [String]] = [:]
+    var pageSize = 100
+    var interactions: [String: [String: Any]] = [:]
+    var fullRequests: [String: [String: Any]] = [:]
+    /// Called after a page is served, to move data between pages.
+    var afterPage: (@Sendable (isolated SectionServer, String, Int) -> Void)?
+    var holdSummaries = false
+    private(set) var requests: [Request] = []
+    private var pendingSummaries: [Int: CheckedContinuation<DomainV2.Summary, Error>] = [:]
     private var pendingChanges: [Int: CheckedContinuation<DomainV2.Changes, Error>] = [:]
     private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
 
-    func domainProjection() async throws -> DomainV2.DomainProjection {
-        let index = append(.projection)
-        return try await withCheckedThrowingContinuation { pendingProjections[index] = $0 }
+    func set(_ change: (isolated SectionServer) -> Void) { change(self) }
+
+    func domainSummary() async throws -> DomainV2.Summary {
+        let index = append(.summary)
+        if holdSummaries { return try await withCheckedThrowingContinuation { pendingSummaries[index] = $0 } }
+        return try summary()
+    }
+
+    func summary() throws -> DomainV2.Summary {
+        let sections = Dictionary(uniqueKeysWithValues: DomainV2.Section.allCases.map { section in
+            (section.rawValue, ["revision": tokens[section.rawValue] ?? "t0", "count": rows[section.rawValue]?.count ?? 0] as [String: Any])
+        })
+        return try decode(["protocol_version": 2, "data_epoch": epoch, "revision": revision,
+                           "counts": ["roots": 0, "pending": 0, "unread_information": 0],
+                           "open_tasks": 0, "connected_agents": 0, "sections": sections, "pending": []])
+    }
+
+    func releaseSummary(_ index: Int) throws {
+        pendingSummaries.removeValue(forKey: index)?.resume(returning: try summary())
+    }
+
+    func domainPage<Row: Decodable & Sendable & Equatable>(
+        _ section: DomainV2.Section, of row: Row.Type, cursor: String?, pendingOnly: Bool
+    ) async throws -> DomainV2.Page<Row> {
+        append(.page(section.rawValue, cursor: cursor))
+        let all = rows[section.rawValue] ?? []
+        let start = cursor.flatMap(Int.init) ?? 0
+        let end = min(all.count, start + pageSize)
+        var page: [String: Any] = [
+            "protocol_version": 2, "data_epoch": epoch, "revision": revision, "section": section.rawValue,
+            "section_revision": tokens[section.rawValue] ?? "t0", "total": all.count,
+            "items": Array(all[start..<end]), "truncated": truncated[section.rawValue] ?? [],
+        ]
+        if end < all.count { page["next_cursor"] = String(end) }
+        let decoded: DomainV2.Page<Row> = try decode(page)
+        afterPage?(self, section.rawValue, start)
+        return decoded
+    }
+
+    func domainInteraction(_ id: DomainV2.InteractionId) async throws -> DomainV2.Item<DomainV2.Interaction> {
+        append(.interaction(id.rawValue))
+        guard let row = interactions[id.rawValue] else {
+            throw DomainV2.DomainError(code: "not_found", message: "gone", currentRevision: revision, subject: id.rawValue)
+        }
+        return try decode(["protocol_version": 2, "data_epoch": epoch, "revision": revision, "item": row, "truncated": false])
+    }
+
+    func domainRequest(_ id: DomainV2.RequestId) async throws -> DomainV2.Item<DomainV2.Request> {
+        append(.request(id.rawValue))
+        return try decode(["protocol_version": 2, "data_epoch": epoch, "revision": revision,
+                           "item": fullRequests[id.rawValue] ?? [:], "truncated": false])
     }
 
     func domainChanges(epoch: DomainV2.DataEpoch, after revision: DomainV2.Revision,
@@ -25,6 +88,22 @@ private actor ControlledDomainTransport: DomainSyncTransport {
         return try await withCheckedThrowingContinuation { pendingChanges[index] = $0 }
     }
 
+    func domainRuntime() async throws -> DomainV2.Runtime {
+        throw DomainV2.DomainError(code: "not_found", message: "not served", currentRevision: nil, subject: nil)
+    }
+
+    func respondChanges(_ index: Int, changed: Bool) {
+        pendingChanges.removeValue(forKey: index)?.resume(returning: .init(
+            protocolVersion: 2, dataEpoch: .init(rawValue: epoch), revision: revision, changed: changed, sections: tokens))
+    }
+
+    func fail(_ index: Int, code: String) {
+        let error = DomainV2.DomainError(code: code, message: code, currentRevision: nil, subject: nil)
+        pendingChanges.removeValue(forKey: index)?.resume(throwing: error)
+        pendingSummaries.removeValue(forKey: index)?.resume(throwing: error)
+    }
+
+    @discardableResult
     private func append(_ request: Request) -> Int {
         let index = requests.count
         requests.append(request)
@@ -39,40 +118,166 @@ private actor ControlledDomainTransport: DomainSyncTransport {
         await withCheckedContinuation { waiters.append((count, $0)) }
     }
 
-    func request(_ index: Int) -> Request { requests[index] }
-
-    func respondProjection(_ index: Int, epoch: String, revision: UInt64) throws {
-        let json = """
-        {"protocol_version":2,"data_epoch":"\(epoch)","revision":\(revision),
-         "inbox":[],"counts":{"roots":0,"pending":0,"unread_information":0},
-         "tasks":[],"agents":[],"requests":[],"interactions":[],"pull_requests":[],
-         "documents":[],"document_revisions":[],"document_reviews":[],
-         "merge_authorizations":[],"stack_readiness":[]}
-        """
-        let projection = try DomainV2.decode(DomainV2.DomainProjection.self, from: Data(json.utf8))
-        pendingProjections.removeValue(forKey: index)?.resume(returning: projection)
+    func waitForChangesRequest() async -> Int {
+        while true {
+            if let index = requests.indices.last(where: { if case .changes = requests[$0] { return pendingChanges[$0] != nil } else { return false } }) {
+                return index
+            }
+            await waitForRequests(requests.count + 1)
+        }
     }
 
-    func respondChanges(_ index: Int, epoch: String, revision: UInt64, changed: Bool) {
-        pendingChanges.removeValue(forKey: index)?.resume(returning: .init(
-            protocolVersion: 2, dataEpoch: .init(rawValue: epoch), revision: revision, changed: changed))
+    func pages(since start: Int) -> [String] {
+        requests[start...].compactMap { if case .page(let section, nil) = $0 { section } else { nil } }
     }
 
-    func staleEpoch(_ index: Int) {
-        pendingChanges.removeValue(forKey: index)?.resume(throwing: DomainV2.DomainError(
-            code: "stale_epoch", message: "Epoch changed", currentRevision: nil, subject: nil))
+    private func decode<Value: Decodable>(_ object: [String: Any]) throws -> Value {
+        try DomainV2.decode(Value.self, from: JSONSerialization.data(withJSONObject: object))
+    }
+}
+
+private func task(_ id: String, revision: UInt64 = 1, presentation: String? = nil) -> [String: Any] {
+    var row: [String: Any] = ["id": id, "request_id": "r", "title": id, "state": "running", "revision": revision,
+                              "started": true, "review_prs": false, "dependencies": [], "documents": [:], "archived": false]
+    if let presentation { row["final_presentation"] = presentation }
+    return row
+}
+
+private func question(_ id: String, revision: UInt64, body: String = "Which one?") -> [String: Any] {
+    ["attachments": [], "id": id, "scope": ["kind": "task", "task_id": "t1"], "author": ["kind": "agent", "agent_id": "a"],
+     "recipient": ["kind": "user"], "body": body, "blocking": true,
+     "payload": ["kind": "question", "options": []], "revision": revision, "order": revision]
+}
+
+private func inboxEntry(for interaction: String, revision: UInt64) -> [String: Any] {
+    ["id": "interaction:\(interaction)", "kind": "question", "subject": ["kind": "interaction", "interaction_id": interaction],
+     "title": "t1", "body": "Which one?", "task_id": "t1", "revision": revision, "order": revision, "pending": true,
+     "children": [], "available_actions": []]
+}
+
+final class DomainSectionsTests: XCTestCase {
+    func testOnlySectionsWhoseTokenMovedAreReadAgain() async throws {
+        let server = SectionServer()
+        await server.set { $0.rows["tasks"] = [task("t1")]; $0.tokens["tasks"] = "a"; $0.tokens["agents"] = "a" }
+        var sections = DomainSections()
+        let first = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(first.tasks.map(\.id.rawValue), ["t1"])
+        let firstPages = await server.pages(since: 0)
+        XCTAssertEqual(Set(firstPages), Set(DomainSections.synced.map(\.rawValue)))
+
+        let mark = await server.requests.count
+        await server.set { $0.revision = 2; $0.rows["tasks"] = [task("t1"), task("t2")]; $0.tokens["tasks"] = "b" }
+        let second = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(second.tasks.map(\.id.rawValue), ["t1", "t2"])
+        let secondPages = await server.pages(since: mark)
+        XCTAssertEqual(secondPages, ["tasks"], "An unchanged token must not be read again")
     }
 
-    func incompatibleResponse(_ index: Int) {
-        pendingChanges.removeValue(forKey: index)?.resume(throwing: DomainV2.DomainError(
-            code: "incompatible_protocol", message: "Invalid changes", currentRevision: nil, subject: nil))
+    func testEverySectionIsPagedToTheEnd() async throws {
+        let server = SectionServer()
+        await server.set { $0.pageSize = 2; $0.rows["tasks"] = (1...5).map { task("t\($0)") } }
+        var sections = DomainSections()
+        let projection = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(projection.tasks.map(\.id.rawValue), ["t1", "t2", "t3", "t4", "t5"])
+    }
+
+    func testASectionThatMovesBetweenPagesIsReadAgainFromTheStart() async throws {
+        let server = SectionServer()
+        await server.set { server in
+            server.pageSize = 1
+            server.rows["tasks"] = [task("t1"), task("t2")]
+            server.tokens["tasks"] = "a"
+            server.afterPage = { server, section, start in
+                guard section == "tasks", start == 0, server.tokens["tasks"] == "a" else { return }
+                server.rows["tasks"] = [task("t0"), task("t1"), task("t2")]
+                server.tokens["tasks"] = "b"
+            }
+        }
+        var sections = DomainSections()
+        let projection = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(projection.tasks.map(\.id.rawValue), ["t0", "t1", "t2"], "Rows from two revisions must never mix")
+    }
+
+    func testARowCutShortIsReadWhole() async throws {
+        let server = SectionServer()
+        let whole = String(repeating: "x", count: 40_000)
+        await server.set {
+            $0.rows["requests"] = [["id": "r", "body": "xx", "closed": false]]
+            $0.truncated["requests"] = ["r"]
+            $0.fullRequests["r"] = ["id": "r", "body": whole, "closed": false]
+        }
+        var sections = DomainSections()
+        let projection = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(projection.requests.first?.body, whole)
+    }
+
+    func testInteractionsAreReadForInboxEntriesAndAgainOnlyWhenTheirRevisionMoves() async throws {
+        let server = SectionServer()
+        await server.set {
+            $0.rows["inbox"] = [inboxEntry(for: "q1", revision: 3)]
+            $0.tokens["inbox"] = "a"
+            $0.interactions["q1"] = question("q1", revision: 3)
+        }
+        var sections = DomainSections()
+        let first = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(first.interactions.map(\.id.rawValue), ["q1"])
+
+        let mark = await server.requests.count
+        await server.set { $0.revision = 2; $0.tokens["tasks"] = "moved" }
+        _ = try await sections.refresh(to: try await server.summary(), from: server)
+        let unchanged = await server.requests[mark...].filter { $0 == .interaction("q1") }
+        XCTAssertTrue(unchanged.isEmpty, "An interaction whose revision did not move is not read again")
+
+        await server.set {
+            $0.revision = 3
+            $0.rows["inbox"] = [inboxEntry(for: "q1", revision: 4)]
+            $0.tokens["inbox"] = "b"
+            $0.interactions["q1"] = question("q1", revision: 4, body: "Answered?")
+        }
+        let third = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(third.interactions.first?.body, "Answered?")
+    }
+
+    func testAnOpenTaskPresentationIsReadWithoutAnInboxEntry() async throws {
+        let server = SectionServer()
+        await server.set {
+            $0.rows["tasks"] = [task("t1", presentation: "p1")]
+            $0.interactions["p1"] = question("p1", revision: 1)
+        }
+        var sections = DomainSections()
+        let projection = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(projection.interactions.map(\.id.rawValue), ["p1"])
+    }
+
+    func testRevisionCannotMoveBackwardsWithinAnEpoch() async throws {
+        let server = SectionServer()
+        await server.set { $0.revision = 8 }
+        var sections = DomainSections()
+        _ = try await sections.refresh(to: try await server.summary(), from: server)
+        await server.set { $0.revision = 7 }
+        do {
+            _ = try await sections.refresh(to: try await server.summary(), from: server)
+            XCTFail("A stale summary must not replace revision 8")
+        } catch let error as DomainV2.DomainError { XCTAssertEqual(error.code, "incompatible_protocol") }
+    }
+
+    func testANewEpochReadsEverySectionAgain() async throws {
+        let server = SectionServer()
+        await server.set { $0.revision = 8; $0.rows["tasks"] = [task("old")] }
+        var sections = DomainSections()
+        _ = try await sections.refresh(to: try await server.summary(), from: server)
+        let mark = await server.requests.count
+        await server.set { $0.epoch = "new"; $0.revision = 1; $0.rows["tasks"] = [task("new")] }
+        let projection = try await sections.refresh(to: try await server.summary(), from: server)
+        XCTAssertEqual(projection.tasks.map(\.id.rawValue), ["new"])
+        let pages = await server.pages(since: mark)
+        XCTAssertEqual(Set(pages), Set(DomainSections.synced.map(\.rawValue)))
     }
 }
 
 final class DomainSyncSessionTests: XCTestCase {
     private func identity(_ key: String) -> SyncIdentity {
-        SyncIdentity(server: URL(string: "https://relay.example.invalid")!,
-                     deviceID: "phone", credentialRevision: key)
+        SyncIdentity(server: URL(string: "https://relay.example.invalid")!, deviceID: "phone", credentialRevision: key)
     }
 
     private func nextProjection(_ iterator: inout AsyncStream<DomainSyncState>.Iterator) async -> DomainSyncState? {
@@ -82,104 +287,81 @@ final class DomainSyncSessionTests: XCTestCase {
         return nil
     }
 
-    func testEpochChangeClearsOldProjectionAndStartsAtNewRevision() async throws {
-        let transport = ControlledDomainTransport()
-        let session = DomainSyncSession(transport: transport, identity: identity("one"))
+    func testUnchangedPollKeepsTheCursorAndAChangeReadsTheSummaryAgain() async throws {
+        let server = SectionServer()
+        await server.set { $0.revision = 4 }
+        let session = DomainSyncSession(transport: server, identity: identity("one"))
         var updates = await session.subscribe().makeAsyncIterator()
-        await transport.waitForRequests(1)
-        try await transport.respondProjection(0, epoch: "epoch-a", revision: 7)
-        let firstResult = await nextProjection(&updates)
-        let first = try XCTUnwrap(firstResult)
-        XCTAssertEqual(first.projection?.dataEpoch.rawValue, "epoch-a")
-        await transport.waitForRequests(2)
-        let request = await transport.request(1)
-        XCTAssertEqual(request, .changes(epoch: "epoch-a", after: 7, wait: 10))
-        await transport.staleEpoch(1)
-        await transport.waitForRequests(3)
+        _ = await nextProjection(&updates)
+        let poll = await server.waitForChangesRequest()
+        let first = await server.requests[poll]
+        XCTAssertEqual(first, .changes(epoch: "epoch", after: 4, wait: 10))
+        await server.respondChanges(poll, changed: false)
+        await server.waitForRequests(poll + 2)
+        let second = await server.requests[poll + 1]
+        XCTAssertEqual(second, .changes(epoch: "epoch", after: 4, wait: 10))
+        await server.set { $0.revision = 5; $0.rows["tasks"] = [task("t1")]; $0.tokens["tasks"] = "b" }
+        await server.respondChanges(poll + 1, changed: true)
+        let updated = await nextProjection(&updates)
+        XCTAssertEqual(updated?.projection?.revision, 5)
+        XCTAssertEqual(updated?.projection?.tasks.map(\.id.rawValue), ["t1"])
+        let reread = await server.requests[(poll + 2)...].filter { if case .page = $0 { true } else { false } }
+        XCTAssertEqual(reread, [.page("tasks", cursor: nil)])
+        await session.stop()
+    }
+
+    func testEpochChangeClearsTheOldViewAndStartsAtTheNewRevision() async throws {
+        let server = SectionServer()
+        await server.set { $0.epoch = "epoch-a"; $0.revision = 7 }
+        let session = DomainSyncSession(transport: server, identity: identity("one"))
+        var updates = await session.subscribe().makeAsyncIterator()
+        let first = await nextProjection(&updates)
+        XCTAssertEqual(first?.projection?.dataEpoch.rawValue, "epoch-a")
+        let poll = await server.waitForChangesRequest()
+        await server.set { $0.epoch = "epoch-b"; $0.revision = 1; $0.holdSummaries = true }
+        await server.fail(poll, code: "stale_epoch")
+        await server.waitForRequests(poll + 2)
         let clearing = await session.state
-        XCTAssertNil(clearing.projection, "Stale epoch must not remain visible as current")
-        try await transport.respondProjection(2, epoch: "epoch-b", revision: 1)
-        let secondResult = await nextProjection(&updates)
-        let second = try XCTUnwrap(secondResult)
-        XCTAssertEqual(second.projection?.dataEpoch.rawValue, "epoch-b")
-        XCTAssertEqual(second.projection?.revision, 1)
+        XCTAssertNil(clearing.projection, "A stale epoch must not remain visible as current")
+        try await server.releaseSummary(poll + 1)
+        let second = await nextProjection(&updates)
+        XCTAssertEqual(second?.projection?.dataEpoch.rawValue, "epoch-b")
+        XCTAssertEqual(second?.projection?.revision, 1)
         await session.stop()
     }
 
     func testLateOldIdentityResponseCannotPublishIntoNewIdentity() async throws {
-        let old = ControlledDomainTransport()
-        let new = ControlledDomainTransport()
+        let old = SectionServer()
+        let new = SectionServer()
+        await old.set { $0.holdSummaries = true; $0.epoch = "old-epoch"; $0.revision = 50 }
+        await new.set { $0.holdSummaries = true; $0.epoch = "new-epoch"; $0.revision = 2 }
         let session = DomainSyncSession(transport: old, identity: identity("old"))
         var updates = await session.subscribe().makeAsyncIterator()
         await old.waitForRequests(1)
         await session.use(transport: new, identity: identity("new"))
         await new.waitForRequests(1)
-        try await old.respondProjection(0, epoch: "old-epoch", revision: 50)
+        try await old.releaseSummary(0)
         let pending = await session.state
         XCTAssertEqual(pending.identity, identity("new"))
         XCTAssertNil(pending.projection)
-        try await new.respondProjection(0, epoch: "new-epoch", revision: 2)
-        let currentResult = await nextProjection(&updates)
-        let current = try XCTUnwrap(currentResult)
-        XCTAssertEqual(current.identity, identity("new"))
-        XCTAssertEqual(current.projection?.dataEpoch.rawValue, "new-epoch")
+        try await new.releaseSummary(0)
+        let current = await nextProjection(&updates)
+        XCTAssertEqual(current?.identity, identity("new"))
+        XCTAssertEqual(current?.projection?.dataEpoch.rawValue, "new-epoch")
         await session.stop()
     }
 
-    func testUnchangedPollKeepsCursorAndChangedPollFetchesFullProjection() async throws {
-        let transport = ControlledDomainTransport()
-        let session = DomainSyncSession(transport: transport, identity: identity("one"))
+    func testIncompatibleChangeResponseClearsTheView() async throws {
+        let server = SectionServer()
+        let session = DomainSyncSession(transport: server, identity: identity("one"), backoff: ConnectionBackoff(initial: .seconds(60)))
         var updates = await session.subscribe().makeAsyncIterator()
-        await transport.waitForRequests(1)
-        try await transport.respondProjection(0, epoch: "epoch", revision: 4)
         _ = await nextProjection(&updates)
-        await transport.waitForRequests(2)
-        await transport.respondChanges(1, epoch: "epoch", revision: 4, changed: false)
-        await transport.waitForRequests(3)
-        let secondPoll = await transport.request(2)
-        XCTAssertEqual(secondPoll, .changes(epoch: "epoch", after: 4, wait: 10))
-        await transport.respondChanges(2, epoch: "epoch", revision: 5, changed: true)
-        await transport.waitForRequests(4)
-        let refreshRequest = await transport.request(3)
-        XCTAssertEqual(refreshRequest, .projection)
-        try await transport.respondProjection(3, epoch: "epoch", revision: 5)
-        let updatedResult = await nextProjection(&updates)
-        let updated = try XCTUnwrap(updatedResult)
-        XCTAssertEqual(updated.projection?.revision, 5)
-        await session.stop()
-    }
-
-    func testIncompatibleChangeResponseClearsProjection() async throws {
-        let transport = ControlledDomainTransport()
-        let session = DomainSyncSession(transport: transport, identity: identity("one"), backoff: ConnectionBackoff(initial: .seconds(60)))
-        var updates = await session.subscribe().makeAsyncIterator()
-        await transport.waitForRequests(1)
-        try await transport.respondProjection(0, epoch: "epoch", revision: 4)
-        _ = await nextProjection(&updates)
-        await transport.waitForRequests(2)
-        await transport.incompatibleResponse(1)
+        let poll = await server.waitForChangesRequest()
+        await server.fail(poll, code: "incompatible_protocol")
         let failure = await updates.next()
         XCTAssertNil(failure?.projection)
         guard let failure else { return XCTFail("Expected offline state") }
-        if case .offline(_) = failure.connection {} else { XCTFail("Expected offline state") }
-        await session.stop()
-    }
-
-    func testRefetchCannotPublishLowerRevisionWithinSameEpoch() async throws {
-        let transport = ControlledDomainTransport()
-        let session = DomainSyncSession(transport: transport, identity: identity("one"), backoff: ConnectionBackoff(initial: .seconds(60)))
-        var updates = await session.subscribe().makeAsyncIterator()
-        await transport.waitForRequests(1)
-        try await transport.respondProjection(0, epoch: "epoch", revision: 8)
-        _ = await nextProjection(&updates)
-        await transport.waitForRequests(2)
-        await transport.respondChanges(1, epoch: "epoch", revision: 9, changed: true)
-        await transport.waitForRequests(3)
-        try await transport.respondProjection(2, epoch: "epoch", revision: 7)
-        let rejected = await updates.next()
-        XCTAssertNil(rejected?.projection, "A stale 200 snapshot must not replace revision 8")
-        guard let rejected else { return XCTFail("Expected rejected state") }
-        if case .offline(_) = rejected.connection {} else { XCTFail("Expected protocol error") }
+        if case .offline = failure.connection {} else { XCTFail("Expected offline state") }
         await session.stop()
     }
 }

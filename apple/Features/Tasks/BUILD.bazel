@@ -9,6 +9,8 @@ swift_library(
         "//apple/Domain:AlondraDomain",
         "//apple:AlondraShared",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
+        "//apple/Features/DomainDependency:AlondraDomainDependency",
+        "//apple/Contracts:AlondraContracts",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -18,11 +20,13 @@ swift_test(
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraTasksFeatureTests",
     srcs = glob(["Tests/**/*.swift"]),
+    data = ["//apple/APIClient:domain_v2_wire_fixtures"],
     deps = [
         "//apple/Domain:AlondraDomain",
         ":AlondraTasksFeature",
         "//apple:AlondraShared",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
+        "//apple/Contracts:AlondraContracts",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],

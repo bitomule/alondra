@@ -37,16 +37,14 @@ struct ServicePullRequestView: View {
     private var reviewContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
-                if let pr = store.displayedPR {
-                    Text(pr.title).font(.title3.weight(.bold))
-                    Text(pr.summary).font(.footnote.monospaced()).foregroundStyle(.secondary)
-                    PRStatus(pr: pr)
-                    ForEach(store.reports) { AttachedReport(report: $0, showsBody: true) }
-                    ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { store.visibleQuestionIDs.contains($0.id) }) { child in
-                        ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question), showsDetail: true)
-                    }
-                    if let body = pr.body, !body.isEmpty { ServicePRDescription(markdown: body, expanded: store.descriptionExpanded ?? (body.count <= 600)) { store.send(.toggleDescription) } }
+                Text(store.observation?.title ?? store.lastKnownCard.root.title).font(.title3.weight(.bold))
+                Text(store.lastKnownCard.summary).font(.footnote.monospaced()).foregroundStyle(.secondary)
+                PRStatus(card: store.lastKnownCard)
+                ForEach(store.information, id: \.id) { AttachedReport(report: $0, showsBody: true) }
+                ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { store.visibleQuestionIDs.contains($0.id) }) { child in
+                    ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question), showsDetail: true)
                 }
+                if let body = store.observation?.body, !body.isEmpty { ServicePRDescription(markdown: body, expanded: store.descriptionExpanded ?? (body.count <= 600)) { store.send(.toggleDescription) } }
                 if let files = store.diff.files {
                     Text("Tap a line to comment on it").font(.caption).foregroundStyle(.secondary)
                     if store.diff.diffTruncated {
@@ -86,7 +84,7 @@ struct ServicePullRequestView: View {
                 ServiceAttachButton(store: store.scope(state: \.diff.attachmentPicker, action: \.diff.attachmentPicker))
                 TextField("A note for the node (optional)", text: Binding(get: { store.diff.note }, set: { _ = store.send(.diff(.noteChanged($0))) }), axis: .vertical)
                     .lineLimit(1...4).textFieldStyle(.roundedBorder)
-            }.disabled(store.diff.isSending || store.diff.mutationOutcome?.uncertainID != nil)
+            }.disabled(store.diff.isSending || store.diff.mutationOutcome == .unknown)
             HStack(spacing: 8) {
                 Button { _ = store.send(.diff(.askTapped)) } label: {
                     Label("Ask", systemImage: "questionmark.bubble").frame(maxWidth: .infinity)
@@ -97,9 +95,7 @@ struct ServicePullRequestView: View {
             }
             Group {
                 ServicePRMainAction(store: store.scope(state: \.pr, action: \.pr), placement: .bar(prominent: !store.diff.hasDraft))
-                if let pr = store.displayedPR {
-                    PRFooter(pr: pr) { _ = store.send(.pr(.setAsideTapped)) }.padding(.horizontal, 4)
-                }
+                PRFooter(card: store.lastKnownCard).padding(.horizontal, 4)
             }.disabled(store.diff.isSending || !store.pr.canAct)
             if store.diff.commentsNeedReview {
                 Text("The diff changed. Check each comment before confirming.").font(.caption)

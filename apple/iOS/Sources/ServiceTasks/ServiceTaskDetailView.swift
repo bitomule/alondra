@@ -8,10 +8,9 @@ import SwiftUI
 struct ServiceTaskDetailView: View {
     let store: StoreOf<TaskDetailFeature>
     let presentation: ServiceTaskPresentation
-    let openTask: (String) -> Void
+    let openTask: (DomainV2.TaskId) -> Void
     let focusInbox: (String) -> Void
     private var fleet: ServiceTaskPresentation { presentation }
-    private var details: TaskInFull? { store.detail }
 
     var body: some View {
         let task = store.task
@@ -37,7 +36,7 @@ struct ServiceTaskDetailView: View {
         .sensoryFeedback(.success, trigger: store.successfulActionCount)
     }
 
-    private func content(_ task: WorkTask) -> some View {
+    private func content(_ task: DomainV2.Task) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 24) {
                 header(task)
@@ -56,16 +55,18 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private func header(_ task: WorkTask) -> some View {
+    private func header(_ task: DomainV2.Task) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Glyph(task: task)
                 Text(task.state.label.prefix(1).uppercased() + task.state.label.dropFirst())
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(task.tint)
-                Text("since \(relative(task.stateSince))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                if let since = fleet.stateSince(of: task) {
+                    Text("since \(relative(since))")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
             Text(task.title)
                 .font(.display(.largeTitle, weight: .bold))
@@ -76,7 +77,7 @@ struct ServiceTaskDetailView: View {
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
-            if let node = fleet.node(of: task) {
+            if let node = fleet.node(task.agentId) {
                 Text(node.displayName)
                     .font(.mono(.caption))
                     .foregroundStyle(.secondary)
@@ -94,19 +95,19 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private func origin(_ task: WorkTask) -> String? {
+    private func origin(_ task: DomainV2.Task) -> String? {
         let request = fleet.request(of: task).map { String(localized: "from “\(fleet.title(of: $0))”") }
         let parts = [fleet.project(of: task), request].compactMap(\.self)
         return parts.isEmpty ? nil : parts.joined(separator: " · ")
     }
 
     @ViewBuilder
-    private func pending(_ task: WorkTask) -> some View {
+    private func pending(_ task: DomainV2.Task) -> some View {
         let items = fleet.items(forTask: task)
         if !items.isEmpty {
             DetailSection(title: String(localized: "Waiting for You"), symbol: "tray.full") {
                 VStack(alignment: .leading, spacing: 8) {
-                    ForEach(items) { item in
+                    ForEach(items, id: \.id) { item in
                         Button { focusInbox(item.id) } label: {
                             HStack(spacing: 10) {
                                 KindBadge(kind: Kind(item))
@@ -132,8 +133,8 @@ struct ServiceTaskDetailView: View {
     }
 
     @ViewBuilder
-    private func request(_ task: WorkTask) -> some View {
-        if let request = fleet.request(of: task), let text = request.text, !text.isEmpty {
+    private func request(_ task: DomainV2.Task) -> some View {
+        if let request = fleet.request(of: task), case let text = request.body, !text.isEmpty {
             DetailSection(title: String(localized: "Request"), symbol: "text.quote") {
                 VStack(alignment: .leading, spacing: 10) {
                     Text(text)
@@ -141,7 +142,7 @@ struct ServiceTaskDetailView: View {
                         .foregroundStyle(Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
-                    Text(verbatim: "\(relative(request.createdAt)) · \(String(localized: "\(fleet.board.tree(for: request.id)?.rows.count ?? 0) tasks"))")
+                    Text(verbatim: [fleet.createdAt(of: request).map(relative), String(localized: "\(fleet.board.tree(for: request.id)?.rows.count ?? 0) tasks")].compactMap { $0 }.joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }
@@ -151,13 +152,14 @@ struct ServiceTaskDetailView: View {
     }
 
     @ViewBuilder
-    private func pullRequests(_ task: WorkTask) -> some View {
+    private func pullRequests(_ task: DomainV2.Task) -> some View {
         let train = fleet.board.mergeOrder(around: task).flatMap { owner in fleet.pullRequests(of: owner).map { (owner: owner, pr: $0) } }
         if !train.isEmpty {
             DetailSection(title: String(localized: "PRs in merge order"), symbol: "arrow.triangle.merge") {
                 VStack(spacing: 0) {
                     ForEach(Array(train.enumerated()), id: \.element.pr.id) { index, entry in
-                        ServicePullRequestLine(order: index + 1, pr: entry.pr, mine: entry.owner.id == task.id, waiting: fleet.inbox.contains { $0.id == InboxItem.pullRequest(entry.pr).id }, open: focusInbox)
+                        ServicePullRequestLine(order: index + 1, pr: entry.pr, observation: fleet.observation(of: entry.pr),
+                                               stackedOn: fleet.stackedOn(entry.pr), mine: entry.owner.id == task.id, waitingItem: fleet.inboxItem(for: entry.pr.id)?.id, open: focusInbox)
                             .overlay(alignment: .top) {
                                 if index > 0 { Palette.hairline.frame(height: 1).padding(.leading, 16) }
                             }
@@ -167,7 +169,7 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private func dependencies(_ task: WorkTask) -> some View {
+    private func dependencies(_ task: DomainV2.Task) -> some View {
         DetailSection(title: String(localized: "Dependencies"), symbol: "link") {
             VStack(spacing: 0) {
                 dependencyRow(String(localized: "Depends on"), fleet.board.dependencies(of: task))
@@ -177,7 +179,7 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private func dependencyRow(_ title: String, _ tasks: [WorkTask]) -> some View {
+    private func dependencyRow(_ title: String, _ tasks: [DomainV2.Task]) -> some View {
         HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(title)
                 .foregroundStyle(Palette.ink)
@@ -187,7 +189,7 @@ struct ServiceTaskDetailView: View {
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .trailing, spacing: 6) {
-                    ForEach(tasks) { other in
+                    ForEach(tasks, id: \.id) { other in
                         Button { openTask(other.id) } label: {
                             HStack(spacing: 6) {
                                 Glyph(task: other, size: .tiny)
@@ -208,13 +210,13 @@ struct ServiceTaskDetailView: View {
     }
 
     @ViewBuilder
-    private func documents(_ task: WorkTask) -> some View {
-        let reports = fleet.documents(of: task, in: details)
+    private func documents(_ task: DomainV2.Task) -> some View {
+        let reports = fleet.documents(of: task)
         if !reports.isEmpty {
             DetailSection(title: String(localized: "Documents"), symbol: "doc.text") {
                 VStack(spacing: 0) {
                     ForEach(Array(reports.enumerated()), id: \.element.id) { index, report in
-                        documentRow(report)
+                        documentRow(report, of: task)
                             .overlay(alignment: .top) {
                                 if index > 0 { Palette.hairline.frame(height: 1).padding(.leading, 16) }
                             }
@@ -224,10 +226,11 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private func documentRow(_ report: Report) -> some View {
-        let unread = fleet.isUnread(report)
+    private func documentRow(_ report: TaskDocument, of task: DomainV2.Task) -> some View {
+        let waiting = fleet.reviewItem(for: report.id, of: task.id)
+        let unread = waiting != nil
         return Button {
-            if unread { focusInbox(InboxItem.report(report).id) }
+            if let waiting { focusInbox(waiting.id) }
         } label: {
             HStack(spacing: 12) {
                 Image(systemName: "doc.text")
@@ -235,11 +238,11 @@ struct ServiceTaskDetailView: View {
                     .foregroundStyle(Palette.sky)
                     .frame(width: 22)
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(report.title)
+                    Text(report.document.title)
                         .font(.body.weight(.semibold))
                         .foregroundStyle(Palette.ink)
                         .multilineTextAlignment(.leading)
-                    Text(verbatim: "\(unread ? String(localized: "unread") : String(localized: "read")) · \(relative(report.createdAt))")
+                    Text(unread ? String(localized: "unread") : String(localized: "read"))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -258,18 +261,18 @@ struct ServiceTaskDetailView: View {
         .disabled(!unread)
     }
 
-    private func options(_ task: WorkTask) -> some View {
+    private func options(_ task: DomainV2.Task) -> some View {
         DetailSection(title: String(localized: "Options"), symbol: "slider.horizontal.3") {
             VStack(spacing: 0) {
                 HStack {
                     Text("PR handling")
                     Spacer()
-                    Text(OptionSpec.prHandling(autoMerge: task.options?.mergesAlone ?? false))
+                    Text(OptionSpec.prHandling(autoMerge: !task.reviewPrs))
                         .foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 16)
                 .padding(.vertical, 13)
-                if let effort = task.options?.effort {
+                if let effort = fleet.runtime?.task(task.id)?.effort, !effort.isEmpty {
                     Palette.hairline.frame(height: 1).padding(.leading, 16)
                     HStack {
                         Text("Effort")
@@ -284,7 +287,7 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private var history: [WorkTask.Transition]? { details?.task.history }
+    private var history: [DomainV2.TaskStep]? { store.history?.history }
 
     @ViewBuilder
     private var timeline: some View {
@@ -300,14 +303,14 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private func actions(_ task: WorkTask) -> some View {
+    private func actions(_ task: DomainV2.Task) -> some View {
         VStack(spacing: 10) {
             ServiceActionButton(title: String(localized: "Cancel Task"), symbol: "xmark.circle", tint: Palette.rose,
-                         enabled: !task.state.isFinished && !store.isActing && store.mutationOutcome?.uncertainID == nil) {
+                         enabled: !task.state.isFinished && !store.isActing) {
                 store.send(.cancelTapped)
             }
             ServiceActionButton(title: String(localized: "Reopen"), symbol: "arrow.clockwise", tint: Palette.sky,
-                         enabled: task.state.isFinished && !store.isActing && store.mutationOutcome?.uncertainID == nil) {
+                         enabled: task.state.isFinished && !store.isActing) {
                 store.send(.reopenTapped)
             }
             ServiceTaskOutcome(outcome: store.mutationOutcome)
@@ -317,16 +320,17 @@ struct ServiceTaskDetailView: View {
 
 private struct ServicePullRequestLine: View {
     let order: Int
-    let pr: PullRequest
+    let pr: DomainV2.PullRequest
+    let observation: DomainV2.PullRequestRuntime?
+    let stackedOn: DomainV2.PullRequest?
     let mine: Bool
 
-    let waiting: Bool
+    let waitingItem: String?
     let open: (String) -> Void
 
     var body: some View {
-        let item = InboxItem.pullRequest(pr)
         Button {
-            if waiting { open(item.id) }
+            if let waitingItem { open(waitingItem) }
         } label: {
             HStack(alignment: .top, spacing: 10) {
                 Text(order, format: .number)
@@ -335,7 +339,7 @@ private struct ServicePullRequestLine: View {
                     .background(Palette.hairline, in: .circle)
                 VStack(alignment: .leading, spacing: 4) {
                     HStack(spacing: 6) {
-                        Text(verbatim: "#\(pr.number) \(pr.title)")
+                        Text(verbatim: "#\(pr.number) \(observation?.title ?? pr.repository)")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(Palette.ink)
                             .multilineTextAlignment(.leading)
@@ -354,11 +358,11 @@ private struct ServicePullRequestLine: View {
                         .font(.mono(.caption))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.leading)
-                    if let checks = pr.checks, !checks.isEmpty {
+                    if let checks = observation?.checks, !checks.isEmpty {
                         FlowChecks(checks: checks)
                     }
-                    if let stacked = pr.stackedOn {
-                        Label(stacked, systemImage: "square.stack.3d.up")
+                    if let stackedOn {
+                        Label(stackedOn.stackedOnLabel, systemImage: "square.stack.3d.up")
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(.secondary)
                     }
@@ -370,7 +374,7 @@ private struct ServicePullRequestLine: View {
             .contentShape(.rect)
         }
         .buttonStyle(PressStyle())
-        .disabled(!waiting)
+        .disabled(waitingItem == nil)
     }
 }
 
@@ -396,20 +400,20 @@ private struct FlowChecks: View {
 }
 
 private struct HistoryLine: View {
-    let step: WorkTask.Transition
+    let step: DomainV2.TaskStep
     let first: Bool
     let last: Bool
 
     var body: some View {
-        let tint = step.to.tint
+        let tint = step.state.tint
         HStack(alignment: .top, spacing: 10) {
             Text(Date(millis: step.at), format: .dateTime.hour().minute())
                 .font(.mono(.caption))
                 .foregroundStyle(.tertiary)
                 .frame(width: 44, alignment: .leading)
-            Glyph(symbol: step.to.symbol, tint: tint, size: .tiny)
+            Glyph(symbol: step.state.symbol, tint: tint, size: .tiny)
                 .background(Palette.card, in: .circle)
-            (Text(step.to.label).fontWeight(.semibold).foregroundStyle(tint) + Text(verbatim: " · \(step.summary)"))
+            (Text(step.state.label).fontWeight(.semibold).foregroundStyle(tint) + Text(verbatim: " · \(step.summary)"))
                 .font(.subheadline)
                 .foregroundStyle(Palette.ink.opacity(0.86))
                 .fixedSize(horizontal: false, vertical: true)
@@ -434,7 +438,7 @@ struct ServiceTaskOutcome: View {
     let outcome: TaskMutationOutcome?
     var body: some View {
         switch outcome {
-        case .unknown: Text("The response was lost. This action is blocked until its outcome is reconciled.").foregroundStyle(Palette.ember)
+        case .unknown: Text("We couldn’t confirm the result. Try again; it won’t be applied twice.").foregroundStyle(Palette.ember)
         case .rejected: EmptyView() // Root presents the original failure toast.
         case .obsolete: Text("The connection changed. Open this task again.").foregroundStyle(.secondary)
         case .confirmed, nil: EmptyView()

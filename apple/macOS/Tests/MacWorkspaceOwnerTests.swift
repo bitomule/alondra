@@ -56,8 +56,7 @@ struct MacWorkspaceOwnerTests {
         let answers = ProbeAnswers(probes)
         return MacWorkspaceOwner(account: account, isDaemonRunning: { answers.next() },
             openLocal: {
-                try await CloudAppServices.local(LoopbackSession(identity: identity, deviceName: "Mac"),
-                                                 identity: identity, storageDirectory: directory)
+                try await CloudAppServices.local(LoopbackSession(identity: identity, deviceName: "Mac"), identity: identity)
             },
             startRemote: { remoteStarts.record() }, reprobeInterval: .milliseconds(5))
     }

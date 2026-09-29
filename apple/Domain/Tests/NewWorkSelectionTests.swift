@@ -18,11 +18,11 @@ import Testing
         #expect(selection.chosen["effort"] == .value("hard"))
         selection.apply(updated)
 
-        let body = selection.body(text: "Do the work", attachments: ["upload-1"])
-        let sent = try JSONSerialization.jsonObject(with: JSONEncoder().encode(body)) as? [String: Any]
-        #expect(sent?["project"] as? String == "A")
-        #expect(sent?["attachments"] as? [String] == ["upload-1"])
-        #expect((sent?["options"] as? [String: Any])?.isEmpty == true)
+        let upload = DomainV2.AttachmentRef(id: "upload-1", name: "a", contentDigest: "d", contentReference: "r", bytes: 1)
+        let body = selection.body(text: "Do the work", attachments: [upload])
+        #expect(body.project == "A")
+        #expect(body.attachments == [upload])
+        #expect(body.options.isEmpty)
     }
 
     @Test func changingProjectCannotSendPreviousProjectsOverrides() throws {
@@ -36,15 +36,15 @@ import Testing
 
         selection.project = "B"
         selection.set(oldSpec, to: .value("hard"))
-        let sent = try JSONSerialization.jsonObject(with: JSONEncoder().encode(selection.body(text: "Next"))) as? [String: Any]
-        #expect(sent?["project"] as? String == "B")
-        #expect((sent?["options"] as? [String: Any])?.isEmpty == true)
-        #expect(sent?["issue"] == nil)
+        let sent = selection.body(text: "Next")
+        #expect(sent.project == "B")
+        #expect(sent.options.isEmpty)
+        #expect(sent.issue == nil)
 
         selection.select(issue: "owner/other#2", inferredProject: "C")
-        let issueSent = try JSONSerialization.jsonObject(with: JSONEncoder().encode(selection.body(text: "Issue"))) as? [String: Any]
-        #expect(issueSent?["project"] as? String == "C")
-        #expect(issueSent?["issue"] as? String == "owner/other#2")
-        #expect((issueSent?["options"] as? [String: Any])?.isEmpty == true)
+        let issueSent = selection.body(text: "Issue")
+        #expect(issueSent.project == "C")
+        #expect(issueSent.issue == "owner/other#2")
+        #expect(issueSent.options.isEmpty)
     }
 }

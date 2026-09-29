@@ -1,4 +1,3 @@
-import AlondraCommands
 import AlondraContracts
 import AlondraRecovery
 import ComposableArchitecture
@@ -7,9 +6,9 @@ import Foundation
 public struct DeliveryJournalClient: Sendable {
     public var available: Bool
     public var refresh: @Sendable () async throws -> DeliveryJournalSnapshot
-    public var resolve: @Sendable (DeliveryAttempt, CommandScope, Bool, Bool, Bool) async throws -> DeliveryJournalSnapshot
+    public var resolve: @Sendable (DomainV2.DeliveryAttempt, CommandScope, Bool, Bool, Bool) async throws -> DeliveryJournalSnapshot
     public init(available: Bool = true, refresh: @escaping @Sendable () async throws -> DeliveryJournalSnapshot,
-                resolve: @escaping @Sendable (DeliveryAttempt, CommandScope, Bool, Bool, Bool) async throws -> DeliveryJournalSnapshot) {
+                resolve: @escaping @Sendable (DomainV2.DeliveryAttempt, CommandScope, Bool, Bool, Bool) async throws -> DeliveryJournalSnapshot) {
         self.available = available; self.refresh = refresh; self.resolve = resolve
     }
 }
@@ -29,7 +28,7 @@ public extension DependencyValues {
         public var snapshot: DeliveryJournalSnapshot?
         public var error: String?
         public var presented = false
-        public var selected: DeliveryAttempt?
+        public var selected: DomainV2.DeliveryAttempt?
         public var terminalChecked = false
         public var duplicateRisk = false
         public var resolving = false
@@ -37,16 +36,16 @@ public extension DependencyValues {
         public var active = false
         public var loading = false
         public var refreshRequested = false
-        public var lastTick: UInt64?
+        public var lastTick: DomainV2.Revision?
         public init() {}
-        public var pending: [DeliveryAttempt] { snapshot?.attempts.filter(\.needsAttention) ?? [] }
+        public var pending: [DomainV2.DeliveryAttempt] { snapshot?.attempts.filter(\.needsAttention) ?? [] }
     }
     public enum Action {
         case appeared, disappeared, refresh
-        case syncTick(UInt64)
+        case syncTick(DomainV2.Revision)
         case loaded(UInt64, DeliveryJournalSnapshot)
         case failed(UInt64, String)
-        case present(Bool), select(UInt64?)
+        case present(Bool), select(Int64?)
         case terminalChecked(Bool), duplicateRisk(Bool), resolve(retry: Bool)
         case resolved(UInt64, DeliveryJournalSnapshot)
         case resolutionFailed(UInt64, String)

@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraShared
 import ComposableArchitecture
 import CoreTransferable
@@ -17,21 +18,16 @@ private struct AttachmentExport: Transferable {
 
 public struct AttachmentDownloads: View {
     let store: StoreOf<AttachmentDownloadFeature>
-    let attachments: [Attachment]
-    public init(store: StoreOf<AttachmentDownloadFeature>, attachments: [Attachment]) {
+    let attachments: [DomainV2.AttachmentRef]
+    public init(store: StoreOf<AttachmentDownloadFeature>, attachments: [DomainV2.AttachmentRef]) {
         self.store = store; self.attachments = attachments
     }
     public var body: some View {
         ForEach(Array(attachments.enumerated()), id: \.offset) { _, attachment in
-            if let path = attachment.storedPath {
-                Button { store.send(.download(path: path, name: attachment.name)) } label: {
-                    Label(attachment.name, systemImage: "arrow.down.doc")
-                }
-                .disabled(store.exporting || store.previewURL != nil)
-            } else {
-                Label(attachment.name + " (unavailable)", systemImage: "doc.badge.ellipsis")
-                    .foregroundStyle(.secondary)
+            Button { store.send(.download(attachment)) } label: {
+                Label(attachment.name, systemImage: "arrow.down.doc")
             }
+            .disabled(store.exporting || store.previewURL != nil)
         }
     }
 }

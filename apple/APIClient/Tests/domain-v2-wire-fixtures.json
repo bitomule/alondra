@@ -121,14 +121,17 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
       {
         "id": "r",
         "body": "Build requested result",
-        "closed": false
+        "closed": false,
+        "title": null,
+        "answer": null,
+        "withdrawn": false
       }
     ],
     "interactions": [
@@ -166,7 +169,8 @@
           "feedback": []
         },
         "revision": 8,
-        "order": 7
+        "order": 7,
+        "withdrawn": false
       },
       {
         "attachments": [
@@ -198,7 +202,8 @@
           "read_by": []
         },
         "revision": 4,
-        "order": 4
+        "order": 4,
+        "withdrawn": false
       },
       {
         "attachments": [],
@@ -246,7 +251,8 @@
           }
         },
         "revision": 6,
-        "order": 5
+        "order": 5,
+        "withdrawn": false
       }
     ],
     "pull_requests": [],
@@ -254,7 +260,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "completed": {
     "protocol_version": 2,
@@ -378,14 +385,17 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
       {
         "id": "r",
         "body": "Build requested result",
-        "closed": false
+        "closed": false,
+        "title": null,
+        "answer": null,
+        "withdrawn": false
       }
     ],
     "interactions": [
@@ -423,7 +433,8 @@
           "feedback": []
         },
         "revision": 8,
-        "order": 7
+        "order": 7,
+        "withdrawn": false
       },
       {
         "attachments": [
@@ -455,7 +466,8 @@
           "read_by": []
         },
         "revision": 4,
-        "order": 4
+        "order": 4,
+        "withdrawn": false
       },
       {
         "attachments": [],
@@ -503,7 +515,8 @@
           }
         },
         "revision": 6,
-        "order": 5
+        "order": 5,
+        "withdrawn": false
       }
     ],
     "pull_requests": [],
@@ -511,7 +524,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "information": {
     "protocol_version": 2,
@@ -573,14 +587,17 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
       {
         "id": "r",
         "body": "Build requested result",
-        "closed": false
+        "closed": false,
+        "title": null,
+        "answer": null,
+        "withdrawn": false
       }
     ],
     "interactions": [
@@ -614,7 +631,8 @@
           "read_by": []
         },
         "revision": 4,
-        "order": 4
+        "order": 4,
+        "withdrawn": false
       }
     ],
     "pull_requests": [],
@@ -622,7 +640,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "pr_question": {
     "protocol_version": 2,
@@ -746,14 +765,17 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
       {
         "id": "r",
         "body": "Build requested result",
-        "closed": false
+        "closed": false,
+        "title": null,
+        "answer": null,
+        "withdrawn": false
       }
     ],
     "interactions": [
@@ -788,7 +810,8 @@
           "feedback": []
         },
         "revision": 7,
-        "order": 7
+        "order": 7,
+        "withdrawn": false
       },
       {
         "attachments": [],
@@ -823,7 +846,8 @@
           "answer": null
         },
         "revision": 6,
-        "order": 5
+        "order": 5,
+        "withdrawn": false
       }
     ],
     "pull_requests": [
@@ -849,7 +873,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "question": {
     "protocol_version": 2,
@@ -938,14 +963,17 @@
       {
         "id": "a",
         "name": "Instance A",
-        "connected": true
+        "connected": false
       }
     ],
     "requests": [
       {
         "id": "r",
         "body": "Build requested result",
-        "closed": false
+        "closed": false,
+        "title": null,
+        "answer": null,
+        "withdrawn": false
       }
     ],
     "interactions": [
@@ -979,7 +1007,8 @@
           "read_by": []
         },
         "revision": 4,
-        "order": 4
+        "order": 4,
+        "withdrawn": false
       },
       {
         "attachments": [],
@@ -1016,7 +1045,8 @@
           "answer": null
         },
         "revision": 5,
-        "order": 5
+        "order": 5,
+        "withdrawn": false
       }
     ],
     "pull_requests": [],
@@ -1024,6 +1054,7 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   }
 }

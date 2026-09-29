@@ -8,6 +8,13 @@ public enum ScheduleCommandTarget: Hashable, Sendable {
     case schedule(String)
 }
 
+public struct ScheduleAttempt: Equatable, Sendable {
+    public enum Operation: Equatable, Sendable { case save(ScheduledTaskDraft), run, delete }
+    public let id: String
+    public let operation: Operation
+    public init(id: String, operation: Operation) { self.id = id; self.operation = operation }
+}
+
 @Reducer
 public struct ScheduleFeature {
     @ObservableState
@@ -24,10 +31,10 @@ public struct ScheduleFeature {
         public var busyIDs: Set<String> = []
         /// One command at a time per schedule, across save/run/enable/delete.
         public var inFlightTargets: Set<ScheduleCommandTarget> = []
-        /// Journal IDs remain blocked through refresh and editor dismissal.
         public var submittedDrafts: [UInt64: ScheduledTaskDraft] = [:]
-        public var uncertainDraftRevisions: [UUID: UInt64] = [:]
-        public var uncertainByTarget: [ScheduleCommandTarget: UUID] = [:]
+        /// The attempt ID of a command whose outcome is unknown, with the draft it sent. Sending
+        /// the same draft again reuses it, so the Mac returns the first result.
+        public var attempts: [ScheduleCommandTarget: ScheduleAttempt] = [:]
         public var lastMutationOutcome: TaskMutationOutcome?
         public var loadError: String?
         public var catalogError: String?
@@ -45,7 +52,7 @@ public struct ScheduleFeature {
         public var canSaveDraft: Bool {
             guard let draft, ScheduleDraftRules.canSave(draft), optionsReady, !optionsLoading, !isSaving else { return false }
             let target = editingID.map(ScheduleCommandTarget.schedule) ?? .new
-            return uncertainByTarget[target] == nil && !inFlightTargets.contains(target)
+            return !inFlightTargets.contains(target)
         }
 
         public init() {}
@@ -69,15 +76,13 @@ public struct ScheduleFeature {
         case enabledSaved(String, TaskMutationOutcome, UInt64)
         case deleteConfirmed(String)
         case deleted(String, TaskMutationOutcome, UInt64)
-        /// Sent only by the scoped journal owner after resolving the exact command ID.
-        case commandResolved(UUID, rejection: String?)
-        case commandReconciled(UUID)
         case selected(String?)
         case inspectorPresented(Bool)
         case identityChanged
     }
 
     @Dependency(\.scheduleOperations) var operations
+    @Dependency(\.uuid) var uuid
     public init() {}
 
     public var body: some ReducerOf<Self> {
@@ -160,8 +165,7 @@ public struct ScheduleFeature {
             case .saveTapped:
                 guard state.canSaveDraft, let draft = state.draft else { return .none }
                 let target: ScheduleCommandTarget = state.editingID.map { .schedule($0) } ?? .new
-                guard state.uncertainByTarget[target] == nil,
-                    state.inFlightTargets.insert(target).inserted else { return .none }
+                guard state.inFlightTargets.insert(target).inserted else { return .none }
                 var submitted = draft
                 submitted.options = ScheduleDraftRules.validOverrides(draft.options, in: state.optionSpecs)
                 let payload = submitted
@@ -171,15 +175,15 @@ public struct ScheduleFeature {
                 let epoch = state.presentationEpoch
                 let revision = state.editorRevision
                 state.submittedDrafts[revision] = draft
+                let attempt = attempt(for: target, sending: .save(payload), &state)
                 return .run { send in
-                    await send(.saved(await operations.save(payload, id), target, epoch, revision))
+                    await send(.saved(await operations.save(payload, id, attempt), target, epoch, revision))
                 }
                 .cancellable(id: state.mutationID)
             case .saved(let outcome, let target, let epoch, let revision):
                 guard epoch == state.presentationEpoch else { return .none }
                 state.inFlightTargets.remove(target)
                 record(outcome, for: target, in: &state)
-                if let id = outcome.uncertainID { state.uncertainDraftRevisions[id] = revision }
                 guard revision == state.editorRevision else {
                     return .send(.reconcile)
                 }
@@ -197,13 +201,13 @@ public struct ScheduleFeature {
                 }
             case .runTapped(let id):
                 guard state.tasks.contains(where: { $0.id == id }),
-                    state.uncertainByTarget[.schedule(id)] == nil,
                     state.inFlightTargets.insert(.schedule(id)).inserted else { return .none }
                 state.busyIDs.insert(id)
                 state.mutationError = nil
                 let epoch = state.presentationEpoch
+                let attempt = attempt(for: .schedule(id), sending: .run, &state)
                 return .run { send in
-                    await send(.runFinished(id, await operations.run(id), epoch))
+                    await send(.runFinished(id, await operations.run(id, attempt), epoch))
                 }
                 .cancellable(id: state.mutationID)
             case .runFinished(let id, let outcome, let epoch):
@@ -214,7 +218,6 @@ public struct ScheduleFeature {
                 return .send(.reconcile)
             case .enabledChanged(let id, let enabled):
                 guard let task = state.tasks.first(where: { $0.id == id }),
-                    state.uncertainByTarget[.schedule(id)] == nil,
                     state.inFlightTargets.insert(.schedule(id)).inserted else { return .none }
                 state.busyIDs.insert(id)
                 state.mutationError = nil
@@ -222,8 +225,9 @@ public struct ScheduleFeature {
                 draft.enabled = enabled
                 let submitted = draft
                 let epoch = state.presentationEpoch
+                let attempt = attempt(for: .schedule(id), sending: .save(submitted), &state)
                 return .run { send in
-                    await send(.enabledSaved(id, await operations.save(submitted, id), epoch))
+                    await send(.enabledSaved(id, await operations.save(submitted, id, attempt), epoch))
                 }
                 .cancellable(id: state.mutationID)
             case .enabledSaved(let id, let outcome, let epoch):
@@ -234,13 +238,13 @@ public struct ScheduleFeature {
                 return .send(.reconcile)
             case .deleteConfirmed(let id):
                 guard state.tasks.contains(where: { $0.id == id }),
-                    state.uncertainByTarget[.schedule(id)] == nil,
                     state.inFlightTargets.insert(.schedule(id)).inserted else { return .none }
                 state.busyIDs.insert(id)
                 state.mutationError = nil
                 let epoch = state.presentationEpoch
+                let attempt = attempt(for: .schedule(id), sending: .delete, &state)
                 return .run { send in
-                    await send(.deleted(id, await operations.delete(id), epoch))
+                    await send(.deleted(id, await operations.delete(id, attempt), epoch))
                 }
                 .cancellable(id: state.mutationID)
             case .deleted(let id, let outcome, let epoch):
@@ -248,26 +252,6 @@ public struct ScheduleFeature {
                 state.busyIDs.remove(id)
                 state.inFlightTargets.remove(.schedule(id))
                 record(outcome, for: .schedule(id), in: &state)
-                return .send(.reconcile)
-            case .commandResolved(let id, let rejection):
-                let targets = state.uncertainByTarget.filter { $0.value == id }.map(\.key)
-                guard !targets.isEmpty else { return .none }
-                if let revision = state.uncertainDraftRevisions.removeValue(forKey: id) {
-                    if rejection == nil, revision == state.editorRevision,
-                       state.draft == state.submittedDrafts[revision] {
-                        state.draft = nil; state.editingID = nil
-                    }
-                    state.submittedDrafts[revision] = nil
-                }
-                for target in targets { state.uncertainByTarget[target] = nil }
-                state.lastMutationOutcome = rejection.map(TaskMutationOutcome.rejected) ?? .confirmed
-                state.mutationError = rejection
-                return .send(.reconcile)
-            case .commandReconciled(let id):
-                let matching = state.uncertainByTarget.filter { $0.value == id }.map(\.key)
-                guard !matching.isEmpty else { return .none }
-                for target in matching { state.uncertainByTarget.removeValue(forKey: target) }
-                if state.lastMutationOutcome?.uncertainID == id { state.lastMutationOutcome = nil }
                 return .send(.reconcile)
             case .selected(let id):
                 guard id == nil || state.tasks.contains(where: { $0.id == id }) else { return .none }
@@ -291,7 +275,7 @@ public struct ScheduleFeature {
                 state.projects = []
                 state.busyIDs = []
                 state.inFlightTargets = []
-                state.uncertainByTarget = [:]
+                state.attempts = [:]
                 state.lastMutationOutcome = nil
                 state.isLoading = false
                 state.isSaving = false
@@ -314,8 +298,22 @@ public struct ScheduleFeature {
 
     private func record(_ outcome: TaskMutationOutcome, for target: ScheduleCommandTarget, in state: inout State) {
         state.lastMutationOutcome = outcome
-        if let id = outcome.uncertainID { state.uncertainByTarget[target] = id }
-        if case .rejected(let message) = outcome { state.mutationError = message }
+        if outcome != .unknown { state.attempts[target] = nil }
+        switch outcome {
+        case .rejected(let message): state.mutationError = message
+        case .unknown: state.mutationError = String(localized: "We couldn’t confirm the result. Sending it again won’t apply it twice.")
+        default: break
+        }
+    }
+
+    /// The same operation on the same target after an unknown outcome reuses its attempt ID;
+    /// anything else is a new attempt.
+    private func attempt(for target: ScheduleCommandTarget, sending operation: ScheduleAttempt.Operation,
+                         _ state: inout State) -> String {
+        if let pending = state.attempts[target], pending.operation == operation { return pending.id }
+        let attempt = ScheduleAttempt(id: uuid().uuidString, operation: operation)
+        state.attempts[target] = attempt
+        return attempt.id
     }
 
     private func requestOptions(_ state: inout State, project: String?) -> Effect<Action> {

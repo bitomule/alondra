@@ -43,10 +43,10 @@ final class ConnectionClassifierTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: directory) }
         let identity = LoopbackIdentityStore(directory: directory.appending(path: "identity"), makeKey: { .software(P256.Signing.PrivateKey()) })
         let session = LoopbackSession(base: try Self.closedPort(), identity: identity, deviceName: "Mac")
-        let services = try await CloudAppServices.local(session, identity: identity, storageDirectory: directory)
+        let services = try await CloudAppServices.local(session, identity: identity)
         defer { Task { await services.deactivate() } }
 
-        let updates = await services.triageService().observe()
+        let updates = await services.domainWorkspaceClient().observe()
         var problem: ConnectionProblem?
         for await update in updates {
             if case .offline(let reported) = update.connection { problem = reported; break }

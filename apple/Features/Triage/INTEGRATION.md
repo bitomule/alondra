@@ -29,9 +29,9 @@ the corresponding typed `AlondraClient` operation. Map `.confirmed`, `.rejected`
 `.unknown`, `.obsolete` to `TriageMutationOutcome`. Never replay an `.unknown`
 mutation. The reducer restores the card for rejected/unknown results and shows a
 notice; confirmed cards stay hidden until a snapshot **received after confirmation**
-omits them, including when the card was temporarily absent at confirmation time. Only reports
-(`.markRead`) and PRs (`.dismissPullRequest`) accept `.hide`; questions require
-G1's answer action.
+omits them, including when the card was temporarily absent at confirmation time. Only notices
+the server offers `mark_read` for accept `.hide`; questions, deliveries and pull requests leave
+through their own decisions.
 
 ## Views and detail features
 

@@ -57,7 +57,7 @@ struct ServiceSchedulesView: View {
                                 .tint(.blue)
                         }
                         .contextMenu { taskActions(task) }
-                        .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)) || store.schedules.uncertainByTarget[.schedule(task.id)] != nil)
+                        .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)))
                 }
             }
             .refreshable { await store.send(.schedules(.refresh)).finish() }
@@ -131,7 +131,7 @@ private struct ServiceScheduleEditor: View {
     var body: some View {
         ServiceScheduleForm(draft: Binding(get: { store.draft ?? ScheduledTaskDraft() }, set: { store.send(.draftChanged($0)) }),
                             specs: store.optionSpecs, projects: store.projects, error: store.error,
-                            saving: store.isSaving || !store.optionsReady || store.uncertainByTarget[store.editingID.map(ScheduleCommandTarget.schedule) ?? .new] != nil,
+                            saving: store.isSaving || !store.optionsReady,
                             editing: store.editingID != nil,
                             cancel: { store.send(.editorDismissed) }, save: { store.send(.saveTapped) })
     }

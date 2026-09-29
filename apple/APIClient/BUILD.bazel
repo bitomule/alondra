@@ -11,7 +11,12 @@ swift_library(
 swift_test(
     name = "AlondraAPIClientTests",
     srcs = glob(["Tests/**/*.swift"]),
-    data = ["Tests/domain-v2-wire-fixtures.json"],
+    data = [
+        "Tests/domain-v2-wire-fixtures.json",
+        "//fixtures/client-v2",
+        "//fixtures/domain-v2:acceptance.json",
+        "//fixtures/domain-v2:text-completion.commands.json",
+    ],
     deps = [
         ":AlondraAPIClient",
         "//apple/Contracts:AlondraContracts",

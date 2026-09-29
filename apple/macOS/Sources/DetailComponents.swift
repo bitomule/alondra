@@ -29,10 +29,10 @@ struct DetailScaffold<Content: View, Bar: View>: View {
 }
 
 struct MissionLine: View {
-    let item: InboxItem
+    let mission: String?
 
     var body: some View {
-        if let mission = item.missionExcerpt {
+        if let mission, !mission.isEmpty {
             (Text("Mission").fontWeight(.semibold) + Text(verbatim: " · \(mission)"))
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -44,7 +44,7 @@ struct MissionLine: View {
 struct DetailHeader: View {
     let style: KindStyle
     let node: String?
-    let date: Int64
+    let date: Int64?
     let title: String
     var task: String?
 
@@ -52,7 +52,7 @@ struct DetailHeader: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 KindChip(style: style)
-                Text("\(node ?? String(localized: "unknown node")) · \(ago(date)) ago")
+                Text(date.map { String(localized: "\(node ?? String(localized: "unknown node")) · \(ago($0)) ago") } ?? node ?? String(localized: "unknown node"))
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -216,37 +216,5 @@ struct CardActions<Leading: View, Trailing: View>: View {
             }
         }
         .controlSize(.large)
-    }
-}
-
-struct LinksRow: View {
-    let links: [LinkRef]
-    let attachments: [Attachment]
-
-    var body: some View {
-        if !links.isEmpty || !attachments.isEmpty {
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(links, id: \.self) { link in
-                    if let url = URL(string: link.url) {
-                        SwiftUI.Link(destination: url) {
-                            Label(link.title ?? link.url, systemImage: "arrow.up.right.square")
-                                .lineLimit(1)
-                        }
-                        .help(link.url)
-                    }
-                }
-                ForEach(attachments, id: \.self) { file in
-                    Button {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: file.storedPath ?? file.sourcePath))
-                    } label: {
-                        Label(file.name, systemImage: "paperclip")
-                            .lineLimit(1)
-                    }
-                    .buttonStyle(.link)
-                    .help(file.storedPath ?? file.sourcePath)
-                }
-            }
-            .font(.callout)
-        }
     }
 }

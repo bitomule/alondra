@@ -2,37 +2,39 @@ import AlondraContracts
 import AlondraDomain
 import Foundation
 
-extension WorkRequest.State {
+extension DomainV2.TaskState {
+    /// Every server state keeps its own label; delivered, accepted and finished never merge.
     public var label: String {
         switch self {
-        case .defining: String(localized: "defining", table: "AlondraShared", bundle: #bundle)
-        case .inProgress: String(localized: "in progress", table: "AlondraShared", bundle: #bundle)
-        case .done: String(localized: "request-state.done", defaultValue: "finished", table: "AlondraShared", bundle: #bundle)
-        }
-    }
-}
-
-extension WorkTask.State {
-    public var label: String {
-        switch shown {
         case .notStarted: String(localized: "not started", table: "AlondraShared", bundle: #bundle)
+        case .running: String(localized: "running", table: "AlondraShared", bundle: #bundle)
         case .needsYou: String(localized: "needs you", table: "AlondraShared", bundle: #bundle)
+        case .inReview: String(localized: "presented", table: "AlondraShared", bundle: #bundle)
+        case .waitingDependency: String(localized: "waiting for a dependency", table: "AlondraShared", bundle: #bundle)
+        case .closing: String(localized: "accepted, pending the agent", table: "AlondraShared", bundle: #bundle)
         case .done: String(localized: "task-state.done", defaultValue: "finished", table: "AlondraShared", bundle: #bundle)
         case .cancelled: String(localized: "cancelled", table: "AlondraShared", bundle: #bundle)
-        default: String(localized: "running", table: "AlondraShared", bundle: #bundle)
         }
     }
 }
 
-extension WorkRequest {
-    public func definingLabel(now: Date = .now) -> String {
-        isLeftDefining(now: now) ? String(localized: "no tasks", table: "AlondraShared", bundle: #bundle) : State.defining.label
+extension DomainV2.Request {
+    /// The first line of what the user asked, shortened.
+    public var headline: String? {
+        let line = body.split(whereSeparator: \.isNewline).first.map { String($0).trimmingCharacters(in: .whitespaces) } ?? ""
+        guard !line.isEmpty else { return nil }
+        return line.count <= 90 ? line : String(line.prefix(89)).trimmingCharacters(in: .whitespaces) + "…"
+    }
+
+    public var stateLabel: String {
+        closed ? String(localized: "request-state.done", defaultValue: "finished", table: "AlondraShared", bundle: #bundle)
+            : String(localized: "in progress", table: "AlondraShared", bundle: #bundle)
     }
 }
 
-extension WorkTask {
+extension DomainV2.Task {
     public func fleetRowTitle(nodeDisplayName: String) -> String {
-        title == nodeDisplayName ? WorkTask.mainTaskLabel : title
+        title == nodeDisplayName ? Self.mainTaskLabel : title
     }
     public static var mainTaskLabel: String { String(localized: "main task", table: "AlondraShared", bundle: #bundle) }
 }
@@ -61,20 +63,19 @@ extension Node {
 extension TaskStateGroup {
     public var title: String {
         switch kind {
-        case .defining: String(localized: "Defining", table: "AlondraShared", bundle: #bundle)
         case .task(let state):
-            switch state.shown {
+            switch state {
             case .notStarted: String(localized: "Not started", table: "AlondraShared", bundle: #bundle)
             case .needsYou: String(localized: "Needs you", table: "AlondraShared", bundle: #bundle)
+            case .inReview: String(localized: "Presented", table: "AlondraShared", bundle: #bundle)
+            case .closing: String(localized: "Accepted, pending the agent", table: "AlondraShared", bundle: #bundle)
+            case .waitingDependency: String(localized: "Waiting for a dependency", table: "AlondraShared", bundle: #bundle)
             case .done: String(localized: "task-group.done", defaultValue: "Finished", table: "AlondraShared", bundle: #bundle)
             case .cancelled: String(localized: "Cancelled", table: "AlondraShared", bundle: #bundle)
-            default: String(localized: "Running", table: "AlondraShared", bundle: #bundle)
+            case .running: String(localized: "Running", table: "AlondraShared", bundle: #bundle)
             }
+        case .defining: String(localized: "Defining", table: "AlondraShared", bundle: #bundle)
         case .archived: String(localized: "Archived", table: "AlondraShared", bundle: #bundle)
         }
     }
-}
-
-extension TaskBoard {
-    public func stateLabel(of task: WorkTask) -> String { task.state.label }
 }

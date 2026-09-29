@@ -21,14 +21,16 @@ struct StateChip: View {
 struct StateLine: View {
     let label: String
     let tint: Color
-    let since: Int64
+    let since: Int64?
 
     var body: some View {
         HStack(spacing: 4) {
             Text(label)
                 .foregroundStyle(tint)
-            Text(verbatim: "· \(ago(since))")
-                .foregroundStyle(.tertiary)
+            if let since {
+                Text(verbatim: "· \(ago(since))")
+                    .foregroundStyle(.tertiary)
+            }
         }
         .font(.caption.weight(.semibold))
         .lineLimit(1)

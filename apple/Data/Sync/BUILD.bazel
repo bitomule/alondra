@@ -4,6 +4,7 @@ swift_library(
     name = "AlondraSync",
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraSync",
+    features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
     deps = [
         "//apple/APIClient:AlondraAPIClient",

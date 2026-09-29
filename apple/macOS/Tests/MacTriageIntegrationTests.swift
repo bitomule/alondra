@@ -7,15 +7,23 @@ import Testing
 
 @MainActor
 struct MacTriageIntegrationTests {
-    private func snapshot(_ ids: [Int]) throws -> Overview {
-        let questions = ids.map { id in
-            #"{"id":\#(id),"sessionId":"node","title":"Question \#(id)","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":\#(id)}"#
-        }.joined(separator: ",")
-        let json = #"{"tick":1,"nodes":[],"open_questions":[\#(questions)],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false},"prs":[]}"#
-        let body = Data(json.utf8)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(Overview.self, from: body)
+    private func snapshot(_ ids: [UInt64]) -> DomainWorkspace {
+        let interactions = ids.map { id in
+            DomainV2.Interaction(attachments: [], id: .init(rawValue: "q\(id)"), scope: .task(taskId: "t"), author: .agent(agentId: "node"),
+                                 recipient: .user, body: "Question \(id)", blocking: true, subject: nil,
+                                 payload: .question(options: [], answer: nil), revision: id, order: id)
+        }
+        let inbox = ids.map { id in
+            DomainV2.InboxItem(id: "interaction:q\(id)", kind: "question", subject: .interaction(interactionId: .init(rawValue: "q\(id)")),
+                               title: "Question \(id)", body: nil, taskId: "t", requestId: "r", agentId: "node", revision: id, order: id,
+                               pending: true, children: [],
+                               availableActions: [.init(kind: "answer_question", enabled: true, disabledReason: nil, expectedRevision: id,
+                                                        presentationId: nil, expectedHead: nil)])
+        }
+        return DomainWorkspace(.init(protocolVersion: 2, dataEpoch: "epoch", revision: ids.max() ?? 1, inbox: inbox,
+                                     counts: .init(roots: UInt64(ids.count), pending: UInt64(ids.count), unreadInformation: 0),
+                                     tasks: [], agents: [], requests: [], interactions: interactions, pullRequests: [], documents: [],
+                                     documentRevisions: [], documentReviews: [], mergeAuthorizations: [], stackReadiness: []))
     }
 
     @Test
@@ -27,18 +35,18 @@ struct MacTriageIntegrationTests {
         let server = try #require(URL(string: "https://service.example.test"))
         let old = TriageIdentity(server: server, deviceID: "mac", credentialRevision: "old", generation: 0)
         let replacement = TriageIdentity(server: server, deviceID: "mac", credentialRevision: "new", generation: 1)
-        let update = TriageInboxUpdate(identity: old, overview: try snapshot([1, 2]), connection: .online)
+        let update = DomainWorkspaceUpdate(identity: old, workspace: snapshot([1, 2]), connection: .online)
         for store in [first, second] {
             await store.send(.triage(.triage(.identityChanged(old)))).finish()
-            await store.send(.triage(.triage(.inboxUpdated(update)))).finish()
+            await store.send(.triage(.triage(.workspaceUpdated(update)))).finish()
         }
         let initialIDs = first.triage.triage.queue.map(\.id)
-        #expect(Set(initialIDs) == ["q1", "q2"])
+        #expect(Set(initialIDs) == ["interaction:q1", "interaction:q2"])
         #expect(second.triage.triage.queue.map(\.id) == initialIDs)
         for navigation in [firstNavigation, secondNavigation] { navigation.send(.inboxChanged(initialIDs)) }
-        firstNavigation.send(.select(.item("q2")))
+        firstNavigation.send(.select(.item("interaction:q2")))
         secondNavigation.send(.select(.node("worker")))
-        #expect(firstNavigation.selection == .item("q2"))
+        #expect(firstNavigation.selection == .item("interaction:q2"))
         #expect(secondNavigation.selection == .node("worker"))
         let front = try #require(initialIDs.first)
         await first.send(.triage(.triage(.skip(front)))).finish()
@@ -50,12 +58,12 @@ struct MacTriageIntegrationTests {
             await store.send(.triage(.triage(.identityChanged(replacement)))).finish()
             #expect(store.triage.triage.queue.isEmpty)
             #expect(store.triage.cards.isEmpty)
-            await store.send(.triage(.triage(.inboxUpdated(update)))).finish()
+            await store.send(.triage(.triage(.workspaceUpdated(update)))).finish()
             #expect(store.triage.triage.queue.isEmpty, "An old projection cannot repopulate the new identity")
-            let next = TriageInboxUpdate(identity: replacement, overview: try snapshot([3]), connection: .online)
-            await store.send(.triage(.triage(.inboxUpdated(next)))).finish()
-            #expect(store.triage.triage.queue.map(\.id) == ["q3"])
-            #expect(store.triage.cards.map(\.id) == ["q3"])
+            let next = DomainWorkspaceUpdate(identity: replacement, workspace: snapshot([3]), connection: .online)
+            await store.send(.triage(.triage(.workspaceUpdated(next)))).finish()
+            #expect(store.triage.triage.queue.map(\.id) == ["interaction:q3"])
+            #expect(store.triage.cards.map(\.id) == ["interaction:q3"])
         }
     }
 }

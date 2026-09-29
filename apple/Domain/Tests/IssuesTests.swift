@@ -71,15 +71,29 @@ import Testing
         #expect(IssueSummary.project(of: issue, among: projects) == project)
     }
 
+    private func intent(_ body: NewRequestBody) -> DomainIntent {
+        .createRequest(body: body.text, project: body.project, options: body.options, issue: body.issue, attachments: body.attachments)
+    }
+
     @Test func theRequestCarriesTheIssueWithTheOptionsAndAttachments() throws {
         var options = NewWorkSelection(project: "App")
         options.issue = "me/App#1"
-        var body = options.body(text: "Arréglalo")
-        body.attachments = ["f1"]
+        let file = DomainV2.AttachmentRef(id: "f1", name: "f", contentDigest: "d", contentReference: "r", bytes: 1)
+        let workspace = DomainWorkspace(DomainV2.DomainProjection(protocolVersion: 2, dataEpoch: "e", revision: 4, inbox: [],
+            counts: DomainV2.InboxCounts(roots: 0, pending: 0, unreadInformation: 0),
+            tasks: [], agents: [], requests: [], interactions: [], pullRequests: [], documents: [], documentRevisions: [],
+            documentReviews: [], mergeAuthorizations: [], stackReadiness: []))
+        let envelope = try DomainCommandFactory().envelope(for: intent(options.body(text: "Arréglalo", attachments: [file])),
+                                                           in: workspace, commandID: "c-1", newID: { "r-1" })
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
-        #expect(String(decoding: try encoder.encode(body), as: UTF8.self) == #"{"attachments":["f1"],"issue":"me\/App#1","options":{},"project":"App","text":"Arréglalo"}"#)
+        let command = String(decoding: try encoder.encode(envelope.command), as: UTF8.self)
+        #expect(command.contains(#""issue":"me\/App#1""#))
+        #expect(command.contains(#""project":"App""#))
+        #expect(command.contains(#""id":"f1""#))
         options.issue = nil
-        #expect(!String(decoding: try encoder.encode(options.body(text: "x")), as: UTF8.self).contains("issue"), "no issue, no key")
+        let without = try DomainCommandFactory().envelope(for: intent(options.body(text: "x")), in: workspace,
+                                                          commandID: "c-2", newID: { "r-2" })
+        #expect(!String(decoding: try encoder.encode(without.command), as: UTF8.self).contains("issue"), "no issue, no key")
     }
 }

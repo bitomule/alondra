@@ -1,17 +1,19 @@
+import AlondraContracts
 import AlondraDomain
 import ComposableArchitecture
 import Foundation
 
+/// Downloads an immutable attachment reference; the bytes are checked against its digest.
 public struct AttachmentDownloadClient: Sendable {
-    public var download: @Sendable (String, String, UUID) async throws -> DownloadedAttachment
+    public var download: @Sendable (DomainV2.AttachmentRef, UUID) async throws -> DownloadedAttachment
     public var release: @Sendable (DownloadedAttachment) async -> Void
-    public init(download: @escaping @Sendable (String, String, UUID) async throws -> DownloadedAttachment,
+    public init(download: @escaping @Sendable (DomainV2.AttachmentRef, UUID) async throws -> DownloadedAttachment,
                 release: @escaping @Sendable (DownloadedAttachment) async -> Void) {
         self.download = download; self.release = release
     }
 }
 private enum AttachmentDownloadKey: DependencyKey {
-    static let liveValue = AttachmentDownloadClient(download: { _, _, _ in throw AttachmentFailure(message: "File download is unavailable") }, release: { _ in })
+    static let liveValue = AttachmentDownloadClient(download: { _, _ in throw AttachmentFailure(message: "File download is unavailable") }, release: { _ in })
 }
 public extension DependencyValues {
     var attachmentDownload: AttachmentDownloadClient {
@@ -40,8 +42,8 @@ public struct AttachmentDownloadFeature {
         public init() {}
     }
     public enum Action: Sendable {
-        case download(path: String, name: String)
-        case open(path: String, name: String)
+        case download(DomainV2.AttachmentRef)
+        case open(DomainV2.AttachmentRef)
         case opened(Bool)
         case finished(Result<DownloadedAttachment, AttachmentFailure>, UInt64)
         case cancel
@@ -56,25 +58,26 @@ public struct AttachmentDownloadFeature {
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
-            case .open(let path, let name):
+            case .open(let attachment):
                 guard !state.isLoading, !state.isOpening, !state.exporting, state.previewURL == nil else { return .none }
                 state.opensWhenReady = true
-                return .send(.download(path: path, name: name))
+                return .send(.download(attachment))
             case .opened(let succeeded):
                 state.isOpening = false
                 if !succeeded { state.error = "Couldn’t open the downloaded file." }
                 return releaseIfHidden(&state)
-            case .download(let path, let name):
+            case .download(let attachment):
                 guard !state.exporting, state.previewURL == nil else { return .none }
                 let previous = state.file
-                state.file = nil; state.currentPath = path; state.name = name
+                let path = attachment.id
+                state.file = nil; state.currentPath = path; state.name = attachment.name
                 state.error = nil; state.isLoading = true; state.generation &+= 1
                 let generation = state.generation
                 let id = state.requestIDs[path] ?? UUID(); state.requestIDs[path] = id
                 return .run { send in
                     if let previous { await client.release(previous) }
                     do {
-                        let file = try await client.download(path, name, id)
+                        let file = try await client.download(attachment, id)
                         if Task.isCancelled { await client.release(file); return }
                         await send(.finished(.success(file), generation))
                     } catch is CancellationError { }

@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraDomain
 import AlondraShared
 import Foundation
@@ -6,29 +7,22 @@ import Foundation
 public struct ProjectFleetUseCase: Sendable {
     public init() {}
 
-    /// `visibleInboxIDs` comes from the same presentation owner as the inbox. Hidden/resolved
-    /// cards must not be counted as pending even while an old server snapshot still contains them.
-    public func execute(_ overview: Overview, visibleInboxIDs: Set<String>, sequence: UInt64) -> FleetSnapshot {
-        let board = TaskBoard(requests: overview.requests ?? [], tasks: overview.tasks ?? [])
-        let grouping = InboxGrouping(
-            questions: overview.openQuestions.filter { $0.toOrchestrator != true },
-            reports: overview.news.filter { $0.toOrchestrator != true },
-            pullRequests: overview.prs ?? []
-        )
-        // A question or report attached to an open PR is already represented by that PR card.
-        let pending = (grouping.loose.map(InboxItem.question)
-            + grouping.looseReports.map(InboxItem.report)
-            + (overview.prs ?? []).map(InboxItem.pullRequest))
-            .filter { visibleInboxIDs.contains($0.id) }
-            .map(\.sessionId)
+    /// Agents come from the projection; their telemetry from the runtime read. Pending counts
+    /// are the server's pending inbox roots attributed to each Agent and still visible here.
+    public func execute(_ workspace: DomainWorkspace, visibleInboxIDs: Set<String>, sequence: UInt64) -> FleetSnapshot {
+        let board = TaskBoard(workspace)
+        let pending = workspace.roots.filter { $0.pending && visibleInboxIDs.contains($0.id) }.compactMap(\.agentId?.rawValue)
         let counts = pending.reduce(into: [String: Int]()) { $0[$1, default: 0] += 1 }
+        let runtime = workspace.runtime?.nodes ?? []
+        let known = Set(runtime.map(\.sessionId))
+        let nodes = runtime + workspace.projection.agents.filter { !known.contains($0.id.rawValue) }.compactMap(Node.init(agent:))
         let project = { (node: Node) in
-            FleetNode(node: node, tasks: node.isOrchestrator ? [] : board.tasks(onNode: node.sessionId),
+            FleetNode(node: node, tasks: node.isOrchestrator ? [] : board.tasks(assignedTo: DomainV2.AgentId(rawValue: node.sessionId)),
                       pendingCount: counts[node.sessionId, default: 0])
         }
-        let orchestrator = overview.nodes.filter(\.isOrchestrator)
+        let orchestrator = nodes.filter(\.isOrchestrator)
             .max { $0.stateSince < $1.stateSince }.map(project)
-        let groups = Dictionary(grouping: overview.nodes.filter { !$0.isOrchestrator }) {
+        let groups = Dictionary(grouping: nodes.filter { !$0.isOrchestrator }) {
             $0.projectName ?? Node.otherProjectName
         }
         let sections = groups.map { name, nodes in
@@ -36,7 +30,7 @@ public struct ProjectFleetUseCase: Sendable {
                 ($0.createdAt, $0.sessionId) < ($1.createdAt, $1.sessionId)
             }.map(project))
         }.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-        return FleetSnapshot(sequence: sequence, tick: overview.tick, orchestrator: orchestrator, sections: sections)
+        return FleetSnapshot(sequence: sequence, tick: workspace.revision, orchestrator: orchestrator, sections: sections)
     }
 
     public func search(_ snapshot: FleetSnapshot, query: String) -> [FleetSection] {

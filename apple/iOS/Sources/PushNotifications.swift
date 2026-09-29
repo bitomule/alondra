@@ -1,6 +1,6 @@
 import AlondraShared
 import AlondraAPIClient
-import AlondraCommands
+import AlondraAppComposition
 import AlondraNotificationActions
 import AlondraNotificationPayload
 import Foundation
@@ -98,7 +98,7 @@ final class PushCenter {
     private static let staleNotificationAge: TimeInterval = 10
 
     init() {
-        registrations = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra")
+        registrations = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra")
             .appendingPathComponent("push-preferences.json")))
         let defaults = UserDefaults.standard
         quietHours = QuietHours(
@@ -192,7 +192,7 @@ final class PushCenter {
         #endif
     }()
 
-    func inboxChanged(pending: [InboxItem]) {
+    func inboxChanged(pending: [DomainV2.InboxItem]) {
         guard client != nil, authorization == .authorized else { return }
         center.setBadgeCount(pending.count)
         guard let binding = currentBinding() else { return }
@@ -213,13 +213,13 @@ final class PushCenter {
 
     func respond(to response: NotificationResponse) async {
         guard let raw = response.encryptedPayload,
-              let authorized = try? routing.authorize(raw, nowMilliseconds: UInt64(Date.now.timeIntervalSince1970 * 1000)) else { return }
+              let authorized = try? routing.authorize(raw) else { return }
         let item = authorized.item
         let binding = authorized.binding
         switch response.action {
         case UNNotificationDefaultActionIdentifier:
             guard await activate(authorized) else { return }
-            route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question, binding: binding)
+            route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question && item.kind != .actionRequest, binding: binding)
         case NotificationCategory.review:
             guard await activate(authorized) else { return }
             route = NotificationRoute(itemID: item.inboxID, opensDetail: true, binding: binding)
@@ -242,15 +242,28 @@ final class PushCenter {
         defer { UIApplication.shared.endBackgroundTask(background) }
         guard let result = await submission.value else { return }
         switch result {
-        case .confirmed:
+        case .sent(.recorded):
             break
-        case .unknown:
+        case .sent(.uncertain):
             await reportUncertain(response)
-        case .rejected(let error):
-            await reportFailure(response, reason: error.friendlyDescription)
-        case .obsolete:
+        case .sent(.rejected(let rejection)):
+            await reportFailure(response, reason: rejection.localizedMessage)
+        case .sent(.obsolete):
             return
+        case .noLongerPending:
+            await reportNoLongerPending(response)
         }
+    }
+
+    /// An old push can be tapped after the item was decided elsewhere; say so instead of
+    /// failing silently.
+    private func reportNoLongerPending(_ response: NotificationResponse) async {
+        let content = UNMutableNotificationContent()
+        content.title = String(localized: "No longer pending")
+        content.body = response.title.isEmpty
+            ? String(localized: "This was already handled or changed. Open Alondra to see where it stands.")
+            : String(localized: "\(response.title) was already handled or changed. Open Alondra to see where it stands.")
+        try? await center.add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
     }
 
     private func reportUncertain(_ response: NotificationResponse) async {

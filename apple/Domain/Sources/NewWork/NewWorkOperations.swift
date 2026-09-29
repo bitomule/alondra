@@ -27,14 +27,14 @@ public struct NewWorkOperations: Sendable {
 /// Its closures must bind the same client and signer, never look up the current client
 /// again. `create` must revalidate identity at its I/O boundary before dispatch.
 public struct NewWorkSubmissionScope: Sendable {
-    private let uploadOperation: @Sendable (NewRequestAttachment) async throws -> String
+    private let uploadOperation: @Sendable (NewRequestAttachment) async throws -> DomainV2.AttachmentRef
     private let identityIsCurrent: @Sendable () async -> Bool
-    private let createOperation: @Sendable (NewRequestBody) async -> CreateRequestResult
+    private let createOperation: @Sendable (NewRequestBody, String) async -> CreateRequestResult
 
     public init(
-        upload: @escaping @Sendable (NewRequestAttachment) async throws -> String,
+        upload: @escaping @Sendable (NewRequestAttachment) async throws -> DomainV2.AttachmentRef,
         isCurrent: @escaping @Sendable () async -> Bool,
-        create: @escaping @Sendable (NewRequestBody) async -> CreateRequestResult
+        create: @escaping @Sendable (NewRequestBody, String) async -> CreateRequestResult
     ) {
         uploadOperation = upload
         identityIsCurrent = isCurrent
@@ -43,16 +43,17 @@ public struct NewWorkSubmissionScope: Sendable {
 
     public func isCurrent() async -> Bool { await identityIsCurrent() }
 
-    public func upload(_ attachment: NewRequestAttachment) async throws -> String {
+    public func upload(_ attachment: NewRequestAttachment) async throws -> DomainV2.AttachmentRef {
         try Task.checkCancellation()
         guard await identityIsCurrent() else { throw CancellationError() }
         try Task.checkCancellation()
         return try await uploadOperation(attachment)
     }
 
-    public func create(_ body: NewRequestBody) async -> CreateRequestResult {
+    /// The command ID stays with the draft: a retry after an unknown outcome reuses it.
+    public func create(_ body: NewRequestBody, commandID: String) async -> CreateRequestResult {
         guard !Task.isCancelled, await identityIsCurrent(), !Task.isCancelled else { return .cancelled }
-        return await createOperation(body)
+        return await createOperation(body, commandID)
     }
 }
 
@@ -61,37 +62,37 @@ public struct NewRequestAttachment: Identifiable, Equatable, Sendable {
     public let id: UUID
     public let name: String
     public let data: Data
-    public let storedID: String?
+    public let stored: DomainV2.AttachmentRef?
 
-    public init(id: UUID, name: String, data: Data, storedID: String? = nil) {
+    public init(id: UUID, name: String, data: Data, stored: DomainV2.AttachmentRef? = nil) {
         self.id = id
         self.name = name
         self.data = data
-        self.storedID = storedID
+        self.stored = stored
     }
 }
 
 /// Owns the submit transaction. There is no automatic retry of `create`: a lost
 /// acknowledgement could mean the server already accepted the request.
 public struct CreateRequestUseCase: Sendable {
-    public var run: @Sendable (NewRequestBody, [NewRequestAttachment]) async -> CreateRequestResult
+    public var run: @Sendable (NewRequestBody, [NewRequestAttachment], String) async -> CreateRequestResult
 
     public init(operations: NewWorkOperations) {
-        run = { body, attachments in
+        run = { body, attachments, commandID in
             do {
                 guard let scope = await operations.captureSubmissionScope() else { return .cancelled }
                 var body = body
-                var ids: [String] = []
+                var stored: [DomainV2.AttachmentRef] = []
                 for attachment in attachments {
                     try Task.checkCancellation()
                     guard await scope.isCurrent() else { return .cancelled }
-                    ids.append(try await scope.upload(attachment))
+                    stored.append(try await scope.upload(attachment))
                 }
                 try Task.checkCancellation()
                 guard await scope.isCurrent() else { return .cancelled }
                 try Task.checkCancellation()
-                body.attachments = ids
-                return await scope.create(body)
+                body.attachments = stored
+                return await scope.create(body, commandID: commandID)
             } catch is CancellationError {
                 return .cancelled
             } catch {
@@ -105,6 +106,5 @@ public enum CreateRequestResult: Equatable, Sendable {
     case confirmed
     case failed(String)
     case uncertain(String)
-    case uncertainCommand(UUID, String)
     case cancelled
 }

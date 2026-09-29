@@ -8,51 +8,45 @@ import Testing
 
 @MainActor
 struct FeedbackAuthorIntegrationTests {
-    @Test(arguments: [false, true], ["", "Ana"])
-    func acceptedOverviewAuthorReachesActualFeedback(detail: Bool, author: String) async throws {
-        let identity = TriageIdentity(server: URL(string: "https://service.example")!, deviceID: "phone", credentialRevision: "one", generation: 1)
-        let other = TriageIdentity(server: identity.server, deviceID: "other", credentialRevision: "two", generation: 2)
-        func snapshot(_ user: String?) throws -> Overview {
-            let decoder = JSONDecoder()
-            decoder.keyDecodingStrategy = .convertFromSnakeCase
-            let userField = user.map { ",\"user\":\"\($0)\"" } ?? ""
-            return try decoder.decode(Overview.self, from: Data("""
-            {"tick":1,"nodes":[],"open_questions":[],"news":[{"id":7,"session_id":"s","title":"Report","body":"Body","links":[{"url":"https://claude.ai/artifact/review-1"}],"attachments":[],"kind":"document","created_at":1}],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}\(userField)}
-            """.utf8))
-        }
-        let sent = LockIsolated<[String]>([])
+    /// Line comments and the general note reach the delivery's one `submit_feedback`, from the
+    /// card and from the document detail alike. The v2 projection names no user, so the comments
+    /// carry no author.
+    @Test(arguments: [false, true])
+    func documentFeedbackReachesTheDeliveryAsOneCommand(detail: Bool) async throws {
+        var fixture = V2Fixture()
+        let root = fixture.documentReview("a", text: "Body")
+        let delivery = root.children[0]
+        let log = CommandLog()
         let store = Store(initialState: ServiceTriageFeature.State()) { ServiceTriageFeature() } withDependencies: {
-            $0.questionWorkService = .init(submit: { _ in .failed("Unexpected route") }, submitReportFeedback: { request, _ in
-                sent.withValue { $0.append(request.text) }
-                return .failed("Rejected")
-            }, document: { _ in "Body" })
+            $0.domainWorkspace = .scripted(log, documents: ["rev-a": "Body"]) { _ in V2Fixture.rejected() }
         }
-        await store.send(.triage(.inboxUpdated(.init(identity: identity, overview: try snapshot("Previous"), connection: .online)))).finish()
-        let id = try #require(store.cards.first?.id)
-        if detail { await store.send(.open(id)).finish() }
-        await store.send(.triage(.inboxUpdated(.init(identity: identity, overview: try snapshot(author.isEmpty ? nil : author), connection: .online)))).finish()
-        // An old/foreign stream must not replace the accepted author's projection.
-        await store.send(.triage(.inboxUpdated(.init(identity: other, overview: try snapshot("Wrong"), connection: .online)))).finish()
+        await store.send(.triage(.workspaceUpdated(fixture.update()))).finish()
+        try #require(store.cards[id: root.id]?.document != nil)
+        if detail { await store.send(.open(root.id)).finish() }
+        // Another session's update must not replace this one's cards.
+        await store.send(.triage(.workspaceUpdated(V2Fixture().update(V2Fixture.other)))).finish()
         func documentAction(_ action: DocumentReviewFeature.Action) -> ServiceTriageFeature.Action {
-            detail ? .documents(.element(id: id, action: action)) : .cards(.element(id: id, action: .document(action)))
+            detail ? .documents(.element(id: delivery.id, action: action)) : .cards(.element(id: root.id, action: .document(action)))
         }
         await store.send(documentAction(.appeared)).finish()
         await store.send(documentAction(.generalChanged("Retain this"))).finish()
         await store.send(documentAction(.commentChanged(anchor: "block-1", quote: "Body", text: "Change spacing"))).finish()
         if detail {
-            let projected = try #require(store.document?.feedbackAuthor)
-            #expect(projected == author)
-            await store.send(documentAction(.submitFeedback(author: projected))).finish()
+            let author = try #require(store.document?.feedbackAuthor)
+            #expect(author.isEmpty)
+            await store.send(documentAction(.sendFeedbackTapped(author: author))).finish()
         } else {
-            #expect(store.cards[id: id]?.document?.feedbackAuthor == author)
-            await store.send(.cards(.element(id: id, action: .send))).finish()
+            #expect(store.cards[id: root.id]?.document?.feedbackAuthor.isEmpty == true)
+            await store.send(.cards(.element(id: root.id, action: .send))).finish()
         }
-        #expect(sent.value.count == 1)
-        let text = try #require(sent.value.first)
-        #expect(text.hasPrefix(author.isEmpty ? "Comments:" : "Comments from Ana:"))
+        #expect(log.count == 1)
+        guard case let .submitFeedback(id, text, _) = try #require(log.intents.first) else {
+            Issue.record("Feedback is one submit_feedback: \(log.intents)"); return
+        }
+        #expect(id == "delivery-a")
+        #expect(text.hasPrefix("Comments:"))
         #expect(text.contains("Change spacing") && text.contains("Retain this"))
-        #expect(!text.contains("David") && !text.contains("Previous") && !text.contains("Wrong"))
-        await store.send(.triage(.identityChanged(other))).finish()
+        await store.send(.triage(.identityChanged(V2Fixture.other))).finish()
         #expect(store.feedbackAuthor.isEmpty)
         #expect(store.cards.isEmpty && store.document == nil)
     }

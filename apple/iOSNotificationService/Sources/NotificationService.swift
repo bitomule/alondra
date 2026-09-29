@@ -21,8 +21,7 @@ final class NotificationService: UNNotificationServiceExtension {
               let raw = try? JSONSerialization.data(withJSONObject: content.userInfo),
               let hint = try? ServiceNotificationDecoder.bindingHint(raw),
               let context = try? NotificationDecryptionStore(accessGroup: group).load(binding: hint),
-              let decrypted = try? ServiceNotificationDecoder.decrypt(raw, context: context,
-                  nowMilliseconds: UInt64(Date.now.timeIntervalSince1970 * 1000)),
+              let decrypted = try? ServiceNotificationDecoder.decrypt(raw, context: context),
               var payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [String: Any],
               let binding = NotificationPayload.Binding(userInfo: payload),
               let aps = payload["aps"] as? [String: Any] else {
@@ -189,8 +188,8 @@ enum QuestionCategories {
     }
 
     private static func category(for question: NotificationPayload.Question, identifier: String) -> UNNotificationCategory {
-        let options = question.options.map { label in
-            UNNotificationAction(identifier: NotificationPayload.Action.option(label), title: title(for: label), options: [.authenticationRequired])
+        let options = question.options.map { option in
+            UNNotificationAction(identifier: NotificationPayload.Action.option(option.id), title: title(for: option.label), options: [.authenticationRequired])
         }
         return UNNotificationCategory(identifier: identifier, actions: options + [
             replyAction,

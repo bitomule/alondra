@@ -1,3 +1,5 @@
+import AlondraContracts
+import AlondraDomain
 import AlondraShared
 import AlondraWorkspaceFeature
 import AlondraTasksFeature
@@ -6,151 +8,143 @@ import Foundation
 import Testing
 
 @Suite struct TaskPresentationIntegrationTests {
-    private static let machine = #"{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}"#
-    private static let node = #"{"session_id":"s1","short_id":"s1","is_orchestrator":false,"has_plugin":true,"state":"working","state_since":5,"state_source":"hook","tool":{"name":"Bash","summary":"make test","since":4}}"#
-
     private static func decode<T: Decodable>(_ json: String) throws -> T {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: Data(json.utf8))
     }
 
-    private static func task(_ id: String, request: String = "r-1", state: String = "running", dependsOn: [String] = [], created: Int64, session: String = "s1", archivedAt: Int64? = nil) throws -> WorkTask {
-        let deps = dependsOn.map { #""\#($0)""# }.joined(separator: ",")
-        let archived = archivedAt.map { #","archived_at":\#($0)"# } ?? ""
-        return try decode(#"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","depends_on":[\#(deps)],"options":{"auto_merge":false},"assignee":{"session_id":"\#(session)"},"prs":[],"documents":[],"blocker":null,"notices":[],"state":"\#(state)","state_since":\#(created),"created_at":\#(created)\#(archived)}"#)
-    }
-
-    private static func request(_ id: String, tasks: [String], state: String = "in_progress", archivedAt: Int64? = nil) throws -> WorkRequest {
-        let ids = tasks.map { #""\#($0)""# }.joined(separator: ",")
-        let archived = archivedAt.map { #","archived_at":\#($0)"# } ?? ""
-        return try decode(#"{"id":"\#(id)","text":"Do the thing\nin detail","created_at":1,"state":"\#(state)","tasks":[\#(ids)]\#(archived)}"#)
-    }
-
-    @MainActor @Test func requestsTasksCardTasksAndActivityDecode() throws {
-        let node = Self.node.replacingOccurrences(of: #""state":"working""#, with: #""state":"working","activity":[{"agent_id":null,"agent_type":null,"task":"t-1","tool":"Bash","summary":"bazel build //app","since":9},{"agent_id":"a1","agent_type":"tester","task":"t-1","tool":"mav","summary":"tap Save","since":10}]"#)
-        let question = #"{"id":7,"session_id":"s1","title":"Which one?","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","asked_at":3,"task":"t-1"}"#
-        let task = #"{"id":"t-1","request":"r-1","title":"Build it","depends_on":[],"options":{"auto_merge":true,"effort":"hard","project":"alondra"},"assignee":{"session_id":"s1","agent_id":"a1"},"prs":[2],"documents":[],"blocker":{"kind":"question","question":7,"since":3},"notices":[],"state":"needs_you","state_since":3,"created_at":2,"auto_merge_pending":true}"#
-        let json = #"{"tick":1,"nodes":[\#(node)],"open_questions":[\#(question)],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":[{"id":"r-1","text":"Build it","created_at":1,"state":"in_progress","tasks":["t-1"]}],"tasks":[\#(task)]}"#
-        let overview: Overview = try Self.decode(json)
-        #expect(overview.openQuestions[0].task == "t-1")
-        #expect(overview.requests?.first?.state == .inProgress)
-        let decoded = try #require(overview.tasks?.first)
-        #expect(decoded.state == .needsYou)
-        #expect(decoded.options?.mergesAlone == true)
-        #expect(decoded.mergesAlone)
-        #expect(decoded.assignee?.agentId == "a1")
-        #expect(overview.nodes[0].activity?.map(\.thread) == ["main", "tester"])
-        let store = ServiceTaskPresentation(overview: overview)
-        #expect(store.task(for: .question(overview.openQuestions[0]))?.id == "t-1")
-        #expect(store.now(for: decoded) == "question: Which one?")
-        #expect(store.project(of: decoded) == "alondra")
-        let context = ServiceTaskContext(board: store.board, overview: overview, taskID: "t-1")
-        #expect(context.requestTitle == "Build it")
+    @MainActor @Test func tasksCardsAndRuntimeMeetInThePresentation() throws {
+        var fixture = V2Fixture()
+        fixture.tasks = [V2Fixture.makeTask("t1", state: .needsYou)]
+        let question = fixture.question("q7", title: "Which one?")
+        fixture.runtime = V2Fixture.runtime(#""nodes":[],"tasks":{"t1":{"project":"alondra","effort":"hard","state_since":3}},"requests":{"request-1":{"created_at":1}}"#)
+        let store = ServiceTaskPresentation(workspace: fixture.workspace)
+        let task = try #require(store.board.task("t1"))
+        #expect(store.task(for: question)?.id == "t1")
+        #expect(store.now(for: task) == "question: Which one?")
+        #expect(store.project(of: task) == "alondra")
+        let context = ServiceTaskContext(presentation: store, taskID: "t1")
+        #expect(context.requestTitle == "Task t1", "a request with one task goes by that task's title")
+        #expect(context.requestCreatedAt == 1)
         #expect(context.project == "alondra")
         #expect(context.now == "question: Which one?")
+        #expect(context.effort == "hard")
+        #expect(context.stateSince == 3)
         #expect(context.requestTaskCount == 1)
-        #expect(context.pending.map(\.id) == ["q7"])
-        #expect(context.inboxIDs == ["q7"])
-        let resolved = ServiceTaskContext(board: store.board, overview: overview, taskID: "t-1", hiddenIDs: ["q7"])
+        #expect(context.pending.map(\.id) == [question.id])
+        let resolved = ServiceTaskContext(presentation: ServiceTaskPresentation(workspace: fixture.workspace, hiddenIDs: [question.id]), taskID: "t1")
         #expect(resolved.pending.isEmpty)
-        #expect(resolved.inboxIDs.isEmpty)
-        #expect(resolved.requestTitle == "Build it")
+        #expect(resolved.requestTitle == "Task t1")
         #expect(resolved.requestTaskCount == 1)
     }
 
     @MainActor @Test func aRunningTaskShowsItsStateAndTheNodeRouteCarriesItsThreads() throws {
-        let task = #"{"id":"t-1","request":"r-1","title":"Build it","assignee":{"session_id":"s1"},"state":"running","state_since":1,"created_at":1}"#
-        let overview: Overview = try Self.decode(#"{"tick":1,"nodes":[\#(Self.node)],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":[],"tasks":[\#(task)]}"#)
-        #expect(overview.nodes[0].activity == nil)
-        let store = ServiceTaskPresentation(overview: overview)
-        let running = try #require(store.board.task("t-1"))
+        let fixture = V2Fixture()
+        let store = ServiceTaskPresentation(workspace: fixture.workspace)
+        let running = try #require(store.board.task("t1"))
         #expect(store.now(for: running) == nil, "the row shows “running”, not the tool in flight")
-        let detail: NodeThreads = try Self.decode(#"{"node":{"session_id":"s1","activity":[{"agent_id":null,"task":"t-1","tool":"Bash","summary":"make test","since":4},{"agent_id":"a1","agent_type":"tester","tool":"mav","since":6}]},"questions":[],"timeline":[]}"#)
+        let detail: NodeThreads = try Self.decode(#"{"node":{"session_id":"s1","activity":[{"agent_id":null,"task":"t1","tool":"Bash","summary":"make test","since":4},{"agent_id":"a1","agent_type":"tester","tool":"mav","since":6}]},"questions":[],"timeline":[]}"#)
         #expect(detail.activity?.map(\.thread) == ["main", "tester"])
         #expect(detail.activity?.first?.doing == "Bash make test")
         let older: NodeThreads = try Self.decode(#"{"node":{"session_id":"s1"}}"#)
         #expect(older.activity == nil)
     }
 
-    @MainActor @Test func aTaskReadsRunningWaitingForYouOrFinishedAndAMergedAndReportedTaskIsFinished() throws {
-        func task(_ id: String, _ request: String, _ state: String, _ deps: String, _ more: String = "") -> String {
-            #"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","state":"\#(state)","depends_on":[\#(deps)],"state_since":1,"created_at":1,"recorded":true\#(more)}"#
-        }
-        let tasks = [
-            task("t-1", "r-1", "running", ""), task("t-2", "r-1", "waiting_dependency", #""t-1""#), task("t-3", "r-2", "waiting_dependency", #""t-1""#),
-            task("t-4", "r-2", "in_review", "", #","prs":[114]"#), task("t-5", "r-2", "closing", "", #","prs":[114]"#),
-            task("t-6", "r-3", "done", "", #","prs":[114],"final_report":274"#),
-        ]
-        let requests = #"[{"id":"r-1","created_at":1,"state":"in_progress","tasks":["t-1","t-2"]},{"id":"r-2","created_at":1,"state":"in_progress","tasks":["t-3","t-4","t-5"]},{"id":"r-3","created_at":1,"state":"done","tasks":["t-6"]}]"#
-        let store = ServiceTaskPresentation(overview: try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":\#(requests),"tasks":[\#(tasks.joined(separator: ","))]}"#))
-        let label = { (id: String) in try #require(store.board.task(id)).state.label }
-        #expect(try ["t-1", "t-2", "t-3", "t-5"].map(label) == ["running", "running", "running", "running"])
-        #expect(try label("t-4") == "needs you")
-        #expect(try label("t-6") == "finished")
-        let waiting = try #require(store.board.task("t-2"))
-        #expect(store.board.stateLabel(of: waiting) == "running")
-        #expect(store.now(for: waiting) == nil, "no “after …” line: the tree already shows what it waits for")
+    @MainActor @Test func everyServerTaskStateKeepsItsOwnLabel() throws {
+        var fixture = V2Fixture()
+        let states: [DomainV2.TaskState] = [.notStarted, .running, .needsYou, .inReview, .waitingDependency, .closing, .done, .cancelled]
+        fixture.tasks = states.enumerated().map { V2Fixture.makeTask(DomainV2.TaskId(rawValue: "t\($0.offset)"), state: $0.element) }
+        let store = ServiceTaskPresentation(workspace: fixture.workspace)
+        let labels = try states.indices.map { try #require(store.board.task(DomainV2.TaskId(rawValue: "t\($0)"))).state.label }
+        #expect(labels == ["not started", "running", "needs you", "presented", "waiting for a dependency",
+                           "accepted, pending the agent", "finished", "cancelled"])
+        #expect(Set(labels).count == states.count, "no two server states share a label")
     }
 
     @MainActor @Test func aStartedTaskWaitingForAMergeSaysWhichPR() throws {
-        let fix = #"{"id":"t-44136","request":"r-1","title":"PhotoKit off the pool","state":"in_review","prs":[1],"state_since":1,"created_at":1,"recorded":true}"#
-        let beta = #"{"id":"t-44137","request":"r-1","title":"Beta 192","state":"waiting_dependency","depends_on":["t-44136"],"awaiting":1,"state_since":2,"created_at":1,"recorded":true}"#
-        let pr = #"{"id":1,"url":"https://github.com/acmecorp-private/Redraft/pull/264","repo":"acmecorp-private/Redraft","number":264,"session_id":"s1","title":"Run Home's PhotoKit calls off the pool","opened_at":1,"state":"open","additions":0,"deletions":0,"changed_files":0,"checks":[],"merge_methods":["merge"],"task":"t-44136"}"#
-        let requests = #"[{"id":"r-1","created_at":1,"state":"in_progress","tasks":["t-44136","t-44137"]}]"#
-        let store = ServiceTaskPresentation(overview: try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"prs":[\#(pr)],"requests":\#(requests),"tasks":[\#(fix),\#(beta)]}"#))
-        let waiting = try #require(store.board.task("t-44137"))
-        #expect(waiting.awaiting == 1)
+        var fixture = V2Fixture()
+        fixture.pullRequests = [.init(id: "pr-264", taskId: "fix", host: "github.com", repository: "bitomule/Redraft", number: 264,
+                                      head: "h", base: "main", state: .open, mergedHead: nil, allowedMethods: [.merge], review: nil)]
+        var fix = V2Fixture.makeTask("fix", state: .inReview, prId: "pr-264")
+        fix.title = "PhotoKit off the pool"
+        var beta = V2Fixture.makeTask("beta", state: .waitingDependency)
+        beta.dependencies = ["fix"]
+        beta.stack = .init(upstreamTask: "fix", presentationId: "p", prId: "pr-264", head: "h")
+        fixture.tasks = [fix, beta]
+        let store = ServiceTaskPresentation(workspace: fixture.workspace)
+        let waiting = try #require(store.board.task("beta"))
         #expect(store.now(for: waiting) == "waits for PR #264 to be merged")
         #expect(store.waitingReason(for: waiting) == "It started, and what is left of it waits for PR #264 of “PhotoKit off the pool” to be merged: it goes on once that PR is merged.")
-        let summary = try Self.decode(#"{"from":"running","to":"waiting_dependency","event":{"kind":"awaits_merge","pr":1},"at":2}"#) as WorkTask.Transition
-        #expect(summary.summary == "the node has nothing left but the merge of a PR it builds on")
     }
 
-    @MainActor @Test func aRequestGoesByItsTitleThenItsOnlyTasksThenWhatTheUserWrote() throws {
-        func task(_ id: String, _ request: String) -> String {
-            #"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","state":"running","state_since":1,"created_at":1}"#
-        }
-        func request(_ id: String, _ state: String, _ tasks: String, _ title: String = "") -> String {
-            #"{"id":"\#(id)","text":"Do the thing\nin detail","created_at":1,"state":"\#(state)","tasks":[\#(tasks)]\#(title)}"#
-        }
-        let requests = [
-            request("r-given", "in_progress", #""a""#, #","title":"Ship the thing""#),
-            request("r-one", "in_progress", #""one""#),
-            request("r-two", "in_progress", #""b","c""#),
-            request("r-new", "defining", ""),
-        ]
-        let tasks = [task("a", "r-given"), task("one", "r-one"), task("b", "r-two"), task("c", "r-two")]
-        let json = #"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"requests":[\#(requests.joined(separator: ","))],"tasks":[\#(tasks.joined(separator: ","))]}"#
-        let store = ServiceTaskPresentation(overview: try Self.decode(json))
-        let title = { (id: String) in store.board.request(id).map(store.title(of:)) }
+    @MainActor @Test func aRequestGoesByItsTitleThenItsOnlyTaskThenWhatTheUserWrote() throws {
+        var fixture = V2Fixture()
+        fixture.requests = ["r-given", "r-one", "r-two", "r-new"].map { .init(id: .init(rawValue: $0), body: "Do the thing\nin detail", closed: false) }
+        fixture.requests[0].title = "Ship the thing"
+        fixture.tasks = [V2Fixture.makeTask("a", request: "r-given"), V2Fixture.makeTask("one", request: "r-one"),
+                         V2Fixture.makeTask("b", request: "r-two"), V2Fixture.makeTask("c", request: "r-two")]
+        let store = ServiceTaskPresentation(workspace: fixture.workspace)
+        let title = { (id: String) in store.board.request(.init(rawValue: id)).map(store.title(of:)) }
         #expect(title("r-given") == "Ship the thing", "the orchestrator's title wins")
         #expect(title("r-one") == "Task one", "its only task's title, not the prompt")
-        #expect(title("r-two") == "Do the thing", "several tasks and no title from an older alondrad")
-        #expect(title("r-new") == "Do the thing", "still defined: what the user wrote")
-        #expect(try Self.request("r", tasks: []).title == nil)
+        #expect(title("r-two") == "Do the thing", "several tasks and no title: what the user wrote")
+        #expect(title("r-new") == "Do the thing", "still being split: what the user wrote")
+        #expect(store.definingLabel(of: try #require(store.board.request("r-new"))) == "the orchestrator is splitting it")
     }
 
-    @MainActor @Test func aTasksDocumentsComeFromItsOwnRouteBeyondTheOverviewsNewestReports() throws {
-        let task: WorkTask = try Self.decode(#"{"id":"t","request":"r","title":"T","documents":[5],"state":"in_review","state_since":5,"created_at":1}"#)
-        let details: TaskInFull = try Self.decode(#"{"task":{"id":"t","request":"r","title":"T","state":"in_review","state_since":5,"created_at":1},"reports":[{"id":5,"session_id":"s","title":"Plan","links":[],"attachments":[],"kind":"document","created_at":4}]}"#)
-        let store = ServiceTaskPresentation(overview: try Self.decode(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":\#(Self.machine),"reports":[]}"#))
-        #expect(store.documents(of: task, in: nil).isEmpty, "report 5 is not among the overview's newest")
-        #expect(store.documents(of: task, in: details).map(\.title) == ["Plan"])
+    @MainActor @Test func aTasksDocumentsComeFromItsDocumentMap() throws {
+        var fixture = V2Fixture()
+        fixture.documentReview("plan")
+        fixture.tasks[0].documents = ["doc-plan": "plan"]
+        let store = ServiceTaskPresentation(workspace: fixture.workspace)
+        let task = try #require(store.board.task("t1"))
+        #expect(store.documents(of: task).map(\.document.title) == ["Document plan"])
+        let context = ServiceTaskContext(presentation: store, taskID: "t1")
+        #expect(context.documentItems["doc-plan"] == fixture.inbox.last?.id, "the waiting review card opens the document")
+        let reviewed = ServiceTaskContext(presentation: ServiceTaskPresentation(workspace: fixture.workspace, hiddenIDs: [fixture.inbox.last!.id]), taskID: "t1")
+        #expect(reviewed.documentItems["doc-plan"] == nil)
     }
+
     @MainActor @Test func aFinishedRequestCannotDispatchWithdrawal() async throws {
-        let answered = try Self.request("r-3", tasks: [], state: "done")
-        var initial = ServiceTasksFeature.State()
-        initial.taskBoard = TaskBoard(requests: [answered], tasks: [])
-        let store = Store(initialState: initial) { ServiceTasksFeature() } withDependencies: {
-            $0.taskOperations = TaskOperations(
-                withdraw: { _ in Issue.record("A finished request cannot be withdrawn"); return .confirmed },
-                cancel: { _ in .obsolete }, reopen: { _ in .obsolete }, archiveCompleted: { .obsolete }, details: { _ in nil })
+        var fixture = V2Fixture()
+        fixture.requests = [.init(id: "r-3", body: "Done already", closed: true)]
+        fixture.tasks = []
+        let log = CommandLog()
+        let store = Store(initialState: ServiceTasksFeature.State()) { ServiceTasksFeature() } withDependencies: {
+            $0.domainWorkspace = .scripted(log) { _ in
+                Issue.record("A finished request cannot be withdrawn")
+                return V2Fixture.recorded
+            }
         }
-        await store.send(.withdrawRequested(answered.id)).finish()
+        await store.send(.workspaceChanged(fixture.workspace)).finish()
+        await store.send(.withdrawRequested("r-3")).finish()
         await store.send(.withdrawConfirmed).finish()
         #expect(store.state.withdrawingRequestID == nil)
         #expect(store.state.withdrawOutcome == nil, "nothing was sent for it")
+        #expect(log.count == 0)
     }
 
+    @MainActor @Test func withdrawingAgainAfterAnUnknownOutcomeReusesItsCommandID() async throws {
+        let fixture = V2Fixture()
+        let log = CommandLog()
+        let results = LockIsolated<[DomainCommandResult]>([.uncertain, V2Fixture.recorded])
+        let store = Store(initialState: ServiceTasksFeature.State()) { ServiceTasksFeature() } withDependencies: {
+            $0.uuid = .incrementing
+            $0.domainWorkspace = .scripted(log) { intent in
+                #expect(intent == .closeRequest(V2Fixture.request))
+                return results.withValue { $0.removeFirst() }
+            }
+        }
+        await store.send(.workspaceChanged(fixture.workspace)).finish()
+        await store.send(.withdrawRequested(V2Fixture.request)).finish()
+        await store.send(.withdrawConfirmed).finish()
+        #expect(store.state.withdrawOutcome == .unknown)
+        await store.send(.withdrawRequested(V2Fixture.request)).finish()
+        await store.send(.withdrawConfirmed).finish()
+        #expect(store.state.withdrawOutcome == .confirmed)
+        #expect(log.count == 2)
+        #expect(Set(log.commandIDs).count == 1, "the retry is the same command, so the server applies it once")
+        #expect(store.state.withdrawCommandIDs.isEmpty)
+    }
 }

@@ -1,3 +1,5 @@
+import AlondraContracts
+import AlondraDomain
 import AlondraTasksFeature
 import AlondraFleetFeature
 import AlondraShared
@@ -18,7 +20,7 @@ public struct ServiceFleetFeature {
         public var fleet = FleetFeature.State()
         public var nodePath: [String] = []
         public var path = StackState<Path.State>()
-        public var presentation = ServiceTaskPresentation(overview: nil)
+        public var presentation = ServiceTaskPresentation(workspace: nil)
         @Presents public var taskDetail: TaskDetailFeature.State?
         public var focusedInboxID: String?
         public var nodes: IdentifiedArrayOf<NodeDetailFeature.State> = []
@@ -43,15 +45,15 @@ public struct ServiceFleetFeature {
             for id in nodes.ids { nodes[id: id]?.pendingSubmission = nil }
         }
         public var sequence: UInt64 = 0
-        public var overview: Overview?
+        public var workspace: DomainWorkspace?
         public var hiddenInboxIDs: Set<String> = []
     }
     public enum Action {
         case appeared, disappeared, refresh
         case identityChanged(TriageIdentity)
-        case openTask(String), focusInbox(String), inboxFocusHandled
+        case openTask(DomainV2.TaskId), focusInbox(String), inboxFocusHandled
         case taskDetail(PresentationAction<TaskDetailFeature.Action>)
-        case snapshot(Overview?)
+        case workspaceChanged(DomainWorkspace?)
         case hiddenInboxChanged(Set<String>)
         case fleet(FleetFeature.Action)
         case detailDismissed
@@ -59,10 +61,9 @@ public struct ServiceFleetFeature {
         case openNode(String)
         case nodePathChanged([String])
         case path(StackActionOf<Path>)
-        case pushTask(String)
+        case pushTask(DomainV2.TaskId)
     }
     @Dependency(\.serviceTasksClient) var snapshots
-    private enum CancelID { case observation }
     public var body: some ReducerOf<Self> {
         Scope(state: \.fleet, action: \.fleet) { FleetFeature() }
         Reduce { state, action in
@@ -71,29 +72,26 @@ public struct ServiceFleetFeature {
                 state.resetIdentity(identity)
                 return .none
             case .pushTask(let id):
-                guard let task = state.presentation.board.task(id) else { return .none }
+                guard let detail = ServiceTasksFeature.detail(id, state.workspace) else { return .none }
                 state.path.append(.task(TaskDetailFeature.State(taskID: id)))
                 guard let pathID = state.path.ids.last else { return .none }
-                return .send(.path(.element(id: pathID, action: .task(.taskChanged(task)))))
+                return .send(.path(.element(id: pathID, action: .task(.taskChanged(detail, state.workspace)))))
             case .path(.push(let id, _)):
                 guard case .node(let route) = state.path[id: id] else { return .none }
                 return .send(.openNode(route.sessionID))
             case .refresh: return .run { _ in await snapshots.refresh() }
             case .openTask(let id):
-                guard let task = state.presentation.board.task(id) else { return .none }
+                guard let detail = ServiceTasksFeature.detail(id, state.workspace) else { return .none }
                 state.taskDetail = TaskDetailFeature.State(taskID: id)
-                return .send(.taskDetail(.presented(.taskChanged(task))))
+                return .send(.taskDetail(.presented(.taskChanged(detail, state.workspace))))
             case .focusInbox(let id): state.focusedInboxID = id; return .none
             case .inboxFocusHandled: state.focusedInboxID = nil; return .none
-            case .appeared:
-                return .run { send in
-                    for await snapshot in await snapshots.observe() { await send(.snapshot(snapshot)) }
-                }.cancellable(id: CancelID.observation, cancelInFlight: true)
+            case .appeared: return .none
             case .disappeared:
                 state.cancelPendingSubmissions()
-                return .cancel(id: CancelID.observation)
-            case .snapshot(let overview):
-                state.overview = overview
+                return .none
+            case .workspaceChanged(let workspace):
+                state.workspace = workspace
                 return project(&state)
             case .hiddenInboxChanged(let ids):
                 guard state.hiddenInboxIDs != ids else { return .none }
@@ -113,10 +111,10 @@ public struct ServiceFleetFeature {
                 if let id = state.detailID { state.nodes[id: id]?.pendingSubmission = nil }
                 state.detailID = nil
                 return .none
-            case .nodes(.element(let id, .acknowledgeFinished)), .nodes(.element(let id, .cancelFinished)), .nodes(.element(let id, .retryFinished)), .nodes(.element(let id, .closeFinished)), .nodes(.element(let id, .sendFinished)), .nodes(.element(let id, .commandResolved)):
+            case .nodes(.element(let id, .acknowledgeFinished)), .nodes(.element(let id, .cancelFinished)), .nodes(.element(let id, .retryFinished)), .nodes(.element(let id, .closeFinished)), .nodes(.element(let id, .sendFinished)):
                 if let node = state.nodes[id: id], node.shouldDismiss || (
                     node.acceptedSequence != nil && node.entry == nil && !node.isSending && !node.isClosing && !node.hasOutstandingOrchestratorControl
-                        && node.sendOutcome?.uncertainID == nil && node.closeOutcome?.uncertainID == nil
+                        && node.sendOutcome != .unknown && node.closeOutcome != .unknown
                 ) {
                     state.nodes.remove(id: id)
                     if let pathID = state.path.ids.first(where: { pathID in
@@ -140,31 +138,32 @@ public struct ServiceFleetFeature {
     }
 
     private func project(_ state: inout State) -> Effect<Action> {
-        state.presentation = ServiceTaskPresentation(overview: state.overview, hiddenIDs: state.hiddenInboxIDs)
+        state.presentation = ServiceTaskPresentation(workspace: state.workspace, hiddenIDs: state.hiddenInboxIDs)
+        let workspace = state.workspace
         let taskUpdate: Effect<Action> = state.taskDetail.map { detail in
-            .send(.taskDetail(.presented(.taskChanged(state.presentation.board.task(detail.taskID)))))
+            .send(.taskDetail(.presented(.taskChanged(ServiceTasksFeature.detail(detail.taskID, workspace), workspace))))
         } ?? .none
-        guard let overview = state.overview else {
+        guard let workspace else {
             let pathUpdates: Effect<Action> = .merge(state.path.ids.map { id in
                 switch state.path[id: id]! {
                 case .node: return .none
-                case .task: return .send(.path(.element(id: id, action: .task(.taskChanged(nil)))))
+                case .task: return .send(.path(.element(id: id, action: .task(.taskChanged(nil, nil)))))
                 }
             })
             return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotUnavailable)), .merge(state.nodes.ids.map { .send(.nodes(.element(id: $0, action: .snapshotUnavailable))) }))
         }
         state.sequence &+= 1
-        let ids = Set(ObserveInboxUseCase().execute(overview).items.map(\.id)).subtracting(state.hiddenInboxIDs)
-        let snapshot = ProjectFleetUseCase().execute(overview, visibleInboxIDs: ids, sequence: state.sequence)
+        let ids = Set(workspace.roots.map(\.id)).subtracting(state.hiddenInboxIDs)
+        let snapshot = ProjectFleetUseCase().execute(workspace, visibleInboxIDs: ids, sequence: state.sequence)
         for node in state.nodes where snapshot.node(node.id) == nil && !node.isSending && !node.isClosing && !node.hasOutstandingOrchestratorControl
-            && node.sendOutcome?.uncertainID == nil && node.closeOutcome?.uncertainID == nil {
+            && node.sendOutcome != .unknown && node.closeOutcome != .unknown {
             state.nodes.remove(id: node.id)
             if state.detailID == node.id { state.detailID = nil }
         }
         let pathUpdates: Effect<Action> = .merge(state.path.ids.map { id in
             switch state.path[id: id]! {
             case .node: return .none
-            case .task(let task): return .send(.path(.element(id: id, action: .task(.taskChanged(state.presentation.board.task(task.taskID))))))
+            case .task(let task): return .send(.path(.element(id: id, action: .task(.taskChanged(ServiceTasksFeature.detail(task.taskID, workspace), workspace)))))
             }
         })
         return .merge(pathUpdates, taskUpdate, .send(.fleet(.snapshotChanged(snapshot))), .merge(state.nodes.ids.map { .send(.nodes(.element(id: $0, action: .snapshotChanged(snapshot)))) }))

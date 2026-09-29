@@ -15,5 +15,6 @@ swift_test(
     deps = [
         ":AlondraLoopbackSession",
         "//apple/APIClient:AlondraAPIClient",
+        "//apple/Contracts:AlondraContracts",
     ],
 )

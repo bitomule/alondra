@@ -62,12 +62,10 @@ import Testing
         options.apply(try catalog(lumoCatalog))
         options.set(spec("device", in: options), to: .toggle(true))
         options.set(spec("pr", in: options), to: .value("auto_merge"))
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .sortedKeys
-        var body = options.body(text: "Arregla el crash")
-        body.attachments = ["a1b2"]
-        let json = String(decoding: try encoder.encode(body), as: UTF8.self)
-        #expect(json == #"{"attachments":["a1b2"],"options":{"device":true,"pr":"auto_merge"},"project":"Lumo","text":"Arregla el crash"}"#)
+        let body = options.body(text: "Arregla el crash")
+        #expect(body.project == "Lumo")
+        #expect(body.options == ["device": .toggle(true), "pr": .value("auto_merge")])
+        #expect(body.text == "Arregla el crash")
     }
 
     @Test func aNewCatalogDropsChoicesItNoLongerOffersAndIgnoresAnotherProject() throws {

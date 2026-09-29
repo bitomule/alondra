@@ -1,35 +1,59 @@
 import AlondraAPIClient
+import AlondraContracts
 import AlondraRelayOutbox
 @testable import AlondraRelaySession
 import CryptoKit
 import Foundation
 import XCTest
 
+private let ok = Data(#"{"ok":true}"#.utf8)
+private let changesBody = #"{"protocol_version":2,"data_epoch":"epoch","revision":42,"changed":true}"#
+private let command = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":7,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
+private let changedCommand = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":8,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
+
 final class RelaySessionTests: XCTestCase {
-    func testInvalidEnvelopeTimeIsRejectedBeforeDispatchAndJournalReservation() async throws {
+    private func api(_ fixture: Fixture, _ session: RelaySession) -> AlondraAPIClient {
+        AlondraAPIClient(serviceURL: fixture.scope.relay, deviceID: fixture.scope.deviceID, operations: session)
+    }
+
+    private func summary(_ fixture: Fixture, _ session: RelaySession) async throws -> Data {
+        try await api(fixture, session).send(Endpoint<Data>.data(.get, path: ["v2", "domain", "summary"]))
+    }
+
+    private func changes(_ fixture: Fixture, _ session: RelaySession, after revision: UInt64) async throws -> DomainV2.Changes {
+        try await api(fixture, session).domainChanges(epoch: "epoch", after: revision, wait: 50)
+    }
+
+    private func opened(_ fixture: Fixture, _ post: Data?) throws -> [String: Any] {
+        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(post))
+        let plaintext = try envelope.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
+            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
+        return try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+    }
+
+    func testInvalidEnvelopeTimeIsRejectedBeforeDispatchAndReservation() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
+        let session = fixture.session(now: { UInt64.max })
         do {
-            _ = try await fixture.session(now: { UInt64.max }).execute(
-                requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message")
+            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
             XCTFail("Invalid envelope time must remain a definite rejection")
         } catch RelaySessionError.invalidRequest { }
         let posts = await fixture.http.mutations
         XCTAssertTrue(posts.isEmpty)
-        let restored = try await fixture.session().recoveryStatus(requestID: "operation-1")
+        let restored = try await session.recoveryStatus(requestID: "operation-1")
         XCTAssertEqual(restored, .notDispatched)
     }
 
     func testRecoveryDistinguishesProvenAbsenceFromExecutedOrUncertainMutations() async throws {
         for mode in [FakeHTTP.Mode.success, .oversized, .rejected] {
             let fixture = try Fixture(mode: mode)
-            defer { try? FileManager.default.removeItem(at: fixture.directory) }
-            let absent = try await fixture.session().recoveryStatus(requestID: "operation-1")
+            let session = fixture.session()
+            let absent = try await session.recoveryStatus(requestID: "operation-1")
             XCTAssertEqual(absent, .notDispatched)
-            _ = try await fixture.session().execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message")
-            let restored = try await fixture.session().recoveryStatus(requestID: "operation-1")
+            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+            let restored = try await session.recoveryStatus(requestID: "operation-1")
             switch mode {
-            case .success: XCTAssertEqual(restored, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+            case .success: XCTAssertEqual(restored, .completed(status: 200, body: ok))
             case .rejected: XCTAssertEqual(restored, .completed(status: 422, body: Data(#"{"error":"invalid message"}"#.utf8)))
             default: XCTAssertEqual(restored, .unknown)
             }
@@ -40,39 +64,53 @@ final class RelaySessionTests: XCTestCase {
 
     func testReadCannotReuseMutationIdentityInEitherDirection() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let session = fixture.session()
-        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message")
-        _ = try await session.execute(requestID: "operation-1", method: "GET", path: "/v1/overview")
+        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+        _ = try await session.execute(requestID: "operation-1", method: "GET", path: "/v2/domain/summary")
         let requests = await fixture.http.mutations
         XCTAssertEqual(requests.count, 2)
         let read = try JSONDecoder().decode(EnvelopeV1.self, from: requests[1])
         XCTAssertNotEqual(read.requestID, "operation-1")
         XCTAssertTrue(read.requestID.hasPrefix("read-"))
         do {
-            _ = try await session.execute(requestID: read.requestID, method: "POST", path: "/v1/nodes/node/message")
+            _ = try await session.execute(requestID: read.requestID, method: "POST", path: "/v2/domain/commands", body: command)
             XCTFail("Mutation must not reuse an internal read identity")
         } catch RelaySessionError.invalidRequest { }
         let after = await fixture.http.mutations
         XCTAssertEqual(after.count, 2)
     }
 
-    func testMutationIdentityRejectsChangedRequestAfterRelaunchAndRetirement() async throws {
+    func testSectionedReadsAreAdmittedAndTheWholeProjectionIsRefusedBeforeAnyPOST() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let session = fixture.session()
-        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message",
-                                      body: Data(#"{"text":"hello"}"#.utf8))
+        do {
+            _ = try await session.execute(requestID: "whole", method: "GET", path: "/v2/domain")
+            XCTFail("The whole projection is no longer read")
+        } catch RelaySessionError.invalidRequest { }
+        let none = await fixture.http.mutations
+        XCTAssertTrue(none.isEmpty, "A refused read never reaches the relay")
+        for path in ["/v2/domain/summary", "/v2/domain/inbox/interaction%3Aq"] {
+            let result = try await session.execute(requestID: "caller-read", method: "GET", path: path)
+            XCTAssertEqual(result, .completed(status: 200, body: ok))
+        }
+        let posts = await fixture.http.mutations
+        XCTAssertEqual(try posts.map { try opened(fixture, $0)["path"] as? String },
+                       ["/v2/domain/summary", "/v2/domain/inbox/interaction%3Aq"])
+    }
+
+    func testMutationIdentityRejectsChangedRequestBeforeAndAfterRetirement() async throws {
+        let fixture = try Fixture()
+        let session = fixture.session()
+        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
         for retired in [false, true] {
             if retired { try await session.retireAppliedResponse(requestID: "operation-1") }
-            let restored = fixture.session()
             for (method, path, body) in [
-                ("POST", "/v1/nodes/node/message", #"{"text":"changed"}"#),
-                ("POST", "/v1/nodes/other/message", #"{"text":"hello"}"#),
-                ("DELETE", "/v1/nodes/node/message", #"{"text":"hello"}"#)
+                ("POST", "/v2/domain/commands", changedCommand),
+                ("POST", "/v2/domain/schedules", command),
+                ("PUT", "/v2/domain/schedules/schedule-1", command)
             ] {
                 do {
-                    _ = try await restored.execute(requestID: "operation-1", method: method, path: path, body: Data(body.utf8))
+                    _ = try await session.execute(requestID: "operation-1", method: method, path: path, body: body)
                     XCTFail("Changed operation must not receive the original operation's success")
                 } catch RelaySessionError.operationIdentityConflict { }
             }
@@ -83,98 +121,81 @@ final class RelaySessionTests: XCTestCase {
 
     func testConcurrentDifferentMutationsCannotShareAnIdentity() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        @Sendable func attempt(_ text: String) async throws -> Bool {
+        let session = fixture.session()
+        @Sendable func attempt(_ body: Data) async throws -> Bool {
             do {
-                let body = try JSONSerialization.data(withJSONObject: ["text": text])
-                let outcome = try await fixture.session().execute(requestID: "operation-1", method: "POST",
-                    path: "/v1/nodes/node/message", body: body)
-                XCTAssertEqual(outcome, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+                let outcome = try await session.execute(requestID: "operation-1", method: "POST",
+                    path: "/v2/domain/commands", body: body)
+                XCTAssertEqual(outcome, .completed(status: 200, body: ok))
                 return true
             } catch RelaySessionError.operationIdentityConflict { return false }
         }
-        async let first = attempt("first")
-        async let second = attempt("second")
+        async let first = attempt(command)
+        async let second = attempt(changedCommand)
         let results = try await [first, second]
         XCTAssertEqual(results.filter { $0 }.count, 1)
         let posts = await fixture.http.mutations
         XCTAssertEqual(posts.count, 1)
     }
 
-    func testReadRecoversLostResponseWithoutCreatingDurableMutationJournal() async throws {
+    func testReadRecoversLostResponseWithoutReservingAnIdentity() async throws {
         let fixture = try Fixture(mode: .overview)
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let api = AlondraAPIClient(serviceURL: fixture.scope.relay, deviceID: fixture.scope.deviceID,
-                                   operations: fixture.session())
-        let response = try await api.send(Endpoint<Data>.data(.get, path: ["v1", "overview"]),
-                                          operationID: "operation-1")
-        XCTAssertEqual(response, Data(#"{"tick":42}"#.utf8))
+        let session = fixture.session()
+        let response = try await api(fixture, session).send(Endpoint<Data>.data(.get, path: ["v2", "domain", "summary"]),
+                                                            operationID: "operation-1")
+        XCTAssertEqual(try DomainV2.decode(DomainV2.Changes.self, from: response),
+                       try DomainV2.decode(DomainV2.Changes.self, from: Data(changesBody.utf8)))
         let posts = await fixture.http.mutations
         XCTAssertEqual(posts.count, 1, "Lost read replies resolve through status, not another POST")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path),
-                       "Periodic reads must not accumulate permanent mutation tombstones")
+        let recorded = try await session.recoveryStatus(requestID: "operation-1")
+        XCTAssertEqual(recorded, .notDispatched, "Periodic reads must not accumulate mutation records")
     }
 
-    func testUnifiedAPIRecoversLostMutationAcrossCoordinatorRecreation() async throws {
+    func testUnifiedAPIRecoversLostMutationAcrossClientRecreation() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let endpoint = Endpoint<Data>.data(.post, path: ["v1", "nodes", "node", "message"],
-                                           body: Data(#"{"text":"hello"}"#.utf8))
-        let first = AlondraAPIClient(serviceURL: fixture.scope.relay, deviceID: fixture.scope.deviceID,
-                                    operations: fixture.session())
-        let result = try await first.send(endpoint, operationID: "operation-1")
-        XCTAssertEqual(result, Data(#"{"ok":true}"#.utf8))
-        let restored = AlondraAPIClient(serviceURL: fixture.scope.relay, deviceID: fixture.scope.deviceID,
-                                       operations: fixture.session())
-        let recovered = try await restored.send(endpoint, operationID: "operation-1")
+        let session = fixture.session()
+        let endpoint = Endpoint<Data>.data(.post, path: ["v2", "domain", "commands"], body: command)
+        let result = try await api(fixture, session).send(endpoint, operationID: "command-1")
+        XCTAssertEqual(result, ok)
+        let recovered = try await api(fixture, session).send(endpoint, operationID: "command-1")
         XCTAssertEqual(recovered, result)
         let posts = await fixture.http.mutations
-        XCTAssertEqual(posts.count, 1, "The product API must preserve the durable ID across recreation")
+        XCTAssertEqual(posts.count, 1, "The product API keeps the operation ID across client values")
     }
 
-    func testLostPOSTResponseRelaunchResolvesEncryptedResultWithoutReplayingMutation() async throws {
+    func testLostPOSTResponseResolvesEncryptedResultWithoutReplayingMutation() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let first = fixture.session()
-        let initial = try await first.execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message",
-                                              body: Data(#"{"text":"hello"}"#.utf8), statusPolls: 0)
+        let session = fixture.session()
+        let initial = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands",
+                                                body: command, statusPolls: 0)
         XCTAssertEqual(initial, .unknown)
-        let restored = fixture.session()
-        let result = try await restored.execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message",
-                                                body: Data(#"{"text":"hello"}"#.utf8))
-        XCTAssertEqual(result, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+        let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands",
+                                               body: command)
+        XCTAssertEqual(result, .completed(status: 200, body: ok))
         let requests = await fixture.http.mutations
-        XCTAssertEqual(requests.count, 1, "A restored operation must never duplicate the Mac message")
-        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(requests.first))
-        let plaintext = try envelope.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
-            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
-        let local = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
-        XCTAssertEqual(local["path"] as? String, "/v1/nodes/node/message")
-        XCTAssertEqual((local["body"] as? [String: String])?["text"], "hello")
+        XCTAssertEqual(requests.count, 1, "A retried operation must never duplicate the command")
+        let local = try opened(fixture, requests.first)
+        XCTAssertEqual(local["path"] as? String, "/v2/domain/commands")
+        XCTAssertEqual((local["body"] as? [String: Any])?["command_id"] as? String, "command-1")
     }
 
     func testV2CommandRecoveryReusesExactIdentityAndNeverReposts() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let command = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":7,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
-        let first = try await fixture.session().execute(requestID: "command-1", method: "POST",
+        let session = fixture.session()
+        let first = try await session.execute(requestID: "command-1", method: "POST",
             path: "/v2/domain/commands", body: command, statusPolls: 0)
         XCTAssertEqual(first, .unknown)
-        let recovered = try await fixture.session().execute(requestID: "command-1", method: "POST",
+        let recovered = try await session.execute(requestID: "command-1", method: "POST",
             path: "/v2/domain/commands", body: command)
-        XCTAssertEqual(recovered, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+        XCTAssertEqual(recovered, .completed(status: 200, body: ok))
         do {
-            let changed = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":8,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
-            _ = try await fixture.session().execute(requestID: "command-1", method: "POST",
-                path: "/v2/domain/commands", body: changed)
+            _ = try await session.execute(requestID: "command-1", method: "POST",
+                path: "/v2/domain/commands", body: changedCommand)
             XCTFail("A changed v2 envelope reused an existing command identity")
         } catch RelaySessionError.operationIdentityConflict { }
         let posts = await fixture.http.mutations
         XCTAssertEqual(posts.count, 1)
-        let sealed = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(posts.first))
-        let plaintext = try sealed.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
-            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
-        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        let request = try opened(fixture, posts.first)
         XCTAssertEqual(request["path"] as? String, "/v2/domain/commands")
         let body = try XCTUnwrap(request["body"] as? [String: Any])
         XCTAssertEqual(body["command_id"] as? String, "command-1")
@@ -220,25 +241,22 @@ final class RelaySessionTests: XCTestCase {
 
     func testV2ScheduleReadIsEphemeralAndCreateRetryReusesSealedOperation() async throws {
         let fixture = try Fixture()
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let session = fixture.session()
         let read = try await session.execute(requestID: "caller-read", method: "GET", path: "/v2/domain/schedules")
-        XCTAssertEqual(read, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path))
+        XCTAssertEqual(read, .completed(status: 200, body: ok))
+        let readRecord = try await session.recoveryStatus(requestID: "caller-read")
+        XCTAssertEqual(readRecord, .notDispatched)
 
         let body = Data(#"{"title":"Review","text":"Review project","frequency":"daily","hour":9,"minute":0,"revision":0}"#.utf8)
         let first = try await session.execute(requestID: "schedule-create-1", method: "POST",
             path: "/v2/domain/schedules", body: body, statusPolls: 0)
         XCTAssertEqual(first, .unknown)
-        let recovered = try await fixture.session().execute(requestID: "schedule-create-1", method: "POST",
+        let recovered = try await session.execute(requestID: "schedule-create-1", method: "POST",
             path: "/v2/domain/schedules", body: body)
-        XCTAssertEqual(recovered, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+        XCTAssertEqual(recovered, .completed(status: 200, body: ok))
         let sealed = await fixture.http.mutations
-        XCTAssertEqual(sealed.count, 2, "one ephemeral read and one durable create; no replay POST")
-        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(sealed.last))
-        let plaintext = try envelope.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
-            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
-        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        XCTAssertEqual(sealed.count, 2, "one ephemeral read and one create; no replay POST")
+        let request = try opened(fixture, sealed.last)
         XCTAssertEqual(request["path"] as? String, "/v2/domain/schedules")
         XCTAssertEqual(request["method"] as? String, "POST")
         XCTAssertEqual((request["body"] as? [String: Any])?["revision"] as? Int, 0)
@@ -246,47 +264,44 @@ final class RelaySessionTests: XCTestCase {
 
     func testRestartRefreshesChallengeForStatusWithoutRepostingMutation() async throws {
         let fixture = try Fixture(mode: .restart)
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        let result = try await fixture.session().execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message")
-        XCTAssertEqual(result, .completed(status: 200, body: Data(#"{"ok":true}"#.utf8)))
+        let result = try await fixture.session().execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+        XCTAssertEqual(result, .completed(status: 200, body: ok))
         let mutations = await fixture.http.mutations
         let headers = await fixture.http.statusEpochs
         XCTAssertEqual(mutations.count, 1)
         XCTAssertEqual(headers, ["AAAAAAAAAAAAAAAAAAAAAA", "AQEBAQEBAQEBAQEBAQEBAQ"])
     }
 
-    func testContentLongPollUsesEncryptedDaemonCursorAndNoMutationJournal() async throws {
+    func testContentLongPollUsesEncryptedDaemonCursorAndReservesNoIdentity() async throws {
         let fixture = try Fixture(mode: .overview)
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let session = fixture.session()
-        try await session.waitForChange(afterSnapshotTick: UInt64.max, seconds: 50)
+        let changed = try await changes(fixture, session, after: 41)
+        XCTAssertEqual(changed.revision, 42)
         let posts = await fixture.http.mutations
         XCTAssertEqual(posts.count, 1)
-        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(posts.first))
-        let plaintext = try envelope.open(senderKey: fixture.phoneSigning.publicKey, recipientKey: fixture.macAgreement,
-            sender: "phone-test", recipient: "mac-test", route: "mac-test", nowMilliseconds: 1000)
-        let request = try XCTUnwrap(JSONSerialization.jsonObject(with: plaintext) as? [String: Any])
+        let request = try opened(fixture, posts.first)
         XCTAssertEqual(request["method"] as? String, "GET")
-        XCTAssertEqual(request["path"] as? String, "/v1/changes?after=18446744073709551615&wait=50")
+        XCTAssertEqual(request["path"] as? String, "/v2/domain/changes?data_epoch=epoch&after=41&wait=50")
         XCTAssertNil(request["body"])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path))
+        let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(posts.first))
+        let recorded = try await session.recoveryStatus(requestID: envelope.requestID)
+        XCTAssertEqual(recorded, .notDispatched)
     }
 
     func testContentLongPollWaitsForRemoteResultAndLogoutSuppressesNextFetch() async throws {
         let fixture = try Fixture(mode: .pendingChange)
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let timer = TimerGate()
         await fixture.http.holdChanges(on: timer)
         let session = fixture.session()
-        _ = try await session.fetchOverview()
+        _ = try await summary(fixture, session)
         let nextRefresh = Task {
-            try await session.waitForChange(afterSnapshotTick: 999, seconds: 50)
-            return try await session.fetchOverview()
+            _ = try await self.changes(fixture, session, after: 41)
+            return try await self.summary(fixture, session)
         }
         let duration = await timer.started()
         XCTAssertEqual(duration, .seconds(25))
         let beforeRelease = await fixture.http.mutations
-        XCTAssertEqual(beforeRelease.count, 2, "One overview and one content poll; no next overview before its response")
+        XCTAssertEqual(beforeRelease.count, 2, "One summary and one content poll; no next summary before its response")
         await session.deactivate()
         await timer.release()
         do { _ = try await nextRefresh.value; XCTFail("Logged-out session fetched again") }
@@ -297,8 +312,7 @@ final class RelaySessionTests: XCTestCase {
 
     func testFiftySecondContentReadUsesRelayWakeupsWithoutPollingEachSecond() async throws {
         let fixture = try Fixture(mode: .longChange)
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
-        try await fixture.session().waitForChange(afterSnapshotTick: 42, seconds: 50)
+        _ = try await changes(fixture, fixture.session(), after: 41)
         let posts = await fixture.http.mutations
         let statusReads = await fixture.http.requestStatusCount
         let changes = await fixture.http.changeQueries
@@ -309,17 +323,15 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual(changes.map(\.wait), [25, 25, 25])
         XCTAssertEqual(changes.map(\.epoch), Array(repeating: "AAAAAAAAAAAAAAAAAAAAAA", count: 3))
         XCTAssertEqual(elapsed, 50, "Two server-held intervals; the first response contains immediate unrelated/received events")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.directory.appendingPathComponent("outbox.json").path))
     }
 
     func testReadWakeupRejectsEpochErrorsAndForgedCompletionWithoutReposting() async throws {
         for mode in [FakeHTTP.Mode.changeUnauthorized, .changeConflict, .changeEpoch, .changeForged] {
             let fixture = try Fixture(mode: mode)
-            defer { try? FileManager.default.removeItem(at: fixture.directory) }
             do {
-                try await fixture.session().waitForChange(afterSnapshotTick: 42, seconds: 50)
+                _ = try await changes(fixture, fixture.session(), after: 41)
                 XCTFail("An invalid relay wakeup/completion became content success")
-            } catch RelaySessionError.outcomeUnknown { }
+            } catch ServiceAPIError.outcomeUnknown { }
             let posts = await fixture.http.mutations
             XCTAssertEqual(posts.count, 1, "No new encrypted request after authentication/epoch/verification failure")
         }
@@ -327,12 +339,11 @@ final class RelaySessionTests: XCTestCase {
 
     func testCancellationDuringRelayWaitDoesNotReadStatusOrPostAgain() async throws {
         let fixture = try Fixture(mode: .pendingChange)
-        defer { try? FileManager.default.removeItem(at: fixture.directory) }
         let gate = TimerGate()
         await fixture.http.holdChanges(on: gate)
         let session = fixture.session()
-        _ = try await session.fetchOverview()
-        let task = Task { try await session.waitForChange(afterSnapshotTick: 42, seconds: 50) }
+        _ = try await summary(fixture, session)
+        let task = Task { _ = try await self.changes(fixture, session, after: 41) }
         _ = await gate.started()
         let readsBefore = await fixture.http.requestStatusCount
         task.cancel()
@@ -341,18 +352,17 @@ final class RelaySessionTests: XCTestCase {
         catch is CancellationError { }
         let posts = await fixture.http.mutations
         let readsAfter = await fixture.http.requestStatusCount
-        XCTAssertEqual(posts.count, 2, "Overview plus one content read")
+        XCTAssertEqual(posts.count, 2, "Summary plus one content read")
         XCTAssertEqual(readsAfter, readsBefore)
     }
 
     func testReadCancelsDeadlineChildOnSuccessAndBootstrapFailure() async throws {
         for mode in [FakeHTTP.Mode.overview, .bootstrapFailure] {
             let fixture = try Fixture(mode: mode)
-            defer { try? FileManager.default.removeItem(at: fixture.directory) }
             let timer = DeadlineHTTPGate(returnsLate: false)
             let session = fixture.session(readDeadline: { _ in try await timer.wait() })
             do {
-                try await session.waitForChange(afterSnapshotTick: 42, seconds: 50)
+                _ = try await changes(fixture, session, after: 41)
                 XCTAssertEqual(mode, .overview)
             } catch RelayWireError.unauthorized {
                 XCTAssertEqual(mode, .bootstrapFailure, "Bootstrap errors retain their original policy")
@@ -367,7 +377,6 @@ final class RelaySessionTests: XCTestCase {
         for phase in ["bootstrap", "status", "changes"] {
             for returnsLate in [false, true] {
                 let fixture = try Fixture(mode: phase == "changes" ? .longChange : .overview)
-                defer { try? FileManager.default.removeItem(at: fixture.directory) }
                 let timer = TimerGate()
                 let http = DeadlineHTTPGate(returnsLate: returnsLate)
                 await fixture.http.stall(phase, on: http)
@@ -377,14 +386,14 @@ final class RelaySessionTests: XCTestCase {
                     XCTAssertLessThanOrEqual(remaining, .seconds(55))
                     try await timer.wait(remaining)
                 })
-                let read = Task { try await session.waitForChange(afterSnapshotTick: 42, seconds: 50) }
+                let read = Task { _ = try await self.changes(fixture, session, after: 41) }
                 await http.started()
                 _ = await timer.started()
                 await timer.release() // Controlled expiry while HTTP is still suspended.
                 await http.cancelled()
                 if returnsLate { await http.releaseLateResponse() }
                 do { try await read.value; XCTFail("Expired \(phase) accepted a late result") }
-                catch RelaySessionError.outcomeUnknown { }
+                catch ServiceAPIError.outcomeUnknown { }
                 let posts = await fixture.http.mutations
                 let statusReads = await fixture.http.requestStatusCount
                 XCTAssertEqual(posts.count, phase == "bootstrap" ? 0 : 1)
@@ -396,9 +405,8 @@ final class RelaySessionTests: XCTestCase {
     func testUncertainMacExecutionAndForgedIdentityCannotBecomeSuccess() async throws {
         for mode in [FakeHTTP.Mode.oversized, .wrongSender, .wrongRequest, .expired] {
             let fixture = try Fixture(mode: mode)
-            defer { try? FileManager.default.removeItem(at: fixture.directory) }
             let session = fixture.session()
-            let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/v1/nodes/node/message")
+            let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
             XCTAssertEqual(result, .unknown)
             let mutations = await fixture.http.mutations
             XCTAssertEqual(mutations.count, 1)
@@ -411,17 +419,15 @@ private struct Fixture {
     let phoneAgreement = P256.KeyAgreement.PrivateKey()
     let macSigning = P256.Signing.PrivateKey()
     let macAgreement = P256.KeyAgreement.PrivateKey()
-    let directory: URL
     let http: FakeHTTP
     let scope = RelayOutboxScope(relay: URL(string: "https://relay.example")!, macID: "mac-test",
                                  deviceID: "phone-test", credentialRevision: "approved-generation-1")
     init(mode: FakeHTTP.Mode = .success) throws {
-        directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         http = FakeHTTP(macSigning: macSigning, phoneAgreement: phoneAgreement.publicKey, mode: mode)
     }
     func session(now: @escaping @Sendable () -> UInt64 = { 1000 }, sleep: @escaping @Sendable () async throws -> Void = {},
                  readDeadline: @escaping @Sendable (ContinuousClock.Instant) async throws -> Void = { try await ContinuousClock().sleep(until: $0) }) -> RelaySession {
-        return try! RelaySession(journalFile: directory.appendingPathComponent("outbox.json"), scope: scope,
+        return try! RelaySession(scope: scope,
             bearer: { "token" }, transport: http,
             signing: phoneSigning, agreement: phoneAgreement, macSigning: macSigning.publicKey,
             macAgreement: macAgreement.publicKey, now: now, sleep: sleep, waitForReadDeadline: readDeadline)
@@ -505,7 +511,7 @@ private actor FakeHTTP: ServiceHTTPTransport {
         if mode == .pendingChange && mutations.count > 1 || waitsForChange && !completedChange {
             return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["request_id": requestID, "status": "pending", "revision": 1]))
         }
-        let payload = mode == .overview || mode == .pendingChange ? #"{"status":200,"body":{"tick":42}}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : mode == .rejected ? #"{"status":422,"body":{"error":"invalid message"}}"# : #"{"status":200,"body":{"ok":true}}"#
+        let payload = mode == .overview || mode == .pendingChange || waitsForChange ? #"{"status":200,"body":\#(changesBody)}"# : mode == .oversized ? #"{"status":502,"error":"response_too_large"}"# : mode == .rejected ? #"{"status":422,"body":{"error":"invalid message"}}"# : #"{"status":200,"body":{"ok":true}}"#
         let envelope = try EnvelopeV1.seal(route: "mac-test", sender: mode == .wrongSender || mode == .changeForged ? "mac-other" : "mac-test",
             recipient: "phone-test", requestID: mode == .wrongRequest ? "operation-other" : requestID, kind: "response",
             expiresAtMilliseconds: mode == .expired ? 999 : 5000, plaintext: Data(payload.utf8),
