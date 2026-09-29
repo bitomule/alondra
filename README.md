@@ -24,7 +24,7 @@ make install        # builds with Bazel and installs alondra and alondrad in ~/.
 alondra setup       # config.toml, launchd service, plugin marketplace and iPhone pairing (--help, --dry-run)
 alondra doctor      # what works and what is missing, with how to fix it
 alondra update      # Homebrew installs: upgrade, then wait until the daemon runs the new version (--check only looks)
-alondra             # the TUI
+alondra             # the TUI on this Mac (Local)
 alondra status      # the same as text
 ```
 

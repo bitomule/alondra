@@ -34,10 +34,6 @@ use crate::client::Client;
 #[derive(Parser)]
 #[command(name = "alondra", about = tr!("The hive from the terminal. With no arguments it opens the TUI.", "La colmena desde la terminal. Sin argumentos abre la TUI."))]
 struct Cli {
-    #[arg(long, conflicts_with = "remote", help = "Open the TUI on this explicitly approved service Mac")]
-    mac: Option<String>,
-    #[arg(long, help = "Open the TUI on the last explicitly selected service Mac")]
-    remote: bool,
     #[command(subcommand)]
     command: Option<Cmd>,
 }
@@ -48,7 +44,7 @@ enum Cmd {
     Delivery(delivery::Options),
     #[command(about = "List Macs enrolled in your service account")]
     Machines,
-    #[command(about = "Pair/select a remote Mac; normal alondra still opens Local")]
+    #[command(about = "Pair or repair this Mac's access to a remote Mac; the TUI stays Local")]
     Connect { mac: String, #[arg(long, help = "Request new approval on the destination; keep current trust until approval succeeds")] repair: bool },
     #[command(about = tr!("Sign in to the Alondra service in your browser", "Inicia sesión en el servicio Alondra desde el navegador"))]
     Login,
@@ -168,10 +164,6 @@ fn main() -> Result<()> {
         libc::signal(libc::SIGPIPE, libc::SIG_DFL);
     }
     let cli = Cli::parse();
-    if cli.mac.is_some() || cli.remote {
-        if cli.command.is_some() { anyhow::bail!("--mac and --remote apply only to the TUI, without a subcommand"); }
-        service_client::initialize(cli.mac.as_deref())?;
-    }
     match cli.command {
         Some(Cmd::Delivery(options)) => delivery::run(options),
         Some(Cmd::Machines) => service_client::list(),
@@ -554,14 +546,12 @@ mod mcp_entrypoint_tests {
 mod destination_tests {
     use super::*;
     #[test]
-    fn local_is_the_default_and_remote_modes_are_explicit_and_exclusive() {
-        let local = Cli::try_parse_from(["alondra"]).unwrap();
-        assert!(local.mac.is_none() && !local.remote);
-        assert_eq!(Cli::try_parse_from(["alondra", "--mac", "mac-a"]).unwrap().mac.as_deref(), Some("mac-a"));
-        assert!(Cli::try_parse_from(["alondra", "--remote"]).unwrap().remote);
-        assert!(Cli::try_parse_from(["alondra", "--mac", "mac-a", "--remote"]).is_err());
+    fn startup_does_not_accept_remote_destination_flags() {
+        assert!(Cli::try_parse_from(["alondra"]).unwrap().command.is_none());
+        assert!(Cli::try_parse_from(["alondra", "--mac", "mac-a"]).is_err());
+        assert!(Cli::try_parse_from(["alondra", "--remote"]).is_err());
         let connect = Cli::try_parse_from(["alondra", "connect", "mac-a"]).unwrap();
-        assert!(connect.mac.is_none() && !connect.remote);
+        assert!(matches!(connect.command, Some(Cmd::Connect { mac, repair: false }) if mac == "mac-a"));
     }
 }
 
@@ -612,7 +602,6 @@ mod delivery_cli_tests {
         assert!(Cli::try_parse_from(["alondra","delivery","retry","7","--expected-version","2"]).is_err());
         assert!(Cli::try_parse_from(["alondra","delivery","retry","7","--expected-version","2","--terminal-checked"]).is_err());
         let cli=Cli::try_parse_from(["alondra","delivery","retry","7","--mac","mac-b","--expected-version","2","--terminal-checked","--confirm-duplicate-risk"]).unwrap();
-        assert!(cli.mac.is_none());
         assert!(matches!(cli.command,Some(Cmd::Delivery(delivery::Options{mac:Some(mac),..})) if mac=="mac-b"));
         assert!(Cli::try_parse_from(["alondra","answer","7","--mac","mac-b"]).is_err());
         let cli=Cli::try_parse_from(["alondra","delivery","list"]).unwrap();

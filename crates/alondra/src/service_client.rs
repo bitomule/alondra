@@ -33,9 +33,7 @@ pub struct Profile {
     pub agreement_key: String,
 }
 #[derive(Default, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
 struct Profiles {
-    selected: Option<String>,
     profiles: Vec<Profile>,
 }
 
@@ -286,51 +284,23 @@ pub fn connect(mac: &str, repair: bool) -> Result<()> {
         profiles.profiles.retain(|p| p.mac_id != mac);
         profiles.profiles.push(profile);
     }
-    profiles.selected = Some(mac.into());
     save(&profiles)?;
-    println!("Selected Mac: {mac}");
+    println!("Paired Mac: {mac}");
     Ok(())
 }
 pub fn initialize(requested: Option<&str>) -> Result<()> {
+    let mac = requested.context("remote delivery requires an explicit Mac ID")?;
+    if !valid_id(mac) {
+        bail!("invalid Mac ID");
+    }
     crate::account::ensure_token_for_enrollment()?;
-    let mut profiles = load()?;
-    if let Some(mac) = requested {
-        if !valid_id(mac) {
-            bail!("invalid Mac ID");
-        }
-        profiles.selected = Some(mac.into());
-    }
-    if profiles.selected.is_none() {
-        let macs = machines()?;
-        if macs.is_empty() {
-            bail!("No Macs enrolled in this account. Run alondra setup on the destination Mac.");
-        }
-        println!("Select the Mac this terminal will control:");
-        for (i, mac) in macs.iter().enumerate() {
-            println!("  {}. {mac}", i + 1);
-        }
-        print!("Mac number: ");
-        std::io::stdout().flush()?;
-        let mut choice = String::new();
-        std::io::stdin().read_line(&mut choice)?;
-        let index = choice
-            .trim()
-            .parse::<usize>()
-            .ok()
-            .and_then(|n| n.checked_sub(1))
-            .context("invalid selection")?;
-        connect(macs.get(index).context("invalid selection")?, false)?;
-        profiles = load()?;
-    }
+    let profiles = load()?;
     let token = crate::account::token_for_service()?;
-    let selected = profiles
-        .selected
-        .context("select a Mac with alondra connect")?;
     let profile = profiles
         .profiles
         .into_iter()
-        .find(|p| p.mac_id == selected && p.owner_sub == token.sub)
-        .context("selected Mac has no approval for this account; run alondra connect <mac-id>")?;
+        .find(|p| p.mac_id == mac && p.owner_sub == token.sub)
+        .context("this Mac has no approval for the signed-in account; run alondra connect <mac-id>")?;
     profile.validate()?;
     ACTIVE
         .set(Arc::new(profile))
@@ -681,6 +651,18 @@ mod live_transfer_test;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_store_ignores_unknown_root_fields_but_rewrites_only_current_fields() {
+        let profiles: Profiles = serde_json::from_str(
+            r#"{"profiles":[],"future_setting":"ignored"}"#,
+        )
+        .unwrap();
+        assert!(profiles.profiles.is_empty());
+        let saved = serde_json::to_value(profiles).unwrap();
+        assert!(saved.get("future_setting").is_none());
+    }
+
     fn fixture() -> (Profile, SigningKey, SecretKey) {
         let mac = SigningKey::from_slice(&[1; 32]).unwrap();
         let mac_agreement = SecretKey::from_slice(&[5; 32]).unwrap();
