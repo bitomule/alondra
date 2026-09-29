@@ -31,7 +31,7 @@ impl Client {
             Err(_) => return storage(),
         }
         match self.domain.store.lock().expect("domain store poisoned").task_history(&task) {
-            Ok(history) => Json(json!({"history": history})).into_response(),
+            Ok(history) => Json(json!({"brief": null, "history": history})).into_response(),
             Err(_) => storage(),
         }
     }

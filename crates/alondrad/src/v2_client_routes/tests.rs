@@ -696,7 +696,7 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     let request = &expected["history"];
     let history = fixture.get_json(request["path"].as_str().unwrap()).await;
     assert_covers(&json!({"history": request["response"]["history"]}), &history, "history");
-    assert!(history.get("brief").is_none(), "a v2 task has no brief to give");
+    assert_eq!(history["brief"], Value::Null, "a v2 task has no brief to give yet, and the key is there for the apps");
     let steps: Vec<(&str, &str)> = history["history"].as_array().unwrap().iter()
         .map(|step| (step["state"].as_str().unwrap(), step["summary"].as_str().unwrap())).collect();
     assert_eq!(steps, [("not_started", ""), ("running", ""), ("needs_you", "Which colour?"), ("running", ""), ("cancelled", "")]);
