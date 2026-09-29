@@ -116,12 +116,15 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
             Ok(Reply::Plain(json!({})))
         }
         "Stop" => {
-            let Some(batch) = claim_batch(domain, &agent_id)? else {
-                return Ok(Reply::Plain(json!({})));
+            let held = crate::domain_messages::take_held(domain, &agent_id);
+            let batch = claim_batch(domain, &agent_id)?;
+            let (text, claims) = match batch {
+                Some(batch) => (held.into_iter().chain([batch.text]).collect::<Vec<_>>().join("\n\n"), batch.claims),
+                None if held.is_empty() => return Ok(Reply::Plain(json!({}))),
+                None => (held.join("\n\n"), vec![]),
             };
-            let body = json!({"hookSpecificOutput": {"hookEventName": "Stop",
-                "additionalContext": batch.text}});
-            Ok(Reply::Delivery { body, claims: batch.claims })
+            let body = json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}});
+            Ok(Reply::Delivery { body, claims })
         }
         _ => Ok(Reply::Plain(json!({}))),
     }
@@ -447,6 +450,25 @@ mod tests {
         let reopened = fixture.open();
         assert!(agent_outbox(&reopened, "session-b").is_empty());
         assert!(agent_outbox(&reopened, "session-a").is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_held_user_message_reaches_the_next_stop_hook_once_with_any_batch() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        answered_question(&domain, "session-a");
+        domain.held.lock().unwrap().entry("session-a".into()).or_default().push("Use the new API".into());
+        let stop = json!({"session_id": "session-a", "hook_event_name": "Stop"});
+        let (body, result) = hook(&domain, stop.clone(), Some(6)).await;
+        result.unwrap();
+        let context = body["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert!(context.starts_with("Use the new API\n\n[Alondra domain v2]"), "{context}");
+        assert!(agent_outbox(&domain, "session-a").is_empty());
+        domain.held.lock().unwrap().entry("session-a".into()).or_default().push("Only this".into());
+        let (body, _) = hook(&domain, stop.clone(), Some(6)).await;
+        assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Only this");
+        let (body, _) = hook(&domain, stop, Some(6)).await;
+        assert_eq!(body, json!({}), "a held message is handed once");
     }
 
     #[tokio::test]

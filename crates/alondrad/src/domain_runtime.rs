@@ -14,6 +14,8 @@ pub struct DomainRuntime {
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
+    /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
+    pub(crate) held: Mutex<std::collections::BTreeMap<alondra_core::domain_v2::AgentId, Vec<String>>>,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -39,6 +41,7 @@ impl DomainRuntime {
             authority: Mutex::new(authority),
             changed,
             reads: Default::default(),
+            held: Default::default(),
         })
     }
     pub fn projection(&self) -> Result<DomainProjection> {
