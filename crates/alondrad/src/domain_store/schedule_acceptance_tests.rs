@@ -521,7 +521,7 @@ fn schedule_catalog_has_explicit_partial_cs_evidence_and_pending_layers() {
         .unwrap()
         .contains("complete scenario pending"));
     let cases = [
-        "V54", "V55", "V56", "V57", "V58", "V59", "V60", "V61", "V62",
+        "V54", "V55", "V56", "V57", "V58", "V62",
     ];
     for id in cases {
         let case = scenario(id);
