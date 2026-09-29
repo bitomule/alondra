@@ -9,6 +9,7 @@ mod domain_content;
 mod domain_delivery;
 mod domain_github;
 mod domain_migration;
+mod domain_orchestrator;
 mod domain_runtime;
 mod domain_schedule_runner;
 mod domain_store;
@@ -402,6 +403,7 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let service = service::Service::open(&config.home, config.port, auth.clone())?
         .map(|service| Arc::new(service.with_domain(state.domain())));
     let domain = state.domain();
+    let state_domain = domain.clone();
     let gauges = state.gauges();
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
@@ -419,6 +421,9 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone(), config.home.clone()));
     let github = tokio::spawn(domain_github::run(domain, Arc::new(domain_github::GhCli::new())));
     tokio::spawn(machine::run_v2(gauges));
+    if config.wake {
+        tokio::spawn(domain_orchestrator::run(state_domain.clone(), config.home.clone(), watcher::claude_home()));
+    }
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();
