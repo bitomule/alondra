@@ -10,6 +10,7 @@ use rusqlite::{Connection, OpenFlags};
 const DATABASES: [&str; 3] = ["alondra.db", "domain-v2.db", "schedules.db"];
 
 pub fn run(config: &Config) -> Result<String> {
+    crate::domain_cutover::refuse_legacy_home(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
     let scratch = Scratch::new()?;
     snapshot(&config.home, &scratch.0)?;
@@ -104,33 +105,17 @@ mod tests {
     }
 
     #[test]
-    fn a_startable_home_passes_and_nothing_in_it_changes() {
-        let (home, config) = home("ok");
+    fn a_legacy_home_is_refused_without_the_lock_and_left_alone() {
+        let (home, config) = home("legacy");
         let hub = crate::hub::Hub::open(config.clone(), false).unwrap();
         hub.append(alondra_core::Event::Joined { session_id: "s1".into() }).unwrap();
         let lock = alondra_core::home_lock::HomeLock::recovery(&home).unwrap();
         let before = contents(&home);
-        let passed = run(&config).unwrap();
+        let refused = run(&config).unwrap_err();
         drop(lock);
-        assert!(passed.contains("legacy state starts"), "{passed}");
+        assert!(format!("{refused:#}").contains("still holds legacy data"), "{refused:#}");
         assert_eq!(contents(&home), before, "preflight must not write to the HOME it checks");
         drop(hub);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn stored_state_that_fails_the_integrity_audit_is_refused_and_left_alone() {
-        let (home, config) = home("audit");
-        drop(crate::hub::Hub::open(config.clone(), false).unwrap());
-        let mut view = alondra_core::View::default();
-        view.nodes.insert("s1".into(), alondra_core::Node::new("other", 1));
-        let db = Connection::open(home.join("alondra.db")).unwrap();
-        db.execute("INSERT INTO snapshots(seq,at,body) VALUES(1000,1,?1)", [serde_json::to_string(&view).unwrap()]).unwrap();
-        drop(db);
-        let before = contents(&home);
-        let refused = run(&config).unwrap_err();
-        assert!(format!("{refused:#}").contains("integrity audit"), "{refused:#}");
-        assert_eq!(contents(&home), before);
         std::fs::remove_dir_all(home).unwrap();
     }
 }

@@ -2871,7 +2871,7 @@
       "cs_expected": {"schema_created_once": true, "cards_lost": 0, "partial_state_published": false, "foreign_key_check": [], "integrity_check": ["ok"]},
       "cs_evidence_status": "passed",
       "remaining": ["rehearsal of the live HOME at cutover"],
-      "cs_evidence": ["domain_migration::tests::backup_rehearsal_and_rollback_preserve_tail_cards_and_content", "domain_migration::synthetic::live_shaped_home_rehearses_with_its_counts_and_reports_command_latency"],
+      "cs_evidence": ["domain_migration::tests::one_command_cutover_imports_work_in_flight_and_rolls_back_exactly", "domain_migration::synthetic::live_shaped_home_rehearses_with_its_counts_and_reports_command_latency"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3588,22 +3588,22 @@
     },
     {
       "id": "V60",
-      "title": "Orphan ambiguous or uncertain legacy link blocks import",
+      "title": "A link to finished work is dropped; an ambiguous or uncertain legacy link blocks import",
       "layers": ["S", "A"],
       "base": "synthetic_offline_backup",
-      "cs_expected": {"blocked": true},
-      "cs_evidence": ["domain_migration::schedules::tests::orphan_ambiguous_and_uncertain_links_fail_without_rewriting_source"],
+      "cs_expected": {"finished_link_dropped": true, "ambiguous_or_uncertain_blocked": true},
+      "cs_evidence": ["domain_migration::schedules::tests::finished_links_are_dropped_but_ambiguous_and_uncertain_ones_fail_without_rewriting_source"],
       "cs_evidence_status": "passed",
       "remaining": ["full offline cutover rehearsal"],
       "execution_status": "test_evidence"
     },
     {
       "id": "V61",
-      "title": "Prepare and promote import the populated Schedule store and verify it against the backup",
+      "title": "The one-command cutover imports the populated Schedule store from its verified backup",
       "layers": ["S", "A", "U"],
       "base": "synthetic_offline_backup",
-      "cs_expected": {"schedule_rows": 2, "run_rows": 1, "tool_rows": 1, "receipt_rows": 1, "failed_launch_rows": 1, "tampered_stage_blocks": true, "unknown_table_blocks": true},
-      "cs_evidence": ["domain_migration::tests::backup_rehearsal_and_rollback_preserve_tail_cards_and_content", "domain_migration::tests::populated_schedule_store_is_readable_and_unsafe_or_unknown_stores_are_refused"],
+      "cs_expected": {"schedule_rows": 2, "run_rows": 1, "tool_rows": 1, "receipt_rows": 1, "failed_launch_rows": 1, "tampered_backup_blocks": true, "unknown_table_blocks": true},
+      "cs_evidence": ["domain_migration::tests::one_command_cutover_imports_work_in_flight_and_rolls_back_exactly", "domain_migration::tests::populated_schedule_store_is_readable_and_unsafe_or_unknown_stores_are_refused"],
       "cs_evidence_status": "passed",
       "remaining": ["runner and consumer validation", "rollback smoke"],
       "execution_status": "test_evidence"

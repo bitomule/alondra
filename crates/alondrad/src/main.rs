@@ -65,7 +65,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
-            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --backup-domain-offline <source-home> <new-backup> <legacy-daemon>\n      --prepare-domain-cutover <source-home> <new-backup> <new-stage-home> <legacy-daemon>\n      --commit-domain-cutover <source-home> <new-backup> <manifest-sha256> <new-stage-home>\n      --abort-domain-cutover <source-home> <new-backup> <manifest-sha256>\n      --restore-domain-rehearsal <backup> <manifest-sha256> <new-home>\n      --rehearse-domain-cutover <live-home> <new-work-dir> <legacy-daemon> <report-prefix>\n\nThe backup and preparation commands require the daemon to be stopped and leave the live HOME unchanged. Commit and abort require the same stopped writers and a verified backup.\nWithout options, starts the local daemon and configured service connector.");
+            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --cutover-domain-v2 <new-backup-dir> <legacy-alondrad> <legacy-alondra>\n                                   Cut this HOME over to domain v2: waits for the daemon to release HOME, backs it up with the legacy binaries, imports the work in flight and commits\n      --rollback-domain-v2 <backup-dir>\n                                   Restore the legacy HOME from a cutover backup\n      --rehearse-domain-cutover <live-home> <new-work-dir> <legacy-daemon> <report-prefix>\n\nWithout options, starts the local daemon and configured service connector.");
             return Ok(());
         }
         [flag] if flag == "--version" || flag == "-V" => {
@@ -94,42 +94,18 @@ fn main() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&result)?);
             return Ok(());
         }
-        [flag, source, target, old_binary] if flag == "--backup-domain-offline" => {
-            let destination = std::path::Path::new(target);
-            let result = domain_migration::backup_offline(std::path::Path::new(source), destination, std::path::Path::new(old_binary))?;
-            println!("Verified private backup: {} files; legacy seq {}; manifest SHA256 {}",
-                result.files.len(), result.source_seq, domain_migration::backup_manifest_digest(destination)?);
+        [flag, backup, legacy_daemon, legacy_cli] if flag == "--cutover-domain-v2" => {
+            domain_cutover::cutover_cli(Path::new(backup), &[Path::new(legacy_daemon), Path::new(legacy_cli)])?;
             return Ok(());
         }
-        [flag, source, backup, stage, old_binary] if flag == "--prepare-domain-cutover" => {
-            let result = domain_migration::prepare_cutover_offline(
-                std::path::Path::new(source), std::path::Path::new(backup),
-                std::path::Path::new(stage), std::path::Path::new(old_binary))?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            return Ok(());
-        }
-        [flag, backup, digest, target] if flag == "--restore-domain-rehearsal" => {
-            let result = domain_migration::restore_rehearsal(std::path::Path::new(backup), digest, std::path::Path::new(target))?;
-            println!("Verified rollback rehearsal: legacy seq {}", result.source_seq);
+        [flag, backup] if flag == "--rollback-domain-v2" => {
+            domain_cutover::rollback_cli(Path::new(backup))?;
             return Ok(());
         }
         [flag, live, work, legacy, report] if flag == "--rehearse-domain-cutover" => {
             let passed = domain_migration::rehearsal::run_and_write(
                 Path::new(live), Path::new(work), Path::new(legacy), Path::new(report))?;
             if !passed { std::process::exit(1); }
-            return Ok(());
-        }
-        [flag, source, backup, digest] if flag == "--abort-domain-cutover" => {
-            domain_cutover::abort_prepared_offline(
-                std::path::Path::new(source), std::path::Path::new(backup), digest)?;
-            println!("Prepared domain cutover aborted; legacy HOME can start");
-            return Ok(());
-        }
-        [flag, source, backup, digest, stage] if flag == "--commit-domain-cutover" => {
-            let marker = domain_cutover::promote_stage_offline(
-                std::path::Path::new(source), std::path::Path::new(backup), digest,
-                std::path::Path::new(stage))?;
-            println!("Domain v2 committed: legacy seq {}; data epoch {}", marker.source_seq, marker.data_epoch);
             return Ok(());
         }
         _ => (),
@@ -146,8 +122,12 @@ fn main() -> Result<()> {
         log!("start failed {} times in a row ({}); waiting {}s before exiting so launchd does not restart it every 10s",
             record.failures, record.reason, wait.as_secs());
         let watcher = relaunch::watcher(&label);
-        if start_guard::wait(wait, std::time::Duration::from_secs(2), || watcher.as_ref().is_some_and(|w| w.replaced())) {
-            log!("the binary was replaced; exiting now so launchd starts it");
+        let home = alondra_core::config::alondra_home(&env);
+        let committed = || domain_cutover::read_marker(&home).ok().flatten()
+            .is_some_and(|marker| marker.phase == domain_cutover::Phase::Committed);
+        if start_guard::wait(wait, std::time::Duration::from_secs(2),
+            || watcher.as_ref().is_some_and(|w| w.replaced()) || committed()) {
+            log!("the binary was replaced or HOME was cut over; exiting now so launchd starts it");
         }
     }
     Err(error)
@@ -156,6 +136,7 @@ fn main() -> Result<()> {
 #[tokio::main(flavor = "multi_thread", worker_threads = 2)]
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
+    domain_cutover::refuse_legacy_home(&config.home)?;
     if let Some(kept) = retire_empty_older_sidecar(&config.home)? {
         log!("set aside an empty domain database from an older build; copy kept in {}", kept.display());
     }

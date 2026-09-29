@@ -16,6 +16,12 @@ pub(super) const QUESTIONS: u64 = 274;
 pub(super) const OPEN_QUESTIONS: u64 = 4;
 /// Open, asked by a live session, on a Task that is already done.
 pub(super) const CLOSED_TASK_QUESTION: u64 = 3;
+/// Open, asked by a live session that is not the assignee of its active Task.
+pub(super) const NOT_ASSIGNEE_QUESTION: u64 = 2;
+/// Its session is the assignee of an active Task but legacy saw it stopped.
+pub(super) const STOPPED_ASSIGNEE: usize = 1;
+/// Legacy PRs no Task owned: one open, two merged.
+pub(super) const UNOWNED_PRS: [u64; 3] = [5, 100, 101];
 pub(super) const REPORTS: u64 = 287;
 pub(super) const DOCUMENTS: u64 = 24;
 pub(super) const MESSAGES: u64 = 805;
@@ -28,7 +34,7 @@ pub(crate) fn write_live_shaped_home(source: &Path) -> View {
     for index in 0..NODES {
         let mut node = alondra_core::model::Node::new(&format!("node-{index}"), 1);
         node.name = Some(format!("Node {index}"));
-        node.alive = index + 1 < NODES;
+        node.alive = index + 1 < NODES && index != STOPPED_ASSIGNEE;
         view.nodes.insert(node.session_id.clone(), node);
     }
     fs::DirBuilder::new().mode(0o700).create(source.join("files")).unwrap();
@@ -67,7 +73,7 @@ pub(crate) fn write_live_shaped_home(source: &Path) -> View {
         )
         .unwrap();
         let task = (id - 1) % REQUESTS as u64;
-        item.task = Some(format!("t-{task}"));
+        item.task = (!UNOWNED_PRS.contains(&id)).then(|| format!("t-{task}"));
         if id <= FORMAL_PRS {
             item.head_sha = Some(format!("{id:040x}"));
             item.base = Some("main".into());
@@ -80,7 +86,11 @@ pub(crate) fn write_live_shaped_home(source: &Path) -> View {
     }
     for id in 1..=QUESTIONS {
         let open = id <= OPEN_QUESTIONS;
-        let session = if id == OPEN_QUESTIONS { NODES - 1 } else { id as usize % NODES };
+        let session = match id {
+            OPEN_QUESTIONS => NODES - 1,
+            NOT_ASSIGNEE_QUESTION => 5,
+            _ => id as usize % NODES,
+        };
         let mut question = json!({
             "id":id,"session_id":format!("node-{session}"),"node_name":null,
             "title":format!("Synthetic question {id}"),"blocking":open,"origin":"ask",
@@ -120,6 +130,7 @@ pub(crate) fn write_live_shaped_home(source: &Path) -> View {
         (2, "node-2", alondra_core::delivery::State::Uncertain, "process_restarted"),
         (3, "node-3", alondra_core::delivery::State::Dispatching, "in_flight"),
         (4, "session-never-imported", alondra_core::delivery::State::Retryable, "terminal_not_ready"),
+        (5, "node-17", alondra_core::delivery::State::Retryable, "terminal_not_ready"),
     ] {
         view.delivery_attempts.insert(id, alondra_core::delivery::Attempt {
             id, session_id: session.into(), channel: alondra_core::delivery::Channel::Terminal,
@@ -154,31 +165,37 @@ fn live_shaped_home_rehearses_with_its_counts_and_reports_command_latency() {
     let rehearsal = rehearse(&source, &stage).unwrap();
     let rehearse_ms = started.elapsed().as_millis();
     let imported = &rehearsal.imported;
-    assert_eq!(imported.requests, REQUESTS);
-    assert_eq!(imported.tasks, ORIGINAL_TASKS);
-    assert_eq!(imported.split_pr_tasks, FORMAL_PRS as usize - REQUESTS);
-    assert_eq!(imported.agents, NODES);
-    assert_eq!(imported.formal_prs, FORMAL_PRS as usize);
-    assert_eq!(imported.reference_only_prs.len(), (PRS - FORMAL_PRS) as usize);
-    assert_eq!(imported.questions, QUESTIONS as usize);
-    assert_eq!(imported.open_questions_reopened, OPEN_QUESTIONS as usize - 2);
-    assert_eq!(imported.open_questions_requiring_reconciliation, 2);
-    assert_eq!(
-        (imported.conserved_undelivered, imported.conserved_uncertain, imported.conserved_historical),
-        (1, 2, 1)
-    );
-    assert_eq!(imported.reports, REPORTS as usize);
-    assert_eq!(imported.documents, DOCUMENTS as usize);
-    assert_eq!(imported.messages, MESSAGES as usize);
-    assert_eq!(imported.final_presentations, ACTIVE_TASKS);
+    assert_eq!(imported.requests, REQUESTS + 1, "every open Request, plus one for PRs no active Task owned");
+    assert_eq!((imported.tasks, imported.skipped.tasks), (ACTIVE_TASKS, ORIGINAL_TASKS - ACTIVE_TASKS));
+    assert_eq!(imported.derived_pr_tasks, 1, "only the open PR without a Task becomes a Task");
+    assert_eq!(imported.agents, ACTIVE_TASKS, "only assignees of work in flight become Agents");
+    assert_eq!(imported.prs, ACTIVE_TASKS + 1,
+        "open PRs, plus the latest PR registered on an active Task whose PRs are all merged");
+    assert_eq!(imported.prs + imported.skipped.prs, PRS as usize);
+    assert_eq!((imported.questions_reopened, imported.questions_unread), (1, 2));
+    assert_eq!(imported.skipped.questions, QUESTIONS as usize - 3);
+    assert_eq!((imported.deliveries_uncertain, imported.skipped.deliveries), (2, 3),
+        "only unknown outcomes for an active Task's assignee reach the user; retries are dropped");
+    assert_eq!(imported.skipped.messages, MESSAGES as usize);
+    assert_eq!(imported.final_presentations, ACTIVE_TASKS + 1, "the open PR without a Task is presented too");
     let runtime = crate::domain_runtime::DomainRuntime::open(&stage).unwrap();
     let state = runtime.state().unwrap();
-    assert_eq!(state.tasks.len(), ORIGINAL_TASKS + imported.split_pr_tasks);
-    assert_eq!(
-        state.tasks.values().filter(|task| !task.state.terminal()).count(),
-        ACTIVE_TASKS,
-        "only the 17 in-flight Tasks stay open; historical open questions block nothing"
+    assert_eq!(state.tasks.len(), ACTIVE_TASKS + imported.derived_pr_tasks);
+    let question = |id: u64| &state.interactions[&d::InteractionId(format!("legacy-question-{id}"))].payload;
+    assert!(
+        matches!(question(1), d::InteractionPayload::Question { .. }),
+        "the stopped session still assigned to its active Task keeps its question"
     );
+    assert!(matches!(question(NOT_ASSIGNEE_QUESTION), d::InteractionPayload::Information { .. }));
+    assert!(!state.interactions.contains_key(&d::InteractionId(format!("legacy-question-{CLOSED_TASK_QUESTION}"))));
+    let unowned: Vec<_> = state.tasks.values()
+        .filter(|task| task.request_id.0 == "legacy-pr-request-unowned").collect();
+    assert_eq!(unowned.len(), 1, "merged PRs without a Task stay behind");
+    assert_eq!(
+        state.requests[&d::RequestId("legacy-pr-request-unowned".into())].body,
+        "Imported pull requests without a task"
+    );
+    assert!(state.tasks.values().all(|task| !task.state.terminal() && !task.archived), "only work in flight is imported");
     // Cost is pinned by what a command reads and writes, never by the wall clock:
     // no full-table load once the store is warm, and a handful of row writes.
     const MAX_WRITES_PER_COMMAND: u64 = 12;
