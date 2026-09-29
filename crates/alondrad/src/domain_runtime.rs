@@ -13,10 +13,12 @@ pub struct DomainRuntime {
     approval_home: PathBuf,
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
+    schedule_changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
     pub(crate) live: crate::v2_client_routes::Live,
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
-    pub(crate) held: Mutex<std::collections::BTreeMap<alondra_core::domain_v2::AgentId, Vec<String>>>,
+    pub(crate) held:
+        Mutex<std::collections::BTreeMap<alondra_core::domain_v2::AgentId, Vec<String>>>,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -34,6 +36,7 @@ impl DomainRuntime {
         let mut store = DomainStore::open(&home.join("domain-v2.db"))?;
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
+        let (schedule_changed, _) = watch::channel(state.revision);
         let authority = capabilities::load(home, state.data_epoch.0)?;
         Ok(Self {
             home: home.to_path_buf(),
@@ -41,6 +44,7 @@ impl DomainRuntime {
             approval_home: home.to_path_buf(),
             authority: Mutex::new(authority),
             changed,
+            schedule_changed,
             reads: Default::default(),
             live: Default::default(),
             held: Default::default(),
@@ -68,14 +72,26 @@ impl DomainRuntime {
     pub fn state(&self) -> Result<DomainState> {
         self.store.lock().expect("domain store poisoned").load()
     }
-    pub(crate) fn schedule_request_tools(&self, request_id: &RequestId) -> Result<Option<Vec<String>>> {
-        self.store.lock().expect("domain store poisoned").schedule_request_tools(request_id)
+    pub(crate) fn schedule_request_tools(
+        &self,
+        request_id: &RequestId,
+    ) -> Result<Option<Vec<String>>> {
+        self.store
+            .lock()
+            .expect("domain store poisoned")
+            .schedule_request_tools(request_id)
     }
     pub(crate) fn was_schedule_launch_failed(&self, request_id: &RequestId) -> Result<bool> {
-        self.store.lock().expect("domain store poisoned").was_schedule_launch_failed(request_id)
+        self.store
+            .lock()
+            .expect("domain store poisoned")
+            .was_schedule_launch_failed(request_id)
     }
     pub fn subscribe(&self) -> watch::Receiver<Revision> {
         self.changed.subscribe()
+    }
+    pub(crate) fn subscribe_schedules(&self) -> watch::Receiver<Revision> {
+        self.schedule_changed.subscribe()
     }
 
     /// Issued capabilities outlive this process: the Claude session keeps its
@@ -142,7 +158,8 @@ impl DomainRuntime {
     pub fn resolve_bearer(&self, bearer: &str) -> Result<Principal, StoreError> {
         let authority = self.authority.lock().expect("domain authority poisoned");
         let state = self.store.lock().expect("domain store poisoned").load()?;
-        authority.resolve(&state.data_epoch.0, bearer)
+        authority
+            .resolve(&state.data_epoch.0, bearer)
             .map_err(|message| DomainError::new("forbidden", message).into())
     }
 
@@ -159,8 +176,14 @@ impl DomainRuntime {
     }
 
     /// What the user chose when asking for the Request, if it was asked for with choices.
-    pub(crate) fn request_launch(&self, request_id: &RequestId) -> Result<Option<crate::domain_store::RequestLaunch>> {
-        self.store.lock().expect("domain store poisoned").request_launch(request_id)
+    pub(crate) fn request_launch(
+        &self,
+        request_id: &RequestId,
+    ) -> Result<Option<crate::domain_store::RequestLaunch>> {
+        self.store
+            .lock()
+            .expect("domain store poisoned")
+            .request_launch(request_id)
     }
 
     pub(crate) fn execute_with(
@@ -193,6 +216,9 @@ impl DomainRuntime {
         let commit = commit?;
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
+            if schedule_command(&prepared.envelope.command) {
+                self.schedule_changed.send_replace(commit.state.revision);
+            }
         }
         Ok(commit.outcome)
     }
@@ -239,9 +265,22 @@ impl DomainRuntime {
         let commit = commit?;
         if !commit.replayed && commit.outcome.changed {
             self.changed.send_replace(commit.state.revision);
+            if schedule_command(&prepared.envelope.command) {
+                self.schedule_changed.send_replace(commit.state.revision);
+            }
         }
         Ok(commit.outcome)
     }
+}
+
+fn schedule_command(command: &Command) -> bool {
+    matches!(
+        command,
+        Command::CreateSchedule { .. }
+            | Command::UpdateSchedule { .. }
+            | Command::DeleteSchedule { .. }
+            | Command::ClaimScheduleRun { .. }
+    )
 }
 
 /// Exhaustive scope resolution for delegated producers; unscoped commands are never admitted.
@@ -353,7 +392,8 @@ mod approval_tests {
             expected_revision: state.revision,
             command: Command::CreateRequest {
                 request_id: "request-lease".into(),
-                body: "Work".into(), auto_merge: false,
+                body: "Work".into(),
+                auto_merge: false,
             },
         };
         let (checked_tx, checked_rx) = mpsc::channel();
@@ -445,38 +485,117 @@ mod producer_revision_tests {
                 command,
             }
         };
-        runtime.execute(&Actor::System, &envelope(&runtime, "agent", None,
-            Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() }), None, || Ok(())).unwrap();
-        let user = Actor::User { user_id: "u".into() };
-        runtime.execute(&user, &envelope(&runtime, "request", None,
-            Command::CreateRequest { request_id: "request-a".into(), body: "Work".into(), auto_merge: false }), None, || Ok(())).unwrap();
-        runtime.execute(&user, &envelope(&runtime, "task", None, Command::CreateTask {
-            task_id: "task-a".into(), request_id: "request-a".into(), title: "Task".into(),
-            agent_id: Some("agent-a".into()), review_prs: false,
-            dependencies: Default::default(), stack: None,
-        }), None, || Ok(())).unwrap();
-        let token = runtime.issue(Principal::Agent {
-            session_id: "agent-a".into(), task_binding: None, provider_agent_id: None,
-        }).unwrap();
+        runtime
+            .execute(
+                &Actor::System,
+                &envelope(
+                    &runtime,
+                    "agent",
+                    None,
+                    Command::RegisterAgent {
+                        agent_id: "agent-a".into(),
+                        name: "A".into(),
+                    },
+                ),
+                None,
+                || Ok(()),
+            )
+            .unwrap();
+        let user = Actor::User {
+            user_id: "u".into(),
+        };
+        runtime
+            .execute(
+                &user,
+                &envelope(
+                    &runtime,
+                    "request",
+                    None,
+                    Command::CreateRequest {
+                        request_id: "request-a".into(),
+                        body: "Work".into(),
+                        auto_merge: false,
+                    },
+                ),
+                None,
+                || Ok(()),
+            )
+            .unwrap();
+        runtime
+            .execute(
+                &user,
+                &envelope(
+                    &runtime,
+                    "task",
+                    None,
+                    Command::CreateTask {
+                        task_id: "task-a".into(),
+                        request_id: "request-a".into(),
+                        title: "Task".into(),
+                        agent_id: Some("agent-a".into()),
+                        review_prs: false,
+                        dependencies: Default::default(),
+                        stack: None,
+                    },
+                ),
+                None,
+                || Ok(()),
+            )
+            .unwrap();
+        let token = runtime
+            .issue(Principal::Agent {
+                session_id: "agent-a".into(),
+                task_binding: None,
+                provider_agent_id: None,
+            })
+            .unwrap();
         let bearer = token.expose_for_child_environment();
-        let publish = envelope(&runtime, "producer-info", Some(0), Command::PublishInformation {
-            attachments: vec![],
-            interaction_id: "info-a".into(),
-            scope: Scope::Task { task_id: "task-a".into() },
-            recipient: Recipient::User,
-            body: "Progress".into(),
-        });
+        let publish = envelope(
+            &runtime,
+            "producer-info",
+            Some(0),
+            Command::PublishInformation {
+                attachments: vec![],
+                interaction_id: "info-a".into(),
+                scope: Scope::Task {
+                    task_id: "task-a".into(),
+                },
+                recipient: Recipient::User,
+                body: "Progress".into(),
+            },
+        );
         let revision = runtime.state().unwrap().revision;
         let first = runtime.execute_bearer(bearer, &publish).unwrap();
         assert!(first.changed);
         assert_eq!(first.revision, revision + 1);
-        assert_eq!(runtime.execute_bearer(bearer, &publish).unwrap(), first,
-            "a retry with the bytes the producer sent replays its receipt");
+        assert_eq!(
+            runtime.execute_bearer(bearer, &publish).unwrap(),
+            first,
+            "a retry with the bytes the producer sent replays its receipt"
+        );
         assert_eq!(runtime.state().unwrap().revision, revision + 1);
-        let stale = runtime.execute(&user, &CommandEnvelope { expected_revision: 0, ..envelope(&runtime, "user-zero", None,
-            Command::CreateRequest { request_id: "request-b".into(), body: "More".into(), auto_merge: false }) }, None, || Ok(()));
-        assert!(matches!(stale, Err(StoreError::Domain(error)) if error.code == "stale_revision"),
-            "a user command is never filled");
+        let stale = runtime.execute(
+            &user,
+            &CommandEnvelope {
+                expected_revision: 0,
+                ..envelope(
+                    &runtime,
+                    "user-zero",
+                    None,
+                    Command::CreateRequest {
+                        request_id: "request-b".into(),
+                        body: "More".into(),
+                        auto_merge: false,
+                    },
+                )
+            },
+            None,
+            || Ok(()),
+        );
+        assert!(
+            matches!(stale, Err(StoreError::Domain(error)) if error.code == "stale_revision"),
+            "a user command is never filled"
+        );
         drop(runtime);
         std::fs::remove_dir_all(home).unwrap();
     }

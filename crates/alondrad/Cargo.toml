@@ -24,3 +24,9 @@ sha2 = "0.11.0"
 sysinfo.workspace = true
 tokio.workspace = true
 toml.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "libc", "objc2"] }
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["NSDate", "NSTimeZone", "NSNotification", "NSString", "NSOperation", "block2"] }
