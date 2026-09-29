@@ -479,7 +479,7 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
         command(domain, Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {
             attachments: vec![], interaction_id: format!("q{n}").into(), scope: Scope::Task { task_id: "t".into() },
             recipient: Recipient::Orchestrator, body: format!("Where do I put change {n}?"), blocking: false,
-            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), inputs: vec![] }],
+            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None, inputs: vec![] }],
         });
     }
 

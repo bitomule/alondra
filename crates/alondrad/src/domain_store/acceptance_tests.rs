@@ -287,6 +287,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                         QuestionOption {
                             id: string(field(option, "option_id")).into(),
                             label: string(field(option, "label")).into(),
+                            description: option.get("description").and_then(|d| d.as_str()).map(String::from),
                             inputs: vec![],
                         }
                     })

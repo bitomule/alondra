@@ -558,6 +558,16 @@ impl DomainStore {
         }
         Ok(times)
     }
+    pub(crate) fn set_cancel_reason(&self, task_id: &TaskId, reason: &str) -> Result<()> {
+        self.conn.execute("INSERT INTO task_cancel_reason(task_id,reason) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason",
+            params![task_id.0, reason])?;
+        Ok(())
+    }
+    pub(crate) fn cancel_reasons(&self) -> Result<std::collections::BTreeMap<TaskId, String>> {
+        let mut query = self.conn.prepare("SELECT task_id,reason FROM task_cancel_reason")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
     pub(crate) fn task_history(&self, task_id: &TaskId) -> Result<Vec<HistoryStep>> {
         let mut query = self.conn.prepare("SELECT a.at,h.state,h.summary FROM task_history h JOIN command_audit a ON a.revision=h.revision
             WHERE h.task_id=?1 ORDER BY h.revision")?;

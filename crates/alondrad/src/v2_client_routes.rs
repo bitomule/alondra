@@ -5,6 +5,7 @@ mod close;
 mod live;
 mod new_work;
 mod pr_details;
+mod tasks;
 
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
@@ -15,7 +16,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, post, put};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -72,12 +73,16 @@ pub(crate) enum Write {
     Close(String),
     NewRequest,
     OrchestratorMessage,
+    Presence,
+    CancelReason(String),
 }
 
 /// The writes of this module by path, the way both the local listener and the relay name them.
 pub(crate) fn parse_write(path: &str) -> Option<Write> {
-    if path == "/v2/requests" {
-        return Some(Write::NewRequest);
+    match path {
+        "/v2/requests" => return Some(Write::NewRequest),
+        "/v2/activity" => return Some(Write::Presence),
+        _ => {}
     }
     if path == "/v2/orchestrator/messages" {
         return Some(Write::OrchestratorMessage);
@@ -88,6 +93,12 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
 
 pub(crate) fn approved_write_path(path: &str) -> bool {
     parse_write(path).is_some()
+}
+
+/// The writes that replace something in place, by path.
+pub(crate) fn parse_put(path: &str) -> Option<Write> {
+    path.strip_prefix("/v2/tasks/")?.strip_suffix("/cancel-reason")
+        .filter(|id| plain_id(id)).map(|id| Write::CancelReason(id.to_owned()))
 }
 
 /// The writes that are one domain command, which the relay journals atomically with it.
@@ -104,6 +115,7 @@ pub(crate) enum Route {
     Options(Option<String>),
     Projects,
     Issues { refresh: bool },
+    TaskHistory(String),
 }
 
 fn plain_id(id: &str) -> bool {
@@ -155,6 +167,8 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
         ("/v2/projects", None) => Some(Route::Projects),
         ("/v2/issues", None) => Some(Route::Issues { refresh: false }),
         ("/v2/issues", Some(query)) => single_query(query, "refresh").filter(|value| value == "1").map(|_| Route::Issues { refresh: true }),
+        (path, None) if path.starts_with("/v2/tasks/") => path.strip_prefix("/v2/tasks/")?.strip_suffix("/history")
+            .filter(|id| plain_id(id)).map(|id| Route::TaskHistory(id.to_owned())),
         (path, None) => path.strip_prefix("/v2/agents/")?.strip_suffix("/activity")
             .filter(|id| plain_id(id)).map(|id| Route::Activity(id.to_owned())),
         _ => None,
@@ -205,6 +219,14 @@ impl Client {
             }
             Write::NewRequest => self.new_request(user_id, body, transport, authorize).await,
             Write::OrchestratorMessage => self.orchestrator_message(user_id, body, transport, authorize).await,
+            Write::Presence => {
+                authorize()?;
+                Ok(self.presence(body))
+            }
+            Write::CancelReason(id) => {
+                authorize()?;
+                self.cancel_reason(&id, body)
+            }
         }
     }
 
@@ -232,6 +254,7 @@ impl Client {
             Route::Options(project) => self.options_answer(project),
             Route::Projects => self.projects_answer(),
             Route::Issues { refresh } => self.issues_answer(refresh).await,
+            Route::TaskHistory(id) => self.task_history(&id),
         })
     }
 
@@ -274,9 +297,12 @@ impl Client {
                 live::client_node(node, name)
             })
             .collect();
-        let launches = match self.domain.store.lock().expect("domain store poisoned").request_launch_summaries() {
-            Ok(launches) => launches,
-            Err(_) => return storage(),
+        let (launches, cancel_reasons) = {
+            let store = self.domain.store.lock().expect("domain store poisoned");
+            match (store.request_launch_summaries(), store.cancel_reasons()) {
+                (Ok(launches), Ok(reasons)) => (launches, reasons),
+                _ => return storage(),
+            }
         };
         let live = self.domain.live.nodes();
         let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
@@ -285,7 +311,7 @@ impl Client {
                 .and_then(|agent| live.iter().find(|node| node.session_id == agent.0))
                 .map(|node| node.project()));
             (id.0.clone(), json!({"project": project, "state_since": state_times.get(id),
-                "effort": effort, "cancel_reason": null}))
+                "effort": effort, "cancel_reason": cancel_reasons.get(id)}))
         }).collect();
         let requests: serde_json::Map<String, Value> = state.requests.iter().map(|(id, request)| {
             let answer = request.answer.clone().or_else(|| request_answer(&state, &id.0));
@@ -390,7 +416,7 @@ async fn write(
     let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
         return forbidden();
     };
-    let Some(route) = parse_write(uri.path()) else {
+    let Some(route) = parse_write(uri.path()).or_else(|| parse_put(uri.path())) else {
         return StatusCode::NOT_FOUND.into_response();
     };
     let Ok(Json(body)) = body else {
@@ -407,11 +433,44 @@ async fn write(
     }
 }
 
+/// A user resolves an uncertain delivery on this Mac the way a phone does through the relay.
+async fn resolve_delivery(
+    State(client): State<Arc<Client>>,
+    signed: Option<Extension<Signed>>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let home = client.home().to_owned();
+    let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
+        return forbidden();
+    };
+    let (Ok(Json(body)), Ok(attempt)) = (body, id.parse::<i64>()) else {
+        return Reply::error(DomainError::new("invalid_input", "invalid delivery resolution")).into_response();
+    };
+    let digest: [u8; 32] = <sha2::Sha256 as sha2::Digest>::digest(body.to_string().as_bytes()).into();
+    let request = format!("local-{}", crate::auth::random_hex(16));
+    let domain = client.domain.clone();
+    let resolved = tokio::task::spawn_blocking(move || crate::domain_api::encrypted_resolve_delivery_runtime(
+        &domain, &home.clone(), &device.device_id, attempt, Some(&body), (&device.device_id, &request, &digest),
+        || crate::domain_bootstrap::signed_device(&home, &signed).map(|_| ()).ok_or_else(|| anyhow::anyhow!("device approval was revoked")))).await;
+    match resolved {
+        Ok(Ok(result)) => {
+            let status = StatusCode::from_u16(result["status"].as_u64().unwrap_or(500) as u16).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            (status, Json(result["body"].clone())).into_response()
+        }
+        _ => storage(),
+    }
+}
+
 pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
         .route("/v2/agents/{id}/close", post(write))
         .route("/v2/requests", post(write))
         .route("/v2/orchestrator/messages", post(write))
+        .route("/v2/activity", post(write))
+        .route("/v2/tasks/{id}/cancel-reason", put(write))
+        .route("/v2/tasks/{id}/history", get(read))
+        .route("/v2/domain/delivery-attempts/{id}/resolve", post(resolve_delivery))
         .route("/v2/options", get(read))
         .route("/v2/projects", get(read))
         .route("/v2/issues", get(read))
