@@ -232,6 +232,9 @@ struct ServiceTriageCard: View {
             ForEach(question.attachments, id: \.id) { attachment in
                 reviewButton(String(localized: "Review the attachment"), detail: attachment.name, symbol: "doc.text.magnifyingglass")
             }
+            if let context = node?.lastSaid {
+                nodeContext(context)
+            }
         } else if let document = store.document?.subject {
             let body = document.interaction.body
             ForEach(Artifacts.urls(in: body), id: \.self) { url in
@@ -363,6 +366,33 @@ struct ServiceTriageCard: View {
             .contentShape(.rect(cornerRadius: 18))
         }
         .buttonStyle(.plain)
+    }
+
+    private func nodeContext(_ context: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.spring(duration: 0.35)) { _ = store.send(.toggleNodeContext) }
+            } label: {
+                HStack {
+                    Label("What the node said last", systemImage: "text.quote")
+                    Spacer()
+                    Image(systemName: "chevron.down")
+                        .rotationEffect(.degrees(showNodeContext ? 180 : 0))
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                .contentShape(.rect)
+            }
+            .buttonStyle(.plain)
+            if showNodeContext {
+                blocks(context)
+                    .font(.callout)
+                    .padding(14)
+                    .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.top, 4)
     }
 
     private func reviewButton(_ title: String, detail: String, symbol: String) -> some View {

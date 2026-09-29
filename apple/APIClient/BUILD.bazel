@@ -13,6 +13,7 @@ swift_test(
     srcs = glob(["Tests/**/*.swift"]),
     data = [
         "Tests/domain-v2-wire-fixtures.json",
+        "//fixtures/client-v2",
         "//fixtures/domain-v2:acceptance.json",
         "//fixtures/domain-v2:text-completion.commands.json",
     ],

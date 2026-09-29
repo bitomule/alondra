@@ -114,7 +114,8 @@ struct ServiceTaskDetailView: View {
                             ForEach(Array(context.pullRequests.enumerated()), id: \.element.id) { index, pr in
                                 if index > 0 { Divider().padding(.horizontal, 12) }
                                 if let owner = context.pullRequestOwners[pr.id] {
-                                    ServiceTaskPullRequestRow(order: index + 1, pr: pr, observation: context.observations[pr.id], owner: owner,
+                                    ServiceTaskPullRequestRow(order: index + 1, pr: pr, observation: context.observations[pr.id],
+                                        stackedOn: context.stackedOn[pr.id], owner: owner,
                                         mine: owner.id == task.id, available: context.pullRequestItems[pr.id] != nil) {
                                             if let item = context.pullRequestItems[pr.id] { focusInbox(item) }
                                         }
@@ -171,15 +172,15 @@ struct ServiceTaskDetailView: View {
                         .padding(.horizontal, 12).padding(.vertical, 10)
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                 }
-                if case let history = context.history, !history.isEmpty {
+                if let history = store.history?.history, !history.isEmpty {
                     ServiceTaskSection(String(localized: "History")) {
                         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 6) {
                             ForEach(Array(history.enumerated()), id: \.offset) { _, step in
                                 GridRow {
                                     Text(Date(timeIntervalSince1970: TimeInterval(step.at) / 1000), format: .dateTime.hour().minute())
                                         .font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary)
-                                    StatusDot(color: step.to.color)
-                                    (Text(step.to.label).fontWeight(.semibold) + Text(verbatim: " · \(step.summary)").foregroundStyle(.secondary))
+                                    StatusDot(color: step.state.color)
+                                    (Text(step.state.label).fontWeight(.semibold) + Text(verbatim: " · \(step.summary)").foregroundStyle(.secondary))
                                 }
                             }
                         }
@@ -216,7 +217,7 @@ private struct ServiceTaskHeader: View {
             }.font(.callout).foregroundStyle(.secondary)
             Text(task.title).font(.title.weight(.semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                StatusDot(color: task.color, size: 9)
+                TaskDot(task: task, size: 9)
                 Text(task.state.label.capitalizedFirst)
                 if let since = context.stateSince { Text("· for \(ago(since))").foregroundStyle(.secondary) }
                 if let node = context.agentName { Text("· \(node)").foregroundStyle(.secondary) }
@@ -235,7 +236,7 @@ private struct ServiceTaskLinks: View {
                 ForEach(tasks) { task in
                     Button { open(task.id) } label: {
                         HStack(spacing: 6) {
-                            StatusDot(color: task.color)
+                            TaskDot(task: task)
                             Text(task.title)
                             Text(verbatim: "· \(task.state.label)").foregroundStyle(.secondary)
                         }.contentShape(.rect)
@@ -273,7 +274,8 @@ private struct ServiceTaskRequestText: View {
 private struct ServiceTaskPullRequestRow: View {
     let order: Int
     let pr: DomainV2.PullRequest
-    let observation: PullRequest?
+    let observation: DomainV2.PullRequestRuntime?
+    let stackedOn: DomainV2.PullRequest?
     let owner: DomainV2.Task
     let mine: Bool
     let available: Bool
@@ -301,22 +303,21 @@ private struct ServiceTaskPullRequestRow: View {
                             .background(.blue.opacity(0.14), in: .capsule)
                     }
                 }
-                let summary = observation?.summary ?? "\(pr.repository) #\(pr.number)"
-                Text(verbatim: observation?.stackedOn.map { "\($0) · \(summary)" } ?? summary)
+                Text(verbatim: stackedOn.map { "\($0.stackedOnLabel) · \(pr.summary)" } ?? pr.summary)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            if let reason = observation?.mergeBlockedReason {
+            if let reason = stackedOn?.mergeFirstLabel {
                 Text(reason)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else {
-                StatusDot(color: owner.color)
+                TaskDot(task: owner)
                 if let observation {
-                    Text(verbatim: observation.progress(mergesAlone: !owner.reviewPrs))
+                    Text(verbatim: observation.progress(number: pr.number, stackedOn: stackedOn?.number, mergesAlone: !owner.reviewPrs))
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -324,7 +325,7 @@ private struct ServiceTaskPullRequestRow: View {
             }
             Button("Merge…", action: open)
                 .controlSize(.small)
-                .disabled(observation?.mergeBlockedReason != nil || !available)
+                .disabled(stackedOn != nil || !available)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

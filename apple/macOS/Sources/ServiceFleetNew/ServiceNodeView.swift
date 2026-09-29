@@ -40,7 +40,7 @@ struct ServiceNodeView: View {
                                 ForEach(store.tasks) { task in
                                     Button { openTask(task.id) } label: {
                                         HStack(spacing: 10) {
-                                            StatusDot(color: task.color)
+                                            TaskDot(task: task)
                                             VStack(alignment: .leading, spacing: 1) {
                                                 Text(task.title).fontWeight(.medium).strikethrough(task.state == .cancelled)
                                                 Text(presentation.taskLine(task)).font(.caption).foregroundStyle(.secondary)

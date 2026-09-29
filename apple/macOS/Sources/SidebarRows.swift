@@ -95,7 +95,7 @@ struct NodeRow: View {
             }
             ForEach(tasks) { task in
                 HStack(spacing: 7) {
-                    StatusDot(color: task.color, size: 6)
+                    TaskDot(task: task, size: 6)
                     Text(task.fleetRowTitle(nodeDisplayName: node.displayName))
                         .strikethrough(task.state == .cancelled)
                         .lineLimit(1)
@@ -180,9 +180,15 @@ extension DomainV2.TaskState {
     }
 }
 
-extension DomainV2.Task {
-    /// An action the user has to carry out takes the colour of "your turn", like its card.
-    var color: Color { state.color }
+/// A task's state dot; an action the user has to carry out takes the colour of "your turn", like its card.
+struct TaskDot: View {
+    let task: DomainV2.Task
+    var size: CGFloat = 8
+    @Environment(\.yourTurnTasks) private var yourTurn
+
+    var body: some View {
+        StatusDot(color: task.state == .needsYou && yourTurn.contains(task.id) ? .pink : task.state.color, size: size)
+    }
 }
 
 extension TaskStateGroup.Kind {

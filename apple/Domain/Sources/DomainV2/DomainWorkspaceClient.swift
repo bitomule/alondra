@@ -44,19 +44,23 @@ public struct DomainWorkspaceClient: Sendable {
     public var taskActions: @Sendable (DomainV2.TaskId, DomainV2.DataEpoch) async throws -> [DomainV2.AvailableAction]
     public var pullRequestDiff: @Sendable (DomainV2.PrId, String) async throws -> DomainV2.PullRequestDiff
     public var documentContent: @Sendable (DomainV2.DocumentRevisionId, String) async throws -> String
+    /// The brief a Task was launched with and each state it went through, for its detail.
+    public var taskHistory: @Sendable (DomainV2.TaskId) async throws -> DomainV2.TaskHistory
 
     public init(
         observe: @escaping @Sendable () async -> AsyncStream<DomainWorkspaceUpdate>,
         perform: @escaping @Sendable (DomainIntent, DomainWorkspace, [DomainV2.AvailableAction], String) async -> DomainCommandResult,
         taskActions: @escaping @Sendable (DomainV2.TaskId, DomainV2.DataEpoch) async throws -> [DomainV2.AvailableAction],
         pullRequestDiff: @escaping @Sendable (DomainV2.PrId, String) async throws -> DomainV2.PullRequestDiff,
-        documentContent: @escaping @Sendable (DomainV2.DocumentRevisionId, String) async throws -> String
+        documentContent: @escaping @Sendable (DomainV2.DocumentRevisionId, String) async throws -> String,
+        taskHistory: @escaping @Sendable (DomainV2.TaskId) async throws -> DomainV2.TaskHistory = { _ in DomainV2.TaskHistory() }
     ) {
         self.observe = observe
         self.perform = perform
         self.taskActions = taskActions
         self.pullRequestDiff = pullRequestDiff
         self.documentContent = documentContent
+        self.taskHistory = taskHistory
     }
 
     /// Neither observes nor sends anything: an unconfigured feature stays inert.

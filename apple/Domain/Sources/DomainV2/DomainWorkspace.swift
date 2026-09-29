@@ -6,7 +6,7 @@ import Foundation
 /// infers ownership from URLs, titles, dates or arrays.
 public struct DomainWorkspace: Equatable, Sendable {
     public let projection: DomainV2.DomainProjection
-    /// Telemetry and remote observations for display, from the same epoch. Never authority.
+    /// Telemetry and remote observations for display. Never authority.
     public private(set) var runtime: DomainV2.Runtime?
     private let tasks: [DomainV2.TaskId: DomainV2.Task]
     private let agents: [DomainV2.AgentId: DomainV2.Agent]
@@ -20,7 +20,7 @@ public struct DomainWorkspace: Equatable, Sendable {
 
     public init(_ projection: DomainV2.DomainProjection, runtime: DomainV2.Runtime? = nil) {
         self.projection = projection
-        self.runtime = runtime?.dataEpoch == projection.dataEpoch ? runtime : nil
+        self.runtime = runtime
         tasks = Self.index(projection.tasks, by: \.id)
         agents = Self.index(projection.agents, by: \.id)
         requests = Self.index(projection.requests, by: \.id)
@@ -106,6 +106,12 @@ public struct DomainWorkspace: Equatable, Sendable {
                                 currentRevision: revisions[document.currentRevision],
                                 review: projection.documentReviews.first { $0.taskId == task.id && $0.documentId == id })
         }
+    }
+
+    /// The open PR of the Task this PR's Task stacks on: it merges first.
+    public func stackedOn(_ pr: DomainV2.PullRequest) -> DomainV2.PullRequest? {
+        guard let stack = task(pr.taskId)?.stack, let below = pullRequest(stack.prId), below.state == .open else { return nil }
+        return below
     }
 
     public func mergeAuthorizations(for pr: DomainV2.PrId) -> [DomainV2.MergeAuthorization] {

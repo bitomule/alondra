@@ -130,12 +130,9 @@ struct V2Fixture {
         return root
     }
 
-    /// Runtime telemetry as the Mac serves it; `body` holds the fields besides the envelope.
+    /// Runtime telemetry as the Mac serves it at `/v2/runtime`.
     static func runtime(_ body: String = #""nodes":[]"#) -> DomainV2.Runtime {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let json = #"{"protocol_version":2,"data_epoch":"\#(epoch.rawValue)",\#(body)}"#
-        return try! decoder.decode(DomainV2.Runtime.self, from: Data(json.utf8))
+        try! DomainV2.Runtime.decode(from: Data(#"{\#(body)}"#.utf8))
     }
 
     static func digest(_ text: String) -> String {

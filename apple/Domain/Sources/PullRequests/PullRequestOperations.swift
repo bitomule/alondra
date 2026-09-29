@@ -35,8 +35,10 @@ public struct DomainPullRequestCard: Equatable, Sendable {
     public let mergeAuthorizations: [DomainV2.MergeAuthorization]
     /// The head the agent presented. Diffs and feedback are bound to it, never to a newer one.
     public let presentedHead: String?
-    /// What GitHub last reported: title, checks, mergeability, stack. Display only.
-    public let observation: PullRequest?
+    /// What GitHub last reported: title, checks, mergeability. Display only.
+    public let observation: DomainV2.PullRequestRuntime?
+    /// The open PR this one is stacked on, which merges first.
+    public let stackedOn: DomainV2.PullRequest?
 
     public init?(root: DomainV2.InboxItem, in workspace: DomainWorkspace) {
         guard case .pullRequest(let id) = root.subject, let pullRequest = workspace.pullRequest(id) else { return nil }
@@ -47,6 +49,7 @@ public struct DomainPullRequestCard: Equatable, Sendable {
         information = root.children.filter { $0.kind == "information" }
         mergeAuthorizations = workspace.mergeAuthorizations(for: id)
         observation = workspace.runtime?.pullRequest(id)
+        stackedOn = workspace.stackedOn(pullRequest)
         if case .delivery(let targets, _, _, _) = presentation.flatMap(workspace.interaction(of:))?.payload {
             presentedHead = targets.lazy.compactMap { target -> String? in
                 if case let .pullRequest(prId, head) = target, prId == id { return head }

@@ -61,6 +61,12 @@ public struct OptionsCatalog: Decodable, Sendable {
     public let project: String?
     public let options: [OptionSpec]
     public let error: String?
+
+    public init(project: String?, options: [OptionSpec], error: String?) {
+        self.project = project
+        self.options = options
+        self.error = error
+    }
 }
 
 public struct ProjectList: Decodable, Sendable {

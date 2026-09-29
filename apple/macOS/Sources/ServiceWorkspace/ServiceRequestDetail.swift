@@ -52,7 +52,7 @@ struct ServiceRequestDetail: View {
                         ForEach(tasks) { task in
                             Button { selectTask(task.id) } label: {
                                 HStack(spacing: 6) {
-                                    StatusDot(color: task.color)
+                                    TaskDot(task: task)
                                     Text(task.title)
                                     Text(verbatim: "· \(task.state.label)")
                                         .foregroundStyle(.secondary)

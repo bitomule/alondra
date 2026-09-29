@@ -10,7 +10,7 @@ struct ServiceDocumentView: View {
     @FocusState private var generalFocused: Bool
     private var item: DomainV2.InboxItem { store.subject.item }
     private var agentName: String? { store.workspace.agent(item.agentId)?.name }
-    private var date: Int64? { store.workspace.runtime?.createdAt(store.subject.interaction.id) }
+    private var date: Int64? { store.workspace.createdAt(of: store.subject.item) }
     private var kind: Kind { Kind(item) }
     private var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: store.sourceText ?? "") }
     private var loaded: Bool { store.sourceText != nil || store.loadError != nil }

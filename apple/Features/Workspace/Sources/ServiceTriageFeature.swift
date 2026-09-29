@@ -42,9 +42,8 @@ public struct ServiceTriageFeature {
         public func task(for item: DomainV2.InboxItem) -> DomainV2.Task? { workspace?.task(item.taskId) }
         public func agent(for item: DomainV2.InboxItem) -> DomainV2.Agent? { workspace?.agent(item.agentId) }
         public func context(for item: DomainV2.InboxItem) -> CardContext {
-            let interaction: DomainV2.InteractionId? = if case .interaction(let id) = item.subject { id } else { nil }
-            return CardContext(node: workspace?.runtime?.node(item.agentId), agent: agent(for: item), task: task(for: item),
-                               date: workspace?.runtime?.createdAt(interaction),
+            CardContext(node: workspace?.runtime?.node(item.agentId), agent: agent(for: item), task: task(for: item),
+                               date: workspace?.runtime?.inboxTime(item.id),
                                mission: workspace?.request(item.requestId)?.body)
         }
         @Presents public var question: QuestionFeature.State?

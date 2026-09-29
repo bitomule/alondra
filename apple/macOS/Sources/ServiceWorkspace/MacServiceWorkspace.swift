@@ -36,6 +36,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
             .overlay(alignment: .top) { ServiceDeliveryBanner(store: store) }
         }
         .environment(\.searchActive, searchFocused)
+        .environment(\.yourTurnTasks, store.workspace?.yourTurnTasks ?? [])
         .navigationTitle("Alondra")
         .navigationSubtitle(store.macSubtitle)
         .toolbar {

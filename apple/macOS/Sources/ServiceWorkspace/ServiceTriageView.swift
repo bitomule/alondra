@@ -100,6 +100,11 @@ struct ServiceQuestionView: View {
                     MarkdownText(text: store.question.body)
                 }
                 ServiceLinksRow(attachments: store.question.attachments, store: store.scope(state: \.downloads, action: \.downloads))
+                if let context = store.workspace.runtime?.node(item.agentId)?.lastSaid {
+                    DisclosureGroup("What the node said last") {
+                        MarkdownText(text: context).font(.callout).foregroundStyle(.secondary).padding(.top, 6)
+                    }.foregroundStyle(.secondary)
+                }
             }
         } bar: {
             VStack(alignment: .leading, spacing: 12) {

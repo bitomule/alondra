@@ -19,8 +19,6 @@ public struct ScheduledTask: Identifiable, Equatable, Sendable {
     public let nextRun: Int64?
     public let lastRun: Int64?
     public let lastRequest: String?
-    public let lastState: String?
-    public let lastNodes: [String]?
     public let lastError: String?
     public let status: String
     public let revision: Int
@@ -42,8 +40,6 @@ public struct ScheduledTask: Identifiable, Equatable, Sendable {
         nextRun = schedule.nextRun
         lastRun = schedule.lastRun
         lastRequest = schedule.lastRequest?.rawValue
-        lastState = nil
-        lastNodes = nil
         lastError = schedule.lastError
         status = schedule.status.rawValue
         revision = Int(schedule.revision)

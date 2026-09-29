@@ -14,7 +14,7 @@ public protocol DomainSyncTransport: Sendable {
     func domainChanges(epoch: DomainV2.DataEpoch, after revision: DomainV2.Revision,
                        wait seconds: UInt) async throws -> DomainV2.Changes
     /// Machine telemetry and agent activity: a daemon read outside the domain.
-    func domainRuntime(epoch: DomainV2.DataEpoch) async throws -> DomainV2.Runtime
+    func domainRuntime() async throws -> DomainV2.Runtime
 }
 
 extension AlondraAPIClient: DomainSyncTransport {}
@@ -25,7 +25,7 @@ public struct DomainSyncState: Equatable, Sendable {
     public let publicationRevision: UInt64
     public let connection: SyncConnection
     public let projection: DomainV2.DomainProjection?
-    /// Telemetry and remote observations of the same epoch; nil until the Mac serves them.
+    /// Telemetry and remote observations; nil until the Mac serves them.
     public let runtime: DomainV2.Runtime?
 }
 
@@ -120,7 +120,7 @@ public actor DomainSyncSession {
     private func publish(identity: SyncIdentity, connection: SyncConnection,
                          projection: DomainV2.DomainProjection?, runtime: DomainV2.Runtime? = nil) {
         publicationRevision &+= 1
-        let runtime = projection.flatMap { projection in runtime?.dataEpoch == projection.dataEpoch ? runtime : nil }
+        let runtime = projection == nil ? nil : runtime
         state = DomainSyncState(identity: identity, generation: generation,
                                 publicationRevision: publicationRevision,
                                 connection: connection, projection: projection, runtime: runtime)
@@ -142,7 +142,7 @@ public actor DomainSyncSession {
                 guard !Task.isCancelled, generation == current else { return }
                 sections = next
                 failures = 0
-                var runtime = await Self.runtime(transport, projection.dataEpoch) ?? state.runtime
+                var runtime = await Self.runtime(transport) ?? state.runtime
                 guard !Task.isCancelled, generation == current else { return }
                 publish(identity: state.identity, connection: .online, projection: projection, runtime: runtime)
                 while !Task.isCancelled && generation == current && !subscribers.isEmpty {
@@ -152,7 +152,7 @@ public actor DomainSyncSession {
                     if changes.changed || changes.revision != projection.revision
                         || changes.sections.contains(where: { summary.sections[$0.key]?.revision != $0.value }) { break }
                     // Telemetry moves without a domain revision; refresh it on each idle wait.
-                    if let fresh = await Self.runtime(transport, projection.dataEpoch), fresh != runtime {
+                    if let fresh = await Self.runtime(transport), fresh != runtime {
                         guard !Task.isCancelled, generation == current else { return }
                         runtime = fresh
                         publish(identity: state.identity, connection: .online, projection: projection, runtime: fresh)
@@ -181,7 +181,7 @@ public actor DomainSyncSession {
     }
 
     /// The runtime is display-only; a daemon that does not serve it yet leaves it empty.
-    private static func runtime(_ transport: any DomainSyncTransport, _ epoch: DomainV2.DataEpoch) async -> DomainV2.Runtime? {
-        try? await transport.domainRuntime(epoch: epoch)
+    private static func runtime(_ transport: any DomainSyncTransport) async -> DomainV2.Runtime? {
+        try? await transport.domainRuntime()
     }
 }

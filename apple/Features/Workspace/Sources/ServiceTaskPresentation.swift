@@ -61,8 +61,11 @@ public struct ServiceTaskPresentation {
         }
     }
 
-    /// What GitHub last said about the PR: checks, conflicts, stack order.
-    public func observation(of pr: DomainV2.PullRequest?) -> PullRequest? { runtime?.pullRequest(pr?.id) }
+    /// What GitHub last said about the PR: title, checks, conflicts.
+    public func observation(of pr: DomainV2.PullRequest?) -> DomainV2.PullRequestRuntime? { runtime?.pullRequest(pr?.id) }
+
+    /// The open PR this one is stacked on, which merges first.
+    public func stackedOn(_ pr: DomainV2.PullRequest) -> DomainV2.PullRequest? { workspace?.stackedOn(pr) }
 
     /// The task's PR, then the PRs of the tasks it stacks on, bottom last.
     public func pullRequests(of task: DomainV2.Task) -> [DomainV2.PullRequest] {
@@ -84,6 +87,21 @@ public struct ServiceTaskPresentation {
         [project(of: request), definingLabel(of: request)].compactMap { $0 }.joined(separator: " · ")
     }
 
+    /// Where a schedule's last run stands, from the request it created: the state key the
+    /// schedule labels use, and the agents working on it.
+    public func lastRun(of schedule: ScheduledTask) -> (state: String?, agents: [String]) {
+        guard let id = schedule.lastRequest, let request = board.request(DomainV2.RequestId(rawValue: id)) else { return (nil, []) }
+        let tasks = board.tree(for: request.id)?.tasks ?? []
+        let state = if tasks.isEmpty { request.closed ? "done" : "defining" }
+            else if request.closed || tasks.allSatisfy({ $0.state.isFinished }) { "done" }
+            else { "in_progress" }
+        var agents: [String] = []
+        for task in tasks {
+            if let name = node(task.agentId)?.displayName ?? agent(task.agentId)?.name, !agents.contains(name) { agents.append(name) }
+        }
+        return (state, agents)
+    }
+
     /// The state of a request the orchestrator has not split into Tasks.
     public func definingLabel(of request: DomainV2.Request) -> String {
         request.closed
@@ -101,19 +119,18 @@ public struct ServiceTaskPresentation {
             ?? board.request(task.requestId).flatMap(project(of:))
     }
 
+    /// A request carries no project of its own; its Tasks do.
     public func project(of request: DomainV2.Request) -> String? {
-        (runtime?.request(request.id)?.project).flatMap(Self.named)
+        board.tree(for: request.id)?.tasks.lazy.compactMap { (self.runtime?.task($0.id)?.project).flatMap(Self.named) }.first
     }
 
-    /// The title the orchestrator gave it, else its only task's, else the first line of what the
-    /// user asked, else its first task's.
+    /// Its only task's title, else the first line of what the user asked, else its first task's.
     public func title(of request: DomainV2.Request) -> String {
-        Self.title(of: request, in: board, runtime: runtime)
+        Self.title(of: request, in: board)
     }
 
-    public static func title(of request: DomainV2.Request, in board: TaskBoard, runtime: DomainV2.Runtime? = nil) -> String {
+    public static func title(of request: DomainV2.Request, in board: TaskBoard) -> String {
         let tasks = board.tree(for: request.id)?.tasks ?? []
-        if let title = runtime?.request(request.id)?.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
         if tasks.count == 1 { return tasks[0].title }
         return request.headline ?? tasks.first?.title ?? String(localized: "Request")
     }
@@ -136,7 +153,7 @@ public struct ServiceTaskPresentation {
             return String(localized: "question: \(item.title)")
         case .inReview:
             if let pr = pullRequest(of: task), let observation = observation(of: pr) {
-                return observation.progress(mergesAlone: !task.reviewPrs)
+                return observation.progress(number: pr.number, stackedOn: stackedOn(pr)?.number, mergesAlone: !task.reviewPrs)
             }
             guard let document = documents(of: task).last else { return nil }
             return String(localized: "document: \(document.document.title)")

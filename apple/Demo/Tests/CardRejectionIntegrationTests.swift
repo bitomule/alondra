@@ -24,8 +24,8 @@ struct CardRejectionIntegrationTests {
         case .feedback, .comments, .approve: root = fixture.documentReview("a")
         default:
             root = fixture.pullRequest(5)
-            let mergeable = route == .conflicts ? "CONFLICTING" : "MERGEABLE"
-            fixture.runtime = V2Fixture.runtime(#""nodes":[],"pull_requests":[{"pr_id":"pr-5","observation":{"id":5,"session_id":"s","url":"https://example.com/p/5","repo":"a/b","number":5,"title":"PR","state":"open","opened_at":1,"mergeable":"\#(mergeable)","merge_methods":["merge"]}}]"#)
+            let conflicts = route == .conflicts
+            fixture.runtime = V2Fixture.runtime(#""nodes":[],"pull_requests":{"pr-5":{"title":"PR","checks":[],"conflicts":\#(conflicts),"mergeability_unknown":false}}"#)
         }
         var card = TriageCardFeature.State(item: root, workspace: fixture.workspace, identity: V2Fixture.workIdentity)
         let entries = [AttachmentFeature.Entry(draft: file, status: .uploaded(Self.receipt))]

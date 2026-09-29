@@ -34,7 +34,7 @@ final class APIClientWireTests: XCTestCase {
         for (status, body, expected) in cases {
             let operations = WireOperations(status: status, body: Data(body.utf8))
             do {
-                _ = try await client(operations).send(Endpoint<Data>.data(.get, path: ["v2", "daemon", "runtime"]))
+                _ = try await client(operations).send(Endpoint<Data>.data(.get, path: ["v2", "runtime"]))
                 XCTFail("Expected service response \(status) to fail")
             } catch { XCTAssertEqual(error as? APIError, expected) }
             let requests = await operations.recorded()
@@ -48,8 +48,8 @@ final class APIClientWireTests: XCTestCase {
         _ = try await api.domainSearch("a b&c?#é")
         _ = try? await api.domainAgentActivity("a/b")
         let requests = await operations.recorded()
-        XCTAssertEqual(requests[0].path, "/v2/domain/search?q=a%20b%26c%3F%23%C3%A9")
-        XCTAssertEqual(requests[1].path, "/v2/daemon/agents/a%2Fb/activity")
+        XCTAssertEqual(requests[0].path, "/v2/agents/search?q=a%20b%26c%3F%23%C3%A9")
+        XCTAssertEqual(requests[1].path, "/v2/agents/a%2Fb/activity")
     }
 
     func testV1RoutesAreNoLongerAdmitted() async throws {

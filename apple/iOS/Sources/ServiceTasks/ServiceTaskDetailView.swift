@@ -158,7 +158,8 @@ struct ServiceTaskDetailView: View {
             DetailSection(title: String(localized: "PRs in merge order"), symbol: "arrow.triangle.merge") {
                 VStack(spacing: 0) {
                     ForEach(Array(train.enumerated()), id: \.element.pr.id) { index, entry in
-                        ServicePullRequestLine(order: index + 1, pr: entry.pr, observation: fleet.observation(of: entry.pr), mine: entry.owner.id == task.id, waitingItem: fleet.inboxItem(for: entry.pr.id)?.id, open: focusInbox)
+                        ServicePullRequestLine(order: index + 1, pr: entry.pr, observation: fleet.observation(of: entry.pr),
+                                               stackedOn: fleet.stackedOn(entry.pr), mine: entry.owner.id == task.id, waitingItem: fleet.inboxItem(for: entry.pr.id)?.id, open: focusInbox)
                             .overlay(alignment: .top) {
                                 if index > 0 { Palette.hairline.frame(height: 1).padding(.leading, 16) }
                             }
@@ -286,7 +287,7 @@ struct ServiceTaskDetailView: View {
         }
     }
 
-    private var history: [DomainV2.TaskTransition]? { store.task.flatMap { fleet.runtime?.task($0.id)?.history } }
+    private var history: [DomainV2.TaskStep]? { store.history?.history }
 
     @ViewBuilder
     private var timeline: some View {
@@ -320,7 +321,8 @@ struct ServiceTaskDetailView: View {
 private struct ServicePullRequestLine: View {
     let order: Int
     let pr: DomainV2.PullRequest
-    let observation: PullRequest?
+    let observation: DomainV2.PullRequestRuntime?
+    let stackedOn: DomainV2.PullRequest?
     let mine: Bool
 
     let waitingItem: String?
@@ -352,15 +354,15 @@ private struct ServicePullRequestLine: View {
                                 .fixedSize()
                         }
                     }
-                    Text(observation?.summary ?? "\(pr.repository) #\(pr.number)")
+                    Text(pr.summary)
                         .font(.mono(.caption))
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.leading)
                     if let checks = observation?.checks, !checks.isEmpty {
                         FlowChecks(checks: checks)
                     }
-                    if let stacked = observation?.stackedOn {
-                        Label(stacked, systemImage: "square.stack.3d.up")
+                    if let stackedOn {
+                        Label(stackedOn.stackedOnLabel, systemImage: "square.stack.3d.up")
                             .font(.footnote.weight(.medium))
                             .foregroundStyle(.secondary)
                     }
@@ -398,20 +400,20 @@ private struct FlowChecks: View {
 }
 
 private struct HistoryLine: View {
-    let step: DomainV2.TaskTransition
+    let step: DomainV2.TaskStep
     let first: Bool
     let last: Bool
 
     var body: some View {
-        let tint = step.to.tint
+        let tint = step.state.tint
         HStack(alignment: .top, spacing: 10) {
             Text(Date(millis: step.at), format: .dateTime.hour().minute())
                 .font(.mono(.caption))
                 .foregroundStyle(.tertiary)
                 .frame(width: 44, alignment: .leading)
-            Glyph(symbol: step.to.symbol, tint: tint, size: .tiny)
+            Glyph(symbol: step.state.symbol, tint: tint, size: .tiny)
                 .background(Palette.card, in: .circle)
-            (Text(step.to.label).fontWeight(.semibold).foregroundStyle(tint) + Text(verbatim: " · \(step.summary)"))
+            (Text(step.state.label).fontWeight(.semibold).foregroundStyle(tint) + Text(verbatim: " · \(step.summary)"))
                 .font(.subheadline)
                 .foregroundStyle(Palette.ink.opacity(0.86))
                 .fixedSize(horizontal: false, vertical: true)

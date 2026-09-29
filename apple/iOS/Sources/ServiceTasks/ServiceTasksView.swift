@@ -201,11 +201,10 @@ private struct DefiningRow: View {
     let since: Int64?
 
     var body: some View {
-        let left = request.closed
         HStack(alignment: .top, spacing: 12) {
-            Glyph(symbol: "diamond", tint: Palette.slate, pulse: !left)
+            Glyph(symbol: "diamond", tint: Palette.slate, pulse: true)
             VStack(alignment: .leading, spacing: 3) {
-                Text(left ? String(localized: "The orchestrator left it without tasks") : String(localized: "The orchestrator is splitting it into tasks"))
+                Text("The orchestrator is splitting it into tasks")
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
                 StateLine(label: label, tint: Palette.slate, since: since)

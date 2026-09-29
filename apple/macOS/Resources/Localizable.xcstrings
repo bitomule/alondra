@@ -1386,26 +1386,6 @@
         }
       }
     },
-    "the orchestrator left it without tasks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "el orquestador la dejó sin tareas"
-          }
-        }
-      }
-    },
-    "The orchestrator left it without tasks and did not close it: withdraw it if it is no longer needed.": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El orquestador la dejó sin tareas y sin cerrarla: retírala si ya no hace falta."
-          }
-        }
-      }
-    },
     "This node is gone": {
       "localizations": {
         "es": {

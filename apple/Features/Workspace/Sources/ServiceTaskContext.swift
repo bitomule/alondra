@@ -20,13 +20,13 @@ public struct ServiceTaskContext {
     public var pullRequestOwners: [DomainV2.PrId: DomainV2.Task] = [:]
     /// The inbox card of each PR that waits for you.
     public var pullRequestItems: [DomainV2.PrId: String] = [:]
-    public var observations: [DomainV2.PrId: PullRequest] = [:]
+    public var observations: [DomainV2.PrId: DomainV2.PullRequestRuntime] = [:]
+    public var stackedOn: [DomainV2.PrId: DomainV2.PullRequest] = [:]
     public var documents: [TaskDocument] = []
     /// The inbox card asking you to review each document, while one waits.
     public var documentItems: [DomainV2.DocumentId: String] = [:]
     public var pending: [DomainV2.InboxItem] = []
     public var agentName: String?
-    public var history: [DomainV2.TaskTransition] = []
 
     public init() {}
 
@@ -49,6 +49,7 @@ public struct ServiceTaskContext {
             pullRequests.append(pr)
             pullRequestOwners[pr.id] = owner
             observations[pr.id] = presentation.observation(of: pr)
+            stackedOn[pr.id] = presentation.stackedOn(pr)
             pullRequestItems[pr.id] = presentation.inboxItem(for: pr.id)?.id
         }
         documents = presentation.documents(of: task)
@@ -57,6 +58,5 @@ public struct ServiceTaskContext {
         }
         pending = presentation.items(forTask: task)
         agentName = presentation.node(task.agentId)?.displayName ?? presentation.agent(task.agentId)?.name
-        history = presentation.runtime?.task(task.id)?.history ?? []
     }
 }

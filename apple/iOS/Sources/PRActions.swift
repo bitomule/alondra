@@ -7,10 +7,15 @@ struct PRStatus: View {
 
     var body: some View {
         if let pr = card.observation { observed(pr) }
+        if let stackedOn = card.stackedOn {
+            Label(stackedOn.stackedOnLabel, systemImage: "square.stack.3d.up")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.secondary)
+        }
     }
 
     @ViewBuilder
-    private func observed(_ pr: PullRequest) -> some View {
+    private func observed(_ pr: DomainV2.PullRequestRuntime) -> some View {
         if pr.hasConflicts {
             Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
                 .font(.footnote.weight(.medium))
@@ -20,12 +25,7 @@ struct PRStatus: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }
-        if let stackedOn = pr.stackedOn {
-            Label(stackedOn, systemImage: "square.stack.3d.up")
-                .font(.footnote.weight(.medium))
-                .foregroundStyle(.secondary)
-        }
-        ForEach(pr.checks ?? [], id: \.self) { check in
+        ForEach(pr.checks, id: \.self) { check in
             Label(check.name, systemImage: check.passed ? "checkmark.circle.fill" : check.failed ? "xmark.circle.fill" : "clock")
                 .font(.footnote)
                 .foregroundStyle(check.passed ? Palette.sage : check.failed ? Palette.rose : Palette.dawn)

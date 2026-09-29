@@ -250,11 +250,6 @@ struct DemoState {
             "stateSource": "demo", "lastMessage": "Waiting for your feedback on the example work."], as: Node.self)
         let machine = try? DemoFixture.decode(["memoryTotal": 16_000_000_000, "memoryAvailable": 10_000_000_000, "load": [0.2, 0.3, 0.2],
             "diskAvailable": 120_000_000_000, "unreliable": false], as: Machine.self)
-        let observation = try? DemoFixture.decode(["id": 3, "url": "demo://pull-request/3", "repo": "demo/garden", "number": 3,
-            "sessionId": designAgent.rawValue, "nodeName": "Design assistant", "title": "Simplify the welcome message",
-            "body": "Example pull request. Every action changes only this demo.", "base": "main", "head": "demo/welcome",
-            "state": "open", "mergeable": "MERGEABLE", "checks": [["name": "Example integration checks", "state": "passed"]],
-            "mergeMethods": ["squash"], "additions": 1, "deletions": 1, "changedFiles": 1, "openedAt": now], as: PullRequest.self)
         return DemoState(
             tasks: [
                 .init(id: designTask, requestId: request, agentId: designAgent, title: "Polish the welcome experience", state: .needsYou,
@@ -272,10 +267,13 @@ struct DemoState {
             documents: [.init(id: documentID, title: "Welcome screen proposal", currentRevision: revisionID)],
             documentRevisions: [.init(id: revisionID, documentId: documentID, number: 1, contentDigest: DemoFixture.documentDigest,
                                       contentReference: "demo://welcome.md")],
-            runtime: DomainV2.Runtime(protocolVersion: DomainV2.protocolVersion, dataEpoch: epoch, machine: machine, usage: nil,
-                                      nodes: node.map { [$0] } ?? [],
-                                      pullRequests: observation.map { [.init(prId: pullRequest, observation: $0)] },
-                                      requests: [.init(requestId: request, title: "Welcome experience", createdAt: now, project: "Demo Garden", effort: nil, issue: nil)]))
+            runtime: DomainV2.Runtime(machine: machine, nodes: node.map { [$0] } ?? [],
+                                      tasks: [designTask.rawValue: .init(project: "Demo Garden", stateSince: now),
+                                              copyTask.rawValue: .init(project: "Demo Garden", stateSince: now)],
+                                      requests: [request.rawValue: .init(createdAt: now)],
+                                      pullRequests: [pullRequest.rawValue: .init(title: "Simplify the welcome message",
+                                          body: "Example pull request. Every action changes only this demo.",
+                                          checks: [PRCheck(name: "Example integration checks", state: "passed")])]))
     }
 
     var workspace: DomainWorkspace {

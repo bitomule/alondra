@@ -26,7 +26,7 @@ private func workspace(nodes: [Node], agents: [DomainV2.Agent] = [], tasks: [Dom
         counts: .init(roots: UInt64(inbox.count), pending: 0, unreadInformation: 0), tasks: tasks, agents: agents,
         requests: [.init(id: "r", body: "Work", closed: false)], interactions: [], pullRequests: [], documents: [],
         documentRevisions: [], documentReviews: [], mergeAuthorizations: [], stackReadiness: [])
-    return DomainWorkspace(projection, runtime: .init(protocolVersion: 2, dataEpoch: "epoch", machine: nil, usage: nil, nodes: nodes))
+    return DomainWorkspace(projection, runtime: .init(nodes: nodes))
 }
 
 private func root(_ id: String, agent: String) -> DomainV2.InboxItem {

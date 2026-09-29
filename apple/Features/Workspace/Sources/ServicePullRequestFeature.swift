@@ -17,7 +17,7 @@ public struct ServicePullRequestFeature {
         public var lastKnownCard: DomainPullRequestCard
         public var displayedPR: DomainV2.PullRequest? { pr.pr ?? lastKnownCard.pullRequest }
         /// What GitHub last said about it: title, body, checks, conflicts.
-        public var observation: PullRequest? { pr.card?.observation ?? lastKnownCard.observation }
+        public var observation: DomainV2.PullRequestRuntime? { pr.card?.observation ?? lastKnownCard.observation }
         public var hasOutstandingCommand: Bool {
             pr.isSending || pr.mutationOutcome == .unknown || diff.isSending || diff.mutationOutcome == .unknown
                 || questionFeatures.contains { $0.question.isSubmitting || $0.question.needsReconciliation }

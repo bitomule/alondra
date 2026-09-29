@@ -18,14 +18,15 @@ import Testing
         var fixture = V2Fixture()
         fixture.tasks = [V2Fixture.makeTask("t1", state: .needsYou)]
         let question = fixture.question("q7", title: "Which one?")
-        fixture.runtime = V2Fixture.runtime(#""nodes":[],"tasks":[{"task_id":"t1","project":"alondra","effort":"hard","state_since":3}],"requests":[{"request_id":"request-1","title":"Build it","created_at":1}]"#)
+        fixture.runtime = V2Fixture.runtime(#""nodes":[],"tasks":{"t1":{"project":"alondra","effort":"hard","state_since":3}},"requests":{"request-1":{"created_at":1}}"#)
         let store = ServiceTaskPresentation(workspace: fixture.workspace)
         let task = try #require(store.board.task("t1"))
         #expect(store.task(for: question)?.id == "t1")
         #expect(store.now(for: task) == "question: Which one?")
         #expect(store.project(of: task) == "alondra")
         let context = ServiceTaskContext(presentation: store, taskID: "t1")
-        #expect(context.requestTitle == "Build it")
+        #expect(context.requestTitle == "Task t1", "a request with one task goes by that task's title")
+        #expect(context.requestCreatedAt == 1)
         #expect(context.project == "alondra")
         #expect(context.now == "question: Which one?")
         #expect(context.effort == "hard")
@@ -34,7 +35,7 @@ import Testing
         #expect(context.pending.map(\.id) == [question.id])
         let resolved = ServiceTaskContext(presentation: ServiceTaskPresentation(workspace: fixture.workspace, hiddenIDs: [question.id]), taskID: "t1")
         #expect(resolved.pending.isEmpty)
-        #expect(resolved.requestTitle == "Build it")
+        #expect(resolved.requestTitle == "Task t1")
         #expect(resolved.requestTaskCount == 1)
     }
 
@@ -77,15 +78,13 @@ import Testing
         #expect(store.waitingReason(for: waiting) == "It started, and what is left of it waits for PR #264 of “PhotoKit off the pool” to be merged: it goes on once that PR is merged.")
     }
 
-    @MainActor @Test func aRequestGoesByItsTitleThenItsOnlyTasksThenWhatTheUserWrote() throws {
+    @MainActor @Test func aRequestGoesByItsOnlyTaskThenWhatTheUserWrote() throws {
         var fixture = V2Fixture()
-        fixture.requests = ["r-given", "r-one", "r-two", "r-new"].map { .init(id: .init(rawValue: $0), body: "Do the thing\nin detail", closed: false) }
-        fixture.tasks = [V2Fixture.makeTask("a", request: "r-given"), V2Fixture.makeTask("one", request: "r-one"),
+        fixture.requests = ["r-one", "r-two", "r-new"].map { .init(id: .init(rawValue: $0), body: "Do the thing\nin detail", closed: false) }
+        fixture.tasks = [V2Fixture.makeTask("one", request: "r-one"),
                          V2Fixture.makeTask("b", request: "r-two"), V2Fixture.makeTask("c", request: "r-two")]
-        fixture.runtime = V2Fixture.runtime(#""nodes":[],"requests":[{"request_id":"r-given","title":"Ship the thing"}]"#)
         let store = ServiceTaskPresentation(workspace: fixture.workspace)
         let title = { (id: String) in store.board.request(.init(rawValue: id)).map(store.title(of:)) }
-        #expect(title("r-given") == "Ship the thing", "the orchestrator's title wins")
         #expect(title("r-one") == "Task one", "its only task's title, not the prompt")
         #expect(title("r-two") == "Do the thing", "several tasks and no title: what the user wrote")
         #expect(title("r-new") == "Do the thing", "still being split: what the user wrote")

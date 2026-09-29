@@ -2,38 +2,67 @@ import AlondraContracts
 import CryptoKit
 import Foundation
 
-/// Routes the apps call that the v2 daemon does not serve yet. Bodies mirror the v1 routes they
-/// replace. Until the daemon adds them each call fails with the daemon's own error, and the
-/// feature says so instead of disappearing (docs/domain-v2-apple-client-contracts.md).
+/// The v2 daemon's routes beyond the domain (docs/domain-v2-apple-client-contracts.md). The
+/// TUI and CLI send the same bodies; fixtures/client-v2/requests.json holds each one.
 extension AlondraAPIClient {
-    public func domainRuntime(epoch: DomainV2.DataEpoch) async throws -> DomainV2.Runtime {
-        let runtime = try await send(Endpoint<DomainV2.Runtime>.json(.get, path: ["v2", "daemon", "runtime"]))
-        guard runtime.protocolVersion == DomainV2.protocolVersion, runtime.dataEpoch == epoch else {
-            throw DomainV2.DomainError(code: "stale_epoch", message: "Runtime is from another workspace", currentRevision: nil, subject: nil)
-        }
-        return runtime
+    public func domainRuntime() async throws -> DomainV2.Runtime {
+        try await send(Endpoint<DomainV2.Runtime>(.get, path: ["v2", "runtime"]) { try DomainV2.Runtime.decode(from: $0) })
     }
 
     public func domainAgentActivity(_ agent: DomainV2.AgentId) async throws -> [NodeActivity] {
-        try await send(Endpoint<NodeThreads>.json(.get, path: ["v2", "daemon", "agents", agent.rawValue, "activity"])).activity ?? []
+        try await send(Endpoint<NodeThreads>.json(.get, path: ["v2", "agents", agent.rawValue, "activity"])).activity ?? []
+    }
+
+    public func domainTaskHistory(_ task: DomainV2.TaskId) async throws -> DomainV2.TaskHistory {
+        try await send(Endpoint<DomainV2.TaskHistory>.json(.get, path: ["v2", "tasks", task.rawValue, "history"]))
     }
 
     public func domainProjects() async throws -> [String] {
-        try await send(Endpoint<ProjectList>.json(.get, path: ["v2", "domain", "catalog", "projects"])).projects.map(\.name)
+        try await send(Endpoint<ProjectList>.json(.get, path: ["v2", "projects"])).projects.map(\.name)
     }
 
+    /// The daemon answers the options of the project asked for; the catalog records which one.
     public func domainOptions(project: String?) async throws -> OptionsCatalog {
-        try await send(Endpoint<OptionsCatalog>.json(.get, path: ["v2", "domain", "catalog", "options"],
-                                                     query: project.map { [("project", $0)] } ?? []))
+        let served = try await send(Endpoint<OptionsCatalog>.json(.get, path: ["v2", "options"],
+                                                                  query: project.map { [("project", $0)] } ?? []))
+        return OptionsCatalog(project: project, options: served.options, error: served.error)
     }
 
     public func domainIssues(refresh: Bool) async throws -> IssueList {
-        try await send(Endpoint<IssueList>.json(.get, path: ["v2", "domain", "catalog", "issues"],
-                                                query: refresh ? [("refresh", "1")] : []))
+        try await send(Endpoint<IssueList>.json(.get, path: ["v2", "issues"], query: refresh ? [("refresh", "1")] : []))
     }
 
     public func domainSearch(_ query: String) async throws -> SearchResult {
-        try await send(Endpoint<SearchResult>.json(.get, path: ["v2", "domain", "search"], query: [("q", query)]))
+        try await send(Endpoint<SearchResult>.json(.get, path: ["v2", "agents", "search"], query: [("q", query)]))
+    }
+
+    /// Types the message into the agent's session. The kind tells the daemon how to word it.
+    public func sendAgentMessage(_ agent: DomainV2.AgentId, _ message: AgentMessage, operationID: String) async throws -> AgentMessageReceipt {
+        return try await send(Endpoint<AgentMessageReceipt>.json(.post, path: ["v2", "agents", agent.rawValue, "messages"],
+                                                                 body: try DomainV2.encode(message)),
+                              operationID: operationID)
+    }
+
+    /// The orchestrator is not a domain agent: its messages have a route of their own.
+    public func sendOrchestratorMessage(_ message: AgentMessage, operationID: String) async throws -> AgentMessageReceipt {
+        let body = try DomainV2.encode(OrchestratorMessage(text: message.text, attachments: message.attachments))
+        return try await send(Endpoint<AgentMessageReceipt>.json(.post, path: ["v2", "orchestrator", "messages"], body: body),
+                              operationID: operationID)
+    }
+
+    public func closeAgent(_ agent: DomainV2.AgentId, force: Bool, operationID: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["force": force])
+        _ = try await send(Endpoint<Data>.data(.post, path: ["v2", "agents", agent.rawValue, "close"], body: body,
+                                               contentType: "application/json", requiresJSONObjectResponse: true),
+                           operationID: operationID)
+    }
+
+    /// A request with its project, launch options, issue and attachments, created in one step.
+    public func createRequest(_ request: NewRequestSubmission, operationID: String) async throws -> DomainV2.CommandOutcome {
+        try await send(Endpoint<DomainV2.CommandOutcome>(.post, path: ["v2", "requests"], body: try DomainV2.encode(request),
+                                                         contentType: "application/json", requiresJSONObjectResponse: true) {
+            try DomainV2.decode(DomainV2.CommandOutcome.self, from: $0)
+        }, operationID: operationID)
     }
 
     /// Attachments are immutable references with a content digest; every chunk is checked
@@ -150,4 +179,9 @@ extension AlondraAPIClient {
 /// `POST /v2/orchestrator/{cancel,acknowledge,retry}` with the execution's `run_id`.
 public enum OrchestratorDecision: String, Sendable {
     case cancel, acknowledge, retry
+}
+
+private struct OrchestratorMessage: Encodable {
+    let text: String
+    let attachments: [DomainV2.AttachmentRef]
 }

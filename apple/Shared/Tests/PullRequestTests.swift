@@ -1,68 +1,72 @@
+import AlondraContracts
+import AlondraDomain
 import AlondraShared
 import Foundation
 import Testing
 
 @Suite struct PullRequestTests {
-    private func pr(_ extra: String) throws -> PullRequest {
-        let json = """
-        {"id":4,"url":"https://github.com/a/b/pull/12","repo":"a/b","number":12,"session_id":"s","title":"Menus","state":"open","opened_at":1,"base":"main","head":"menus","additions":120,"deletions":8,"changed_files":5\(extra)}
-        """
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(PullRequest.self, from: Data(json.utf8))
+    private static func pr(_ id: String, task: String, number: UInt64, state: DomainV2.PrState = .open,
+                           methods: [DomainV2.MergeMethod] = [.squash, .merge]) -> DomainV2.PullRequest {
+        .init(id: .init(rawValue: id), taskId: .init(rawValue: task), host: "github.com", repository: "a/b", number: number,
+              head: "h-\(id)", base: "main", state: state, mergedHead: nil, allowedMethods: methods, review: nil)
     }
 
-    @Test func theMethodLastUsedInTheRepoComesFirst() throws {
-        #expect(try pr(#","merge_methods":["merge","squash"]"#).methods == ["merge", "squash"])
-        #expect(try pr(#","merge_methods":["merge","squash"],"preferred_method":"squash""#).methods == ["squash", "merge"])
-        #expect(try pr(#","merge_methods":["merge","squash"],"preferred_method":"rebase""#).methods == ["merge", "squash"])
-        #expect(try pr("").methods == PullRequest.allMethods, "all three when the repo was not read")
+    private static func task(_ id: String, stackedOn below: String? = nil) -> DomainV2.Task {
+        .init(id: .init(rawValue: id), requestId: "r", agentId: "a", title: "Task \(id)", state: .running, revision: 1,
+              started: true, reviewPrs: false, finalPresentation: nil, prId: nil, dependencies: [],
+              stack: below.map { .init(upstreamTask: .init(rawValue: "t-\($0)"), presentationId: "p", prId: .init(rawValue: $0), head: "h-\($0)") },
+              documents: [:], archived: false)
     }
 
-    private func train(_ id: UInt64, openedAt: Int64, bottom: UInt64?, position: Int?, trainOpenedAt: Int64?) throws -> PullRequest {
-        let below = position.map { $0 > 0 ? "\(id + 9)" : "null" } ?? "null"
-        let json = """
-        {"id":\(id),"url":"https://github.com/a/b/pull/\(id + 10)","repo":"a/b","number":\(id + 10),"session_id":"s","title":"T\(id)","state":"open","opened_at":\(openedAt),"below_number":\(below),"stack_bottom":\(bottom.map(String.init) ?? "null"),"stack_position":\(position.map(String.init) ?? "null"),"stack_opened_at":\(trainOpenedAt.map(String.init) ?? "null")}
-        """
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        return try decoder.decode(PullRequest.self, from: Data(json.utf8))
+    private static func card(stackedOn below: DomainV2.PrState? = nil, runtime: DomainV2.PullRequestRuntime? = nil) throws -> DomainPullRequestCard {
+        var pullRequests = [pr("top", task: "t-top", number: 12)]
+        var tasks = [task("t-top", stackedOn: below.map { _ in "below" })]
+        if let below {
+            pullRequests.append(pr("below", task: "t-below", number: 11, state: below))
+            tasks.append(task("t-below"))
+        }
+        let root = DomainV2.InboxItem(id: "pr:top", kind: "pull_request", subject: .pullRequest(prId: "top"), title: "Menus",
+                                      body: nil, taskId: "t-top", requestId: "r", agentId: "a", revision: 1, order: 1,
+                                      pending: true, children: [], availableActions: [])
+        let projection = DomainV2.DomainProjection(
+            protocolVersion: 2, dataEpoch: "e", revision: 1, inbox: [root], counts: .init(roots: 1, pending: 1, unreadInformation: 0),
+            tasks: tasks, agents: [], requests: [], interactions: [], pullRequests: pullRequests, documents: [],
+            documentRevisions: [], documentReviews: [], mergeAuthorizations: [], stackReadiness: [])
+        let workspace = DomainWorkspace(projection, runtime: runtime.map { .init(pullRequests: ["top": $0]) })
+        return try #require(DomainPullRequestCard(root: root, in: workspace))
+    }
+
+    @Test func aCardSaysWhereItGoes() throws {
+        let card = try Self.card()
+        #expect(card.summary == "a/b #12 · main")
+        #expect(card.webURL?.absoluteString == "https://github.com/a/b/pull/12")
     }
 
     @Test func aPROnTopOfAnOpenPRSaysSoAndWaitsForIt() throws {
-        let upper = try train(2, openedAt: 5, bottom: 1, position: 1, trainOpenedAt: 3)
-        #expect(upper.stackedOn == "On top of PR #11")
-        #expect(upper.mergeBlockedReason == "Merge PR #11 first")
-        let alone = try pr("")
-        #expect(alone.stackedOn == nil)
-        #expect(alone.mergeBlockedReason == nil)
+        let upper = try Self.card(stackedOn: .open)
+        #expect(upper.stackedOn?.stackedOnLabel == "On top of PR #11")
+        #expect(upper.mainAction == .merge(methods: [.squash, .merge], blockedBy: "Merge PR #11 first"))
+        let landed = try Self.card(stackedOn: .merged)
+        #expect(landed.stackedOn == nil, "a merged PR underneath no longer holds it")
+        #expect(try Self.card().mainAction == .merge(methods: [.squash, .merge], blockedBy: nil))
     }
 
-    @Test func aCardSaysWhereItGoesAndHowBigItIs() throws {
-        let p = try pr(#","checks":[{"name":"test","state":"failed","url":null}],"mergeable":"CONFLICTING""#)
-        #expect(p.summary == "a/b #12 · main ← menus · +120 −8 in 5 files")
-        #expect(p.hasConflicts)
-        #expect(p.checks?.first?.failed == true)
+    @Test func conflictsComeFirstEvenOnTopOfAnotherPR() throws {
+        let conflicted = try Self.card(stackedOn: .open, runtime: .init(conflicts: true))
+        #expect(conflicted.mainAction == .resolveConflicts)
+        let checking = try Self.card(runtime: .init(mergeabilityUnknown: true))
+        #expect(checking.mainAction == .merge(methods: [.squash, .merge], blockedBy: nil), "GitHub still checking is not a conflict")
     }
 
-    /// 24 Sep: David's «la pantalla de PR full screen no tiene los mismos botones»; the card and
-    /// the full screen now both ask the PR which main button to show.
     @Test(arguments: [
-        ("ready", #","mergeable":"MERGEABLE","merge_methods":["merge","squash"],"preferred_method":"squash""#, PullRequest.MainAction.merge(methods: ["squash", "merge"], blockedBy: nil)),
-        ("GitHub still checking", #","mergeable":"UNKNOWN""#, .merge(methods: PullRequest.allMethods, blockedBy: nil)),
-        ("on top of an open PR", #","below_number":11"#, .merge(methods: PullRequest.allMethods, blockedBy: "Merge PR #11 first")),
-        ("conflicts", #","mergeable":"CONFLICTING""#, .resolveConflicts),
-        ("conflicts before the PR under it", #","merge_state":"DIRTY","below_number":11"#, .resolveConflicts),
+        ("conflicts", DomainV2.PullRequestRuntime(checks: [.init(name: "t", state: "failed")], conflicts: true), UInt64?.none, false, "PR #12 · conflicts"),
+        ("failed check", .init(checks: [.init(name: "t", state: "failed")]), nil, false, "PR #12 · checks failed"),
+        ("stacked", .init(), 11, false, "PR #12 · merge #11 first"),
+        ("running", .init(checks: [.init(name: "a", state: "passed"), .init(name: "b", state: "running")]), nil, false, "PR #12 · waiting for checks, 1 of 2"),
+        ("auto merge", .init(), nil, true, "PR #12 · Alondra merges it when the checks pass"),
+        ("ready", .init(), nil, false, "PR #12 · ready to merge"),
     ])
-    func conflictsComeFirstAndAMergeWaitsForThePRUnderIt(what: String, extra: String, expected: PullRequest.MainAction) throws {
-        #expect(try pr(extra).mainAction == expected, "\(what)")
-    }
-
-    @Test func aDirtyMergeStateIsAConflictAndUnknownIsStillBeingChecked() throws {
-        #expect(try pr(#","mergeable":"UNKNOWN","merge_state":"DIRTY""#).hasConflicts)
-        let checking = try pr(#","mergeable":"UNKNOWN","merge_state":"UNKNOWN""#)
-        #expect(!checking.hasConflicts && checking.mergeabilityUnknown)
-        let clean = try pr(#","mergeable":"MERGEABLE","merge_state":"CLEAN""#)
-        #expect(!clean.hasConflicts && !clean.mergeabilityUnknown)
+    func progressSaysWhatHoldsThePR(what: String, runtime: DomainV2.PullRequestRuntime, below: UInt64?, mergesAlone: Bool, expected: String) {
+        #expect(runtime.progress(number: 12, stackedOn: below, mergesAlone: mergesAlone) == expected, "\(what)")
     }
 }

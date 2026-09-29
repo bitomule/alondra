@@ -31,6 +31,10 @@ struct ServicePullRequestView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
                 if let pr = store.observation { observed(pr) }
+                if let stackedOn = card.stackedOn {
+                    Label(stackedOn.stackedOnLabel, systemImage: "square.stack.3d.up")
+                        .foregroundStyle(.secondary)
+                }
                 if let url = card.webURL {
                     Link(destination: url) {
                         Label("Open on GitHub", systemImage: "arrow.up.right.square")
@@ -70,7 +74,7 @@ struct ServicePullRequestView: View {
     }
 
     @ViewBuilder
-    private func observed(_ pr: PullRequest) -> some View {
+    private func observed(_ pr: DomainV2.PullRequestRuntime) -> some View {
         if pr.hasConflicts {
             Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
                 .foregroundStyle(.orange)
@@ -78,13 +82,9 @@ struct ServicePullRequestView: View {
             Label("GitHub is checking whether it can be merged", systemImage: "clock")
                 .foregroundStyle(.secondary)
         }
-        if let stackedOn = pr.stackedOn {
-            Label(stackedOn, systemImage: "square.stack.3d.up")
-                .foregroundStyle(.secondary)
-        }
-        if let checks = pr.checks, !checks.isEmpty {
+        if !pr.checks.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(checks, id: \.self) { check in
+                ForEach(pr.checks, id: \.self) { check in
                     CheckRow(check: check)
                 }
             }
@@ -99,7 +99,7 @@ struct ServicePullRequestView: View {
     private func actions(_ card: DomainPullRequestCard) -> some View {
         CardActions {
         } trailing: {
-            if !card.hasConflicts, let reason = store.observation?.mergeBlockedReason {
+            if !card.hasConflicts, let reason = card.stackedOn?.mergeFirstLabel {
                 Text(reason)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -126,11 +126,11 @@ struct ServicePullRequestView: View {
                     .help("Its node brings the base into the branch, resolves the conflicts and pushes; the card comes back when it can be merged")
             } else if hasChanges {
                 Button("Merge…") { store.send(.pr(.presentMergeConfirmation(true))) }
-                    .disabled(store.observation?.mergeBlockedReason != nil)
+                    .disabled(card.stackedOn != nil)
             } else {
                 Button("Merge…") { store.send(.pr(.presentMergeConfirmation(true))) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(store.observation?.mergeBlockedReason != nil)
+                    .disabled(card.stackedOn != nil)
             }
         }
         .animation(.snappy(duration: 0.18), value: hasChanges)

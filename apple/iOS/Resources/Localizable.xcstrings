@@ -1824,16 +1824,6 @@
         }
       }
     },
-    "The orchestrator left it without tasks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El orquestador la dejó sin tareas"
-          }
-        }
-      }
-    },
     "This device can’t scan codes. Enter the details below.": {
       "localizations": {
         "es": {

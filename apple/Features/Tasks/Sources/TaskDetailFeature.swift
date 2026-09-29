@@ -18,6 +18,7 @@ public struct TaskDetailFeature {
         public var workspace: DomainWorkspace?
         public var actions: [DomainV2.AvailableAction] = []
         public var actionsRevision: DomainV2.Revision?
+        public var history: DomainV2.TaskHistory?
         public var isActing = false
         public var confirmation: Confirmation?
         public var mutationOutcome: TaskMutationOutcome?
@@ -51,7 +52,7 @@ public struct TaskDetailFeature {
     public enum Action: Sendable {
         case downloads(AttachmentDownloadFeature.Action)
         case taskChanged(DomainTaskDetail?, DomainWorkspace?)
-        case actionsLoaded([DomainV2.AvailableAction], DomainV2.Revision, UInt64)
+        case actionsLoaded([DomainV2.AvailableAction], DomainV2.TaskHistory?, DomainV2.Revision, UInt64)
         case cancelTapped
         case cancelConfirmationDismissed
         case cancelConfirmed
@@ -89,12 +90,14 @@ public struct TaskDetailFeature {
                 let epoch = state.presentationEpoch
                 return .run { send in
                     let actions = (try? await client.taskActions(id, workspace.epoch)) ?? []
-                    await send(.actionsLoaded(actions, revision, epoch))
+                    let history = try? await client.taskHistory(id)
+                    await send(.actionsLoaded(actions, history, revision, epoch))
                 }
                 .cancellable(id: state.effectID, cancelInFlight: true)
-            case let .actionsLoaded(actions, revision, epoch):
+            case let .actionsLoaded(actions, history, revision, epoch):
                 guard epoch == state.presentationEpoch, state.detail?.task.revision == revision else { return .none }
                 state.actions = actions
+                if let history { state.history = history }
                 state.actionsRevision = revision
                 return .none
             case .cancelTapped:
@@ -126,6 +129,7 @@ public struct TaskDetailFeature {
                 state.workspace = nil
                 state.actions = []
                 state.actionsRevision = nil
+                state.history = nil
                 state.confirmation = nil
                 state.isActing = false
                 state.mutationOutcome = nil

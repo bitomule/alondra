@@ -57,15 +57,18 @@ public struct ServiceRequest: Sendable, Equatable {
         self.body = endpoint.body
     }
 
-    /// Routes defined by the Apple client contract that the daemon adds after cutover.
+    /// The v2 daemon's routes beyond the domain (docs/domain-v2-apple-client-contracts.md).
     public static func validClientContractRoute(method: HTTPMethod, path: [String]) -> Bool {
-        guard path.starts(with: ["v2"]), path.count >= 3 else { return false }
+        guard path.starts(with: ["v2"]), path.count >= 2 else { return false }
         switch (method, Array(path.dropFirst())) {
-        case (.get, ["daemon", "runtime"]), (.get, ["domain", "search"]),
-             (.get, ["domain", "catalog", "projects"]), (.get, ["domain", "catalog", "options"]),
-             (.get, ["domain", "catalog", "issues"]), (.post, ["device", "push-binding"]):
+        case (.get, ["runtime"]), (.get, ["agents", "search"]), (.get, ["projects"]), (.get, ["options"]),
+             (.get, ["issues"]), (.post, ["requests"]), (.post, ["device", "push-binding"]), (.post, ["orchestrator", "messages"]):
             return true
-        case (.get, let rest) where rest.count == 4 && rest[0] == "daemon" && rest[3] == "activity" && rest[1] == "agents":
+        case (.get, let rest) where rest.count == 3 && rest[0] == "agents" && rest[2] == "activity":
+            return true
+        case (.post, let rest) where rest.count == 3 && rest[0] == "agents" && ["messages", "close"].contains(rest[2]):
+            return true
+        case (.get, let rest) where rest.count == 3 && rest[0] == "tasks" && rest[2] == "history":
             return true
         case (.get, ["files", "chunk"]):
             return true

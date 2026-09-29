@@ -28,6 +28,12 @@ extension CloudAppServices {
                 let text = try await self.api.domainDocumentContent(id, expectedDigest: digest)
                 try await self.checkActive()
                 return text
+            },
+            taskHistory: { id in
+                try await self.checkActive()
+                let history = try await self.api.domainTaskHistory(id)
+                try await self.checkActive()
+                return history
             })
     }
 
@@ -55,6 +61,9 @@ extension CloudAppServices {
         guard (try? checkActive()) != nil else { return .obsolete }
         if let pending = unresolved[commandID] { return await send(pending) }
         do {
+            if let route = try ClientRoute.route(for: intent, in: workspace, newID: { "request-\(commandID)" }) {
+                return await send(route, in: workspace, commandID: commandID)
+            }
             return await send(try DomainCommandFactory().envelope(for: intent, in: workspace, taskActions: taskActions,
                                                                   commandID: commandID))
         } catch {

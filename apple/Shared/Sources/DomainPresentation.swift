@@ -51,6 +51,14 @@ extension DomainCommandRejection {
     public var localizedMessage: String { errorCode?.localizedMessage ?? message }
 }
 
+extension Node {
+    /// The session's last message, shown with a question for context; a raw tool call says nothing.
+    public var lastSaid: String? {
+        guard let text = lastMessage?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty, !text.hasPrefix("mcp__") else { return nil }
+        return text
+    }
+}
+
 extension DomainWorkspace {
     /// Who the item comes from, when for, and the request behind it: display only.
     public func agentName(of item: DomainV2.InboxItem) -> String? {
@@ -58,8 +66,13 @@ extension DomainWorkspace {
     }
 
     public func createdAt(of item: DomainV2.InboxItem) -> Int64? {
-        guard case .interaction(let id) = item.subject else { return nil }
-        return runtime?.createdAt(id)
+        runtime?.inboxTime(item.id)
+    }
+
+    /// Tasks with a pending action request: the user's turn to do something outside Alondra.
+    public var yourTurnTasks: Set<DomainV2.TaskId> {
+        func flatten(_ items: [DomainV2.InboxItem]) -> [DomainV2.InboxItem] { items.flatMap { [$0] + flatten($0.children) } }
+        return Set(flatten(roots).filter { $0.kind == "action_request" && $0.pending }.compactMap(\.taskId))
     }
 
     public func mission(of item: DomainV2.InboxItem) -> String? {

@@ -88,7 +88,7 @@ private actor SectionServer: DomainSyncTransport {
         return try await withCheckedThrowingContinuation { pendingChanges[index] = $0 }
     }
 
-    func domainRuntime(epoch: DomainV2.DataEpoch) async throws -> DomainV2.Runtime {
+    func domainRuntime() async throws -> DomainV2.Runtime {
         throw DomainV2.DomainError(code: "not_found", message: "not served", currentRevision: nil, subject: nil)
     }
 
