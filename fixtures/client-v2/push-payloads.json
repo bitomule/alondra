@@ -1,0 +1,10 @@
+{
+  "data_epoch": "epoch-1",
+  "cases": [
+    {"interaction": "question", "payload": {"aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra"}, "sound": "default"}, "alondra": {"protocol_version": 2, "data_epoch": "epoch-1", "kind": "question", "item_id": "interaction:i-question", "interaction_id": "i-question"}}},
+    {"interaction": "action_request", "payload": {"aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra"}, "sound": "default"}, "alondra": {"protocol_version": 2, "data_epoch": "epoch-1", "kind": "action_request", "item_id": "interaction:i-action_request", "interaction_id": "i-action_request"}}},
+    {"interaction": "information", "payload": {"aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra"}, "sound": "default"}, "alondra": {"protocol_version": 2, "data_epoch": "epoch-1", "kind": "information", "item_id": "interaction:i-information", "interaction_id": "i-information"}}},
+    {"interaction": "delivery_text", "payload": {"aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra"}, "sound": "default"}, "alondra": {"protocol_version": 2, "data_epoch": "epoch-1", "kind": "delivery", "item_id": "interaction:i-delivery_text", "interaction_id": "i-delivery_text"}}},
+    {"interaction": "delivery_pull_request", "payload": {"aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra"}, "sound": "default"}, "alondra": {"protocol_version": 2, "data_epoch": "epoch-1", "kind": "delivery", "item_id": "interaction:i-delivery_pull_request", "interaction_id": "i-delivery_pull_request"}}}
+  ]
+}

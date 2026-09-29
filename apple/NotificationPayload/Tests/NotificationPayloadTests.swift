@@ -121,4 +121,24 @@ final class NotificationPayloadTests: XCTestCase {
     private func payload(_ json: String) throws -> [AnyHashable: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }
+
+    func testEveryPushTheDaemonSendsIsRouted() throws {
+        let env = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: env["TEST_SRCDIR"] ?? "").appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/client-v2/push-payloads.json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let cases = try XCTUnwrap(fixture["cases"] as? [[String: Any]])
+        let binding = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        XCTAssertEqual(cases.count, 5)
+        for entry in cases {
+            var push = try XCTUnwrap(entry["payload"] as? [String: Any])
+            var alondra = try XCTUnwrap(push["alondra"] as? [String: Any])
+            alondra["push_binding"] = binding
+            push["alondra"] = alondra
+            let bound = try XCTUnwrap(NotificationPayload.BoundItem(userInfo: push), "\(entry["interaction"] ?? "")")
+            XCTAssertEqual(bound.item.inboxID, alondra["item_id"] as? String)
+            XCTAssertEqual(bound.item.kind.rawValue, alondra["kind"] as? String)
+            XCTAssertEqual(bound.item.epoch, fixture["data_epoch"] as? String)
+        }
+    }
 }
