@@ -47,6 +47,8 @@ fn user(actor: &Actor) -> Result<String> {
         _ => fail("forbidden", "User decision required"),
     }
 }
+/// Who authorized a merge the daemon makes because the user asked for auto-merge.
+pub const AUTO_MERGE_USER: &str = "alondra:auto-merge";
 fn system(actor: &Actor) -> Result<()> {
     if matches!(actor, Actor::System) {
         Ok(())
@@ -1653,7 +1655,12 @@ impl DomainState {
                 expected_head,
                 method,
             } => {
-                let u = user(actor)?;
+                // The daemon authorizes the merge itself only for a Request the user asked
+                // to auto-merge; the choice was the user's.
+                let u = match actor {
+                    Actor::System => AUTO_MERGE_USER.to_owned(),
+                    _ => user(actor)?,
+                };
                 id(&authorization_id.0)?;
                 let (_, t, targets) = self.presentation(presentation_id)?;
                 if !targets.contains(&DeliveryTarget::PullRequest {
@@ -1741,7 +1748,14 @@ impl DomainState {
                     .get(authorization_id)
                     .ok_or_else(|| DomainError::new("not_found", "Authorization missing"))?
                     .clone();
-                self.assigned(actor, &a.task_id)?;
+                match actor {
+                    Actor::System if a.user_id == AUTO_MERGE_USER => {
+                        self.active(&a.task_id)?;
+                    }
+                    _ => {
+                        self.assigned(actor, &a.task_id)?;
+                    }
+                }
                 self.presentation(&a.presentation_id)?;
                 if !a.valid {
                     return fail("acceptance_stale", "Authorization was invalidated");

@@ -527,27 +527,29 @@ kind = \"toggle\"
 ";
 
 #[tokio::test]
-async fn options_offer_effort_and_the_users_own_and_never_auto_merge() {
+async fn options_offer_pr_handling_effort_and_the_users_own() {
     let fixture = Fixture::start().await;
     let expected = fixture_json("requests.json");
     let request = &expected["options"];
     let bare = fixture.get_json("/v2/options").await;
-    assert_eq!(bare["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(), ["effort"], "without an options file only effort is offered");
+    assert_eq!(bare["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(), ["pr", "effort"], "without an options file the built-in PR handling and effort are offered");
     let shipped = fixture.get_json(request["path"].as_str().unwrap()).await;
     assert_covers(&request["response"], &shipped, "options");
-    assert_eq!(shipped["options"][0]["default"], "auto");
+    assert_eq!((shipped["options"][0]["default"].as_str(), shipped["options"][1]["default"].as_str()), (Some("review"), Some("auto")));
 
     write_options(&fixture, &format!("[defaults]\npr = \"auto_merge\"\n{USER_OPTION}"));
     let app = fixture.get_json("/v2/options?project=App").await;
     let ids = |value: &Value| value["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
-    assert_eq!(ids(&app), ["effort", "tests"], "no PR handling, whatever the file defaults say: {app}");
-    assert_eq!(ids(&fixture.get_json("/v2/options?project=Web").await), ["effort", "tests", "deploy"], "a project's own options come with it");
+    assert_eq!(ids(&app), ["pr", "effort", "tests"], "{app}");
+    let pr = app["options"].as_array().unwrap().iter().find(|o| o["id"] == "pr").unwrap();
+    assert_eq!(pr["default"], "auto_merge", "the file's default for PR handling is offered as 8ccd131 did");
+    assert!(pr["values"].as_array().unwrap().iter().any(|v| v["id"] == "auto_merge"));
+    assert_eq!(ids(&fixture.get_json("/v2/options?project=Web").await), ["pr", "effort", "tests", "deploy"], "a project's own options come with it");
     assert_eq!(fixture.get_json("/v2/options?project=Web").await["project"], "Web");
-    assert!(app["options"].as_array().unwrap().iter().all(|o| o["values"].as_array().unwrap().iter().all(|v| v["id"] != "auto_merge")));
 
     std::fs::write(alondra_core::options::path_in(&fixture.home), "this is [not toml").unwrap();
     let broken = fixture.get_json("/v2/options?project=App").await;
-    assert_eq!(ids(&broken), ["effort", "tests"], "a broken file keeps the last good options in use");
+    assert_eq!(ids(&broken), ["pr", "effort", "tests"], "a broken file keeps the last good options in use");
     assert!(broken["error"].as_str().is_some_and(|error| error.contains("options.toml")), "and says why: {broken}");
     assert_eq!(fixture.unsigned_get("/v2/options").await, StatusCode::FORBIDDEN);
 }
@@ -608,7 +610,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
     assert_eq!((launch.project.as_deref(), launch.issue.as_deref()), (Some("App"), Some("me/App#3")));
     assert_eq!((launch.options.effort.as_str(), launch.options.flags.model.as_deref(), launch.options.auto_merge), ("hard", Some("opus"), false));
     assert!(launch.options.picked.iter().any(|p| p.id == "tests"), "the user's option is resolved with the rest");
-    assert!(launch.options.picked.iter().all(|p| p.id != "pr"), "there is no PR handling to pick");
+    assert!(launch.options.picked.iter().any(|p| p.id == "pr" && p.value_label == "review each PR"), "PR handling is kept with the rest");
     assert!(launch.issue_text.as_deref().is_some_and(|text| text.contains("Crash on launch") && text.contains("It crashes when the app opens.")), "{:?}", launch.issue_text);
     assert_eq!(launch.attachments, serde_json::from_value::<Vec<AttachmentRef>>(request["body"]["attachments"].clone()).unwrap());
 
@@ -667,8 +669,6 @@ async fn a_new_request_is_refused_whole_and_leaves_nothing_behind() {
         let fixture = &fixture;
         async move { fixture.send("POST", "/v2/requests", &body).await }
     };
-    let (status, error) = send(json!({"options": {"pr": "auto_merge"}})).await;
-    assert_eq!((status, error["error"].as_str()), (StatusCode::BAD_REQUEST, Some("unknown option pr")), "auto-merge is not offered any more");
     let (status, error) = send(json!({"options": {"effort": "extreme"}})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
     let (status, error) = send(json!({"issue": "not an issue"})).await;

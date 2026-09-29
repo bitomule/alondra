@@ -3989,7 +3989,7 @@ agreement_key = "{}"
             assert!(approved_method(&LocalRequest { method: "GET".into(), path: path.into(), body: None }).is_ok(), "{path} is relayed");
         }
         let options = service.dispatch("phone-a", &read("/v2/options")).await.unwrap();
-        assert_eq!((options["status"].as_i64(), options["body"]["options"][0]["id"].as_str()), (Some(200), Some("effort")));
+        assert_eq!((options["status"].as_i64(), options["body"]["options"][0]["id"].as_str()), (Some(200), Some("pr")));
         assert_eq!(service.dispatch("phone-a", &read("/v2/projects")).await.unwrap()["status"], 200);
         assert!(service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/requests".into(), body: Some(json!({})) }));
         let new_request = Work {
