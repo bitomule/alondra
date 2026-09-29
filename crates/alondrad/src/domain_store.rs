@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 6;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
@@ -526,9 +526,6 @@ impl DomainStore {
                         Some(interaction_id.0.as_str()),
                         "A domain interaction requires your response.",
                     ),
-                    DomainEffect::TellOrchestrator { message } => {
-                        ("orchestrator", None, None, None, message.as_str())
-                    }
                 };
                 repository::exec(&tx, "INSERT INTO domain_messages(revision,ordinal,recipient_kind,agent_id,task_id,interaction_id,message) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![outcome.revision as i64,index as i64,kind,agent,task,interaction,message])?;
                 if matches!(effect, DomainEffect::NotifyUser { .. }) {
@@ -599,17 +596,6 @@ pub(crate) struct DeliveryClaim {
     pub message: OutboxMessage,
 }
 impl DomainStore {
-    /// The outbox messages a commit produced, in the order its effects were written.
-    pub(crate) fn outbox_ids(&self, revision: u64) -> Result<Vec<i64>> {
-        let mut query = self.conn.prepare("SELECT id FROM domain_messages WHERE revision=?1 ORDER BY ordinal")?;
-        let ids = query.query_map([revision as i64], |row| row.get(0))?.collect::<rusqlite::Result<_>>()?;
-        Ok(ids)
-    }
-    /// What the latest delivery attempt of one message says, once there is one.
-    pub(crate) fn delivery_state(&self, message_id: i64) -> Result<Option<String>> {
-        Ok(self.conn.query_row("SELECT state FROM delivery_attempts WHERE message_id=?1 ORDER BY id DESC LIMIT 1",
-            [message_id], |row| row.get(0)).optional()?)
-    }
     pub(crate) fn pending_messages(&self) -> Result<Vec<OutboxMessage>> {
         let mut q=self.conn.prepare("SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,m.agent_id,m.task_id,m.interaction_id,m.message,o.state FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id LEFT JOIN domain_message_user_targets u ON u.message_id=m.id WHERE o.state IN('pending','retryable') ORDER BY m.id")?;
         Ok(q.query_map([], |r| {

@@ -331,7 +331,7 @@ impl Service {
                     || self.require_device_approval(&envelope.sender, device))?
             } else if let Some(route) = crate::v2_client_routes::parse_write(&request.path).filter(|_| crate::v2_client_routes::atomic_write_path(&request.path)) {
                 let routes = self.routes.as_ref().context("client routes unavailable")?;
-                let body = request.body.as_ref().context("message body required")?;
+                let body = request.body.as_ref().context("request body required")?;
                 let identity = (envelope.sender.as_str(), envelope.request_id.as_str(), digest);
                 routes.write(&format!("device:{}", envelope.sender), route, body, Some(identity),
                     &|| self.require_device_approval(&envelope.sender, device)).await?.into_value()
@@ -3828,38 +3828,15 @@ agreement_key = "{}"
         for (index, path) in ["/v2/nothing", "/v2/runtime?x=1", "/v2/agents/agent-a/nothing"].into_iter().enumerate() {
             assert!(service.prepare_work(&sealed(&format!("refused-{index}"), path)).is_err(), "{path} is refused");
         }
-        let post = |request_id: &str, path: &str, body: Value| Work {
-            request_id: request_id.into(),
-            envelope: EnvelopeV1::seal_random(EnvelopeContext {
-                route: "mac-1", sender: "phone-a", recipient: "mac-1", request_id,
-                kind: "request", expires_at_ms: now_ms() + 60_000,
-            }, serde_json::to_vec(&json!({"method":"POST","path":path,"body":body})).unwrap().as_slice(),
-            &phone_signing, &service.agreement.public_key()).unwrap(),
-        };
-        assert!(service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/messages".into(), body: Some(json!({})) }));
-        assert!(!service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/close".into(), body: Some(json!({})) }));
-        let message = post("message-1", "/v2/agents/agent-a/messages", json!({"text": "Hello", "attachments": []}));
-        let prepared = service.prepare_work(&message).unwrap().unwrap();
-        service.journal.accept("phone-a", "message-1", &prepared.digest).unwrap();
-        service.journal.executing_local("phone-a", "message-1", &prepared.digest).unwrap();
-        let device = service.devices.get("phone-a").unwrap();
-        let bytes = service.execute_atomic_local(&message.envelope, device, &prepared.request, &prepared.digest).await.unwrap();
-        let sealed_answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
-        let answer: Value = serde_json::from_slice(&sealed_answer.open(service.signing.verifying_key(), &phone_agreement,
-            "mac-1", "phone-a", "mac-1", now_ms()).unwrap()).unwrap();
-        assert_eq!(answer["status"], 200, "{answer}");
-        assert!(answer["body"]["message_id"].as_i64().unwrap() > 0);
-        assert_eq!(domain.state().unwrap().messages.len(), 1, "the message was written as the paired phone");
-        assert_eq!(domain.state().unwrap().messages.values().next().unwrap().body, "Hello");
+        assert!(!service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/close".into(), body: Some(json!({})) }),
+            "closing a session is journaled as uncertain when it is interrupted, never replayed");
         let closed = service.dispatch("phone-a", &LocalRequest { method: "POST".into(), path: "/v2/agents/nobody/close".into(), body: Some(json!({"force": true})) }).await.unwrap();
         assert_eq!((closed["status"].as_i64(), closed["body"]["code"].as_str()), (Some(404), Some("not_found")));
-        let recovery = service.dispatch("phone-a", &LocalRequest { method: "POST".into(), path: "/v2/orchestrator/retry".into(), body: Some(json!({"run_id": "run-1"})) }).await.unwrap();
-        assert_eq!(recovery["body"]["code"], "orchestrator_unavailable");
-        for (index, (method, path)) in [("POST", "/v2/agents/agent-a/messages/extra"), ("PUT", "/v2/agents/agent-a/messages"), ("DELETE", "/v2/agents/agent-a/close")].into_iter().enumerate() {
+        for (index, (method, path)) in [("POST", "/v2/agents/agent-a/close/extra"), ("PUT", "/v2/agents/agent-a/close"), ("DELETE", "/v2/agents/agent-a/close")].into_iter().enumerate() {
             let request = LocalRequest { method: method.into(), path: path.into(), body: Some(json!({})) };
             assert!(approved_method(&request).is_err(), "{method} {path} is not a relayed operation ({index})");
         }
-        assert!(approved_method(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/messages".into(), body: None }).is_err(), "a write needs its body");
+        assert!(approved_method(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/close".into(), body: None }).is_err(), "a write needs its body");
 
         let bytes: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
         let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
@@ -3914,10 +3891,18 @@ agreement_key = "{}"
         assert_eq!((options["status"].as_i64(), options["body"]["options"][0]["id"].as_str()), (Some(200), Some("effort")));
         assert_eq!(service.dispatch("phone-a", &read("/v2/projects")).await.unwrap()["status"], 200);
         assert!(service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/requests".into(), body: Some(json!({})) }));
-        let new_request = post("request-1", "/v2/requests", json!({"request_id": "request-9", "text": "Ship it", "options": {"effort": "hard"}, "attachments": []}));
+        let new_request = Work {
+            request_id: "request-1".into(),
+            envelope: EnvelopeV1::seal_random(EnvelopeContext {
+                route: "mac-1", sender: "phone-a", recipient: "mac-1", request_id: "request-1",
+                kind: "request", expires_at_ms: now_ms() + 60_000,
+            }, serde_json::to_vec(&json!({"method":"POST","path":"/v2/requests","body":{"request_id": "request-9", "text": "Ship it", "options": {"effort": "hard"}, "attachments": []}})).unwrap().as_slice(),
+            &phone_signing, &service.agreement.public_key()).unwrap(),
+        };
         let prepared = service.prepare_work(&new_request).unwrap().unwrap();
         service.journal.accept("phone-a", "request-1", &prepared.digest).unwrap();
         service.journal.executing_local("phone-a", "request-1", &prepared.digest).unwrap();
+        let device = service.devices.get("phone-a").unwrap();
         let bytes = service.execute_atomic_local(&new_request.envelope, device, &prepared.request, &prepared.digest).await.unwrap();
         let sealed_answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
         let answer: Value = serde_json::from_slice(&sealed_answer.open(service.signing.verifying_key(), &phone_agreement,
@@ -3925,9 +3910,8 @@ agreement_key = "{}"
         assert_eq!((answer["status"].as_i64(), answer["body"]["created_ids"].clone()), (Some(200), json!(["request-9"])), "{answer}");
         assert_eq!(domain.request_launch(&"request-9".into()).unwrap().unwrap().options.effort, "hard", "the phone's choices are kept with its request");
 
-        let message = json!({"text": "See the shot", "attachments": [attachment]});
-        let sent = service.routes.as_ref().unwrap().write("device:phone-a", crate::v2_client_routes::Write::AgentMessage("agent-a".into()), &message, None, &|| Ok(())).await.unwrap();
-        assert_eq!(sent.status, StatusCode::OK, "the reference a relay upload returns is one a command accepts: {}", sent.body);
+        let aside = service.dispatch("phone-a", &LocalRequest { method: "POST".into(), path: "/v2/pull-requests/nothing/set-aside".into(), body: Some(json!({})) }).await.unwrap();
+        assert_eq!(aside["body"]["code"], "not_found", "setting aside is relayed and answered by the daemon");
         auth.revoke("phone-a").unwrap();
         assert!(service.dispatch("phone-a", &read("/v2/runtime")).await.is_err(), "a revoked phone reads nothing");
         drop(service);
