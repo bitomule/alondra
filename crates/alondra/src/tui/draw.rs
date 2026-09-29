@@ -609,7 +609,7 @@ fn action_lines(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>>
             out.push(fit(hint("1", tr!("resolve conflicts (its agent does it)", "resolver conflictos (lo hace su agente)").into()), width));
         }
         out.push(fit(
-            [hint("d", tr!("diff and comment (tuicr)", "diff y comentarios (tuicr)").into()), hint("r", tr!("request changes", "pedir cambios").into()), hint("p", tr!("ask", "preguntar").into()), hint("x", tr!("set aside", "apartar").into())].concat(),
+            [hint("d", tr!("diff and comment (tuicr)", "diff y comentarios (tuicr)").into()), hint("r", tr!("request changes", "pedir cambios").into()), hint("p", tr!("ask", "preguntar").into())].concat(),
             width,
         ));
     }
@@ -1267,7 +1267,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                         if app.item_pr(item).is_some_and(|p| app.conflicts(&p.id)) {
                             v.push(k("1", tr!("resolve conflicts", "resolver conflictos")));
                         }
-                        v.extend([k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("p", tr!("ask", "preguntar")), k("w", "GitHub"), k("x", tr!("set aside", "apartar"))]);
+                        v.extend([k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("p", tr!("ask", "preguntar")), k("w", "GitHub")]);
                     }
                     _ => {}
                 }
@@ -1352,7 +1352,7 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
         row("p", tr!("ask the PR's agent about it", "preguntar al agente del PR")),
         row("v", tr!("accept a delivery (the agent still finishes the task) · elsewhere: open its images and files", "aceptar una entrega (el agente sigue siendo quien termina la tarea) · en lo demás: abrir sus imágenes y ficheros")),
-        row("x", tr!("mark information read; nothing is sent to the agent · on a PR: set it aside", "marcar información leída; no se envía nada al agente · en un PR: apartarlo")),
+        row("x", tr!("mark information read; nothing is sent to the agent", "marcar información leída; no se envía nada al agente")),
         row("d · w", tr!("the PR in tuicr on its clone (its diff here otherwise) · the PR on GitHub", "el PR en tuicr sobre su copia (si no, su diff aquí) · el PR en GitHub")),
         row("Shift+J/Shift+K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the agent's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del agente (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),

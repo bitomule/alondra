@@ -3,7 +3,7 @@ CREATE TABLE domain_meta (
  revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991),
  orchestrator_generation INTEGER NOT NULL CHECK(orchestrator_generation>=0)
 );
-CREATE TABLE requests (id TEXT PRIMARY KEY CHECK(length(id)>0), body TEXT NOT NULL, closed INTEGER NOT NULL CHECK(closed IN(0,1)));
+CREATE TABLE requests (id TEXT PRIMARY KEY CHECK(length(id)>0), body TEXT NOT NULL, closed INTEGER NOT NULL CHECK(closed IN(0,1)), created_at INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE agents (id TEXT PRIMARY KEY CHECK(length(id)>0), name TEXT NOT NULL, connected INTEGER NOT NULL CHECK(connected IN(0,1)));
 CREATE TABLE tasks (
  id TEXT PRIMARY KEY CHECK(length(id)>0), request_id TEXT NOT NULL REFERENCES requests(id), agent_id TEXT REFERENCES agents(id), title TEXT NOT NULL,
@@ -59,7 +59,7 @@ CREATE TABLE task_stacks(task_id TEXT PRIMARY KEY REFERENCES tasks(id),upstream_
 CREATE TABLE stack_readiness(task_id TEXT PRIMARY KEY,presentation_id TEXT NOT NULL,pr_id TEXT NOT NULL,head TEXT NOT NULL,ready INTEGER NOT NULL CHECK(ready IN(0,1)),FOREIGN KEY(task_id,presentation_id) REFERENCES interactions(task_id,id),FOREIGN KEY(task_id,pr_id) REFERENCES pull_requests(task_id,id));
 CREATE TABLE semantic_receipts(actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),result TEXT NOT NULL CHECK(json_valid(result)),PRIMARY KEY(actor,command_id,data_epoch));
 CREATE TABLE local_command_results(sender TEXT NOT NULL,request_id TEXT NOT NULL,digest BLOB NOT NULL CHECK(length(digest)=32),result TEXT NOT NULL CHECK(json_valid(result)),PRIMARY KEY(sender,request_id));
-CREATE TABLE command_audit(revision INTEGER PRIMARY KEY,actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,command TEXT NOT NULL CHECK(json_valid(command)),FOREIGN KEY(actor,command_id,data_epoch) REFERENCES semantic_receipts(actor,command_id,data_epoch) DEFERRABLE INITIALLY DEFERRED);
+CREATE TABLE command_audit(revision INTEGER PRIMARY KEY,actor TEXT NOT NULL,command_id TEXT NOT NULL,data_epoch TEXT NOT NULL,command TEXT NOT NULL CHECK(json_valid(command)),at INTEGER NOT NULL,FOREIGN KEY(actor,command_id,data_epoch) REFERENCES semantic_receipts(actor,command_id,data_epoch) DEFERRABLE INITIALLY DEFERRED);
 CREATE TABLE domain_messages(id INTEGER PRIMARY KEY,revision INTEGER NOT NULL REFERENCES command_audit(revision),ordinal INTEGER NOT NULL,recipient_kind TEXT NOT NULL CHECK(recipient_kind IN('agent','orchestrator')),agent_id TEXT REFERENCES agents(id),task_id TEXT REFERENCES tasks(id),interaction_id TEXT REFERENCES interactions(id),message TEXT NOT NULL,UNIQUE(revision,ordinal),CHECK((recipient_kind='agent' AND agent_id IS NOT NULL) OR (recipient_kind='orchestrator' AND agent_id IS NULL)));
 CREATE TABLE domain_message_user_targets(message_id INTEGER PRIMARY KEY REFERENCES domain_messages(id));
 CREATE TABLE delivery_attempts(id INTEGER PRIMARY KEY,message_id INTEGER NOT NULL REFERENCES domain_messages(id),state TEXT NOT NULL CHECK(state IN('dispatching','uncertain','handed','retryable','discarded')),version INTEGER NOT NULL CHECK(version BETWEEN 1 AND 9007199254740991),reason TEXT);
@@ -201,3 +201,31 @@ CREATE TRIGGER retain_legacy_schedule_receipt BEFORE DELETE ON legacy_schedule_r
 CREATE TABLE schedule_failed_launches (
  request_id TEXT PRIMARY KEY REFERENCES requests(id)
 );
+
+-- When each Task entered each state, stamped with the commit that did it.
+CREATE TABLE task_history (
+ revision INTEGER NOT NULL REFERENCES command_audit(revision),
+ task_id TEXT NOT NULL REFERENCES tasks(id),
+ state TEXT NOT NULL,
+ summary TEXT NOT NULL,
+ PRIMARY KEY(revision,task_id)
+);
+CREATE TRIGGER immutable_task_history BEFORE UPDATE ON task_history
+ BEGIN SELECT RAISE(ABORT,'task history is immutable'); END;
+CREATE TRIGGER retain_task_history BEFORE DELETE ON task_history
+ BEGIN SELECT RAISE(ABORT,'task history is retained'); END;
+
+-- What the user chose when asking for new work: the project, the options resolved at that
+-- moment, the issue it comes from and the files attached. Written with the Request.
+CREATE TABLE request_launch (
+ request_id TEXT PRIMARY KEY REFERENCES requests(id),
+ project TEXT CHECK(project IS NULL OR length(trim(project))>0),
+ options TEXT NOT NULL CHECK(json_valid(options) AND json_type(options)='object'),
+ issue TEXT,
+ issue_text TEXT,
+ attachments TEXT NOT NULL CHECK(json_valid(attachments) AND json_type(attachments)='array')
+);
+CREATE TRIGGER immutable_request_launch BEFORE UPDATE ON request_launch
+ BEGIN SELECT RAISE(ABORT,'request launch is immutable'); END;
+CREATE TRIGGER retain_request_launch BEFORE DELETE ON request_launch
+ BEGIN SELECT RAISE(ABORT,'request launch is retained'); END;

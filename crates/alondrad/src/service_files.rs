@@ -83,6 +83,14 @@ fn upload_id(sender: &str, id: &str) -> String {
 }
 impl Transfers {
     pub fn dispatch(&self, home: &Path, sender: &str, route: &str, body: Value) -> Result<Value> {
+        let renamed;
+        let route = match route.strip_prefix("/v2/domain/uploads/") {
+            Some(step) => {
+                renamed = format!("/v1/service/uploads/{step}");
+                renamed.as_str()
+            }
+            None => route,
+        };
         if route == "/v1/service/files/chunk" {
             return download(home, serde_json::from_value(body)?);
         }
@@ -238,6 +246,19 @@ impl Transfers {
         Ok(result)
     }
 }
+impl Transfers {
+    /// A step of an upload as the v2 routes name it. What `finish` answers is the attachment
+    /// a v2 command carries.
+    pub fn dispatch_v2(&self, home: &Path, sender: &str, route: &str, body: Value) -> Result<Value> {
+        let finished = self.dispatch(home, sender, route, body)?;
+        let (Some(id), Some(name), Some(stored)) = (finished.get("id").and_then(Value::as_str),
+            finished.get("name").and_then(Value::as_str), finished.get("path").and_then(Value::as_str)) else {
+            return Ok(finished);
+        };
+        let attachment = attachment_ref(home, id.to_owned(), name.to_owned(), Path::new(stored))?;
+        Ok(json!({"attachment": attachment}))
+    }
+}
 pub fn error_code(error: &anyhow::Error) -> &'static str {
     match error.to_string().as_str() {
         "transfer expired or missing; restart upload" => "attachment_transfer_unknown",
@@ -264,6 +285,43 @@ fn ledger(home: &Path) -> Result<rusqlite::Connection> {
 }
 pub(crate) fn read_verified_domain_chunk(home: &Path, reference: &str, digest: &str,
     offset: u64, version: Option<String>) -> Result<Value> {
+    read_chunk(home, reference, Some(digest), offset, version).map(|(chunk, _)| chunk)
+}
+
+/// A chunk of a stored copy with the digest of the whole file, which the daemon computes.
+pub(crate) fn read_stored_chunk(home: &Path, reference: &str, offset: u64, version: Option<String>) -> Result<Value> {
+    let (mut chunk, digest) = read_chunk(home, reference, None, offset, version)?;
+    chunk["content_digest"] = json!(digest);
+    Ok(chunk)
+}
+
+/// The attachment a v2 command carries, for a file the daemon stored: its digest is
+/// computed from the stored copy and its reference is relative to this HOME.
+pub(crate) fn attachment_ref(home: &Path, id: String, name: String, stored: &Path) -> Result<alondra_core::domain_v2::AttachmentRef> {
+    let mut file = open_stored_file(home, stored)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0u8; 64 * 1024];
+    let mut total = 0u64;
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        hasher.update(&buffer[..count]);
+        total += count as u64;
+    }
+    let reference = stored.strip_prefix(home).unwrap_or(stored);
+    Ok(alondra_core::domain_v2::AttachmentRef {
+        id,
+        name,
+        content_digest: hex_digest(hasher.finalize().as_slice()),
+        content_reference: reference.to_string_lossy().into_owned(),
+        bytes: total,
+    })
+}
+
+fn read_chunk(home: &Path, reference: &str, expected: Option<&str>,
+    offset: u64, version: Option<String>) -> Result<(Value, String)> {
     let path = Path::new(reference);
     let path = if path.is_absolute() { path.to_path_buf() } else { home.join(path) };
     let mut file = open_stored_file(home, &path)?;
@@ -291,13 +349,14 @@ pub(crate) fn read_verified_domain_chunk(home: &Path, reference: &str, digest: &
         position = segment_end;
         ensure!(position <= crate::uploads::MAX_UPLOAD_BYTES as u64, "stored document too large");
     }
-    ensure!(position == metadata.len() && hex_digest(hash.finalize().as_slice()) == digest,
+    let actual = hex_digest(hash.finalize().as_slice());
+    ensure!(position == metadata.len() && expected.is_none_or(|digest| actual == digest),
         "stored document digest does not match revision");
     let after = file.metadata()?;
     ensure!(file_version(&after) == current_version, "file changed during read");
     let next = offset + bytes.len() as u64;
-    Ok(json!({"version":current_version,"data":URL_SAFE_NO_PAD.encode(bytes),
-        "offset":offset,"total":metadata.len(),"next_offset":next,"eof":next==metadata.len()}))
+    Ok((json!({"version":current_version,"data":URL_SAFE_NO_PAD.encode(bytes),
+        "offset":offset,"total":metadata.len(),"next_offset":next,"eof":next==metadata.len()}), actual))
 }
 
 fn hex_digest(bytes: &[u8]) -> String {

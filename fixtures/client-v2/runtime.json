@@ -25,7 +25,7 @@
     "request-2": {"created_at": 1000, "withdrawn": false, "answer": "Nothing to change: it already works"}
   },
   "pull_requests": {
-    "pr-1": {"title": "Editor covers readable text", "checks": [{"name": "build", "state": "passed"}, {"name": "ui tests", "state": "failed"}], "conflicts": true, "mergeability_unknown": false, "set_aside": false}
+    "pr-1": {"title": "Editor covers readable text", "checks": [{"name": "build", "state": "passed"}, {"name": "ui tests", "state": "failed"}], "conflicts": true, "mergeability_unknown": false}
   },
   "inbox_times": {"interaction:info-1": 1000}
 }

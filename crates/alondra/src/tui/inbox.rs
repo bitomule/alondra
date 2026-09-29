@@ -218,10 +218,7 @@ impl App {
             KeyCode::Char('c') => self.more_context(&key),
             KeyCode::Char('p') => self.ask_about_pr(&key),
             KeyCode::Char('v') => self.accept_or_open(&key),
-            KeyCode::Char('x') => match pr_root {
-                Some(pr) => self.set_aside(&key, &pr),
-                None => self.mark_read(&key),
-            },
+            KeyCode::Char('x') if pr_root.is_none() => self.mark_read(&key),
             KeyCode::Char('w') => match self.item(&key).and_then(|i| self.item_pr(i)).map(pr_url) {
                 Some(url) => super::open_with_mac(&url),
                 None => self.fail(tr!("There is no PR here", "Aquí no hay PR")),
@@ -436,13 +433,6 @@ impl App {
         m.attachments = attachments;
         let name = self.pull_request(pr).and_then(|p| self.task(&p.task_id)).map(|t| self.agent_name(t.agent_id.as_ref())).unwrap_or_default();
         self.message(Some(key.clone()), m, trf!("Changes requested from {name}", "Cambios pedidos a {name}"));
-    }
-
-    fn set_aside(&mut self, key: &Key, pr: &PrId) {
-        let number = self.pull_request(pr).map_or(0, |p| p.number);
-        let (path, body) = ops::set_aside(pr);
-        self.op(Some(key.clone()), path, body, trf!("PR #{number} set aside", "PR #{number} apartado"));
-        self.hide(key.clone());
     }
 
     fn resolve_conflicts(&mut self, key: &Key, pr: &PrId) {
