@@ -107,6 +107,10 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/orchestrator/interrupt", post(orchestrator_interrupt))
         .route("/v2/orchestrator/machine", get(orchestrator_machine))
         .route("/v2/orchestrator/schedules", post(orchestrator_schedule))
+        .route("/v2/orchestrator/fleet", get(orchestrator_fleet))
+        .route("/v2/orchestrator/node", get(orchestrator_node))
+        .route("/v2/orchestrator/candidates", get(orchestrator_candidates))
+        .route("/v2/agents/waiting-machine", post(agent_waiting_machine))
         .route("/v1", axum::routing::any(legacy_protocol))
         .route("/v1/{*rest}", axum::routing::any(legacy_protocol))
         .merge(crate::domain_api::routes())
@@ -319,6 +323,72 @@ async fn orchestrator_schedule(State(state): State<Arc<V2Only>>, ConnectInfo(pee
     }
 }
 
+fn gauges_json(state: &V2Only) -> (Value, Value) {
+    match &*state.gauges.lock().expect("machine gauges poisoned") {
+        Some((machine, usage)) => (json!(machine), json!(usage)),
+        None => (Value::Null, Value::Null),
+    }
+}
+
+async fn orchestrator_fleet(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    let (machine, usage) = gauges_json(&state);
+    tool_answer(crate::domain_orchestrator_reads::fleet(&state.domain, machine, usage))
+}
+
+#[derive(Deserialize)]
+struct NodeQuery {
+    node: String,
+}
+
+async fn orchestrator_node(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    Query(query): Query<NodeQuery>) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    tool_answer(crate::domain_orchestrator_reads::node(&state.domain, &query.node))
+}
+
+#[derive(Deserialize)]
+struct CandidatesQuery {
+    task: Option<String>,
+    repo: Option<String>,
+}
+
+async fn orchestrator_candidates(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    Query(query): Query<CandidatesQuery>) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    tool_answer(crate::domain_orchestrator_reads::candidates(&state.domain, query.task.as_deref(), query.repo.as_deref()))
+}
+
+#[derive(Deserialize)]
+struct WaitingBody {
+    reason: String,
+}
+
+/// An Agent declares it is stopped waiting for the machine, as 8ccd131's `wait_for_machine` did:
+/// its live state says so until its next turn.
+async fn agent_waiting_machine(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<WaitingBody>, JsonRejection>) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    let bearer = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer "));
+    let session_id = match bearer.map(|token| state.domain.resolve_bearer(token)) {
+        Some(Ok(crate::domain_authority::Principal::Agent { session_id, .. })) => session_id,
+        _ => return forbidden("an Agent's capability is required"),
+    };
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid reason"));
+    };
+    state.domain.live.apply(&alondra_core::Event::WaitingMachine { session_id, reason: body.reason });
+    Json(json!({"ok": true})).into_response()
+}
+
 /// Machine capacity and the subscription's usage, as the `/v2/daemon` gauges hold them.
 async fn orchestrator_machine(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
     if let Err(refused) = tool_caller(&state, &peer, &headers) {
@@ -519,6 +589,21 @@ mod tests {
             .json(&draft).send().await.unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
         assert_eq!(domain.state().unwrap().schedule.schedules.values().next().unwrap().title, "Nightly");
+        let orchestrator_get = |path: &str| client.get(format!("{base}{path}")).bearer_auth(orchestrator.expose_for_child_environment()).send();
+        assert_eq!(client.get(format!("{base}/v2/orchestrator/fleet")).bearer_auth(&bearer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        let fleet = orchestrator_get("/v2/orchestrator/fleet").await.unwrap();
+        assert_eq!(fleet.status(), StatusCode::OK);
+        assert!(fleet.json::<serde_json::Value>().await.unwrap()["nodes"].is_array());
+        assert_eq!(orchestrator_get("/v2/orchestrator/node?node=nobody").await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(orchestrator_get("/v2/orchestrator/candidates").await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
+        domain.live.observe(&json!({"session_id": "test-agent", "hook_event_name": "UserPromptSubmit", "cwd": "/tmp", "prompt": "go"}));
+        let waiting = json!({"reason": "the build queue is full"});
+        assert_eq!(client.post(format!("{base}/v2/agents/waiting-machine")).bearer_auth(orchestrator.expose_for_child_environment())
+            .json(&waiting).send().await.unwrap().status(), StatusCode::FORBIDDEN, "only an Agent waits for the machine");
+        assert_eq!(client.post(format!("{base}/v2/agents/waiting-machine")).bearer_auth(&bearer)
+            .json(&waiting).send().await.unwrap().status(), StatusCode::OK);
+        let node = domain.live.node("test-agent").unwrap();
+        assert_eq!(node.turn_signal, Some(alondra_core::TurnSignal::WaitingMachine), "{node:?}");
         domain.revoke_agent("test-agent").unwrap();
         assert_eq!(client.get(format!("{base}{merge_path}"))
             .header("authorization", format!("Bearer {bearer}"))
