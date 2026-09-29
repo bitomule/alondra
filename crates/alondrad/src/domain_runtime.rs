@@ -15,6 +15,8 @@ pub struct DomainRuntime {
     changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
     pub(crate) live: crate::v2_client_routes::Live,
+    /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
+    pub(crate) held: Mutex<std::collections::BTreeMap<alondra_core::domain_v2::AgentId, Vec<String>>>,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -41,6 +43,7 @@ impl DomainRuntime {
             changed,
             reads: Default::default(),
             live: Default::default(),
+            held: Default::default(),
         })
     }
     pub fn projection(&self) -> Result<DomainProjection> {
@@ -58,6 +61,9 @@ impl DomainRuntime {
                     error
                 }
             })
+    }
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
     }
     pub fn state(&self) -> Result<DomainState> {
         self.store.lock().expect("domain store poisoned").load()

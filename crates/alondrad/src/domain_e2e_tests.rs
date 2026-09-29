@@ -63,13 +63,14 @@ impl Daemon {
 
 /// The fake session's MCP side: the real entrypoint, started as Claude Code
 /// would start it, with the environment the launcher handed the session.
-fn mcp(home: &Path, port: u16, capability: &str, calls: Vec<(&str, Value)>) -> Vec<Value> {
+fn mcp(home: &Path, port: u16, credential: (&str, &str), calls: Vec<(&str, Value)>) -> Vec<Value> {
     let mut child = Process::new(alondra_binary())
         .arg("mcp-node")
         .env("ALONDRA_HOME", home)
         .env("ALONDRA_PORT", port.to_string())
         .env("ALONDRA_DOMAIN_PROTOCOL", "2")
-        .env("ALONDRA_DOMAIN_CAPABILITY", capability)
+        .env_remove("ALONDRA_DOMAIN_CAPABILITY")
+        .env(credential.0, credential.1)
         .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
         .spawn().unwrap();
     let stdin = child.stdin.as_mut().unwrap();
@@ -107,14 +108,16 @@ fn hook(home: &Path, payload: Value) -> Value {
     if text.trim().is_empty() { json!({}) } else { serde_json::from_str(text.trim()).unwrap() }
 }
 
-struct CapturingLauncher(Mutex<Vec<Vec<(String, String)>>>);
+const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
+
+struct CapturingLauncher(Mutex<Vec<Vec<String>>>);
 impl crate::orchestrate::Launcher for CapturingLauncher {
-    async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-        panic!("a v2 producer launch must carry its environment");
-    }
-    async fn run_with_env(&self, _: &str, _: &[String], env: &[(String, String)]) -> Result<String, crate::orchestrate::Refusal> {
-        self.0.lock().unwrap().push(env.to_vec());
+    async fn run(&self, _: &str, args: &[String]) -> Result<String, crate::orchestrate::Refusal> {
+        self.0.lock().unwrap().push(args.to_vec());
         Ok("backgrounded · ab1234 · scheduled/run".into())
+    }
+    async fn session_of(&self, short: &str) -> Option<String> {
+        (short == "ab1234").then(|| SESSION.to_owned())
     }
     fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
     fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
@@ -145,9 +148,12 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     });
     let launcher = CapturingLauncher(Mutex::new(vec![]));
     crate::domain_schedule_runner::run_cycle(&daemon.domain, &home, false, &launcher).await.unwrap();
-    let env = launcher.0.lock().unwrap().pop().expect("one launch");
-    let capability = env.iter().find(|(key, _)| key == "ALONDRA_DOMAIN_CAPABILITY").unwrap().1.clone();
-    let session = crate::domain_schedule_runner::session_for_run(&"run-1".into());
+    let args = launcher.0.lock().unwrap().pop().expect("one launch");
+    let settings = args.windows(2).find(|pair| pair[0] == "--settings").unwrap()[1].clone();
+    let written: Value = serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+    let capability = written["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().unwrap().to_owned();
+    let from_settings = ("ALONDRA_DOMAIN_SETTINGS", settings.as_str());
+    let session = SESSION.to_owned();
     let state = daemon.domain.state().unwrap();
     let task = state.tasks.values().next().unwrap().clone();
     assert_eq!(task.agent_id.as_ref().unwrap().0, session);
@@ -155,7 +161,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
 
     // The session reports through the MCP and asks the user a question.
     let scope = json!({"kind": "task", "task_id": task.id.0});
-    let replies = mcp(&home, daemon.port, &capability, vec![
+    let replies = mcp(&home, daemon.port, from_settings, vec![
         ("domain_command", envelope(&epoch, "info-1", json!({"kind": "publish_information",
             "interaction_id": "info-1", "scope": scope, "recipient": {"kind": "user"}, "body": "Started the review"}))),
         ("ask", envelope(&epoch, "question-1", json!({"kind": "ask_question", "interaction_id": "question-1",
@@ -188,7 +194,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     // The daemon restarts: the session keeps acting with its bearer and is not handed the answer again.
     daemon.stop().await;
     let daemon = Daemon::start(&home).await;
-    let replies = mcp(&home, daemon.port, &capability, vec![
+    let replies = mcp(&home, daemon.port, from_settings, vec![
         ("domain_command", envelope(&epoch, "info-2", json!({"kind": "publish_information",
             "interaction_id": "info-2", "scope": scope, "recipient": {"kind": "user"}, "body": "Acting on the answer"}))),
     ]);
@@ -200,13 +206,14 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
 
     // The session ends: its bearer stops working.
     assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "SessionEnd"})), json!({}));
-    let replies = mcp(&home, daemon.port, &capability, vec![
+    let replies = mcp(&home, daemon.port, ("ALONDRA_DOMAIN_CAPABILITY", &capability), vec![
         ("domain_command", envelope(&epoch, "info-3", json!({"kind": "publish_information",
             "interaction_id": "info-3", "scope": scope, "recipient": {"kind": "user"}, "body": "Too late"}))),
     ]);
     let (refused, text) = tool_text(&replies[0]);
     assert!(refused && text.contains("forbidden"), "{text}");
     assert!(!daemon.domain.state().unwrap().agents[&AgentId(session.clone())].connected);
+    assert!(!Path::new(&settings).exists(), "the session's settings file goes with it");
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }

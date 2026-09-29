@@ -146,12 +146,13 @@ impl Stream {
                 let tools = v["tools"].as_array();
                 // Claude prefixes plugin MCP names. Accept only the two exact launch forms
                 // observed for this server, paired with their matching tool names.
+                let required: &[&str] = if self.restricted { &["domain_command", "ask"] } else { &["fleet", "ask"] };
                 let available = [
                     ("plugin:alondra-orchestrator:alondra-orchestrator", "mcp__plugin_alondra-orchestrator_alondra-orchestrator"),
                     ("alondra-orchestrator", "mcp__alondra-orchestrator"),
                 ].iter().any(|(server, prefix)| {
                     v["mcp_servers"].as_array().is_some_and(|servers| servers.iter().any(|s| s["name"] == *server && s["status"] == "connected"))
-                        && tools.is_some_and(|tools| ["fleet", "ask"].iter().all(|name| {
+                        && tools.is_some_and(|tools| required.iter().all(|name| {
                             let expected = format!("{prefix}__{name}");
                             tools.iter().any(|t| t.as_str() == Some(expected.as_str()))
                         }))
@@ -242,6 +243,8 @@ pub struct Invocation<'a> {
     pub home: &'a Path,
     pub plugins: Vec<&'a Path>,
     pub domain_v2: bool,
+    /// The bearer bound to this execution; only a v2 invocation carries one.
+    pub capability: Option<&'a str>,
     pub session: &'a str,
     pub resume: bool,
     pub execution: &'a str,
@@ -272,7 +275,10 @@ impl Invocation<'_> {
             .env("ALONDRA_SESSION_ID", alondra_core::orchestrator::NODE_ID)
             .env_remove("CLAUDECODE")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).process_group(0);
-        cmd.env_remove("ALONDRA_DOMAIN_CAPABILITY");
+        match self.capability.filter(|_| self.domain_v2) {
+            Some(capability) => { cmd.env("ALONDRA_DOMAIN_CAPABILITY", capability); }
+            None => { cmd.env_remove("ALONDRA_DOMAIN_CAPABILITY"); }
+        }
         if self.domain_v2 { cmd.env("ALONDRA_DOMAIN_PROTOCOL", "2"); }
         else { cmd.env_remove("ALONDRA_DOMAIN_PROTOCOL"); }
         self.ownership.lent.store(true, std::sync::atomic::Ordering::SeqCst);
@@ -446,12 +452,18 @@ mod tests {
             r#""mcp__foreign__shell""#,
         ] {
             let mut stream = Stream { restricted: true, ..Stream::default() };
-            let init = format!(r#"{{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{{"name":"alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask",{extra}]}}"#);
+            let init = format!(r#"{{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{{"name":"alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","mcp__alondra-orchestrator__domain_command","mcp__alondra-orchestrator__ask",{extra}]}}"#);
             assert!(stream.accept(init.as_bytes(), "s").is_err(), "{extra}");
         }
         let mut stream = Stream { restricted: true, ..Stream::default() };
-        let foreign = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"},{"name":"foreign","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask"]}"#;
+        let foreign = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"},{"name":"foreign","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__domain_command","mcp__alondra-orchestrator__ask"]}"#;
         assert!(stream.accept(foreign, "s").is_err());
+        let mut stream = Stream { restricted: true, ..Stream::default() };
+        let legacy_catalog = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__fleet","mcp__alondra-orchestrator__ask"]}"#;
+        assert!(stream.accept(legacy_catalog, "s").is_err(), "a v2 invocation needs the v2 catalog");
+        let mut stream = Stream { restricted: true, ..Stream::default() };
+        let v2 = br#"{"type":"system","subtype":"init","session_id":"s","permissionMode":"auto","mcp_servers":[{"name":"alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__alondra-orchestrator__domain_command","mcp__alondra-orchestrator__ask"]}"#;
+        assert!(stream.accept(v2, "s").unwrap());
     }
     #[test]
     fn ownership_is_exclusive() {
@@ -513,14 +525,14 @@ mod tests {
         path
     }
     fn invocation<'a>(dir: &'a Path, exe: &'a Path, lock: &'a Ownership) -> Invocation<'a> {
-        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain_v2: true, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
+        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain_v2: true, capability: None, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
     }
     #[tokio::test]
     async fn real_process_drains_stderr_and_checks_terminal_result() {
         let dir = std::env::temp_dir().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, r#"cat >/dev/null
-printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["mcp__plugin_alondra-orchestrator_alondra-orchestrator__fleet","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
+printf '%s\n' '{"type":"system","subtype":"init","session_id":"test-session","permissionMode":"auto","mcp_servers":[{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__domain_command","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}'
 i=0
 while [ "$i" -lt 10000 ]; do printf 'bounded diagnostics\n' >&2; i=$((i+1)); done
 printf '%s\n' '{"type":"assistant","message":{"usage":{"input_tokens":31}}}'

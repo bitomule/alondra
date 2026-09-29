@@ -824,9 +824,9 @@ impl DomainStore {
         })?
         .collect::<rusqlite::Result<_>>()?)
     }
-    /// Legacy store-level fixture. Production resolution uses the authenticated
-    /// transport receipt above so a retry cannot repeat the decision.
-    #[cfg(test)]
+    /// Resolve one uncertain attempt from the daemon's own recovery, where no
+    /// transport receipt exists; a device's decision goes through the
+    /// authenticated variant.
     pub(crate) fn resolve_uncertain(
         &mut self,
         attempt_id: i64,

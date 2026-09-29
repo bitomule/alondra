@@ -293,6 +293,8 @@ impl Service {
         if self.domain.is_some() {
             return request.method == "POST" && (request.path == "/v2/domain/commands"
                 || crate::v2_client_routes::atomic_write_path(&request.path)
+                || agent_message(&request.path).is_some()
+                || crate::domain_orchestrator::decision_route(&request.path).is_some()
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some())
                 || crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some());
         }
@@ -329,6 +331,10 @@ impl Service {
                     &envelope.sender, attempt_id, request.body.as_ref(),
                     (&envelope.sender, &envelope.request_id, digest),
                     || self.require_device_approval(&envelope.sender, device))?
+            } else if let Some(agent) = agent_message(&request.path) {
+                crate::domain_messages::relayed(domain, &self.home, &envelope.sender, agent, request.body.as_ref()).await
+            } else if let Some(decision) = crate::domain_orchestrator::decision_route(&request.path) {
+                crate::domain_orchestrator::decide(&crate::domain_orchestrator::executor(domain.clone(), &self.home), decision, request.body.as_ref())
             } else if let Some(route) = crate::v2_client_routes::parse_write(&request.path).filter(|_| crate::v2_client_routes::atomic_write_path(&request.path)) {
                 let routes = self.routes.as_ref().context("client routes unavailable")?;
                 let body = request.body.as_ref().context("request body required")?;
@@ -670,7 +676,8 @@ impl Service {
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         if self.domain.is_some() {
             anyhow::ensure!((request.path.starts_with("/v2/domain") || crate::v2_client_routes::approved_read_path(&request.path)
-                || crate::v2_client_routes::approved_write_path(&request.path))
+                || crate::v2_client_routes::approved_write_path(&request.path)
+                || agent_message(&request.path).is_some() || crate::domain_orchestrator::decision_route(&request.path).is_some())
                 && approved_method(&request).is_ok(), "v2-only service route is not approved");
         }
         let body = serde_json::to_vec(e)?;
@@ -1240,6 +1247,11 @@ fn v2_read_route(request: &LocalRequest) -> bool {
     request.method == "GET" && (request.path.starts_with("/v2/domain") || crate::v2_client_routes::approved_read_path(&request.path))
 }
 
+/// The agent a relayed `POST /v2/agents/{id}/messages` writes to.
+fn agent_message(path: &str) -> Option<alondra_core::domain_v2::AgentId> {
+    path.strip_prefix("/v2/agents/")?.strip_suffix("/messages").filter(|id| v2_read_id(id)).map(Into::into)
+}
+
 fn v2_read_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 256
@@ -1275,6 +1287,8 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || crate::v2_client_routes::approved_write_path(&request.path)
                 || crate::v2_client_routes::upload_step(&request.path).is_some()
                 || request.path == "/v2/domain/commands"
+                || agent_message(&request.path).is_some()
+                || crate::domain_orchestrator::decision_route(&request.path).is_some()
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some(),
             "POST" if request.body.is_none() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, false),
             "PUT" | "DELETE" => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()),
@@ -2722,6 +2736,28 @@ agreement_key = "{}"
                 "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
             serde_json::from_slice(&bytes).unwrap()
         }).collect()
+    }
+
+    #[test]
+    fn a_message_to_an_agent_is_a_relayed_mutation_with_a_body() {
+        let post = |path: &str, body: Option<Value>| LocalRequest { method: "POST".into(), path: path.into(), body };
+        assert!(approved_method(&post("/v2/agents/agent-a/messages", Some(json!({"text": "hi"})))).is_ok());
+        assert!(approved_method(&post("/v2/agents/agent-a/messages", None)).is_err());
+        for path in ["/v2/agents//messages", "/v2/agents/a/b/messages", "/v2/agents/../messages", "/v2/agents/agent-a/other"] {
+            assert!(approved_method(&post(path, Some(json!({"text": "hi"})))).is_err(), "{path}");
+        }
+        assert!(approved_method(&LocalRequest { method: "GET".into(), path: "/v2/agents/agent-a/messages".into(), body: None }).is_err());
+    }
+
+    #[test]
+    fn an_orchestrator_decision_is_a_relayed_mutation_with_a_body() {
+        let request = |method: &str, path: &str, body: Option<Value>| LocalRequest { method: method.into(), path: path.into(), body };
+        for path in ["/v2/orchestrator/cancel", "/v2/orchestrator/acknowledge", "/v2/orchestrator/retry"] {
+            assert!(approved_method(&request("POST", path, Some(json!({"run_id": "run-7"})))).is_ok(), "{path}");
+            assert!(approved_method(&request("POST", path, None)).is_err(), "{path}");
+            assert!(approved_method(&request("GET", path, None)).is_err(), "{path}");
+        }
+        assert!(approved_method(&request("POST", "/v2/orchestrator/restart", Some(json!({"run_id": "r"})))).is_err());
     }
 
     #[test]
