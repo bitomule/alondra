@@ -189,7 +189,10 @@ fn remove_owned_sqlite_files(path: &Path) -> Result<()> {
 }
 
 fn canonical_parent(path: &Path) -> Result<std::path::PathBuf> {
-    let parent = path.parent().context("path has no parent")?.canonicalize()?;
+    let parent = path
+        .parent()
+        .context("path has no parent")?
+        .canonicalize()?;
     Ok(parent.join(path.file_name().context("path has no name")?))
 }
 
@@ -218,10 +221,18 @@ fn legacy_data(path: &Path) -> bool {
         Err(_) => return true,
         Ok(_) => (),
     }
-    Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW)
-        .and_then(|store| store.query_row(
-            "SELECT EXISTS(SELECT 1 FROM event_log) OR EXISTS(SELECT 1 FROM snapshots)", [], |row| row.get(0)))
-        .unwrap_or(true)
+    Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
+    )
+    .and_then(|store| {
+        store.query_row(
+            "SELECT EXISTS(SELECT 1 FROM event_log) OR EXISTS(SELECT 1 FROM snapshots)",
+            [],
+            |row| row.get(0),
+        )
+    })
+    .unwrap_or(true)
 }
 
 /// How long the cutover waits for a running daemon to release HOME.
@@ -231,7 +242,10 @@ pub(crate) struct LockWait {
 }
 
 impl LockWait {
-    pub(crate) const LIVE: LockWait = LockWait { attempts: 600, interval: std::time::Duration::from_secs(1) };
+    pub(crate) const LIVE: LockWait = LockWait {
+        attempts: 600,
+        interval: std::time::Duration::from_secs(1),
+    };
 }
 
 fn exclusive_lock(home: &Path, wait: &LockWait, mut progress: impl FnMut(u32)) -> Result<HomeLock> {
@@ -243,8 +257,10 @@ fn exclusive_lock(home: &Path, wait: &LockWait, mut progress: impl FnMut(u32)) -
                 std::thread::sleep(wait.interval);
             }
             Err(error) => {
-                return Err(anyhow::Error::new(error)
-                    .context(format!("HOME is still in use after {} attempts; stop its daemon", wait.attempts)));
+                return Err(anyhow::Error::new(error).context(format!(
+                    "HOME is still in use after {} attempts; stop its daemon",
+                    wait.attempts
+                )));
             }
         }
     }
@@ -264,7 +280,12 @@ fn rollback_command(backup: &Path) -> String {
 }
 
 fn sqlite_trio(name: &str) -> [String; 4] {
-    [name.to_owned(), format!("{name}-wal"), format!("{name}-shm"), format!("{name}-journal")]
+    [
+        name.to_owned(),
+        format!("{name}-wal"),
+        format!("{name}-shm"),
+        format!("{name}-journal"),
+    ]
 }
 
 /// Moves the legacy stores and their journals into HOME's archive. Renames
@@ -275,7 +296,10 @@ fn archive_legacy_stores(home: &Path) -> Result<()> {
         Ok(()) => (),
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let meta = fs::symlink_metadata(&archive)?;
-            ensure!(meta.is_dir() && meta.uid() == unsafe { libc::geteuid() }, "unsafe legacy archive");
+            ensure!(
+                meta.is_dir() && meta.uid() == unsafe { libc::geteuid() },
+                "unsafe legacy archive"
+            );
         }
         Err(error) => return Err(error.into()),
     }
@@ -304,7 +328,10 @@ pub(crate) fn cutover_offline(
     wait: &LockWait,
     progress: impl FnMut(u32),
 ) -> Result<Cutover> {
-    ensure!(home.is_absolute() && backup.is_absolute(), "cutover paths must be absolute");
+    ensure!(
+        home.is_absolute() && backup.is_absolute(),
+        "cutover paths must be absolute"
+    );
     let home = home.canonicalize()?;
     let backup = &canonical_parent(backup)?;
     let _lock = exclusive_lock(&home, wait, progress)?;
@@ -313,13 +340,18 @@ pub(crate) fn cutover_offline(
         Some(marker) if marker.phase == Phase::Committed => {
             crate::domain_backup::verify_backup_expected(backup, &marker.backup_manifest_sha256)
                 .context("HOME was cut over with another backup")?;
-            return Ok(Cutover { marker, resumed: false, already_committed: true, rollback });
+            return Ok(Cutover {
+                marker,
+                resumed: false,
+                already_committed: true,
+                rollback,
+            });
         }
         Some(marker) => {
             crate::domain_backup::verify_backup_expected(backup, &marker.backup_manifest_sha256)
                 .context("an interrupted cutover belongs to another backup; roll it back first")?;
             ensure!(
-                crate::domain_runtime::DomainRuntime::open(&home)
+                crate::domain_runtime::DomainRuntime::open_at(&home, &home.join("domain-v2.db"))
                     .and_then(|runtime| runtime.state())
                     .is_ok_and(|state| state.data_epoch.0 == marker.data_epoch),
                 "the interrupted cutover's domain store is missing; roll it back with {rollback}"
@@ -328,22 +360,36 @@ pub(crate) fn cutover_offline(
             let mut committed = marker.clone();
             committed.phase = Phase::Committed;
             write_marker(&home, &committed, false)?;
-            return Ok(Cutover { marker: committed, resumed: true, already_committed: false, rollback });
+            return Ok(Cutover {
+                marker: committed,
+                resumed: true,
+                already_committed: false,
+                rollback,
+            });
         }
         None => (),
     }
-    ensure!(home.join("alondra.db").exists(), "HOME holds no legacy store to cut over");
+    ensure!(
+        home.join("alondra.db").exists(),
+        "HOME holds no legacy store to cut over"
+    );
     let database = home.join("domain-v2.db");
     validate_owned_sqlite_files(&database)?;
     ensure!(
         !database.exists() || crate::replaceable_cutover_sidecar_is_empty(&database)?,
         "HOME already has domain data"
     );
-    ensure!(!home.join(ARCHIVE).exists(), "HOME already has a legacy archive");
+    ensure!(
+        !home.join(ARCHIVE).exists(),
+        "HOME already has a legacy archive"
+    );
     let manifest = crate::domain_backup::backup_home(&home, backup, legacy_binaries)?;
     let digest = crate::domain_backup::backup_manifest_digest(backup)?;
     remove_owned_sqlite_files(&database)?;
-    let data_epoch = crate::domain_runtime::DomainRuntime::open(&home)?.state()?.data_epoch.0;
+    let data_epoch = crate::domain_runtime::DomainRuntime::open_at(&home, &database)?
+        .state()?
+        .data_epoch
+        .0;
     let marker = Marker {
         format: 1,
         phase: Phase::Prepared,
@@ -356,17 +402,28 @@ pub(crate) fn cutover_offline(
     let mut committed = marker;
     committed.phase = Phase::Committed;
     write_marker(&home, &committed, false)?;
-    Ok(Cutover { marker: committed, resumed: false, already_committed: false, rollback })
+    Ok(Cutover {
+        marker: committed,
+        resumed: false,
+        already_committed: false,
+        rollback,
+    })
 }
 
 fn absolute(path: &Path) -> Result<std::path::PathBuf> {
-    Ok(if path.is_absolute() { path.to_owned() } else { std::env::current_dir()?.join(path) })
+    Ok(if path.is_absolute() {
+        path.to_owned()
+    } else {
+        std::env::current_dir()?.join(path)
+    })
 }
 
 fn waiting(attempt: u32) {
     if attempt == 1 || attempt % 10 == 0 {
-        eprintln!("waiting for the daemon to release HOME (attempt {attempt} of {}); stop it to continue",
-            LockWait::LIVE.attempts);
+        eprintln!(
+            "waiting for the daemon to release HOME (attempt {attempt} of {}); stop it to continue",
+            LockWait::LIVE.attempts
+        );
     }
 }
 
@@ -380,31 +437,52 @@ fn rollback_steps(backup: &Path, binaries: &[&Path], label: &str) -> String {
         backup.display()
     );
     for binary in binaries {
-        let name = binary.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
+        let name = binary
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
         steps.push_str(&format!(
             "   install -m 755 {} \"$(realpath \"$(command -v {name})\")\"\n",
-            backup.join(crate::domain_backup::LEGACY_BINARIES).join(&name).display()
+            backup
+                .join(crate::domain_backup::LEGACY_BINARIES)
+                .join(&name)
+                .display()
         ));
     }
-    steps.push_str(&format!("   brew pin alondra\n4. Restart: launchctl kickstart -k gui/$(id -u)/{label}"));
+    steps.push_str(&format!(
+        "   brew pin alondra\n4. Restart: launchctl kickstart -k gui/$(id -u)/{label}"
+    ));
     steps
 }
 
 pub(crate) fn cutover_cli(backup: &Path, binaries: &[&Path]) -> Result<()> {
-    let config = alondra_core::config::Config::load().map_err(|error| anyhow::anyhow!("config.toml unreadable: {error}"))?;
+    let config = alondra_core::config::Config::load()
+        .map_err(|error| anyhow::anyhow!("config.toml unreadable: {error}"))?;
     let backup = absolute(backup)?;
-    eprintln!("Cutting {} over to domain v2; backup in {}", config.home.display(), backup.display());
+    eprintln!(
+        "Cutting {} over to domain v2; backup in {}",
+        config.home.display(),
+        backup.display()
+    );
     let result = cutover_offline(&config.home, &backup, binaries, &LockWait::LIVE, waiting)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
-    eprintln!("Domain v2 started empty; the legacy data is archived in {} (legacy seq {}). To roll back:\n{}",
-        config.home.join(ARCHIVE).display(), result.marker.source_seq, rollback_steps(&backup, binaries, &config.service_label));
+    eprintln!(
+        "Domain v2 started empty; the legacy data is archived in {} (legacy seq {}). To roll back:\n{}",
+        config.home.join(ARCHIVE).display(),
+        result.marker.source_seq,
+        rollback_steps(&backup, binaries, &config.service_label)
+    );
     Ok(())
 }
 
 pub(crate) fn rollback_cli(backup: &Path) -> Result<()> {
-    let config = alondra_core::config::Config::load().map_err(|error| anyhow::anyhow!("config.toml unreadable: {error}"))?;
+    let config = alondra_core::config::Config::load()
+        .map_err(|error| anyhow::anyhow!("config.toml unreadable: {error}"))?;
     let aside = rollback_offline(&config.home, &absolute(backup)?, &LockWait::LIVE, waiting)?;
-    eprintln!("Legacy HOME restored. What domain v2 wrote is kept in {}; start the legacy daemon.", aside.display());
+    eprintln!(
+        "Legacy HOME restored. What domain v2 wrote is kept in {}; start the legacy daemon.",
+        aside.display()
+    );
     Ok(())
 }
 
@@ -412,33 +490,58 @@ pub(crate) fn rollback_cli(backup: &Path) -> Result<()> {
 /// `domain-v2-rolled-back-<time>` and removes the marker last. A committed
 /// HOME whose daemon ran may have sent messages or merged PRs: those effects
 /// are not undone.
-pub(crate) fn rollback_offline(home: &Path, backup: &Path, wait: &LockWait, progress: impl FnMut(u32)) -> Result<std::path::PathBuf> {
-    ensure!(home.is_absolute() && backup.is_absolute(), "rollback paths must be absolute");
+pub(crate) fn rollback_offline(
+    home: &Path,
+    backup: &Path,
+    wait: &LockWait,
+    progress: impl FnMut(u32),
+) -> Result<std::path::PathBuf> {
+    ensure!(
+        home.is_absolute() && backup.is_absolute(),
+        "rollback paths must be absolute"
+    );
     let home = home.canonicalize()?;
     let backup = &backup.canonicalize()?;
     let _lock = exclusive_lock(&home, wait, progress)?;
     let marker = read_marker(&home)?.context("HOME has no domain cutover to roll back")?;
-    let manifest = crate::domain_backup::verify_backup_expected(backup, &marker.backup_manifest_sha256)
-        .context("backup does not belong to this cutover")?;
-    ensure!(manifest.source_seq == marker.source_seq, "backup does not match the cutover marker");
-    let aside = home.join(format!("domain-v2-rolled-back-{}", alondra_core::now_millis()));
+    let manifest =
+        crate::domain_backup::verify_backup_expected(backup, &marker.backup_manifest_sha256)
+            .context("backup does not belong to this cutover")?;
+    ensure!(
+        manifest.source_seq == marker.source_seq,
+        "backup does not match the cutover marker"
+    );
+    let aside = home.join(format!(
+        "domain-v2-rolled-back-{}",
+        alondra_core::now_millis()
+    ));
     fs::DirBuilder::new().mode(0o700).create(&aside)?;
     let set_aside = |name: &str| -> Result<()> {
         let from = home.join(name);
         if fs::symlink_metadata(&from).is_ok() {
             let to = aside.join(name);
             if let Some(parent) = to.parent() {
-                fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
+                fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(parent)?;
             }
             rename_exclusive(&from, &to)?;
         }
         Ok(())
     };
-    for name in sqlite_trio("domain-v2.db").iter().chain(&sqlite_trio("domain-v2.db.next")) {
+    for name in sqlite_trio("domain-v2.db")
+        .iter()
+        .chain(&sqlite_trio("domain-v2.db.next"))
+    {
         set_aside(name)?;
     }
     set_aside(ARCHIVE)?;
-    for file in manifest.files.iter().filter(|file| !file.path.starts_with(crate::domain_backup::LEGACY_BINARIES)) {
+    for file in manifest
+        .files
+        .iter()
+        .filter(|file| !file.path.starts_with(crate::domain_backup::LEGACY_BINARIES))
+    {
         let names = if crate::domain_backup::BACKUP_DATABASES.contains(&file.path.as_str()) {
             sqlite_trio(&file.path).to_vec()
         } else {
@@ -449,7 +552,10 @@ pub(crate) fn rollback_offline(home: &Path, backup: &Path, wait: &LockWait, prog
         }
         let target = home.join(&file.path);
         if let Some(parent) = target.parent() {
-            fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(parent)?;
         }
         crate::domain_backup::copy_regular(&backup.join(&file.path), &target)?;
     }
@@ -497,7 +603,10 @@ mod tests {
     /// Holds the shared HOME lock like a daemon that keeps restarting, until told to stop.
     #[test]
     fn lock_holder_child() {
-        let (Some(home), Some(signals)) = (std::env::var_os("ALONDRA_TEST_HOLD_HOME"), std::env::var_os("ALONDRA_TEST_HOLD_SIGNALS")) else {
+        let (Some(home), Some(signals)) = (
+            std::env::var_os("ALONDRA_TEST_HOLD_HOME"),
+            std::env::var_os("ALONDRA_TEST_HOLD_SIGNALS"),
+        ) else {
             return;
         };
         let signals = std::path::PathBuf::from(signals);
@@ -510,7 +619,10 @@ mod tests {
     }
 
     fn legacy_home(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!("alondra-cutover-{name}-{}", crate::auth::random_hex(8)));
+        let root = std::env::temp_dir().join(format!(
+            "alondra-cutover-{name}-{}",
+            crate::auth::random_hex(8)
+        ));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let home = root.join("home");
@@ -525,20 +637,29 @@ mod tests {
             )
             .unwrap();
         let schedules = Connection::open(home.join("schedules.db")).unwrap();
-        schedules.execute_batch("CREATE TABLE schedules(id TEXT); INSERT INTO schedules VALUES('nightly');").unwrap();
+        schedules
+            .execute_batch(
+                "CREATE TABLE schedules(id TEXT); INSERT INTO schedules VALUES('nightly');",
+            )
+            .unwrap();
         fs::write(home.join("config.toml"), "name = \"Test\"\n").unwrap();
         fs::write(home.join("devices.json"), "[]").unwrap();
         (root, home)
     }
 
     fn quick() -> LockWait {
-        LockWait { attempts: 1, interval: std::time::Duration::ZERO }
+        LockWait {
+            attempts: 1,
+            interval: std::time::Duration::ZERO,
+        }
     }
 
     fn legacy_digests(home: &Path) -> Vec<String> {
         ["alondra.db", "schedules.db"]
             .iter()
-            .map(|name| crate::domain_backup::rehearsal::sqlite_content_digest(&home.join(name)).unwrap())
+            .map(|name| {
+                crate::domain_backup::rehearsal::sqlite_content_digest(&home.join(name)).unwrap()
+            })
             .collect()
     }
 
@@ -548,25 +669,47 @@ mod tests {
         let signals = root.join("signals");
         fs::create_dir(&signals).unwrap();
         let mut holder = std::process::Command::new(std::env::current_exe().unwrap())
-            .args(["--exact", "domain_cutover::tests::lock_holder_child", "--nocapture"])
+            .args([
+                "--exact",
+                "domain_cutover::tests::lock_holder_child",
+                "--nocapture",
+            ])
             .env("ALONDRA_TEST_HOLD_HOME", &home)
             .env("ALONDRA_TEST_HOLD_SIGNALS", &signals)
             .spawn()
             .unwrap();
         let started = std::time::Instant::now();
         while !signals.join("held").exists() {
-            assert!(started.elapsed() < std::time::Duration::from_secs(60), "holder never took the lock");
+            assert!(
+                started.elapsed() < std::time::Duration::from_secs(60),
+                "holder never took the lock"
+            );
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let three = LockWait { attempts: 3, interval: std::time::Duration::from_millis(1) };
+        let three = LockWait {
+            attempts: 3,
+            interval: std::time::Duration::from_millis(1),
+        };
         let mut reported = vec![];
-        let error = cutover_offline(&home, &root.join("refused"), &[], &three, |attempt| reported.push(attempt))
-            .unwrap_err();
-        assert!(format!("{error:#}").contains("still in use after 3 attempts"), "{error:#}");
+        let error = cutover_offline(&home, &root.join("refused"), &[], &three, |attempt| {
+            reported.push(attempt)
+        })
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("still in use after 3 attempts"),
+            "{error:#}"
+        );
         assert_eq!(reported, vec![1, 2], "every failed attempt is reported");
-        assert!(!root.join("refused").exists() && home.join("alondra.db").exists() && read_marker(&home).unwrap().is_none());
+        assert!(
+            !root.join("refused").exists()
+                && home.join("alondra.db").exists()
+                && read_marker(&home).unwrap().is_none()
+        );
 
-        let patient = LockWait { attempts: 60_000, interval: std::time::Duration::from_millis(1) };
+        let patient = LockWait {
+            attempts: 60_000,
+            interval: std::time::Duration::from_millis(1),
+        };
         let mut waited = 0;
         let cutover = cutover_offline(&home, &root.join("backup"), &[], &patient, |_| {
             waited += 1;
@@ -593,7 +736,10 @@ mod tests {
         assert_eq!(cutover.marker.source_seq, 2);
         assert_eq!(read_marker(&home).unwrap().unwrap(), cutover.marker);
 
-        let state = crate::domain_runtime::DomainRuntime::open(&home).unwrap().state().unwrap();
+        let state = crate::domain_runtime::DomainRuntime::open(&home)
+            .unwrap()
+            .state()
+            .unwrap();
         assert_eq!(state.data_epoch.0, cutover.marker.data_epoch);
         assert_eq!(state.revision, 0);
         assert!(
@@ -611,9 +757,14 @@ mod tests {
             assert!(!home.join(name).exists(), "{name} left in HOME");
             assert!(archive.join(name).exists(), "{name} not archived");
         }
-        let archived = ["alondra.db", "schedules.db"]
-            .map(|name| crate::domain_backup::rehearsal::sqlite_content_digest(&archive.join(name)).unwrap());
-        assert_eq!(archived.to_vec(), before, "the archive holds the original rows");
+        let archived = ["alondra.db", "schedules.db"].map(|name| {
+            crate::domain_backup::rehearsal::sqlite_content_digest(&archive.join(name)).unwrap()
+        });
+        assert_eq!(
+            archived.to_vec(),
+            before,
+            "the archive holds the original rows"
+        );
         assert!(home.join("config.toml").exists() && home.join("devices.json").exists());
         refuse_legacy_home(&home).unwrap();
 
@@ -627,7 +778,12 @@ mod tests {
         let (root, home) = legacy_home("resume");
         let backup = root.join("backup");
         let manifest = crate::domain_backup::backup_home(&home, &backup, &[]).unwrap();
-        let epoch = crate::domain_runtime::DomainRuntime::open(&home).unwrap().state().unwrap().data_epoch.0;
+        let epoch = crate::domain_runtime::DomainRuntime::open(&home)
+            .unwrap()
+            .state()
+            .unwrap()
+            .data_epoch
+            .0;
         let prepared = Marker {
             format: 1,
             phase: Phase::Prepared,
@@ -636,13 +792,25 @@ mod tests {
             data_epoch: epoch.clone(),
         };
         write_marker(&home, &prepared, true).unwrap();
-        assert!(refuse_legacy_home(&home).is_ok(), "a Prepared HOME is fenced by protocol mode, not treated as legacy");
+        assert!(
+            refuse_legacy_home(&home).is_ok(),
+            "a Prepared HOME is fenced by protocol mode, not treated as legacy"
+        );
         let resumed = cutover_offline(&home, &backup, &[], &quick(), |_| ()).unwrap();
         assert!(resumed.resumed);
         assert_eq!(resumed.marker.phase, Phase::Committed);
         assert_eq!(resumed.marker.data_epoch, epoch);
-        assert!(!home.join("alondra.db").exists() && home.join(ARCHIVE).join("alondra.db").exists());
-        assert_eq!(crate::domain_runtime::DomainRuntime::open(&home).unwrap().state().unwrap().revision, 0);
+        assert!(
+            !home.join("alondra.db").exists() && home.join(ARCHIVE).join("alondra.db").exists()
+        );
+        assert_eq!(
+            crate::domain_runtime::DomainRuntime::open(&home)
+                .unwrap()
+                .state()
+                .unwrap()
+                .revision,
+            0
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -655,13 +823,18 @@ mod tests {
         let (other_root, other_home) = legacy_home("other");
         let stranger = other_root.join("backup");
         crate::domain_backup::backup_home(&other_home, &stranger, &[]).unwrap();
-        assert!(rollback_offline(&home, &stranger, &quick(), |_| ()).is_err(), "another backup must not restore this HOME");
+        assert!(
+            rollback_offline(&home, &stranger, &quick(), |_| ()).is_err(),
+            "another backup must not restore this HOME"
+        );
         assert!(read_marker(&home).unwrap().is_some());
 
         let aside = rollback_offline(&home, &backup, &quick(), |_| ()).unwrap();
         assert!(read_marker(&home).unwrap().is_none());
         assert_eq!(legacy_digests(&home), before);
-        assert!(aside.join("domain-v2.db").exists() && aside.join(ARCHIVE).join("alondra.db").exists());
+        assert!(
+            aside.join("domain-v2.db").exists() && aside.join(ARCHIVE).join("alondra.db").exists()
+        );
         assert!(!home.join(ARCHIVE).exists() && !home.join("domain-v2.db").exists());
         assert!(refuse_legacy_home(&home).is_err());
         fs::remove_dir_all(other_root).unwrap();

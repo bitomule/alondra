@@ -33,7 +33,11 @@ impl DomainRuntime {
     }
 
     pub fn open(home: &Path) -> Result<Self> {
-        let mut store = DomainStore::open(&home.join("domain-v2.db"))?;
+        Self::open_at(home, &crate::domain_database_migration::active_path(home))
+    }
+
+    pub(crate) fn open_at(home: &Path, database: &Path) -> Result<Self> {
+        let mut store = DomainStore::open(database)?;
         let state = store.load()?;
         let (changed, _) = watch::channel(state.revision);
         let (schedule_changed, _) = watch::channel(state.revision);

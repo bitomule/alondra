@@ -1,9 +1,8 @@
 //! Technical delivery of committed v2 effects. An outbox handoff is not a
 //! business decision, user acceptance, or proof that Claude acted on a turn.
+use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::hub::Hub;
-use crate::domain_runtime::DomainRuntime;
-use std::path::Path;
 use crate::push::Push;
 use crate::service::Service;
 use alondra_core::Event;
@@ -11,6 +10,7 @@ use alondra_core::delivery::State;
 use anyhow::Result;
 use serde_json::json;
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -45,10 +45,14 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) 
     }
 }
 
-/// V2-only dispatcher: all receipts live in domain-v2.db. User hints are sent
+/// V2-only dispatcher: all receipts live in the active domain database. User hints are sent
 /// here; the orchestrator executor and producer transport own producer messages.
-pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
-    push: Arc<Push>, service: Option<Arc<Service>>) -> Result<()> {
+pub async fn run_v2(
+    domain: Arc<DomainRuntime>,
+    home: std::path::PathBuf,
+    push: Arc<Push>,
+    service: Option<Arc<Service>>,
+) -> Result<()> {
     let mut changed = domain.subscribe();
     let mut retry_after: HashMap<i64, Instant> = HashMap::new();
     loop {
@@ -56,7 +60,8 @@ pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
         let pending = {
             let mut store = domain.store.lock().expect("domain store poisoned");
             store.discard_expired_orchestrator_messages(
-                alondra_core::now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
+                alondra_core::now_millis()
+                    .saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
             )?;
             store.pending_messages()?
         };
@@ -74,8 +79,13 @@ pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
     }
 }
 
-async fn deliver_one_v2(domain: &DomainRuntime, home: &Path, push: &Push,
-    service: Option<&Service>, message: OutboxMessage) -> Result<()> {
+async fn deliver_one_v2(
+    domain: &DomainRuntime,
+    home: &Path,
+    push: &Push,
+    service: Option<&Service>,
+    message: OutboxMessage,
+) -> Result<()> {
     if matches!(message.recipient_kind.as_str(), "agent" | "orchestrator") {
         return Ok(());
     }
@@ -102,8 +112,12 @@ async fn deliver_one_v2(domain: &DomainRuntime, home: &Path, push: &Push,
 
 /// User hints and producer messages are limited separately, so a backlog of
 /// one kind never hides the other and a retryable producer message is retried.
-fn ready_messages_v2(messages: Vec<OutboxMessage>, retry_after: &HashMap<i64, Instant>) -> Vec<OutboxMessage> {
-    let (user, producer): (Vec<_>, Vec<_>) = messages.into_iter()
+fn ready_messages_v2(
+    messages: Vec<OutboxMessage>,
+    retry_after: &HashMap<i64, Instant>,
+) -> Vec<OutboxMessage> {
+    let (user, producer): (Vec<_>, Vec<_>) = messages
+        .into_iter()
         .partition(|message| message.recipient_kind == "user");
     let mut ready = ready_messages(user, retry_after);
     ready.extend(ready_messages(producer, retry_after));
@@ -193,14 +207,21 @@ async fn deliver_user(
 }
 
 async fn deliver_user_runtime(
-    domain: &DomainRuntime, home: &Path, push: &Push,
-    service: Option<&Service>, message: &OutboxMessage,
+    domain: &DomainRuntime,
+    home: &Path,
+    push: &Push,
+    service: Option<&Service>,
+    message: &OutboxMessage,
 ) -> std::result::Result<(), (State, &'static str)> {
     // DomainProjection is the durable user inbox. APNs is only a generic wake hint;
     // the receipt never means a person read or accepted this interaction.
-    let state = domain.state()
+    let state = domain
+        .state()
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
-    let item_id = message.interaction_id.as_ref().map(|id| format!("interaction:{id}"));
+    let item_id = message
+        .interaction_id
+        .as_ref()
+        .map(|id| format!("interaction:{id}"));
     let payload = json!({"aps":{"alert":{"title":"Alondra","body":"New activity in Alondra"},
         "sound":"default"},"alondra":{"protocol_version":2,"data_epoch":state.data_epoch,
         "item_id":item_id}});
@@ -231,107 +252,287 @@ mod tests {
 
     #[test]
     fn unavailable_old_recipients_do_not_starve_new_messages() {
-        let messages: Vec<_> = (1..=65).map(|id| OutboxMessage {
-            id, recipient_kind: "agent".into(), agent_id: Some("absent".into()),
-            task_id: None, interaction_id: None, message: String::new(), state: "retryable".into(),
-        }).collect();
+        let messages: Vec<_> = (1..=65)
+            .map(|id| OutboxMessage {
+                id,
+                recipient_kind: "agent".into(),
+                agent_id: Some("absent".into()),
+                task_id: None,
+                interaction_id: None,
+                message: String::new(),
+                state: "retryable".into(),
+            })
+            .collect();
         let backoff: HashMap<_, _> = (1..=64).map(|id| (id, Instant::now())).collect();
         let ready = ready_messages(messages, &backoff);
-        assert_eq!(ready.iter().map(|message| message.id).collect::<Vec<_>>(), vec![65]);
+        assert_eq!(
+            ready.iter().map(|message| message.id).collect::<Vec<_>>(),
+            vec![65]
+        );
     }
 
     #[tokio::test]
     async fn v2_only_outbox_exits_on_sql_failure() {
-        let home = std::env::temp_dir().join(format!("alondra-v2-outbox-failure-{}", crate::auth::random_hex(8)));
+        let home = std::env::temp_dir().join(format!(
+            "alondra-v2-outbox-failure-{}",
+            crate::auth::random_hex(8)
+        ));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        rusqlite::Connection::open(home.join("domain-v2.db")).unwrap()
-            .execute_batch("DROP TABLE domain_outbox").unwrap();
+        rusqlite::Connection::open(home.join("domain-v2.db"))
+            .unwrap()
+            .execute_batch("DROP TABLE domain_outbox")
+            .unwrap();
         let push = Arc::new(Push::open(&home).unwrap());
-        let result = tokio::time::timeout(Duration::from_secs(2),
-            run_v2(domain.clone(), home.clone(), push, None)).await.unwrap();
-        assert!(result.is_err(), "SQL failure must terminate the critical outbox worker");
+        let result = tokio::time::timeout(
+            Duration::from_secs(2),
+            run_v2(domain.clone(), home.clone(), push, None),
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.is_err(),
+            "SQL failure must terminate the critical outbox worker"
+        );
         drop(domain);
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
     fn v2_only_retryable_producers_never_starve_later_user_hints() {
-        let mut messages: Vec<_> = (1..=65).map(|id| OutboxMessage {
-            id, recipient_kind: "agent".into(), agent_id: Some("absent".into()),
-            task_id: None, interaction_id: None, message: String::new(), state: "retryable".into(),
-        }).collect();
-        messages.push(OutboxMessage { id: 66, recipient_kind: "user".into(),
-            agent_id: None, task_id: None, interaction_id: None, message: String::new(), state: "pending".into() });
+        let mut messages: Vec<_> = (1..=65)
+            .map(|id| OutboxMessage {
+                id,
+                recipient_kind: "agent".into(),
+                agent_id: Some("absent".into()),
+                task_id: None,
+                interaction_id: None,
+                message: String::new(),
+                state: "retryable".into(),
+            })
+            .collect();
+        messages.push(OutboxMessage {
+            id: 66,
+            recipient_kind: "user".into(),
+            agent_id: None,
+            task_id: None,
+            interaction_id: None,
+            message: String::new(),
+            state: "pending".into(),
+        });
         let ready = ready_messages_v2(messages, &HashMap::new());
         let ids: Vec<_> = ready.iter().map(|message| message.id).collect();
-        assert_eq!(ids[0], 66, "the user hint is never behind the producer backlog");
-        assert_eq!(&ids[1..], (1..=64).collect::<Vec<_>>().as_slice(),
-            "retryable producer messages are retried, not filtered forever");
+        assert_eq!(
+            ids[0], 66,
+            "the user hint is never behind the producer backlog"
+        );
+        assert_eq!(
+            &ids[1..],
+            (1..=64).collect::<Vec<_>>().as_slice(),
+            "retryable producer messages are retried, not filtered forever"
+        );
     }
 
     fn v2_command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
         let state = domain.state().unwrap();
-        domain.execute(&actor, &CommandEnvelope {
-            protocol_version: 2, data_epoch: state.data_epoch,
-            command_id: id.into(), expected_revision: state.revision, command,
-        }, None, || Ok(())).unwrap();
+        domain
+            .execute(
+                &actor,
+                &CommandEnvelope {
+                    protocol_version: 2,
+                    data_epoch: state.data_epoch,
+                    command_id: id.into(),
+                    expected_revision: state.revision,
+                    command,
+                },
+                None,
+                || Ok(()),
+            )
+            .unwrap();
     }
 
     #[tokio::test]
     async fn v2_only_outbox_hands_user_hint_and_leaves_producer_pending_without_transport() {
-        let home = std::env::temp_dir().join(format!("alondra-v2-only-outbox-{}", crate::auth::random_hex(8)));
+        let home = std::env::temp_dir().join(format!(
+            "alondra-v2-only-outbox-{}",
+            crate::auth::random_hex(8)
+        ));
         std::fs::create_dir_all(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
-        v2_command(&domain, Actor::System, "agent", Command::RegisterAgent {
-            agent_id: "agent-a".into(), name: "A".into(),
-        });
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request-a".into(), body: "Request".into(), auto_merge: false,
-        });
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
-            task_id: "task-a".into(), request_id: "request-a".into(), title: "Task".into(),
-            agent_id: Some("agent-a".into()), review_prs: false,
-            dependencies: BTreeSet::new(), stack: None,
-        });
-        v2_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
-            attachments: vec![], interaction_id: "question-a".into(),
-            scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
-            body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
-        });
+        v2_command(
+            &domain,
+            Actor::System,
+            "agent",
+            Command::RegisterAgent {
+                agent_id: "agent-a".into(),
+                name: "A".into(),
+            },
+        );
+        v2_command(
+            &domain,
+            Actor::User {
+                user_id: "u".into(),
+            },
+            "request",
+            Command::CreateRequest {
+                request_id: "request-a".into(),
+                body: "Request".into(),
+                auto_merge: false,
+            },
+        );
+        v2_command(
+            &domain,
+            Actor::User {
+                user_id: "u".into(),
+            },
+            "task",
+            Command::CreateTask {
+                task_id: "task-a".into(),
+                request_id: "request-a".into(),
+                title: "Task".into(),
+                agent_id: Some("agent-a".into()),
+                review_prs: false,
+                dependencies: BTreeSet::new(),
+                stack: None,
+            },
+        );
+        v2_command(
+            &domain,
+            Actor::Agent {
+                agent_id: "agent-a".into(),
+            },
+            "question",
+            Command::AskQuestion {
+                attachments: vec![],
+                interaction_id: "question-a".into(),
+                scope: Scope::Task {
+                    task_id: "task-a".into(),
+                },
+                recipient: Recipient::User,
+                body: "Choose".into(),
+                blocking: true,
+                options: vec![QuestionOption {
+                    id: "yes".into(),
+                    label: "Yes".into(),
+                    description: None,
+                    inputs: vec![],
+                }],
+            },
+        );
         let push = Push::open(&home).unwrap();
-        let user = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
-            .find(|message| message.recipient_kind == "user").unwrap();
-        deliver_one_v2(&domain, &home, &push, None, user.clone()).await.unwrap();
-        assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().iter()
-            .any(|item| item.message_id == user.id && item.state == "handed"));
-        assert!(matches!(domain.state().unwrap().interactions[&"question-a".into()].payload,
-            InteractionPayload::Question { .. }));
-        v2_command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
-            attachments: vec![], interaction_id: "question-a".into(),
-            option_id: "yes".into(), inputs: Default::default(),
-        });
-        let producer = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
-            .find(|message| message.recipient_kind == "agent").unwrap();
-        deliver_one_v2(&domain, &home, &push, None, producer.clone()).await.unwrap();
-        let evidence = domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
-        assert!(!evidence.iter().any(|item| item.message_id == producer.id),
-            "without an Agent transport the producer message is not claimed");
-        assert!(domain.store.lock().unwrap().pending_messages().unwrap().iter()
-            .any(|message| message.id == producer.id && message.state == "pending"));
+        let user = domain
+            .store
+            .lock()
+            .unwrap()
+            .pending_messages()
+            .unwrap()
+            .into_iter()
+            .find(|message| message.recipient_kind == "user")
+            .unwrap();
+        deliver_one_v2(&domain, &home, &push, None, user.clone())
+            .await
+            .unwrap();
+        assert!(
+            domain
+                .store
+                .lock()
+                .unwrap()
+                .delivery_evidence_page(0)
+                .unwrap()
+                .iter()
+                .any(|item| item.message_id == user.id && item.state == "handed")
+        );
+        assert!(matches!(
+            domain.state().unwrap().interactions[&"question-a".into()].payload,
+            InteractionPayload::Question { .. }
+        ));
+        v2_command(
+            &domain,
+            Actor::User {
+                user_id: "u".into(),
+            },
+            "answer",
+            Command::AnswerQuestion {
+                attachments: vec![],
+                interaction_id: "question-a".into(),
+                option_id: "yes".into(),
+                inputs: Default::default(),
+            },
+        );
+        let producer = domain
+            .store
+            .lock()
+            .unwrap()
+            .pending_messages()
+            .unwrap()
+            .into_iter()
+            .find(|message| message.recipient_kind == "agent")
+            .unwrap();
+        deliver_one_v2(&domain, &home, &push, None, producer.clone())
+            .await
+            .unwrap();
+        let evidence = domain
+            .store
+            .lock()
+            .unwrap()
+            .delivery_evidence_page(0)
+            .unwrap();
+        assert!(
+            !evidence.iter().any(|item| item.message_id == producer.id),
+            "without an Agent transport the producer message is not claimed"
+        );
+        assert!(
+            domain
+                .store
+                .lock()
+                .unwrap()
+                .pending_messages()
+                .unwrap()
+                .iter()
+                .any(|message| message.id == producer.id && message.state == "pending")
+        );
         // A retry claim has a fresh version. A stale finisher cannot complete it,
         // and restart makes the ambiguous claim uncertain rather than redelivering.
-        let claim = domain.store.lock().unwrap().claim_message(producer.id).unwrap().unwrap();
-        assert!(!domain.store.lock().unwrap().finish_message(claim.attempt_id,
-            claim.version + 1, State::Handed, None).unwrap());
+        let claim = domain
+            .store
+            .lock()
+            .unwrap()
+            .claim_message(producer.id)
+            .unwrap()
+            .unwrap();
+        assert!(
+            !domain
+                .store
+                .lock()
+                .unwrap()
+                .finish_message(claim.attempt_id, claim.version + 1, State::Handed, None)
+                .unwrap()
+        );
         drop(domain);
         let reopened = DomainRuntime::open(&home).unwrap();
-        let recovered = reopened.store.lock().unwrap().delivery_evidence_page(0).unwrap();
-        assert!(recovered.iter().any(|item| item.attempt_id == claim.attempt_id
-            && item.state == "uncertain" && item.reason.as_deref() == Some("daemon_restarted_after_claim")));
-        assert!(!reopened.store.lock().unwrap().pending_messages().unwrap().iter()
-            .any(|message| message.id == producer.id));
+        let recovered = reopened
+            .store
+            .lock()
+            .unwrap()
+            .delivery_evidence_page(0)
+            .unwrap();
+        assert!(
+            recovered
+                .iter()
+                .any(|item| item.attempt_id == claim.attempt_id
+                    && item.state == "uncertain"
+                    && item.reason.as_deref() == Some("daemon_restarted_after_claim"))
+        );
+        assert!(
+            !reopened
+                .store
+                .lock()
+                .unwrap()
+                .pending_messages()
+                .unwrap()
+                .iter()
+                .any(|message| message.id == producer.id)
+        );
         drop(reopened);
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -384,7 +585,8 @@ mod tests {
             "request",
             Command::CreateRequest {
                 request_id: "request-a".into(),
-                body: "Request".into(), auto_merge: false,
+                body: "Request".into(),
+                auto_merge: false,
             },
         );
         command(
@@ -517,16 +719,46 @@ mod tests {
                 .iter()
                 .any(|e| e.message_id == agent_message.id && e.state == "retryable")
         );
-        command(&hub, Actor::Agent { agent_id: "agent-a".into() }, "info-2",
-            Command::PublishInformation { attachments: vec![], interaction_id: "info-b".into(),
-                scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
-                body: "Another update".into() });
+        command(
+            &hub,
+            Actor::Agent {
+                agent_id: "agent-a".into(),
+            },
+            "info-2",
+            Command::PublishInformation {
+                attachments: vec![],
+                interaction_id: "info-b".into(),
+                scope: Scope::Task {
+                    task_id: "task-a".into(),
+                },
+                recipient: Recipient::User,
+                body: "Another update".into(),
+            },
+        );
         std::fs::write(home.join("service.toml"), "service unavailable").unwrap();
-        let user_message = hub.domain.store.lock().unwrap().pending_messages().unwrap()
-            .into_iter().find(|m| m.interaction_id.as_deref() == Some("info-b")).unwrap();
-        deliver_one(&hub, &push, None, user_message.clone()).await.unwrap();
-        assert!(hub.domain.store.lock().unwrap().delivery_evidence().unwrap().iter()
-            .any(|e| e.message_id == user_message.id && e.state == "retryable"));
+        let user_message = hub
+            .domain
+            .store
+            .lock()
+            .unwrap()
+            .pending_messages()
+            .unwrap()
+            .into_iter()
+            .find(|m| m.interaction_id.as_deref() == Some("info-b"))
+            .unwrap();
+        deliver_one(&hub, &push, None, user_message.clone())
+            .await
+            .unwrap();
+        assert!(
+            hub.domain
+                .store
+                .lock()
+                .unwrap()
+                .delivery_evidence()
+                .unwrap()
+                .iter()
+                .any(|e| e.message_id == user_message.id && e.state == "retryable")
+        );
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
     }

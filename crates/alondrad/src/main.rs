@@ -11,6 +11,7 @@ mod domain_backup;
 mod domain_bootstrap;
 mod domain_content;
 mod domain_cutover;
+mod domain_database_migration;
 mod domain_delivery;
 #[cfg(test)]
 mod domain_e2e_tests;
@@ -163,6 +164,17 @@ fn main() -> Result<()> {
 async fn run(diagnostic: Option<String>) -> Result<()> {
     let config = Config::load().map_err(|e| anyhow!("config.toml unreadable: {e}"))?;
     domain_cutover::refuse_legacy_home(&config.home)?;
+    let (database_migrated, _source_fence) =
+        domain_database_migration::migrate_and_fence(&config.home)?;
+    if database_migrated {
+        log!(
+            "activated verified domain database at {}",
+            config
+                .home
+                .join(domain_database_migration::DATABASE)
+                .display()
+        );
+    }
     if let Some(kept) = retire_empty_older_sidecar(&config.home)? {
         log!(
             "set aside an empty domain database from an older build; copy kept in {}",
