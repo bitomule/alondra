@@ -205,28 +205,7 @@ async fn upload(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signe
 fn attachment_ref(home: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<AttachmentRef> {
     let (id, attachment) = crate::uploads::store(home, name, bytes)?;
     let stored = attachment.stored_path.as_deref().context("upload has no stored copy")?;
-    let stored = Path::new(stored);
-    let mut file = crate::service_files::open_stored_file(home, stored)?;
-    let mut hasher = <sha2::Sha256 as sha2::Digest>::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut total = 0u64;
-    loop {
-        let count = std::io::Read::read(&mut file, &mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        sha2::Digest::update(&mut hasher, &buffer[..count]);
-        total += count as u64;
-    }
-    let digest: String = sha2::Digest::finalize(hasher).iter().map(|byte| format!("{byte:02x}")).collect();
-    let reference = stored.strip_prefix(home).unwrap_or(stored);
-    Ok(AttachmentRef {
-        id,
-        name: attachment.name,
-        content_digest: digest,
-        content_reference: reference.to_string_lossy().into_owned(),
-        bytes: total,
-    })
+    crate::service_files::attachment_ref(home, id, attachment.name, Path::new(stored))
 }
 
 #[derive(Deserialize)]

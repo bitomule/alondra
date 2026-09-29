@@ -853,6 +853,16 @@ impl Service {
             return Ok(result);
         }
         if request.method == "POST" {
+            if crate::v2_client_routes::upload_step(&request.path).is_some() {
+                let body = request.body.clone().context("file transfer body required")?;
+                let (transfers, home, owner, route) = (self.transfers.clone(), self.home.clone(), sender.to_owned(), request.path.clone());
+                let result = tokio::task::spawn_blocking(move || transfers.dispatch_v2(&home, &owner, &route, body)).await?;
+                approved.recheck()?;
+                return Ok(match result {
+                    Ok(body) => json!({"status":200,"body":body}),
+                    Err(error) => json!({"status":422,"body":{"error":crate::service_files::error_code(&error)}}),
+                });
+            }
             let routes = self.routes.as_ref().context("client routes unavailable")?;
             let route = crate::v2_client_routes::parse_write(&request.path).context("v2-only write is not approved")?;
             let body = request.body.as_ref().context("write body required")?;
@@ -861,7 +871,10 @@ impl Service {
             return Ok(reply.into_value());
         }
         anyhow::ensure!(request.method == "GET" && request.body.is_none(), "v2-only read must be GET");
-        let client_read = self.routes.as_ref().and_then(|client| client.read(&request.path));
+        let client_read = match &self.routes {
+            Some(client) => client.read(&request.path).await,
+            None => None,
+        };
         let response = match client_read {
             Some(response) => { approved.recheck()?; response }
             None => crate::domain_api::encrypted_read_runtime(domain, &self.home, &approved, &request.path).await?,
@@ -1260,6 +1273,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || crate::domain_reads::approved_read_path(&request.path),
             "POST" if request.body.is_some() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, true)
                 || crate::v2_client_routes::approved_write_path(&request.path)
+                || crate::v2_client_routes::upload_step(&request.path).is_some()
                 || request.path == "/v2/domain/commands"
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some(),
             "POST" if request.body.is_none() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, false),
@@ -3846,6 +3860,56 @@ agreement_key = "{}"
             assert!(approved_method(&request).is_err(), "{method} {path} is not a relayed operation ({index})");
         }
         assert!(approved_method(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/messages".into(), body: None }).is_err(), "a write needs its body");
+
+        let bytes: Vec<u8> = (0..70_000u32).map(|i| (i % 251) as u8).collect();
+        let digest: String = Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect();
+        let transfer = "01234567-89ab-cdef-0123-456789abcdef";
+        let step = |path: &str, body: Value| {
+            let request = LocalRequest { method: "POST".into(), path: format!("/v2/domain/uploads/{path}"), body: Some(body) };
+            let service = &service;
+            async move { service.dispatch("phone-a", &request).await }
+        };
+        let started = step("start", json!({"transfer_id": transfer, "name": "shot.png", "bytes": bytes.len(), "sha256": digest})).await.unwrap();
+        assert_eq!(started["status"], 200, "{started}");
+        for (index, chunk) in bytes.chunks(64 * 1024).enumerate() {
+            let sent = step("chunk", json!({"transfer_id": transfer, "offset": index * 64 * 1024, "data": URL_SAFE_NO_PAD.encode(chunk)})).await.unwrap();
+            assert_eq!(sent["status"], 200, "{sent}");
+        }
+        let finished = step("finish", json!({"transfer_id": transfer})).await.unwrap();
+        assert_eq!(finished["status"], 200, "{finished}");
+        let attachment: alondra_core::domain_v2::AttachmentRef = serde_json::from_value(finished["body"]["attachment"].clone()).unwrap();
+        assert_eq!((attachment.name.as_str(), attachment.bytes, attachment.content_digest.as_str()), ("shot.png", 70_000, digest.as_str()));
+        assert!(home.join(&attachment.content_reference).is_file(), "the reference is relative to this home: {}", attachment.content_reference);
+
+        let mut fetched = Vec::new();
+        let mut version: Option<String> = None;
+        loop {
+            let mut path = format!("/v2/files/chunk?path={}&offset={}", url::form_urlencoded::byte_serialize(attachment.content_reference.as_bytes()).collect::<String>(), fetched.len());
+            if let Some(version) = &version {
+                path.push_str(&format!("&version={version}"));
+            }
+            let chunk = service.dispatch("phone-a", &read(&path)).await.unwrap();
+            assert_eq!(chunk["status"], 200, "{chunk}");
+            let chunk = &chunk["body"];
+            assert_eq!(chunk["content_digest"], digest.as_str(), "the daemon names the digest of the whole file");
+            version = Some(chunk["version"].as_str().unwrap().to_owned());
+            fetched.extend(URL_SAFE_NO_PAD.decode(chunk["data"].as_str().unwrap()).unwrap());
+            assert_eq!(chunk["next_offset"], fetched.len());
+            if chunk["eof"] == true { break; }
+        }
+        assert_eq!(fetched, bytes, "the file comes back whole, in more than one chunk");
+        let outside = service.dispatch("phone-a", &read("/v2/files/chunk?path=%2Fetc%2Fhosts&offset=0")).await.unwrap();
+        assert_eq!(outside["body"]["code"], "content_unavailable", "only stored copies are served");
+
+        let other = "89abcdef-0123-4567-89ab-cdef01234567";
+        assert_eq!(step("start", json!({"transfer_id": other, "name": "b.png", "bytes": 3, "sha256": "a".repeat(64)})).await.unwrap()["status"], 200);
+        assert_eq!(step("cancel", json!({"transfer_id": other})).await.unwrap()["body"], json!({"cancelled": true}));
+        let after_cancel = step("chunk", json!({"transfer_id": other, "offset": 0, "data": "AAEC"})).await.unwrap();
+        assert_eq!((after_cancel["status"].as_i64(), after_cancel["body"]["error"].as_str()), (Some(422), Some("attachment_transfer_unknown")));
+
+        let message = json!({"text": "See the shot", "attachments": [attachment]});
+        let sent = service.routes.as_ref().unwrap().write("device:phone-a", crate::v2_client_routes::Write::AgentMessage("agent-a".into()), &message, None, &|| Ok(())).await.unwrap();
+        assert_eq!(sent.status, StatusCode::OK, "the reference a relay upload returns is one a command accepts: {}", sent.body);
         auth.revoke("phone-a").unwrap();
         assert!(service.dispatch("phone-a", &read("/v2/runtime")).await.is_err(), "a revoked phone reads nothing");
         drop(service);

@@ -595,3 +595,77 @@ fn writes_are_named_exactly() {
     assert!(atomic_write_path("/v2/agents/a/messages") && atomic_write_path("/v2/orchestrator/messages"));
     assert!(!atomic_write_path("/v2/agents/a/close") && !atomic_write_path("/v2/orchestrator/retry"));
 }
+
+#[tokio::test]
+async fn resolving_conflicts_asks_the_agent_that_owns_an_open_pull_request() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let expected = fixture_json("requests.json");
+    let request = &expected["resolve_conflicts"];
+    let path = request["path"].as_str().unwrap();
+    let (status, answer) = fixture.send("POST", path, &request["body"]).await;
+    assert_eq!((status, &answer), (StatusCode::OK, &request["response"]), "{answer}");
+    let queued = outbox_for(&fixture, Some("agent-a"));
+    assert_eq!(queued.len(), 1);
+    assert!(queued[0].message.starts_with("The user asks you to resolve the conflicts of https://github.com/me/app/pull/7 with main: "), "{}", queued[0].message);
+
+    let (status, error) = fixture.send("POST", "/v2/pull-requests/nothing/resolve-conflicts", &json!({})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+    let (status, error) = fixture.send("POST", path, &json!({"extra": 1})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
+    fixture.command(Actor::System, "closed", Command::ObservePrState {
+        pr_id: "pr-1".into(), head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
+        state: alondra_core::domain_v2::PrState::Closed, merged_head: None });
+    let (status, error) = fixture.send("POST", path, &json!({})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")), "{error}");
+    assert_eq!(outbox_for(&fixture, Some("agent-a")).len(), 1, "a refusal asks nobody");
+}
+
+#[tokio::test]
+async fn setting_a_pull_request_aside_is_the_users_preference_kept_outside_the_domain() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let revision = fixture.domain.state().unwrap().revision;
+    let expected = fixture_json("requests.json");
+    let request = &expected["set_aside"];
+    let path = request["path"].as_str().unwrap();
+    assert_eq!(fixture.get_json("/v2/runtime").await["pull_requests"]["pr-1"]["set_aside"], false);
+    let (status, answer) = fixture.send("POST", path, &request["body"]).await;
+    assert_eq!((status, &answer), (StatusCode::OK, &request["response"]));
+    assert_eq!(fixture.send("POST", path, &json!({})).await.0, StatusCode::OK, "setting it aside twice is the same");
+    assert_eq!(fixture.get_json("/v2/runtime").await["pull_requests"]["pr-1"]["set_aside"], true);
+    assert_eq!(fixture.domain.state().unwrap().revision, revision, "the domain never heard of it");
+    let (status, error) = fixture.send("POST", "/v2/pull-requests/nothing/set-aside", &json!({})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+    assert_eq!(fixture.send("POST", path, &json!({"extra": 1})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn chunked_uploads_and_file_chunks_are_for_the_relay_and_not_on_this_mac() {
+    let fixture = Fixture::start().await;
+    let expected = fixture_json("requests.json");
+    for step in ["start", "chunk", "finish", "cancel"] {
+        let request = &expected[format!("upload_{step}")];
+        let (status, _) = fixture.send("POST", request["path"].as_str().unwrap(), &json!({"transfer_id": "x"})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{step}");
+    }
+    assert_eq!(fixture.get("/v2/files/chunk?path=files%2Fatt-1&offset=0").await, (StatusCode::NOT_FOUND, vec![]));
+    for path in ["/v2/files/chunk?path=files%2Fatt-1&offset=0", "/v2/files/chunk?path=a&offset=5&version=1-2-3",
+        "/v2/files/chunk?offset=0&path=a%2Fb"] {
+        assert!(approved_read_path(path), "{path}");
+    }
+    for path in ["/v2/files/chunk", "/v2/files/chunk?path=a", "/v2/files/chunk?path=a&offset=5", "/v2/files/chunk?path=&offset=0",
+        "/v2/files/chunk?path=a&offset=-1", "/v2/files/chunk?path=a&offset=0&offset=1", "/v2/files/chunk?path=a&offset=0&x=1",
+        "/v2/files/chunk?path=a&offset=0&version=v1", "/v2/files/chunk?path=a%00b&offset=0"] {
+        assert!(!approved_read_path(path), "{path}");
+    }
+    for step in ["start", "chunk", "finish", "cancel"] {
+        assert_eq!(upload_step(&format!("/v2/domain/uploads/{step}")), Some(step));
+    }
+    for path in ["/v2/domain/uploads", "/v2/domain/uploads/other", "/v2/domain/uploads/start/", "/v2/uploads"] {
+        assert_eq!(upload_step(path), None, "{path}");
+    }
+    assert_eq!(parse_write("/v2/pull-requests/pr-1/resolve-conflicts"), Some(Write::ResolveConflicts("pr-1".into())));
+    assert_eq!(parse_write("/v2/pull-requests/pr-1/set-aside"), Some(Write::SetAside("pr-1".into())));
+    assert!(atomic_write_path("/v2/pull-requests/pr-1/resolve-conflicts") && !atomic_write_path("/v2/pull-requests/pr-1/set-aside"));
+}
