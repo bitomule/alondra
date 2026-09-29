@@ -427,7 +427,7 @@ impl DomainStore {
                         None,
                         task_id.as_ref().map(|x| x.0.as_str()),
                         Some(interaction_id.0.as_str()),
-                        "A domain interaction is ready for your review.",
+                        "A domain interaction is ready for your review.".to_owned(),
                     ),
                     DomainEffect::NotifyAgent {
                         agent_id,
@@ -439,14 +439,24 @@ impl DomainStore {
                         Some(agent_id.0.as_str()),
                         task_id.as_ref().map(|x| x.0.as_str()),
                         interaction_id.as_ref().map(|x| x.0.as_str()),
-                        message.as_str(),
+                        message.clone(),
                     ),
-                    DomainEffect::NotifyOrchestrator { interaction_id } => (
+                    DomainEffect::NotifyOrchestrator { interaction_id: Some(interaction_id), .. } => (
                         "orchestrator",
                         None,
                         None,
                         Some(interaction_id.0.as_str()),
-                        "A domain interaction requires your response.",
+                        "A domain interaction requires your response.".to_owned(),
+                    ),
+                    DomainEffect::NotifyOrchestrator { interaction_id: None, request_id } => (
+                        "orchestrator",
+                        None,
+                        None,
+                        None,
+                        match request_id {
+                            Some(request) => format!("The user created Request {request}: turn it into Tasks, or answer it and close it."),
+                            None => "The domain has something for you.".to_owned(),
+                        },
                     ),
                 };
                 repository::exec(&tx, "INSERT INTO domain_messages(revision,ordinal,recipient_kind,agent_id,task_id,interaction_id,message) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![outcome.revision as i64,index as i64,kind,agent,task,interaction,message])?;

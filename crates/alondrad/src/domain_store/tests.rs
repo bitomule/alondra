@@ -63,7 +63,7 @@ fn execute(store: &mut DomainStore, actor: &Actor, id: &str, command: Command) -
 pub(super) fn seeded(store: &mut DomainStore) {
     execute(
         store,
-        &user(),
+        &Actor::Orchestrator { generation: 0 },
         "request",
         Command::CreateRequest {
             request_id: "request-1".into(),

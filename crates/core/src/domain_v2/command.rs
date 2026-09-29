@@ -275,8 +275,13 @@ pub enum DomainEffect {
         interaction_id: Option<InteractionId>,
         message: String,
     },
+    /// Something for the orchestrator's next batch: an interaction addressed to it, or a Request
+    /// the user created.
     NotifyOrchestrator {
-        interaction_id: InteractionId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        interaction_id: Option<InteractionId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        request_id: Option<RequestId>,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
