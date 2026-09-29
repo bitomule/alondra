@@ -2488,10 +2488,9 @@ fn variant_index(c: &Command) -> usize {
         Command::CancelTask { .. } => 38,
         Command::ReopenTask { .. } => 39,
         Command::ArchiveTask { .. } => 40,
-        Command::SendMessage { .. } => 41,
     }
 }
-const COMMAND_KINDS: usize = 42;
+const COMMAND_KINDS: usize = 41;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2581,7 +2580,6 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CancelTask { task_id: ids.task.into() }, false),
         (Command::ReopenTask { task_id: ids.task.into() }, false),
         (Command::ArchiveTask { task_id: ids.task.into(), archived: false }, false),
-        (send("fresh-message", Recipient::Agent { agent_id: ids.agent.into() }, MessageKind::Message, "Hi"), false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -2788,168 +2786,4 @@ fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
         scope: Scope::Task { task_id: "scheduled-task".into() }, recipient: Recipient::User, body: "Started".into(),
     }).unwrap();
     state.validate().unwrap();
-}
-fn send(id: &str, recipient: Recipient, purpose: MessageKind, text: &str) -> Command {
-    Command::SendMessage {
-        message_id: id.into(),
-        recipient,
-        purpose,
-        text: text.into(),
-        attachments: vec![],
-        interaction_id: None,
-        pr_id: None,
-        mark_read: false,
-    }
-}
-fn to_agent() -> Recipient {
-    Recipient::Agent {
-        agent_id: "a".into(),
-    }
-}
-#[test]
-fn a_user_message_reaches_its_agent_worded_by_kind_and_a_reply_marks_information_read_atomically() {
-    let mut s = fixture();
-    exec(
-        &mut s,
-        agent(),
-        Command::PublishInformation {
-            attachments: vec![],
-            interaction_id: "info".into(),
-            scope: Scope::Task { task_id: "t".into() },
-            recipient: Recipient::User,
-            body: "Useful result".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(s.projection().counts.unread_information, 1);
-    let mut reply = send("m-reply", to_agent(), MessageKind::Reply, "Thanks, ship it");
-    if let Command::SendMessage { interaction_id, mark_read, .. } = &mut reply {
-        *interaction_id = Some("info".into());
-        *mark_read = true;
-    }
-    let out = exec(&mut s, user(), reply.clone()).unwrap();
-    assert_eq!(
-        out.effects,
-        vec![DomainEffect::NotifyAgent {
-            agent_id: "a".into(),
-            task_id: Some("t".into()),
-            interaction_id: Some("info".into()),
-            message: "Thanks, ship it".into(),
-        }]
-    );
-    assert_eq!(out.created_ids, ["m-reply"]);
-    assert_eq!(s.projection().counts.unread_information, 0, "the reply read the information in its own commit");
-    assert_eq!(s.messages[&"m-reply".into()].body, "Thanks, ship it");
-    assert_eq!(s.messages[&"m-reply".into()].at_revision, s.revision);
-    s.validate().unwrap();
-
-    reject_unchanged(&mut s, user(), reply, "idempotency_conflict");
-    reject_unchanged(&mut s, agent(), send("m-x", to_agent(), MessageKind::Message, "hi"), "forbidden");
-    reject_unchanged(&mut s, user(), send("m-x", to_agent(), MessageKind::Message, "  "), "invalid_input");
-    reject_unchanged(&mut s, user(), send("m-x", Recipient::User, MessageKind::Message, "hi"), "invalid_input");
-    reject_unchanged(
-        &mut s,
-        user(),
-        send("m-x", Recipient::Agent { agent_id: "nobody".into() }, MessageKind::Message, "hi"),
-        "not_found",
-    );
-    reject_unchanged(&mut s, user(), send("m-x", to_agent(), MessageKind::Reply, "no interaction named"), "invalid_input");
-    reject_unchanged(&mut s, user(), send("m-x", Recipient::Orchestrator, MessageKind::MoreContext, "why"), "invalid_input");
-    let mut marks_a_message = send("m-x", to_agent(), MessageKind::Message, "hi");
-    if let Command::SendMessage { mark_read, .. } = &mut marks_a_message {
-        *mark_read = true;
-    }
-    reject_unchanged(&mut s, user(), marks_a_message, "invalid_input");
-
-    let out = exec(&mut s, user(), send("m-plain", to_agent(), MessageKind::Message, "Rename it")).unwrap();
-    assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { task_id: None, interaction_id: None, message, .. }] if message == "Rename it"));
-    let out = exec(&mut s, user(), send("m-orchestrator", Recipient::Orchestrator, MessageKind::Message, "Plan the week")).unwrap();
-    assert_eq!(out.effects, vec![DomainEffect::TellOrchestrator { message: "Plan the week".into() }]);
-}
-#[test]
-fn a_message_about_a_question_pr_or_context_names_what_it_is_about_and_who_owns_it() {
-    let mut s = fixture();
-    register(&mut s);
-    exec(
-        &mut s,
-        agent(),
-        Command::AskQuestion {
-            attachments: vec![],
-            interaction_id: "q".into(),
-            scope: Scope::Task { task_id: "t".into() },
-            recipient: Recipient::User,
-            body: "Which one?".into(),
-            blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }],
-        },
-    )
-    .unwrap();
-    let about = |command: &mut Command, interaction: Option<&str>, pr: Option<&str>| {
-        if let Command::SendMessage { interaction_id, pr_id, .. } = command {
-            *interaction_id = interaction.map(Into::into);
-            *pr_id = pr.map(Into::into);
-        }
-    };
-    let mut changes = send("m-changes", to_agent(), MessageKind::PrChanges, "Rename it");
-    about(&mut changes, None, Some("pr"));
-    let out = exec(&mut s, user(), changes).unwrap();
-    assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { task_id: Some(task), message, .. }]
-        if task.0 == "t" && message == "The user requests changes on https://github.com/owner/repo/pull/1:\n\nRename it"));
-    let mut question = send("m-question", to_agent(), MessageKind::PrQuestion, "Why this base?");
-    about(&mut question, None, Some("pr"));
-    let out = exec(&mut s, user(), question).unwrap();
-    assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { message, .. }]
-        if message.starts_with("The user asks about https://github.com/owner/repo/pull/1:")));
-    let mut more = send("m-more", to_agent(), MessageKind::MoreContext, "");
-    about(&mut more, Some("q"), None);
-    let out = exec(&mut s, user(), more.clone()).unwrap();
-    assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { interaction_id: Some(i), message, .. }]
-        if i.0 == "q" && message.starts_with("The user needs more context before deciding.") && message.ends_with("and ask again.")),
-        "a text-less more-context request is a message");
-    assert!(matches!(&s.interactions[&"q".into()].payload, InteractionPayload::Question { answer: None, .. }), "it leaves the question open");
-
-    let mut marks_a_question = send("m-mark", to_agent(), MessageKind::Reply, "Later");
-    about(&mut marks_a_question, Some("q"), None);
-    if let Command::SendMessage { mark_read, .. } = &mut marks_a_question {
-        *mark_read = true;
-    }
-    reject_unchanged(&mut s, user(), marks_a_question, "invalid_action_for_kind");
-    let mut wrong_pr = send("m-wrong", to_agent(), MessageKind::PrChanges, "x");
-    about(&mut wrong_pr, None, Some("missing"));
-    reject_unchanged(&mut s, user(), wrong_pr, "not_found");
-    let mut both = send("m-both", to_agent(), MessageKind::PrChanges, "x");
-    about(&mut both, Some("q"), Some("pr"));
-    reject_unchanged(&mut s, user(), both, "invalid_input");
-
-    exec(&mut s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() }).unwrap();
-    let mut other_agent = send("m-other", Recipient::Agent { agent_id: "b".into() }, MessageKind::PrChanges, "x");
-    about(&mut other_agent, None, Some("pr"));
-    reject_unchanged(&mut s, user(), other_agent, "not_assigned");
-    let mut other_question = send("m-other-q", Recipient::Agent { agent_id: "b".into() }, MessageKind::MoreContext, "");
-    about(&mut other_question, Some("q"), None);
-    reject_unchanged(&mut s, user(), other_question, "not_assigned");
-    s.validate().unwrap();
-}
-#[test]
-fn a_message_lists_its_attachments_and_old_snapshots_have_no_messages() {
-    let mut s = fixture();
-    let file = AttachmentRef {
-        id: "att-1".into(),
-        name: "shot.png".into(),
-        content_digest: "d".repeat(64),
-        content_reference: "files/uploads/att-1".into(),
-        bytes: 3,
-    };
-    let mut command = send("m-file", to_agent(), MessageKind::Message, "");
-    if let Command::SendMessage { attachments, .. } = &mut command {
-        attachments.push(file.clone());
-    }
-    let out = exec(&mut s, user(), command).unwrap();
-    assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { message, .. }]
-        if message.contains("- shot.png: files/uploads/att-1")), "an attachment alone is a message");
-    assert_eq!(s.messages[&"m-file".into()].attachments, [file]);
-    let mut without_messages = serde_json::to_value(DomainState::new("epoch")).unwrap();
-    assert!(without_messages.get("messages").is_none(), "an empty ledger leaves the snapshot as it was");
-    without_messages["revision"] = 0.into();
-    assert!(serde_json::from_value::<DomainState>(without_messages).unwrap().messages.is_empty());
 }
