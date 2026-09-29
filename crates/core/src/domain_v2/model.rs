@@ -250,6 +250,8 @@ pub enum InputValue {
 pub struct QuestionOption {
     pub id: String,
     pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub inputs: Vec<InputSpec>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

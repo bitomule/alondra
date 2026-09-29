@@ -376,7 +376,7 @@ mod tests {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
             scope: Scope::Task { task_id: format!("task-{agent}").into() }, recipient: Recipient::User,
             body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{agent}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
@@ -608,7 +608,7 @@ mod tests {
             attachments: vec![], interaction_id: "question-2".into(),
             scope: Scope::Task { task_id: "task-session-a".into() }, recipient: Recipient::User,
             body: "Again".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
         });
         command(&domain, Actor::User { user_id: "u".into() }, "answer-2", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "question-2".into(), option_id: "yes".into(), inputs: Default::default(),

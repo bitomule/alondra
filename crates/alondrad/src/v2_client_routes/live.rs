@@ -34,6 +34,11 @@ impl Live {
         self.presence.lock().expect("presence poisoned").insert(client.to_owned(), now_millis());
     }
 
+    #[cfg(test)]
+    pub(crate) fn last_touched(&self, client: &str) -> Option<i64> {
+        self.presence.lock().expect("presence poisoned").get(client).copied()
+    }
+
     pub(crate) fn apply(&self, event: &Event) {
         self.view.lock().expect("live sessions poisoned").apply(self.next(), now_millis(), event);
     }

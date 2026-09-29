@@ -153,7 +153,7 @@ fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
                 "inputSchema":{"type":"object","properties":{
                     "protocol_version":{"type":"integer","const":2},"data_epoch":{"type":"string"},
                     "command_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},
-                    "command":{"type":"object","properties":{"kind":{"const":"ask_question"}},"required":["kind"],"description":"Typed ask_question with interaction_id, scope, recipient, body, blocking and options"}
+                    "command":{"type":"object","properties":{"kind":{"const":"ask_question"}},"required":["kind"],"description":"Typed ask_question with interaction_id, scope, recipient, body, blocking and options ({id, label, description?, inputs}); a description says what choosing that option means"}
                 },"required":["protocol_version","data_epoch","command_id","expected_revision","command"],"additionalProperties":false}})
         } else {
             json!({"name": "ask", "description": format!("Structured question to {user} (or, with to_orchestrator: true, to the orchestrator instead of {user}) — use only for a real decision, never a handoff. Returns its number right away; Alondra types the answer into this session when it comes."), "inputSchema": ask_schema(user)})

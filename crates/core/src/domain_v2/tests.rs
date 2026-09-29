@@ -551,6 +551,35 @@ fn reaccepted_feedback_then_reassignment_needs_fresh_acceptance() {
     );
 }
 #[test]
+fn an_option_carries_an_optional_description() {
+    let ask = |id: &str, description: Option<&str>| Command::AskQuestion {
+        attachments: vec![],
+        interaction_id: id.into(),
+        scope: Scope::Task { task_id: "t".into() },
+        recipient: Recipient::User,
+        body: "Which one?".into(),
+        blocking: false,
+        options: vec![QuestionOption {
+            id: "keep".into(),
+            label: "Keep it".into(),
+            description: description.map(String::from),
+            inputs: vec![],
+        }],
+    };
+    let mut s = fixture();
+    reject_unchanged(&mut s, agent(), ask("blank", Some("  ")), "invalid_input");
+    exec(&mut s, agent(), ask("q", Some("Nothing changes for the release"))).unwrap();
+    let InteractionPayload::Question { options, .. } = &s.interactions[&"q".into()].payload else { panic!("not a question") };
+    assert_eq!(options[0].description.as_deref(), Some("Nothing changes for the release"));
+    let wire = serde_json::to_value(&options[0]).unwrap();
+    assert_eq!(wire["description"], "Nothing changes for the release");
+    let bare = QuestionOption { id: "keep".into(), label: "Keep it".into(), description: None, inputs: vec![] };
+    assert_eq!(serde_json::to_value(&bare).unwrap(), serde_json::json!({"id": "keep", "label": "Keep it", "inputs": []}),
+        "an option without a description serializes as before");
+    let older: QuestionOption = serde_json::from_value(serde_json::json!({"id": "keep", "label": "Keep it", "inputs": []})).unwrap();
+    assert_eq!(older, bare);
+}
+#[test]
 fn typed_option_ids_and_open_question_guard() {
     let mut s = fixture();
     exec(
@@ -568,6 +597,7 @@ fn typed_option_ids_and_open_question_guard() {
             options: vec![QuestionOption {
                 id: "yes".into(),
                 label: "Sí".into(),
+                description: None,
                 inputs: vec![InputSpec {
                     id: "why".into(),
                     kind: InputKind::Text,
@@ -740,6 +770,36 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]
+fn the_daemon_authorizes_and_claims_an_auto_merge_and_the_agent_completes_after_it() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let authorize = |id: &str| Command::AuthorizeMerge { authorization_id: id.into(), presentation_id: "d".into(),
+        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash };
+    reject_unchanged(&mut s, agent(), authorize("auto"), "forbidden");
+    exec(&mut s, Actor::System, authorize("auto")).unwrap();
+    assert_eq!(s.merge_authorizations[&"auto".into()].user_id, AUTO_MERGE_USER);
+    let claim = |id: &str| Command::ClaimMergeAuthorization { authorization_id: id.into(), remote_head: "head1".into(),
+        remote_base: "main".into(), base_verified: true };
+    exec(&mut s, Actor::System, claim("auto")).unwrap();
+    assert_eq!(s.merge_authorizations[&"auto".into()].attempt, MergeAttemptState::Claimed);
+    assert_eq!(s.merge_authorizations[&"auto".into()].claimed_by, Some("a".into()), "the merge is on the Task's behalf");
+    exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+        state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
+    assert_eq!(s.merge_authorizations[&"auto".into()].attempt, MergeAttemptState::Confirmed);
+    exec(&mut s, agent(), Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn the_daemon_cannot_claim_a_merge_the_user_authorized() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    reject_unchanged(&mut s, Actor::System, Command::ClaimMergeAuthorization { authorization_id: "auth".into(),
+        remote_head: "head1".into(), remote_base: "main".into(), base_verified: true }, "not_assigned");
+}
+#[test]
 fn head_push_invalidates_authorization_and_merge_external_does_not_accept() {
     let mut s = fixture();
     register(&mut s);
@@ -875,7 +935,7 @@ fn a_manager_retitles_a_task_and_moves_its_revision() {
 #[test]
 fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_takes_an_answer() {
     let mut s = fixture();
-    let option = QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] };
+    let option = QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] };
     exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() },
         recipient: Recipient::User, body: "Ship?".into(), blocking: true, options: vec![option.clone()] }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
@@ -897,7 +957,7 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     reject_unchanged(&mut s, agent(), Command::WithdrawQuestion { interaction_id: "q2".into() }, "invalid_action_for_kind");
     exec(&mut s, orchestrator(), Command::AskQuestion { attachments: vec![], interaction_id: "oq".into(),
         scope: Scope::Orchestrator { request_id: Some("r".into()) }, recipient: Recipient::User, body: "Scope?".into(), blocking: false,
-        options: vec![QuestionOption { id: "a".into(), label: "A".into(), inputs: vec![] }] }).unwrap();
+        options: vec![QuestionOption { id: "a".into(), label: "A".into(), description: None, inputs: vec![] }] }).unwrap();
     exec(&mut s, orchestrator(), Command::WithdrawQuestion { interaction_id: "oq".into() }).unwrap();
     assert!(s.interactions[&"oq".into()].withdrawn);
 }
@@ -1202,6 +1262,7 @@ fn question_explicitly_linked_to_pr_keeps_identity_and_answer() {
             options: vec![QuestionOption {
                 id: "ok".into(),
                 label: "Okay".into(),
+                description: None,
                 inputs: vec![],
             }],
         },
@@ -1305,6 +1366,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
             options: vec![QuestionOption {
                 id: "proceed".into(),
                 label: "Continuar".into(),
+                description: None,
                 inputs: vec![InputSpec {
                     id: "explanation".into(),
                     kind: InputKind::Text,
@@ -1364,6 +1426,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
             options: vec![QuestionOption {
                 id: "proceed".into(),
                 label: "Proceed".into(),
+                description: Some("Merge once the checks pass".into()),
                 inputs: vec![],
             }],
         },
@@ -1421,6 +1484,7 @@ fn recipient_scope_and_generation_preserve_logical_coordination() {
             options: vec![QuestionOption {
                 id: "ok".into(),
                 label: "Proceed".into(),
+                description: None,
                 inputs: vec![],
             }],
         },
@@ -1475,6 +1539,7 @@ fn recipient_scope_and_generation_preserve_logical_coordination() {
             options: vec![QuestionOption {
                 id: "ok".into(),
                 label: "Okay".into(),
+                description: None,
                 inputs: vec![],
             }],
         },
@@ -1722,6 +1787,7 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
             options: vec![QuestionOption {
                 id: "yes".into(),
                 label: "Yes".into(),
+                description: None,
                 inputs: vec![],
             }],
         },
@@ -2565,6 +2631,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
     let option = QuestionOption {
         id: "yes".into(),
         label: "Yes".into(),
+        description: None,
         inputs: vec![],
     };
     let list = vec![
@@ -2709,7 +2776,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
         is_final: true }).unwrap();
     exec(&mut s, b.clone(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(),
         scope: Scope::Task { task_id: "t2".into() }, recipient: Recipient::User, body: "Q?".into(),
-        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }] }).unwrap();
+        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }] }).unwrap();
     exec(&mut s, user(), Command::AuthorizeMerge { authorization_id: "auth2".into(),
         presentation_id: "pres2".into(), pr_id: "pr2".into(), expected_head: "head1".into(),
         method: MergeMethod::Squash }).unwrap();

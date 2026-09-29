@@ -11,3 +11,4 @@ pub use command::*;
 pub use model::*;
 pub use projection::*;
 pub use schedule::*;
+pub use rules::AUTO_MERGE_USER;

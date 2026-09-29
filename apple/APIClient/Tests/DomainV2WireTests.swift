@@ -149,6 +149,14 @@ final class DomainV2WireTests: XCTestCase {
             if case .interaction(interactionId: "q") = child.subject { return true }
             return false
         }, "An explicitly linked question remains a child with its own ID")
+        guard case .question(let options, _) = try XCTUnwrap(pr.interactions.first { $0.id == "q" }).payload else {
+            return XCTFail("q is a question")
+        }
+        XCTAssertEqual(options.map(\.description), ["Merge once the checks pass"])
+        let bare = try JSONDecoder().decode(DomainV2.QuestionOption.self, from: Data(#"{"id":"a","label":"A","inputs":[]}"#.utf8))
+        XCTAssertNil(bare.description)
+        XCTAssertEqual(String(decoding: try JSONEncoder().encode(bare), as: UTF8.self).contains("description"), false,
+                       "an option without a description encodes as before")
         XCTAssertTrue(prRoot.children.contains { child in
             child.availableActions.contains { $0.kind == "authorize_merge" && $0.enabled }
         })

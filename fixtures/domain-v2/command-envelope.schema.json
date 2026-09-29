@@ -368,6 +368,9 @@
         "label": {
           "type": "string"
         },
+        "description": {
+          "type": "string"
+        },
         "inputs": {
           "type": "array",
           "items": {
