@@ -1,0 +1,31 @@
+{
+  "machine": {"at": 1000, "memory_total": 34359738368, "memory_available": 8589934592, "memory_free_percent": 25, "load": [2.5, 2.0, 1.5], "cpus": 10, "cpu_usage": 42.0, "disk_total": 1000000000000, "disk_available": 400000000000, "unreliable": false},
+  "usage": {"week_percent": 53.0, "week_resets_at": 2000, "today_spent": 9.0, "today_share": 14.0, "per_day_left": 12.0, "measured_at": 1000, "over_pace": false},
+  "update": {"current": "0.1.11", "latest": "0.1.12", "available": true},
+  "nodes": [
+    {"session_id": "agent-a", "short_id": "a1b2c3", "name": "Instance A", "cwd": "/Users/me/Projects/repo", "is_orchestrator": false, "has_plugin": true,
+     "state": "working", "state_since": 1000, "state_source": "hooks", "busy": true, "waiting_permission": false, "turn": 3, "usage_limited": false, "last_seen": 1000,
+     "last_message": "Running the suite", "daemon_needs": "A decision on the flag",
+     "background": [{"kind": "agent", "label": "Explore the parser", "started_at": 900, "suspect": false}],
+     "project": "App"},
+    {"session_id": "agent-b", "short_id": "d4e5f6", "name": "Instance B", "is_orchestrator": false, "has_plugin": true,
+     "state": "your_turn", "state_since": 1000, "state_source": "hooks", "busy": false, "waiting_permission": false, "turn": 1, "usage_limited": false, "last_seen": 1000,
+     "project": "Web"},
+    {"session_id": "alondra-orchestrator", "short_id": "alondra-orchestrator", "name": "Orchestrator", "is_orchestrator": true, "has_plugin": true,
+     "state": "working", "state_since": 1000, "state_source": "daemon", "busy": true, "waiting_permission": false, "turn": 9, "usage_limited": false, "last_seen": 1000,
+     "orchestrator_runtime": {"phase": "failed", "can_retry": true, "can_cancel": true, "cancel_requested": false, "active_run_id": "run-7", "queue_depth": 2, "last_error": "The batch stopped halfway", "retry_at": null}},
+    {"session_id": "broken", "short_id": "broken", "is_orchestrator": false}
+  ],
+  "orchestrator": {"phase": "failed", "can_retry": true, "can_cancel": true, "active_run_id": "run-7", "queue_depth": 2, "last_error": "The batch stopped halfway"},
+  "tasks": {
+    "task-1": {"project": "App", "state_since": 1000, "effort": "hard", "cancel_reason": null}
+  },
+  "requests": {
+    "request-1": {"created_at": 1000, "withdrawn": false, "answer": null},
+    "request-2": {"created_at": 1000, "withdrawn": false, "answer": "Nothing to change: it already works"}
+  },
+  "pull_requests": {
+    "pr-1": {"title": "Editor covers readable text", "checks": [{"name": "build", "state": "passed"}, {"name": "ui tests", "state": "failed"}], "conflicts": true, "mergeability_unknown": false, "set_aside": false}
+  },
+  "inbox_times": {"interaction:info-1": 1000}
+}

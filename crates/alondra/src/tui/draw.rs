@@ -10,10 +10,12 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block as Panel, BorderType, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap};
 
-use super::inbox::{action, interaction_of, merge_method, pr_state};
+use super::inbox::{Section, action, interaction_of, merge_method, pr_state, section_of};
 use super::md::{self, str_width, truncate, wrap};
 use super::{App, Key, Pane, Screen, Target, View, unavailable};
-use crate::i18n;
+use crate::i18n::{self, Occupancy};
+use crate::runtime::FleetNode;
+use alondra_core::NodeState;
 
 const ACCENT: Color = Color::LightYellow;
 const DIM: Color = Color::DarkGray;
@@ -24,11 +26,25 @@ const COMMENT: Color = Color::LightMagenta;
 pub fn draw(f: &mut Frame, app: &mut App) {
     let [head, body, foot] = Layout::vertical([Constraint::Length(1), Constraint::Min(3), Constraint::Length(1)]).areas(f.area());
     draw_head(f, app, head);
+    let body = if let Some(text) = delivery_warning(&app.deliveries) {
+        let [warning, rest] = Layout::vertical([Constraint::Length(1), Constraint::Min(2)]).areas(body);
+        f.render_widget(Paragraph::new(text).style(Style::new().fg(ACCENT)), warning);
+        rest
+    } else {
+        body
+    };
     let body = match app.composer.as_ref() {
         Some(c) => {
-            let h = composer_height(&c.input, body.width).min(body.height.saturating_sub(3));
+            let preview = c.chips.iter().rev().find(|c| app.previews.contains_key(&c.seq)).map(|c| c.seq);
+            let preview_h = if preview.is_some() { PREVIEW_ROWS } else { 0 };
+            let h = (composer_height(&c.input, body.width) + chips_height(&c.chips) + form_height(c.form.as_ref()) + preview_h).min(body.height.saturating_sub(3));
             let [main, comp] = Layout::vertical([Constraint::Min(3), Constraint::Length(h)]).areas(body);
-            draw_composer(f, app, comp);
+            let preview_area = draw_composer(f, app, comp, preview_h);
+            if let (Some(seq), Some(area)) = (preview, preview_area)
+                && let Some(state) = app.previews.get_mut(&seq)
+            {
+                f.render_stateful_widget(ratatui_image::StatefulImage::default(), area, state);
+            }
             main
         }
         None => body,
@@ -42,6 +58,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
             Screen::Tasks => tasks::draw_tasks(f, app, body),
             Screen::Fleet => tasks::draw_agents(f, app, body),
         }
+    }
+    if let Some(form) = app.composer.as_ref().and_then(|c| c.form.as_ref()) {
+        draw_form_popup(f, form, body);
     }
     draw_foot(f, app, foot);
     draw_flash(f, app, body);
@@ -138,6 +157,45 @@ fn centered_lines(f: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
     f.render_widget(Paragraph::new(lines).centered().wrap(Wrap { trim: true }), r);
 }
 
+pub(super) fn since_phrase(ms: i64) -> String {
+    let t = ago(ms);
+    if now_millis() - ms < 60_000 { tr!("since just now", "desde ahora mismo").into() } else { trf!("for {t}", "desde hace {t}") }
+}
+
+pub(super) fn ago_phrase(ms: i64) -> String {
+    if now_millis() - ms < 60_000 {
+        return tr!("just now", "ahora mismo").into();
+    }
+    let t = ago(ms);
+    trf!("{t} ago", "hace {t}")
+}
+
+pub(super) fn state_color(s: NodeState) -> Color {
+    match s {
+        NodeState::WaitingAnswer => Color::Yellow,
+        NodeState::YourTurn => Color::LightYellow,
+        NodeState::WaitingMerge => Color::LightGreen,
+        NodeState::Unclear => Color::Magenta,
+        NodeState::Stalled => Color::LightRed,
+        NodeState::Delivered => Color::Cyan,
+        NodeState::WaitingMachine => Color::LightRed,
+        NodeState::Working => Color::Green,
+        NodeState::Done => DIM,
+    }
+}
+
+/// The orchestrator keeps its node state's colour; every other session is busy, free or waiting.
+pub(super) fn node_color(n: &FleetNode) -> Color {
+    if n.is_orchestrator {
+        return state_color(n.state);
+    }
+    match Occupancy::of(n) {
+        Occupancy::Busy => Color::Green,
+        Occupancy::Free => SOFT,
+        Occupancy::WaitingMachine => Color::LightRed,
+    }
+}
+
 pub(super) fn state_glyph(s: TaskState) -> (&'static str, Color) {
     match s {
         TaskState::NotStarted => ("○", DIM),
@@ -184,13 +242,135 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         left.push(Span::raw(" "));
         left.push(Span::styled(tr!(" no connection to alondrad ", " sin conexión con alondrad "), Style::new().fg(Color::White).bg(Color::Red).add_modifier(Modifier::BOLD)));
     }
+    let daemon = app.daemon.as_ref();
+    let reading = |pick: for<'a> fn(&'a crate::runtime::Runtime) -> bool| app.runtime.as_ref().filter(|r| pick(r)).or(daemon.filter(|r| pick(r)));
+    if let Some(notice) = reading(|r| r.update.is_some()).and_then(|r| r.update.as_ref()).and_then(update_notice) {
+        left.push(Span::raw(" "));
+        left.push(notice);
+    }
+    let lw: usize = left.iter().map(Span::width).sum();
     f.render_widget(Paragraph::new(Line::from(left)), area);
+    if !app.loaded {
+        return;
+    }
+    let machine = reading(|r| r.machine.is_some()).and_then(|r| r.machine.as_ref());
+    let usage = reading(|r| r.usage.is_some()).and_then(|r| r.usage.as_ref());
+    if machine.is_none() && usage.is_none() {
+        return;
+    }
+    let reads = readings(machine, usage);
+    let working = app.runtime.as_ref().map_or(0, crate::runtime::Runtime::working);
+    let fits = |spans: &[Span]| lw + spans.iter().map(Span::width).sum::<usize>() + 2 <= area.width as usize;
+    let right = [gauges(&reads, working, true), gauges(&reads, working, false)].into_iter().find(|r| fits(r));
+    if let Some(right) = right {
+        f.render_widget(Paragraph::new(Line::from(right).right_aligned()), area);
+    }
+}
+
+/// A newer release, or one that was installed but refused to start: one quiet mark in the header.
+fn update_notice(update: &alondra_core::update::Status) -> Option<Span<'static>> {
+    if let Some(rejected) = &update.rejected {
+        let version = rejected.version.clone().unwrap_or_default();
+        return Some(Span::styled(trf!("{version} did not start · alondra doctor", "{version} no arrancó · alondra doctor"), Style::new().fg(ACCENT)));
+    }
+    let latest = update.latest.as_deref().filter(|_| update.available)?;
+    Some(Span::styled(trf!("↑ {latest} · alondra update", "↑ {latest} · alondra update"), Style::new().fg(DIM)))
+}
+
+/// The header bars, named when there is room (`Claude week ▰▰▱▱ 53%`) and bare when not.
+fn gauges(reads: &[Reading], working: usize, named: bool) -> Vec<Span<'static>> {
+    let mut out = vec![Span::styled(trf!("{working} working ", "{working} trabajando "), Style::new().fg(DIM))];
+    let mut group = None;
+    for r in reads {
+        let color = match r.level {
+            Level::Calm => ACCENT,
+            Level::Warm => Color::Yellow,
+            Level::Hot => Color::LightRed,
+        };
+        let new_group = group != Some(r.group);
+        let gap = match (named, group.is_some() && new_group) {
+            (false, _) => " ",
+            (true, true) => " │ ",
+            (true, false) => "  ",
+        };
+        out.push(Span::styled(gap, Style::new().fg(DIM)));
+        if named {
+            if new_group {
+                out.push(Span::styled(format!("{} ", r.group), Style::new().fg(SOFT).add_modifier(Modifier::BOLD)));
+            }
+            out.push(Span::styled(format!("{} ", r.name), Style::new().fg(SOFT)));
+        }
+        group = Some(r.group);
+        let filled = ((r.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize).max(1);
+        out.push(Span::styled("▰".repeat(filled), Style::new().fg(color)));
+        out.push(Span::styled("▱".repeat(BAR_CELLS - filled), Style::new().fg(DIM)));
+        let label_style = if r.level == Level::Hot { Style::new().fg(Color::LightRed).add_modifier(Modifier::BOLD) } else { Style::new().fg(DIM) };
+        out.push(Span::styled(format!(" {}", if named { &r.label } else { &r.short }), label_style));
+    }
+    out.push(Span::raw(" "));
+    out
+}
+
+const BAR_CELLS: usize = 4;
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub(super) enum Level {
+    Calm,
+    Warm,
+    Hot,
+}
+
+#[derive(Debug, PartialEq)]
+pub(super) struct Reading {
+    pub group: &'static str,
+    pub name: &'static str,
+    pub value: f64,
+    pub label: String,
+    pub short: String,
+    pub level: Level,
+}
+
+/// The header bars, always in this order: the week's Claude usage, today against its share of
+/// the week, memory in use and CPU in use. `?` explains them.
+pub(super) fn readings(m: Option<&alondra_core::Machine>, u: Option<&alondra_core::usage::Usage>) -> Vec<Reading> {
+    let mut out = vec![];
+    if let Some(u) = u {
+        let week = format!("{}%", u.week_percent.round());
+        out.push(Reading { group: "Claude", name: tr!("week", "semana"), value: u.week_percent / 100.0, short: week.clone(), label: week, level: if u.week_percent >= 85.0 { Level::Hot } else { Level::Calm } });
+        if let Some((spent, share)) = u.today_spent.zip(u.today_share) {
+            let level = if u.over_pace { Level::Hot } else if spent >= share * 0.75 { Level::Warm } else { Level::Calm };
+            let (spent, share) = (spent.round(), share.round());
+            out.push(Reading {
+                group: "Claude",
+                name: tr!("today", "hoy"),
+                value: spent / share.max(0.1),
+                label: trf!("{spent}% of {share}%", "{spent}% de {share}%"),
+                short: format!("{spent}/{share}%"),
+                level,
+            });
+        }
+    }
+    let Some(m) = m else { return out };
+    if let Some(free) = m.memory_free_percent {
+        let used = 100 - free.min(100);
+        let level = if free < 15 { Level::Hot } else if free < 30 { Level::Warm } else { Level::Calm };
+        out.push(Reading { group: "Mac", name: "RAM", value: used as f64 / 100.0, label: format!("{used}%"), short: format!("{used}%"), level });
+    }
+    let cpu = m.cpu_usage as f64;
+    let level = if m.unreliable { Level::Hot } else if cpu >= 85.0 { Level::Warm } else { Level::Calm };
+    out.push(Reading { group: "Mac", name: "CPU", value: cpu / 100.0, label: format!("{}%", cpu.round()), short: format!("{}%", cpu.round()), level });
+    out
 }
 
 fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
     let w = area.width;
     app.detail_view.shown = w >= 84;
-    if w >= 84 {
+    if w >= 170 {
+        let [list, detail, fleet] = Layout::horizontal([Constraint::Length(50), Constraint::Min(40), Constraint::Length(40)]).areas(area);
+        draw_inbox_list(f, app, list);
+        draw_item_detail(f, app, detail);
+        tasks::draw_compact_agents(f, app, fleet);
+    } else if w >= 84 {
         let lw = (w * 2 / 5).clamp(36, 56);
         let [list, detail] = Layout::horizontal([Constraint::Length(lw), Constraint::Min(30)]).areas(area);
         draw_inbox_list(f, app, list);
@@ -217,8 +397,15 @@ fn item_lines(app: &App, item: &InboxItem, width: usize, selected: bool, nested:
     let title_style = if selected { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
     let first = fit(vec![bar.clone(), hook, Span::styled(format!("{glyph} "), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(row_title(item), title_style)], width);
     let mut meta = vec![bar, gap, Span::styled(format!("  {} · {kind}", app.agent_name(item.agent_id.as_ref())), Style::new().fg(DIM))];
+    if let Some(at) = app.runtime.as_ref().and_then(|r| r.inbox_times.get(&item.id)) {
+        meta.push(Span::styled(format!(" · {}", ago(*at)), Style::new().fg(DIM)));
+    }
     if item.pending {
         meta.push(Span::styled(tr!(" · pending", " · pendiente"), Style::new().fg(ACCENT)));
+    }
+    let clips = interaction_of(item).and_then(|id| app.interaction(id)).map_or(0, |i| i.attachments.len());
+    if clips > 0 {
+        meta.push(Span::styled(format!(" · 📎{clips}"), Style::new().fg(DIM)));
     }
     let drafted = app.reviews.get(&key).map(|r| r.count()).unwrap_or(0);
     if drafted > 0 {
@@ -234,8 +421,38 @@ fn item_lines(app: &App, item: &InboxItem, width: usize, selected: bool, nested:
     }
     if let Some(pr) = app.item_pr(item) {
         meta.push(Span::styled(format!(" · {} #{} {}", pr.repository, pr.number, pr_state(pr.state)), Style::new().fg(DIM)));
+        if let Some((mark, color)) = app.runtime.as_ref().and_then(|r| r.pull_request(&pr.id.0)).and_then(|p| checks_mark(&p.checks)) {
+            meta.push(Span::styled(format!(" {mark}"), Style::new().fg(color)));
+        }
+        if let Some(below) = app.stacked_on(pr) {
+            let n = below.number;
+            meta.push(Span::styled(trf!(" ↑ on top of PR #{n}", " ↑ va encima del PR #{n}"), Style::new().fg(DIM)));
+        }
     }
     vec![first, fit(meta, width)]
+}
+
+/// One mark for a PR's checks: failed wins over running, running over passed.
+fn checks_mark(checks: &[alondra_core::pr::Check]) -> Option<(&'static str, Color)> {
+    use alondra_core::pr::CheckState;
+    if checks.is_empty() {
+        return None;
+    }
+    Some(if checks.iter().any(|c| c.state == CheckState::Failed) {
+        ("✗", Color::LightRed)
+    } else if checks.iter().any(|c| c.state == CheckState::Running) {
+        ("…", Color::Yellow)
+    } else {
+        ("✓", Color::LightGreen)
+    })
+}
+
+fn section_title(s: Section) -> (&'static str, Color) {
+    match s {
+        Section::Waiting => (tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT),
+        Section::PullRequests => (tr!("PULL REQUESTS", "PULL REQUESTS"), Color::Magenta),
+        Section::ToRead => (tr!("TO READ", "PARA LEER"), Color::Cyan),
+    }
 }
 
 fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
@@ -266,8 +483,18 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let width = inner.width.saturating_sub(1) as usize;
     let mut lines: Vec<Line> = vec![];
     let mut sel_range = None;
+    let mut section = None;
     for (item, nested) in &rows {
-        if !nested && !lines.is_empty() {
+        if !nested && section != Some(section_of(item)) {
+            let s = section_of(item);
+            section = Some(s);
+            let count = rows.iter().filter(|(i, n)| !n && section_of(i) == s).count();
+            if !lines.is_empty() {
+                lines.push(Line::default());
+            }
+            let (label, color) = section_title(s);
+            lines.push(Line::from(vec![Span::styled(format!(" {label} "), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(count.to_string(), Style::new().fg(DIM))]));
+        } else if !nested && !lines.is_empty() {
             lines.push(Line::default());
         }
         let selected = app.sel.as_ref().is_some_and(|k| k.0 == item.id);
@@ -289,15 +516,74 @@ fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     scrollbar(f, inner, total, app.list_scroll);
 }
 
-fn detail(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>> {
+/// Where an image goes in the detail text: the first of the blank rows kept for it, how many,
+/// and the content route it was loaded from.
+struct ImageSlot {
+    line: usize,
+    rows: usize,
+    route: String,
+}
+
+const IMAGE_MAX_ROWS: usize = 20;
+const PREVIEW_ROWS: u16 = 6;
+
+/// Rows an image takes at `width` columns, keeping its proportions (a cell is about twice as
+/// tall as it is wide).
+fn image_rows(img: &image::DynamicImage, width: usize) -> usize {
+    let rows = (width as f64 * img.height() as f64 / img.width().max(1) as f64 / 2.0).ceil() as usize;
+    rows.clamp(4, IMAGE_MAX_ROWS)
+}
+
+fn detail(app: &App, item: &InboxItem, width: usize) -> (Vec<Line<'static>>, Vec<ImageSlot>) {
     let (glyph, kind, color) = kind_glyph(&item.kind);
     let mut meta = vec![Span::styled(format!("{glyph} {kind}"), Style::new().fg(color).add_modifier(Modifier::BOLD)), Span::styled(format!(" · {}", app.agent_name(item.agent_id.as_ref())), Style::new().fg(SOFT))];
+    if let Some(project) = item.agent_id.as_ref().and_then(|a| app.node(a)).and_then(|n| n.project.clone()) {
+        meta.push(Span::styled(format!(" · {project}"), Style::new().fg(DIM)));
+    }
+    if let Some(at) = app.runtime.as_ref().and_then(|r| r.inbox_times.get(&item.id)) {
+        meta.push(Span::styled(format!(" · {}", ago_phrase(*at)), Style::new().fg(DIM)));
+    }
     if let Some(parent) = app.parent(&Key(item.id.clone())) {
         meta.push(Span::styled(format!(" · {}", md::one_line(&parent.title)), Style::new().fg(DIM)));
     }
     let mut lines = vec![fit(meta, width), Line::default()];
+    let mut slots = vec![];
     let parts = app.item_text(item);
     lines.extend(md::render(&md::parse(&parts.join("\n\n")), width).lines);
+    if let Some(pr) = app.item_pr(item).filter(|_| item.kind == "pull_request")
+        && let Some(runtime) = app.runtime.as_ref().and_then(|r| r.pull_request(&pr.id.0))
+    {
+        use alondra_core::pr::CheckState;
+        for c in &runtime.checks {
+            let (mark, color) = match c.state {
+                CheckState::Passed => ("✓", Color::LightGreen),
+                CheckState::Failed => ("✗", Color::LightRed),
+                CheckState::Running => ("…", Color::Yellow),
+                CheckState::Other => ("·", DIM),
+            };
+            lines.push(fit(vec![Span::styled(format!("  {mark} "), Style::new().fg(color)), Span::raw(c.name.clone())], width));
+        }
+    }
+    for (name, route) in app.item_files(item) {
+        lines.push(Line::default());
+        lines.push(md::render(&[md::Block::label(&format!("📎 {name}"))], width).lines.remove(0));
+        match app.files.get(&route) {
+            Some(Ok(super::files::FileBody::Text(text))) => {
+                lines.push(Line::default());
+                lines.extend(md::render(&md::parse(text), width).lines);
+            }
+            Some(Ok(body @ super::files::FileBody::Image(img))) => {
+                lines.push(Line::from(super::files::not_text(body).fg(DIM)));
+                lines.push(Line::default());
+                let rows = image_rows(img, width);
+                slots.push(ImageSlot { line: lines.len(), rows, route: route.clone() });
+                lines.extend(std::iter::repeat_n(Line::default(), rows));
+            }
+            Some(Ok(body)) => lines.push(Line::from(super::files::not_text(body).fg(DIM))),
+            Some(Err(e)) => lines.push(Line::from(trf!("Could not load it: {e}", "No he podido cargarlo: {e}").fg(Color::LightRed))),
+            None => lines.push(Line::from(tr!("Loading…", "Cargando…").fg(DIM))),
+        }
+    }
     if let Some(root) = app.item(&Key(item.id.clone())).filter(|i| !i.children.is_empty()) {
         lines.push(Line::default());
         let n = root.children.len();
@@ -307,7 +593,7 @@ fn detail(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>> {
             lines.push(fit(vec![Span::styled(format!(" {g} {k} "), Style::new().fg(col).bold()), Span::raw(row_title(c))], width));
         }
     }
-    lines
+    (lines, slots)
 }
 
 /// The keys the selected item offers, straight from its available actions; an action that is off
@@ -316,6 +602,17 @@ fn action_lines(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>>
     let hint = |k: &str, label: String| vec![keycap(k), Span::styled(format!(" {label}  "), Style::new().add_modifier(Modifier::BOLD))];
     let off = |label: String, why: String| fit(vec![Span::styled(format!("{label}: {why}"), Style::new().fg(DIM))], width);
     let mut out = vec![];
+    if let Some(pr) = app.item_pr(item).filter(|_| item.kind == "pull_request") {
+        if app.conflicts(&pr.id) {
+            let base = pr.base.clone();
+            out.push(fit(vec![Span::styled(trf!("Conflicts with {base}", "Conflictos con {base}"), Style::new().fg(Color::LightRed))], width));
+            out.push(fit(hint("1", tr!("resolve conflicts (its agent does it)", "resolver conflictos (lo hace su agente)").into()), width));
+        }
+        out.push(fit(
+            [hint("d", tr!("diff and comment (tuicr)", "diff y comentarios (tuicr)").into()), hint("r", tr!("request changes", "pedir cambios").into()), hint("p", tr!("ask", "preguntar").into()), hint("x", tr!("set aside", "apartar").into())].concat(),
+            width,
+        ));
+    }
     if interaction_of(item).is_none() {
         out.push(fit(vec![Span::styled(tr!("Select an item under it to act on it", "Selecciona un elemento de debajo para actuar"), Style::new().fg(DIM))], width));
     }
@@ -355,12 +652,21 @@ fn action_lines(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>>
         }
     }
     let mut tail = vec![keycap("o"), Span::styled(tr!(" read all  ", " leer entero  "), Style::new().fg(SOFT))];
+    match item.kind.as_str() {
+        "question" | "action_request" => tail.extend([keycap("r"), Span::styled(tr!(" reply  ", " responder  "), Style::new().fg(SOFT)), keycap("c"), Span::styled(tr!(" more context  ", " más contexto  "), Style::new().fg(SOFT))]),
+        "information" => tail.extend([keycap("r"), Span::styled(tr!(" reply  ", " responder  "), Style::new().fg(SOFT))]),
+        _ => {}
+    }
+    if action(item, "accept_delivery").is_none() && !app.item_files(item).is_empty() {
+        tail.extend([keycap("v"), Span::styled(tr!(" open files  ", " abrir ficheros  "), Style::new().fg(SOFT))]);
+    }
+    if app.item_pr(item).is_some() && item.kind != "pull_request" {
+        tail.extend([keycap("d"), Span::styled(" diff  ", Style::new().fg(SOFT)), keycap("p"), Span::styled(tr!(" ask  ", " preguntar  "), Style::new().fg(SOFT))]);
+    }
     if app.item_pr(item).is_some() {
-        tail.extend([keycap("d"), Span::styled(" diff  ", Style::new().fg(SOFT)), keycap("w"), Span::styled(" GitHub  ", Style::new().fg(SOFT))]);
+        tail.extend([keycap("w"), Span::styled(" GitHub  ", Style::new().fg(SOFT))]);
     }
-    if item.agent_id.is_some() {
-        tail.extend([keycap("a"), Span::styled(tr!(" its terminal", " su terminal"), Style::new().fg(SOFT))]);
-    }
+    tail.extend([keycap("a"), Span::styled(tr!(" its terminal", " su terminal"), Style::new().fg(SOFT))]);
     out.push(fit(tail, width));
     out
 }
@@ -368,7 +674,12 @@ fn action_lines(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>>
 fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(item) = app.sel.as_ref().and_then(|k| app.item(k)).cloned() else {
         app.detail_view.total = 0;
-        f.render_widget(panel(Line::from(tr!(" Detail ", " Detalle ").fg(DIM)), false), area);
+        let block = panel(Line::from(tr!(" Detail ", " Detalle ").fg(DIM)), false);
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        if app.loaded {
+            centered_lines(f, inner, fleet_summary(app));
+        }
         return;
     };
     let (_, kind, color) = kind_glyph(&item.kind);
@@ -378,7 +689,7 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let actions = action_lines(app, &item, width);
     let ah = (actions.len() as u16 + 1).min(inner.height / 2);
     let [content, bottom] = Layout::vertical([Constraint::Min(1), Constraint::Length(ah)]).areas(inner);
-    let lines = detail(app, &item, width);
+    let (lines, slots) = detail(app, &item, width);
     let total = lines.len();
     let h = content.height as usize;
     app.detail_scroll = app.detail_scroll.min(total.saturating_sub(h));
@@ -389,6 +700,13 @@ fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     f.render_widget(block, area);
     let text_area = Rect { x: content.x + 1, width: content.width.saturating_sub(2), ..content };
     f.render_widget(Paragraph::new(lines).scroll((app.detail_scroll as u16, 0)), text_area);
+    for slot in slots {
+        let Some(top) = slot.line.checked_sub(app.detail_scroll).filter(|top| top + slot.rows <= h) else { continue };
+        if let Some(state) = app.images.get_mut(&slot.route) {
+            let at = Rect { y: text_area.y + top as u16, height: slot.rows as u16, ..text_area };
+            f.render_stateful_widget(ratatui_image::StatefulImage::default(), at, state);
+        }
+    }
     scrollbar(f, content, total, app.detail_scroll);
     let mut bottom_lines = vec![Line::styled("─".repeat(inner.width as usize), Style::new().fg(DIM))];
     bottom_lines.extend(actions.into_iter().map(|l| {
@@ -543,6 +861,15 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
             if item.is_some_and(|i| action(i, "mark_read").is_some_and(|a| a.enabled)) {
                 lines.push(key("x", tr!("mark read", "marca leído")));
             }
+            if item.is_some_and(|i| i.kind == "information") {
+                lines.push(key("s", tr!("send them to its agent (marks it read)", "envíalos a su agente (se marca leído)")));
+            }
+            if item.is_some_and(|i| matches!(i.kind.as_str(), "question" | "action_request")) {
+                lines.push(key("1-9", tr!("send them with the option you pick", "envíalos con la opción que elijas")));
+            }
+            if item.is_some_and(|i| i.kind == "pull_request") {
+                lines.push(key("s", tr!("send them as changes to its agent", "envíalos como cambios a su agente")));
+            }
             if let Some(InteractionPayload::Question { options, answer: None } | InteractionPayload::ActionRequest { options, answer: None }) = item.and_then(interaction_of).and_then(|id| app.interaction(id)).map(|i| &i.payload) {
                 lines.push(Line::default());
                 lines.push(Line::from(tr!("Or choose directly", "O elige directamente").fg(DIM)));
@@ -573,6 +900,119 @@ fn composer_height(input: &super::input::TextInput, width: u16) -> u16 {
     lines.len().clamp(1, 8) as u16 + 2
 }
 
+fn chips_height(chips: &[super::dropped::Chip]) -> u16 {
+    u16::from(!chips.is_empty())
+}
+
+fn form_height(form: Option<&super::work::OptionsForm>) -> u16 {
+    form.map_or(0, |f| if f.loaded { f.rows_shown().len() as u16 } else { 1 })
+}
+
+fn form_lines(form: &super::work::OptionsForm) -> Vec<Line<'static>> {
+    if !form.loaded {
+        return vec![Line::from(tr!("Loading the options…", "Cargando las opciones…").fg(DIM))];
+    }
+    let width = form.rows_shown().iter().map(|(l, _, _)| l.chars().count()).max().unwrap_or(0);
+    let mut lines: Vec<Line<'static>> = form
+        .rows_shown()
+        .into_iter()
+        .map(|(label, value, focused)| {
+            let (marker, style) = if focused { ("▸ ", Style::new().fg(Color::Black).bg(ACCENT)) } else { ("  ", Style::new()) };
+            Line::from(vec![Span::styled(marker, Style::new().fg(ACCENT)), Span::styled(format!("{label:<width$}  "), Style::new().fg(DIM)), Span::styled(value, style)])
+        })
+        .collect();
+    if let (Some(e), Some(first)) = (&form.error, lines.first_mut()) {
+        first.spans.push(Span::styled(format!("   ⚠ {e}"), Style::new().fg(Color::Red)));
+    }
+    lines
+}
+
+/// The list a row of "New" opens, drawn over the screen above the composer.
+fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
+    use super::work::Popup;
+    let Some(popup) = form.popup.as_ref() else { return };
+    let (title, hint, lines): (String, &str, Vec<Line<'static>>) = match popup {
+        Popup::Issues(p) => {
+            let mut lines = vec![Line::from(vec![Span::styled("/ ", Style::new().fg(DIM)), Span::raw(p.query.clone())])];
+            if p.loading {
+                lines.push(Line::from(tr!("Asking GitHub…", "Preguntando a GitHub…").fg(DIM)));
+            }
+            if let Some(e) = &p.error {
+                lines.push(Line::from(Span::styled(format!("⚠ {e}"), Style::new().fg(Color::Red))));
+            }
+            let visible = p.visible();
+            if visible.is_empty() && !p.loading {
+                lines.push(Line::from(tr!("No open issues match", "Ninguna issue abierta coincide").fg(DIM)));
+            }
+            let room = (area.height as usize).saturating_sub(lines.len() + 2).max(1);
+            let start = p.sel.saturating_sub(room - 1);
+            for (i, issue) in visible.iter().enumerate().skip(start).take(room) {
+                let style = if i == p.sel { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
+                let labels = if issue.labels.is_empty() { String::new() } else { format!("  [{}]", issue.labels.join(", ")) };
+                let text = truncate(&format!("{}  {}{labels}", issue.reference(), issue.title), area.width.saturating_sub(4) as usize);
+                lines.push(Line::from(Span::styled(text, style)));
+            }
+            let hint = tr!(" type to filter · ↑↓ · ⏎ picks · Ctrl+R searches GitHub again · Esc ", " escribe para filtrar · ↑↓ · ⏎ elige · Ctrl+R busca de nuevo en GitHub · Esc ");
+            (tr!("Issues", "Issues").to_string(), hint, lines)
+        }
+        Popup::Projects { query, sel } => {
+            let mut lines = vec![Line::from(vec![Span::styled("/ ", Style::new().fg(DIM)), Span::raw(query.clone())])];
+            let choices = form.project_choices(query);
+            if choices.is_empty() {
+                lines.push(Line::from(tr!("No project matches", "Ningún proyecto coincide").fg(DIM)));
+            }
+            let sel = (*sel).min(choices.len().saturating_sub(1));
+            let room = (area.height as usize).saturating_sub(lines.len() + 2).max(1);
+            let start = sel.saturating_sub(room - 1);
+            for (i, choice) in choices.iter().enumerate().skip(start).take(room) {
+                let style = if i == sel { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new() };
+                let (name, note) = match choice {
+                    None => (tr!("The orchestrator decides", "Lo decide el orquestador").to_string(), String::new()),
+                    Some(p) if form.suggested.as_ref() == Some(p) => (p.clone(), tr!("  · this directory", "  · este directorio").to_string()),
+                    Some(p) => (p.clone(), String::new()),
+                };
+                lines.push(Line::from(vec![Span::styled(name, style), Span::styled(note, Style::new().fg(DIM))]));
+            }
+            let hint = tr!(" type to filter · ↑↓ · ⏎ picks · Esc ", " escribe para filtrar · ↑↓ · ⏎ elige · Esc ");
+            (tr!("Project", "Proyecto").to_string(), hint, lines)
+        }
+        Popup::Values { spec, sel } => {
+            let title = form.specs.get(*spec).map(super::work::label).unwrap_or_default();
+            let mut lines = vec![];
+            for (i, e) in form.entries(*spec).into_iter().enumerate() {
+                let style = if i == *sel { Style::new().fg(Color::Black).bg(ACCENT) } else { Style::new().bold() };
+                lines.push(Line::from(Span::styled(format!(" {} ", e.label), style)));
+                if let Some(d) = e.description {
+                    lines.push(Line::from(Span::styled(format!("   {}", truncate(&d, area.width.saturating_sub(8) as usize)), Style::new().fg(DIM))));
+                }
+            }
+            (title, tr!(" ↑↓ · ⏎ picks · Esc ", " ↑↓ · ⏎ elige · Esc "), lines)
+        }
+    };
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let area = Rect { y: area.y + area.height - height, height, ..area };
+    let block = panel(Line::from(Span::styled(format!(" {title} "), Style::new().fg(ACCENT).bold())), true).title_bottom(Line::from(hint.fg(DIM)).right_aligned());
+    let inner = block.inner(area);
+    f.render_widget(Clear, area);
+    f.render_widget(block, area);
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
+fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
+    let mut spans = vec![];
+    for chip in chips {
+        let icon = if chip.image() { "🖼" } else { "📄" };
+        let size = super::files::size(chip.bytes as usize);
+        let (label, style) = match chip.upload {
+            super::dropped::Upload::Sending => (format!(" {icon} {} · {size} · {} ", chip.name, tr!("copying…", "copiando…")), Style::new().fg(DIM)),
+            super::dropped::Upload::Stored(_) => (format!(" {icon} {} · {size} ", chip.name), Style::new().fg(Color::Black).bg(SOFT)),
+        };
+        spans.push(Span::styled(label, style));
+        spans.push(Span::raw(" "));
+    }
+    Line::from(spans)
+}
+
 /// Whether what the composer answers is still the one on screen: a text opened on something that
 /// changed stays, and says so, instead of going to something else.
 fn composer_outdated(app: &App, target: &Target) -> bool {
@@ -584,8 +1024,9 @@ fn composer_outdated(app: &App, target: &Target) -> bool {
     !app.item(key).is_some_and(|i| action(i, kind).is_some_and(|a| a.enabled))
 }
 
-fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
-    let Some(c) = app.composer.as_ref() else { return };
+/// Draws the composer and gives back where the preview of its image goes, if it has room.
+fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option<Rect> {
+    let c = app.composer.as_ref()?;
     let mut title = match &c.target {
         Target::Answer { title, label, .. } => {
             let (t, o) = (md::one_line(title), i18n::option_label(label));
@@ -594,6 +1035,17 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
         Target::Feedback { title, .. } => {
             let t = md::one_line(title);
             trf!("Feedback on {t}", "Feedback sobre {t}")
+        }
+        Target::Message { name, title, message, .. } => {
+            let t = md::one_line(title);
+            match message.kind {
+                crate::ops::MessageKind::MoreContext => trf!("{t} · what do you need to know? (optional)", "{t} · ¿qué te falta saber? (opcional)"),
+                crate::ops::MessageKind::PrChanges => trf!("{t} · what should change?", "{t} · ¿qué hay que cambiar?"),
+                crate::ops::MessageKind::PrQuestion => trf!("{t} · what do you want to ask?", "{t} · ¿qué quieres preguntar?"),
+                crate::ops::MessageKind::Reply if message.mark_read => trf!("Reply to {name} (marks it read)", "Responder a {name} (se marca leído)"),
+                crate::ops::MessageKind::Reply => trf!("Reply to {name}: the question stays open", "Responder a {name}: la pregunta sigue abierta"),
+                crate::ops::MessageKind::Message => trf!("Message to {name}", "Mensaje a {name}"),
+            }
         }
         Target::NewRequest => tr!("New work: the orchestrator turns it into tasks", "Trabajo nuevo: el orquestador lo convierte en tareas").into(),
         Target::Comment { quote, .. } => {
@@ -614,6 +1066,16 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(Clear, area);
     f.render_widget(block, area);
     let text = Rect { x: inner.x + 1, width: inner.width.saturating_sub(2), ..inner };
+    let form_h = form_height(c.form.as_ref()).min(text.height.saturating_sub(1));
+    let chips_h = chips_height(&c.chips).min(text.height.saturating_sub(form_h + 1));
+    let preview_h = preview_h.min(text.height.saturating_sub(form_h + chips_h + 1));
+    let [preview, chips, form, text] = Layout::vertical([Constraint::Length(preview_h), Constraint::Length(chips_h), Constraint::Length(form_h), Constraint::Min(1)]).areas(text);
+    if chips_h > 0 {
+        f.render_widget(Paragraph::new(chip_line(&c.chips)), chips);
+    }
+    if let Some(o) = c.form.as_ref().filter(|_| form_h > 0) {
+        f.render_widget(Paragraph::new(form_lines(o)), form);
+    }
     let (lines, (row, col)) = c.input.layout(text.width as usize);
     let scroll = row.saturating_sub(text.height.saturating_sub(1) as usize);
     if c.input.text().is_empty() {
@@ -622,12 +1084,39 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(Paragraph::new(lines.into_iter().map(Line::from).collect::<Vec<_>>()).scroll((scroll as u16, 0)), text);
     }
     f.set_cursor_position(Position { x: text.x + col as u16, y: text.y + (row - scroll) as u16 });
+    (preview_h > 0).then_some(preview)
 }
 
 fn composer_action(t: &Target) -> &'static str {
     match t {
+        Target::Message { message, .. } if message.kind == crate::ops::MessageKind::MoreContext => tr!("sends it back", "la devuelve"),
         Target::Comment { .. } | Target::General { send: false } => tr!("saves", "guarda"),
         _ => tr!("sends", "envía"),
+    }
+}
+
+/// The fleet in one glance for an empty detail pane: how many sessions are busy, waiting or free.
+fn fleet_summary(app: &App) -> Vec<Line<'static>> {
+    let Some(runtime) = app.runtime.as_ref() else { return vec![] };
+    let nodes: Vec<&FleetNode> = runtime.nodes.iter().filter(|n| !n.is_orchestrator).collect();
+    let mut lines = vec![Line::from(tr!("The fleet right now", "La flota ahora").fg(DIM).bold()), Line::default()];
+    if nodes.is_empty() {
+        lines.push(Line::from(tr!("No sessions yet.", "Todavía no hay sesiones.").fg(DIM)));
+    }
+    for occupancy in [Occupancy::Busy, Occupancy::WaitingMachine, Occupancy::Free] {
+        let Some(n) = nodes.iter().find(|n| Occupancy::of(n) == occupancy) else { continue };
+        let c = nodes.iter().filter(|n| Occupancy::of(n) == occupancy).count();
+        lines.push(Line::from(vec![Span::styled("● ", Style::new().fg(node_color(n))), Span::raw(format!("{c} {}", occupancy.label()))]));
+    }
+    lines
+}
+
+/// Only an uncertain handoff needs the user: a dispatching one settles by itself.
+fn delivery_warning(attempts: &[crate::delivery::Attempt]) -> Option<String> {
+    match attempts.iter().filter(|a| a.state == alondra_core::delivery::State::Uncertain).count() {
+        0 => None,
+        1 => Some(tr!("1 message not confirmed · review it with :deliveries", "1 mensaje sin confirmar · revísalo con :deliveries").into()),
+        n => Some(trf!("{n} messages not confirmed · review them with :deliveries", "{n} mensajes sin confirmar · revísalos con :deliveries")),
     }
 }
 
@@ -638,7 +1127,40 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
         return vec![k("j/k", tr!("move", "mover")), k("n", tr!("new", "nueva")), k("e", tr!("edit", "editar")), k("p", if enabled { tr!("pause", "pausa") } else { tr!("resume", "reanuda") }), k("⏎", tr!("run", "ejecuta")), k("d d", tr!("delete", "borra")), k("Esc", tr!("back", "atrás"))];
     }
     if let Some(c) = app.composer.as_ref() {
-        return vec![k("⏎", composer_action(&c.target)), k("Alt+⏎", tr!("new line", "nueva línea")), k("Ctrl+W", tr!("delete word", "borra palabra")), k("Ctrl+U", tr!("delete line", "borra línea")), k("Esc", tr!("cancel", "cancela"))];
+        if let Some(form) = c.form.as_ref() {
+            if form.popup.is_some() {
+                return vec![k("↑/↓", tr!("move", "mover")), k("⏎", tr!("picks", "elige")), k("Esc", tr!("closes the list", "cierra la lista"))];
+            }
+            if form.focus.is_some() {
+                return vec![
+                    k("↑/↓", tr!("setting", "ajuste")),
+                    k("⏎", tr!("shows its values", "muestra sus valores")),
+                    k("p", tr!("project", "proyecto")),
+                    k("i", tr!("issue", "issue")),
+                    k("x", tr!("drop the issue", "quita la issue")),
+                    k("Tab", tr!("back to the text", "vuelve al texto")),
+                ];
+            }
+            return vec![
+                k("⏎", composer_action(&c.target)),
+                k("Tab", tr!("project, issue and options", "proyecto, issue y opciones")),
+                k("Alt+⏎", tr!("new line", "nueva línea")),
+                k(tr!("drop a file", "arrastra un archivo"), tr!("attaches it", "lo adjunta")),
+                k("Esc", tr!("cancel", "cancela")),
+            ];
+        }
+        return vec![
+            k("⏎", composer_action(&c.target)),
+            k("Alt+⏎", tr!("new line", "nueva línea")),
+            k("Ctrl+W", tr!("delete word", "borra palabra")),
+            k("Ctrl+U", tr!("delete line", "borra línea")),
+            if c.chips.is_empty() {
+                k(tr!("drop a file", "arrastra un archivo"), tr!("attaches it", "lo adjunta"))
+            } else {
+                k(tr!("⌫ on empty", "⌫ en vacío"), tr!("removes the last attachment", "quita el último adjunto"))
+            },
+            k("Esc", tr!("cancel", "cancela")),
+        ];
     }
     if let Some(r) = app.reader.as_ref() {
         if r.find.as_ref().is_some_and(|f| f.editing) {
@@ -659,6 +1181,12 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             if action(item, "mark_read").is_some_and(|a| a.enabled) {
                 v.push(k("x", tr!("mark read", "leído")));
             }
+            match item.kind.as_str() {
+                "information" => v.push(k("s", tr!("send to its agent", "enviar a su agente"))),
+                "pull_request" => v.push(k("s", tr!("request changes", "pedir cambios"))),
+                "question" | "action_request" => v.push(k("1-9", tr!("answer with your comments", "contestar con tus comentarios"))),
+                _ => {}
+            }
         }
         v.push(k("Esc/o", tr!("back", "volver")));
         return v;
@@ -672,7 +1200,7 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             if matches!(app.task_sel, Some(super::tasks::TaskKey::Finished | super::tasks::TaskKey::Archived)) {
                 v.push(k("⏎", tr!("show/hide", "mostrar/ocultar")));
             } else if let Some(t) = app.selected_task() {
-                v.extend([k("o", tr!("detail", "detalle")), k("⏎", tr!("its terminal", "su terminal"))]);
+                v.extend([k("o", tr!("detail", "detalle")), k("⏎", tr!("its terminal", "su terminal")), k("r", tr!("message", "mensaje"))]);
                 if t.state.terminal() { v.push(k("Shift+R", tr!("reopen", "reabrir"))); } else { v.push(k("x", tr!("cancel", "descartar"))); }
             } else if app.selected_request().is_some_and(|r| !r.closed) {
                 v.push(k("x", tr!("withdraw", "retirar")));
@@ -684,14 +1212,35 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             if app.search.as_ref().is_some_and(|s| s.editing) {
                 return vec![k("⏎", tr!("keep filter", "fijar filtro")), k("Esc", tr!("clear search", "quitar búsqueda"))];
             }
+            if app.orchestrator_selected() {
+                let mut keys = vec![k("j/k", tr!("move", "mover")), k("⏎/o", tr!("activity", "actividad"))];
+                if let Some(runtime) = app.runtime.as_ref().and_then(|r| r.orchestrator_state()) {
+                    if runtime.can_retry {
+                        keys.extend([k("C", tr!("continue without repeating", "continuar sin repetir")), k("R", tr!("retry", "reintentar"))]);
+                    }
+                    if runtime.can_cancel {
+                        keys.push(k("S", tr!("stop", "detener")));
+                    }
+                }
+                keys.extend([k("r", tr!("message", "mensaje")), k("Esc", tr!("back", "volver")), k("n", tr!("new", "nuevo")), k("Tab", tr!("inbox", "bandeja"))]);
+                return keys;
+            }
             if app.agent_zoom {
-                return vec![k("j/k", tr!("scroll", "desplazar")), k("^d/^u", tr!("half page", "media página")), k("Esc/o", tr!("back", "volver")), k("a", tr!("its terminal", "su terminal"))];
+                return vec![k("j/k", tr!("scroll", "desplazar")), k("^d/^u", tr!("half page", "media página")), k("Esc/o", tr!("back", "volver")), k("r", tr!("message", "mensaje")), k("a", tr!("its terminal", "su terminal"))];
             }
             let mut v = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel")), k("/", tr!("search", "buscar"))];
             if app.search.is_some() {
                 v.push(k("Esc", tr!("clear search", "quitar búsqueda")));
             }
-            v.extend([k("o", tr!("expand", "expandir")), k("⏎", tr!("its terminal (← returns)", "su terminal (← vuelve)")), k("n", tr!("new", "nuevo")), k("Tab", tr!("inbox", "bandeja")), k("q", tr!("quit", "salir"))]);
+            v.extend([
+                k("o", tr!("expand", "expandir")),
+                k("r", tr!("message", "mensaje")),
+                k("⏎", tr!("its terminal (← returns)", "su terminal (← vuelve)")),
+                k("x", tr!("close the session", "cerrar la sesión")),
+                k("n", tr!("new", "nuevo")),
+                k("Tab", tr!("inbox", "bandeja")),
+                k("q", tr!("quit", "salir")),
+            ]);
             v
         }
         Screen::Inbox => {
@@ -711,9 +1260,20 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                         _ => {}
                     }
                 }
-                if item.agent_id.is_some() {
-                    v.push(k("a", tr!("its terminal", "su terminal")));
+                match item.kind.as_str() {
+                    "question" | "action_request" => v.extend([k("r", tr!("reply", "responder")), k("c", tr!("more context", "más contexto"))]),
+                    "information" => v.push(k("r", tr!("reply", "responder"))),
+                    "pull_request" => {
+                        if app.item_pr(item).is_some_and(|p| app.conflicts(&p.id)) {
+                            v.push(k("1", tr!("resolve conflicts", "resolver conflictos")));
+                        }
+                        v.extend([k("d", "diff"), k("r", tr!("request changes", "pedir cambios")), k("p", tr!("ask", "preguntar")), k("w", "GitHub"), k("x", tr!("set aside", "apartar"))]);
+                    }
+                    _ => {}
                 }
+                v.push(k("a", tr!("its terminal", "su terminal")));
+            } else {
+                v = vec![k("n", tr!("new work", "trabajo nuevo")), k("Shift+M", tr!("orchestrator", "orquestador"))];
             }
             v.extend([k("^d/^u", tr!("scroll detail", "desplazar detalle")), k("Tab", tr!("tasks", "tareas")), k("n", tr!("new", "nuevo")), k("q", tr!("quit", "salir"))]);
             v
@@ -776,14 +1336,24 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("h/l  ←→", tr!("focus the list / the detail pane", "enfocar la lista / el panel de detalle")),
         row("o  ⏎", tr!("expand: open the whole item", "expandir: abrir entero el elemento")),
         row("Esc", tr!("back: close, collapse or leave the detail pane", "volver: cerrar, plegar o salir del panel de detalle")),
+        row(":deliveries", tr!("delivery evidence and explicit recovery commands", "evidencia de entrega y comandos de recuperación explícita")),
         row(":", tr!("command line: :q  :help  :inbox  :tasks  :agents  :<number>", "línea de órdenes: :q  :help  :inbox  :tasks  :agents  :<número>")),
+        Line::default(),
+        section(tr!("Bars in the header, left to right", "Barras de la cabecera, de izquierda a derecha")),
+        row(tr!("week", "semana"), tr!("Claude's weekly limit used; it turns red past 85%", "límite semanal de Claude usado; en rojo pasado el 85%")),
+        row(tr!("today", "hoy"), tr!("today's spend / today's share of the week; red when over it (no launches without asking)", "gastado hoy / lo que te toca hoy de la semana; en rojo si te pasas (no se lanzan sesiones sin preguntarte)")),
+        row(tr!("memory", "memoria"), tr!("the Mac's memory in use", "memoria del Mac en uso")),
+        row("CPU", tr!("the Mac's CPU in use; red when the load is too high to trust the readings", "CPU del Mac en uso; en rojo si la carga es tan alta que las lecturas no son fiables")),
         Line::default(),
         section(tr!("Inbox", "Bandeja")),
         row("1-9", tr!("question: choose an option · delivery with a PR: authorize a merge method (twice to confirm)", "pregunta: elegir una opción · entrega con PR: autorizar un método de fusión (dos veces para confirmar)")),
-        row("r", tr!("question: write the answer · delivery: send feedback", "pregunta: escribir la respuesta · entrega: enviar feedback")),
-        row("v", tr!("accept a delivery; the agent still finishes the task", "aceptar una entrega; el agente sigue siendo quien termina la tarea")),
-        row("x", tr!("mark information read; nothing is sent to the agent", "marcar información leída; no se envía nada al agente")),
-        row("d · w", tr!("the PR's diff · the PR on GitHub", "el diff del PR · el PR en GitHub")),
+        row("1", tr!("on a PR in conflict: its agent resolves the conflicts", "en un PR con conflictos: su agente los resuelve")),
+        row("r", tr!("question: write the answer or reply to its agent · delivery or PR: feedback · information: reply", "pregunta: escribir la respuesta o responder a su agente · entrega o PR: feedback · información: responder")),
+        row("c", tr!("send the question back asking for more context", "devolver la pregunta pidiendo más contexto")),
+        row("p", tr!("ask the PR's agent about it", "preguntar al agente del PR")),
+        row("v", tr!("accept a delivery (the agent still finishes the task) · elsewhere: open its images and files", "aceptar una entrega (el agente sigue siendo quien termina la tarea) · en lo demás: abrir sus imágenes y ficheros")),
+        row("x", tr!("mark information read; nothing is sent to the agent · on a PR: set it aside", "marcar información leída; no se envía nada al agente · en un PR: apartarlo")),
+        row("d · w", tr!("the PR in tuicr on its clone (its diff here otherwise) · the PR on GitHub", "el PR en tuicr sobre su copia (si no, su diff aquí) · el PR en GitHub")),
         row("Shift+J/Shift+K", tr!("scroll the detail 5 lines", "desplazar el detalle 5 líneas")),
         row("a", tr!("open the agent's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)", "abrir el terminal del agente (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)")),
         Line::default(),
@@ -791,25 +1361,28 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row("j/k", tr!("next / previous block; long blocks scroll line by line", "bloque siguiente / anterior; los bloques largos avanzan línea a línea")),
         row("/  n  Shift+N", tr!("search the text · next match · previous match", "buscar en el texto · siguiente · anterior")),
         row("c · Shift+C · d", tr!("comment on block · general comment · delete comment", "comentar bloque · comentario general · borrar")),
-        row("s · v · x", tr!("send comments as feedback · accept · mark read", "enviar comentarios como feedback · aceptar · leído")),
+        row("s · v · x", tr!("send comments as feedback (or to the agent) · accept · mark read", "enviar comentarios como feedback (o al agente) · aceptar · leído")),
+        row("1-9", tr!("on a question: answer with that option and your comments", "en una pregunta: contestar con esa opción y tus comentarios")),
         row("q  o  Esc", tr!("close the reading", "cerrar la lectura")),
         Line::default(),
         section(tr!("Tasks", "Tareas")),
         row("o", tr!("expand the task's detail to full screen", "expandir el detalle de la tarea a pantalla completa")),
-        row("⏎", tr!("its agent's terminal", "el terminal de su agente")),
+        row("r · ⏎", tr!("message its agent · its agent's terminal", "mensaje a su agente · el terminal de su agente")),
         row("x", tr!("cancel the task, or withdraw a request without tasks (twice to confirm)", "descartar la tarea, o retirar una petición sin tareas (dos veces para confirmar)")),
         row("Shift+R", tr!("reopen a finished or cancelled task", "reabrir una tarea terminada o descartada")),
         row("Shift+A", tr!("archive every finished or cancelled task", "archivar todas las tareas terminadas o descartadas")),
         row("⏎ · o", tr!("on Finished or Archived: show or hide them", "en Terminadas o Archivadas: mostrar u ocultar")),
         Line::default(),
         section(tr!("Agents", "Agentes")),
-        row("/", tr!("search agents by name", "buscar agentes por nombre")),
-        row("⏎ · a", tr!("the agent's terminal", "el terminal del agente")),
+        row("/", tr!("search names and local session details", "buscar nombres y detalles locales de la sesión")),
+        row("r · ⏎ · a", tr!("message the agent · its terminal", "mensaje al agente · su terminal")),
         row("o", tr!("expand the agent's detail to full screen", "expandir el detalle del agente a pantalla completa")),
+        row("x", tr!("close the session (twice to confirm; never discards work)", "cerrar la sesión (dos veces para confirmar; nunca descarta trabajo)")),
+        row("C · S · R", tr!("orchestrator: continue without repeating · stop · retry (twice each)", "orquestador: continuar sin repetir · detener · reintentar (dos veces cada una)")),
         Line::default(),
         section(tr!("Always", "Siempre")),
         row("Tab", tr!("inbox → tasks → agents (Shift+Tab goes back)", "bandeja → tareas → agentes (Shift+Tab vuelve)")),
-        row("n", tr!("new work for the orchestrator", "trabajo nuevo para el orquestador")),
+        row("n · Shift+M", tr!("new work for the orchestrator · message the orchestrator", "trabajo nuevo para el orquestador · mensaje al orquestador")),
         row("q  Ctrl-c", tr!("quit", "salir")),
         row(tr!("typing", "al escribir"), tr!("letters go to the text box; Esc leaves it", "las letras van al cuadro de texto; Esc sale")),
     ]
@@ -817,14 +1390,26 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
 
 fn draw_help(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let lines = help_lines();
+    let lines = if app.delivery_help {
+        crate::delivery::details(&app.deliveries, crate::service_client::target())
+            .into_iter()
+            .flat_map(|text| wrap(vec![Span::raw(text)], (94usize).min(area.width.saturating_sub(4) as usize).max(1), vec![], vec![]))
+            .collect()
+    } else {
+        help_lines()
+    };
     let w = 96.min(area.width.saturating_sub(2));
     let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let r = Rect { x: area.x + (area.width - w) / 2, y: area.y + (area.height - h) / 2, width: w, height: h };
     let view_h = h.saturating_sub(2) as usize;
     app.help_view = View { h: view_h, total: lines.len(), shown: true };
     app.help_scroll = app.help_scroll.min(lines.len().saturating_sub(view_h));
-    let mut block = panel(Line::from(tr!(" Keys · j/k scroll · any other key closes ", " Teclas · j/k desplaza · cualquier otra tecla cierra ").bold()), true);
+    let title = if app.delivery_help {
+        tr!(" Deliveries · j/k scroll · any other key closes ", " Entregas · j/k desplaza · cualquier otra tecla cierra ")
+    } else {
+        tr!(" Keys · j/k scroll · any other key closes ", " Teclas · j/k desplaza · cualquier otra tecla cierra ")
+    };
+    let mut block = panel(Line::from(title.bold()), true);
     if let Some(hint) = more_hint(app.help_scroll, view_h, lines.len()) {
         block = block.title_bottom(hint);
     }

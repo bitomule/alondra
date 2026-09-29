@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use alondra_core::config::Config;
 use alondra_core::domain_v2::reads::{Changes, Item, Page, Summary, TextChunk};
-use alondra_core::domain_v2::{Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainProjection, Interaction, InteractionId, PROTOCOL_VERSION, Revision};
+use alondra_core::domain_v2::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, DomainProjection, Interaction, InteractionId, PROTOCOL_VERSION, Revision};
 use std::collections::BTreeMap;
 use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;
@@ -278,6 +278,95 @@ impl Client {
         let (status, value) = self.exchange("POST", "/v2/domain/commands", Some(&body)).map_err(|e| CommandFailure::Uncertain(format!("{e:#}")))?;
         classify(status, value)
     }
+
+    /// The daemon's runtime readings; `None` from an alondrad that does not serve them yet.
+    pub fn runtime(&self) -> Result<Option<crate::runtime::Runtime>> {
+        match self.get::<Value>(crate::runtime::RUNTIME) {
+            Ok(value) => Ok(Some(serde_json::from_value(value)?)),
+            Err(e) if missing(&e) => Ok(None),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// A stored file. An attachment's copy comes whole from `/v2/files` on this Mac and in
+    /// verified chunks through the service; a document revision always in chunks.
+    pub fn content(&self, route: &str) -> Result<Vec<u8>> {
+        match route.strip_prefix(FILES) {
+            Some(query) if self.service.is_some() => content_via(&format!("{FILES}/chunk{query}"), |path| self.get::<Value>(path)),
+            Some(_) => self.raw("GET", route, &[]),
+            None => content_via(route, |path| self.get::<Value>(path)),
+        }
+    }
+
+    /// Copies a file into the daemon's storage and returns the reference commands attach:
+    /// in one request on this Mac, in chunks through the service.
+    pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<AttachmentRef> {
+        if self.service.is_none() {
+            let answer = self.raw("POST", &format!("{UPLOADS}?name={}", crate::mcp::urlencode(name)), bytes)?;
+            return Ok(serde_json::from_slice(&answer)?);
+        }
+        let finished = crate::service_client::Profile::upload_via(name, bytes, self.timeout.max(Duration::from_secs(120)), |step, body, _| self.post(&format!("{SERVICE_UPLOADS}/{step}"), &body))?;
+        Ok(serde_json::from_value(finished.get("attachment").cloned().context("the upload returned no attachment")?)?)
+    }
+
+    /// A signed local request whose body, sent or answered, is the file itself.
+    fn raw(&self, method: &str, path: &str, body: &[u8]) -> Result<Vec<u8>> {
+        let url = format!("{}{path}", self.base);
+        let not_responding = tr!("alondrad is not responding (is it running?)", "alondrad no responde (¿está arrancado?)");
+        let mut resp = match method {
+            "POST" => self.headers(self.agent.post(url).header("content-type", "application/octet-stream"), method, path, body).send(body),
+            _ => self.headers(self.agent.get(url), method, path, b"").call(),
+        }
+        .context(not_responding)?;
+        let status = resp.status().as_u16();
+        let bytes = resp.body_mut().with_config().limit(MAX_ATTACHMENT_BYTES + 1024 * 1024).read_to_vec()?;
+        if status >= 400 {
+            return Err(failure(status, &serde_json::from_slice(&bytes).unwrap_or(Value::Null)));
+        }
+        Ok(bytes)
+    }
+}
+
+pub const UPLOADS: &str = "/v2/uploads";
+pub const SERVICE_UPLOADS: &str = "/v2/domain/uploads";
+pub const FILES: &str = "/v2/files";
+pub const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+
+/// Where an attachment's stored copy is read.
+pub fn attachment_content(a: &AttachmentRef) -> String {
+    format!("{FILES}?path={}", crate::mcp::urlencode(&a.content_reference))
+}
+
+pub fn document_content(revision: &str) -> String {
+    format!("/v2/domain/document-revisions/{}/content", crate::mcp::urlencode(revision))
+}
+
+/// Reads `route` from offset 0 to the end, refusing a file that changes between chunks.
+fn content_via(route: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Result<Vec<u8>> {
+    use base64::Engine as _;
+    let mut bytes = Vec::new();
+    let mut version: Option<String> = None;
+    let sep = if route.contains('?') { '&' } else { '?' };
+    loop {
+        let path = match &version {
+            Some(v) => format!("{route}{sep}offset={}&version={}", bytes.len(), crate::mcp::urlencode(v)),
+            None => format!("{route}{sep}offset=0"),
+        };
+        let chunk = get(&path)?;
+        let v = chunk["version"].as_str().context("content version missing")?.to_string();
+        anyhow::ensure!(version.as_ref().is_none_or(|old| *old == v) && chunk["offset"].as_u64() == Some(bytes.len() as u64), "the file changed while it was read");
+        let total = chunk["total"].as_u64().context("content size missing")?;
+        anyhow::ensure!(total <= MAX_ATTACHMENT_BYTES, "the file is larger than 20 MB");
+        let data = base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(chunk["data"].as_str().context("content data missing")?)?;
+        bytes.extend_from_slice(&data);
+        anyhow::ensure!(bytes.len() as u64 <= total && chunk["next_offset"].as_u64() == Some(bytes.len() as u64), "invalid content chunk");
+        version = Some(v);
+        if chunk["eof"] == true {
+            anyhow::ensure!(bytes.len() as u64 == total, "incomplete file");
+            return Ok(bytes);
+        }
+        anyhow::ensure!(!data.is_empty(), "the file stopped before its end");
+    }
 }
 
 const SECTION_ROUTES: &[(&str, &str)] = &[
@@ -341,8 +430,27 @@ fn answer(mut resp: ureq::http::Response<ureq::Body>) -> Result<Value> {
     Ok(value)
 }
 
+/// alondrad answered 404 without a domain error: it does not serve that route yet.
+#[derive(Debug)]
+pub struct Missing;
+
+impl std::fmt::Display for Missing {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(tr!("this alondrad does not have it yet", "este alondrad todavía no lo tiene"))
+    }
+}
+
+impl std::error::Error for Missing {}
+
+pub fn missing(error: &anyhow::Error) -> bool {
+    error.is::<Missing>()
+}
+
 /// Why alondrad said no, in the user's language where the reason is a domain error it names.
 fn failure(status: u16, body: &Value) -> anyhow::Error {
+    if status == 404 && (body.is_null() || body.as_object().is_some_and(|o| o.is_empty())) {
+        return anyhow::Error::new(Missing);
+    }
     if let Ok(error) = serde_json::from_value::<DomainError>(body.clone()) {
         return anyhow!(refusal(&error));
     }
@@ -419,6 +527,36 @@ mod tests {
         assert_eq!(said("not_found"), "Alondra ya no lo tiene");
         assert_eq!(said("something_new"), "english detail (something_new)");
         assert_eq!(failure(409, &json!({"code": "not_found", "message": "gone", "current_revision": null, "subject": null})).to_string(), "Alondra ya no lo tiene");
+    }
+
+    #[test]
+    fn a_stored_file_is_read_chunk_by_chunk_and_a_change_between_chunks_stops_it() {
+        use base64::Engine as _;
+        let data = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
+        let mut asked = vec![];
+        let bytes = content_via("/v2/domain/attachments/att-1/content", |path| {
+            asked.push(path.to_string());
+            Ok(if path.ends_with("offset=0") {
+                json!({"version": "v-1", "data": data("ab"), "offset": 0, "total": 3, "next_offset": 2, "eof": false})
+            } else {
+                json!({"version": "v-1", "data": data("c"), "offset": 2, "total": 3, "next_offset": 3, "eof": true})
+            })
+        })
+        .unwrap();
+        assert_eq!(bytes, b"abc");
+        assert_eq!(asked, ["/v2/domain/attachments/att-1/content?offset=0", "/v2/domain/attachments/att-1/content?offset=2&version=v-1"]);
+        let changed = content_via("/r", |path| {
+            Ok(if path.ends_with("offset=0") { json!({"version": "v-1", "data": data("ab"), "offset": 0, "total": 3, "next_offset": 2, "eof": false}) } else { json!({"version": "v-2", "data": data("c"), "offset": 2, "total": 3, "next_offset": 3, "eof": true}) })
+        });
+        assert!(changed.unwrap_err().to_string().contains("changed"));
+        let contract = crate::runtime::fixture("requests.json")["attachment_content"]["response"].clone();
+        assert_eq!(content_via("/v2/domain/attachments/att-1/content", |_| Ok(contract.clone())).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn a_route_the_daemon_lacks_reads_as_missing_not_as_a_refusal() {
+        assert!(missing(&failure(404, &Value::Null)));
+        assert!(!missing(&failure(404, &json!({"code": "not_found", "message": "gone", "current_revision": null, "subject": null}))));
     }
 
     #[test]

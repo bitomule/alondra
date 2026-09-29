@@ -17,9 +17,12 @@ pub(crate) struct World {
     seq: u64,
 }
 
+mod parity;
+
 fn actor(alias: &str) -> Actor {
     match alias {
         "system" => Actor::System,
+        "orchestrator" => Actor::Orchestrator { generation: 1 },
         a if a.starts_with("agent") => Actor::Agent { agent_id: a.into() },
         u => Actor::User { user_id: u.into() },
     }
@@ -147,10 +150,6 @@ fn marking_information_read_changes_only_that_item_and_never_replies() {
     assert!(read("info-1") && !read("info-2"));
     assert_eq!(world.state.tasks[&TaskId::from("task-1")].state, TaskState::Running);
     select(&mut app, "interaction:info-2");
-    press(&mut app, KeyCode::Char('r'));
-    assert_eq!(sent(&app).len(), 1, "information has no reply");
-    assert!(app.composer.is_none());
-    assert!(flash(&app).contains("no reply"));
     let shown = screen(&mut app, 120, 24);
     assert!(shown.contains("Docs updated") && shown.contains("x mark read"), "{shown}");
 }
@@ -308,8 +307,6 @@ fn a_child_keeps_its_selection_when_the_inbox_is_regrouped() {
     world.question("question-1", "Keep the flag?", &[("yes", false)]);
     let mut app = app_on(&world);
     select(&mut app, "interaction:question-1");
-    press(&mut app, KeyCode::Char('r'));
-    assert!(app.composer.is_none(), "no option asks for text");
     world.pull_request();
     world.run("agent-a", Command::LinkInteractionSubject { interaction_id: "question-1".into(), subject: InteractionSubject::PullRequest { pr_id: "pr-1".into() } });
     refresh(&mut app, &world);
