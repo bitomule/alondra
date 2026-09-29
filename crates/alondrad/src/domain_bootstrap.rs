@@ -91,6 +91,9 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(crate::uploads::MAX_UPLOAD_BYTES + 4096)))
         .route("/v2/files", get(file))
         .route("/v2/agents/{id}/messages", post(agent_message))
+        .route("/v2/orchestrator/cancel", post(orchestrator_decision))
+        .route("/v2/orchestrator/acknowledge", post(orchestrator_decision))
+        .route("/v2/orchestrator/retry", post(orchestrator_decision))
         .route("/v1", axum::routing::any(legacy_protocol))
         .route("/v1/{*rest}", axum::routing::any(legacy_protocol))
         .merge(crate::domain_api::routes())
@@ -214,6 +217,25 @@ async fn agent_message(State(state): State<Arc<V2Only>>, signed: Option<Extensio
         &crate::domain_messages::ClaudeAgents, &Arc::new(crate::domain_transport::Tmux)).await {
         Ok(answer) => Json(answer).into_response(),
         Err(error) => crate::domain_api::domain_error(error),
+    }
+}
+
+async fn orchestrator_decision(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signed>>,
+    uri: axum::http::Uri, body: Option<Json<Value>>) -> Response {
+    if signed_device(&state.home, &signed).is_none() {
+        return forbidden("signed user device required");
+    }
+    let Some(decision) = crate::domain_orchestrator::decision_route(uri.path()) else {
+        return crate::domain_api::domain_error(DomainError::new("not_found", "unknown orchestrator decision"));
+    };
+    let executor = crate::domain_orchestrator::executor(state.domain(), &state.home);
+    let body = body.map(|Json(body)| body);
+    match tokio::task::spawn_blocking(move || crate::domain_orchestrator::decide(&executor, decision, body.as_ref())).await {
+        Ok(answer) => {
+            let status = answer["status"].as_u64().and_then(|s| StatusCode::from_u16(s as u16).ok()).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            (status, Json(answer["body"].clone())).into_response()
+        }
+        Err(_) => storage(),
     }
 }
 
@@ -567,6 +589,12 @@ mod tests {
         let unknown = signed(&client, &base, &key, &device.id, "POST", "/v2/agents/agent-z/messages", Some(message)).send().await.unwrap();
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
         assert_eq!(unknown.json::<serde_json::Value>().await.unwrap()["code"], "not_found");
+        assert_eq!(client.post(format!("{base}/v2/orchestrator/retry")).json(&json!({"run_id": "run-7"}))
+            .send().await.unwrap().status(), StatusCode::FORBIDDEN, "a decision needs the signed user");
+        let none = signed(&client, &base, &key, &device.id, "POST", "/v2/orchestrator/acknowledge", Some(json!({"run_id": "run-7"})))
+            .send().await.unwrap();
+        assert_eq!(none.status(), StatusCode::CONFLICT);
+        assert_eq!(none.json::<serde_json::Value>().await.unwrap()["code"], "conflict");
         let publish = json!({"protocol_version": 2, "data_epoch": epoch, "command_id": "attached",
             "expected_revision": domain.state().unwrap().revision,
             "command": {"kind": "create_request", "request_id": "request-attached", "body": "Work with a file"}});
