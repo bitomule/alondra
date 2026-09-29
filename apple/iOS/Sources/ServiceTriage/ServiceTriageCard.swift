@@ -635,7 +635,7 @@ struct ServiceOptionGrid: View {
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var compact: Bool {
-        options.count == 2 && options.allSatisfy { $0.displayLabel.count <= 16 } && !typeSize.isAccessibilitySize
+        options.count == 2 && options.allSatisfy { $0.displayLabel.count <= 16 && $0.description == nil } && !typeSize.isAccessibilitySize
     }
 
     var body: some View {
@@ -643,9 +643,17 @@ struct ServiceOptionGrid: View {
         layout {
             ForEach(options, id: \.id) { option in
                 Button { onPick(option) } label: {
-                    Text(option.displayLabel)
-                        .font(.headline)
-                        .frame(maxWidth: .infinity, minHeight: 46, alignment: compact ? .center : .leading)
+                    VStack(alignment: compact ? .center : .leading, spacing: 2) {
+                        Text(option.displayLabel)
+                            .font(.headline)
+                        if let description = option.description, !compact {
+                            Text(description)
+                                .font(.caption)
+                                .opacity(0.8)
+                                .multilineTextAlignment(.leading)
+                        }
+                    }
+                    .frame(maxWidth: .infinity, minHeight: 46, alignment: compact ? .center : .leading)
                     .padding(.horizontal, compact ? 0 : 6)
                 }
                 .buttonStyle(ServiceOptionStyle(tone: ServiceOptionTone(option.label), picked: picked == option))

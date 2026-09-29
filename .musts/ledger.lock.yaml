@@ -11,6 +11,7 @@ satisfied:
 - {check: "root/bazel-build", scope_hash: "12530b817e58ac68e76a17ae8c51d2bf565dc29b6e76816e6bf223e8293fd9bb"}
 - {check: "root/bazel-build", scope_hash: "162a3239e6c114f95cd660cba7eb10a630f921cece9613df3b763c22358ce152"}
 - {check: "root/bazel-build", scope_hash: "1686bd53e3c61c5672d6762b0f7858b0a6e593ec5e794da76f55cf653aeef548"}
+- {check: "root/bazel-build", scope_hash: "1998fbc025507764c8de49c0df594dc4b1d79c5d8c2720507ecdb97b502925e4"}
 - {check: "root/bazel-build", scope_hash: "1a7268e45faafb92ea0f59e05ac1a8427947f9a3619a9a01f0be36cab93577cf"}
 - {check: "root/bazel-build", scope_hash: "1b503ef6b6505fb72d7eb6452a0c333b66edf5705a3a9fca4b7d6f5be7ef2a2f"}
 - {check: "root/bazel-build", scope_hash: "203d39531b20a1ae1347a9bf680fc06ac7fa8fba23280f30a871140e6b547558"}

@@ -194,7 +194,7 @@ struct ServiceDocumentView: View {
                 if let question, !question.options.isEmpty {
                     QuestionOptions(options: question.options,
                         detail: { option in
-                            guard !store.draft.comments.isEmpty else { return nil }
+                            guard !store.draft.comments.isEmpty else { return option.description }
                             return option.inputs.contains { $0.kind == .text }
                                 ? String(localized: "Sends your \(store.draft.comments.count) comments")
                                 : String(localized: "Without your comments")

@@ -7,7 +7,7 @@ struct QuestionOptions: View {
     /// The chosen option's ID.
     var selected: String?
     var showsKeys = true
-    var detail: (DomainV2.QuestionOption) -> String? = { _ in nil }
+    var detail: (DomainV2.QuestionOption) -> String? = \.description
     var prominent: (DomainV2.QuestionOption, Int) -> Bool = { _, _ in false }
     let choose: (DomainV2.QuestionOption) -> Void
 

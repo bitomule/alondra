@@ -344,17 +344,21 @@ extension DomainV2 {
     public struct QuestionOption: Codable, Equatable, Sendable {
         public var id: String
         public var label: String
+        /// What choosing this option means, shown under its button.
+        public var description: String?
         public var inputs: [InputSpec]
 
-        public init(id: String, label: String, inputs: [InputSpec]) {
+        public init(id: String, label: String, description: String? = nil, inputs: [InputSpec]) {
             self.id = id
             self.label = label
+            self.description = description
             self.inputs = inputs
         }
 
         enum CodingKeys: String, CodingKey {
             case id = "id"
             case label = "label"
+            case description = "description"
             case inputs = "inputs"
         }
     }
