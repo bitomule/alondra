@@ -8,7 +8,9 @@ use crate::service::Service;
 use alondra_core::Event;
 use alondra_core::delivery::State;
 use anyhow::Result;
-use alondra_core::domain_v2::{DomainState, InteractionId, InteractionPayload};
+use alondra_core::domain_v2::{
+    DomainState, InputKind, InteractionId, InteractionPayload, QuestionOption,
+};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -239,22 +241,67 @@ async fn deliver_user_runtime(
     Ok(())
 }
 
+const PUSH_OPTION_LIMIT: usize = 4;
+
 fn user_push_payload(state: &DomainState, interaction_id: Option<&str>) -> Value {
     let mut alondra = json!({"protocol_version": 2, "data_epoch": state.data_epoch});
+    let mut aps = json!({"alert": {"title": "Alondra", "body": "New activity in Alondra"},
+        "sound": "default"});
     if let Some(id) = interaction_id {
         alondra["item_id"] = json!(format!("interaction:{id}"));
         alondra["interaction_id"] = json!(id);
         if let Some(interaction) = state.interactions.get(&InteractionId::from(id)) {
-            alondra["kind"] = json!(match interaction.payload {
-                InteractionPayload::Information { .. } => "information",
-                InteractionPayload::Question { .. } => "question",
-                InteractionPayload::ActionRequest { .. } => "action_request",
-                InteractionPayload::Delivery { .. } => "delivery",
-            });
+            let (kind, category) = match interaction.payload {
+                InteractionPayload::Information { .. } => ("information", Some("ALONDRA_READ")),
+                InteractionPayload::Question { .. } => ("question", Some("ALONDRA_QUESTION")),
+                InteractionPayload::ActionRequest { .. } => {
+                    ("action_request", Some("ALONDRA_QUESTION"))
+                }
+                InteractionPayload::Delivery { .. } => ("delivery", None),
+            };
+            alondra["kind"] = json!(kind);
+            if let Some(category) = category {
+                alondra["expected_revision"] = json!(interaction.revision);
+                aps["category"] = json!(category);
+                aps["mutable-content"] = json!(1);
+            }
+            if let InteractionPayload::Question { options, .. }
+            | InteractionPayload::ActionRequest { options, .. } = &interaction.payload
+            {
+                let (options, reply_option_id) = push_options(options);
+                if !options.is_empty() {
+                    alondra["options"] = json!(options);
+                }
+                if let Some(reply) = reply_option_id {
+                    alondra["reply_option_id"] = json!(reply);
+                }
+            }
         }
     }
-    json!({"aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra"},
-        "sound": "default"}, "alondra": alondra})
+    json!({"aps": aps, "alondra": alondra})
+}
+
+/// The options the phone can answer from a notification: those with no required input become
+/// buttons, and the first with a single text input is answered by typing a reply.
+fn push_options(options: &[QuestionOption]) -> (Vec<Value>, Option<String>) {
+    let mut pushed = Vec::new();
+    let mut reply = None;
+    for option in options {
+        if pushed.len() == PUSH_OPTION_LIMIT {
+            break;
+        }
+        let mut entry = json!({"id": option.id, "label": option.label});
+        match option.inputs.as_slice() {
+            [input] if input.kind == InputKind::Text => {
+                entry["text_input"] = json!(input.id);
+                reply.get_or_insert_with(|| option.id.clone());
+            }
+            inputs if inputs.iter().all(|input| !input.required) => {}
+            _ => continue,
+        }
+        pushed.push(entry);
+    }
+    (pushed, reply)
 }
 
 #[cfg(test)]
@@ -782,12 +829,34 @@ mod tests {
             serde_json::from_str(include_str!("../../../fixtures/client-v2/push-payloads.json"))
                 .unwrap();
         let mut state = DomainState::new(fixture["data_epoch"].as_str().unwrap());
-        let options = vec![QuestionOption {
-            id: "yes".into(),
-            label: "Yes".into(),
-            description: None,
-            inputs: vec![],
-        }];
+        let options = vec![
+            QuestionOption {
+                id: "yes".into(),
+                label: "Yes".into(),
+                description: None,
+                inputs: vec![],
+            },
+            QuestionOption {
+                id: "changes".into(),
+                label: "Request changes".into(),
+                description: None,
+                inputs: vec![InputSpec {
+                    id: "why".into(),
+                    kind: InputKind::Text,
+                    required: true,
+                }],
+            },
+            QuestionOption {
+                id: "scale".into(),
+                label: "Scale".into(),
+                description: None,
+                inputs: vec![InputSpec {
+                    id: "count".into(),
+                    kind: InputKind::Integer,
+                    required: true,
+                }],
+            },
+        ];
         let delivery = |target| InteractionPayload::Delivery {
             targets: vec![target],
             is_final: true,

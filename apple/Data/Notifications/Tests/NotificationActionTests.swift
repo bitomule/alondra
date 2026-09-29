@@ -56,15 +56,35 @@ final class NotificationActionTests: XCTestCase {
         }
     }
 
-    private func lookup(revision: Int, pending: Bool = true, enabled: Bool = true) throws -> DomainV2.InboxLookup {
+    func testTappingAButtonOnTheDaemonsPushAnswersFromAFreshRead() throws {
+        let env = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: env["TEST_SRCDIR"] ?? "").appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: root.appendingPathComponent("fixtures/client-v2/push-payloads.json"))) as? [String: Any])
+        let entry = try XCTUnwrap((fixture["cases"] as? [[String: Any]])?.first { $0["interaction"] as? String == "question" })
+        let push = try XCTUnwrap(entry["payload"] as? [String: Any])
+        let item = try XCTUnwrap(NotificationPayload.Item(userInfo: push))
+        let question = NotificationPayload.Question(userInfo: push)
+
+        let button = try XCTUnwrap(NotificationAction(item: item, question: question, action: NotificationPayload.Action.option("yes"), text: nil))
+        let envelope = try button.envelope(fresh: lookup(revision: 12, id: "i-question"), interaction: interaction(approveID: "yes", id: "i-question"), commandID: "fresh-2")
+
+        XCTAssertEqual(envelope.commandId, "fresh-2")
+        XCTAssertEqual(envelope.expectedRevision, 12)
+        XCTAssertEqual(envelope.command, .answerQuestion(attachments: [], interactionId: "i-question", optionId: "yes", inputs: [:]))
+        XCTAssertThrowsError(try button.envelope(fresh: lookup(revision: 12, pending: false, id: "i-question"), interaction: interaction(approveID: "yes", id: "i-question"), commandID: "c")) {
+            XCTAssertEqual($0 as? NotificationActionError, .noLongerPending)
+        }
+    }
+
+    private func lookup(revision: Int, pending: Bool = true, enabled: Bool = true, id: String = "q-1") throws -> DomainV2.InboxLookup {
         try DomainV2.decode(DomainV2.InboxLookup.self, from: Data(#"""
-        {"protocol_version":2,"data_epoch":"epoch-1","revision":\#(revision),"root_id":"interaction:q-1","item":{"id":"interaction:q-1","kind":"question","subject":{"kind":"interaction","interaction_id":"q-1"},"title":"Deploy?","revision":\#(revision),"order":3,"pending":\#(pending),"children":[],"available_actions":[{"kind":"answer_question","enabled":\#(enabled),"expected_revision":\#(revision)}]}}
+        {"protocol_version":2,"data_epoch":"epoch-1","revision":\#(revision),"root_id":"interaction:\#(id)","item":{"id":"interaction:\#(id)","kind":"question","subject":{"kind":"interaction","interaction_id":"\#(id)"},"title":"Deploy?","revision":\#(revision),"order":3,"pending":\#(pending),"children":[],"available_actions":[{"kind":"answer_question","enabled":\#(enabled),"expected_revision":\#(revision)}]}}
         """#.utf8))
     }
 
-    private func interaction() throws -> DomainV2.Interaction {
+    private func interaction(approveID: String = "approve", id: String = "q-1") throws -> DomainV2.Interaction {
         try DomainV2.decode(DomainV2.Interaction.self, from: Data(#"""
-        {"attachments":[],"id":"q-1","scope":{"kind":"task","task_id":"t-1"},"author":{"kind":"agent","agent_id":"a-1"},"recipient":{"kind":"user"},"body":"Deploy?","blocking":true,"payload":{"kind":"question","options":[{"id":"approve","label":"Approve","inputs":[]},{"id":"changes","label":"Request changes","inputs":[{"id":"why","kind":"text","required":true}]}]},"revision":12,"order":3}
+        {"attachments":[],"id":"\#(id)","scope":{"kind":"task","task_id":"t-1"},"author":{"kind":"agent","agent_id":"a-1"},"recipient":{"kind":"user"},"body":"Deploy?","blocking":true,"payload":{"kind":"question","options":[{"id":"\#(approveID)","label":"Approve","inputs":[]},{"id":"changes","label":"Request changes","inputs":[{"id":"why","kind":"text","required":true}]}]},"revision":12,"order":3}
         """#.utf8))
     }
 
