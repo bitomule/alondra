@@ -97,6 +97,8 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/pair", post(pair))
         .route("/devices", get(devices))
         .route("/devices/{id}", axum::routing::delete(revoke_device))
+        .route("/service/bootstrap", get(service_bootstrap))
+        .route("/service/approve-device", post(service_approve_device))
         .route(
             "/uploads",
             post(upload).layer(axum::extract::DefaultBodyLimit::max(
@@ -159,6 +161,51 @@ async fn daemon(
         "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage}),
     )
     .into_response()
+}
+
+/// The challenge `alondra pair` signs to approve a phone through the service; local only.
+async fn service_bootstrap(
+    State(state): State<Arc<V2Only>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    Json(json!({"epoch": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD,
+        state.auth.service_epoch())})).into_response()
+}
+
+#[derive(Deserialize)]
+struct ServiceApproveBody {
+    device_id: String,
+    name: String,
+    signing_key: String,
+}
+
+/// A phone the service paired, approved by `alondra pair` signing with this Mac's key.
+async fn service_approve_device(
+    State(state): State<Arc<V2Only>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: axum::body::Bytes,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    if body.len() > 2048 {
+        return (StatusCode::PAYLOAD_TOO_LARGE, "service approval too large").into_response();
+    }
+    if let Err(error) = state.auth.verify_service_approval(&headers, &body) {
+        return (StatusCode::UNAUTHORIZED, error).into_response();
+    }
+    let Ok(body) = serde_json::from_slice::<ServiceApproveBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, "invalid service approval").into_response();
+    };
+    match state.auth.approve_service(&body.device_id, &body.name, &body.signing_key) {
+        Ok(()) => StatusCode::NO_CONTENT.into_response(),
+        Err(error) => (StatusCode::CONFLICT, error).into_response(),
+    }
 }
 
 /// A one-time code for a device on this Mac's network; only a local caller may mint one.
@@ -671,6 +718,49 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn pair_approves_a_service_phone_with_the_macs_signature() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        let home = std::env::temp_dir().join(format!(
+            "alondra-v2-service-approval-{}",
+            crate::auth::random_hex(8)
+        ));
+        std::fs::create_dir_all(home.join("service-keys")).unwrap();
+        let mac = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        std::fs::write(home.join("service-keys/public.json"), json!({"mac_id": "mac-test",
+            "signing_key": URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes())}).to_string()).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        let state = V2Only::open(&home).unwrap();
+        let auth = state.auth();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = router(state).layer(axum::middleware::from_fn_with_state(auth.clone(), crate::auth::guard));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let boot: Value = client.get(format!("{base}/service/bootstrap")).send().await.unwrap().json().await.unwrap();
+        let epoch: [u8; 16] = URL_SAFE_NO_PAD.decode(boot["epoch"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let phone = SigningKey::from_slice(&[5u8; 32]).unwrap();
+        let body = json!({"device_id": "phone-a", "name": "iPhone",
+            "signing_key": URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes())}).to_string();
+        let now = alondra_core::now_millis() as u64;
+        let nonce = [3u8; 16];
+        let signature = alondra_e2e::sign_http_challenge(&mac, "mac-test", "POST",
+            "/service/approve-device", &epoch, body.as_bytes(), now, &nonce).unwrap();
+        let approved = client.post(format!("{base}/service/approve-device"))
+            .header("x-device-id", "mac-test")
+            .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch))
+            .header("x-device-timestamp-ms", now.to_string())
+            .header("x-device-nonce", URL_SAFE_NO_PAD.encode(nonce))
+            .header("x-device-signature", signature)
+            .body(body).send().await.unwrap();
+        assert_eq!(approved.status(), StatusCode::NO_CONTENT);
+        assert!(auth.list().iter().any(|device| device.id == "phone-a"));
+        server.abort();
+        std::fs::remove_dir_all(&home).unwrap();
+    }
 
     #[test]
     fn a_store_reset_for_another_schema_still_boots() {
