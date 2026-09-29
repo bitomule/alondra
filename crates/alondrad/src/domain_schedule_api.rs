@@ -364,10 +364,10 @@ mod tests {
     struct FakeClaude;
     impl crate::orchestrate::Launcher for FakeClaude {
         async fn run(&self, _: &str, _: &[String]) -> Result<String, crate::orchestrate::Refusal> {
-            panic!("a v2 producer launch must carry its environment");
-        }
-        async fn run_with_env(&self, _: &str, _: &[String], _: &[(String, String)]) -> Result<String, crate::orchestrate::Refusal> {
             Ok("backgrounded · ab1234 · scheduled/manual".into())
+        }
+        async fn session_of(&self, _: &str) -> Option<String> {
+            Some("ab1234cd-0000-4000-8000-000000000000".into())
         }
         fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
         fn plugin(&self) -> Option<std::path::PathBuf> { Some("/synthetic/plugin".into()) }
