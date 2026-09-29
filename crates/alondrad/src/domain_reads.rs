@@ -111,6 +111,16 @@ impl Snapshot {
             state,
         }
     }
+    pub(crate) fn state(&self) -> &DomainState {
+        &self.state
+    }
+    /// Each inbox row with the revision that put it there.
+    pub(crate) fn inbox_orders(&self) -> Vec<(String, Revision)> {
+        self.inbox_by_id.iter().map(|(id, (root, child))| {
+            let root = &self.projection.inbox[*root];
+            (id.clone(), child.map_or(root.order, |child| root.children[child].order))
+        }).collect()
+    }
     pub(crate) fn section_tokens(&self) -> BTreeMap<String, String> {
         self.sections.iter().map(|(k, v)| (k.clone(), v.revision.clone())).collect()
     }

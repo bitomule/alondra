@@ -175,7 +175,7 @@ fn internal(e: anyhow::Error) -> Response {
     err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())
 }
 
-fn str_field(v: &Value, k: &str) -> Option<String> {
+pub(crate) fn str_field(v: &Value, k: &str) -> Option<String> {
     v.get(k).and_then(Value::as_str).map(str::to_string)
 }
 
@@ -230,7 +230,7 @@ fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> Option<Stri
     }
 }
 
-fn tool_summary(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
+pub(crate) fn tool_summary(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     let input = input?;
     let pick = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
     let s = match tool {
@@ -246,7 +246,7 @@ fn tool_summary(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
 }
 
 /// The task one of Alondra's own tools names in its `task` argument.
-fn named_task(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
+pub(crate) fn named_task(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     tool.filter(|t| t.starts_with(alondra_core::activity::ALONDRA_TOOLS))?;
     input?.get("task")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
@@ -671,7 +671,7 @@ pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::ht
 
 /// Keep enough context to explain lifecycle hooks without storing arbitrary tool input or
 /// streaming message text. The source event name and task IDs are stored separately.
-fn hook_detail(event: &str, input: &Value) -> Option<String> {
+pub(crate) fn hook_detail(event: &str, input: &Value) -> Option<String> {
     let fields: &[&str] = match event {
         "SessionStart" | "SessionEnd" | "PreCompact" | "PostCompact" => &["reason", "source", "trigger"],
         "TaskCreated" | "TaskCompleted" => &["task_id", "task_subject", "task_description"],

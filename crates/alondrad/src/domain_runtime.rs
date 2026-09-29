@@ -14,6 +14,7 @@ pub struct DomainRuntime {
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
+    pub(crate) live: crate::v2_client_routes::Live,
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
     pub(crate) held: Mutex<std::collections::BTreeMap<alondra_core::domain_v2::AgentId, Vec<String>>>,
 }
@@ -41,6 +42,7 @@ impl DomainRuntime {
             authority: Mutex::new(authority),
             changed,
             reads: Default::default(),
+            live: Default::default(),
             held: Default::default(),
         })
     }
@@ -153,6 +155,22 @@ impl DomainRuntime {
         transport: Option<TransportIdentity<'_>>,
         authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
     ) -> Result<CommandOutcome, StoreError> {
+        self.execute_with(actor, envelope, transport, None, authorize)
+    }
+
+    /// What the user chose when asking for the Request, if it was asked for with choices.
+    pub(crate) fn request_launch(&self, request_id: &RequestId) -> Result<Option<crate::domain_store::RequestLaunch>> {
+        self.store.lock().expect("domain store poisoned").request_launch(request_id)
+    }
+
+    pub(crate) fn execute_with(
+        &self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        transport: Option<TransportIdentity<'_>>,
+        launch: Option<&crate::domain_store::RequestLaunch>,
+        authorize: impl FnOnce() -> std::result::Result<(), StoreError>,
+    ) -> Result<CommandOutcome, StoreError> {
         let mut store = self.store.lock().expect("domain store poisoned");
         // Lock order is domain store → approval lease. Revocation takes only the
         // exclusive approval lease and never waits for the domain store.
@@ -165,7 +183,10 @@ impl DomainRuntime {
         };
         authorize()?;
         let prepared = crate::domain_content::prepare(&self.home, envelope)?;
-        let commit = store.execute_authenticated(actor, &prepared.envelope, transport);
+        let commit = match launch {
+            Some(launch) => store.execute_launching(actor, &prepared.envelope, transport, launch),
+            None => store.execute_authenticated(actor, &prepared.envelope, transport),
+        };
         if matches!(&commit, Err(StoreError::Domain(_))) {
             prepared.discard_uncommitted(&self.home);
         }
