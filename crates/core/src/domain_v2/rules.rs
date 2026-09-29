@@ -942,6 +942,10 @@ impl DomainState {
                     Request::new(request_id.clone(), body.clone()),
                 );
                 created.push(request_id.0.clone());
+                // 8ccd131 handed every new request of the user to the orchestrator.
+                if matches!(actor, Actor::User { .. }) {
+                    effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id.clone()) });
+                }
             }
             Command::CloseRequest { request_id, answer, withdrawn, title } => {
                 self.manager(actor)?;
@@ -1179,7 +1183,8 @@ impl DomainState {
                 }
                 if matches!(recipient, Recipient::Orchestrator) {
                     effects.push(DomainEffect::NotifyOrchestrator {
-                        interaction_id: interaction_id.clone(),
+                        interaction_id: Some(interaction_id.clone()),
+                        request_id: None,
                     });
                 }
             }
@@ -1282,7 +1287,8 @@ impl DomainState {
                         self.notify(&task_id, Some(interaction_id.clone()), "Question answered", effects)?;
                     }
                     (Author::Orchestrator { .. }, _) => effects.push(DomainEffect::NotifyOrchestrator {
-                        interaction_id: interaction_id.clone(),
+                        interaction_id: Some(interaction_id.clone()),
+                        request_id: None,
                     }),
                     _ => {}
                 }

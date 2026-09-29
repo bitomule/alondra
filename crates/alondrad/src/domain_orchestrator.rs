@@ -409,36 +409,22 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
     }
 }
 
+/// A fake `claude` for the runner: it checks the v2 environment, records the prompt it was
+/// handed and answers with `body`, and the plugins it needs are registered.
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use alondra_core::domain_v2::*;
-    use std::collections::BTreeSet;
+pub(crate) fn stub_claude(root: &Path, body: &str) -> (PathBuf, PathBuf) {
     use std::os::unix::fs::PermissionsExt;
-
-    const SUCCESS: &str = r#"printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":25}}}'
-printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
-
-    struct Fixture { root: PathBuf, executor: Executor, ownership: Ownership }
-    impl Drop for Fixture {
-        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
+    let claude_home = root.join("claude-home");
+    let repo = root.join("assets");
+    for plugin in [crate::plugins::NODE, crate::plugins::ORCHESTRATOR] {
+        std::fs::create_dir_all(repo.join(plugin).join(".claude-plugin")).unwrap();
+        std::fs::write(repo.join(plugin).join(".claude-plugin/plugin.json"), "{}").unwrap();
     }
-
-    fn fixture(body: &str) -> Fixture {
-        let root = std::env::temp_dir().join(format!("alondra-v2-orchestrator-{}", crate::auth::random_hex(8)));
-        let home = root.join("home");
-        std::fs::create_dir_all(&home).unwrap();
-        let claude_home = root.join("claude-home");
-        let repo = root.join("assets");
-        for plugin in [crate::plugins::NODE, crate::plugins::ORCHESTRATOR] {
-            std::fs::create_dir_all(repo.join(plugin).join(".claude-plugin")).unwrap();
-            std::fs::write(repo.join(plugin).join(".claude-plugin/plugin.json"), "{}").unwrap();
-        }
-        std::fs::create_dir_all(claude_home.join("plugins")).unwrap();
-        std::fs::write(claude_home.join("plugins/known_marketplaces.json"),
-            serde_json::json!({"alondra":{"installLocation":repo}}).to_string()).unwrap();
-        let executable = root.join("fake-claude");
-        std::fs::write(&executable, format!(r#"#!/bin/sh
+    std::fs::create_dir_all(claude_home.join("plugins")).unwrap();
+    std::fs::write(claude_home.join("plugins/known_marketplaces.json"),
+        serde_json::json!({"alondra":{"installLocation":repo}}).to_string()).unwrap();
+    let executable = root.join("fake-claude");
+    std::fs::write(&executable, format!(r#"#!/bin/sh
 test "$ALONDRA_DOMAIN_PROTOCOL" = 2 || exit 89
 test -n "$ALONDRA_DOMAIN_CAPABILITY" || exit 88
 printf '%s\n' "$ALONDRA_DOMAIN_CAPABILITY" >> capabilities
@@ -451,7 +437,32 @@ printf 'start\n' >> starts
 printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","permissionMode":"auto","model":"opus","mcp_servers":[{{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__domain_command","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}}'
 {body}
 "#)).unwrap();
-        std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();
+    (claude_home, executable)
+}
+
+#[cfg(test)]
+pub(crate) const STUB_SUCCESS: &str = r#"printf '%s\n' '{"type":"assistant","message":{"model":"opus","usage":{"input_tokens":25}}}'
+printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alondra_core::domain_v2::*;
+    use std::collections::BTreeSet;
+
+    const SUCCESS: &str = STUB_SUCCESS;
+
+    struct Fixture { root: PathBuf, executor: Executor, ownership: Ownership }
+    impl Drop for Fixture {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.root); }
+    }
+
+    fn fixture(body: &str) -> Fixture {
+        let root = std::env::temp_dir().join(format!("alondra-v2-orchestrator-{}", crate::auth::random_hex(8)));
+        let home = root.join("home");
+        std::fs::create_dir_all(&home).unwrap();
+        let (claude_home, executable) = stub_claude(&root, body);
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let directory = home.join("runtime/orchestrator");
         let ownership = Ownership::acquire(&directory).unwrap().unwrap();
@@ -470,7 +481,7 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
     fn ask_orchestrator(domain: &DomainRuntime, n: u32) {
         if n == 1 {
             command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-            command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into() });
+            command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into() });
             command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
                 task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
                 review_prs: false, dependencies: BTreeSet::new(), stack: None,

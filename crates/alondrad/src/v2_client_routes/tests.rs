@@ -628,6 +628,31 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
 }
 
 #[tokio::test]
+async fn a_new_request_reaches_the_orchestrators_next_batch() {
+    let fixture = Fixture::start().await;
+    write_options(&fixture, "");
+    let request = json!({"request_id": "request-1", "text": "Make the editor readable", "options": {}, "attachments": []});
+    let (status, outcome) = fixture.send("POST", "/v2/requests", &request).await;
+    assert_eq!(status, StatusCode::OK, "{outcome}");
+    assert_eq!(outcome["effects"], json!([{"kind": "notify_orchestrator", "request_id": "request-1"}]));
+    let pending = fixture.domain.store.lock().unwrap().pending_messages().unwrap();
+    let batch: Vec<_> = pending.iter().filter(|m| m.recipient_kind == "orchestrator").collect();
+    assert_eq!(batch.len(), 1, "{pending:?}");
+    assert!(batch[0].message.contains("request-1"), "{}", batch[0].message);
+
+    let root = fixture.home.join("stub");
+    std::fs::create_dir_all(&root).unwrap();
+    let (claude_home, executable) = crate::domain_orchestrator::stub_claude(&root, crate::domain_orchestrator::STUB_SUCCESS);
+    let executor = crate::domain_orchestrator::Executor { domain: fixture.domain.clone(), home: fixture.home.clone(), claude_home, executable };
+    let ownership = crate::orchestrator_process::Ownership::acquire(&fixture.home.join("runtime/orchestrator")).unwrap().unwrap();
+    executor.tick(&ownership).await.unwrap();
+    let prompt = std::fs::read_to_string(fixture.home.join("runtime/orchestrator/received-prompt")).unwrap();
+    assert!(prompt.contains("The user created Request request-1") && prompt.contains("request request-1: Make the editor readable"), "{prompt}");
+    assert!(fixture.domain.store.lock().unwrap().pending_messages().unwrap().iter().all(|m| m.recipient_kind != "orchestrator"),
+        "the batch was handed");
+}
+
+#[tokio::test]
 async fn a_new_request_is_refused_whole_and_leaves_nothing_behind() {
     let fixture = Fixture::start().await;
     write_options(&fixture, &format!("[issues]\nowners = [\"me\"]\nexclude = [\"me/Secret\"]\n{USER_OPTION}"));

@@ -69,7 +69,7 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
     assert_eq!(fleet["open_questions"][0]["title"], "Question q-open");
     let report = &fleet["reports"][0];
     assert_eq!((report["id"].as_str(), report["read"].as_bool(), report["node_name"].as_str()), (Some("info"), Some(false), Some("Instance A")));
-    assert_eq!(fleet["orchestrator_messages"].as_array().unwrap().len(), 1, "the question for the orchestrator is on its way");
+    assert_eq!(fleet["orchestrator_messages"].as_array().unwrap().len(), 2, "the new request and the question for the orchestrator are on their way");
     assert_eq!(fleet["requests"][0]["state"], "working");
     let t2 = fleet["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t2").unwrap();
     assert_eq!((t2["depends_on"].clone(), t2["assignee"].clone()), (json!(["t1"]), Value::Null));
