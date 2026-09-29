@@ -27,7 +27,7 @@ fn agent_a() -> Actor {
 fn ask(domain: &DomainRuntime, id: &str, recipient: Recipient, scope: Scope, actor: Actor) {
     run(domain, actor, Command::AskQuestion { attachments: vec![], interaction_id: id.into(), scope, recipient,
         body: format!("Question {id}\nwith detail"), blocking: false,
-        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }] });
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }] });
 }
 
 /// Agent A runs Task t1 in App; t2 builds on t1 and nobody has it yet.

@@ -685,7 +685,7 @@ impl Service {
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         if self.domain.is_some() {
             anyhow::ensure!((request.path.starts_with("/v2/domain") || crate::v2_client_routes::approved_read_path(&request.path)
-                || crate::v2_client_routes::approved_write_path(&request.path)
+                || crate::v2_client_routes::approved_write_path(&request.path) || crate::v2_client_routes::parse_put(&request.path).is_some()
                 || agent_message(&request.path).is_some() || crate::domain_orchestrator::decision_route(&request.path).is_some()
                 || request.path == PUSH_BINDING_V2)
                 && approved_method(&request).is_ok(), "v2-only service route is not approved");
@@ -871,7 +871,7 @@ impl Service {
             approved.recheck()?;
             return Ok(result);
         }
-        if request.method == "POST" {
+        if request.method == "POST" || request.method == "PUT" {
             if crate::v2_client_routes::upload_step(&request.path).is_some() {
                 let body = request.body.clone().context("file transfer body required")?;
                 let (transfers, home, owner, route) = (self.transfers.clone(), self.home.clone(), sender.to_owned(), request.path.clone());
@@ -883,7 +883,8 @@ impl Service {
                 });
             }
             let routes = self.routes.as_ref().context("client routes unavailable")?;
-            let route = crate::v2_client_routes::parse_write(&request.path).context("v2-only write is not approved")?;
+            let route = crate::v2_client_routes::parse_write(&request.path).or_else(|| crate::v2_client_routes::parse_put(&request.path))
+                .context("v2-only write is not approved")?;
             let body = request.body.as_ref().context("write body required")?;
             let reply = routes.write(&format!("device:{sender}"), route, body, None, &|| approved.recheck()).await?;
             approved.recheck()?;
@@ -1304,7 +1305,9 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || crate::domain_orchestrator::decision_route(&request.path).is_some()
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some(),
             "POST" if request.body.is_none() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, false),
-            "PUT" | "DELETE" => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()),
+            "PUT" => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some())
+                || request.body.is_some() && crate::v2_client_routes::parse_put(&request.path).is_some(),
+            "DELETE" => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()),
             _ => false,
         };
         if !allowed { bail!("local operation is not approved for service access"); }
@@ -4007,6 +4010,20 @@ agreement_key = "{}"
             "mac-1", "phone-a", "mac-1", now_ms()).unwrap()).unwrap();
         assert_eq!((answer["status"].as_i64(), answer["body"]["created_ids"].clone()), (Some(200), json!(["request-9"])), "{answer}");
         assert_eq!(domain.request_launch(&"request-9".into()).unwrap().unwrap().options.effort, "hard", "the phone's choices are kept with its request");
+
+        for path in ["/v2/tasks/task-1/history"] {
+            assert!(approved_method(&LocalRequest { method: "GET".into(), path: path.into(), body: None }).is_ok(), "{path} is relayed");
+        }
+        assert_eq!(service.dispatch("phone-a", &read("/v2/tasks/nothing/history")).await.unwrap()["status"], 404);
+        let put = |path: &str, body: Option<Value>| LocalRequest { method: "PUT".into(), path: path.into(), body };
+        assert!(approved_method(&put("/v2/tasks/task-1/cancel-reason", Some(json!({"reason": "x"})))).is_ok());
+        assert!(approved_method(&put("/v2/tasks/task-1/cancel-reason", None)).is_err(), "a write needs its body");
+        assert!(approved_method(&LocalRequest { method: "POST".into(), path: "/v2/tasks/task-1/cancel-reason".into(), body: Some(json!({})) }).is_err(), "it is a PUT");
+        assert!(!service.atomic_local(&put("/v2/tasks/task-1/cancel-reason", Some(json!({})))), "recording a reason is journaled as uncertain when interrupted");
+        let missing = service.dispatch("phone-a", &put("/v2/tasks/nothing/cancel-reason", Some(json!({"reason": "x"})))).await.unwrap();
+        assert_eq!((missing["status"].as_i64(), missing["body"]["code"].as_str()), (Some(404), Some("not_found")));
+        let presence = service.dispatch("phone-a", &LocalRequest { method: "POST".into(), path: "/v2/activity".into(), body: Some(json!({"client": "phone"})) }).await.unwrap();
+        assert_eq!((presence["status"].as_i64(), &presence["body"]), (Some(200), &json!({})));
 
         auth.revoke("phone-a").unwrap();
         assert!(service.dispatch("phone-a", &read("/v2/runtime")).await.is_err(), "a revoked phone reads nothing");

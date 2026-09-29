@@ -25,7 +25,8 @@ Use `domain_command` with the typed `command.kind`:
 
 - `publish_information` to tell the user or orchestrator a finding. This does not complete work.
 - `ask_question` or `request_action` for a decision or outside action. Include the whole context,
-  recipient, options, blocking flag, and task scope. Wait for the recorded answer; do not infer
+  recipient, options (each may carry a `description` of what choosing it means), blocking flag,
+  and task scope. Wait for the recorded answer; do not infer
   acceptance from a read or a chat message.
 - `create_document` or `revise_document` with an Alondra-stored file reference and its SHA256;
   review belongs to that exact revision. A `claude.ai` link is not a document body.
