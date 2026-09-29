@@ -1,0 +1,5 @@
+filegroup(
+    name = "client-v2",
+    srcs = glob(["*.json"]),
+    visibility = ["//visibility:public"],
+)

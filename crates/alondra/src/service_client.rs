@@ -547,7 +547,7 @@ impl Profile {
             Ok(value)
         })
     }
-    fn upload_via(name: &str, bytes: &[u8], timeout: Duration,
+    pub(crate) fn upload_via(name: &str, bytes: &[u8], timeout: Duration,
         mut call: impl FnMut(&str, Value, Instant) -> Result<Value>) -> Result<Value> {
         let started = Instant::now();
         let deadline = started + timeout;
