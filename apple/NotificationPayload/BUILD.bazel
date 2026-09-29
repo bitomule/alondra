@@ -10,5 +10,6 @@ swift_library(
 swift_test(
     name = "AlondraNotificationPayloadTests",
     srcs = glob(["Tests/**/*.swift"]),
+    data = ["//fixtures/client-v2"],
     deps = [":AlondraNotificationPayload", "//apple/Contracts:AlondraContracts"],
 )
