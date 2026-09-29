@@ -213,6 +213,41 @@ pub(super) fn load_schedule_request_tools(
     .transpose()
 }
 
+pub(super) fn remember_request_launch(c: &Connection, request_id: &RequestId, launch: &super::RequestLaunch) -> Result<()> {
+    exec(
+        c,
+        "INSERT INTO request_launch(request_id,project,options,issue,issue_text,attachments) VALUES(?1,?2,?3,?4,?5,?6)",
+        params![
+            request_id.0,
+            launch.project,
+            serde_json::to_string(&launch.options)?,
+            launch.issue,
+            launch.issue_text,
+            serde_json::to_string(&launch.attachments)?
+        ],
+    )?;
+    Ok(())
+}
+
+pub(super) fn load_request_launch(c: &Connection, request_id: &RequestId) -> Result<Option<super::RequestLaunch>> {
+    c.query_row(
+        "SELECT project,options,issue,issue_text,attachments FROM request_launch WHERE request_id=?1",
+        [&request_id.0],
+        |r| Ok((r.get::<_, Option<String>>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, Option<String>>(3)?, r.get::<_, String>(4)?)),
+    )
+    .optional()?
+    .map(|(project, options, issue, issue_text, attachments)| {
+        Ok(super::RequestLaunch {
+            project,
+            options: serde_json::from_str(&options)?,
+            issue,
+            issue_text,
+            attachments: serde_json::from_str(&attachments)?,
+        })
+    })
+    .transpose()
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct LegacyScheduleReceipt {
     pub sender: String,

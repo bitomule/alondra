@@ -3907,6 +3907,24 @@ agreement_key = "{}"
         let after_cancel = step("chunk", json!({"transfer_id": other, "offset": 0, "data": "AAEC"})).await.unwrap();
         assert_eq!((after_cancel["status"].as_i64(), after_cancel["body"]["error"].as_str()), (Some(422), Some("attachment_transfer_unknown")));
 
+        for path in ["/v2/options", "/v2/options?project=App", "/v2/projects", "/v2/issues?refresh=1"] {
+            assert!(approved_method(&LocalRequest { method: "GET".into(), path: path.into(), body: None }).is_ok(), "{path} is relayed");
+        }
+        let options = service.dispatch("phone-a", &read("/v2/options")).await.unwrap();
+        assert_eq!((options["status"].as_i64(), options["body"]["options"][0]["id"].as_str()), (Some(200), Some("effort")));
+        assert_eq!(service.dispatch("phone-a", &read("/v2/projects")).await.unwrap()["status"], 200);
+        assert!(service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/requests".into(), body: Some(json!({})) }));
+        let new_request = post("request-1", "/v2/requests", json!({"request_id": "request-9", "text": "Ship it", "options": {"effort": "hard"}, "attachments": []}));
+        let prepared = service.prepare_work(&new_request).unwrap().unwrap();
+        service.journal.accept("phone-a", "request-1", &prepared.digest).unwrap();
+        service.journal.executing_local("phone-a", "request-1", &prepared.digest).unwrap();
+        let bytes = service.execute_atomic_local(&new_request.envelope, device, &prepared.request, &prepared.digest).await.unwrap();
+        let sealed_answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
+        let answer: Value = serde_json::from_slice(&sealed_answer.open(service.signing.verifying_key(), &phone_agreement,
+            "mac-1", "phone-a", "mac-1", now_ms()).unwrap()).unwrap();
+        assert_eq!((answer["status"].as_i64(), answer["body"]["created_ids"].clone()), (Some(200), json!(["request-9"])), "{answer}");
+        assert_eq!(domain.request_launch(&"request-9".into()).unwrap().unwrap().options.effort, "hard", "the phone's choices are kept with its request");
+
         let message = json!({"text": "See the shot", "attachments": [attachment]});
         let sent = service.routes.as_ref().unwrap().write("device:phone-a", crate::v2_client_routes::Write::AgentMessage("agent-a".into()), &message, None, &|| Ok(())).await.unwrap();
         assert_eq!(sent.status, StatusCode::OK, "the reference a relay upload returns is one a command accepts: {}", sent.body);

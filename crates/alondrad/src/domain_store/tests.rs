@@ -1288,3 +1288,43 @@ fn user_messages_persist_with_their_outbox_rows_and_cannot_be_rewritten() {
     drop(store);
     assert_eq!(DomainStore::open(&fixture.path()).unwrap().load().unwrap(), expected, "messages survive a restart");
 }
+
+#[test]
+fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_all() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    let launch = RequestLaunch {
+        project: Some("App".into()),
+        options: alondra_core::options::OptionsFile::default().resolve(Some("App"), &Default::default()).unwrap(),
+        issue: Some("me/app#3".into()),
+        issue_text: Some("Crash on launch".into()),
+        attachments: vec![attachment("att-1")],
+    };
+    let create = |store: &mut DomainStore, id: &str, request: &str, body: &str| {
+        let mut e = envelope(store, id, Command::CreateRequest { request_id: request.into(), body: body.into() });
+        e.expected_revision = 0;
+        store.execute_launching(&user(), &e, None, &launch)
+    };
+    assert!(matches!(create(&mut store, "empty", "request-1", "  "), Err(StoreError::Domain(_))), "a refused request records no launch");
+    assert!(store.request_launch(&"request-1".into()).unwrap().is_none());
+    assert!(store.load().unwrap().requests.is_empty());
+    let not_a_request = envelope(&mut store, "other", Command::CloseRequest { request_id: "request-1".into() });
+    assert!(matches!(store.execute_launching(&user(), &not_a_request, None, &launch), Err(StoreError::Domain(_))), "only a new Request has a launch");
+
+    let first = create(&mut store, "first", "request-1", "Ship it").unwrap();
+    assert!(!first.replayed && first.outcome.changed);
+    assert_eq!(store.request_launch(&"request-1".into()).unwrap().as_ref(), Some(&launch));
+    assert_eq!(store.request_launch_summaries().unwrap()[&"request-1".into()], (Some("App".to_owned()), Some("auto".to_owned())));
+    let again = create(&mut store, "first", "request-1", "Ship it").unwrap();
+    assert!(again.replayed, "the same command again is the same request");
+    execute(&mut store, &user(), "plain", Command::CreateRequest { request_id: "request-2".into(), body: "Plain".into() });
+    assert!(store.request_launch(&"request-2".into()).unwrap().is_none(), "a plain request keeps no launch");
+
+    assert!(store.conn.execute("UPDATE request_launch SET project='Other'", []).is_err(), "what was asked for is immutable");
+    assert!(store.conn.execute("DELETE FROM request_launch", []).is_err(), "and retained");
+    let expected = store.load().unwrap();
+    drop(store);
+    let mut reopened = DomainStore::open(&fixture.path()).unwrap();
+    assert_eq!(reopened.load().unwrap(), expected);
+    assert_eq!(reopened.request_launch(&"request-1".into()).unwrap().as_ref(), Some(&launch), "the launch survives a restart");
+}

@@ -4,7 +4,7 @@ use super::*;
 use crate::auth::Auth;
 use crate::domain_bootstrap::V2Only;
 use alondra_core::domain_v2::{
-    Actor, Command, CommandEnvelope, CommandOutcome, PROTOCOL_VERSION, Recipient, Scope,
+    Actor, AttachmentRef, Command, CommandEnvelope, CommandOutcome, PROTOCOL_VERSION, Recipient, Scope,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
@@ -137,9 +137,9 @@ pub(super) fn assert_covers(expected: &Value, actual: &Value, at: &str) {
     }
 }
 
-struct Github(Value);
+struct PrGithub(Value);
 
-impl PrView for Github {
+impl PrView for PrGithub {
     fn view<'a>(&'a self, _: &'a str) -> pr_details::Viewed<'a> {
         Box::pin(async move { Some(self.0.clone()) })
     }
@@ -191,7 +191,7 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
     seed_work(&fixture);
     observe_sessions(&fixture);
     fixture.client.stamp().unwrap();
-    let github = Github(json!({"title": "Editor covers readable text", "state": "OPEN", "mergeable": "CONFLICTING",
+    let github = PrGithub(json!({"title": "Editor covers readable text", "state": "OPEN", "mergeable": "CONFLICTING",
         "mergeStateStatus": "DIRTY", "statusCheckRollup": [
             {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
             {"name": "ui tests", "status": "COMPLETED", "conclusion": "FAILURE"}]}));
@@ -668,4 +668,213 @@ async fn chunked_uploads_and_file_chunks_are_for_the_relay_and_not_on_this_mac()
     assert_eq!(parse_write("/v2/pull-requests/pr-1/resolve-conflicts"), Some(Write::ResolveConflicts("pr-1".into())));
     assert_eq!(parse_write("/v2/pull-requests/pr-1/set-aside"), Some(Write::SetAside("pr-1".into())));
     assert!(atomic_write_path("/v2/pull-requests/pr-1/resolve-conflicts") && !atomic_write_path("/v2/pull-requests/pr-1/set-aside"));
+}
+
+fn write_options(fixture: &Fixture, extra: &str) {
+    let projects = fixture.home.join("Projects");
+    for name in ["App", "Web"] {
+        std::fs::create_dir_all(projects.join(name).join(".git")).unwrap();
+    }
+    std::fs::write(alondra_core::options::path_in(&fixture.home),
+        format!("projects_root = {:?}\n{extra}", projects.to_str().unwrap())).unwrap();
+}
+
+struct FakeGithub {
+    searches: std::sync::atomic::AtomicUsize,
+    found: Value,
+}
+
+impl FakeGithub {
+    fn with(found: Value) -> Arc<Self> {
+        Arc::new(Self { searches: Default::default(), found })
+    }
+
+    fn searches(&self) -> usize {
+        self.searches.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl Github for FakeGithub {
+    fn search_issues<'a>(&'a self, _: &'a [String]) -> close::Answer<'a, Result<Value, String>> {
+        Box::pin(async move {
+            self.searches.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(self.found.clone())
+        })
+    }
+
+    fn issue_view<'a>(&'a self, repo: &'a str, number: u64) -> close::Answer<'a, Result<Value, String>> {
+        Box::pin(async move {
+            Ok(json!({"url": format!("https://github.com/{repo}/issues/{number}"), "title": "Crash on launch",
+                "body": "It crashes when the app opens.", "comments": []}))
+        })
+    }
+}
+
+const USER_OPTION: &str = "
+[[option]]
+id = \"tests\"
+label = \"Tests\"
+kind = \"toggle\"
+default = true
+on = \"Run the whole suite before the PR.\"
+
+[projects.Web]
+[[projects.Web.option]]
+id = \"deploy\"
+label = \"Deploy\"
+kind = \"toggle\"
+";
+
+#[tokio::test]
+async fn options_offer_effort_and_the_users_own_and_never_auto_merge() {
+    let fixture = Fixture::start().await;
+    let expected = fixture_json("requests.json");
+    let request = &expected["options"];
+    let bare = fixture.get_json("/v2/options").await;
+    assert_eq!(bare["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(), ["effort"], "without an options file only effort is offered");
+    let shipped = fixture.get_json(request["path"].as_str().unwrap()).await;
+    assert_covers(&request["response"], &shipped, "options");
+    assert_eq!(shipped["options"][0]["default"], "auto");
+
+    write_options(&fixture, &format!("[defaults]\npr = \"auto_merge\"\n{USER_OPTION}"));
+    let app = fixture.get_json("/v2/options?project=App").await;
+    let ids = |value: &Value| value["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(ids(&app), ["effort", "tests"], "no PR handling, whatever the file defaults say: {app}");
+    assert_eq!(ids(&fixture.get_json("/v2/options?project=Web").await), ["effort", "tests", "deploy"], "a project's own options come with it");
+    assert_eq!(fixture.get_json("/v2/options?project=Web").await["project"], "Web");
+    assert!(app["options"].as_array().unwrap().iter().all(|o| o["values"].as_array().unwrap().iter().all(|v| v["id"] != "auto_merge")));
+
+    std::fs::write(alondra_core::options::path_in(&fixture.home), "this is [not toml").unwrap();
+    let broken = fixture.get_json("/v2/options?project=App").await;
+    assert_eq!(ids(&broken), ["effort", "tests"], "a broken file keeps the last good options in use");
+    assert!(broken["error"].as_str().is_some_and(|error| error.contains("options.toml")), "and says why: {broken}");
+    assert_eq!(fixture.unsigned_get("/v2/options").await, StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn projects_are_the_checkouts_under_the_root_ranked_by_what_the_daemon_saw() {
+    let fixture = Fixture::start().await;
+    write_options(&fixture, "");
+    let expected = fixture_json("requests.json");
+    let listed = fixture.get_json(expected["projects"]["path"].as_str().unwrap()).await;
+    assert_covers(&expected["projects"]["response"], &listed, "projects");
+    let names = |value: &Value| value["projects"].as_array().unwrap().iter().map(|p| p["name"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(names(&listed), ["App", "Web"]);
+    assert_eq!(listed["root"], fixture.home.join("Projects").to_str().unwrap());
+
+    fixture.command(Actor::System, "register-web", Command::RegisterAgent { agent_id: "agent-web".into(), name: "Web agent".into() });
+    let cwd = fixture.home.join("Projects").join("Web");
+    fixture.domain.live.observe(&hook("agent-web", "SessionStart", json!({"cwd": cwd.to_str().unwrap()})));
+    assert_eq!(names(&fixture.get_json("/v2/projects").await), ["Web", "App"], "the project a session is working in comes first");
+}
+
+#[tokio::test]
+async fn issues_are_searched_once_and_kept_unless_refreshed() {
+    let fixture = Fixture::start().await;
+    write_options(&fixture, "[issues]\nowners = [\"me\"]\nexclude = [\"me/Secret\"]\n");
+    let found = json!([
+        {"repository": {"nameWithOwner": "me/App"}, "number": 3, "title": "Crash on launch", "url": "https://github.com/me/App/issues/3"},
+        {"repository": {"nameWithOwner": "me/Secret"}, "number": 1, "title": "Hidden", "url": "https://github.com/me/Secret/issues/1"}]);
+    let github = FakeGithub::with(found);
+    fixture.client.use_github(github.clone());
+    let expected = fixture_json("requests.json");
+    let first = fixture.get_json(expected["issues"]["path"].as_str().unwrap()).await;
+    assert_covers(&expected["issues"]["response"], &first, "issues");
+    assert_eq!(first["issues"].as_array().unwrap().len(), 1, "an excluded repository is never offered");
+    assert_eq!(first["issues"][0]["repo"], "me/App");
+    fixture.get_json("/v2/issues").await;
+    assert_eq!(github.searches(), 1, "the second read is served from memory");
+    fixture.get_json("/v2/issues?refresh=1").await;
+    assert_eq!(github.searches(), 2, "a refresh asks again");
+    assert_eq!(fixture.get("/v2/issues?refresh=0").await, (StatusCode::NOT_FOUND, vec![]), "refresh takes only 1");
+}
+
+#[tokio::test]
+async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_request() {
+    let fixture = Fixture::start().await;
+    write_options(&fixture, &format!("[issues]\nowners = [\"me\"]\n{USER_OPTION}"));
+    fixture.client.use_github(FakeGithub::with(json!([])));
+    let expected = fixture_json("requests.json");
+    let request = &expected["new_request"];
+    let path = request["path"].as_str().unwrap();
+
+    let (status, outcome) = fixture.send("POST", path, &request["body"]).await;
+    assert_eq!(status, StatusCode::OK, "{outcome}");
+    assert_covers(&request["response"], &outcome, "new_request");
+    assert_eq!(outcome["created_ids"], json!(["request-9"]));
+    assert_eq!(fixture.domain.state().unwrap().requests[&"request-9".into()].body, "Ship it");
+    let launch = fixture.domain.request_launch(&"request-9".into()).unwrap().unwrap();
+    assert_eq!((launch.project.as_deref(), launch.issue.as_deref()), (Some("App"), Some("me/App#3")));
+    assert_eq!((launch.options.effort.as_str(), launch.options.flags.model.as_deref(), launch.options.auto_merge), ("hard", Some("opus"), false));
+    assert!(launch.options.picked.iter().any(|p| p.id == "tests"), "the user's option is resolved with the rest");
+    assert!(launch.options.picked.iter().all(|p| p.id != "pr"), "there is no PR handling to pick");
+    assert!(launch.issue_text.as_deref().is_some_and(|text| text.contains("Crash on launch") && text.contains("It crashes when the app opens.")), "{:?}", launch.issue_text);
+    assert_eq!(launch.attachments, serde_json::from_value::<Vec<AttachmentRef>>(request["body"]["attachments"].clone()).unwrap());
+
+    let (status, again) = fixture.send("POST", path, &request["body"]).await;
+    assert_eq!((status, &again), (StatusCode::OK, &outcome), "sending it again is the same request");
+    assert_eq!(fixture.domain.state().unwrap().requests.len(), 1);
+    let mut other = request["body"].clone();
+    other["text"] = json!("Something else");
+    let (status, error) = fixture.send("POST", path, &other).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("idempotency_conflict")), "one request id, one request");
+
+    fixture.user("task-9", Command::CreateTask {
+        task_id: "task-9".into(), request_id: "request-9".into(), title: "Ship".into(), agent_id: None,
+        review_prs: true, dependencies: BTreeSet::new(), stack: None });
+    let runtime = fixture.get_json("/v2/runtime").await;
+    assert_eq!((runtime["tasks"]["task-9"]["project"].as_str(), runtime["tasks"]["task-9"]["effort"].as_str()), (Some("App"), Some("hard")), "its tasks carry what it asked for");
+}
+
+#[tokio::test]
+async fn a_new_request_is_refused_whole_and_leaves_nothing_behind() {
+    let fixture = Fixture::start().await;
+    write_options(&fixture, &format!("[issues]\nowners = [\"me\"]\nexclude = [\"me/Secret\"]\n{USER_OPTION}"));
+    fixture.client.use_github(FakeGithub::with(json!([])));
+    let body = |patch: Value| {
+        let mut body = json!({"request_id": "request-1", "text": "Do it", "options": {}, "attachments": []});
+        body.as_object_mut().unwrap().extend(patch.as_object().unwrap().clone());
+        body
+    };
+    let send = |patch: Value| {
+        let body = body(patch);
+        let fixture = &fixture;
+        async move { fixture.send("POST", "/v2/requests", &body).await }
+    };
+    let (status, error) = send(json!({"options": {"pr": "auto_merge"}})).await;
+    assert_eq!((status, error["error"].as_str()), (StatusCode::BAD_REQUEST, Some("unknown option pr")), "auto-merge is not offered any more");
+    let (status, error) = send(json!({"options": {"effort": "extreme"}})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let (status, error) = send(json!({"issue": "not an issue"})).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
+    let (status, error) = send(json!({"issue": "me/Secret#1"})).await;
+    assert!(status == StatusCode::BAD_REQUEST && error["error"].as_str().unwrap().contains("excluded"), "{error}");
+    let (status, error) = send(json!({"text": "   "})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
+    let (status, error) = send(json!({"unknown": 1})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
+    let bad_file = json!([{"id": "a", "name": "a.png", "content_digest": "short", "content_reference": "files/a", "bytes": 1}]);
+    let (status, error) = send(json!({"attachments": bad_file})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
+    assert!(fixture.domain.state().unwrap().requests.is_empty(), "no refusal created a request");
+    assert!(fixture.domain.request_launch(&"request-1".into()).unwrap().is_none());
+    let unsigned = reqwest::Client::new().post(format!("{}/v2/requests", fixture.base)).json(&body(json!({}))).send().await.unwrap();
+    assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
+
+    let (status, _) = send(json!({"issue": "me/App#3"})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.domain.request_launch(&"request-1".into()).unwrap().unwrap().project.as_deref(), Some("App"), "an issue names its project when it is one of the checkouts");
+}
+
+#[test]
+fn reads_of_new_work_are_named_exactly() {
+    for path in ["/v2/options", "/v2/options?project=App", "/v2/options?project=My%20App", "/v2/projects", "/v2/issues", "/v2/issues?refresh=1"] {
+        assert!(approved_read_path(path), "{path}");
+    }
+    for path in ["/v2/options?project=", "/v2/options?other=1", "/v2/options?project=a&project=b", "/v2/projects?x=1", "/v2/issues?refresh=0",
+        "/v2/issues?refresh=1&x=1", "/v2/issues/", "/v2/option"] {
+        assert!(!approved_read_path(path), "{path}");
+    }
+    assert_eq!(parse_write("/v2/requests"), Some(Write::NewRequest));
+    assert!(atomic_write_path("/v2/requests"));
 }
