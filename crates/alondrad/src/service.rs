@@ -669,6 +669,7 @@ impl Service {
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         if self.domain.is_some() {
             anyhow::ensure!((request.path.starts_with("/v2/domain") || crate::v2_client_routes::approved_read_path(&request.path)
+                || crate::v2_client_routes::approved_write_path(&request.path)
                 || agent_message(&request.path).is_some() || crate::domain_orchestrator::decision_route(&request.path).is_some())
                 && approved_method(&request).is_ok(), "v2-only service route is not approved");
         }
@@ -850,6 +851,14 @@ impl Service {
             };
             approved.recheck()?;
             return Ok(result);
+        }
+        if request.method == "POST" {
+            let routes = self.routes.as_ref().context("client routes unavailable")?;
+            let route = crate::v2_client_routes::parse_write(&request.path).context("v2-only write is not approved")?;
+            let body = request.body.as_ref().context("write body required")?;
+            let reply = routes.write(route, body, &|| approved.recheck()).await?;
+            approved.recheck()?;
+            return Ok(reply.into_value());
         }
         anyhow::ensure!(request.method == "GET" && request.body.is_none(), "v2-only read must be GET");
         let client_read = self.routes.as_ref().and_then(|client| client.read(&request.path));
@@ -1255,6 +1264,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                     .is_some_and(|(id, query)| v2_read_id(id) && crate::domain_api::document_content_query(query).is_some())
                 || crate::domain_reads::approved_read_path(&request.path),
             "POST" if request.body.is_some() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, true)
+                || crate::v2_client_routes::approved_write_path(&request.path)
                 || request.path == "/v2/domain/commands"
                 || agent_message(&request.path).is_some()
                 || crate::domain_orchestrator::decision_route(&request.path).is_some()
@@ -2712,7 +2722,7 @@ agreement_key = "{}"
         let post = |path: &str, body: Option<Value>| LocalRequest { method: "POST".into(), path: path.into(), body };
         assert!(approved_method(&post("/v2/agents/agent-a/messages", Some(json!({"text": "hi"})))).is_ok());
         assert!(approved_method(&post("/v2/agents/agent-a/messages", None)).is_err());
-        for path in ["/v2/agents//messages", "/v2/agents/a/b/messages", "/v2/agents/../messages", "/v2/agents/agent-a/close"] {
+        for path in ["/v2/agents//messages", "/v2/agents/a/b/messages", "/v2/agents/../messages", "/v2/agents/agent-a/other"] {
             assert!(approved_method(&post(path, Some(json!({"text": "hi"})))).is_err(), "{path}");
         }
         assert!(approved_method(&LocalRequest { method: "GET".into(), path: "/v2/agents/agent-a/messages".into(), body: None }).is_err());
@@ -3833,6 +3843,15 @@ agreement_key = "{}"
         for (index, path) in ["/v2/nothing", "/v2/runtime?x=1", "/v2/agents/agent-a/nothing"].into_iter().enumerate() {
             assert!(service.prepare_work(&sealed(&format!("refused-{index}"), path)).is_err(), "{path} is refused");
         }
+        assert!(!service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/close".into(), body: Some(json!({})) }),
+            "closing a session is journaled as uncertain when it is interrupted, never replayed");
+        let closed = service.dispatch("phone-a", &LocalRequest { method: "POST".into(), path: "/v2/agents/nobody/close".into(), body: Some(json!({"force": true})) }).await.unwrap();
+        assert_eq!((closed["status"].as_i64(), closed["body"]["code"].as_str()), (Some(404), Some("not_found")));
+        for (index, (method, path)) in [("POST", "/v2/agents/agent-a/close/extra"), ("PUT", "/v2/agents/agent-a/close"), ("DELETE", "/v2/agents/agent-a/close")].into_iter().enumerate() {
+            let request = LocalRequest { method: method.into(), path: path.into(), body: Some(json!({})) };
+            assert!(approved_method(&request).is_err(), "{method} {path} is not a relayed operation ({index})");
+        }
+        assert!(approved_method(&LocalRequest { method: "POST".into(), path: "/v2/agents/agent-a/close".into(), body: None }).is_err(), "a write needs its body");
         auth.revoke("phone-a").unwrap();
         assert!(service.dispatch("phone-a", &read("/v2/runtime")).await.is_err(), "a revoked phone reads nothing");
         drop(service);

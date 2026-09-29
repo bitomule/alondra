@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 
 pub(super) struct Fixture {
     pub home: PathBuf,
-    base: String,
+    pub base: String,
     http: reqwest::Client,
     key: SigningKey,
     device_id: String,
@@ -320,5 +320,122 @@ async fn unknown_v2_routes_are_a_bare_404_and_reads_are_named_exactly() {
     for path in ["/v2/runtime?x=1", "/v2/agents/a%2Fb/activity", "/v2/agents//activity", "/v2/agents/search",
         "/v2/agents/search?q=", "/v2/agents/search?q=a&q=b", "/v2/agents/search?q=a&x=1", "/v2/runtime/", "/v2/agents/a/activity?x=1"] {
         assert!(!approved_read_path(path), "{path}");
+    }
+}
+
+struct FakeSessions {
+    listed: std::sync::Mutex<Vec<String>>,
+    leftovers: Option<String>,
+    calls: std::sync::Mutex<Vec<Vec<String>>>,
+    stuck: bool,
+}
+
+impl FakeSessions {
+    fn listing(ids: &[&str]) -> Arc<Self> {
+        Arc::new(Self { listed: std::sync::Mutex::new(ids.iter().map(|id| id.to_string()).collect()), leftovers: None,
+            calls: Default::default(), stuck: false })
+    }
+}
+
+impl Sessions for FakeSessions {
+    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<String, String>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(args.clone());
+            match args[0].as_str() {
+                "agents" => Ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string()),
+                "rm" if self.stuck => Ok(format!("removed {}", args[1])),
+                "rm" => {
+                    self.listed.lock().unwrap().retain(|id| id != &args[1]);
+                    Ok(format!("removed {}", args[1]))
+                }
+                _ => Err("unexpected".into()),
+            }
+        })
+    }
+
+    fn leftovers<'a>(&'a self, _: &'a str) -> close::Answer<'a, Option<String>> {
+        Box::pin(async move { self.leftovers.clone() })
+    }
+}
+
+#[tokio::test]
+async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fleet() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
+    fixture.command(Actor::System, "connect-a", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
+    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    let sessions = FakeSessions::listing(&[&short]);
+    fixture.client.use_sessions(sessions.clone());
+    let expected = fixture_json("requests.json");
+    let request = &expected["close"];
+    let bearer = fixture.domain.bind_agent("agent-a").unwrap().expose_for_child_environment().to_owned();
+
+    let (status, answer) = fixture.send("POST", request["path"].as_str().unwrap(), &request["body"]).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_covers(&request["response"], &answer, "close");
+    assert_eq!(answer["interactive"], false);
+    let calls = sessions.calls.lock().unwrap().clone();
+    assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
+    assert!(!fixture.domain.state().unwrap().agents[&"agent-a".into()].connected, "the domain sees the session gone");
+    assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
+    let runtime = fixture.get_json("/v2/runtime").await;
+    assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
+}
+
+#[tokio::test]
+async fn closing_an_interactive_session_only_leaves_the_fleet() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    fixture.command(Actor::System, "connect-b", Command::ObserveAgent { agent_id: "agent-b".into(), connected: true });
+    let sessions = FakeSessions::listing(&[]);
+    fixture.client.use_sessions(sessions.clone());
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-b/close", &json!({"force": false})).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["interactive"], true);
+    assert!(answer["output"].as_str().unwrap().contains("interactive session"));
+    assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] == "agents"), "claude rm is never run for a terminal session");
+    assert!(!fixture.domain.state().unwrap().agents[&"agent-b".into()].connected);
+}
+
+#[tokio::test]
+async fn a_busy_session_or_one_with_unsaved_work_is_not_closed() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    let sessions = Arc::new(FakeSessions {
+        listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: Some("2 uncommitted file(s) in /w".into()),
+        calls: Default::default(), stuck: false,
+    });
+    fixture.client.use_sessions(sessions.clone());
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(answer["reasons"], json!([{"kind": "busy"}]), "{answer}");
+    assert!(answer["error"].as_str().unwrap().contains("still has something pending"));
+
+    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(answer["reasons"], json!([{"kind": "worktree", "detail": "2 uncommitted file(s) in /w"}]), "force never discards work: {answer}");
+    assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] != "rm"), "nothing was removed");
+
+    let stuck = Arc::new(FakeSessions { listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: None, calls: Default::default(), stuck: true });
+    fixture.client.use_sessions(stuck);
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert!(answer["error"].as_str().unwrap().contains("is still listed by claude agents"), "{answer}");
+    let (status, error) = fixture.send("POST", "/v2/agents/nobody/close", &json!({"force": true})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+}
+
+#[test]
+fn writes_are_named_exactly() {
+    assert_eq!(parse_write("/v2/agents/agent-a/close"), Some(Write::Close("agent-a".into())));
+    for path in ["/v2/agents//close", "/v2/agents/a%2Fb/close", "/v2/agents/a/close?x=1", "/v2/agents/a/other", "/v2/close",
+        "/v2/agents/a/close/", "/v2/orchestrator/retry"] {
+        assert_eq!(parse_write(path), None, "{path}");
     }
 }
