@@ -1,12 +1,16 @@
-//! GitHub facts for domain v2 pull requests. `gh` is the only reader; the
-//! daemon never merges a v2 PR itself. An observation records remote reality,
-//! it never accepts a delivery or completes a Task.
+//! GitHub facts for domain v2 pull requests. `gh` is the only reader. An
+//! observation records remote reality, it never accepts a delivery or
+//! completes a Task. The daemon merges a PR itself only for a Request the user
+//! asked to auto-merge (`auto_merge`).
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain_v2::{
     Actor, AuthorizationId, Command, CommandEnvelope, DomainState, MergeAttemptState,
-    PrState, PullRequest, PROTOCOL_VERSION,
+    MergeMethod, PrState, PullRequest, PROTOCOL_VERSION,
 };
+
+mod auto_merge;
+pub(crate) use auto_merge::{AutoMerging, Sessions, Tell};
 use anyhow::Result;
 use serde_json::Value;
 use std::future::Future;
@@ -18,23 +22,42 @@ use std::time::Duration;
 /// What GitHub reports for one PR. `merged_head` is the PR head at merge time,
 /// never the merge commit: squash and rebase produce a different commit that
 /// can never match the presented and authorized head.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct PrFacts {
     pub head: String,
     pub base: String,
     pub state: PrState,
     pub merged_head: Option<String>,
+    pub checks: Vec<alondra_core::pr::Check>,
+    /// GitHub's `mergeable`: MERGEABLE, CONFLICTING or UNKNOWN while it works it out.
+    pub mergeable: Option<String>,
+    pub draft: bool,
 }
 
 type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
+type Merged<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 pub(crate) trait PrObserver: Send + Sync + 'static {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
+    /// `gh pr merge` pinned to the head whose checks passed: GitHub refuses the merge if a push
+    /// moved the branch since.
+    fn merge<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a>;
 }
 
 impl<T: PrObserver> PrObserver for Arc<T> {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         (**self).observe(host, repository, number)
+    }
+    fn merge<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a> {
+        (**self).merge(host, repository, number, method, head)
+    }
+}
+
+fn merge_flag(method: MergeMethod) -> &'static str {
+    match method {
+        MergeMethod::Merge => "--merge",
+        MergeMethod::Squash => "--squash",
+        MergeMethod::Rebase => "--rebase",
     }
 }
 
@@ -57,7 +80,7 @@ impl PrObserver for GhCli {
         Box::pin(async move {
             let url = format!("https://{host}/{repository}/pull/{number}");
             let run = tokio::process::Command::new(&self.program)
-                .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName"])
+                .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup,mergeable,isDraft"])
                 .kill_on_drop(true)
                 .output();
             let output = match tokio::time::timeout(Duration::from_secs(30), run).await {
@@ -68,6 +91,22 @@ impl PrObserver for GhCli {
             };
             let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
             parse(&value)
+        })
+    }
+
+    fn merge<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a> {
+        Box::pin(async move {
+            let url = format!("https://{host}/{repository}/pull/{number}");
+            let run = tokio::process::Command::new(&self.program)
+                .args(["pr", "merge", &url, merge_flag(method), "--match-head-commit", head])
+                .kill_on_drop(true)
+                .output();
+            match tokio::time::timeout(Duration::from_secs(90), run).await {
+                Ok(Ok(output)) if output.status.success() => Ok(()),
+                Ok(Ok(output)) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+                Ok(Err(error)) => Err(error.to_string()),
+                Err(_) => Err("gh pr merge did not finish within 90 s".into()),
+            }
         })
     }
 }
@@ -89,6 +128,9 @@ fn parse(value: &Value) -> Result<PrFacts, String> {
         base: base.to_owned(),
         merged_head: (state == PrState::Merged).then(|| head.to_owned()),
         state,
+        checks: value["statusCheckRollup"].as_array().map(|checks| checks.iter().filter_map(crate::prs::check).collect()).unwrap_or_default(),
+        mergeable: value["mergeable"].as_str().map(str::to_owned),
+        draft: value["isDraft"].as_bool().unwrap_or(false),
     })
 }
 
@@ -170,8 +212,10 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
 }
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>) -> Result<()> {
+    let mut merging = AutoMerging::default();
     loop {
         reconcile(&domain, &*observer).await?;
+        auto_merge::run_once(&domain, &*observer, &mut merging, &Sessions, alondra_core::now_millis()).await?;
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
@@ -211,11 +255,12 @@ async fn observed_authorization(
 }
 
 #[cfg(test)]
-pub(crate) struct FakeObserver(pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>);
+pub(crate) struct FakeObserver(pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>,
+    pub std::sync::Mutex<Vec<(u64, MergeMethod, String)>>, pub std::sync::Mutex<Option<String>>);
 #[cfg(test)]
 impl FakeObserver {
     pub(crate) fn new() -> Self {
-        Self(std::sync::Mutex::new(Default::default()))
+        Self(Default::default(), Default::default(), Default::default())
     }
     pub(crate) fn set(&self, number: u64, facts: Result<PrFacts, String>) {
         self.0.lock().unwrap().insert(number, facts);
@@ -227,6 +272,11 @@ impl PrObserver for FakeObserver {
         let facts = self.0.lock().unwrap().get(&number).cloned()
             .unwrap_or_else(|| Err("no such PR".into()));
         Box::pin(async move { facts })
+    }
+    fn merge<'a>(&'a self, _: &'a str, _: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a> {
+        self.1.lock().unwrap().push((number, method, head.to_owned()));
+        let refusal = self.2.lock().unwrap().clone();
+        Box::pin(async move { refusal.map_or(Ok(()), Err) })
     }
 }
 
@@ -257,7 +307,7 @@ mod tests {
 
     fn facts(head: &str, state: PrState) -> PrFacts {
         PrFacts { head: head.into(), base: "main".into(), state,
-            merged_head: (state == PrState::Merged).then(|| head.to_owned()) }
+            merged_head: (state == PrState::Merged).then(|| head.to_owned()), checks: vec![], mergeable: None, draft: false }
     }
 
     /// A Task with a registered PR, a presented final and the user's merge authorization.
@@ -376,11 +426,15 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let gh = GhCli::at(program);
         let merged = gh.observe("github.com", "owner/repo", 7).await.unwrap();
-        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()) });
+        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()),
+            checks: vec![], mergeable: None, draft: false });
         assert_eq!(gh.observe("github.com", "owner/repo", 8).await.unwrap_err(), "gh reported no PR head");
         assert!(gh.observe("github.com", "owner/repo", 9).await.unwrap_err().contains("no pull requests found"));
         let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName"), "{calls}");
-        assert!(!calls.contains("merge"), "the daemon never merges a v2 PR");
+        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName,statusCheckRollup,mergeable,isDraft"), "{calls}");
+        assert!(!calls.contains("pr merge"), "observing never merges");
+        assert!(gh.merge("github.com", "owner/repo", 9, MergeMethod::Squash, HEAD).await.unwrap_err().contains("no pull requests found"));
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains(&format!("pr merge https://github.com/owner/repo/pull/9 --squash --match-head-commit {HEAD}")), "{calls}");
     }
 }

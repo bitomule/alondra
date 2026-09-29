@@ -5,7 +5,7 @@ use super::close::Answer;
 use super::{Client, Reply};
 use crate::domain_store::{RequestLaunch, TransportIdentity};
 use alondra_core::domain_v2::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
-use alondra_core::options::{Choice, OptionsFile, PR};
+use alondra_core::options::{Choice, OptionsFile};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -97,8 +97,7 @@ impl Client {
     pub(super) fn options_answer(&self, project: Option<String>) -> Response {
         let loaded = crate::options::load_in(&self.home, &self.options);
         let project = project.filter(|p| !p.trim().is_empty());
-        let mut catalog = loaded.file.catalog(project.as_deref());
-        catalog.retain(|spec| spec.id != PR);
+        let catalog = loaded.file.catalog(project.as_deref());
         Json(json!({"project": project, "options": catalog, "error": loaded.error})).into_response()
     }
 
@@ -145,14 +144,10 @@ impl Client {
             alondra_core::options::projects(&root).into_iter().find(|(project, _)| project.eq_ignore_ascii_case(name)).map(|(project, _)| project)
         });
         let project = body.project.as_deref().filter(|p| !p.trim().is_empty()).or(from_issue.as_deref());
-        if body.options.contains_key(PR) {
-            return Ok(refused(format!("unknown option {PR}")));
-        }
         let mut resolved = match loaded.file.resolve(project, &body.options) {
             Ok(resolved) => resolved,
             Err(error) => return Ok(refused(error)),
         };
-        resolved.picked.retain(|picked| picked.id != PR);
         let github = self.github.lock().expect("github poisoned").clone();
         let issue_text = match &issue {
             Some((repo, number)) => {

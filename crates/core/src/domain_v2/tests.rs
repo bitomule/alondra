@@ -740,6 +740,36 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]
+fn the_daemon_authorizes_and_claims_an_auto_merge_and_the_agent_completes_after_it() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let authorize = |id: &str| Command::AuthorizeMerge { authorization_id: id.into(), presentation_id: "d".into(),
+        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash };
+    reject_unchanged(&mut s, agent(), authorize("auto"), "forbidden");
+    exec(&mut s, Actor::System, authorize("auto")).unwrap();
+    assert_eq!(s.merge_authorizations[&"auto".into()].user_id, AUTO_MERGE_USER);
+    let claim = |id: &str| Command::ClaimMergeAuthorization { authorization_id: id.into(), remote_head: "head1".into(),
+        remote_base: "main".into(), base_verified: true };
+    exec(&mut s, Actor::System, claim("auto")).unwrap();
+    assert_eq!(s.merge_authorizations[&"auto".into()].attempt, MergeAttemptState::Claimed);
+    assert_eq!(s.merge_authorizations[&"auto".into()].claimed_by, Some("a".into()), "the merge is on the Task's behalf");
+    exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+        state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
+    assert_eq!(s.merge_authorizations[&"auto".into()].attempt, MergeAttemptState::Confirmed);
+    exec(&mut s, agent(), Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn the_daemon_cannot_claim_a_merge_the_user_authorized() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    reject_unchanged(&mut s, Actor::System, Command::ClaimMergeAuthorization { authorization_id: "auth".into(),
+        remote_head: "head1".into(), remote_base: "main".into(), base_verified: true }, "not_assigned");
+}
+#[test]
 fn head_push_invalidates_authorization_and_merge_external_does_not_accept() {
     let mut s = fixture();
     register(&mut s);
