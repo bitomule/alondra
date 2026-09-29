@@ -136,13 +136,29 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<AgentId>, Option<Runt
     Ok((agent(&d, runtime.as_ref(), name)?, runtime))
 }
 
+/// A Task id sends to the Task's agent, about that Task; anything else names the agent.
 pub fn send(name: &str, text: &str) -> Result<()> {
-    let client = user();
-    let (agent, _) = resolved(&client, name)?;
-    let message = ops::Message::to(agent, MessageKind::Message, text.to_string());
+    let client = Client::for_user(Duration::from_secs(60));
+    let d = client.domain()?;
+    let task = d.tasks.iter().find(|t| t.id.0 == name);
+    let message = match task {
+        Some(t) => {
+            let agent = t.agent_id.clone().with_context(|| trf!("{name} has no agent yet", "{name} aún no tiene agente"))?;
+            ops::Message { task: Some(t.id.clone()), ..ops::Message::to(Some(agent), MessageKind::Message, text.to_string()) }
+        }
+        None => ops::Message::to(resolved(&client, name)?.0, MessageKind::Message, text.to_string()),
+    };
     let answer = client.post(&message.path(), &message.body())?;
-    println!("{}", crate::delivery::response_notice(&answer, None).unwrap_or_else(|| trf!("Sent to {name}", "Enviado a {name}")));
+    println!("{}", sent_notice(&answer, name));
     Ok(())
+}
+
+fn sent_notice(answer: &Value, name: &str) -> String {
+    match answer.get("delivery_state").and_then(Value::as_str) {
+        Some("uncertain") => trf!("It may not have reached {name}'s session; check it before sending again", "Puede que no haya llegado a la sesión de {name}; revísala antes de reenviar"),
+        Some("handed") => trf!("Typed into {name}'s session", "Escrito en la sesión de {name}"),
+        _ => crate::delivery::response_notice(answer, None).unwrap_or_else(|| trf!("Sent to {name}", "Enviado a {name}")),
+    }
 }
 
 pub fn close(name: &str, force: bool) -> Result<()> {

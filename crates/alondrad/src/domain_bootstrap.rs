@@ -90,6 +90,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/devices/{id}", axum::routing::delete(revoke_device))
         .route("/v2/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(crate::uploads::MAX_UPLOAD_BYTES + 4096)))
         .route("/v2/files", get(file))
+        .route("/v2/agents/{id}/messages", post(agent_message))
         .merge(crate::domain_api::routes())
         .with_state(state)
 }
@@ -190,6 +191,23 @@ async fn upload(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signe
         Ok(Ok(reference)) => Json(reference).into_response(),
         Ok(Err(error)) => crate::domain_api::domain_error(DomainError::new("invalid_input", error.to_string())),
         Err(_) => storage(),
+    }
+}
+
+async fn agent_message(State(state): State<Arc<V2Only>>, signed: Option<Extension<Signed>>,
+    RoutePath(id): RoutePath<String>, body: Result<Json<crate::domain_messages::MessageBody>, JsonRejection>) -> Response {
+    let Some(device) = signed_device(&state.home, &signed) else {
+        return forbidden("signed user device required");
+    };
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid message"));
+    };
+    let user = alondra_core::domain_v2::Actor::User { user_id: format!("device:{}", device.device_id) };
+    let name = alondra_core::config::Config::load().map(|config| config.name).unwrap_or_else(|_| "The user".into());
+    match crate::domain_messages::deliver(&state.domain, &state.home, &user, &name, &id.into(), body,
+        &crate::domain_messages::ClaudeAgents, &Arc::new(crate::domain_transport::Tmux)).await {
+        Ok(answer) => Json(answer).into_response(),
+        Err(error) => crate::domain_api::domain_error(error),
     }
 }
 
@@ -537,6 +555,12 @@ mod tests {
         let outside = "/v2/files?path=/etc/hosts";
         assert_eq!(signed(&client, &base, &newcomer, &newcomer_id, "GET", outside, None).send().await.unwrap().status(),
             StatusCode::NOT_FOUND, "only stored copies are served");
+        let message = json!({"text": "hi"});
+        assert_eq!(client.post(format!("{base}/v2/agents/agent-z/messages")).json(&message)
+            .send().await.unwrap().status(), StatusCode::FORBIDDEN, "a message needs the signed user");
+        let unknown = signed(&client, &base, &key, &device.id, "POST", "/v2/agents/agent-z/messages", Some(message)).send().await.unwrap();
+        assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
+        assert_eq!(unknown.json::<serde_json::Value>().await.unwrap()["code"], "not_found");
         let publish = json!({"protocol_version": 2, "data_epoch": epoch, "command_id": "attached",
             "expected_revision": domain.state().unwrap().revision,
             "command": {"kind": "create_request", "request_id": "request-attached", "body": "Work with a file"}});
