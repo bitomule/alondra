@@ -502,7 +502,7 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
     let before = store.load().unwrap();
     let mut upgraded = store;
     assert_eq!(upgraded.load().unwrap(), before);
-    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
+    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     upgraded.conn.execute_batch("INSERT INTO schedules
         (id,title,text,project,options,disallowed_tools,frequency,hour,minute,weekday,interval,start_at,enabled,next_run,revision,deleted_at)
         VALUES ('schedule-1','Daily work','Do work',NULL,'{}','[]','daily',9,30,7,0,-1,1,2000000,2,NULL);

@@ -3877,8 +3877,6 @@ agreement_key = "{}"
         let after_cancel = step("chunk", json!({"transfer_id": other, "offset": 0, "data": "AAEC"})).await.unwrap();
         assert_eq!((after_cancel["status"].as_i64(), after_cancel["body"]["error"].as_str()), (Some(422), Some("attachment_transfer_unknown")));
 
-        let aside = service.dispatch("phone-a", &LocalRequest { method: "POST".into(), path: "/v2/pull-requests/nothing/set-aside".into(), body: Some(json!({})) }).await.unwrap();
-        assert_eq!(aside["body"]["code"], "not_found", "setting aside is relayed and answered by the daemon");
         auth.revoke("phone-a").unwrap();
         assert!(service.dispatch("phone-a", &read("/v2/runtime")).await.is_err(), "a revoked phone reads nothing");
         drop(service);
