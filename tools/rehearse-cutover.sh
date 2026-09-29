@@ -1,7 +1,7 @@
 #!/bin/sh
 # Usage: tools/rehearse-cutover.sh <alondrad built from this checkout>
-# Full domain v2 cutover rehearsal against a read-only snapshot of the live HOME
-# (docs/domain-v2-live-cutover.md). The live HOME and its daemon are never written,
+# Domain v2 cutover rehearsal (backup, archive, empty v2 start, rollback) against a
+# read-only snapshot of the live HOME (docs/domain-v2-live-cutover.md). The live HOME and its daemon are never written,
 # locked or stopped. Everything is copied into a new private directory, which is
 # deleted at the end; only the report is kept.
 #   LIVE_HOME       HOME to snapshot (default: $ALONDRA_HOME or ~/.alondra)
@@ -37,8 +37,8 @@ for item in alondra.db alondra.db-wal schedules.db schedules.db-wal domain-v2.db
 		used_kb=$((used_kb + $(du -sk "$live/$item" | cut -f1)))
 	fi
 done
-# Snapshot, backup, stage, the commit's own recheck copy and the restored HOME, plus headroom.
-needed_kb=$((used_kb * 5 + 524288))
+# Snapshot, backup and the restored HOME, plus headroom.
+needed_kb=$((used_kb * 3 + 524288))
 free_kb=$(df -k "$root" | awk 'NR==2 {print $4}')
 if [ "$free_kb" -lt "$needed_kb" ]; then
 	echo "$root has $((free_kb / 1024)) MB free; the rehearsal needs about $((needed_kb / 1024)) MB. Set REHEARSAL_ROOT." >&2
