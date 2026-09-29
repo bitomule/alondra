@@ -6,13 +6,13 @@ swift_library(
     srcs = glob(["Sources/*.swift"]),
     visibility = ["//visibility:public"],
     deps = [
+        "//apple:AlondraShared",
         "//apple/Contracts:AlondraContracts",
         "//apple/Domain:AlondraDomain",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Auth:AlondraAuth",
         "//apple/ServicePairing:AlondraServicePairing",
         "//apple/Data/AttachmentStorage:AlondraAttachmentStorage",
-        "//apple/Data/Commands:AlondraCommands",
         "//apple/Data/Recovery:AlondraRecovery",
         "//apple/Data/RelayOutbox:AlondraRelayOutbox",
         "//apple/Data/RelaySession:AlondraRelaySession",
@@ -28,6 +28,8 @@ swift_test(
     srcs = glob(["Tests/*.swift"]),
     deps = [
         ":AlondraWorkspace",
+        "//apple/Data/Notifications:AlondraNotificationActions",
+        "//apple/NotificationPayload:AlondraNotificationPayload",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Auth:AlondraAuth",
         "//apple/Contracts:AlondraContracts",

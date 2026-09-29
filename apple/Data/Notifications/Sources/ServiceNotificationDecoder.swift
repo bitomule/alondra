@@ -36,8 +36,9 @@ public enum ServiceNotificationDecoder {
     }
 
     /// Never trust routing or buttons supplied outside the authenticated encrypted payload.
-    public static func decrypt(_ outerJSON: Data, context: NotificationDecryptionContext,
-                               nowMilliseconds: UInt64) throws -> Data {
+    /// Notifications do not expire: an action is valid whenever it is tapped and the server
+    /// refuses it if the item changed since.
+    public static func decrypt(_ outerJSON: Data, context: NotificationDecryptionContext) throws -> Data {
         let outer = try JSONDecoder().decode(Outer.self, from: outerJSON)
         if let scope = context.scope {
             guard scope.isValid, scope.macID == context.macID, scope.deviceID == context.deviceID else {
@@ -50,7 +51,7 @@ public enum ServiceNotificationDecoder {
         let plaintext = try outer.alondra.envelope.open(
             senderKey: P256.Signing.PublicKey(rawRepresentation: context.macSigningKey),
             recipientKey: P256.KeyAgreement.PrivateKey(rawRepresentation: context.agreementPrivateKey),
-            sender: context.macID, recipient: context.deviceID, route: context.macID, nowMilliseconds: nowMilliseconds)
+            sender: context.macID, recipient: context.deviceID, route: context.macID, nowMilliseconds: nil)
         guard let decoded = try JSONSerialization.jsonObject(with: plaintext) as? [String: Any],
               decoded["push_binding"] as? String == context.binding,
               var payload = decoded["payload"] as? [String: Any],

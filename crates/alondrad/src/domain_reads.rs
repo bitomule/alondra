@@ -185,6 +185,28 @@ fn is_inbox_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 512 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':'))
 }
 
+/// Path segments are percent-encoded (RFC 3986 §2.1): `interaction%3Aq` names `interaction:q`.
+/// The decoded id still has to pass the id grammar, so `%2F` or `%25` never widen it.
+fn decode_segment(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let pair = bytes.get(index + 1..index + 3)?;
+            if !pair.iter().all(u8::is_ascii_hexdigit) {
+                return None;
+            }
+            decoded.push(u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 fn parse_query(raw: Option<&str>, allowed: &[&str]) -> Option<Query> {
     let mut query = Query { limit: DEFAULT_LIMIT, ..Query::default() };
     let Some(raw) = raw else { return Some(query) };
@@ -268,6 +290,11 @@ pub(crate) fn parse(path: &str) -> Option<Route> {
     if more.is_some() {
         return None;
     }
+    let first = match first {
+        Some(raw) => Some(decode_segment(raw)?),
+        None => None,
+    };
+    let first = first.as_deref();
     let body_offset = |query: Option<&str>| -> Option<u64> {
         let q = parse_query(query, &["offset"])?;
         q.offset

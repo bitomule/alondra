@@ -46,23 +46,21 @@ public struct RelayOutboxEntry: Codable, Sendable, Equatable {
 
 }
 
-/// Stores only an encrypted envelope. The exact request ID and envelope survive a crash before
-/// or during POST. Existing entries are never automatically POSTed again, even after a 404.
+/// The encrypted envelopes this process sent, by request ID, so a lost response is
+/// reconciled by status instead of POSTed again. Nothing is persisted: a v2 command keeps its
+/// command ID in the draft and a retry after relaunch is a new request the server deduplicates.
 public actor RelayOutbox {
-    private let file: URL
     private let scope: RelayOutboxScope
     private let transport: any RelayRequestTransport
+    private var records: [String: RelayOutboxEntry] = [:]
 
-    public init(file: URL, scope: RelayOutboxScope, transport: any RelayRequestTransport) {
-        self.file = file
+    public init(scope: RelayOutboxScope, transport: any RelayRequestTransport) {
         self.scope = scope
         self.transport = transport
     }
 
     public func entry(requestID: String) throws -> RelayOutboxEntry? {
-        guard let record = try withLock({ try readFile() })[requestID] else { return nil }
-        guard record.scope == scope else { throw RelayOutboxError.wrongScope }
-        return record
+        records[requestID]
     }
 
     /// The caller must seal a fresh envelope before this call. A record is durable before POST.
@@ -75,13 +73,9 @@ public actor RelayOutbox {
         }
         guard envelope.route == scope.macID, envelope.recipient == scope.macID,
               envelope.sender == scope.deviceID else { throw RelayOutboxError.wrongScope }
-        try withLock {
-            var records = try readFile()
-            guard records[envelope.requestID] == nil else { throw RelayOutboxError.duplicateRequestID }
-            records[envelope.requestID] = RelayOutboxEntry(
-                requestID: envelope.requestID, scope: scope, envelope: envelope, phase: .reserved, semanticTag: semanticTag)
-            try writeFile(records)
-        }
+        guard records[envelope.requestID] == nil else { throw RelayOutboxError.duplicateRequestID }
+        records[envelope.requestID] = RelayOutboxEntry(
+            requestID: envelope.requestID, scope: scope, envelope: envelope, phase: .reserved, semanticTag: semanticTag)
 
         do {
             let receipt = try await transport.submitRequest(envelope)
@@ -106,9 +100,7 @@ public actor RelayOutbox {
 
     /// Read-only reconciliation. A missing/failed status lookup leaves the entry uncertain.
     public func reconcile(requestID: String) async throws -> RelayReceipt? {
-        guard let record = try withLock({ try readFile() })[requestID] else { return nil }
-        guard record.scope == scope else { throw RelayOutboxError.wrongScope }
-        guard record.phase != .retired else { return nil }
+        guard let record = records[requestID], record.phase != .retired else { return nil }
         let receipt = try await transport.requestStatus(requestID: requestID)
         guard receipt.requestID == requestID else { throw RelayOutboxError.transportResponseMismatch }
         let saved = try update(requestID, phase: .acknowledged, receipt: receipt)
@@ -120,19 +112,14 @@ public actor RelayOutbox {
     /// Keeps a small request-ID tombstone so the same ID can never be POSTed again.
     public func retireAppliedResponse(requestID: String, revision: UInt64,
                                       verifiedResponse: EnvelopeV1) throws {
-        try withLock {
-            var records = try readFile()
-            guard var record = records[requestID] else { throw RelayOutboxError.persistenceFailed }
-            guard record.scope == scope else { throw RelayOutboxError.wrongScope }
-            guard record.phase == .acknowledged, record.lastStatus == "completed",
-                  record.lastRevision == revision, record.lastResponse == verifiedResponse
-            else { throw RelayOutboxError.resultNotApplied }
-            record.phase = .retired
-            record.envelope = nil
-            record.lastResponse = nil
-            records[requestID] = record
-            try writeFile(records)
-        }
+        guard var record = records[requestID] else { throw RelayOutboxError.persistenceFailed }
+        guard record.phase == .acknowledged, record.lastStatus == "completed",
+              record.lastRevision == revision, record.lastResponse == verifiedResponse
+        else { throw RelayOutboxError.resultNotApplied }
+        record.phase = .retired
+        record.envelope = nil
+        record.lastResponse = nil
+        records[requestID] = record
     }
 
     private func setUncertain(_ id: String) throws {
@@ -148,62 +135,19 @@ public actor RelayOutbox {
     @discardableResult
     private func update(_ id: String, phase: RelayOutboxEntry.Phase,
                         receipt: RelayReceipt?) throws -> RelayOutboxEntry {
-        try withLock {
-            var records = try readFile()
-            guard var record = records[id] else { throw RelayOutboxError.persistenceFailed }
-            guard record.scope == scope else { throw RelayOutboxError.wrongScope }
-            if record.phase == .retired { return record }
-            if receipt == nil && record.phase == .acknowledged { return record }
-            if let receipt, let lastRevision = record.lastRevision, receipt.revision < lastRevision {
-                return record // A delayed read must not roll back a newer observed result.
-            }
-            record.phase = phase
-            if let receipt {
-                record.lastStatus = receipt.status
-                record.lastRevision = receipt.revision
-                record.lastResponse = receipt.response ?? record.lastResponse
-            }
-            records[id] = record
-            try writeFile(records)
-            return record
+        guard var record = records[id] else { throw RelayOutboxError.persistenceFailed }
+        if record.phase == .retired { return record }
+        if receipt == nil && record.phase == .acknowledged { return record }
+        if let receipt, let lastRevision = record.lastRevision, receipt.revision < lastRevision {
+            return record // A delayed read must not roll back a newer observed result.
         }
-    }
-
-    private func withLock<T>(_ body: () throws -> T) throws -> T {
-        do {
-            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(),
-                                                    withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
-        } catch { throw RelayOutboxError.persistenceFailed }
-        let descriptor = open(file.path + ".lock", O_CREAT | O_RDWR, 0o600)
-        guard descriptor >= 0 else { throw RelayOutboxError.persistenceFailed }
-        defer { close(descriptor) }
-        guard flock(descriptor, LOCK_EX) == 0 else { throw RelayOutboxError.persistenceFailed }
-        defer { flock(descriptor, LOCK_UN) }
-        return try body()
-    }
-
-    private func readFile() throws -> [String: RelayOutboxEntry] {
-        do {
-            let data = try Data(contentsOf: file)
-            let decoded = try JSONDecoder().decode([String: RelayOutboxEntry].self, from: data)
-            guard decoded.allSatisfy({ $0.key == $0.value.requestID }) else {
-                throw RelayOutboxError.persistenceFailed
-            }
-            return decoded
-        } catch let error as CocoaError where error.code == .fileReadNoSuchFile {
-            return [:]
-        } catch {
-            throw RelayOutboxError.persistenceFailed
+        record.phase = phase
+        if let receipt {
+            record.lastStatus = receipt.status
+            record.lastRevision = receipt.revision
+            record.lastResponse = receipt.response ?? record.lastResponse
         }
-    }
-
-    private func writeFile(_ records: [String: RelayOutboxEntry]) throws {
-        do {
-            let data = try JSONEncoder().encode(records)
-            try data.write(to: file, options: [.atomic, .completeFileProtectionUnlessOpen])
-        } catch {
-            throw RelayOutboxError.persistenceFailed
-        }
+        records[id] = record
+        return record
     }
 }

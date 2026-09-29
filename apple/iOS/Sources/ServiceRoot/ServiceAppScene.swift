@@ -58,29 +58,20 @@ private final class ServiceSceneContext {
     }
 
     func connect(_ services: CloudAppServices) async {
-        let triage = await services.triageService()
-        let questions = await services.questionWorkService()
-        let tasks = await services.taskOperations()
+        let workspace = await services.domainWorkspaceClient()
         let schedules = await services.scheduleOperations()
-        let prs = await services.pullRequestOperations()
         let nodes = await services.nodeOperations()
         let newWork = await services.newWorkOperations()
         let downloads = await services.attachmentDownloadClient()
+        let sync = await services.domainSync
         guard !Task.isCancelled else { return }
         store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
-            $0.triageService = triage
-            $0.questionWorkService = questions
-            $0.taskOperations = tasks
+            $0.domainWorkspace = workspace
             $0.scheduleOperations = schedules
-            $0.pullRequestOperations = prs
             $0.deliveryJournal = DeliveryJournalClient(refresh: { try await services.journal().refresh() },
                 resolve: { attempt, scope, retry, checked, risk in
                     try await services.journal().resolve(attempt, in: scope, retry: retry, terminalChecked: checked, duplicateRisk: risk)
                 })
-            $0.serviceCommandRecovery = ServiceCommandRecoveryClient(observe: { await services.commandResolutions() },
-                observeFeedback: { await services.reportFeedbackRecoveryEvents() },
-                observeDelivery: { await services.deliveryStatuses() },
-                acknowledgeDelivery: { try await services.acknowledgeDeliveryWarnings($0, in: $1) })
             $0.attachmentDownload = downloads
             $0.attachmentImport = CloudAppServices.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
@@ -88,7 +79,7 @@ private final class ServiceSceneContext {
             })
             $0.nodeOperations = nodes
             $0.newWorkOperations = newWork
-            $0.serviceTasksClient = ServiceTasksClient(refresh: { await services.sync.refresh() }, observe: { await services.taskSnapshots() })
+            $0.serviceTasksClient = ServiceTasksClient(refresh: { await sync.refresh() })
         }
     }
 }

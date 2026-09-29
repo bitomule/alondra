@@ -1,6 +1,32 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Accept the result before this can continue.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acepta el resultado antes de que esto pueda seguir."}}}},
+    "Accepted, pending the agent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Aceptada, pendiente del agente"}}}},
+    "accepted, pending the agent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "aceptada, pendiente del agente"}}}},
+    "Choose an option.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una opción."}}}},
+    "Describe the request first.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Describe primero la petición."}}}},
+    "Fill in the required field.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Rellena el campo obligatorio."}}}},
+    "Presented": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Presentada"}}}},
+    "presented": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "presentada"}}}},
+    "Waiting for a dependency": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esperando una dependencia"}}}},
+    "waiting for a dependency": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "esperando una dependencia"}}}},
+    "This Mac runs a different version of Alondra. Update the app or the Mac.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este Mac tiene otra versión de Alondra. Actualiza la app o el Mac."}}}},
+    "This Mac’s data was reset. Reopen the item before deciding.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Los datos de este Mac se han reiniciado. Vuelve a abrirlo antes de decidir."}}}},
+    "This action doesn’t apply to this item.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta acción no se aplica a este elemento."}}}},
+    "This action is not available any more. Refresh and try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta acción ya no está disponible. Actualiza e inténtalo de nuevo."}}}},
+    "This action was already sent with different content.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta acción ya se envió con otro contenido."}}}},
+    "This changed since you opened it. Review the latest version before deciding.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esto ha cambiado desde que lo abriste. Revisa la última versión antes de decidir."}}}},
+    "This item is no longer available.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este elemento ya no está disponible."}}}},
+    "This merge method is not allowed for this pull request.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este método de fusión no está permitido en este pull request."}}}},
+    "This option doesn’t take that answer.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta opción no admite esa respuesta."}}}},
+    "This task is no longer active.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta tarea ya no está activa."}}}},
+    "Write your feedback first.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Escribe primero tus comentarios."}}}},
+    "You can’t do this from this device.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No puedes hacer esto desde este dispositivo."}}}},
+    "the node declared it finished": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "el nodo la dio por terminada"}}}},
+    "the node presented a result": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "el nodo presentó un resultado"}}}},
+    "you accepted the result": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "aceptaste el resultado"}}}},
+    "you authorized the merge": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "autorizaste la fusión"}}}},
     "Retry delivery #%llu": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentar entrega #%llu"}}}},
     "Discard delivery #%llu": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar entrega #%llu"}}}},
     "Continue without repeating": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuar sin repetir"}}}},
@@ -555,16 +581,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vas por encima del ritmo: el orquestador te pregunta antes de lanzar nodos nuevos."
-          }
-        }
-      }
-    },
-    "PR #%@ is still open on GitHub: merge or close it first": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El PR #%@ sigue abierto en GitHub: fusiónalo o ciérralo antes"
           }
         }
       }

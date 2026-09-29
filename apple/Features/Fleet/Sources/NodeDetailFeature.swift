@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraDomain
 import AlondraAttachmentsFeature
 import AlondraShared
@@ -24,7 +25,8 @@ public struct NodeDetailFeature {
         public var pendingSubmission: AttachmentSubmissionIntent?
         public var isSending = false
         public var sendOutcome: NodeMutationOutcome?
-        public var uncertainMessage: NodeMessage?
+        /// Command IDs of attempts whose outcome is unknown, by action; the same action again reuses its ID.
+        public var commandIDs: [String: String] = [:]
         public var sentCount = 0
         public var showCloseConfirmation = false
         public var isClosing = false
@@ -57,7 +59,6 @@ public struct NodeDetailFeature {
         public var canAcknowledgeOrchestrator: Bool { canRetryOrchestrator }
         public var hasOutstandingOrchestratorControl: Bool {
             isRetrying || isCancelling || isAcknowledging
-                || retryOutcome?.uncertainID != nil || cancelOutcome?.uncertainID != nil || acknowledgeOutcome?.uncertainID != nil
         }
         public var shouldDismiss = false
         public var presentationEpoch: UInt64 = 0
@@ -66,11 +67,10 @@ public struct NodeDetailFeature {
 
         public init(sessionID: String) { self.sessionID = sessionID }
         public var node: Node? { entry?.node }
-        public var tasks: [WorkTask] { entry?.tasks ?? [] }
+        public var tasks: [DomainV2.Task] { entry?.tasks ?? [] }
         public var isSendInFlight: Bool { pendingSubmission != nil || isSending }
         public var canSend: Bool {
             attachmentPicker.canPrepareSubmission && pendingSubmission == nil && !isStale && node != nil && !isSending && !isClosing
-                && sendOutcome?.uncertainID == nil && closeOutcome?.uncertainID == nil
                 && closeOutcome != .confirmed
                 && SendNodeMessageUseCase().prepare(text: message, files: files) != nil
         }
@@ -106,12 +106,11 @@ public struct NodeDetailFeature {
         case closeCancelled
         case closeConfirmed
         case closeFinished(NodeMutationOutcome, UInt64)
-        case commandResolved(UUID, rejection: String?)
-        case commandReconciled(UUID)
     }
 
     @Dependency(\.nodeOperations) var operations
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.uuid) var uuid
     private let sendUseCase = SendNodeMessageUseCase()
     private let threadsUseCase = ResolveNodeThreadsUseCase()
 
@@ -122,7 +121,8 @@ public struct NodeDetailFeature {
         Reduce { state, action in
             switch action {
             case .attachmentPicker(let event):
-                state.files = state.attachmentPicker.entries.map { NodeFile(id: $0.id, name: $0.draft.name, data: $0.draft.data, storedID: $0.storedID) }
+                state.files = state.attachmentPicker.entries.map { NodeFile(id: $0.id, name: $0.draft.name, data: $0.draft.data, stored: $0.stored) }
+                if event.invalidatesPendingSubmission { state.commandIDs["send"] = nil }
                 if state.pendingSubmission != nil, case .uploaded(_, .failure) = event,
                    let failure = state.attachmentPicker.failedUploadMessage {
                     state.pendingSubmission = nil
@@ -196,7 +196,7 @@ public struct NodeDetailFeature {
                 state.files = []
                 state.isSending = false
                 state.sendOutcome = nil
-                state.uncertainMessage = nil
+                state.commandIDs = [:]
                 state.showCloseConfirmation = false
                 state.isClosing = false
                 state.closeOutcome = nil
@@ -242,6 +242,7 @@ public struct NodeDetailFeature {
                 return .none
             case .messageChanged(let message):
                 state.pendingSubmission = nil
+                if state.message != message { state.commandIDs["send"] = nil }
                 state.message = message
                 return .none
             case .filesChanged(let files):
@@ -260,7 +261,7 @@ public struct NodeDetailFeature {
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false
                 state.sendOutcome = outcome
-                state.uncertainMessage = outcome.uncertainID == nil ? nil : outgoing
+                if outcome != .unknown { state.commandIDs["send"] = nil }
                 if outcome == .confirmed {
                     // The user may have changed the draft while the request was in flight.
                     if state.message.trimmingCharacters(in: .whitespacesAndNewlines) == outgoing.text,
@@ -291,13 +292,15 @@ public struct NodeDetailFeature {
                 state.acknowledgedRunID = runID
                 state.isAcknowledging = true
                 let epoch = state.presentationEpoch
+                let command = commandID("acknowledge:" + runID, &state)
                 return .run { send in
-                    await send(.acknowledgeFinished(await operations.acknowledgeOrchestrator(runID), epoch))
+                    await send(.acknowledgeFinished(await operations.acknowledgeOrchestrator(runID, command), epoch))
                 }.cancellable(id: state.mutationID)
             case .acknowledgeFinished(let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.isAcknowledging else { return .none }
                 state.isAcknowledging = false
                 state.acknowledgeOutcome = outcome
+                if outcome != .unknown, let run = state.acknowledgedRunID { state.commandIDs["acknowledge:" + run] = nil }
                 return .none
             case .cancelRequested:
                 guard state.canCancelOrchestrator else { return .none }
@@ -317,13 +320,15 @@ public struct NodeDetailFeature {
                 state.cancelledRunID = runID
                 state.isCancelling = true
                 let epoch = state.presentationEpoch
+                let command = commandID("cancel:" + runID, &state)
                 return .run { send in
-                    await send(.cancelFinished(await operations.cancelOrchestrator(runID), epoch))
+                    await send(.cancelFinished(await operations.cancelOrchestrator(runID, command), epoch))
                 }.cancellable(id: state.mutationID)
             case .cancelFinished(let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.isCancelling else { return .none }
                 state.isCancelling = false
                 state.cancelOutcome = outcome
+                if outcome != .unknown, let run = state.cancelledRunID { state.commandIDs["cancel:" + run] = nil }
                 return .none
             case .retryRequested:
                 guard state.canRetryOrchestrator else { return .none }
@@ -343,18 +348,18 @@ public struct NodeDetailFeature {
                 state.retryRunID = runID
                 state.isRetrying = true
                 let epoch = state.presentationEpoch
+                let command = commandID("retry:" + runID, &state)
                 return .run { send in
-                    await send(.retryFinished(await operations.retryOrchestrator(runID), epoch))
+                    await send(.retryFinished(await operations.retryOrchestrator(runID, command), epoch))
                 }.cancellable(id: state.mutationID)
             case .retryFinished(let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.isRetrying else { return .none }
                 state.isRetrying = false
                 state.retryOutcome = outcome
+                if outcome != .unknown, let run = state.retryRunID { state.commandIDs["retry:" + run] = nil }
                 return .none
             case .closeRequested:
                 guard !state.isStale, state.node?.isOrchestrator == false, !state.isSending, !state.isClosing,
-                      state.closeOutcome?.uncertainID == nil,
-                      state.sendOutcome?.uncertainID == nil,
                       state.closeOutcome != .confirmed else { return .none }
                 state.pendingSubmission = nil
                 state.showCloseConfirmation = true
@@ -364,46 +369,23 @@ public struct NodeDetailFeature {
                 return .none
             case .closeConfirmed:
                 guard state.showCloseConfirmation, !state.isStale, state.node?.isOrchestrator == false,
-                      !state.isSending, !state.isClosing, state.closeOutcome?.uncertainID == nil,
-                      state.sendOutcome?.uncertainID == nil,
-                      state.closeOutcome != .confirmed else { return .none }
+                      !state.isSending, !state.isClosing, state.closeOutcome != .confirmed else { return .none }
                 state.pendingSubmission = nil
                 state.showCloseConfirmation = false
                 state.isClosing = true
                 state.closeOutcome = nil
                 let session = state.sessionID
                 let epoch = state.presentationEpoch
+                let command = commandID("close", &state)
                 return .run { send in
-                    await send(.closeFinished(await operations.close(session), epoch))
+                    await send(.closeFinished(await operations.close(session, command), epoch))
                 }.cancellable(id: state.mutationID)
             case .closeFinished(let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.isClosing else { return .none }
                 state.isClosing = false
                 state.closeOutcome = outcome
+                if outcome != .unknown { state.commandIDs["close"] = nil }
                 state.shouldDismiss = outcome == .confirmed
-                return .none
-            case .commandResolved(let id, let rejection):
-                let outcome = rejection.map(NodeMutationOutcome.rejected) ?? .confirmed
-                if state.sendOutcome?.uncertainID == id, let outgoing = state.uncertainMessage {
-                    state.isSending = true
-                    return .send(.sendFinished(outgoing, outcome, state.presentationEpoch))
-                }
-                if state.cancelOutcome?.uncertainID == id { state.cancelOutcome = outcome }
-                if state.acknowledgeOutcome?.uncertainID == id { state.acknowledgeOutcome = outcome }
-                if state.retryOutcome?.uncertainID == id {
-                    state.retryOutcome = outcome
-                }
-                if state.closeOutcome?.uncertainID == id {
-                    state.isClosing = true
-                    return .send(.closeFinished(outcome, state.presentationEpoch))
-                }
-                return .none
-            case .commandReconciled(let id):
-                if state.sendOutcome?.uncertainID == id { state.sendOutcome = nil }
-                if state.closeOutcome?.uncertainID == id { state.closeOutcome = nil }
-                if state.retryOutcome?.uncertainID == id { state.retryOutcome = nil }
-                if state.cancelOutcome?.uncertainID == id { state.cancelOutcome = nil }
-                if state.acknowledgeOutcome?.uncertainID == id { state.acknowledgeOutcome = nil }
                 return .none
             }
         }.onChange(of: \.attachmentPicker.instanceID) { oldID, _ in
@@ -419,9 +401,17 @@ public struct NodeDetailFeature {
         state.sendOutcome = nil
         let session = state.sessionID
         let epoch = state.presentationEpoch
+        let command = commandID("send", &state)
         return .run { send in
-            await send(.sendFinished(outgoing, await operations.send(session, outgoing), epoch))
+            await send(.sendFinished(outgoing, await operations.send(session, outgoing, command), epoch))
         }.cancellable(id: state.mutationID)
+    }
+
+    /// After an unknown outcome the same action reuses its command ID, so it is applied once.
+    private func commandID(_ action: String, _ state: inout State) -> String {
+        let id = state.commandIDs[action] ?? uuid().uuidString.lowercased()
+        state.commandIDs[action] = id
+        return id
     }
 
     private func pollThreads(_ state: State) -> Effect<Action> {

@@ -7,6 +7,8 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = [
         "//apple:AlondraShared",
+        "//apple/Contracts:AlondraContracts",
+        "//apple/Domain:AlondraDomain",
         "//apple/Features/Triage:AlondraTriageFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],

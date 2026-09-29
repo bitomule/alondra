@@ -1,3 +1,4 @@
+import AlondraDomain
 import AlondraShared
 import AlondraTriageFeature
 import AlondraWorkspaceFeature
@@ -12,21 +13,19 @@ struct ServiceRootLifecycleTests {
     func reconnectKeepsSelectedTabAndSnapshot() async throws {
         let identity = TriageIdentity(server: URL(string: "https://service.example")!,
             deviceID: "phone", credentialRevision: "approved", generation: 1)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
+        let workspace = V2Fixture().workspace
         let store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() }
-        let online = TriageInboxUpdate(identity: identity, overview: overview, connection: .online)
-        await store.send(.triage(.triage(.inboxUpdated(online)))).finish()
+        let online = DomainWorkspaceUpdate(identity: identity, workspace: workspace, connection: .online)
+        await store.send(.triage(.triage(.workspaceUpdated(online)))).finish()
         await store.send(.tabSelected(.tasks)).finish()
         #expect(store.triage.triage.connection == .online)
-        await store.send(.triage(.triage(.inboxUpdated(TriageInboxUpdate(
-            identity: identity, overview: overview, connection: .offline(.serverUnreachable)
+        await store.send(.triage(.triage(.workspaceUpdated(DomainWorkspaceUpdate(
+            identity: identity, workspace: workspace, connection: .offline(.serverUnreachable)
         ))))).finish()
         #expect(store.tab == .tasks)
         #expect(store.triage.triage.connection == .offline(.serverUnreachable))
         #expect(store.triage.triage.hasSnapshot)
-        await store.send(.triage(.triage(.inboxUpdated(online)))).finish()
+        await store.send(.triage(.triage(.workspaceUpdated(online)))).finish()
         #expect(store.tab == .tasks)
         #expect(store.triage.triage.connection == .online)
         #expect(store.triage.triage.hasSnapshot)
@@ -36,11 +35,9 @@ struct ServiceRootLifecycleTests {
     func closingOneSceneLeavesTheOtherSubscribed() async throws {
         let identity = TriageIdentity(server: URL(string: "https://service.example")!,
             deviceID: "phone", credentialRevision: "approved", generation: 1)
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}}"#.utf8))
-        let a = AsyncStream<TriageInboxUpdate>.makeStream()
-        let b = AsyncStream<TriageInboxUpdate>.makeStream()
+        let workspace = V2Fixture().workspace
+        let a = AsyncStream<DomainWorkspaceUpdate>.makeStream()
+        let b = AsyncStream<DomainWorkspaceUpdate>.makeStream()
         let terminations = StreamTerminations()
         a.continuation.onTermination = { reason in
             terminations.record("a", reason: reason)
@@ -49,10 +46,10 @@ struct ServiceRootLifecycleTests {
             terminations.record("b", reason: reason)
         }
         let first = TestStore(initialState: ServiceTriageFeature.State()) { ServiceTriageFeature() } withDependencies: {
-            $0.triageService = TriageService(observe: { a.stream }, mutate: { _, _, _ in .obsolete })
+            $0.domainWorkspace = .scripted(CommandLog(), observe: { a.stream }) { _ in .obsolete }
         }
         let second = TestStore(initialState: ServiceTriageFeature.State()) { ServiceTriageFeature() } withDependencies: {
-            $0.triageService = TriageService(observe: { b.stream }, mutate: { _, _, _ in .obsolete })
+            $0.domainWorkspace = .scripted(CommandLog(), observe: { b.stream }) { _ in .obsolete }
         }
         // Cross-feature integration: child projection effects are consumed without asserting
         // every internal write. The observable connection and snapshot are
@@ -61,11 +58,11 @@ struct ServiceRootLifecycleTests {
         second.exhaustivity = .off(showSkippedAssertions: true)
         await first.send(.triage(.appeared))
         await second.send(.triage(.appeared))
-        let online = TriageInboxUpdate(identity: identity, overview: overview, connection: .online)
+        let online = DomainWorkspaceUpdate(identity: identity, workspace: workspace, connection: .online)
         a.continuation.yield(online)
         b.continuation.yield(online)
-        await first.receive(\.triage.inboxUpdated)
-        await second.receive(\.triage.inboxUpdated)
+        await first.receive(\.triage.workspaceUpdated)
+        await second.receive(\.triage.workspaceUpdated)
         #expect(first.state.triage.connection == .online)
         #expect(second.state.triage.connection == .online)
 
@@ -73,8 +70,8 @@ struct ServiceRootLifecycleTests {
         await first.finish() // Finish before closing the producer: cancellation must own this.
         #expect(terminations.wasCancelled("a") == true)
         #expect(terminations.wasCancelled("b") == nil, "The second subscription must still be open")
-        b.continuation.yield(TriageInboxUpdate(identity: identity, overview: overview, connection: .offline(.noInternet)))
-        await second.receive(\.triage.inboxUpdated)
+        b.continuation.yield(DomainWorkspaceUpdate(identity: identity, workspace: workspace, connection: .offline(.noInternet)))
+        await second.receive(\.triage.workspaceUpdated)
         #expect(second.state.triage.connection == .offline(.noInternet))
         #expect(second.state.triage.hasSnapshot)
         await second.send(.triage(.disappeared))
@@ -90,7 +87,7 @@ struct ServiceRootLifecycleTests {
 private final class StreamTerminations: Sendable {
     private let cancellations = Mutex<[String: Bool]>([:])
 
-    func record(_ scene: String, reason: AsyncStream<TriageInboxUpdate>.Continuation.Termination) {
+    func record(_ scene: String, reason: AsyncStream<DomainWorkspaceUpdate>.Continuation.Termination) {
         let cancelled: Bool
         switch reason {
         case .cancelled: cancelled = true

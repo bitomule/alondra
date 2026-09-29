@@ -21,16 +21,4 @@ import Testing
     func artifactLinksAreFoundWhereverANodeWritesThem(_ c: (String, String, [String])) {
         #expect(Artifacts.urls(in: c.1).map(\.absoluteString) == c.2, "\(c.0)")
     }
-
-    @Test func aReportCarriesTheArtifactsInItsLinksAndItsBodyOnce() throws {
-        let json = """
-        {"id":1,"session_id":"s","title":"Plan","kind":"document","created_at":0,"attachments":[],
-         "body":"Also https://claude.ai/code/artifact/two and https://claude.ai/artifact/one",
-         "links":[{"url":"https://claude.ai/artifact/one","title":"The plan"},{"url":"https://github.com/a/b/pull/1"}]}
-        """
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let report = try decoder.decode(Report.self, from: Data(json.utf8))
-        #expect(report.artifacts.map(\.absoluteString) == ["https://claude.ai/artifact/one", "https://claude.ai/code/artifact/two"])
-    }
 }

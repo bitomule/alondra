@@ -61,7 +61,7 @@ struct ServiceFleetView: View {
             .scrollContentBackground(.hidden)
             .background(DawnBackground(glow: Palette.sky))
             .overlay {
-                if sections.isEmpty, !showsOrchestrator, store.overview != nil {
+                if sections.isEmpty, !showsOrchestrator, store.workspace != nil {
                     ContentUnavailableView.search(text: store.fleet.query)
                 }
             }

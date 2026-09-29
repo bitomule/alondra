@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraDomain
 import ComposableArchitecture
 import Foundation
@@ -15,14 +16,15 @@ public enum AttachmentSubmissionIntent: Equatable, Sendable {
 public typealias AttachmentDraft = AlondraDomain.AttachmentDraft
 public typealias AttachmentBudget = AlondraDomain.AttachmentBudget
 
+/// Uploads return the immutable reference a v2 command carries.
 public struct AttachmentUploadClient: Sendable {
-    public var upload: @Sendable (AttachmentDraft) async throws -> String
-    public var uploadWithProgress: @Sendable (AttachmentDraft, @escaping @Sendable (Double) -> Void) async throws -> String
-    public init(upload: @escaping @Sendable (AttachmentDraft) async throws -> String) {
+    public var upload: @Sendable (AttachmentDraft) async throws -> DomainV2.AttachmentRef
+    public var uploadWithProgress: @Sendable (AttachmentDraft, @escaping @Sendable (Double) -> Void) async throws -> DomainV2.AttachmentRef
+    public init(upload: @escaping @Sendable (AttachmentDraft) async throws -> DomainV2.AttachmentRef) {
         self.upload = upload
         self.uploadWithProgress = { draft, _ in try await upload(draft) }
     }
-    public init(uploadWithProgress: @escaping @Sendable (AttachmentDraft, @escaping @Sendable (Double) -> Void) async throws -> String) {
+    public init(uploadWithProgress: @escaping @Sendable (AttachmentDraft, @escaping @Sendable (Double) -> Void) async throws -> DomainV2.AttachmentRef) {
         self.uploadWithProgress = uploadWithProgress
         self.upload = { draft in try await uploadWithProgress(draft, { _ in }) }
     }
@@ -39,10 +41,11 @@ public extension DependencyValues {
 @Reducer
 public struct AttachmentFeature {
     public init() {}
-    public enum Status: Equatable, Sendable { case queued, uploading, uploaded(String), failed(String) }
+    public enum Status: Equatable, Sendable { case queued, uploading, uploaded(DomainV2.AttachmentRef), failed(String) }
     public struct Entry: Equatable, Sendable, Identifiable {
         public var id: UUID { draft.id }
-        public var storedID: String? { if case .uploaded(let id) = status { id } else { nil } }
+        public var stored: DomainV2.AttachmentRef? { if case .uploaded(let ref) = status { ref } else { nil } }
+        public var storedID: String? { stored?.id }
         public let draft: AttachmentDraft
         /// Decoded once during import; upload progress and body updates reuse the same image.
         public let thumbnail: CGImage?
@@ -77,7 +80,8 @@ public struct AttachmentFeature {
         public var allReady: Bool {
             !isImporting && importError == nil && entries.allSatisfy { if case .uploaded = $0.status { true } else { false } }
         }
-        public var storedIDs: [String] { entries.compactMap { if case .uploaded(let id) = $0.status { id } else { nil } } }
+        public var storedIDs: [String] { stored.map(\.id) }
+        public var stored: [DomainV2.AttachmentRef] { entries.compactMap(\.stored) }
         public init() {}
         public static func == (lhs: Self, rhs: Self) -> Bool {
             lhs.entries == rhs.entries && lhs.isImporting == rhs.isImporting && lhs.importID == rhs.importID
@@ -102,7 +106,7 @@ public struct AttachmentFeature {
         case prepareForSubmission
         case uploadNext
         case uploadProgress(UUID, Double)
-        case uploaded(UUID, Result<String, AttachmentFailure>)
+        case uploaded(UUID, Result<DomainV2.AttachmentRef, AttachmentFailure>)
         case remove(UUID)
         case retry(UUID)
     }
@@ -305,3 +309,4 @@ public extension AttachmentFeature.Action {
         }
     }
 }
+

@@ -5,6 +5,7 @@ extension DomainV2 {
         case agent(agentId: AgentId)
         case orchestrator(generation: UInt64)
         case system
+        case unknown(kind: String)
 
         enum CodingKeys: String, CodingKey {
             case kind = "kind"
@@ -18,7 +19,7 @@ extension DomainV2 {
             case "agent": self = .agent(agentId: try container.decode(AgentId.self, forKey: .agentId))
             case "orchestrator": self = .orchestrator(generation: try container.decode(UInt64.self, forKey: .generation))
             case "system": self = .system
-            default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown domain v2 Author kind")
+            case let kind: self = .unknown(kind: kind)
             }
         }
 
@@ -33,6 +34,8 @@ extension DomainV2 {
                 try container.encode(generation, forKey: .generation)
             case .system:
                 try container.encode("system", forKey: .kind)
+            case let .unknown(kind):
+                try container.encode(kind, forKey: .kind)
             }
         }
     }
@@ -306,7 +309,9 @@ extension DomainV2 {
 
     public enum Command: Codable, Equatable, Sendable {
         case createRequest(requestId: RequestId, body: String)
-        case closeRequest(requestId: RequestId)
+        case closeRequest(requestId: RequestId, answer: String? = nil, withdrawn: Bool = false, title: String? = nil)
+        case retitleTask(taskId: TaskId, title: String)
+        case withdrawQuestion(interactionId: InteractionId)
         case registerAgent(agentId: AgentId, name: String)
         case observeAgent(agentId: AgentId, connected: Bool)
         case advanceOrchestratorGeneration(generation: UInt64)
@@ -337,6 +342,20 @@ extension DomainV2 {
         case cancelTask(taskId: TaskId)
         case reopenTask(taskId: TaskId)
         case archiveTask(taskId: TaskId, archived: Bool)
+        // Client contracts the daemon does not accept yet (docs/domain-v2-apple-client-contracts.md).
+        // Each keeps a v1 feature on the v2 command service; today's daemon rejects them explicitly.
+        case createRequestWithContext(requestId: RequestId, body: String, project: String?, options: [String: OptionChoice], issue: String?, attachments: [AttachmentRef])
+        case requestMoreContext(attachments: [AttachmentRef], interactionId: InteractionId, body: String)
+        case replyToInformation(attachments: [AttachmentRef], interactionId: InteractionId, body: String)
+        case askAboutPullRequest(attachments: [AttachmentRef], prId: PrId, head: String, body: String)
+        case requestConflictResolution(prId: PrId, head: String)
+        case messageAgent(attachments: [AttachmentRef], agentId: AgentId, body: String)
+        case closeAgent(agentId: AgentId, force: Bool)
+        case retryOrchestratorRun(runId: String)
+        case cancelOrchestratorRun(runId: String)
+        case acknowledgeOrchestratorRun(runId: String)
+        /// A kind this build does not know; it decodes so a read that carries one still succeeds.
+        case unknown(kind: String)
 
         enum CodingKeys: String, CodingKey {
             case kind = "kind"
@@ -386,13 +405,26 @@ extension DomainV2 {
             case mergedHead = "merged_head"
             case ready = "ready"
             case archived = "archived"
+            case project = "project"
+            case issue = "issue"
+            case force = "force"
+            case runId = "run_id"
+            case answer = "answer"
+            case withdrawn = "withdrawn"
         }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             switch try container.decode(String.self, forKey: .kind) {
-            case "create_request": self = .createRequest(requestId: try container.decode(RequestId.self, forKey: .requestId), body: try container.decode(String.self, forKey: .body))
-            case "close_request": self = .closeRequest(requestId: try container.decode(RequestId.self, forKey: .requestId))
+            case "create_request":
+                if [.project, .options, .issue, .attachments].contains(where: container.contains) {
+                    self = .createRequestWithContext(requestId: try container.decode(RequestId.self, forKey: .requestId), body: try container.decode(String.self, forKey: .body), project: try container.decodeIfPresent(String.self, forKey: .project), options: try container.decodeIfPresent([String: OptionChoice].self, forKey: .options) ?? [:], issue: try container.decodeIfPresent(String.self, forKey: .issue), attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [])
+                } else {
+                    self = .createRequest(requestId: try container.decode(RequestId.self, forKey: .requestId), body: try container.decode(String.self, forKey: .body))
+                }
+            case "close_request": self = .closeRequest(requestId: try container.decode(RequestId.self, forKey: .requestId), answer: try container.decodeIfPresent(String.self, forKey: .answer), withdrawn: try container.decodeIfPresent(Bool.self, forKey: .withdrawn) ?? false, title: try container.decodeIfPresent(String.self, forKey: .title))
+            case "retitle_task": self = .retitleTask(taskId: try container.decode(TaskId.self, forKey: .taskId), title: try container.decode(String.self, forKey: .title))
+            case "withdraw_question": self = .withdrawQuestion(interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
             case "register_agent": self = .registerAgent(agentId: try container.decode(AgentId.self, forKey: .agentId), name: try container.decode(String.self, forKey: .name))
             case "observe_agent": self = .observeAgent(agentId: try container.decode(AgentId.self, forKey: .agentId), connected: try container.decode(Bool.self, forKey: .connected))
             case "advance_orchestrator_generation": self = .advanceOrchestratorGeneration(generation: try container.decode(UInt64.self, forKey: .generation))
@@ -423,7 +455,16 @@ extension DomainV2 {
             case "cancel_task": self = .cancelTask(taskId: try container.decode(TaskId.self, forKey: .taskId))
             case "reopen_task": self = .reopenTask(taskId: try container.decode(TaskId.self, forKey: .taskId))
             case "archive_task": self = .archiveTask(taskId: try container.decode(TaskId.self, forKey: .taskId), archived: try container.decode(Bool.self, forKey: .archived))
-            default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown domain v2 Command kind")
+            case "request_more_context": self = .requestMoreContext(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), body: try container.decode(String.self, forKey: .body))
+            case "reply_to_information": self = .replyToInformation(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), body: try container.decode(String.self, forKey: .body))
+            case "ask_about_pull_request": self = .askAboutPullRequest(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], prId: try container.decode(PrId.self, forKey: .prId), head: try container.decode(String.self, forKey: .head), body: try container.decode(String.self, forKey: .body))
+            case "request_conflict_resolution": self = .requestConflictResolution(prId: try container.decode(PrId.self, forKey: .prId), head: try container.decode(String.self, forKey: .head))
+            case "message_agent": self = .messageAgent(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], agentId: try container.decode(AgentId.self, forKey: .agentId), body: try container.decode(String.self, forKey: .body))
+            case "close_agent": self = .closeAgent(agentId: try container.decode(AgentId.self, forKey: .agentId), force: try container.decode(Bool.self, forKey: .force))
+            case "retry_orchestrator_run": self = .retryOrchestratorRun(runId: try container.decode(String.self, forKey: .runId))
+            case "cancel_orchestrator_run": self = .cancelOrchestratorRun(runId: try container.decode(String.self, forKey: .runId))
+            case "acknowledge_orchestrator_run": self = .acknowledgeOrchestratorRun(runId: try container.decode(String.self, forKey: .runId))
+            case let kind: self = .unknown(kind: kind)
             }
         }
 
@@ -434,9 +475,21 @@ extension DomainV2 {
                 try container.encode("create_request", forKey: .kind)
                 try container.encode(requestId, forKey: .requestId)
                 try container.encode(body, forKey: .body)
-            case let .closeRequest(requestId):
+            case let .closeRequest(requestId, answer, withdrawn, title):
                 try container.encode("close_request", forKey: .kind)
                 try container.encode(requestId, forKey: .requestId)
+                try container.encodeIfPresent(answer, forKey: .answer)
+                if withdrawn { try container.encode(true, forKey: .withdrawn) }
+                try container.encodeIfPresent(title, forKey: .title)
+            case let .retitleTask(taskId, title):
+                try container.encode("retitle_task", forKey: .kind)
+                try container.encode(taskId, forKey: .taskId)
+                try container.encode(title, forKey: .title)
+            case let .withdrawQuestion(interactionId):
+                try container.encode("withdraw_question", forKey: .kind)
+                try container.encode(interactionId, forKey: .interactionId)
+            case let .unknown(kind):
+                throw EncodingError.invalidValue(kind, .init(codingPath: encoder.codingPath, debugDescription: "Unknown domain v2 Command kind \(kind) cannot be sent"))
             case let .registerAgent(agentId, name):
                 try container.encode("register_agent", forKey: .kind)
                 try container.encode(agentId, forKey: .agentId)
@@ -607,43 +660,102 @@ extension DomainV2 {
                 try container.encode("archive_task", forKey: .kind)
                 try container.encode(taskId, forKey: .taskId)
                 try container.encode(archived, forKey: .archived)
+            case let .createRequestWithContext(requestId, body, project, options, issue, attachments):
+                try container.encode("create_request", forKey: .kind)
+                try container.encode(requestId, forKey: .requestId)
+                try container.encode(body, forKey: .body)
+                try container.encodeIfPresent(project, forKey: .project)
+                try container.encode(options, forKey: .options)
+                try container.encodeIfPresent(issue, forKey: .issue)
+                try container.encode(attachments, forKey: .attachments)
+            case let .requestMoreContext(attachments, interactionId, body):
+                try container.encode("request_more_context", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
+                try container.encode(interactionId, forKey: .interactionId)
+                try container.encode(body, forKey: .body)
+            case let .replyToInformation(attachments, interactionId, body):
+                try container.encode("reply_to_information", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
+                try container.encode(interactionId, forKey: .interactionId)
+                try container.encode(body, forKey: .body)
+            case let .askAboutPullRequest(attachments, prId, head, body):
+                try container.encode("ask_about_pull_request", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
+                try container.encode(prId, forKey: .prId)
+                try container.encode(head, forKey: .head)
+                try container.encode(body, forKey: .body)
+            case let .requestConflictResolution(prId, head):
+                try container.encode("request_conflict_resolution", forKey: .kind)
+                try container.encode(prId, forKey: .prId)
+                try container.encode(head, forKey: .head)
+            case let .messageAgent(attachments, agentId, body):
+                try container.encode("message_agent", forKey: .kind)
+                try container.encode(attachments, forKey: .attachments)
+                try container.encode(agentId, forKey: .agentId)
+                try container.encode(body, forKey: .body)
+            case let .closeAgent(agentId, force):
+                try container.encode("close_agent", forKey: .kind)
+                try container.encode(agentId, forKey: .agentId)
+                try container.encode(force, forKey: .force)
+            case let .retryOrchestratorRun(runId):
+                try container.encode("retry_orchestrator_run", forKey: .kind)
+                try container.encode(runId, forKey: .runId)
+            case let .cancelOrchestratorRun(runId):
+                try container.encode("cancel_orchestrator_run", forKey: .kind)
+                try container.encode(runId, forKey: .runId)
+            case let .acknowledgeOrchestratorRun(runId):
+                try container.encode("acknowledge_orchestrator_run", forKey: .kind)
+                try container.encode(runId, forKey: .runId)
             }
         }
     }
 
     public enum DomainEffect: Codable, Equatable, Sendable {
+        case notifyUser(taskId: TaskId?, interactionId: InteractionId)
         case notifyAgent(agentId: AgentId, taskId: TaskId?, interactionId: InteractionId?, message: String)
-        case notifyOrchestrator(interactionId: InteractionId)
+        /// An interaction addressed to the orchestrator, or a request the user created.
+        case notifyOrchestrator(interactionId: InteractionId?, requestId: RequestId?)
+        /// A kind this build does not know; it decodes so a command outcome that carries one still reads.
+        case unknown(kind: String)
 
         enum CodingKeys: String, CodingKey {
             case kind = "kind"
             case agentId = "agent_id"
             case taskId = "task_id"
             case interactionId = "interaction_id"
+            case requestId = "request_id"
             case message = "message"
         }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             switch try container.decode(String.self, forKey: .kind) {
+            case "notify_user": self = .notifyUser(taskId: try container.decodeIfPresent(TaskId.self, forKey: .taskId), interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
             case "notify_agent": self = .notifyAgent(agentId: try container.decode(AgentId.self, forKey: .agentId), taskId: try container.decodeIfPresent(TaskId.self, forKey: .taskId), interactionId: try container.decodeIfPresent(InteractionId.self, forKey: .interactionId), message: try container.decode(String.self, forKey: .message))
-            case "notify_orchestrator": self = .notifyOrchestrator(interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
-            default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown domain v2 DomainEffect kind")
+            case "notify_orchestrator": self = .notifyOrchestrator(interactionId: try container.decodeIfPresent(InteractionId.self, forKey: .interactionId), requestId: try container.decodeIfPresent(RequestId.self, forKey: .requestId))
+            case let kind: self = .unknown(kind: kind)
             }
         }
 
         public func encode(to encoder: any Encoder) throws {
             var container = encoder.container(keyedBy: CodingKeys.self)
             switch self {
+            case let .notifyUser(taskId, interactionId):
+                try container.encode("notify_user", forKey: .kind)
+                try container.encodeIfPresent(taskId, forKey: .taskId)
+                try container.encode(interactionId, forKey: .interactionId)
             case let .notifyAgent(agentId, taskId, interactionId, message):
                 try container.encode("notify_agent", forKey: .kind)
                 try container.encode(agentId, forKey: .agentId)
                 try container.encodeIfPresent(taskId, forKey: .taskId)
                 try container.encodeIfPresent(interactionId, forKey: .interactionId)
                 try container.encode(message, forKey: .message)
-            case let .notifyOrchestrator(interactionId):
+            case let .notifyOrchestrator(interactionId, requestId):
                 try container.encode("notify_orchestrator", forKey: .kind)
-                try container.encode(interactionId, forKey: .interactionId)
+                try container.encodeIfPresent(interactionId, forKey: .interactionId)
+                try container.encodeIfPresent(requestId, forKey: .requestId)
+            case let .unknown(kind):
+                throw EncodingError.invalidValue(kind, .init(codingPath: encoder.codingPath, debugDescription: "Unknown domain v2 DomainEffect kind \(kind) cannot be encoded"))
             }
         }
     }

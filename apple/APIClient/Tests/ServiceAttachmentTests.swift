@@ -1,4 +1,5 @@
 import AlondraAPIClient
+import AlondraContracts
 import CryptoKit
 import Foundation
 import XCTest
@@ -10,11 +11,12 @@ final class ServiceAttachmentTests: XCTestCase {
         let api = AlondraAPIClient(serviceURL: URL(string: "https://service.example")!, deviceID: "client-test", operations: transport)
         let id = UUID()
         do {
-            _ = try await api.uploadAttachment(data, name: "a b&c.txt", transferID: id)
+            _ = try await api.uploadDomainAttachment(data, name: "a b&c.txt", transferID: id)
             XCTFail("Lost finish receipt must not report success")
         } catch { XCTAssertEqual(error as? ServiceAPIError, .outcomeUnknown) }
-        let stored = try await api.uploadAttachment(data, name: "a b&c.txt", transferID: id)
-        XCTAssertEqual(stored, "stored-evidence")
+        let stored = try await api.uploadDomainAttachment(data, name: "a b&c.txt", transferID: id)
+        XCTAssertEqual(stored.id, "stored-evidence")
+        XCTAssertEqual(stored.contentDigest, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
         let result = await transport.result()
         XCTAssertEqual(result.bytes, data)
         XCTAssertEqual(result.name, "a b&c.txt")
@@ -23,18 +25,20 @@ final class ServiceAttachmentTests: XCTestCase {
         XCTAssertEqual(result.transferIDs, [id.uuidString.lowercased()])
     }
 
-    func testDownloadPinsVersionAndRejectsCrossVersionAssembly() async throws {
+    func testAttachmentContentPinsVersionAndChecksTheDigest() async throws {
         let transport = DownloadFixture()
         let api = AlondraAPIClient(serviceURL: URL(string: "https://service.example")!, deviceID: "client-test", operations: transport)
+        let bytes = Data(repeating: 1, count: 131_072)
+        let ref = DomainV2.AttachmentRef(id: "file", name: "test.bin",
+            contentDigest: SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(),
+            contentReference: "files/file", bytes: 131_072)
         do {
-            _ = try await api.downloadAttachment(path: "/home/alondra/files/test.bin", downloadID: UUID())
+            _ = try await api.domainAttachmentContent(ref)
             XCTFail("A changed version must not produce a mixed file")
-        } catch { XCTAssertEqual(error as? AttachmentTransferError, .invalidResponse) }
-        let requests = await transport.recorded()
-        XCTAssertEqual(requests.count, 2)
-        let second = try XCTUnwrap(JSONSerialization.jsonObject(with: requests[1].body ?? Data()) as? [String: Any])
-        XCTAssertEqual(second["version"] as? String, "version-one")
-        XCTAssertEqual(second["length"] as? Int, 65_536)
+        } catch { XCTAssertEqual((error as? DomainV2.DomainError)?.code, "content_unavailable") }
+        let paths = await transport.recorded().map(\.path)
+        XCTAssertEqual(paths, ["/v2/files/chunk?path=files%2Ffile&offset=0",
+                               "/v2/files/chunk?path=files%2Ffile&offset=65536&version=version-one"])
     }
 }
 
@@ -51,10 +55,10 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
         transfers.insert(try XCTUnwrap(object["transfer_id"] as? String))
         let response: [String: Any]
         switch request.path {
-        case "/v1/service/uploads/start":
+        case "/v2/domain/uploads/start":
             name = try XCTUnwrap(object["name"] as? String)
             response = ["offset": bytes.count, "chunk_bytes": 65_536, "completed": false]
-        case "/v1/service/uploads/chunk":
+        case "/v2/domain/uploads/chunk":
             let encoded = try XCTUnwrap(object["data"] as? String)
             XCTAssertFalse(encoded.contains("="))
             let base = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
@@ -63,10 +67,12 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
             maxChunk = max(maxChunk, chunk.count)
             bytes.append(chunk)
             response = ["offset": bytes.count]
-        case "/v1/service/uploads/finish":
+        case "/v2/domain/uploads/finish":
             finishCount += 1
-            let result = ServiceResponse.completed(status: 200, body: try JSONSerialization.data(withJSONObject: ["id": "stored-evidence", "bytes": bytes.count]))
-            cache[request.operationID] = result
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let stored: [String: Any] = ["id": "stored-evidence", "name": name ?? "", "content_digest": digest,
+                                         "content_reference": "files/stored-evidence", "bytes": bytes.count]
+            cache[request.operationID] = .completed(status: 200, body: try JSONSerialization.data(withJSONObject: ["attachment": stored]))
             return .unknown
         default: XCTFail("Unexpected path"); return .unknown
         }
@@ -74,18 +80,21 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
         cache[request.operationID] = result
         return result
     }
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {}
     func result() -> (bytes: Data, name: String?, finishCount: Int, maxChunk: Int, transferIDs: Set<String>) { (bytes, name, finishCount, maxChunk, transfers) }
 }
+
 private actor DownloadFixture: ServiceOperationTransport {
     var requests: [ServiceRequest] = []
     func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
         requests.append(request)
         let offset = requests.count == 1 ? 0 : 65_536
         let bytes = Data(repeating: 1, count: 65_536)
-        let body: [String: Any] = ["version": requests.count == 1 ? "version-one" : "version-two", "data": bytes.base64EncodedString().replacingOccurrences(of: "=", with: ""), "offset": offset, "total": 131_072, "next_offset": offset + bytes.count, "eof": requests.count == 2]
+        let data = bytes.base64EncodedString().replacingOccurrences(of: "=", with: "")
+            .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
+        let body: [String: Any] = ["content_digest": SHA256.hash(data: Data(repeating: 1, count: 131_072)).map { String(format: "%02x", $0) }.joined(),
+                                   "version": requests.count == 1 ? "version-one" : "version-two", "data": data,
+                                   "offset": offset, "total": 131_072, "next_offset": offset + bytes.count, "eof": requests.count == 2]
         return .completed(status: 200, body: try JSONSerialization.data(withJSONObject: body))
     }
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {}
     func recorded() -> [ServiceRequest] { requests }
 }

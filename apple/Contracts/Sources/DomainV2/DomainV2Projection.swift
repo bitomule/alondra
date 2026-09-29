@@ -17,8 +17,9 @@ extension DomainV2 {
         public var documentReviews: [DocumentReview]
         public var mergeAuthorizations: [MergeAuthorization]
         public var stackReadiness: [StackReadiness]
+        public var supersededAcceptances: [SupersededAcceptance]
 
-        public init(protocolVersion: UInt32, dataEpoch: DataEpoch, revision: Revision, inbox: [InboxItem], counts: InboxCounts, tasks: [Task], agents: [Agent], requests: [Request], interactions: [Interaction], pullRequests: [PullRequest], documents: [Document], documentRevisions: [DocumentRevision], documentReviews: [DocumentReview], mergeAuthorizations: [MergeAuthorization], stackReadiness: [StackReadiness]) {
+        public init(protocolVersion: UInt32, dataEpoch: DataEpoch, revision: Revision, inbox: [InboxItem], counts: InboxCounts, tasks: [Task], agents: [Agent], requests: [Request], interactions: [Interaction], pullRequests: [PullRequest], documents: [Document], documentRevisions: [DocumentRevision], documentReviews: [DocumentReview], mergeAuthorizations: [MergeAuthorization], stackReadiness: [StackReadiness], supersededAcceptances: [SupersededAcceptance] = []) {
             self.protocolVersion = protocolVersion
             self.dataEpoch = dataEpoch
             self.revision = revision
@@ -34,6 +35,7 @@ extension DomainV2 {
             self.documentReviews = documentReviews
             self.mergeAuthorizations = mergeAuthorizations
             self.stackReadiness = stackReadiness
+            self.supersededAcceptances = supersededAcceptances
         }
 
         enum CodingKeys: String, CodingKey {
@@ -52,6 +54,48 @@ extension DomainV2 {
             case documentReviews = "document_reviews"
             case mergeAuthorizations = "merge_authorizations"
             case stackReadiness = "stack_readiness"
+            case supersededAcceptances = "superseded_acceptances"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            protocolVersion = try container.decode(UInt32.self, forKey: .protocolVersion)
+            dataEpoch = try container.decode(DataEpoch.self, forKey: .dataEpoch)
+            revision = try container.decode(Revision.self, forKey: .revision)
+            inbox = try container.decode([InboxItem].self, forKey: .inbox)
+            counts = try container.decode(InboxCounts.self, forKey: .counts)
+            tasks = try container.decode([Task].self, forKey: .tasks)
+            agents = try container.decode([Agent].self, forKey: .agents)
+            requests = try container.decode([Request].self, forKey: .requests)
+            interactions = try container.decode([Interaction].self, forKey: .interactions)
+            pullRequests = try container.decode([PullRequest].self, forKey: .pullRequests)
+            documents = try container.decode([Document].self, forKey: .documents)
+            documentRevisions = try container.decode([DocumentRevision].self, forKey: .documentRevisions)
+            documentReviews = try container.decode([DocumentReview].self, forKey: .documentReviews)
+            mergeAuthorizations = try container.decode([MergeAuthorization].self, forKey: .mergeAuthorizations)
+            stackReadiness = try container.decode([StackReadiness].self, forKey: .stackReadiness)
+            supersededAcceptances = try container.decodeIfPresent([SupersededAcceptance].self, forKey: .supersededAcceptances) ?? []
+        }
+    }
+
+    public struct SupersededAcceptance: Codable, Equatable, Hashable, Sendable {
+        public var taskId: TaskId
+        public var presentationId: InteractionId
+        public var userId: String
+        public var acceptedAt: Revision
+
+        public init(taskId: TaskId, presentationId: InteractionId, userId: String, acceptedAt: Revision) {
+            self.taskId = taskId
+            self.presentationId = presentationId
+            self.userId = userId
+            self.acceptedAt = acceptedAt
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case taskId = "task_id"
+            case presentationId = "presentation_id"
+            case userId = "user_id"
+            case acceptedAt = "accepted_at"
         }
     }
 

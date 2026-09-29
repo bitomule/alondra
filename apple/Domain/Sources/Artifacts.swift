@@ -29,15 +29,3 @@ public enum Artifacts {
         return found.sorted { $0.offset < $1.offset }.compactMap { URL(string: $0.url) }
     }
 }
-
-extension Report {
-    /// The artifacts this report carries, from its links first and then its body.
-    public var artifacts: [URL] {
-        var out: [URL] = []
-        for url in links.flatMap({ Artifacts.urls(in: $0.url) }) + Artifacts.urls(in: body ?? "") where !out.contains(url) {
-            out.append(url)
-        }
-        return out
-    }
-
-}

@@ -11,12 +11,12 @@ struct StateGlyph: View {
 
 /// A node's tasks under it, each with its state.
 struct NodeTasks: View {
-    let tasks: [WorkTask]
+    let tasks: [DomainV2.Task]
     let nodeDisplayName: String
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            ForEach(tasks) { task in
+            ForEach(tasks, id: \.id) { task in
                 HStack(alignment: .top, spacing: 8) {
                     Glyph(task: task, size: .tiny)
                         .padding(.top, 1)

@@ -47,7 +47,7 @@ public struct NewWorkSelection: Sendable, Equatable {
         }
     }
 
-    public func body(text: String, attachments: [String] = []) -> NewRequestBody {
+    public func body(text: String, attachments: [DomainV2.AttachmentRef] = []) -> NewRequestBody {
         NewRequestBody(text: text, attachments: attachments, project: project, options: chosen, issue: issue)
     }
 

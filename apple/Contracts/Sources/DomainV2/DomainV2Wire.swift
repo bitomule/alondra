@@ -42,14 +42,23 @@ extension DomainV2 {
         public let dataEpoch: DataEpoch
         public let revision: Revision
         public let changed: Bool
-        public init(protocolVersion: UInt32, dataEpoch: DataEpoch, revision: Revision, changed: Bool) {
+        public let sections: [String: String]
+        public init(protocolVersion: UInt32, dataEpoch: DataEpoch, revision: Revision, changed: Bool, sections: [String: String] = [:]) {
             self.protocolVersion = protocolVersion; self.dataEpoch = dataEpoch
-            self.revision = revision; self.changed = changed
+            self.revision = revision; self.changed = changed; self.sections = sections
         }
         enum CodingKeys: String, CodingKey {
             case protocolVersion = "protocol_version"
             case dataEpoch = "data_epoch"
-            case revision, changed
+            case revision, changed, sections
+        }
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            protocolVersion = try container.decode(UInt32.self, forKey: .protocolVersion)
+            dataEpoch = try container.decode(DataEpoch.self, forKey: .dataEpoch)
+            revision = try container.decode(Revision.self, forKey: .revision)
+            changed = try container.decode(Bool.self, forKey: .changed)
+            sections = try container.decodeIfPresent([String: String].self, forKey: .sections) ?? [:]
         }
     }
 }

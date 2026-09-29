@@ -6,11 +6,11 @@ import ComposableArchitecture
 /// A question the node asks about the PR it sits in, answered right there without leaving the PR.
 struct ServiceAttachedQuestion: View {
     let store: StoreOf<QuestionFeature>
-    private var question: Question { store.question }
+    private var question: DomainQuestion { store.question }
     var showsDetail = false
 
     @FocusState private var replyFocused: Bool
-    private var picked: QuestionOption? { question.options.first { $0.label == store.draft.selectedOption } }
+    private var picked: DomainV2.QuestionOption? { store.selectedOption }
     private var sending: Bool { store.isSubmitting || store.pendingSubmission != nil || store.needsReconciliation || store.completed }
     private var text: String { store.draft.text.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var attachmentsEmpty: Bool { store.attachmentPicker.entries.isEmpty }
@@ -25,7 +25,7 @@ struct ServiceAttachedQuestion: View {
                 .font(.headline)
                 .foregroundStyle(Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            if showsDetail, let detail = question.readableDetail, !detail.isEmpty {
+            if showsDetail, case let detail = question.body, !detail.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(MarkdownParser.blocks(from: detail)) { block in
                         MarkdownBlockView(block: block)
@@ -37,7 +37,7 @@ struct ServiceAttachedQuestion: View {
             if !question.options.isEmpty {
                 ServiceOptionGrid(options: question.options, picked: picked) {
                     replyFocused = false
-                    store.send(.attachedOptionTapped($0.label))
+                    store.send(.optionTapped($0.id))
                 }
             }
             if showsDetail || question.options.isEmpty || picked != nil {
@@ -69,7 +69,7 @@ struct ServiceAttachedQuestion: View {
             ServiceAttachButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 .padding(.leading, 4)
                 .padding(.bottom, 2)
-            TextField(picked?.displayDescription ?? String(localized: "Answer in your own words…"), text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
+            TextField(String(localized: "Answer in your own words…"), text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
                 .lineLimit(1...4)
                 .focused($replyFocused)
                 .padding(.trailing, 14)
@@ -77,7 +77,7 @@ struct ServiceAttachedQuestion: View {
             Button {
                 // A fast failure can complete before SwiftUI observes `sending`.
                 replyFocused = false
-                store.send(.attachedAnswerTapped)
+                store.send(.answerTapped)
             } label: {
                 Image(systemName: "arrow.up")
                     .font(.body.weight(.bold))

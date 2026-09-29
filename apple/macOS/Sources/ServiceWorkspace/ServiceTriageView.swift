@@ -9,10 +9,15 @@ import SwiftUI
 struct ServiceTriageView: View {
     @Bindable var store: StoreOf<ServiceTriageFeature>
 
+    private var working: Int { store.nodes.filter { $0.state == .working }.count }
+    private var waiting: Int {
+        store.nodes.filter { [.waitingAnswer, .yourTurn, .waitingMerge, .waitingMachine].contains($0.state) }.count
+    }
+
     var body: some View {
         List {
             Section {
-                Label("\(store.triage.workingNodes) working · \(store.triage.waitingNodes) waiting", systemImage: "desktopcomputer")
+                Label("\(working) working · \(waiting) waiting", systemImage: "desktopcomputer")
             }
             if !store.triage.hasSnapshot {
                 ProgressView("Loading inbox…")
@@ -20,7 +25,8 @@ struct ServiceTriageView: View {
                 ContentUnavailableView("All caught up", systemImage: "checkmark.circle", description: Text("New questions and reports will appear here."))
             } else {
                 ForEach(store.triage.queue) { item in
-                    ServiceInboxRow(item: item, pending: store.triage.pendingIDs.contains(item.id),
+                    ServiceInboxRow(item: item, agent: store.workspace?.agentName(of: item),
+                        pending: store.triage.pendingIDs.contains(item.id),
                         open: { store.send(.open(item.id)) },
                         skip: { store.send(.triage(.skip(item.id))) },
                         hide: { store.send(.triage(.hide(item.id))) })
@@ -52,7 +58,8 @@ struct ServiceTriageView: View {
 }
 
 private struct ServiceInboxRow: View {
-    let item: InboxItem
+    let item: DomainV2.InboxItem
+    let agent: String?
     let pending: Bool
     let open: () -> Void
     let skip: () -> Void
@@ -63,16 +70,14 @@ private struct ServiceInboxRow: View {
             Button(action: open) {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(item.title).font(.headline)
-                    if let node = item.nodeName { Text(node).font(.caption).foregroundStyle(.secondary) }
+                    if let agent { Text(agent).font(.caption).foregroundStyle(.secondary) }
                 }.frame(maxWidth: .infinity, alignment: .leading)
             }.buttonStyle(.plain)
             HStack {
                 Button("Later", action: skip)
                 Spacer()
-                switch item {
-                case .question: EmptyView()
-                case .report: Button("Mark read", action: hide)
-                case .pullRequest: Button("Dismiss", action: hide)
+                if item.availableActions.contains(where: { $0.actionKind == .markRead && $0.enabled }) {
+                    Button("Mark read", action: hide)
                 }
             }.font(.subheadline).buttonStyle(.borderless)
         }.disabled(pending)
@@ -84,28 +89,18 @@ struct ServiceQuestionView: View {
     var taskTitle: String? = nil
     @FocusState private var focus: DetailField?
     @Environment(\.searchActive) private var searchActive
+    private var item: DomainV2.InboxItem { store.question.item }
     var body: some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
-                DetailHeader(style: InboxItem.question(store.question).style, node: store.question.nodeName,
-                    date: store.question.askedAt, title: store.question.title, task: taskTitle)
-                MissionLine(item: .question(store.question))
-                if let detail = store.question.readableDetail, !detail.isEmpty {
-                    MarkdownText(text: store.question.origin == "permission" ? "```\n\(detail)\n```" : detail)
+                DetailHeader(style: item.style, node: store.workspace.agentName(of: item),
+                    date: store.workspace.createdAt(of: item), title: store.question.title, task: taskTitle)
+                MissionLine(mission: store.workspace.mission(of: item))
+                if !store.question.body.isEmpty {
+                    MarkdownText(text: store.question.body)
                 }
-                ServiceLinksRow(links: store.question.links, attachments: store.question.attachments,
-                    store: store.scope(state: \.downloads, action: \.downloads))
-                ForEach(store.question.aboutReports) { report in
-                    GroupBox {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(report.title).font(.headline)
-                            if let body = report.body, !body.isEmpty { MarkdownText(text: body).font(.callout) }
-                        }.frame(maxWidth: .infinity, alignment: .leading)
-                    } label: {
-                        Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text").foregroundStyle(.secondary)
-                    }
-                }
-                if let context = store.question.nodeContext, !context.isEmpty {
+                ServiceLinksRow(attachments: store.question.attachments, store: store.scope(state: \.downloads, action: \.downloads))
+                if let context = store.workspace.runtime?.node(item.agentId)?.lastSaid {
                     DisclosureGroup("What the node said last") {
                         MarkdownText(text: context).font(.callout).foregroundStyle(.secondary).padding(.top, 6)
                     }.foregroundStyle(.secondary)
@@ -115,25 +110,21 @@ struct ServiceQuestionView: View {
             VStack(alignment: .leading, spacing: 12) {
                 if !store.question.options.isEmpty {
                     QuestionOptions(options: store.question.options, selected: store.draft.selectedOption) { option in
-                        store.send(.optionTapped(option.label))
+                        store.send(.optionTapped(option.id))
                     }
                 }
-                if !store.question.isTerminalMenu {
-                    ServiceComposer(placeholder: store.question.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…"),
-                        text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), focus: $focus,
-                        sendTitle: nil, canSend: !store.draft.text.isEmpty || !store.attachmentPicker.entries.isEmpty,
-                        submit: { store.send(.answerTapped) },
-                        escape: { store.send(.optionSelected(nil)) },
-                        attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                }
+                ServiceComposer(placeholder: store.question.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…"),
+                    text: Binding(get: { store.draft.text }, set: { store.send(.textChanged($0)) }), focus: $focus,
+                    sendTitle: nil, canSend: !store.draft.text.isEmpty || !store.attachmentPicker.entries.isEmpty,
+                    submit: { store.send(.answerTapped) },
+                    escape: { store.send(.optionSelected(nil)) },
+                    attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 CardActions {
-                    if !store.question.isTerminalMenu {
-                        Button { store.send(.moreContextTapped) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
-                            .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
-                    }
+                    Button { store.send(.moreContextTapped) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
+                        .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
                 } trailing: {
-                    if store.draft.selectedOption != nil || !store.draft.text.isEmpty || !store.draft.attachmentIDs.isEmpty {
-                        SendButton(title: store.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply")) { store.send(.answerTapped) }
+                    if store.draft.selectedOption != nil || !store.draft.text.isEmpty || !store.attachmentPicker.entries.isEmpty {
+                        SendButton(title: store.selectedOption?.displayLabel ?? String(localized: "Reply")) { store.send(.answerTapped) }
                     }
                 }
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
@@ -148,7 +139,7 @@ struct ServiceQuestionView: View {
             guard store.keyboardReady else { return false }
             if character == "r" { focus = .reply; return true }
             guard let number = character.wholeNumberValue, number >= 1, number <= store.question.options.count else { return false }
-            store.send(.optionTapped(store.question.options[number - 1].label))
+            store.send(.optionTapped(store.question.options[number - 1].id))
             return true
         }
     }
@@ -160,21 +151,18 @@ struct ServiceDocumentView: View {
     var markRead: (() -> Void)?
     @FocusState private var focus: DetailField?
     @Environment(\.searchActive) private var searchActive
-    private var item: InboxItem {
-        switch store.subject { case .question(let q): .question(q); case .report(let r): .report(r) }
-    }
+    private var item: DomainV2.InboxItem { store.subject.item }
+    private var question: DomainQuestion? { store.subject.question }
+    private var canMarkRead: Bool { store.subject.action(.markRead)?.enabled == true }
     var body: some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
-                header
-                MissionLine(item: item)
-                if case .report(let report) = store.subject {
-                    if report.seemsToAsk {
-                        Label(Report.seemsToAskLabel, systemImage: "questionmark.bubble")
-                            .font(.callout.weight(.medium)).foregroundStyle(.orange)
-                    }
-                    ForEach(report.artifacts, id: \.self) { url in
-                        Link(destination: url) { Label(Report.openInBrowserLabel, systemImage: "safari") }
+                DetailHeader(style: item.style, node: store.workspace.agentName(of: item),
+                    date: store.workspace.createdAt(of: item), title: store.subject.title, task: taskTitle)
+                MissionLine(mission: store.workspace.mission(of: item))
+                if question == nil {
+                    ForEach(Artifacts.urls(in: store.subject.interaction.body), id: \.self) { url in
+                        Link(destination: url) { Label(Artifacts.openInBrowserLabel, systemImage: "safari") }
                             .buttonStyle(.borderedProminent).controlSize(.large).help(url.absoluteString)
                     }
                 }
@@ -186,57 +174,51 @@ struct ServiceDocumentView: View {
                     switch section.source {
                     case .inline:
                         if !section.text.isEmpty {
-                            if isReviewable {
+                            if store.subject.isDelivery {
                                 ServiceReviewableDocument(text: section.text, anchorPrefix: bodyPrefix, store: store, focus: $focus)
-                            } else if case .question(let question) = store.subject, question.origin == "permission" {
-                                MarkdownText(text: "```\n\(section.text)\n```")
                             } else { MarkdownText(text: section.text) }
                         }
-                    case .stored(let name, let path):
-                        ServiceAttachmentDocument(name: name, path: path, section: section, store: store, focus: $focus)
+                    case .revision(let name, let id, _):
+                        ServiceAttachmentDocument(name: name, anchor: id.rawValue, section: section, store: store, focus: $focus)
+                    case .attachment(let attachment):
+                        ServiceAttachmentDocument(name: attachment.name, anchor: attachment.id, attachment: attachment, section: section, store: store, focus: $focus)
                     }
                 }
-                context
+                ServiceLinksRow(attachments: store.subject.attachments.filter { !$0.isText }, store: store.scope(state: \.downloads, action: \.downloads))
             }
         } bar: {
             VStack(alignment: .leading, spacing: 12) {
                 ServiceCommentsSummary(comments: store.draft.comments) { comment in
                     store.send(.commentChanged(anchor: comment.anchor, quote: comment.quote, text: ""))
                 }
-                if case .question(let question) = store.subject, !question.options.isEmpty {
-                    QuestionOptions(options: question.options, selected: store.draft.selectedOption,
+                if let question, !question.options.isEmpty {
+                    QuestionOptions(options: question.options,
                         detail: { option in
-                            guard !store.draft.comments.isEmpty else { return option.displayDescription }
-                            return option.needsText || !question.isPlan
+                            guard !store.draft.comments.isEmpty else { return option.description }
+                            return option.inputs.contains { $0.kind == .text }
                                 ? String(localized: "Sends your \(store.draft.comments.count) comments")
                                 : String(localized: "Without your comments")
-                        }, prominent: { option, index in question.isPlan && (store.hasFeedback ? option.needsText : index == 0) },
+                        },
                         choose: choose)
                 }
                 ServiceComposer(placeholder: placeholder,
                     text: Binding(get: { store.draft.general }, set: { store.send(.generalChanged($0)) }), focus: $focus,
                     sendTitle: nil, canSend: store.hasFeedback,
                     submit: { submit() },
-                    escape: { store.send(.optionSelected(nil)) },
                     attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 actions
-                if store.feedbackReadRetryAvailable {
-                    Button(store.isRetryingFeedbackRead ? "Checking…" : "Retry marking report read") { store.send(.retryFeedbackRead) }
-                        .disabled(store.isRetryingFeedbackRead)
-                    Text("Your feedback has already been delivered. This only marks the report read.").font(.caption)
-                }
                 ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
                 if let error = store.downloads.error { Text(error).foregroundStyle(.red) }
             }
-            .disabled(store.isSubmitting || store.pendingSubmission != nil || store.needsReconciliation || store.completed)
+            .disabled(store.isSubmitting || store.pendingReview != nil || store.needsReconciliation || store.completed)
             .animation(.snappy(duration: 0.2), value: store.draft.comments.count)
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
         .onAppear {
             if !searchActive {
-                if case .question(let question) = store.subject {
-                    focus = question.options.isEmpty && !question.isPlan ? .reply : .pane
+                if let question {
+                    focus = question.options.isEmpty ? .reply : .pane
                 } else { focus = .pane }
             }
         }
@@ -247,116 +229,71 @@ struct ServiceDocumentView: View {
         .triageKeys(focus: $focus) { character in
             guard store.keyboardReady, store.composingAnchor == nil else { return false }
             if character == "r" { focus = .reply; return true }
-            switch store.subject {
-            case .question(let question):
+            if let question {
                 guard let number = character.wholeNumberValue, number >= 1, number <= question.options.count else { return false }
                 choose(question.options[number - 1])
                 return true
-            case .report(let report):
-                switch character {
-                case "l": markRead?()
-                case "c" where !report.artifacts.isEmpty: store.send(.reviewTapped(.comments))
-                case "v" where !report.artifacts.isEmpty: store.send(.reviewTapped(.approved))
-                default: return false
-                }
-                return true
             }
+            switch character {
+            case "l" where canMarkRead: markRead?()
+            case "c" where store.subject.action(.submitFeedback) != nil: store.send(.reviewTapped(.comments))
+            case "v" where store.subject.action(.acceptDelivery) != nil: store.send(.reviewTapped(.approved))
+            default: return false
+            }
+            return true
         }
     }
-    private func choose(_ option: QuestionOption) {
+    private func choose(_ option: DomainV2.QuestionOption) {
         let focusRequest = store.generalFocusRequest
-        store.send(.chooseReviewOption(option, author: store.feedbackAuthor))
+        store.send(.chooseReviewOption(option.id, author: store.feedbackAuthor))
         focus = store.generalFocusRequest == focusRequest ? .pane : .reply
     }
 
     private func submit() {
         focus = .pane
-        store.send(.submitFeedback(author: store.feedbackAuthor))
+        store.send(.sendFeedbackTapped(author: store.feedbackAuthor))
     }
 
-    @ViewBuilder private var header: some View {
-        switch store.subject {
-        case .question(let q): DetailHeader(style: item.style, node: q.nodeName, date: q.askedAt, title: q.title, task: taskTitle)
-        case .report(let r): DetailHeader(style: item.style, node: r.nodeName, date: r.createdAt, title: r.title, task: taskTitle)
-        }
-    }
-    private var bodyPrefix: String {
-        switch store.subject { case .question: "plan"; case .report: "cuerpo" }
-    }
-    private var isReviewable: Bool {
-        switch store.subject { case .question(let q): q.isPlan; case .report(let r): r.kind == "document" }
-    }
+    private var bodyPrefix: String { question == nil ? "cuerpo" : "plan" }
     private var placeholder: String {
-        if let option = store.draft.selectedOption { return String(localized: "\(AnswerOption.displayLabel(option)): write why…") }
-        switch store.subject {
-        case .question(let q): return q.isPlan ? String(localized: "General comment on the plan (optional)…") : q.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…")
-        case .report(let r): return r.kind == "document" ? String(localized: "General comment (optional)…") : String(localized: "Reply to the node (optional)…")
-        }
-    }
-    @ViewBuilder private var context: some View {
-        switch store.subject {
-        case .question(let q):
-            ServiceLinksRow(links: q.links, attachments: q.attachments.filter { !$0.isText }, store: store.scope(state: \.downloads, action: \.downloads))
-            ForEach(q.aboutReports) { report in
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text(report.title).font(.headline)
-                        if let body = report.body, !body.isEmpty { MarkdownText(text: body).font(.callout) }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                } label: { Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text").foregroundStyle(.secondary) }
-            }
-            if let text = q.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty {
-                DisclosureGroup("What the node said last") { MarkdownText(text: text).font(.callout).foregroundStyle(.secondary).padding(.top, 6) }.foregroundStyle(.secondary)
-            }
-        case .report(let r):
-            ServiceLinksRow(links: r.links, attachments: r.attachments.filter { r.kind != "document" || !$0.isText }, store: store.scope(state: \.downloads, action: \.downloads))
-            if let earlier = r.earlier, !earlier.isEmpty {
-                GroupBox {
-                    VStack(alignment: .leading, spacing: 14) {
-                        ForEach(earlier) { report in
-                            VStack(alignment: .leading, spacing: 6) {
-                                Text(report.title).font(.headline)
-                                if let body = report.body, !body.isEmpty { MarkdownText(text: body).font(.callout) }
-                            }
-                        }
-                    }.frame(maxWidth: .infinity, alignment: .leading)
-                } label: { Label(String(localized: "Earlier in this delivery (\(earlier.count))"), systemImage: "tray.full").foregroundStyle(.secondary) }
-            }
-        }
+        if let question { return question.options.isEmpty ? String(localized: "Your answer…") : String(localized: "Or answer in your own words…") }
+        return store.subject.isDelivery ? String(localized: "General comment (optional)…") : String(localized: "Reply to the node (optional)…")
     }
     @ViewBuilder private var actions: some View {
-        if case .report(let report) = store.subject {
+        if question != nil {
+            CardActions {
+                Button { focus = .pane; store.send(.moreContextTapped(author: store.feedbackAuthor)) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
+                    .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
+                    .disabled(!store.canReview)
+            } trailing: {}
+        } else if store.subject.isDelivery {
             CardActions {} trailing: {
-                if report.primaryAction() == .review {
-                    Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
-                    Group {
+                if canMarkRead { Button("Mark as Read") { markRead?() }.help("Mark as read (L)") }
+                Group {
+                    if store.subject.action(.acceptDelivery) != nil {
                         Button("Approve") { store.send(.reviewTapped(.approved)) }.help("Tell the node the artifact is approved (V)")
+                            .disabled(!store.canAccept)
+                    }
+                    if store.subject.action(.submitFeedback) != nil {
                         if store.hasFeedback {
                             SendButton(title: String(localized: "Send Comments")) { submit() }
                         } else {
                             Button("Rescue Comments") { store.send(.reviewTapped(.comments)) }.buttonStyle(.borderedProminent)
                                 .help("The node reads your comments on the artifact and applies them (C)")
                         }
-                    }.disabled(!store.canReview)
-                } else if store.hasFeedback {
-                    Button("Mark as Read") { markRead?() }.help("Mark as read (L)")
-                    SendButton(title: report.kind == "document" ? String(localized: "Send Comments") : String(localized: "Reply")) { submit() }
-                        .disabled(!store.canReview)
-                } else {
+                    }
+                }.disabled(!store.canReview)
+            }.animation(.snappy(duration: 0.18), value: store.hasFeedback)
+        } else {
+            CardActions {} trailing: {
+                if store.hasFeedback {
+                    if canMarkRead { Button("Mark as Read") { markRead?() }.help("Mark as read (L)") }
+                    SendButton(title: String(localized: "Reply")) { submit() }
+                        .disabled(!store.canReply)
+                } else if canMarkRead {
                     Button("Mark as Read") { markRead?() }.buttonStyle(.borderedProminent).help("Mark as read (L)")
                 }
             }.animation(.snappy(duration: 0.18), value: store.hasFeedback)
-        } else if case .question(let q) = store.subject {
-            CardActions {
-                Button { focus = .pane; store.send(.moreContextTapped(author: store.feedbackAuthor)) } label: { Label("I need more context", systemImage: "questionmark.bubble") }
-                    .help("Sends the question back to the node so it explains it better. Whatever you wrote goes along as what you’re missing.")
-                    .disabled(!store.canReview)
-            } trailing: {
-                if store.hasFeedback, store.draft.selectedOption != nil || !q.isPlan {
-                    SendButton(title: store.draft.selectedOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply")) { submit() }
-                        .disabled(!store.canReview)
-                }
-            }
         }
     }
 }

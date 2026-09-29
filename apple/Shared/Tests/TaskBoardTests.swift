@@ -3,44 +3,36 @@ import Foundation
 import Testing
 
 @Suite struct TaskPresentationTests {
-    private static let machine = #"{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false}"#
-    private static let node = #"{"session_id":"s1","short_id":"s1","is_orchestrator":false,"has_plugin":true,"state":"working","state_since":5,"state_source":"hook","tool":{"name":"Bash","summary":"make test","since":4}}"#
-
     private static func decode<T: Decodable>(_ json: String) throws -> T {
         let decoder = JSONDecoder()
         decoder.keyDecodingStrategy = .convertFromSnakeCase
         return try decoder.decode(T.self, from: Data(json.utf8))
     }
 
-    private static func task(_ id: String, request: String = "r-1", state: String = "running", dependsOn: [String] = [], created: Int64, session: String = "s1", archivedAt: Int64? = nil) throws -> WorkTask {
-        let deps = dependsOn.map { #""\#($0)""# }.joined(separator: ",")
-        let archived = archivedAt.map { #","archived_at":\#($0)"# } ?? ""
-        return try decode(#"{"id":"\#(id)","request":"\#(request)","title":"Task \#(id)","depends_on":[\#(deps)],"options":{"auto_merge":false},"assignee":{"session_id":"\#(session)"},"prs":[],"documents":[],"blocker":null,"notices":[],"state":"\#(state)","state_since":\#(created),"created_at":\#(created)\#(archived)}"#)
+    private static func task(_ id: String, request: String = "r-1", title: String? = nil, state: DomainV2.TaskState = .running) -> DomainV2.Task {
+        DomainV2.Task(id: .init(rawValue: id), requestId: .init(rawValue: request), agentId: "s1", title: title ?? "Task \(id)",
+                      state: state, revision: 1, started: true, reviewPrs: true, finalPresentation: nil, prId: nil,
+                      dependencies: [], stack: nil, documents: [:], archived: false)
     }
 
-    private static func asked(_ id: String, tasks: [String], state: String = "in_progress", synthetic: Bool = false, created: Int64 = 1, title: String? = nil, closedAt: Int64? = nil) throws -> WorkRequest {
-        let ids = tasks.map { #""\#($0)""# }.joined(separator: ",")
-        let named = title.map { #","title":"\#($0)""# } ?? ""
-        let closed = closedAt.map { #","closed":{"at":\#($0)}"# } ?? ""
-        return try decode(#"{"id":"\#(id)","text":"Do the thing","created_at":\#(created),"state":"\#(state)","synthetic":\#(synthetic),"tasks":[\#(ids)]\#(named)\#(closed)}"#)
+    @Test func aTasksFleetRowTitleNeverRepeatsItsOwnNodesName() {
+        #expect(Self.task("a").fleetRowTitle(nodeDisplayName: "alondra/other") == "Task a", "a real title passes through")
+        let fallenBack = Self.task("b", title: "alondra/estados-por-tarea")
+        #expect(fallenBack.fleetRowTitle(nodeDisplayName: "alondra/estados-por-tarea") == DomainV2.Task.mainTaskLabel,
+                "the fallback title, repeated, reads as the node's main task instead")
     }
 
-    @Test func aTasksFleetRowTitleNeverRepeatsItsOwnNodesName() throws {
-        let named = try Self.task("a", created: 1)
-        #expect(named.fleetRowTitle(nodeDisplayName: "alondra/other") == "Task a", "a real title passes through")
-        let fallenBack: WorkTask = try Self.decode(
-            #"{"id":"t-b","request":"r-1","title":"alondra/estados-por-tarea","depends_on":[],"options":{"auto_merge":false},"assignee":{"session_id":"s1"},"prs":[],"documents":[],"blocker":null,"notices":[],"state":"running","state_since":1,"created_at":1}"#
-        )
-        #expect(fallenBack.fleetRowTitle(nodeDisplayName: "alondra/estados-por-tarea") == WorkTask.mainTaskLabel, "the fallback title, repeated, reads as the node's main task instead")
-    }
-
-    @Test func aRequestTheOrchestratorLeftDefiningSaysItHasNoTasks() throws {
-        let now = Date(timeIntervalSince1970: 10_000)
-        let sent = { (minutesAgo: Int64) throws -> WorkRequest in try Self.asked("r", tasks: [], state: "defining", created: 10_000_000 - minutesAgo * 60_000) }
-        #expect(try sent(1).isLeftDefining(now: now) == false)
-        #expect(try sent(1).definingLabel(now: now) == "defining")
-        #expect(try sent(11).isLeftDefining(now: now))
-        #expect(try sent(11).definingLabel(now: now) == "no tasks")
+    @Test func aRequestTheOrchestratorHasNotSplitIsDefiningAndAClosedOneIsFinished() {
+        let board = TaskBoard(requests: [
+            DomainV2.Request(id: "open", body: "Do the thing", closed: false),
+            DomainV2.Request(id: "withdrawn", body: "Never mind", closed: true),
+            DomainV2.Request(id: "split", body: "Split it", closed: false),
+        ], tasks: [Self.task("t-1", request: "split")])
+        let defining = board.groups.first { $0.kind == .defining }
+        #expect(defining?.requests.map(\.id) == ["open"])
+        #expect(defining?.title == "Defining")
+        #expect(board.groups.first { $0.kind == .task(.done) }?.requests.map(\.id) == ["withdrawn"])
+        #expect(board.openCount == 2, "the running task and the request still being defined")
     }
 
     @Test func aTasksPrHandlingReadsLikeTheLaunchOption() throws {

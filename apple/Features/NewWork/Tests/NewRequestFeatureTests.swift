@@ -1,4 +1,6 @@
 import AlondraAttachmentsFeature
+import AlondraContracts
+import AlondraDomain
 import AlondraNewWorkFeature
 import AlondraShared
 import ComposableArchitecture
@@ -7,18 +9,21 @@ import Testing
 
 @MainActor
 struct NewRequestFeatureTests {
-    @Test func managedOrchestratorAcceptsRequestsBeforeItsFirstSessionAndStopsOnDisconnect() async throws {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let overview = try decoder.decode(Overview.self, from: Data(#"{"tick":1,"nodes":[],"open_questions":[],"news":[],"orchestrator_messages":[],"machine":{"memory_total":1,"memory_available":1,"load":[0],"disk_available":1,"unreliable":false},"orchestrator":{"phase":"idle","queue_depth":0}}"#.utf8))
+    @Test func requestsAreAcceptedWhileTheMacIsConnectedAndStopOnDisconnect() async throws {
+        let workspace = DomainWorkspace(.init(
+            protocolVersion: 2, dataEpoch: "epoch", revision: 1, inbox: [], counts: .init(roots: 0, pending: 0, unreadInformation: 0),
+            tasks: [], agents: [], requests: [.init(id: "r", body: "Earlier", closed: false)], interactions: [], pullRequests: [],
+            documents: [], documentRevisions: [], documentReviews: [], mergeAuthorizations: [], stackReadiness: []))
         let store = TestStore(initialState: NewRequestFeature.State()) { NewRequestFeature() }
-        await store.send(.workspaceUpdated(overview)) {
+        await store.send(.workspaceUpdated(workspace)) {
             $0.hasSnapshot = true
             $0.canSubmit = true
+            $0.sentRequests = [.init(id: "r", body: "Earlier", closed: false)]
         }
         await store.send(.workspaceUpdated(nil)) {
             $0.hasSnapshot = false
             $0.canSubmit = false
+            $0.sentRequests = []
         }
     }
 
@@ -30,6 +35,7 @@ struct NewRequestFeatureTests {
         initial.selection.project = "A"
         initial.projects = ["A", "B"]
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
+            $0.uuid = .constant(UUID(0))
             $0.newWorkOperations = operations(options: { _ in b })
         }
         await store.send(.optionsLoaded(a, 0, 0)) { $0.selection.apply(a); $0.catalogIsCurrent = true }
@@ -67,6 +73,7 @@ struct NewRequestFeatureTests {
         initial.canSubmit = true
         initial.text = "Do work"
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
+            $0.uuid = .constant(UUID(0))
             $0.newWorkOperations = operations()
         }
         await store.send(.submitTapped)
@@ -76,9 +83,10 @@ struct NewRequestFeatureTests {
             $0.isLoadingOptions = false
             $0.catalogIsCurrent = true
         }
-        await store.send(.submitTapped) { $0.isSubmitting = true }
+        await store.send(.submitTapped) { $0.isSubmitting = true; $0.commandID = UUID(0).uuidString.lowercased() }
         await store.receive(\.submitFinished) {
             $0.isSubmitting = false
+            $0.commandID = nil
             $0.text = ""
             $0.successfulSubmissionCount = 1
         }
@@ -91,6 +99,7 @@ struct NewRequestFeatureTests {
         var initial = NewRequestFeature.State()
         initial.projects = ["B"]
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
+            $0.uuid = .constant(UUID(0))
             $0.newWorkOperations = operations(options: { _ in b })
         }
         await store.send(.issueSelected("owner/B#4")) {
@@ -111,6 +120,7 @@ struct NewRequestFeatureTests {
     func lateProjectListStillInfersCheckoutForSelectedIssue() async throws {
         let b = try catalog(#"{"project":"B","options":[]}"#)
         let store = TestStore(initialState: NewRequestFeature.State()) { NewRequestFeature() } withDependencies: {
+            $0.uuid = .constant(UUID(0))
             $0.newWorkOperations = operations(options: { _ in b })
         }
         await store.send(.issueSelected("owner/B#4")) { $0.selection.issue = "owner/B#4" }
@@ -138,7 +148,8 @@ struct NewRequestFeatureTests {
         let started = AsyncStream<Void>.makeStream()
         let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.newWorkOperations = operations(upload: { _ in "stored-1" }, create: { body in
+            $0.uuid = .constant(UUID(0))
+            $0.newWorkOperations = operations(upload: { _ in "stored-1" }, create: { body, _ in
                 await sent.record(body)
                 started.continuation.yield(())
                 for await _ in confirmation.stream { return .confirmed }
@@ -148,7 +159,7 @@ struct NewRequestFeatureTests {
         await store.send(.availabilityChanged(true)) { $0.canSubmit = true }
         await store.send(.textChanged(" first ")) { $0.text = " first " }
         await store.send(.attachmentAdded(attachment)) { $0.attachments = [attachment] }
-        await store.send(.submitTapped) { $0.isSubmitting = true }
+        await store.send(.submitTapped) { $0.isSubmitting = true; $0.commandID = UUID(0).uuidString.lowercased() }
         var iterator = started.stream.makeAsyncIterator()
         _ = await iterator.next()
         await store.send(.submitTapped)
@@ -158,6 +169,7 @@ struct NewRequestFeatureTests {
         confirmation.continuation.finish()
         await store.receive(\.submitFinished) {
             $0.isSubmitting = false
+            $0.commandID = nil
             $0.text = ""
             $0.attachments = []
             $0.successfulSubmissionCount = 1
@@ -168,29 +180,31 @@ struct NewRequestFeatureTests {
     }
 
     @Test
-    func failedPostIsUncertainAndCannotBeRetriedFromSameDraft() async {
+    func anUnknownOutcomeKeepsTheDraftAndSendingAgainReusesTheCommandID() async {
         var initial = NewRequestFeature.State()
         initial.catalogIsCurrent = true
+        let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.newWorkOperations = operations(create: { _ in .uncertain("no acknowledgement") })
+            $0.uuid = .constant(UUID(0))
+            $0.newWorkOperations = operations(create: { body, command in await sent.record(body, command); return .uncertain("no acknowledgement") })
+            $0.uuid = .incrementing
         }
-        await store.send(.availabilityChanged(true)) { $0.canSubmit = true }
-        await store.send(.textChanged("Do work")) { $0.text = "Do work" }
-        await store.send(.submitTapped) { $0.isSubmitting = true }
-        await store.receive(\.submitFinished) {
-            $0.isSubmitting = false
-            $0.submissionError = "no acknowledgement"
-            $0.submissionUncertain = true
-        }
+        store.exhaustivity = .off
+        await store.send(.availabilityChanged(true))
+        await store.send(.textChanged("Do work"))
         await store.send(.submitTapped)
+        await store.receive(\.submitFinished)
+        #expect(store.state.submissionUncertain)
         await store.send(.textChanged("Duplicate"))
-        #expect(store.state.text == "Do work")
-        await store.send(.discardUncertainDraft) {
-            $0.text = ""
-            $0.submissionError = nil
-            $0.submissionUncertain = false
-        }
-        await store.finish()
+        #expect(store.state.text == "Do work", "The draft cannot change while its outcome is unknown")
+        await store.send(.submitTapped)
+        await store.receive(\.submitFinished)
+        let commands = await sent.commands
+        #expect(commands.count == 2)
+        #expect(commands[0] == commands[1], "Sending again reuses the command ID so the request is created once")
+        await store.send(.discardUncertainDraft)
+        #expect(store.state.text == "")
+        #expect(store.state.commandID == nil)
     }
 
     @Test
@@ -202,7 +216,8 @@ struct NewRequestFeatureTests {
         initial.text = "Do work"
         let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.newWorkOperations = operations(create: { body in await sent.record(body); return .confirmed })
+            $0.uuid = .constant(UUID(0))
+            $0.newWorkOperations = operations(create: { body, _ in await sent.record(body); return .confirmed })
         }
         #expect(!store.state.submitEnabled)
         await store.send(.optionsFailed("catalog unavailable", 0, 0)) {
@@ -210,9 +225,10 @@ struct NewRequestFeatureTests {
             $0.optionsError = "catalog unavailable"
         }
         #expect(store.state.submitEnabled)
-        await store.send(.submitTapped) { $0.isSubmitting = true }
+        await store.send(.submitTapped) { $0.isSubmitting = true; $0.commandID = UUID(0).uuidString.lowercased() }
         await store.receive(\.submitFinished) {
             $0.isSubmitting = false
+            $0.commandID = nil
             $0.text = ""
             $0.successfulSubmissionCount = 1
         }
@@ -243,18 +259,21 @@ struct NewRequestFeatureTests {
         var initial = NewRequestFeature.State()
         initial.catalogIsCurrent = true
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.newWorkOperations = operations(create: { _ in .uncertain("no acknowledgement") })
+            $0.uuid = .constant(UUID(0))
+            $0.newWorkOperations = operations(create: { _, _ in .uncertain("no acknowledgement") })
+            $0.uuid = .constant(UUID(0))
         }
         await store.send(.availabilityChanged(true)) { $0.canSubmit = true }
         await store.send(.textChanged("Do work")) { $0.text = "Do work" }
-        await store.send(.submitTapped) { $0.isSubmitting = true }
+        await store.send(.submitTapped) { $0.isSubmitting = true; $0.commandID = UUID(0).uuidString.lowercased() }
         await store.receive(\.submitFinished) {
             $0.isSubmitting = false
             $0.submissionError = "no acknowledgement"
             $0.submissionUncertain = true
         }
-        #expect(!store.state.submitEnabled)
+        #expect(store.state.submitEnabled, "Sending again retries with the same command ID")
         await store.send(.editUncertainDraft) {
+            $0.commandID = nil
             $0.submissionError = nil
             $0.submissionUncertain = false
         }
@@ -281,7 +300,8 @@ struct NewRequestFeatureTests {
         let confirmation = AsyncStream<Void>.makeStream()
         let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.attachmentUpload = AttachmentUploadClient(upload: { retry in
+            $0.uuid = .constant(UUID(0))
+            $0.attachmentUpload = AttachmentUploadClient(ids: { retry in
                 #expect(retry.id == id)
                 #expect(retry.data == draft.data)
                 for await storedID in receipt.stream { return storedID }
@@ -289,9 +309,9 @@ struct NewRequestFeatureTests {
             })
             $0.newWorkOperations = operations(upload: { attachment in
                 #expect(attachment.id == id)
-                #expect(attachment.storedID == "stored-proof", "The final use case must receive the existing receipt")
+                #expect(attachment.stored?.id == "stored-proof", "The final use case must receive the existing receipt")
                 return "stored-proof"
-            }, create: { body in
+            }, create: { body, _ in
                 await sent.record(body)
                 for await _ in confirmation.stream { return .confirmed }
                 return .cancelled
@@ -305,22 +325,24 @@ struct NewRequestFeatureTests {
         receipt.continuation.yield("stored-proof")
         receipt.continuation.finish()
         await store.receive(\.attachmentPicker.uploaded) {
-            $0.attachmentPicker.entries[0].status = .uploaded("stored-proof")
-            $0.attachments = [NewRequestAttachment(id: id, name: draft.name, data: draft.data, storedID: "stored-proof")]
+            $0.attachmentPicker.entries[0].status = .uploaded(stored("stored-proof"))
+            $0.attachments = [NewRequestAttachment(id: id, name: draft.name, data: draft.data, stored: stored("stored-proof"))]
             $0.pendingSubmission = nil
             $0.isSubmitting = true
+            $0.commandID = UUID(0).uuidString.lowercased()
         }
         await store.receive(\.attachmentPicker.uploadNext)
         confirmation.continuation.yield(())
         confirmation.continuation.finish()
         await store.receive(\.submitFinished) {
             $0.isSubmitting = false
+            $0.commandID = nil
             $0.text = ""
             $0.attachments = []
             $0.attachmentPicker = AttachmentFeature.State()
             $0.successfulSubmissionCount = 1
         }
-        #expect(await sent.body?.attachments == ["stored-proof"])
+        #expect(await sent.body?.attachments.map(\.id) == ["stored-proof"])
         #expect(await sent.calls == 1)
         await store.finish()
     }
@@ -337,11 +359,12 @@ struct NewRequestFeatureTests {
         let receipt = AsyncStream<String>.makeStream()
         let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.attachmentUpload = AttachmentUploadClient(upload: { _ in
+            $0.uuid = .constant(UUID(0))
+            $0.attachmentUpload = AttachmentUploadClient(ids: { _ in
                 for await value in receipt.stream { return value }
                 throw CancellationError()
             })
-            $0.newWorkOperations = operations(create: { body in
+            $0.newWorkOperations = operations(create: { body, _ in
                 await sent.record(body)
                 return .confirmed
             })
@@ -384,8 +407,9 @@ struct NewRequestFeatureTests {
         let uploads = UploadAttempts()
         let sent = SentBody()
         let store = TestStore(initialState: initial) { NewRequestFeature() } withDependencies: {
-            $0.attachmentUpload = AttachmentUploadClient(upload: { _ in try await uploads.next() })
-            $0.newWorkOperations = operations(create: { body in
+            $0.uuid = .constant(UUID(0))
+            $0.attachmentUpload = AttachmentUploadClient(ids: { _ in try await uploads.next() })
+            $0.newWorkOperations = operations(create: { body, _ in
                 await sent.record(body)
                 return .confirmed
             })
@@ -409,12 +433,12 @@ struct NewRequestFeatureTests {
     private func operations(
         options: @escaping @Sendable (String?) async throws -> OptionsCatalog = { _ in throw SubmissionFailure.refused },
         upload: @escaping @Sendable (NewRequestAttachment) async throws -> String = { _ in "stored" },
-        create: @escaping @Sendable (NewRequestBody) async -> CreateRequestResult = { _ in .confirmed }
+        create: @escaping @Sendable (NewRequestBody, String) async -> CreateRequestResult = { _, _ in .confirmed }
     ) -> NewWorkOperations {
         NewWorkOperations(
             projects: { [] }, options: options,
             issues: { _ in try JSONDecoder().decode(IssueList.self, from: Data(#"{"issues":[]}"#.utf8)) },
-            captureSubmissionScope: { NewWorkSubmissionScope(upload: upload, isCurrent: { true }, create: create) }
+            captureSubmissionScope: { NewWorkSubmissionScope(upload: { stored(try await upload($0)) }, isCurrent: { true }, create: create) }
         )
     }
 }
@@ -427,7 +451,12 @@ private enum SubmissionFailure: Error, LocalizedError {
 private actor SentBody {
     private(set) var body: NewRequestBody?
     private(set) var calls = 0
-    func record(_ body: NewRequestBody) { self.body = body; calls += 1 }
+    private(set) var commands: [String] = []
+    func record(_ body: NewRequestBody, _ command: String = "") { self.body = body; calls += 1; commands.append(command) }
+}
+
+func stored(_ id: String) -> DomainV2.AttachmentRef {
+    .init(id: id, name: "proof.txt", contentDigest: String(repeating: "a", count: 64), contentReference: "files/" + id, bytes: 5)
 }
 
 enum PendingSendCancellation: Sendable { case edit, disappear, identity, remove }

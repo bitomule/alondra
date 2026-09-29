@@ -17,8 +17,8 @@ struct ServicePRMainAction: View {
     }
 
     var body: some View {
-        if let pr = store.pr {
-        switch pr.mainAction {
+        if let card = store.card {
+        switch card.mainAction {
         case .resolveConflicts:
             Button {
                 willSubmit()
@@ -30,22 +30,22 @@ struct ServicePRMainAction: View {
         case .merge(let methods, let blockedBy):
             Menu {
                 ForEach(methods, id: \.self) { method in
-                    Button(PullRequest.methodLabel(method)) { store.send(.chooseMergeMethod(method)) }
+                    Button(method.label) { store.send(.chooseMergeMethod(method)) }
                 }
             } label: {
                 title(Label(blockedBy ?? String(localized: "Merge…"), systemImage: blockedBy == nil ? "arrow.triangle.merge" : "square.stack.3d.up"))
             }
             .modifier(Chrome(placement: placement, tint: blockedBy == nil ? Palette.sage : Palette.slate))
             .disabled(blockedBy != nil)
-            .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { store.selectedMergeMethod != nil }, set: { if !$0 { store.send(.cancelMerge) } }), titleVisibility: .visible) {
+            .confirmationDialog("Merge PR #\(card.pullRequest.number)?", isPresented: Binding(get: { store.selectedMergeMethod != nil }, set: { if !$0 { store.send(.cancelMerge) } }), titleVisibility: .visible) {
                 if let method = store.selectedMergeMethod {
-                    Button("Merge (\(PullRequest.methodLabel(method)))") {
+                    Button("Merge (\(method.label))") {
                         willSubmit()
                         store.send(.confirmMerge)
                     }
                 }
             } message: {
-                Text(pr.summary)
+                Text(card.summary)
             }
         }
         }

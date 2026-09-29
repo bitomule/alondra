@@ -24,7 +24,7 @@ public final class MacWorkspaceOwner {
                   isDaemonRunning: { await LoopbackSession.isDaemonRunning() },
                   openLocal: {
                       try await CloudAppServices.local(LoopbackSession(identity: identity, deviceName: deviceName),
-                                                       identity: identity, storageDirectory: storageDirectory)
+                                                       identity: identity)
                   },
                   startRemote: { account.store.send(.appeared) })
     }
@@ -53,7 +53,6 @@ public final class MacWorkspaceOwner {
         while !Task.isCancelled, route != .local {
             if await isDaemonRunning(), let services = try? await openLocal() {
                 guard !Task.isCancelled else { await services.deactivate(); return }
-                await services.startRecovery()
                 localServices = services
                 route = .local
                 return

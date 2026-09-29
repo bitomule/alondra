@@ -1,0 +1,12 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+
+swift_library(
+    name = "AlondraDomainDependency",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraDomainDependency",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Domain:AlondraDomain",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)

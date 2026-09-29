@@ -6,22 +6,14 @@ import Testing
 
 private actor LostResponseTransport: RelayRequestTransport {
     private(set) var postCount = 0
-    private let journalFile: URL
-    private let expectedID: String
     private let response: EnvelopeV1?
 
-    init(journalFile: URL, expectedID: String, response: EnvelopeV1? = nil) {
-        self.journalFile = journalFile
-        self.expectedID = expectedID
+    init(response: EnvelopeV1? = nil) {
         self.response = response
     }
 
     func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt {
         postCount += 1
-        let bytes = try Data(contentsOf: journalFile)
-        let text = try #require(String(data: bytes, encoding: .utf8))
-        #expect(text.contains(expectedID), "The envelope must be on disk before POST")
-        #expect(!text.contains("private report"), "The journal must contain ciphertext only")
         throw URLError(.timedOut)
     }
 
@@ -112,84 +104,61 @@ private actor DelayedPostTransport: RelayRequestTransport {
         catch { return .failure(error) }
     }
 
-    @Test func lostResponseSurvivesRelaunchWithoutReposting() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("relay-outbox.json")
+    @Test func lostResponseIsReconciledByStatusWithoutReposting() async throws {
         let id = UUID().uuidString
         let sealed = try envelope(id)
-        let transport = LostResponseTransport(journalFile: file, expectedID: id, response: sealed)
-        let first = RelayOutbox(file: file, scope: scope, transport: transport)
+        let transport = LostResponseTransport(response: sealed)
+        let outbox = RelayOutbox(scope: scope, transport: transport)
 
-        guard case .uncertain = try await first.submitNew(sealed) else {
+        guard case .uncertain = try await outbox.submitNew(sealed) else {
             Issue.record("A lost POST response must be uncertain")
             return
         }
-        let relaunched = RelayOutbox(file: file, scope: scope, transport: transport)
-        #expect(try await relaunched.entry(requestID: id)?.phase == .uncertain)
+        #expect(try await outbox.entry(requestID: id)?.phase == .uncertain)
         await #expect(throws: RelayOutboxError.duplicateRequestID) {
-            try await relaunched.submitNew(sealed)
+            try await outbox.submitNew(sealed)
         }
         #expect(await transport.postCount == 1)
 
-        let differentAccount = RelayOutbox(file: file, scope: RelayOutboxScope(
-            relay: scope.relay, macID: scope.macID, deviceID: scope.deviceID,
-            credentialRevision: "account-session-2"), transport: transport)
-        await #expect(throws: RelayOutboxError.wrongScope) {
-            try await differentAccount.reconcile(requestID: id)
-        }
-        #expect(await transport.postCount == 1)
-
-        let receipt = try await relaunched.reconcile(requestID: id)
+        let receipt = try await outbox.reconcile(requestID: id)
         #expect(receipt?.status == "completed")
-        #expect(try await relaunched.entry(requestID: id)?.phase == .acknowledged)
-        #expect(try await relaunched.entry(requestID: id)?.lastResponse == sealed)
+        #expect(try await outbox.entry(requestID: id)?.phase == .acknowledged)
+        #expect(try await outbox.entry(requestID: id)?.lastResponse == sealed)
         #expect(await transport.postCount == 1)
 
-        try await relaunched.retireAppliedResponse(requestID: id, revision: 7,
-                                                  verifiedResponse: sealed)
-        let tombstone = try await relaunched.entry(requestID: id)
+        try await outbox.retireAppliedResponse(requestID: id, revision: 7, verifiedResponse: sealed)
+        let tombstone = try await outbox.entry(requestID: id)
         #expect(tombstone?.phase == .retired)
         #expect(tombstone?.envelope == nil)
         #expect(tombstone?.lastResponse == nil)
-        if try await relaunched.reconcile(requestID: id) != nil {
+        if try await outbox.reconcile(requestID: id) != nil {
             Issue.record("A retired response must not be presented for application again")
         }
         await #expect(throws: RelayOutboxError.duplicateRequestID) {
-            try await relaunched.submitNew(sealed)
+            try await outbox.submitNew(sealed)
         }
         #expect(await transport.postCount == 1)
     }
 
-    @Test func corruptJournalFailsClosedBeforePOST() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let file = directory.appendingPathComponent("relay-outbox.json")
-        try Data("not json".utf8).write(to: file)
-        let id = UUID().uuidString
-        let transport = LostResponseTransport(journalFile: file, expectedID: id)
-        let outbox = RelayOutbox(file: file, scope: scope, transport: transport)
-        await #expect(throws: RelayOutboxError.persistenceFailed) {
-            try await outbox.submitNew(envelope(id))
+    @Test func anEnvelopeForAnotherDeviceIsRefusedBeforePOST() async throws {
+        let transport = LostResponseTransport()
+        let other = RelayOutbox(scope: RelayOutboxScope(relay: scope.relay, macID: scope.macID, deviceID: "phone-2",
+                                                        credentialRevision: scope.credentialRevision), transport: transport)
+        await #expect(throws: RelayOutboxError.wrongScope) {
+            try await other.submitNew(envelope(UUID().uuidString))
         }
         #expect(await transport.postCount == 0)
     }
 
-    @Test func twoOutboxInstancesCannotPostSameRequest() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("relay-outbox.json")
+    @Test func concurrentSubmissionsOfOneRequestPostItOnce() async throws {
         let id = UUID().uuidString
         let sealed = try envelope(id)
-        let transport = LostResponseTransport(journalFile: file, expectedID: id)
-        let first = RelayOutbox(file: file, scope: scope, transport: transport)
-        let second = RelayOutbox(file: file, scope: scope, transport: transport)
+        let transport = LostResponseTransport()
+        let outbox = RelayOutbox(scope: scope, transport: transport)
 
-        async let firstResult = attempt(first, envelope: sealed)
-        async let secondResult = attempt(second, envelope: sealed)
+        async let firstResult = attempt(outbox, envelope: sealed)
+        async let secondResult = attempt(outbox, envelope: sealed)
         let outcomes = await [firstResult, secondResult]
-        #expect(outcomes.count == 2)
         #expect(outcomes.filter { if case .success(.uncertain) = $0 { true } else { false } }.count == 1)
         #expect(outcomes.filter {
             if case .failure(let error) = $0 { return error as? RelayOutboxError == .duplicateRequestID }
@@ -199,13 +168,10 @@ private actor DelayedPostTransport: RelayRequestTransport {
     }
 
     @Test func localRelayRejectionsNeverReserveAnID() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("relay-outbox.json")
         let id = UUID().uuidString
         let valid = try envelope(id)
-        let transport = LostResponseTransport(journalFile: file, expectedID: id)
-        let outbox = RelayOutbox(file: file, scope: scope, transport: transport)
+        let transport = LostResponseTransport()
+        let outbox = RelayOutbox(scope: scope, transport: transport)
 
         let wrongKind = EnvelopeV1(
             route: valid.route, sender: valid.sender, recipient: valid.recipient,
@@ -228,12 +194,9 @@ private actor DelayedPostTransport: RelayRequestTransport {
     }
 
     @Test func olderStatusCannotRollBackOrReturnStaleRevision() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("relay-outbox.json")
         let id = UUID().uuidString
         let transport = DelayedStatusTransport()
-        let outbox = RelayOutbox(file: file, scope: scope, transport: transport)
+        let outbox = RelayOutbox(scope: scope, transport: transport)
         guard case .uncertain = try await outbox.submitNew(envelope(id)) else {
             Issue.record("The lost POST response must remain uncertain")
             return
@@ -250,12 +213,9 @@ private actor DelayedPostTransport: RelayRequestTransport {
     }
 
     @Test func latePostTimeoutCannotDowngradeReconciledResult() async throws {
-        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let file = directory.appendingPathComponent("relay-outbox.json")
         let id = UUID().uuidString
         let transport = DelayedPostTransport()
-        let outbox = RelayOutbox(file: file, scope: scope, transport: transport)
+        let outbox = RelayOutbox(scope: scope, transport: transport)
         let sealed = try envelope(id)
         let posting = Task { try await outbox.submitNew(sealed) }
         await transport.waitForPost()

@@ -1,38 +1,46 @@
 import AlondraContracts
+import AlondraDomain
 import Foundation
 
-extension PullRequest {
-    public var stackedOn: String? {
-        belowNumber.map { String(localized: "On top of PR #\(String($0))", table: "AlondraShared", bundle: #bundle) }
-    }
-    public var mergeBlockedReason: String? {
-        guard let below = belowNumber.map(String.init) else { return nil }
-        if belowSetAside == true {
-            return String(localized: "PR #\(below) is still open on GitHub: merge or close it first", table: "AlondraShared", bundle: #bundle)
-        }
-        return String(localized: "Merge PR #\(below) first", table: "AlondraShared", bundle: #bundle)
-    }
+extension DomainV2.PullRequest {
+    /// "a/b #12 · main", the line under a PR's title.
     public var summary: String {
-        var parts = ["\(repo) #\(number)"]
-        if let base, let head { parts.append("\(base) ← \(head)") }
-        if let additions, let deletions, let changedFiles, changedFiles > 0 {
-            parts.append(String(localized: "+\(additions) −\(deletions) in \(changedFiles) files", table: "AlondraShared", bundle: #bundle))
-        }
-        return parts.joined(separator: " · ")
+        base.isEmpty ? "\(repository) #\(number)" : "\(repository) #\(number) · \(base)"
     }
-    public static func methodLabel(_ method: String) -> String {
-        switch method {
-        case "merge": String(localized: "Merge commit", table: "AlondraShared", bundle: #bundle)
-        case "squash": String(localized: "Squash", table: "AlondraShared", bundle: #bundle)
-        case "rebase": String(localized: "Rebase", table: "AlondraShared", bundle: #bundle)
-        default: method
-        }
+
+    /// Shown on a PR stacked on this one.
+    public var stackedOnLabel: String {
+        String(localized: "On top of PR #\(String(number))", table: "AlondraShared", bundle: #bundle)
     }
+
+    /// Why a PR stacked on this one cannot merge yet.
+    public var mergeFirstLabel: String {
+        String(localized: "Merge PR #\(String(number)) first", table: "AlondraShared", bundle: #bundle)
+    }
+
+    public var webURL: URL? { URL(string: "https://\(host)/\(repository)/pull/\(number)") }
+}
+
+extension DomainPullRequestCard {
     public enum MainAction: Equatable, Sendable {
         case resolveConflicts
-        case merge(methods: [String], blockedBy: String?)
+        case merge(methods: [DomainV2.MergeMethod], blockedBy: String?)
     }
+
     public var mainAction: MainAction {
-        hasConflicts ? .resolveConflicts : .merge(methods: methods, blockedBy: mergeBlockedReason)
+        hasConflicts ? .resolveConflicts : .merge(methods: pullRequest.allowedMethods, blockedBy: stackedOn?.mergeFirstLabel)
+    }
+
+    public var summary: String { pullRequest.summary }
+    public var webURL: URL? { pullRequest.webURL }
+}
+
+extension DomainV2.MergeMethod {
+    public var label: String {
+        switch self {
+        case .merge: String(localized: "Merge commit", table: "AlondraShared", bundle: #bundle)
+        case .squash: String(localized: "Squash", table: "AlondraShared", bundle: #bundle)
+        case .rebase: String(localized: "Rebase", table: "AlondraShared", bundle: #bundle)
+        }
     }
 }

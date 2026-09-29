@@ -28,7 +28,7 @@ de `apple/BUILD.bazel`, las raíces y las vistas actuales. Al conectar el módul
    `.rejected(mensaje)`, cambio
    de credencial a `.obsolete`. Reconciliar solo con `.commandReconciled(id)` del
    journal. Para `ask`, la tarjeta permanece en inbox; para `requestChanges`,
-   merge, conflictos y set aside, retirar solo cuando se confirme el servidor.
+   merge y conflictos, retirar solo cuando se confirme el servidor.
    `shouldDismiss` es una señal de presentación, no prueba de estado GitHub.
    El adaptador traduce una respuesta 502 posterior a un POST a
    `PRPostDispatchUncertain`; pasar `PRPostFailureClassifier.isUnknown` a

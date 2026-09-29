@@ -1,10 +1,8 @@
 import Foundation
 
-public struct ScheduledTaskList: Decodable, Sendable {
-    public let schedules: [ScheduledTask]
-}
-
-public struct ScheduledTask: Decodable, Identifiable, Equatable, Sendable {
+/// The schedule screens' value. It is built from the v2 Schedule projection; the server owns
+/// `next_run` and the last run.
+public struct ScheduledTask: Identifiable, Equatable, Sendable {
     public let id: String
     public let title: String
     public let text: String
@@ -21,14 +19,34 @@ public struct ScheduledTask: Decodable, Identifiable, Equatable, Sendable {
     public let nextRun: Int64?
     public let lastRun: Int64?
     public let lastRequest: String?
-    public let lastState: String?
-    public let lastNodes: [String]?
     public let lastError: String?
     public let status: String
     public let revision: Int
+
+    public init(_ schedule: DomainV2.Schedule) {
+        id = schedule.id.rawValue
+        title = schedule.title
+        text = schedule.text
+        project = schedule.project
+        options = schedule.options
+        disallowedTools = schedule.disallowedTools
+        frequency = schedule.frequency.rawValue
+        hour = Int(schedule.hour)
+        minute = Int(schedule.minute)
+        weekday = schedule.weekday.map(Int.init)
+        interval = schedule.interval.map(Int.init)
+        startAt = schedule.startAt
+        enabled = schedule.enabled
+        nextRun = schedule.nextRun
+        lastRun = schedule.lastRun
+        lastRequest = schedule.lastRequest?.rawValue
+        lastError = schedule.lastError
+        status = schedule.status.rawValue
+        revision = Int(schedule.revision)
+    }
 }
 
-public struct ScheduledTaskDraft: Encodable, Equatable, Sendable {
+public struct ScheduledTaskDraft: Equatable, Sendable {
     public var title: String
     public var text: String
     public var project: String?
@@ -42,12 +60,6 @@ public struct ScheduledTaskDraft: Encodable, Equatable, Sendable {
     public var startAt: Int64?
     public var enabled: Bool
     public var revision: Int
-
-    private enum CodingKeys: String, CodingKey {
-        case title, text, project, options, frequency, hour, minute, weekday, interval, enabled, revision
-        case disallowedTools = "disallowed_tools"
-        case startAt = "start_at"
-    }
 
     public init(_ task: ScheduledTask? = nil) {
         title = task?.title ?? ""
@@ -63,5 +75,18 @@ public struct ScheduledTaskDraft: Encodable, Equatable, Sendable {
         startAt = task?.startAt ?? Int64((Date.now.addingTimeInterval(3600).timeIntervalSince1970 * 1000).rounded())
         enabled = task?.enabled ?? true
         revision = task?.revision ?? 0
+    }
+}
+
+extension DomainV2.ScheduleDraft {
+    /// The same fields the editor always sent; the server validates them for the frequency.
+    public init?(_ draft: ScheduledTaskDraft) {
+        guard let frequency = DomainV2.ScheduleFrequency(rawValue: draft.frequency),
+              let hour = UInt8(exactly: draft.hour), let minute = UInt8(exactly: draft.minute) else { return nil }
+        self.init(title: draft.title, text: draft.text, project: draft.project, options: draft.options,
+                  disallowedTools: draft.disallowedTools.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
+                  frequency: frequency, hour: hour, minute: minute, weekday: draft.weekday.flatMap(UInt8.init(exactly:)),
+                  interval: draft.interval.flatMap(UInt32.init(exactly:)), startAt: draft.startAt,
+                  enabled: draft.enabled, revision: Int64(draft.revision))
     }
 }

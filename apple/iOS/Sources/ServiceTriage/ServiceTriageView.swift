@@ -85,12 +85,12 @@ struct ServiceTriageView: View {
 
     private var summary: String {
         let queue = store.triage.queue
-        let questions = queue.filter { if case .question = $0 { true } else { false } }.count
+        let questions = queue.filter { $0.kind == "question" || $0.kind == "action_request" }.count
         let reads = queue.count - questions
         var parts: [String] = []
         if questions > 0 { parts.append(String(localized: "\(questions) questions")) }
         if reads > 0 { parts.append(String(localized: "\(reads) to read")) }
-        let working = store.triage.workingNodes
+        let working = store.nodes.filter { $0.state == .working }.count
         parts.append(String(localized: "\(working) nodes working"))
         return parts.joined(separator: " · ")
     }
@@ -100,7 +100,7 @@ struct ServiceTriageView: View {
 private struct ServiceCardStack: View {
     let store: StoreOf<ServiceTriageFeature>
     let zoom: Namespace.ID
-    let onReview: (InboxItem) -> Void
+    let onReview: (DomainV2.InboxItem) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var drag: CGFloat { CGFloat(store.cardStack.drag) }
@@ -142,25 +142,17 @@ private struct ServiceCardStack: View {
         }
     }
 
-    private func card(_ item: InboxItem, isFront: Bool) -> ServiceTriageCard? {
+    private func card(_ item: DomainV2.InboxItem, isFront: Bool) -> ServiceTriageCard? {
         let cards: [StoreOf<TriageCardFeature>] = Array(store.scope(\.cards, action: \.cards))
         guard let child = cards.first(where: { $0.withState { $0.id } == item.id }) else { return nil }
-        let questions: [Question]
-        let reports: [Report]
-        if case .pullRequest(let pr) = item {
-            questions = store.triage.questionsByPullRequest[pr.id] ?? []
-            reports = store.triage.reportsByPullRequest[pr.id] ?? []
-        } else {
-            questions = []
-            reports = []
-        }
-        let task: WorkTask? = store.withState { $0.task(for: item) }
-        return ServiceTriageCard(store: child, node: store.nodes.first { $0.sessionId == item.sessionId }, task: task,
+        let context = store.withState { $0.context(for: item) }
+        return ServiceTriageCard(store: child, node: context.node, agent: context.agent, task: context.task,
+            date: context.date, mission: context.mission,
             isFront: isFront, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) },
-            onHide: { _ = store.send(.triage(.hide(item.id))) }, questions: questions, reports: reports)
+            onHide: { _ = store.send(.triage(.hide(item.id))) })
     }
 
-    private func transition(for item: InboxItem) -> AnyTransition {
+    private func transition(for item: DomainV2.InboxItem) -> AnyTransition {
         if reduceMotion { return .opacity }
         let removal: AnyTransition = store.withState { $0.isLeaving(item.id) } ? AnyTransition(FileAway()) : .opacity
         return .asymmetric(insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: removal)
@@ -189,7 +181,7 @@ private struct ServiceCardStack: View {
         }
     }
 
-    private func skip(_ item: InboxItem) {
+    private func skip(_ item: DomainV2.InboxItem) {
         store.send(.cardStack(.skipTapped(item.id)))
     }
 
@@ -400,41 +392,31 @@ struct ServiceQuestionView: View {
         Form {
             Section {
                 Text(store.question.title).font(.headline)
-                if let detail = store.question.readableDetail { Text(detail).textSelection(.enabled) }
-            }
-            ForEach(store.question.aboutReports) { report in
-                Section(report.title) { ServiceReportContext(report: report) }
+                if !store.question.body.isEmpty { Text(store.question.body).textSelection(.enabled) }
             }
             Section("Answer") {
-                ForEach(store.question.options, id: \.label) { option in
+                ForEach(store.question.options, id: \.id) { option in
                     Button {
-                        store.send(.optionSelected(option.label))
+                        store.send(.optionSelected(option.id))
                     } label: {
                         HStack {
-                            VStack(alignment: .leading) {
-                                Text(option.label)
-                                if let detail = option.description { Text(detail).font(.caption).foregroundStyle(.secondary) }
-                            }
+                            Text(option.displayLabel)
                             Spacer()
-                            if store.draft.selectedOption == option.label { Image(systemName: "checkmark") }
+                            if store.draft.selectedOption == option.id { Image(systemName: "checkmark") }
                         }
                     }
                 }
-                if !store.question.isTerminalMenu {
-                    TextField("Write your answer", text: Binding(get: { store.draft.text }, set: { _ = store.send(.textChanged($0)) }), axis: .vertical)
-                        .lineLimit(4...12)
-                }
+                TextField("Write your answer", text: Binding(get: { store.draft.text }, set: { _ = store.send(.textChanged($0)) }), axis: .vertical)
+                    .lineLimit(4...12)
                 Button(store.isSubmitting ? "Sending…" : "Send answer") { _ = store.send(.answerTapped) }
-                if !store.question.isTerminalMenu {
-                    Button("Ask for more context") { _ = store.send(.moreContextTapped) }
-                }
+                Button("Ask for more context") { _ = store.send(.moreContextTapped) }
             }.disabled(!store.attachmentPicker.canPrepareSubmission || store.pendingSubmission != nil || store.isSubmitting || store.needsReconciliation || store.completed)
             AttachmentPicker(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
                 .disabled(store.isSubmitting || store.needsReconciliation || store.completed)
             ServiceWorkNotice(notice: store.notice, conflict: store.conflict)
         }
         .onDisappear { store.send(.disappeared) }
-        .navigationTitle(store.question.isAction ? "Action" : "Question")
+        .navigationTitle(store.question.isActionRequest ? "Action" : "Question")
         .toolbar { ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } } }
     }
 }
@@ -447,18 +429,5 @@ private struct ServiceWorkNotice: View {
             if let conflict { Text(conflict).foregroundStyle(.orange) }
             if let notice { Text(notice).foregroundStyle(.red) }
         }
-    }
-}
-
-private struct ServiceReportContext: View {
-    let report: Report
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            if let body = report.body {
-                ForEach(MarkdownParser.segments(from: body)) { segment in
-                    MarkdownSegmentView(segment: segment)
-                }
-            }
-        }.textSelection(.enabled)
     }
 }

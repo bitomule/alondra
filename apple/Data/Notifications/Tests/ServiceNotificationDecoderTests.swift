@@ -16,7 +16,7 @@ final class ServiceNotificationDecoderTests: XCTestCase {
         let plaintext = try JSONSerialization.data(withJSONObject: [
             "push_binding": binding, "with_sound": false,
             "payload": ["aps": ["alert": ["title": "Question", "body": "Approve?"], "sound": "default"],
-                        "alondra": ["kind": "question", "id": 42]]
+                        "alondra": ["protocol_version": 2, "kind": "question", "item_id": "interaction:q-42", "interaction_id": "q-42", "data_epoch": "e", "expected_revision": 7]]
         ])
         let envelope = try EnvelopeV1.seal(route: "mac-1", sender: "mac-1", recipient: "client-1",
             requestID: "push-123", kind: "push", expiresAtMilliseconds: 2000, plaintext: plaintext,
@@ -25,18 +25,18 @@ final class ServiceNotificationDecoderTests: XCTestCase {
         let wire = try JSONSerialization.data(withJSONObject: ["alondra": [
             "envelope": wireEnvelope, "push_binding": binding, "kind": "report", "id": 999
         ]])
-        let decoded = try ServiceNotificationDecoder.decrypt(wire, context: context, nowMilliseconds: 1000)
+        let decoded = try ServiceNotificationDecoder.decrypt(wire, context: context)
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: decoded) as? [AnyHashable: Any])
-        XCTAssertEqual(NotificationPayload.BoundItem(userInfo: payload)?.item.inboxID, "q42")
+        XCTAssertEqual(NotificationPayload.BoundItem(userInfo: payload)?.item.inboxID, "interaction:q-42",
+                       "A push opened long after its envelope expired still names its item")
         XCTAssertNil((payload["aps"] as? [String: Any])?["sound"])
-        XCTAssertThrowsError(try ServiceNotificationDecoder.decrypt(wire, context: context, nowMilliseconds: 2001))
         let anotherDevice = NotificationDecryptionContext(macID: "mac-1", deviceID: "client-2", binding: binding,
             macSigningKey: signer.publicKey.rawRepresentation, agreementPrivateKey: recipient.rawRepresentation)
-        XCTAssertThrowsError(try ServiceNotificationDecoder.decrypt(wire, context: anotherDevice, nowMilliseconds: 1000))
+        XCTAssertThrowsError(try ServiceNotificationDecoder.decrypt(wire, context: anotherDevice))
         let anotherSigner = NotificationDecryptionContext(macID: "mac-1", deviceID: "client-1", binding: binding,
             macSigningKey: P256.Signing.PrivateKey().publicKey.rawRepresentation, agreementPrivateKey: recipient.rawRepresentation)
-        XCTAssertThrowsError(try ServiceNotificationDecoder.decrypt(wire, context: anotherSigner, nowMilliseconds: 1000))
+        XCTAssertThrowsError(try ServiceNotificationDecoder.decrypt(wire, context: anotherSigner))
         let plaintextOnly = try JSONSerialization.data(withJSONObject: ["alondra": ["kind": "question", "id": 42, "push_binding": binding]])
-        XCTAssertThrowsError(try ServiceNotificationDecoder.decrypt(plaintextOnly, context: context, nowMilliseconds: 1000))
+        XCTAssertThrowsError(try ServiceNotificationDecoder.decrypt(plaintextOnly, context: context))
     }
 }

@@ -133,7 +133,7 @@ struct ServiceSchedulesView: View {
             Divider()
             Button("Delete", systemImage: "trash", role: .destructive) { store.send(.deleteSchedule(task.id)) }
         }
-        .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)) || store.schedules.uncertainByTarget[.schedule(task.id)] != nil)
+        .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)))
     }
 
     private func detail(_ task: ScheduledTask) -> some View {
@@ -162,12 +162,13 @@ struct ServiceSchedulesView: View {
                     }
                     Divider()
                     Text(task.text).textSelection(.enabled)
+                    let run = store.presentation.lastRun(of: task)
                     if let last = task.lastRun {
                         Divider()
                         VStack(alignment: .leading, spacing: 4) {
                             Text(String(localized: "Last", table: "AlondraShared", bundle: SchedulePresentation.bundle))
                                 .font(.caption).foregroundStyle(.secondary)
-                            Text("\(Date(timeIntervalSince1970: Double(last) / 1000).formatted(date: .abbreviated, time: .shortened)) · \(SchedulePresentation.stateLabel(task.lastError == nil ? (task.lastState ?? task.status) : task.status))")
+                            Text("\(Date(timeIntervalSince1970: Double(last) / 1000).formatted(date: .abbreviated, time: .shortened)) · \(SchedulePresentation.stateLabel(task.lastError == nil ? (run.state ?? task.status) : task.status))")
                         }
                     }
                     if let lastError = task.lastError {
@@ -175,7 +176,7 @@ struct ServiceSchedulesView: View {
                             .foregroundStyle(.red)
                     }
                     if let request = task.lastRequest { Text(request).font(.caption.monospaced()).foregroundStyle(.secondary) }
-                    if let nodes = task.lastNodes, !nodes.isEmpty { Text(nodes.joined(separator: ", ")).font(.caption.monospaced()).foregroundStyle(.secondary) }
+                    if !run.agents.isEmpty { Text(run.agents.joined(separator: ", ")).font(.caption.monospaced()).foregroundStyle(.secondary) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(16)
@@ -187,7 +188,7 @@ struct ServiceSchedulesView: View {
                 Menu { taskActions(task) } label: { Label("More", systemImage: "ellipsis") }
                     .labelStyle(.iconOnly)
             }
-            .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)) || store.schedules.uncertainByTarget[.schedule(task.id)] != nil)
+            .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
         }

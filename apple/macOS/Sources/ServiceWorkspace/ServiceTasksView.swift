@@ -15,7 +15,7 @@ struct ServiceTasksView: View {
                 DisclosureGroup("Done", isExpanded: Binding(get: { store.board.showDone }, set: { store.send(.board(.showDone($0))) })) {
                     ServiceRequestSection(title: "Completed requests", trees: store.doneTrees) { store.send(.openTask($0)) }
                     Button("Archive completed tasks") { store.send(.board(.archiveTapped)) }
-                        .disabled(!store.board.canArchive || store.board.isArchiving || store.board.archiveOutcome?.uncertainID != nil)
+                        .disabled(!store.board.canArchive || store.board.isArchiving)
                     ServiceTaskOutcome(outcome: store.board.archiveOutcome)
                 }
                 DisclosureGroup("Archived", isExpanded: Binding(get: { store.board.showArchived }, set: { store.send(.board(.showArchived($0))) })) {
@@ -40,12 +40,12 @@ struct ServiceTasksView: View {
 private struct ServiceRequestSection: View {
     let title: LocalizedStringKey
     let trees: [RequestTree]
-    let open: (String) -> Void
+    let open: (DomainV2.TaskId) -> Void
     var body: some View {
         Section(title) {
             ForEach(trees) { tree in
                     VStack(alignment: .leading, spacing: 8) {
-                        Text(tree.request.title ?? tree.request.headline ?? "Request").font(.headline)
+                        Text(tree.request.headline ?? String(localized: "Request")).font(.headline)
                         ForEach(tree.rows, id: \.task.id) { row in
                             Button { open(row.task.id) } label: {
                                 HStack {
@@ -65,7 +65,7 @@ struct ServiceTaskOutcome: View {
     let outcome: TaskMutationOutcome?
     var body: some View {
         switch outcome {
-        case .unknown: Text("The response was lost. This action is blocked until its outcome is reconciled.").foregroundStyle(.orange)
+        case .unknown: Text("We couldn’t confirm the result. Try again; it won’t be applied twice.").foregroundStyle(.orange)
         case .rejected(let message): Text(message).foregroundStyle(.red)
         case .obsolete: Text("The connection changed. Open this task again.").foregroundStyle(.secondary)
         case .confirmed, nil: EmptyView()
@@ -76,7 +76,7 @@ struct ServiceTaskOutcome: View {
 struct ServiceTaskDetailView: View {
     @Bindable var store: StoreOf<TaskDetailFeature>
     let context: ServiceTaskContext
-    let openTask: (String) -> Void
+    let openTask: (DomainV2.TaskId) -> Void
     let focusInbox: (String) -> Void
     var body: some View {
         if let task = store.task {
@@ -106,7 +106,7 @@ struct ServiceTaskDetailView: View {
                     }
                 }
                 if let request = context.request {
-                    ServiceTaskRequestText(request: request, taskCount: context.requestTaskCount)
+                    ServiceTaskRequestText(request: request, createdAt: context.requestCreatedAt, taskCount: context.requestTaskCount)
                 }
                 if !context.pullRequests.isEmpty {
                     ServiceTaskSection(String(localized: "Pull requests in merge order")) {
@@ -114,9 +114,10 @@ struct ServiceTaskDetailView: View {
                             ForEach(Array(context.pullRequests.enumerated()), id: \.element.id) { index, pr in
                                 if index > 0 { Divider().padding(.horizontal, 12) }
                                 if let owner = context.pullRequestOwners[pr.id] {
-                                    ServiceTaskPullRequestRow(order: index + 1, pr: pr, owner: owner,
-                                        mine: owner.id == task.id, available: context.inboxIDs.contains("p\(pr.id)")) {
-                                            focusInbox(InboxItem.pullRequest(pr).id)
+                                    ServiceTaskPullRequestRow(order: index + 1, pr: pr, observation: context.observations[pr.id],
+                                        stackedOn: context.stackedOn[pr.id], owner: owner,
+                                        mine: owner.id == task.id, available: context.pullRequestItems[pr.id] != nil) {
+                                            if let item = context.pullRequestItems[pr.id] { focusInbox(item) }
                                         }
                                 }
                             }
@@ -137,7 +138,7 @@ struct ServiceTaskDetailView: View {
                         .padding(.horizontal, 12).padding(.vertical, 10)
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                 }
-                let reports = context.documents(in: store.detail)
+                let reports = context.documents
                 if !reports.isEmpty {
                     ServiceTaskSection(String(localized: "Documents")) {
                         VStack(spacing: 0) {
@@ -146,12 +147,12 @@ struct ServiceTaskDetailView: View {
                                 HStack(spacing: 10) {
                                     Image(systemName: "doc.text").foregroundStyle(.blue)
                                     VStack(alignment: .leading, spacing: 1) {
-                                        Text(report.title).fontWeight(.medium)
-                                        Text("\(report.kindLabel) · \(context.unreadReportIDs.contains(report.id) ? String(localized: "unread") : String(localized: "read")) · \(ago(report.createdAt)) ago").font(.caption).foregroundStyle(.secondary)
+                                        Text(report.document.title).fontWeight(.medium)
+                                        Text(context.documentItems[report.id] != nil ? String(localized: "unread") : String(localized: "read")).font(.caption).foregroundStyle(.secondary)
                                     }
                                     Spacer()
-                                    if context.unreadReportIDs.contains(report.id) {
-                                        Button("Read") { focusInbox("r\(report.id)") }.controlSize(.small)
+                                    if let item = context.documentItems[report.id] {
+                                        Button("Read") { focusInbox(item) }.controlSize(.small)
                                     }
                                 }.padding(.horizontal, 12).padding(.vertical, 8)
                             }
@@ -162,24 +163,24 @@ struct ServiceTaskDetailView: View {
                     Grid(alignment: .leading, horizontalSpacing: 14, verticalSpacing: 8) {
                         GridRow {
                             Text("PR handling").foregroundStyle(.secondary)
-                            Text(OptionSpec.prHandling(autoMerge: task.options?.mergesAlone ?? false))
+                            Text(OptionSpec.prHandling(autoMerge: !task.reviewPrs))
                         }
-                        if let effort = task.options?.effort {
+                        if let effort = context.effort {
                             GridRow { Text("Effort").foregroundStyle(.secondary); Text(effort.capitalizedFirst) }
                         }
                     }.frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 12).padding(.vertical, 10)
                         .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                 }
-                if let history = store.detail?.task.history, !history.isEmpty {
+                if let history = store.history?.history, !history.isEmpty {
                     ServiceTaskSection(String(localized: "History")) {
                         Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 10, verticalSpacing: 6) {
                             ForEach(Array(history.enumerated()), id: \.offset) { _, step in
                                 GridRow {
                                     Text(Date(timeIntervalSince1970: TimeInterval(step.at) / 1000), format: .dateTime.hour().minute())
                                         .font(.system(.caption, design: .monospaced)).foregroundStyle(.tertiary)
-                                    StatusDot(color: step.to.color)
-                                    (Text(step.to.label).fontWeight(.semibold) + Text(verbatim: " · \(step.summary)").foregroundStyle(.secondary))
+                                    StatusDot(color: step.state.color)
+                                    (Text(step.state.label).fontWeight(.semibold) + Text(verbatim: " · \(step.summary)").foregroundStyle(.secondary))
                                 }
                             }
                         }
@@ -190,10 +191,10 @@ struct ServiceTaskDetailView: View {
             .toolbar {
                 ToolbarItemGroup {
                     Button { store.send(.reopenTapped) } label: { Label("Reopen", systemImage: "arrow.clockwise") }
-                        .disabled(!task.state.isFinished || store.isActing || store.mutationOutcome?.uncertainID != nil)
+                        .disabled(!task.state.isFinished || store.isActing)
                         .help("Reopen a finished or cancelled task")
                     Button(role: .destructive) { store.send(.cancelTapped) } label: { Label("Cancel Task…", systemImage: "xmark.circle") }
-                        .disabled(task.state.isFinished || store.isActing || store.mutationOutcome?.uncertainID != nil)
+                        .disabled(task.state.isFinished || store.isActing)
                         .help("Its node stops working on it")
                 }
             }
@@ -206,7 +207,7 @@ struct ServiceTaskDetailView: View {
 }
 
 private struct ServiceTaskHeader: View {
-    let task: WorkTask
+    let task: DomainV2.Task
     let context: ServiceTaskContext
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -216,18 +217,18 @@ private struct ServiceTaskHeader: View {
             }.font(.callout).foregroundStyle(.secondary)
             Text(task.title).font(.title.weight(.semibold)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 8) {
-                StatusDot(color: task.color, size: 9)
+                TaskDot(task: task, size: 9)
                 Text(task.state.label.capitalizedFirst)
-                Text("· for \(ago(task.stateSince))").foregroundStyle(.secondary)
-                if let node = context.nodeName { Text("· \(node)").foregroundStyle(.secondary) }
+                if let since = context.stateSince { Text("· for \(ago(since))").foregroundStyle(.secondary) }
+                if let node = context.agentName { Text("· \(node)").foregroundStyle(.secondary) }
             }.font(.callout)
         }
     }
 }
 
 private struct ServiceTaskLinks: View {
-    let tasks: [WorkTask]
-    let open: (String) -> Void
+    let tasks: [DomainV2.Task]
+    let open: (DomainV2.TaskId) -> Void
     var body: some View {
         if tasks.isEmpty { Text("none").foregroundStyle(.secondary) }
         else {
@@ -235,7 +236,7 @@ private struct ServiceTaskLinks: View {
                 ForEach(tasks) { task in
                     Button { open(task.id) } label: {
                         HStack(spacing: 6) {
-                            StatusDot(color: task.color)
+                            TaskDot(task: task)
                             Text(task.title)
                             Text(verbatim: "· \(task.state.label)").foregroundStyle(.secondary)
                         }.contentShape(.rect)
@@ -247,16 +248,17 @@ private struct ServiceTaskLinks: View {
 }
 
 private struct ServiceTaskRequestText: View {
-    let request: WorkRequest
+    let request: DomainV2.Request
+    let createdAt: Int64?
     let taskCount: Int
 
     var body: some View {
-        if let text = request.text, !text.isEmpty {
+        if case let text = request.body, !text.isEmpty {
             ServiceTaskSection(String(localized: "Request")) {
                 VStack(alignment: .leading, spacing: 6) {
                     Text(text)
                         .textSelection(.enabled)
-                    Text(verbatim: "\(String(localized: "\(ago(request.createdAt)) ago")) · \(String(localized: "\(taskCount) tasks"))")
+                    Text(verbatim: [createdAt.map { String(localized: "\(ago($0)) ago") }, String(localized: "\(taskCount) tasks")].compactMap { $0 }.joined(separator: " · "))
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -271,8 +273,10 @@ private struct ServiceTaskRequestText: View {
 
 private struct ServiceTaskPullRequestRow: View {
     let order: Int
-    let pr: PullRequest
-    let owner: WorkTask
+    let pr: DomainV2.PullRequest
+    let observation: DomainV2.PullRequestRuntime?
+    let stackedOn: DomainV2.PullRequest?
+    let owner: DomainV2.Task
     let mine: Bool
     let available: Bool
     let open: () -> Void
@@ -288,7 +292,7 @@ private struct ServiceTaskPullRequestRow: View {
                 .foregroundStyle(.green)
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 6) {
-                    Text(verbatim: "#\(pr.number) \(pr.title)")
+                    Text(verbatim: "#\(pr.number) \(observation?.title ?? pr.repository)")
                         .fontWeight(.medium)
                     if mine {
                         Text("this task")
@@ -299,27 +303,29 @@ private struct ServiceTaskPullRequestRow: View {
                             .background(.blue.opacity(0.14), in: .capsule)
                     }
                 }
-                Text(verbatim: pr.stackedOn.map { "\($0) · \(pr.summary)" } ?? pr.summary)
+                Text(verbatim: stackedOn.map { "\($0.stackedOnLabel) · \(pr.summary)" } ?? pr.summary)
                     .font(.system(.caption, design: .monospaced))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            if let reason = pr.mergeBlockedReason {
+            if let reason = stackedOn?.mergeFirstLabel {
                 Text(reason)
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
             } else {
-                StatusDot(color: owner.color)
-                Text(verbatim: pr.progress(mergesAlone: owner.mergesAlone))
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
+                TaskDot(task: owner)
+                if let observation {
+                    Text(verbatim: observation.progress(number: pr.number, stackedOn: stackedOn?.number, mergesAlone: !owner.reviewPrs))
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             Button("Merge…", action: open)
                 .controlSize(.small)
-                .disabled(pr.mergeBlockedReason != nil || !available)
+                .disabled(stackedOn != nil || !available)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)

@@ -2,6 +2,12 @@ import AlondraAPIClient
 import CryptoKit
 import Foundation
 
+enum LoopbackDigest {
+    static func hex(_ data: Data) -> String {
+        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+    }
+}
+
 struct LoopbackUpload: Sendable {
     let name: String
     let bytes: Int
@@ -11,18 +17,13 @@ struct LoopbackUpload: Sendable {
 }
 
 struct LoopbackDownload: Sendable {
-    let version: String
+    let digest: String
     let data: Data
 }
 
-enum LoopbackDigest {
-    static func hex(_ data: Data) -> String {
-        SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
-    }
-}
-
-/// The app speaks the relay's chunked attachment protocol. Locally alondrad takes one raw upload
-/// and serves a whole file, so this session buffers the chunks and slices the file itself.
+/// The app speaks the relay's chunked attachment protocol. Locally alondrad takes one raw
+/// upload (`POST /v2/uploads?name=`) and serves a whole stored file (`GET /v2/files?path=`), so
+/// this session buffers the chunks and slices the file itself.
 extension LoopbackSession {
     private static let chunkBytes = 64 * 1024
     private static let maximumBytes = 20 * 1024 * 1024
@@ -69,14 +70,15 @@ extension LoopbackSession {
                 return Self.rejected(422, "attachment bytes do not match")
             }
             let name = upload.name.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? "attachment"
-            let result = try await exchange(method: "POST", target: "/v1/uploads?name=\(name)", body: upload.data,
+            let result = try await exchange(method: "POST", target: "/v2/uploads?name=\(name)", body: upload.data,
                                             operationID: request.operationID, contentType: "application/octet-stream")
-            if case let .completed(status, stored) = result, (200..<300).contains(status) {
-                upload.stored = stored
-                upload.data = Data()
-                uploads[finish.transferId] = upload
-            }
-            return result
+            guard case let .completed(status, reference) = result, (200..<300).contains(status) else { return result }
+            let attachment = try JSONSerialization.jsonObject(with: reference)
+            let stored = try JSONSerialization.data(withJSONObject: ["attachment": attachment])
+            upload.stored = stored
+            upload.data = Data()
+            uploads[finish.transferId] = upload
+            return .completed(status: 200, body: stored)
         case "cancel":
             struct Cancel: Decodable { let transferId: String }
             uploads[try decoder.decode(Cancel.self, from: body).transferId] = nil
@@ -86,32 +88,31 @@ extension LoopbackSession {
         }
     }
 
-    func downloadChunk(_ body: Data) async throws -> LoopbackOutcome {
-        struct Request: Decodable { let path: String; let offset: Int; let length: Int; let version: String? }
-        let request = try JSONDecoder().decode(Request.self, from: body)
-        guard request.offset >= 0, (1...Self.chunkBytes).contains(request.length) else {
+    /// `GET /v2/files/chunk?path=&offset=&version=`, answered from one whole-file read.
+    func fileChunk(_ target: String) async throws -> LoopbackOutcome {
+        let items = URLComponents(string: target)?.queryItems ?? []
+        guard let path = items.first(where: { $0.name == "path" })?.value, !path.isEmpty,
+              let offset = items.first(where: { $0.name == "offset" })?.value.flatMap(Int.init), offset >= 0 else {
             return Self.rejected(422, "invalid range")
         }
-        if downloads[request.path] == nil || request.offset == 0 {
-            let path = request.path.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? ""
-            let result = try await exchange(method: "GET", target: "/v1/file?path=\(path)", body: nil, operationID: nil)
-            guard case let .completed(status, data) = result else { return result }
-            guard (200..<300).contains(status) else { return result }
+        let version = items.first { $0.name == "version" }?.value
+        if downloads[path] == nil || offset == 0 {
+            let encoded = path.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? ""
+            let result = try await exchange(method: "GET", target: "/v2/files?path=\(encoded)", body: nil, operationID: nil)
+            guard case let .completed(status, data) = result, (200..<300).contains(status) else { return result }
             guard data.count <= Self.maximumBytes else { return Self.rejected(413, "file too large") }
-            downloads[request.path] = LoopbackDownload(version: LoopbackDigest.hex(data), data: data)
+            downloads[path] = LoopbackDownload(digest: LoopbackDigest.hex(data), data: data)
         }
-        let file = downloads[request.path]!
-        guard request.version == nil || request.version == file.version else {
-            return Self.rejected(409, "file changed while downloading")
-        }
-        guard request.offset <= file.data.count else { return Self.rejected(416, "offset past the end") }
-        let end = min(request.offset + request.length, file.data.count)
-        let slice = file.data.subdata(in: request.offset..<end)
-        if end == file.data.count { downloads[request.path] = nil }
+        let file = downloads[path]!
+        guard version == nil || version == file.digest else { return Self.rejected(409, "file changed while downloading") }
+        guard offset <= file.data.count else { return Self.rejected(416, "offset past the end") }
+        let end = min(offset + Self.chunkBytes, file.data.count)
+        let slice = file.data.subdata(in: offset..<end)
+        if end == file.data.count { downloads[path] = nil }
         let encoded = slice.base64EncodedString()
             .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
             .replacingOccurrences(of: "=", with: "")
-        return try Self.json(["version": file.version, "data": encoded, "offset": request.offset,
+        return try Self.json(["version": file.digest, "content_digest": file.digest, "data": encoded, "offset": offset,
                               "total": file.data.count, "next_offset": end, "eof": end == file.data.count])
     }
 
@@ -125,6 +126,6 @@ extension LoopbackSession {
     }
 
     private static func rejected(_ status: Int, _ message: String) -> LoopbackOutcome {
-        .completed(status: status, body: (try? JSONSerialization.data(withJSONObject: ["error": message])) ?? Data())
+        .completed(status: status, body: (try? JSONSerialization.data(withJSONObject: ["code": "invalid_input", "message": message])) ?? Data())
     }
 }

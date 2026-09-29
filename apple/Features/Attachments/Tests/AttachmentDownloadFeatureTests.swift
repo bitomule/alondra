@@ -15,7 +15,7 @@ struct AttachmentDownloadFeatureTests {
         state.generation = 2
         state.file = current
         let store = TestStore(initialState: state) { AttachmentDownloadFeature() } withDependencies: {
-            $0.attachmentDownload = AttachmentDownloadClient(download: { _, _, _ in current }, release: { await released.append($0) })
+            $0.attachmentDownload = AttachmentDownloadClient(download: { _, _ in current }, release: { await released.append($0) })
         }
         await store.send(.finished(.success(old), 1))
         await store.finish()
@@ -32,7 +32,7 @@ struct AttachmentDownloadFeatureTests {
         state.isLoading = true
         state.opensWhenReady = true
         let store = TestStore(initialState: state) { AttachmentDownloadFeature() } withDependencies: {
-            $0.attachmentDownload = AttachmentDownloadClient(download: { _, _, _ in file }, release: { await released.append($0) })
+            $0.attachmentDownload = AttachmentDownloadClient(download: { _, _ in file }, release: { await released.append($0) })
             $0.openURL = .init { url in
                 #expect(url == file.url)
                 for await _ in gate.stream { break }
@@ -58,7 +58,7 @@ struct AttachmentDownloadFeatureTests {
         var state = AttachmentDownloadFeature.State()
         state.file = file
         let store = TestStore(initialState: state) { AttachmentDownloadFeature() } withDependencies: {
-            $0.attachmentDownload = AttachmentDownloadClient(download: { _, _, _ in file }, release: { await released.append($0) })
+            $0.attachmentDownload = AttachmentDownloadClient(download: { _, _ in file }, release: { await released.append($0) })
         }
         await store.send(.export) { $0.exporting = true }
         await store.send(.disappeared) { $0.isVisible = false; $0.generation = 1 }

@@ -6,7 +6,9 @@ import SwiftUI
 
 struct ServiceAttachmentDocument: View {
     let name: String
-    let path: String
+    let anchor: String
+    /// A file the Mac can open; a document revision has none.
+    var attachment: DomainV2.AttachmentRef?
     let section: DocumentSection
     let store: StoreOf<DocumentReviewFeature>
     var focus: FocusState<DetailField?>.Binding
@@ -16,9 +18,11 @@ struct ServiceAttachmentDocument: View {
                 Image(systemName: "doc.text").foregroundStyle(.secondary)
                 Text(name).font(.callout.weight(.medium)).foregroundStyle(.secondary)
                 Spacer()
-                Button("Open") { store.send(.downloads(.open(path: path, name: name))) }
-                    .buttonStyle(.link).font(.callout).help("Open with the default app")
-                    .disabled(store.downloads.isLoading || store.downloads.isOpening)
+                if let attachment {
+                    Button("Open") { store.send(.downloads(.open(attachment))) }
+                        .buttonStyle(.link).font(.callout).help("Open with the default app")
+                        .disabled(store.downloads.isLoading || store.downloads.isOpening)
+                }
             }.padding(.horizontal, 10)
             Divider()
             if section.isLoading {
@@ -27,30 +31,24 @@ struct ServiceAttachmentDocument: View {
                 Label("Couldn’t read it: \(error)", systemImage: "exclamationmark.triangle")
                     .foregroundStyle(.secondary).padding(.horizontal, 10)
             } else {
-                ServiceReviewableDocument(text: section.text, anchorPrefix: path, store: store, focus: focus)
+                ServiceReviewableDocument(text: section.text, anchorPrefix: anchor, store: store, focus: focus)
             }
         }
     }
 }
 
 struct ServiceLinksRow: View {
-    let links: [LinkRef]
-    let attachments: [Attachment]
+    let attachments: [DomainV2.AttachmentRef]
     let store: StoreOf<AttachmentDownloadFeature>
     var body: some View {
-        if !links.isEmpty || !attachments.isEmpty {
+        if !attachments.isEmpty {
             VStack(alignment: .leading, spacing: 6) {
-                ForEach(links, id: \.self) { link in
-                    if let url = URL(string: link.url) {
-                        Link(destination: url) { Label(link.title ?? link.url, systemImage: "arrow.up.right.square").lineLimit(1) }.help(link.url)
-                    }
-                }
-                ForEach(attachments, id: \.self) { file in
+                ForEach(attachments, id: \.id) { file in
                     Button {
-                        if let path = file.storedPath { store.send(.open(path: path, name: file.name)) }
+                        store.send(.open(file))
                     } label: { Label(file.name, systemImage: "paperclip").lineLimit(1) }
-                        .buttonStyle(.link).help(file.storedPath ?? file.sourcePath)
-                        .disabled(file.storedPath == nil || store.isLoading || store.isOpening)
+                        .buttonStyle(.link).help(file.name)
+                        .disabled(store.isLoading || store.isOpening)
                 }
             }.font(.callout)
         }

@@ -123,70 +123,6 @@ public struct Node: Codable, Identifiable, Hashable, Sendable {
     }
 }
 
-public struct QuestionOption: Codable, Hashable, Sendable {
-    public let label: String
-    public let description: String?
-}
-
-public struct LinkRef: Codable, Hashable, Sendable {
-    public let url: String
-    public let title: String?
-}
-
-public struct Attachment: Codable, Hashable, Sendable {
-    public let name: String
-    public let sourcePath: String
-    public let storedPath: String?
-}
-
-public struct Question: Codable, Identifiable, Hashable, Sendable {
-    public let id: UInt64
-    public let sessionId: String
-    public let nodeName: String?
-    public let title: String
-    public let detail: String?
-    public let options: [QuestionOption]
-    public let links: [LinkRef]
-    public let attachments: [Attachment]
-    public let origin: String
-    /// `menu:<short>` identifies a terminal menu. Its answer accepts only an exact option.
-    public let toolUseId: String?
-    public let nodeContext: String?
-    public let status: String
-    public let askedAt: Int64
-    public let action: Bool?
-    public let steps: [String]?
-    public let mission: String?
-    /// A handoff for the orchestrator, not a decision for the user; the server already keeps
-    /// these out of `open_questions`, this is a defensive client-side guard.
-    public let toOrchestrator: Bool?
-    /// The open PR card this question belongs to; it is shown inside that card.
-    public let prId: UInt64?
-    /// The report this question is about; the server keeps it out of the inbox and it is shown
-    /// inside the question instead.
-    public let report: Report?
-    /// Every report the question takes in, oldest first: its task's unread reports outside its PR
-    /// card and its review cards. An older alondrad sends only `report`.
-    public let reports: [Report]?
-    /// The task this question blocks.
-    public let task: String?
-
-    public var aboutReports: [Report] { reports ?? report.map { [$0] } ?? [] }
-
-    /// Something to do outside Alondra: answered with "Done" or with why it cannot be done.
-    public var isAction: Bool { action == true }
-
-    public var isTerminalMenu: Bool { toolUseId?.hasPrefix("menu:") == true }
-
-    /// The steps numbered ahead of the detail, so every client reads an action the same way.
-    public var readableDetail: String? {
-        let numbered = (steps ?? []).enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
-        let parts = [numbered, detail ?? ""].filter { !$0.isEmpty }
-        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
-    }
-
-}
-
 public struct Machine: Codable, Hashable, Sendable {
     public let memoryTotal: UInt64
     public let memoryAvailable: UInt64
@@ -196,43 +132,6 @@ public struct Machine: Codable, Hashable, Sendable {
     public let cpuUsage: Double?
     public let diskAvailable: UInt64
     public let unreliable: Bool
-}
-
-public struct Report: Codable, Identifiable, Hashable, Sendable {
-    public let id: UInt64
-    public let sessionId: String
-    public let nodeName: String?
-    public let title: String
-    public let body: String?
-    public let links: [LinkRef]
-    public let attachments: [Attachment]
-    public let kind: String
-    public let createdAt: Int64
-    public let mission: String?
-    /// The server's report gate thought it asks for something; it is delivered anyway, marked.
-    public let looksLikeQuestion: Bool?
-    /// A handoff for the orchestrator, not a result for the user; the server already keeps
-    /// these out of `news`, this is a defensive client-side guard.
-    public let toOrchestrator: Bool?
-    /// The open PR card this report is about; it is shown inside that card.
-    public let prId: UInt64?
-    /// The other unread reports of its task that no question carries, oldest first; this card
-    /// carries them and reading it reads them.
-    public let earlier: [Report]?
-    /// The task this report belongs to.
-    public let task: String?
-
-    public var seemsToAsk: Bool { looksLikeQuestion == true }
-
-}
-
-public struct SentMessage: Codable, Identifiable, Hashable, Sendable {
-    public let id: UInt64
-    public let from: String
-    public let text: String
-    public let createdAt: Int64
-    public let handedAt: Int64?
-    public let deliveredAt: Int64?
 }
 
 public struct Usage: Codable, Hashable, Sendable {
@@ -247,88 +146,7 @@ public struct Usage: Codable, Hashable, Sendable {
 
 }
 
-public struct Overview: Codable, Sendable {
-    public let tick: UInt64
-    public let nodes: [Node]
-    public let openQuestions: [Question]
-    public let news: [Report]
-    public let orchestratorMessages: [SentMessage]
-    public let orchestrator: OrchestratorRuntime?
-    public let machine: Machine
-    public let usage: Usage?
-    public let prs: [PullRequest]?
-    public let user: String?
-    /// The newest reports, read or not; a task's documents are looked up here.
-    public let reports: [Report]?
-    public let requests: [WorkRequest]?
-    public let tasks: [WorkTask]?
-}
-
-public enum InboxItem: Identifiable, Hashable, Sendable {
-    case question(Question)
-    case report(Report)
-    case pullRequest(PullRequest)
-
-    public var id: String {
-        switch self {
-        case .question(let q): "q\(q.id)"
-        case .report(let r): "r\(r.id)"
-        case .pullRequest(let p): "p\(p.id)"
-        }
-    }
-
-    public var isPullRequest: Bool {
-        if case .pullRequest = self { true } else { false }
-    }
-
-    public var date: Int64 {
-        switch self {
-        case .question(let q): q.askedAt
-        case .report(let r): r.createdAt
-        case .pullRequest(let p): p.openedAt
-        }
-    }
-
-    public var sessionId: String {
-        switch self {
-        case .question(let q): q.sessionId
-        case .report(let r): r.sessionId
-        case .pullRequest(let p): p.sessionId
-        }
-    }
-}
-
 public struct SearchResult: Codable, Sendable {
     public let via: String
     public let sessions: [String]
-}
-
-extension Attachment {
-    public var isText: Bool {
-        guard storedPath != nil else { return false }
-        let ext = (name as NSString).pathExtension.lowercased()
-        return ["md", "markdown", "txt", "text", ""].contains(ext)
-    }
-}
-
-extension Question {
-    public var isPlan: Bool { origin == "plan" }
-}
-
-extension InboxItem {
-    public var title: String {
-        switch self {
-        case .question(let q): q.title
-        case .report(let r): r.title
-        case .pullRequest(let p): p.title
-        }
-    }
-
-    public var nodeName: String? {
-        switch self {
-        case .question(let q): q.nodeName
-        case .report(let r): r.nodeName
-        case .pullRequest(let p): p.nodeName
-        }
-    }
 }

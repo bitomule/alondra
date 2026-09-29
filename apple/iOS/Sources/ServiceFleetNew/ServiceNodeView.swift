@@ -8,7 +8,7 @@ import SwiftUI
 struct ServiceNodeView: View {
     let store: StoreOf<NodeDetailFeature>
     let presentation: ServiceTaskPresentation
-    let openTask: (String) -> Void
+    let openTask: (DomainV2.TaskId) -> Void
     let focusInbox: (String) -> Void
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
@@ -105,7 +105,7 @@ struct ServiceNodeView: View {
                 if !tasks.isEmpty {
                     section(String(localized: "Tasks"), symbol: "checklist") {
                         VStack(alignment: .leading, spacing: 12) {
-                            ForEach(tasks) { task in
+                            ForEach(tasks, id: \.id) { task in
                                 Button { openTask(task.id) } label: {
                                     HStack(spacing: 10) {
                                         Glyph(task: task, size: .small)
@@ -138,7 +138,7 @@ struct ServiceNodeView: View {
                     section(String(localized: "Right now"), symbol: "wrench.and.screwdriver") {
                         VStack(alignment: .leading, spacing: 12) {
                             ForEach(Array(threads.enumerated()), id: \.offset) { _, thread in
-                                ThreadLine(activity: thread, task: thread.task.flatMap(fleet.board.task))
+                                ThreadLine(activity: thread, task: thread.task.flatMap { fleet.board.task(DomainV2.TaskId(rawValue: $0)) })
                             }
                         }
                     }
@@ -160,11 +160,11 @@ struct ServiceNodeView: View {
                     }
                 }
 
-                let pending = fleet.pending(for: session)
+                let pending = fleet.pending(for: DomainV2.AgentId(rawValue: session))
                 if !pending.isEmpty {
                     section(String(localized: "Waiting for You"), symbol: "tray.full") {
                         VStack(alignment: .leading, spacing: 8) {
-                            ForEach(pending) { item in
+                            ForEach(pending, id: \.id) { item in
                                 Button { focusInbox(item.id) } label: {
                                     HStack(spacing: 10) {
                                         KindBadge(kind: Kind(item))
@@ -264,7 +264,7 @@ struct ServiceNodeView: View {
         }
     }
 
-    private func taskLine(_ task: WorkTask) -> String {
+    private func taskLine(_ task: DomainV2.Task) -> String {
         guard let request = fleet.request(of: task) else { return task.state.label }
         return "\(task.state.label) · \(String(localized: "from “\(fleet.title(of: request))”"))"
     }
@@ -292,7 +292,7 @@ struct ServiceNodeView: View {
     private func composer(_ node: Node) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             ServiceAttachmentStrip(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                .disabled(store.isSendInFlight || store.sendOutcome?.uncertainID != nil)
+                .disabled(store.isSendInFlight || store.sendOutcome == .unknown)
             ServiceNodeOutcome(outcome: store.sendOutcome)
             if case .unknown = store.closeOutcome {
                 ServiceNodeOutcome(outcome: store.closeOutcome)
@@ -307,7 +307,7 @@ struct ServiceNodeView: View {
         HStack(alignment: .bottom, spacing: 10) {
             HStack(alignment: .bottom, spacing: 4) {
                 ServiceAttachButton(store: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-                    .disabled(store.isSendInFlight || store.sendOutcome?.uncertainID != nil)
+                    .disabled(store.isSendInFlight || store.sendOutcome == .unknown)
                     .padding(.leading, 6)
                     .padding(.bottom, 4)
                 TextField("Write to \(node.displayName)…", text: Binding(get: { store.message }, set: { store.send(.messageChanged($0)) }), axis: .vertical)
@@ -338,7 +338,7 @@ struct ServiceNodeView: View {
 /// One thread of a node: the main one or a subagent, with the task it works on.
 private struct ThreadLine: View {
     let activity: NodeActivity
-    let task: WorkTask?
+    let task: DomainV2.Task?
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
