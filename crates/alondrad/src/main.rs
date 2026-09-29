@@ -19,6 +19,7 @@ mod domain_api;
 mod domain_reads;
 mod domain_schedule_api;
 mod domain_bootstrap;
+mod v2_client_routes;
 mod classify;
 mod http;
 mod hook_socket;
@@ -400,9 +401,10 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let state = domain_bootstrap::V2Only::open(&config.home, expected_epoch)?;
     let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?
-        .map(|service| Arc::new(service.with_domain(state.domain())));
+        .map(|service| Arc::new(service.with_domain(state.domain()).with_client(state.client())));
     let domain = state.domain();
     let gauges = state.gauges();
+    let client = state.client();
     let push = Arc::new(push::Push::open(&config.home)?);
     let addr = SocketAddr::new(config.listen, config.port);
     let listener = tokio::net::TcpListener::bind(addr).await.with_context(|| format!("cannot listen on {addr}"))?;
@@ -419,6 +421,7 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone(), config.home.clone()));
     let github = tokio::spawn(domain_github::run(domain, Arc::new(domain_github::GhCli::new())));
     tokio::spawn(machine::run_v2(gauges));
+    tokio::spawn(client.run(Arc::new(v2_client_routes::GhView)));
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();

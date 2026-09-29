@@ -111,6 +111,12 @@ impl Snapshot {
             state,
         }
     }
+    pub(crate) fn state(&self) -> &DomainState {
+        &self.state
+    }
+    pub(crate) fn inbox_ids(&self) -> Vec<String> {
+        self.inbox_by_id.keys().cloned().collect()
+    }
     pub(crate) fn section_tokens(&self) -> BTreeMap<String, String> {
         self.sections.iter().map(|(k, v)| (k.clone(), v.revision.clone())).collect()
     }

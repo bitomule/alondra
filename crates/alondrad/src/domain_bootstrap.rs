@@ -22,6 +22,7 @@ pub(crate) struct V2Only {
     gauges: crate::machine::Gauges,
     /// The one approval list the guard verifies against and the pairing routes extend.
     auth: Arc<crate::auth::Auth>,
+    client: Arc<crate::v2_client_routes::Client>,
 }
 
 impl V2Only {
@@ -40,15 +41,17 @@ impl V2Only {
             "committed domain database must be a regular file"
         );
         let domain = Arc::new(DomainRuntime::open(home)?);
+        let gauges = crate::machine::Gauges::default();
         ensure!(
             domain.state()?.data_epoch.0 == expected_epoch,
             "cutover epoch does not match domain database"
         );
         Ok(Arc::new(Self {
-            domain,
             home: home.to_owned(),
             observer,
-            gauges: Default::default(),
+            client: crate::v2_client_routes::Client::open(domain.clone(), home, gauges.clone()),
+            domain,
+            gauges,
             auth: Arc::new(crate::auth::Auth::open(home)?),
         }))
     }
@@ -63,6 +66,10 @@ impl V2Only {
 
     pub(crate) fn gauges(&self) -> crate::machine::Gauges {
         self.gauges.clone()
+    }
+
+    pub(crate) fn client(&self) -> Arc<crate::v2_client_routes::Client> {
+        self.client.clone()
     }
 }
 
@@ -82,6 +89,7 @@ impl crate::domain_api::DomainHost for V2Only {
 }
 
 pub(crate) fn router(state: Arc<V2Only>) -> Router {
+    let client = state.client();
     Router::new()
         .route("/v2/daemon", get(daemon))
         .route("/v2/pairing", post(new_pairing))
@@ -92,6 +100,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/files", get(file))
         .merge(crate::domain_api::routes())
         .with_state(state)
+        .merge(crate::v2_client_routes::router(client))
 }
 
 fn forbidden(message: &str) -> Response {
@@ -103,7 +112,7 @@ fn local_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
 }
 
 /// The paired device the middleware verified, while its approval persists.
-fn signed_device(home: &Path, signed: &Option<Extension<Signed>>) -> Option<Signed> {
+pub(crate) fn signed_device(home: &Path, signed: &Option<Extension<Signed>>) -> Option<Signed> {
     let Extension(signed) = signed.as_ref()?;
     let auth = crate::auth::Auth::open(home).ok()?;
     auth.list().iter().any(|entry| entry.id == signed.device_id && entry.public_key == signed.public_key)

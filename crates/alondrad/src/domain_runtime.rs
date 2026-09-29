@@ -14,6 +14,7 @@ pub struct DomainRuntime {
     authority: Mutex<Authority>,
     changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
+    pub(crate) live: crate::v2_client_routes::Live,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -39,6 +40,7 @@ impl DomainRuntime {
             authority: Mutex::new(authority),
             changed,
             reads: Default::default(),
+            live: Default::default(),
         })
     }
     pub fn projection(&self) -> Result<DomainProjection> {
