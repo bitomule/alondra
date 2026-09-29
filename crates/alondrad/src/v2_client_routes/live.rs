@@ -34,6 +34,14 @@ impl Live {
         self.presence.lock().expect("presence poisoned").insert(client.to_owned(), now_millis());
     }
 
+    pub(crate) fn apply(&self, event: &Event) {
+        self.view.lock().expect("live sessions poisoned").apply(self.next(), now_millis(), event);
+    }
+
+    pub(crate) fn node(&self, session_id: &str) -> Option<Node> {
+        self.view.lock().expect("live sessions poisoned").nodes.get(session_id).cloned()
+    }
+
     pub(crate) fn nodes(&self) -> Vec<Node> {
         self.view.lock().expect("live sessions poisoned").nodes.values().cloned().collect()
     }

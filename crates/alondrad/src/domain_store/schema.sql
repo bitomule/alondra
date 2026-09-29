@@ -66,6 +66,18 @@ CREATE TABLE delivery_attempts(id INTEGER PRIMARY KEY,message_id INTEGER NOT NUL
 CREATE TABLE domain_outbox(message_id INTEGER PRIMARY KEY REFERENCES domain_messages(id),state TEXT NOT NULL CHECK(state IN('pending','dispatching','uncertain','handed','retryable','discarded')));
 -- A legacy Store::open fails while creating its events index, before replay/writes.
 CREATE VIEW events AS SELECT revision AS seq,0 AS at,'domain_v2' AS kind,NULL AS session,command AS body FROM command_audit;
+CREATE TABLE user_messages(
+ id TEXT PRIMARY KEY CHECK(length(id)>0),
+ recipient TEXT NOT NULL CHECK(json_valid(recipient) AND json_type(recipient)='object'),
+ kind TEXT NOT NULL CHECK(kind IN('message','reply','more_context','pr_changes','pr_question')),
+ body TEXT NOT NULL,
+ attachments TEXT NOT NULL CHECK(json_valid(attachments) AND json_type(attachments)='array'),
+ interaction_id TEXT REFERENCES interactions(id),
+ pr_id TEXT REFERENCES pull_requests(id),
+ at_revision INTEGER NOT NULL CHECK(at_revision BETWEEN 0 AND 9007199254740991)
+);
+CREATE TRIGGER immutable_user_message BEFORE UPDATE ON user_messages BEGIN SELECT RAISE(ABORT,'user message is immutable'); END;
+CREATE TRIGGER retained_user_message BEFORE DELETE ON user_messages BEGIN SELECT RAISE(ABORT,'user message is retained'); END;
 CREATE TABLE interaction_attachments(
  interaction_id TEXT NOT NULL REFERENCES interactions(id),kind TEXT NOT NULL CHECK(kind IN('interaction','answer','feedback')),
  feedback_ordinal INTEGER,ordinal INTEGER NOT NULL CHECK(ordinal>=0),id TEXT NOT NULL,name TEXT NOT NULL,content_digest TEXT NOT NULL,content_reference TEXT NOT NULL,bytes INTEGER NOT NULL CHECK(bytes BETWEEN 0 AND 67108864),

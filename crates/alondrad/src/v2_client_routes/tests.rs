@@ -13,7 +13,7 @@ use std::net::SocketAddr;
 
 pub(super) struct Fixture {
     pub home: PathBuf,
-    base: String,
+    pub base: String,
     http: reqwest::Client,
     key: SigningKey,
     device_id: String,
@@ -317,4 +317,281 @@ async fn unknown_v2_routes_are_a_bare_404_and_reads_are_named_exactly() {
         "/v2/agents/search?q=", "/v2/agents/search?q=a&q=b", "/v2/agents/search?q=a&x=1", "/v2/runtime/", "/v2/agents/a/activity?x=1"] {
         assert!(!approved_read_path(path), "{path}");
     }
+}
+
+async fn refusal(fixture: &Fixture, path: &str, body: Value) -> (StatusCode, Value) {
+    fixture.send("POST", path, &body).await
+}
+
+fn seed_information(fixture: &Fixture) {
+    fixture.agent("agent-a", "info-1", Command::PublishInformation {
+        attachments: vec![], interaction_id: "info-1".into(),
+        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(),
+    });
+}
+
+fn outbox_for(fixture: &Fixture, agent: Option<&str>) -> Vec<crate::domain_store::OutboxMessage> {
+    fixture.domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        .filter(|message| message.agent_id.as_deref() == agent && message.recipient_kind != "user")
+        .collect()
+}
+
+#[tokio::test]
+async fn a_message_to_an_agent_is_one_command_with_its_read_mark_and_outbox_row() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    seed_information(&fixture);
+    let expected = fixture_json("requests.json");
+    let request = &expected["message"];
+    let path = request["path"].as_str().unwrap();
+
+    let (status, answer) = fixture.send("POST", path, &request["body"]).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_covers(&json!({"message_id": 0}), &answer, "message");
+    assert!(answer.get("delivery_state").is_none(), "nothing has been handed over yet, so no state is claimed: {answer}");
+    let queued = outbox_for(&fixture, Some("agent-a"));
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].id, answer["message_id"].as_i64().unwrap());
+    assert!(queued[0].message.starts_with("The user requests changes on https://github.com/me/app/pull/7:\n\nRename it"), "{}", queued[0].message);
+    assert!(queued[0].message.contains("- shot.png: files/domain-v2/x"), "{}", queued[0].message);
+    assert_eq!(queued[0].task_id.as_deref(), Some("task-1"));
+
+    let unread = fixture.domain.projection().unwrap().counts.unread_information;
+    let (status, _) = fixture.send("POST", "/v2/agents/agent-a/messages",
+        &json!({"text": "Thanks", "attachments": [], "kind": "reply", "mark_read": true, "interaction_id": "info-1"})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.domain.projection().unwrap().counts.unread_information, unread - 1, "the reply marked the information read in the same command");
+    assert_eq!(outbox_for(&fixture, Some("agent-a")).len(), 2);
+
+    let (status, _) = fixture.send("POST", "/v2/agents/agent-a/messages", &json!({"text": "Just so you know", "attachments": []})).await;
+    assert_eq!(status, StatusCode::OK, "a plain message carries no kind");
+    let (status, _) = fixture.send("POST", "/v2/agents/agent-a/messages",
+        &json!({"text": "", "attachments": [], "kind": "more_context", "mark_read": false, "interaction_id": "info-1"})).await;
+    assert_eq!(status, StatusCode::OK, "more context needs no words");
+    assert_eq!(fixture.domain.state().unwrap().messages.len(), 4);
+
+    let refused = |body: Value, path: &'static str| refusal(&fixture, path, body);
+    let (status, error) = refused(json!({"text": "hi"}), "/v2/agents/nobody/messages").await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+    let (status, error) = refused(json!({"text": "hi", "kind": "pr_changes"}), "/v2/agents/agent-a/messages").await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")), "a PR message names its PR");
+    let (status, error) = refused(json!({"text": "hi", "kind": "pr_changes", "pr_id": "pr-1"}), "/v2/agents/agent-b/messages").await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::FORBIDDEN, Some("not_assigned")), "another agent's PR is not its business");
+    let (status, error) = refused(json!({"text": "hi", "unknown": 1}), "/v2/agents/agent-a/messages").await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
+    let (status, _) = refused(json!({"text": "  "}), "/v2/agents/agent-a/messages").await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(fixture.domain.state().unwrap().messages.len(), 4, "a refusal writes nothing");
+    let unsigned = reqwest::Client::new().post(format!("{}/v2/agents/agent-a/messages", fixture.base)).json(&json!({"text": "hi"})).send().await.unwrap();
+    assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
+}
+
+#[tokio::test]
+async fn a_message_to_the_orchestrator_is_plain_and_waits_in_its_outbox() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let (status, answer) = fixture.send("POST", "/v2/orchestrator/messages", &json!({"text": "Plan the week", "attachments": []})).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    let queued = outbox_for(&fixture, None);
+    assert_eq!((queued.len(), queued[0].recipient_kind.as_str(), queued[0].message.as_str()), (1, "orchestrator", "Plan the week"));
+    assert_eq!(queued[0].id, answer["message_id"].as_i64().unwrap());
+    let (status, error) = fixture.send("POST", "/v2/orchestrator/messages", &json!({"text": "why", "kind": "more_context", "interaction_id": "info-1"})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
+}
+
+#[tokio::test]
+async fn a_message_sent_again_over_the_same_transport_request_is_the_same_message() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let body = json!({"text": "Once", "attachments": []});
+    let digest = [7u8; 32];
+    let send = || fixture.client.send_message("device:phone", Some("agent-a"), &body, Some(("phone", "request-1", &digest)), &|| Ok(())).unwrap();
+    let first = send();
+    let id = first.body["message_id"].as_i64().unwrap();
+    {
+        let mut store = fixture.domain.store.lock().unwrap();
+        let claim = store.claim_message(id).unwrap().unwrap();
+        assert!(store.finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap());
+    }
+    let again = send();
+    assert_eq!(again.body["message_id"], first.body["message_id"]);
+    assert_eq!(again.body["delivery_state"], "handed", "the retry learns what became of the first send");
+    assert_eq!(fixture.domain.state().unwrap().messages.len(), 1, "a retry never writes a second message");
+    let revoked = fixture.client.send_message("device:phone", Some("agent-a"), &body, Some(("phone", "request-2", &digest)), &|| Err(anyhow::anyhow!("revoked"))).unwrap();
+    assert_eq!(revoked.status, StatusCode::FORBIDDEN, "a revoked device sends nothing");
+    assert_eq!(fixture.domain.state().unwrap().messages.len(), 1);
+}
+
+struct FakeSessions {
+    listed: std::sync::Mutex<Vec<String>>,
+    leftovers: Option<String>,
+    calls: std::sync::Mutex<Vec<Vec<String>>>,
+    stuck: bool,
+}
+
+impl FakeSessions {
+    fn listing(ids: &[&str]) -> Arc<Self> {
+        Arc::new(Self { listed: std::sync::Mutex::new(ids.iter().map(|id| id.to_string()).collect()), leftovers: None,
+            calls: Default::default(), stuck: false })
+    }
+}
+
+impl Sessions for FakeSessions {
+    fn claude<'a>(&'a self, args: Vec<String>) -> close::Answer<'a, Result<String, String>> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(args.clone());
+            match args[0].as_str() {
+                "agents" => Ok(json!(self.listed.lock().unwrap().iter().map(|id| json!({"id": id})).collect::<Vec<_>>()).to_string()),
+                "rm" if self.stuck => Ok(format!("removed {}", args[1])),
+                "rm" => {
+                    self.listed.lock().unwrap().retain(|id| id != &args[1]);
+                    Ok(format!("removed {}", args[1]))
+                }
+                _ => Err("unexpected".into()),
+            }
+        })
+    }
+
+    fn leftovers<'a>(&'a self, _: &'a str) -> close::Answer<'a, Option<String>> {
+        Box::pin(async move { self.leftovers.clone() })
+    }
+}
+
+#[tokio::test]
+async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fleet() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
+    fixture.command(Actor::System, "connect-a", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
+    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    let sessions = FakeSessions::listing(&[&short]);
+    fixture.client.use_sessions(sessions.clone());
+    let expected = fixture_json("requests.json");
+    let request = &expected["close"];
+    let bearer = fixture.domain.bind_agent("agent-a").unwrap().expose_for_child_environment().to_owned();
+
+    let (status, answer) = fixture.send("POST", request["path"].as_str().unwrap(), &request["body"]).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_covers(&request["response"], &answer, "close");
+    assert_eq!(answer["interactive"], false);
+    let calls = sessions.calls.lock().unwrap().clone();
+    assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
+    assert!(!fixture.domain.state().unwrap().agents[&"agent-a".into()].connected, "the domain sees the session gone");
+    assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
+    let runtime = fixture.get_json("/v2/runtime").await;
+    assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
+}
+
+#[tokio::test]
+async fn closing_an_interactive_session_only_leaves_the_fleet() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    fixture.command(Actor::System, "connect-b", Command::ObserveAgent { agent_id: "agent-b".into(), connected: true });
+    let sessions = FakeSessions::listing(&[]);
+    fixture.client.use_sessions(sessions.clone());
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-b/close", &json!({"force": false})).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+    assert_eq!(answer["interactive"], true);
+    assert!(answer["output"].as_str().unwrap().contains("interactive session"));
+    assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] == "agents"), "claude rm is never run for a terminal session");
+    assert!(!fixture.domain.state().unwrap().agents[&"agent-b".into()].connected);
+}
+
+#[tokio::test]
+async fn a_busy_session_or_one_with_unsaved_work_is_not_closed() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    let sessions = Arc::new(FakeSessions {
+        listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: Some("2 uncommitted file(s) in /w".into()),
+        calls: Default::default(), stuck: false,
+    });
+    fixture.client.use_sessions(sessions.clone());
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(answer["reasons"], json!([{"kind": "busy"}]), "{answer}");
+    assert!(answer["error"].as_str().unwrap().contains("still has something pending"));
+
+    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(answer["reasons"], json!([{"kind": "worktree", "detail": "2 uncommitted file(s) in /w"}]), "force never discards work: {answer}");
+    assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] != "rm"), "nothing was removed");
+
+    let stuck = Arc::new(FakeSessions { listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: None, calls: Default::default(), stuck: true });
+    fixture.client.use_sessions(stuck);
+    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{answer}");
+    assert!(answer["error"].as_str().unwrap().contains("is still listed by claude agents"), "{answer}");
+    let (status, error) = fixture.send("POST", "/v2/agents/nobody/close", &json!({"force": true})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+}
+
+struct FakeOrchestrator(std::sync::Mutex<Vec<(Step, String)>>);
+
+impl OrchestratorControl for FakeOrchestrator {
+    fn status(&self) -> Option<Value> {
+        Some(json!({"phase": "failed", "can_retry": true, "can_cancel": true, "active_run_id": "run-7", "queue_depth": 2, "last_error": "The batch stopped halfway"}))
+    }
+
+    fn recover(&self, step: Step, run_id: &str) -> Result<(), DomainError> {
+        if run_id != "run-7" {
+            return Err(DomainError::new("conflict", "that run is not the active one"));
+        }
+        self.0.lock().unwrap().push((step, run_id.to_owned()));
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn the_orchestrator_recovery_steps_reach_its_runner_with_the_run_they_name() {
+    let fixture = Fixture::start().await;
+    let (status, error) = fixture.send("POST", "/v2/orchestrator/retry", &json!({"run_id": "run-7"})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("orchestrator_unavailable")), "no runner, no recovery");
+    assert!(fixture.get_json("/v2/runtime").await["orchestrator"].is_null());
+
+    let runner = Arc::new(FakeOrchestrator(Default::default()));
+    fixture.client.attach_orchestrator(runner.clone());
+    let expected = fixture_json("requests.json");
+    let retry = &expected["orchestrator_retry"];
+    let (status, answer) = fixture.send("POST", retry["path"].as_str().unwrap(), &retry["body"]).await;
+    assert_eq!((status, &answer), (StatusCode::OK, &retry["response"]));
+    for step in ["cancel", "acknowledge"] {
+        assert_eq!(fixture.send("POST", &format!("/v2/orchestrator/{step}"), &json!({"run_id": "run-7"})).await.0, StatusCode::OK);
+    }
+    assert_eq!(*runner.0.lock().unwrap(), vec![(Step::Retry, "run-7".to_string()), (Step::Cancel, "run-7".into()), (Step::Acknowledge, "run-7".into())]);
+    let (status, error) = fixture.send("POST", "/v2/orchestrator/retry", &json!({"run_id": "run-1"})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("conflict")));
+    assert_eq!(fixture.send("POST", "/v2/orchestrator/retry", &json!({})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(runner.0.lock().unwrap().len(), 3, "a refused call reaches nobody");
+    let runtime = fixture.get_json("/v2/runtime").await;
+    assert_covers(&expected_runtime()["orchestrator"], &runtime["orchestrator"], "orchestrator");
+    assert_eq!(runtime["orchestrator"]["active_run_id"], "run-7");
+}
+
+fn expected_runtime() -> Value {
+    fixture_json("runtime.json")
+}
+
+#[test]
+fn writes_are_named_exactly() {
+    for (path, write) in [
+        ("/v2/agents/agent-a/messages", Write::AgentMessage("agent-a".into())),
+        ("/v2/orchestrator/messages", Write::OrchestratorMessage),
+        ("/v2/agents/agent-a/close", Write::Close("agent-a".into())),
+        ("/v2/orchestrator/cancel", Write::Recover(Step::Cancel)),
+        ("/v2/orchestrator/acknowledge", Write::Recover(Step::Acknowledge)),
+        ("/v2/orchestrator/retry", Write::Recover(Step::Retry)),
+    ] {
+        assert_eq!(parse_write(path), Some(write), "{path}");
+    }
+    for path in ["/v2/orchestrator", "/v2/orchestrator/other", "/v2/orchestrator/messages/", "/v2/agents//messages",
+        "/v2/agents/a%2Fb/close", "/v2/agents/a/messages?x=1", "/v2/agents/a/other", "/v2/messages"] {
+        assert_eq!(parse_write(path), None, "{path}");
+    }
+    assert!(atomic_write_path("/v2/agents/a/messages") && atomic_write_path("/v2/orchestrator/messages"));
+    assert!(!atomic_write_path("/v2/agents/a/close") && !atomic_write_path("/v2/orchestrator/retry"));
 }

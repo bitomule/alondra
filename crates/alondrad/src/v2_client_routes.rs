@@ -1,7 +1,10 @@
 //! The routes the TUI and the CLI call on a v2-only daemon beyond the domain itself: the
 //! live runtime of the Mac and its sessions, and what a session is doing. The domain stays
 //! the only authority; nothing here decides an action.
+mod close;
 mod live;
+mod messages;
+mod orchestrator;
 mod pr_details;
 mod sidecar;
 
@@ -10,17 +13,20 @@ use crate::domain_runtime::DomainRuntime;
 use alondra_core::domain_v2::{
     AgentId, DomainError, DomainState, InteractionPayload, Recipient, Scope, TaskId,
 };
+use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+pub(crate) use close::Sessions;
 pub(crate) use live::Live;
+pub(crate) use orchestrator::{OrchestratorControl, Step};
 pub(crate) use pr_details::{GhView, PrView};
 
 const DETAILS_INTERVAL: Duration = Duration::from_secs(60);
@@ -31,6 +37,68 @@ pub(crate) struct Client {
     gauges: crate::machine::Gauges,
     sidecar: sidecar::Sidecar,
     details: pr_details::PrDetails,
+    orchestrator: std::sync::Mutex<Option<Arc<dyn OrchestratorControl>>>,
+    sessions: std::sync::Mutex<Arc<dyn Sessions>>,
+}
+
+/// What a route answers: the status and the JSON body both the local listener and the relay
+/// carry.
+pub(crate) struct Reply {
+    pub status: StatusCode,
+    pub body: Value,
+}
+
+impl Reply {
+    fn ok(body: Value) -> Self {
+        Self { status: StatusCode::OK, body }
+    }
+
+    fn error(error: DomainError) -> Self {
+        Self { status: crate::domain_api::status_for(&error), body: json!(error) }
+    }
+
+    pub(crate) fn into_value(self) -> Value {
+        json!({"status": self.status.as_u16(), "body": self.body})
+    }
+}
+
+impl IntoResponse for Reply {
+    fn into_response(self) -> Response {
+        (self.status, Json(self.body)).into_response()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Write {
+    AgentMessage(String),
+    OrchestratorMessage,
+    Close(String),
+    Recover(Step),
+}
+
+/// The writes of this module by path, the way both the local listener and the relay name them.
+pub(crate) fn parse_write(path: &str) -> Option<Write> {
+    match path {
+        "/v2/orchestrator/messages" => return Some(Write::OrchestratorMessage),
+        "/v2/orchestrator/cancel" => return Some(Write::Recover(Step::Cancel)),
+        "/v2/orchestrator/acknowledge" => return Some(Write::Recover(Step::Acknowledge)),
+        "/v2/orchestrator/retry" => return Some(Write::Recover(Step::Retry)),
+        _ => {}
+    }
+    let rest = path.strip_prefix("/v2/agents/")?;
+    if let Some(id) = rest.strip_suffix("/messages").filter(|id| plain_id(id)) {
+        return Some(Write::AgentMessage(id.to_owned()));
+    }
+    rest.strip_suffix("/close").filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
+}
+
+pub(crate) fn approved_write_path(path: &str) -> bool {
+    parse_write(path).is_some()
+}
+
+/// The writes that are one domain command, which the relay journals atomically with it.
+pub(crate) fn atomic_write_path(path: &str) -> bool {
+    matches!(parse_write(path), Some(Write::AgentMessage(_) | Write::OrchestratorMessage))
 }
 
 #[derive(Debug, PartialEq)]
@@ -75,7 +143,36 @@ impl Client {
             gauges,
             sidecar: sidecar::Sidecar::open(home),
             details: Default::default(),
+            orchestrator: Default::default(),
+            sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn use_sessions(&self, sessions: Arc<dyn Sessions>) {
+        *self.sessions.lock().expect("session control poisoned") = sessions;
+    }
+
+    pub(crate) async fn write(
+        &self,
+        user_id: &str,
+        route: Write,
+        body: &Value,
+        transport: Option<crate::domain_store::TransportIdentity<'_>>,
+        authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
+    ) -> anyhow::Result<Reply> {
+        match route {
+            Write::AgentMessage(id) => self.send_message(user_id, Some(&id), body, transport, authorize),
+            Write::OrchestratorMessage => self.send_message(user_id, None, body, transport, authorize),
+            Write::Close(id) => {
+                authorize()?;
+                self.close_session(&id, body).await
+            }
+            Write::Recover(step) => {
+                authorize()?;
+                Ok(self.recover_orchestrator(step, body))
+            }
+        }
     }
 
     pub(crate) fn home(&self) -> &Path {
@@ -163,7 +260,7 @@ impl Client {
             .filter_map(|(id, at)| at.map(|at| (id.clone(), json!(at)))).collect();
         Json(json!({
             "machine": machine, "usage": usage, "update": crate::updates::status(&self.home),
-            "nodes": nodes, "tasks": tasks, "requests": requests,
+            "nodes": nodes, "orchestrator": self.orchestrator_status(), "tasks": tasks, "requests": requests,
             "pull_requests": pull_requests, "inbox_times": inbox_times,
         })).into_response()
     }
@@ -243,8 +340,38 @@ async fn read(State(client): State<Arc<Client>>, signed: Option<Extension<Signed
     client.read(path_and_query).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
 
+async fn write(
+    State(client): State<Arc<Client>>,
+    signed: Option<Extension<Signed>>,
+    uri: Uri,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let home = client.home().to_owned();
+    let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
+        return forbidden();
+    };
+    let Some(route) = parse_write(uri.path()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(Json(body)) = body else {
+        return Reply::error(DomainError::new("invalid_input", "invalid request body")).into_response();
+    };
+    let authorize = || {
+        crate::domain_bootstrap::signed_device(&home, &signed)
+            .map(|_| ())
+            .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
+    };
+    match client.write(&format!("device:{}", device.device_id), route, &body, None, &authorize).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
 pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
+        .route("/v2/agents/{id}/messages", post(write))
+        .route("/v2/agents/{id}/close", post(write))
+        .route("/v2/orchestrator/{step}", post(write))
         .route("/v2/runtime", get(read))
         .route("/v2/agents/search", get(read))
         .route("/v2/agents/{id}/activity", get(read))

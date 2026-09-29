@@ -612,6 +612,7 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("interaction", &before.interactions, &after.interactions)?;
     kept("merge authorization", &before.merge_authorizations, &after.merge_authorizations)?;
     kept("stack readiness", &before.stack_readiness, &after.stack_readiness)?;
+    kept("user message", &before.messages, &after.messages)?;
     kept("schedule", &before.schedule.schedules, &after.schedule.schedules)?;
     kept("schedule run", &before.schedule.runs, &after.schedule.runs)?;
     for (id, task) in &before.tasks {
@@ -706,6 +707,9 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     for (r, _) in changed(&before.stack_readiness, &after.stack_readiness) {
         upsert(c, "stack_readiness", &["task_id"], object(r)?)?;
     }
+    for (m, _) in changed(&before.messages, &after.messages) {
+        upsert(c, "user_messages", &["id"], object(m)?)?;
+    }
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
 }
@@ -760,6 +764,9 @@ pub(super) fn save(c: &Connection, state: &DomainState) -> Result<()> {
     exec(c, "DELETE FROM stack_readiness", [])?;
     for r in state.stack_readiness.values() {
         upsert(c, "stack_readiness", &["task_id"], object(r)?)?;
+    }
+    for m in state.messages.values() {
+        upsert(c, "user_messages", &["id"], object(m)?)?;
     }
     save_schedule_state(c, &state.schedule)?;
     Ok(())
@@ -1008,6 +1015,10 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     for row in rows(c, "stack_readiness", &["ready"], &[])? {
         let x: StackReadiness = decode(row)?;
         state.stack_readiness.insert(x.task_id.clone(), x);
+    }
+    for row in rows(c, "user_messages", &[], &["recipient", "attachments"])? {
+        let x: UserMessage = decode(row)?;
+        state.messages.insert(x.id.clone(), x);
     }
     state.schedule = load_schedule_state(c)?;
     state.validate()?;

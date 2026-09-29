@@ -657,6 +657,7 @@ impl DomainState {
             // A Schedule's own revision is its subject: Update carries the next
             // one, Delete and Claim the one they read. The rule checks it.
             Command::CreateSchedule { .. } | Command::UpdateSchedule { .. } => Some(0),
+            Command::SendMessage { .. } => Some(0),
             Command::DeleteSchedule {
                 expected_schedule_revision: Some(_),
                 ..
@@ -1836,6 +1837,118 @@ impl DomainState {
                     },
                 );
             }
+            Command::SendMessage {
+                message_id,
+                recipient,
+                purpose,
+                text,
+                attachments,
+                interaction_id,
+                pr_id,
+                mark_read,
+            } => {
+                let reader = user(actor)?;
+                let kind = purpose;
+                id(&message_id.0)?;
+                if self.messages.contains_key(message_id) {
+                    return fail("idempotency_conflict", "Message ID already exists");
+                }
+                if text.len() > 1_048_576 {
+                    return fail("payload_too_large", "Message is too long");
+                }
+                if text.trim().is_empty()
+                    && attachments.is_empty()
+                    && *kind != MessageKind::MoreContext
+                {
+                    return fail("invalid_input", "A message needs words or an attachment");
+                }
+                validate_attachments(attachments)?;
+                let about_interaction = matches!(kind, MessageKind::Reply | MessageKind::MoreContext);
+                let about_pr = matches!(kind, MessageKind::PrChanges | MessageKind::PrQuestion);
+                if interaction_id.is_some() != about_interaction || pr_id.is_some() != about_pr {
+                    return fail("invalid_input", "This kind of message names its Interaction or PR");
+                }
+                if *mark_read && !about_interaction {
+                    return fail("invalid_input", "Only a reply marks an Interaction read");
+                }
+                match recipient {
+                    Recipient::User => {
+                        return fail("invalid_input", "A message goes to an Agent or the orchestrator");
+                    }
+                    Recipient::Agent { agent_id } if !self.agents.contains_key(agent_id) => {
+                        return fail("not_found", "Agent does not exist");
+                    }
+                    Recipient::Orchestrator if *kind != MessageKind::Message => {
+                        return fail("invalid_input", "Only a plain message goes to the orchestrator");
+                    }
+                    _ => {}
+                }
+                let mut task = None;
+                let mut url = None;
+                if let Some(interaction_id) = interaction_id {
+                    let interaction = self.interaction(interaction_id)?;
+                    if let Scope::Task { task_id } = &interaction.scope {
+                        task = Some(task_id.clone());
+                    }
+                    let authored = matches!((&interaction.author, recipient),
+                        (Author::Agent { agent_id }, Recipient::Agent { agent_id: to }) if agent_id == to);
+                    let owner = task.as_ref().and_then(|t| self.tasks.get(t)).and_then(|t| t.agent_id.as_ref());
+                    let owned = matches!((owner, recipient), (Some(a), Recipient::Agent { agent_id }) if a == agent_id);
+                    if !authored && !owned {
+                        return fail("not_assigned", "The Interaction does not belong to this Agent");
+                    }
+                    if *mark_read && !matches!(interaction.payload, InteractionPayload::Information { .. }) {
+                        return fail("invalid_action_for_kind", "Only information can be marked read");
+                    }
+                }
+                if let Some(pr_id) = pr_id {
+                    let pr = self
+                        .pull_requests
+                        .get(pr_id)
+                        .ok_or_else(|| DomainError::new("not_found", "PR does not exist"))?;
+                    let owner = self.task(&pr.task_id)?.agent_id.as_ref();
+                    if !matches!((owner, recipient), (Some(a), Recipient::Agent { agent_id }) if a == agent_id) {
+                        return fail("not_assigned", "The PR does not belong to this Agent");
+                    }
+                    task = Some(pr.task_id.clone());
+                    url = Some(format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number));
+                }
+                if *mark_read {
+                    let next = self.revision + 1;
+                    if let Some(interaction) = interaction_id.as_ref().and_then(|i| self.interactions.get_mut(i)) {
+                        if let InteractionPayload::Information { read_by } = &mut interaction.payload {
+                            if read_by.is_empty() {
+                                read_by.insert(reader);
+                                interaction.revision = next;
+                            }
+                        }
+                    }
+                }
+                let words = message_words(*kind, text, url.as_deref(), attachments);
+                self.messages.insert(
+                    message_id.clone(),
+                    UserMessage {
+                        id: message_id.clone(),
+                        recipient: recipient.clone(),
+                        kind: *kind,
+                        body: text.clone(),
+                        attachments: attachments.clone(),
+                        interaction_id: interaction_id.clone(),
+                        pr_id: pr_id.clone(),
+                        at_revision: self.revision + 1,
+                    },
+                );
+                created.push(message_id.0.clone());
+                match recipient {
+                    Recipient::Agent { agent_id } => effects.push(DomainEffect::NotifyAgent {
+                        agent_id: agent_id.clone(),
+                        task_id: task,
+                        interaction_id: interaction_id.clone(),
+                        message: words,
+                    }),
+                    _ => effects.push(DomainEffect::TellOrchestrator { message: words }),
+                }
+            }
             Command::CompleteTask {
                 task_id,
                 presentation_id,
@@ -2032,6 +2145,18 @@ impl DomainState {
             return fail("invalid_input", "Unsafe revision or generation");
         };
         self.schedule.validate()?;
+        for (k, m) in &self.messages {
+            id(&k.0)?;
+            if k != &m.id
+                || matches!(&m.recipient, Recipient::User)
+                || matches!(&m.recipient, Recipient::Agent { agent_id } if !self.agents.contains_key(agent_id))
+                || m.interaction_id.as_ref().is_some_and(|i| !self.interactions.contains_key(i))
+                || m.pr_id.as_ref().is_some_and(|p| !self.pull_requests.contains_key(p))
+                || m.at_revision > self.revision
+            {
+                return fail("invalid_input", "Invalid message relation or revision");
+            }
+        }
         for run in self.schedule.runs.values() {
             if let (Some(request_id), Some(task_id)) = (&run.request_id, &run.task_id) {
                 if !self.requests.contains_key(request_id)
@@ -2458,6 +2583,37 @@ fn canonical_pr(host: &str, repo: &str, number: u64) -> Result<()> {
     }
 }
 
+/// What the reader of a user's message is told, worded by why it was written.
+fn message_words(
+    kind: MessageKind,
+    text: &str,
+    pr_url: Option<&str>,
+    attachments: &[AttachmentRef],
+) -> String {
+    let text = text.trim();
+    let mut words = match kind {
+        MessageKind::Message | MessageKind::Reply => text.to_owned(),
+        MessageKind::MoreContext => {
+            let asked = if text.is_empty() { String::new() } else { format!(" They ask: {text}") };
+            format!(
+                "The user needs more context before deciding.{asked} Explain what is at stake, the options with their consequences and your recommendation, and ask again."
+            )
+        }
+        MessageKind::PrChanges => {
+            format!("The user requests changes on {}:\n\n{text}", pr_url.unwrap_or("the PR"))
+        }
+        MessageKind::PrQuestion => {
+            format!("The user asks about {}:\n\n{text}", pr_url.unwrap_or("the PR"))
+        }
+    };
+    if !attachments.is_empty() {
+        words.push_str("\n\nAttached files, by their path under the Alondra home:");
+        for attachment in attachments {
+            words.push_str(&format!("\n- {}: {}", attachment.name, attachment.content_reference));
+        }
+    }
+    words
+}
 fn validate_attachments(attachments: &[AttachmentRef]) -> Result<()> {
     if attachments.len() > 32 {
         return fail("payload_too_large", "Too many attachments");

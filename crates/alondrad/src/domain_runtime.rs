@@ -282,6 +282,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::RegisterAgent { .. }
         | Command::ObserveAgent { .. }
+        | Command::SendMessage { .. }
         | Command::AdvanceOrchestratorGeneration { .. } => None,
     }
 }

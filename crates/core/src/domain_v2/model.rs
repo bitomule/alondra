@@ -22,7 +22,8 @@ ids!(
     CommandId,
     DataEpoch,
     ScheduleId,
-    ScheduleRunId
+    ScheduleRunId,
+    MessageId
 );
 pub type Revision = u64;
 pub const MAX_REVISION: Revision = 9_007_199_254_740_991;
@@ -305,6 +306,31 @@ pub struct Interaction {
     pub revision: Revision,
     pub order: Revision,
 }
+/// Why the user writes to an Agent or the orchestrator: the daemon words the
+/// message for its reader from this.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MessageKind {
+    Message,
+    Reply,
+    MoreContext,
+    PrChanges,
+    PrQuestion,
+}
+/// Words the user sent to an Agent or the orchestrator. Its delivery is an
+/// outbox message; this record is what the user said and about what.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UserMessage {
+    pub id: MessageId,
+    pub recipient: Recipient,
+    pub kind: MessageKind,
+    pub body: String,
+    #[serde(default)]
+    pub attachments: Vec<AttachmentRef>,
+    pub interaction_id: Option<InteractionId>,
+    pub pr_id: Option<PrId>,
+    pub at_revision: Revision,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeAttemptState {
@@ -345,6 +371,8 @@ pub struct DomainState {
     pub stack_readiness: BTreeMap<TaskId, StackReadiness>,
     #[serde(default)]
     pub schedule: ScheduleState,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub messages: BTreeMap<MessageId, UserMessage>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -363,6 +391,7 @@ impl DomainState {
             merge_authorizations: BTreeMap::new(),
             stack_readiness: BTreeMap::new(),
             schedule: ScheduleState::default(),
+            messages: BTreeMap::new(),
         }
     }
 }
