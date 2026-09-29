@@ -102,6 +102,10 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/orchestrator/cancel", post(orchestrator_decision))
         .route("/v2/orchestrator/acknowledge", post(orchestrator_decision))
         .route("/v2/orchestrator/retry", post(orchestrator_decision))
+        .route("/v2/orchestrator/launch", post(orchestrator_launch))
+        .route("/v2/orchestrator/send", post(orchestrator_send))
+        .route("/v2/orchestrator/interrupt", post(orchestrator_interrupt))
+        .route("/v2/orchestrator/machine", get(orchestrator_machine))
         .route("/v1", axum::routing::any(legacy_protocol))
         .route("/v1/{*rest}", axum::routing::any(legacy_protocol))
         .merge(crate::domain_api::routes())
@@ -246,6 +250,66 @@ async fn orchestrator_decision(State(state): State<Arc<V2Only>>, signed: Option<
         }
         Err(_) => storage(),
     }
+}
+
+/// The orchestrator execution calling a tool route: local, with its current bearer.
+fn tool_caller(state: &V2Only, peer: &SocketAddr, headers: &HeaderMap) -> Result<alondra_core::domain_v2::Actor, Response> {
+    if let Some(refused) = local_only(peer, headers) {
+        return Err(refused);
+    }
+    let bearer = headers.get("authorization").and_then(|value| value.to_str().ok()).and_then(|value| value.strip_prefix("Bearer "));
+    crate::domain_orchestrator_tools::orchestrator(&state.domain, bearer).map_err(crate::domain_api::domain_error)
+}
+
+fn tool_answer(answer: Result<Value, DomainError>) -> Response {
+    match answer {
+        Ok(answer) => Json(answer).into_response(),
+        Err(error) => crate::domain_api::domain_error(error),
+    }
+}
+
+async fn orchestrator_launch(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<crate::domain_orchestrator_tools::LaunchBody>, JsonRejection>) -> Response {
+    let actor = match tool_caller(&state, &peer, &headers) { Ok(actor) => actor, Err(refused) => return refused };
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid launch"));
+    };
+    let domain = state.domain();
+    let choices = |request: &alondra_core::domain_v2::RequestId| crate::domain_orchestrator_tools::request_choices(&domain, request).ok().flatten();
+    tool_answer(crate::domain_orchestrator_tools::launch(&state.domain, &state.home, &actor, body, choices, &crate::orchestrate::ClaudeCli).await)
+}
+
+async fn orchestrator_send(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<crate::domain_orchestrator_tools::SendBody>, JsonRejection>) -> Response {
+    let actor = match tool_caller(&state, &peer, &headers) { Ok(actor) => actor, Err(refused) => return refused };
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid message"));
+    };
+    tool_answer(crate::domain_orchestrator_tools::send(&state.domain, &state.home, &actor, body,
+        &crate::domain_messages::ClaudeAgents, &Arc::new(crate::domain_transport::Tmux)).await)
+}
+
+async fn orchestrator_interrupt(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<crate::domain_orchestrator_tools::NodeBody>, JsonRejection>) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid interrupt"));
+    };
+    tool_answer(crate::domain_orchestrator_tools::interrupt(&state.domain, body, &crate::domain_messages::ClaudeAgents, crate::wake::interrupt).await)
+}
+
+/// Machine capacity and the subscription's usage, as the `/v2/daemon` gauges hold them.
+async fn orchestrator_machine(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    let (machine, usage) = match &*state.gauges.lock().expect("machine gauges poisoned") {
+        Some((machine, usage)) => (json!(machine), json!(usage)),
+        None => (Value::Null, Value::Null),
+    };
+    Json(json!({"machine": machine, "usage": usage})).into_response()
 }
 
 fn attachment_ref(home: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<AttachmentRef> {
@@ -417,6 +481,17 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(body["code"], "not_found", "handler must answer merge authorization read");
+        assert_eq!(client.get(format!("{base}/v2/orchestrator/machine")).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        assert_eq!(client.get(format!("{base}/v2/orchestrator/machine")).bearer_auth(&bearer).send().await.unwrap().status(),
+            StatusCode::FORBIDDEN, "an Agent's bearer is not the orchestrator's");
+        let orchestrator = domain.bind_orchestrator("execution-1").unwrap();
+        let machine = client.get(format!("{base}/v2/orchestrator/machine"))
+            .bearer_auth(orchestrator.expose_for_child_environment()).send().await.unwrap();
+        assert_eq!(machine.status(), StatusCode::OK);
+        assert!(machine.json::<serde_json::Value>().await.unwrap().as_object().unwrap().contains_key("usage"));
+        let launch = client.post(format!("{base}/v2/orchestrator/launch")).bearer_auth(orchestrator.expose_for_child_environment())
+            .json(&json!({"name": "n", "cwd": "/tmp", "task": "missing"})).send().await.unwrap();
+        assert_eq!(launch.status(), StatusCode::NOT_FOUND);
         domain.revoke_agent("test-agent").unwrap();
         assert_eq!(client.get(format!("{base}{merge_path}"))
             .header("authorization", format!("Bearer {bearer}"))

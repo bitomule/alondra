@@ -42,7 +42,7 @@ fn instructions_for_mode(role: Role, user: &str, v2: bool) -> String {
     let common = format!("Alondra domain protocol 2. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every mutation needs a fresh expected_revision and a stable command_id; retry the same exact payload with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant domain authority.");
     match role {
         Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. Ending a Claude turn does not complete it. The current MCP has no exact merge authorization read adapter; do not execute a domain v2 merge until one is available. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions."),
-        Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
+        Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a node that already has the context; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
     }
 }
 
@@ -212,6 +212,14 @@ fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
         // A v2 producer must not see the old business mutators, whose final-report
         // and automatic-merge semantics contradict the durable domain contract.
         list.retain(|tool| v2_tool_allowed(role, tool["name"].as_str().unwrap_or_default()));
+        for tool in &mut list {
+            if tool["name"] == "launch" {
+                tool["description"] = json!(format!("Launch a new node with the Alondra plugin for a Task no connected node works on: it gets the Task's mission (its title and its Request) unless you pass a prompt, the options {user} chose for the Request, its domain capability, and the Task. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."));
+                let properties = tool["inputSchema"]["properties"].as_object_mut().expect("launch properties");
+                properties.remove("request_id");
+                tool["inputSchema"]["required"] = json!(["name", "cwd", "task"]);
+            }
+        }
     } else {
         // A HOME without a committed cutover marker keeps the old MCP catalog.
         list.retain(|tool| !matches!(tool["name"].as_str().unwrap_or_default(),
@@ -223,6 +231,7 @@ fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
 fn v2_tool_allowed(role: Role, name: &str) -> bool {
     matches!(name, "domain_command" | "ask")
         || (role == Role::Node && name == "register_pr")
+        || (role == Role::Orchestrator && matches!(name, "launch" | "send" | "interrupt" | "machine"))
 }
 
 pub fn caller() -> Value {
@@ -321,6 +330,14 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
                 anyhow::bail!("ask requires a typed ask_question domain command");
             }
             serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
+        }
+        "launch" | "send" | "interrupt" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_post(&format!("/v2/orchestrator/{name}"), &bearer, args)?)?
+        }
+        "machine" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_get("/v2/orchestrator/machine", &bearer)?)?
         }
         "domain_command" | "register_pr" => {
             let bearer = domain_bearer()?;
@@ -876,8 +893,15 @@ mod tests {
         assert!(!v2_tool_allowed(Role::Node, "domain_cursor"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "domain_cursor"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "register_pr"));
-        assert!(!v2_tool_allowed(Role::Orchestrator, "launch"));
+        for runtime in ["launch", "send", "interrupt", "machine"] {
+            assert!(v2_tool_allowed(Role::Orchestrator, runtime), "{runtime}");
+            assert!(!v2_tool_allowed(Role::Node, runtime), "{runtime}");
+        }
         assert!(!v2_tool_allowed(Role::Orchestrator, "fleet"));
+        let catalog = tools_for_mode(Role::Orchestrator, "Ana", true);
+        let launch = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "launch").unwrap();
+        assert_eq!(launch["inputSchema"]["required"], json!(["name", "cwd", "task"]));
+        assert!(launch["inputSchema"]["properties"].get("request_id").is_none());
         assert!(!v2_tool_allowed(Role::Node, "merge_authorization"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "merge_authorization"));
         assert!(!v2_tool_allowed(Role::Node, "launch"));
