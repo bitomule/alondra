@@ -63,10 +63,10 @@ impl Signer {
         let mut seed = [0u8; 32];
         std::io::Read::read_exact(&mut std::fs::File::open("/dev/urandom")?, &mut seed)?;
         let key = p256::ecdsa::SigningKey::from_slice(&seed).map_err(|e| anyhow!("key: {e}"))?;
-        let code = unsigned.post("/v2/pairing", &serde_json::json!({}))?.get("code").and_then(Value::as_str).map(str::to_string).context("no pairing code")?;
+        let code = unsigned.post("/pairing", &serde_json::json!({}))?.get("code").and_then(Value::as_str).map(str::to_string).context("no pairing code")?;
         let public = base64::engine::general_purpose::STANDARD.encode(key.verifying_key().to_sec1_point(false).as_bytes());
         let host = std::process::Command::new("scutil").args(["--get", "ComputerName"]).output().ok().map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string()).filter(|h| !h.is_empty()).unwrap_or_else(|| "Mac".into());
-        let paired = unsigned.post("/v2/pair", &serde_json::json!({"code": code, "device_name": format!("Terminal ({host})"), "public_key": public}))?;
+        let paired = unsigned.post("/pair", &serde_json::json!({"code": code, "device_name": format!("Terminal ({host})"), "public_key": public}))?;
         let device = paired.get("device_id").and_then(Value::as_str).context("no device id")?.to_string();
         let pem = key.to_pkcs8_pem(LineEnding::LF).map_err(|e| anyhow!("key: {e}"))?;
         std::fs::create_dir_all(home)?;
@@ -184,13 +184,20 @@ impl Client {
     }
 
     pub fn domain_post(&self, path: &str, bearer: &str, body: &Value) -> Result<Value> {
-        let bytes = serde_json::to_vec(body)?;
+        self.domain_call("POST", path, bearer, Some(body))
+    }
+
+    pub fn domain_call(&self, method: &str, path: &str, bearer: &str, body: Option<&Value>) -> Result<Value> {
         let url = format!("http://127.0.0.1:{}{path}", config().port);
-        let resp = self.agent.post(url)
+        let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
+        let request = ureq::http::Request::builder()
+            .method(method)
+            .uri(url)
             .header("content-type", "application/json")
             .header("authorization", format!("Bearer {bearer}"))
-            .send(&bytes[..])?;
-        answer(resp)
+            .body(bytes)?;
+        let response = self.agent.run(request)?;
+        answer(response)
     }
 
     /// The domain assembled from its sections, without interactions: those are read one
@@ -200,7 +207,7 @@ impl Client {
     }
 
     pub fn summary(&self) -> Result<Summary> {
-        self.get("/v2/domain/summary")
+        self.get("/summary")
     }
 
     /// Every row of a section, page after page.
@@ -251,12 +258,12 @@ impl Client {
     /// The whole interaction, reassembled from chunks when its body did not fit one answer.
     pub fn interaction(&self, id: &InteractionId) -> Result<Interaction> {
         let id = crate::mcp::urlencode(&id.0);
-        let detail: Item<Interaction> = self.get(&format!("/v2/domain/interactions/{id}"))?;
+        let detail: Item<Interaction> = self.get(&format!("/interactions/{id}"))?;
         let mut interaction = detail.item;
         if detail.truncated {
             let mut body = String::new();
             loop {
-                let chunk: TextChunk = self.get(&format!("/v2/domain/interactions/{id}/body?offset={}", body.len()))?;
+                let chunk: TextChunk = self.get(&format!("/interactions/{id}/body?offset={}", body.len()))?;
                 body.push_str(&chunk.data);
                 if !chunk.has_more {
                     break;
@@ -269,13 +276,24 @@ impl Client {
 
     /// Waits up to `wait` seconds for the domain to move past `revision`.
     pub fn domain_changes(&self, epoch: &DataEpoch, revision: Revision, wait: u64) -> Result<Changes> {
-        self.get(&format!("/v2/domain/changes?data_epoch={epoch}&after={revision}&wait={wait}"))
+        self.get(&format!("/changes?data_epoch={epoch}&after={revision}&wait={wait}"))
     }
 
     /// A refusal is the daemon's typed answer; anything else leaves the outcome unknown.
     pub fn command(&self, envelope: &CommandEnvelope) -> Result<CommandOutcome, CommandFailure> {
         let body = serde_json::to_value(envelope).map_err(|e| CommandFailure::Uncertain(e.to_string()))?;
-        let (status, value) = self.exchange("POST", "/v2/domain/commands", Some(&body)).map_err(|e| CommandFailure::Uncertain(format!("{e:#}")))?;
+        let kind = body.pointer("/command/kind").and_then(Value::as_str)
+            .ok_or_else(|| CommandFailure::Uncertain("serialized command has no kind".into()))?;
+        let (method, path) = crate::mcp::resource_target(kind, &body["command"])
+            .map_err(|e| CommandFailure::Rejected(DomainError::new("invalid_input", e.to_string())))?;
+        let mut resource_body = body["command"].clone();
+        let command = resource_body.as_object_mut()
+            .ok_or_else(|| CommandFailure::Uncertain("serialized command is not an object".into()))?;
+        command.remove("kind");
+        for key in ["data_epoch", "command_id", "expected_revision"] {
+            command.insert(key.into(), body[key].clone());
+        }
+        let (status, value) = self.exchange(method, &path, Some(&resource_body)).map_err(|e| CommandFailure::Uncertain(format!("{e:#}")))?;
         classify(status, value)
     }
 
@@ -288,7 +306,7 @@ impl Client {
         }
     }
 
-    /// A stored file. An attachment's copy comes whole from `/v2/files` on this Mac and in
+    /// A stored file. An attachment's copy comes whole from `/files` on this Mac and in
     /// verified chunks through the service; a document revision always in chunks.
     pub fn content(&self, route: &str) -> Result<Vec<u8>> {
         match route.strip_prefix(FILES) {
@@ -327,9 +345,9 @@ impl Client {
     }
 }
 
-pub const UPLOADS: &str = "/v2/uploads";
-pub const SERVICE_UPLOADS: &str = "/v2/domain/uploads";
-pub const FILES: &str = "/v2/files";
+pub const UPLOADS: &str = "/uploads";
+pub const SERVICE_UPLOADS: &str = "/uploads";
+pub const FILES: &str = "/files";
 pub const MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
 /// Where an attachment's stored copy is read.
@@ -338,7 +356,7 @@ pub fn attachment_content(a: &AttachmentRef) -> String {
 }
 
 pub fn document_content(revision: &str) -> String {
-    format!("/v2/domain/document-revisions/{}/content", crate::mcp::urlencode(revision))
+    format!("/document-revisions/{}/content", crate::mcp::urlencode(revision))
 }
 
 /// Reads `route` from offset 0 to the end, refusing a file that changes between chunks.
@@ -370,15 +388,15 @@ fn content_via(route: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Resul
 }
 
 const SECTION_ROUTES: &[(&str, &str)] = &[
-    ("inbox", "/v2/domain/inbox"),
-    ("tasks", "/v2/domain/tasks"),
-    ("requests", "/v2/domain/requests"),
-    ("agents", "/v2/domain/agents"),
-    ("pull_requests", "/v2/domain/pull-requests"),
-    ("documents", "/v2/domain/documents"),
-    ("merge_authorizations", "/v2/domain/merge-authorizations"),
-    ("stack_readiness", "/v2/domain/stack-readiness"),
-    ("superseded_acceptances", "/v2/domain/superseded-acceptances"),
+    ("inbox", "/inbox"),
+    ("tasks", "/tasks"),
+    ("requests", "/requests"),
+    ("agents", "/agents"),
+    ("pull_requests", "/pull-requests"),
+    ("documents", "/documents"),
+    ("merge_authorizations", "/merge-authorizations"),
+    ("stack_readiness", "/stack-readiness"),
+    ("superseded_acceptances", "/superseded-acceptances"),
 ];
 
 /// Section rows by the token they were read at, so an unchanged section is never read twice.
@@ -534,7 +552,7 @@ mod tests {
         use base64::Engine as _;
         let data = |s: &str| base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(s);
         let mut asked = vec![];
-        let bytes = content_via("/v2/domain/attachments/att-1/content", |path| {
+        let bytes = content_via("/attachments/att-1/content", |path| {
             asked.push(path.to_string());
             Ok(if path.ends_with("offset=0") {
                 json!({"version": "v-1", "data": data("ab"), "offset": 0, "total": 3, "next_offset": 2, "eof": false})
@@ -544,13 +562,13 @@ mod tests {
         })
         .unwrap();
         assert_eq!(bytes, b"abc");
-        assert_eq!(asked, ["/v2/domain/attachments/att-1/content?offset=0", "/v2/domain/attachments/att-1/content?offset=2&version=v-1"]);
+        assert_eq!(asked, ["/attachments/att-1/content?offset=0", "/attachments/att-1/content?offset=2&version=v-1"]);
         let changed = content_via("/r", |path| {
             Ok(if path.ends_with("offset=0") { json!({"version": "v-1", "data": data("ab"), "offset": 0, "total": 3, "next_offset": 2, "eof": false}) } else { json!({"version": "v-2", "data": data("c"), "offset": 2, "total": 3, "next_offset": 3, "eof": true}) })
         });
         assert!(changed.unwrap_err().to_string().contains("changed"));
         let contract = crate::runtime::fixture("requests.json")["attachment_content"]["response"].clone();
-        assert_eq!(content_via("/v2/domain/attachments/att-1/content", |_| Ok(contract.clone())).unwrap(), b"abc");
+        assert_eq!(content_via("/attachments/att-1/content", |_| Ok(contract.clone())).unwrap(), b"abc");
     }
 
     #[test]
@@ -694,16 +712,16 @@ mod wire_tests {
     #[test]
     fn sync_walks_pages_and_rereads_only_the_sections_whose_token_moved() {
         let mut script = vec![
-            ("/v2/domain/summary", summary(5, "a")),
-            ("/v2/domain/inbox", page("inbox", "a", 5, vec![], None)),
-            ("/v2/domain/tasks", page("tasks", "same", 5, vec![task("t-1")], Some("eyJpIjoidC0xIn0"))),
-            ("/v2/domain/tasks?cursor=eyJpIjoidC0xIn0", page("tasks", "same", 5, vec![task("t-2")], None)),
+            ("/summary", summary(5, "a")),
+            ("/inbox", page("inbox", "a", 5, vec![], None)),
+            ("/tasks", page("tasks", "same", 5, vec![task("t-1")], Some("eyJpIjoidC0xIn0"))),
+            ("/tasks?cursor=eyJpIjoidC0xIn0", page("tasks", "same", 5, vec![task("t-2")], None)),
         ];
         for (section, base) in &SECTION_ROUTES[2..] {
             script.push((base, page(section, "same", 5, vec![], None)));
         }
-        script.push(("/v2/domain/summary", summary(6, "a2")));
-        script.push(("/v2/domain/inbox", page("inbox", "a2", 6, vec![], None)));
+        script.push(("/summary", summary(6, "a2")));
+        script.push(("/inbox", page("inbox", "a2", 6, vec![], None)));
         let (client, seen, server) = peer(script);
         let mut cache = Sections::default();
         let first = client.sync(&mut cache).unwrap();
@@ -714,8 +732,8 @@ mod wire_tests {
         assert_eq!(second.tasks.len(), 2, "an unchanged section is served from the cache");
         server.join().unwrap();
         let seen = seen.lock().unwrap();
-        assert_eq!(seen.iter().filter(|p| p.starts_with("/v2/domain/tasks")).count(), 2);
-        assert!(!seen.iter().any(|p| p == "/v2/domain"), "the whole projection is never read");
+        assert_eq!(seen.iter().filter(|p| p.starts_with("/tasks")).count(), 2);
+        assert!(!seen.iter().any(|p| p == "/domain"), "the whole projection is never read");
     }
 
     #[test]
@@ -726,9 +744,9 @@ mod wire_tests {
         let chunk = |offset: usize, data: &str, more: bool| serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3,
             "id": "i-1", "offset": offset, "total_bytes": 10, "data": data, "has_more": more});
         let (client, _, server) = peer(vec![
-            ("/v2/domain/interactions/i-1", serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3, "item": interaction, "truncated": true})),
-            ("/v2/domain/interactions/i-1/body?offset=0", chunk(0, "first ", true)),
-            ("/v2/domain/interactions/i-1/body?offset=6", chunk(6, "half", false)),
+            ("/interactions/i-1", serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3, "item": interaction, "truncated": true})),
+            ("/interactions/i-1/body?offset=0", chunk(0, "first ", true)),
+            ("/interactions/i-1/body?offset=6", chunk(6, "half", false)),
         ]);
         let full = client.interaction(&"i-1".into()).unwrap();
         assert_eq!(full.body, "first half");

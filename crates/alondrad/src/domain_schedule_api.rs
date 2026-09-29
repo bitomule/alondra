@@ -66,20 +66,20 @@ fn id(path: &str) -> Option<&str> {
 }
 
 fn schedule_path(path: &str) -> Option<(&str, Option<&str>)> {
-    let suffix = path.strip_prefix("/v2/domain/schedules/")?;
-    if let Some(schedule_id) = suffix.strip_suffix("/run") {
+    let suffix = path.strip_prefix("/schedules/")?;
+    if let Some(schedule_id) = suffix.strip_suffix("/runs") {
         return Some((id(schedule_id)?, Some("run")));
     }
     Some((id(suffix)?, None))
 }
 
 pub(crate) fn approved_read_path(path: &str) -> bool {
-    path == "/v2/domain/schedules" || schedule_path(path).is_some_and(|(_, action)| action.is_none())
+    path == "/schedules" || schedule_path(path).is_some_and(|(_, action)| action.is_none())
 }
 
 pub(crate) fn approved_mutation_path(method: &str, path: &str, body: bool) -> bool {
     match (method, path, body) {
-        ("POST", "/v2/domain/schedules", true) => true,
+        ("POST", "/schedules", true) => true,
         ("PUT", _, true) | ("DELETE", _, false) => schedule_path(path).is_some_and(|(_, action)| action.is_none()),
         ("POST", _, false) => schedule_path(path).is_some_and(|(_, action)| action == Some("run")),
         _ => false,
@@ -110,7 +110,7 @@ pub(crate) fn read(domain: &DomainRuntime, path: &str) -> Value {
         Ok(state) => state,
         Err(_) => return error("storage_unavailable", "domain transaction could not be completed"),
     };
-    let body = if path == "/v2/domain/schedules" {
+    let body = if path == "/schedules" {
         let schedules: Vec<_> = state.schedule.schedules.values()
             .filter(|schedule| schedule.deleted_at.is_none())
             .map(|schedule| visible(&state, schedule)).collect();
@@ -217,7 +217,7 @@ pub(crate) fn mutation(
         }),
         None => Ok(None),
     };
-    if method == "POST" && path.ends_with("/run") {
+    if method == "POST" && path.ends_with("/runs") {
         let prior = match receipt(domain) {
             Ok(prior) => prior,
             Err(error_value) => return store_error(error_value),
@@ -379,7 +379,7 @@ mod tests {
         let draft = Fixture::draft();
         let digest = [7u8; 32];
         let create = || encrypted_mutation(&fixture.domain, &fixture.home, "phone",
-            "POST", "/v2/domain/schedules", Some(&draft), ("phone", "create", &digest), || Ok(()));
+            "POST", "/schedules", Some(&draft), ("phone", "create", &digest), || Ok(()));
         let first = create();
         assert_eq!(first["status"], 201);
         let schedule_id = first["body"]["id"].as_str().unwrap();
@@ -392,10 +392,10 @@ mod tests {
         fs::write(&options_path, original_options).unwrap();
         assert_eq!(fixture.domain.state().unwrap().revision, initial_revision);
         let conflict = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
-            "POST", "/v2/domain/schedules", Some(&draft), ("phone", "create", &[6u8;32]), || Ok(()));
+            "POST", "/schedules", Some(&draft), ("phone", "create", &[6u8;32]), || Ok(()));
         assert_eq!(conflict["body"]["code"], "idempotency_conflict");
-        let path = format!("/v2/domain/schedules/{schedule_id}");
-        let run_path = format!("{path}/run");
+        let path = format!("/schedules/{schedule_id}");
+        let run_path = format!("{path}/runs");
         let run = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
             "POST", &run_path, None, ("phone", "run", &[8u8;32]), || Ok(()));
         assert_eq!(run["status"], 202);
@@ -421,7 +421,7 @@ mod tests {
         let deleted = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "DELETE",
             &path, None, ("phone", "delete", &[10u8;32]), || Ok(()));
         assert_eq!(deleted["body"]["ok"], true);
-        assert_eq!(read(&fixture.domain, "/v2/domain/schedules")["body"]["schedules"].as_array().unwrap().len(), 0);
+        assert_eq!(read(&fixture.domain, "/schedules")["body"]["schedules"].as_array().unwrap().len(), 0);
         assert_eq!(read(&fixture.domain, &path)["status"], 404);
     }
 
@@ -431,9 +431,9 @@ mod tests {
         let mut draft = Fixture::draft();
         draft["enabled"] = json!(false);
         let created = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
-            "POST", "/v2/domain/schedules", Some(&draft),
+            "POST", "/schedules", Some(&draft),
             ("phone", "create-disabled", &[11u8; 32]), || Ok(()));
-        let path = format!("/v2/domain/schedules/{}/run", created["body"]["id"].as_str().unwrap());
+        let path = format!("/schedules/{}/runs", created["body"]["id"].as_str().unwrap());
         let run = encrypted_mutation(&fixture.domain, &fixture.home, "phone",
             "POST", &path, None, ("phone", "manual-disabled", &[12u8; 32]), || Ok(()));
         assert_eq!(run["status"], 202);
@@ -454,18 +454,18 @@ mod tests {
 
     #[test]
     fn route_and_draft_boundaries_do_not_accept_client_due_times() {
-        assert!(approved_read_path("/v2/domain/schedules"));
-        assert!(approved_read_path("/v2/domain/schedules/s_1"));
-        assert!(!approved_read_path("/v2/domain/schedules/s_1/run"));
-        assert!(!approved_read_path("/v2/domain/schedules/%2e%2e"));
-        assert!(approved_mutation_path("POST", "/v2/domain/schedules/s_1/run", false));
-        assert!(!approved_mutation_path("POST", "/v2/domain/schedules/s_1/run", true));
-        assert!(!approved_mutation_path("DELETE", "/v2/domain/schedules/s_1?x=1", false));
+        assert!(approved_read_path("/schedules"));
+        assert!(approved_read_path("/schedules/s_1"));
+        assert!(!approved_read_path("/schedules/s_1/runs"));
+        assert!(!approved_read_path("/schedules/%2e%2e"));
+        assert!(approved_mutation_path("POST", "/schedules/s_1/runs", false));
+        assert!(!approved_mutation_path("POST", "/schedules/s_1/runs", true));
+        assert!(!approved_mutation_path("DELETE", "/schedules/s_1?x=1", false));
         let fixture = Fixture::new();
         let mut draft = Fixture::draft();
         draft["next_run"] = json!(1);
         let rejected = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "POST",
-            "/v2/domain/schedules", Some(&draft), ("phone", "bad", &[1u8;32]), || Ok(()));
+            "/schedules", Some(&draft), ("phone", "bad", &[1u8;32]), || Ok(()));
         assert_eq!(rejected["status"], 422);
         assert!(fixture.domain.state().unwrap().schedule.schedules.is_empty());
         let mut bad_interval = Fixture::draft();
@@ -473,7 +473,7 @@ mod tests {
         bad_interval["interval"] = json!(0);
         bad_interval["start_at"] = json!(1000);
         let rejected = encrypted_mutation(&fixture.domain, &fixture.home, "phone", "POST",
-            "/v2/domain/schedules", Some(&bad_interval), ("phone", "bad-interval", &[2u8;32]), || Ok(()));
+            "/schedules", Some(&bad_interval), ("phone", "bad-interval", &[2u8;32]), || Ok(()));
         assert_eq!(rejected["status"], 422);
     }
 }

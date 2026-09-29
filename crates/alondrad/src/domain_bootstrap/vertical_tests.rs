@@ -138,14 +138,37 @@ impl Fixture {
     }
 
     async fn post(&self, bearer: &str, envelope: &Value) -> (StatusCode, Value) {
-        let response = self
-            .client
-            .post(format!("{}/v2/domain/commands", self.base))
-            .bearer_auth(bearer)
-            .json(envelope)
-            .send()
-            .await
-            .unwrap();
+        let command = envelope["command"].as_object().unwrap();
+        let kind = command["kind"].as_str().unwrap();
+        let task = command.get("task_id").and_then(Value::as_str);
+        let interaction = command.get("interaction_id").or_else(|| command.get("presentation_id")).and_then(Value::as_str);
+        let (method, path) = match kind {
+            "create_request" => ("POST", "/requests".to_owned()),
+            "create_task" => ("POST", format!("/requests/{}/tasks", command["request_id"].as_str().unwrap())),
+            "register_pr" => ("POST", format!("/tasks/{}/pull-requests", task.unwrap())),
+            "present_result" => ("POST", format!("/tasks/{}/results", task.unwrap())),
+            "complete_task" => ("POST", format!("/tasks/{}/completion", task.unwrap())),
+            "ask_question" => ("POST", "/questions".to_owned()),
+            "answer_question" => ("POST", format!("/interactions/{}/answers", interaction.unwrap())),
+            "accept_delivery" => ("POST", format!("/interactions/{}/acceptance", interaction.unwrap())),
+            "create_document" => ("POST", format!("/tasks/{}/documents", task.unwrap())),
+            "decide_document_review" => ("PUT", format!("/tasks/{}/documents/{}/review", task.unwrap(), command["document_id"].as_str().unwrap())),
+            "claim_merge_authorization" => ("POST", format!("/merge-authorizations/{}/claim", command["authorization_id"].as_str().unwrap())),
+            _ => panic!("vertical test command has no resource route: {kind}"),
+        };
+        let mut body = serde_json::Map::new();
+        for key in ["data_epoch", "command_id", "expected_revision"] {
+            body.insert(key.to_owned(), envelope[key].clone());
+        }
+        for (key, value) in command {
+            if key != "kind" && !(key == "request_id" && path != "/requests")
+                && !(key == "task_id" && (path.starts_with("/tasks/") || kind == "claim_merge_authorization")) {
+                body.insert(key.clone(), value.clone());
+            }
+        }
+        if kind == "create_request" && !body.contains_key("auto_merge") { body.insert("auto_merge".into(), json!(false)); }
+        let response = self.client.request(method.parse().unwrap(), format!("{}{}", self.base, path))
+            .bearer_auth(bearer).json(&Value::Object(body)).send().await.unwrap();
         let status = response.status();
         (status, response.json().await.unwrap())
     }
@@ -158,7 +181,7 @@ impl Fixture {
             &self.agent
         };
         let (status, body) = self.post(bearer, &envelope).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(status, StatusCode::OK, "command={} body={body}", envelope["command"]["kind"]);
         body
     }
 
@@ -234,10 +257,10 @@ async fn http_producer_answer_and_document_are_visible_to_signed_reader() {
         "options":[{"id":"yes", "label":"Yes", "inputs":[]}]}),
         )
         .await;
-    let (status, projection) = fixture.get_signed("/v2/domain").await;
+    let (status, projection) = fixture.get_signed("/tasks/answer-task/interactions").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        projection["interactions"]
+        projection["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -247,10 +270,10 @@ async fn http_producer_answer_and_document_are_visible_to_signed_reader() {
         json!({"kind":"answer_question", "interaction_id":"question-1",
         "option_id":"yes", "inputs":{}}),
     );
-    let (status, projection) = fixture.get_signed("/v2/domain").await;
+    let (status, projection) = fixture.get_signed("/tasks/answer-task/interactions").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        projection["interactions"]
+        projection["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -300,7 +323,7 @@ async fn http_producer_answer_and_document_are_visible_to_signed_reader() {
         )
         .await;
     let (status, chunk) = fixture
-        .get_signed("/v2/domain/document-revisions/doc-v1/content?offset=0")
+        .get_signed("/document-revisions/doc-v1/content?offset=0")
         .await;
     assert_eq!(status, StatusCode::OK, "{chunk}");
     assert_eq!(chunk["revision_id"], "doc-v1");
@@ -336,10 +359,10 @@ async fn http_producer_answer_and_document_are_visible_to_signed_reader() {
         "presentation_id":"doc-delivery"}),
         )
         .await;
-    let (status, projection) = fixture.get_signed("/v2/domain").await;
+    let (status, projection) = fixture.get_signed("/tasks").await;
     assert_eq!(status, StatusCode::OK);
     assert!(
-        projection["tasks"]
+        projection["items"]
             .as_array()
             .unwrap()
             .iter()
@@ -394,18 +417,15 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
         "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]}),
         )
         .await;
-    let (status, projection) = fixture.get_signed("/v2/domain").await;
+    let (status, projection) = fixture.get_signed("/pull-requests").await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(projection["pull_requests"].as_array().unwrap().len(), 1);
-    assert_eq!(projection["pull_requests"][0]["task_id"], "pr-task");
-    assert_eq!(projection["pull_requests"][0]["head"], "0123456789abcdef");
-    assert!(
-        projection["interactions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|interaction| interaction["id"] == "pr-delivery")
-    );
+    assert_eq!(projection["items"].as_array().unwrap().len(), 1);
+    assert_eq!(projection["items"][0]["task_id"], "pr-task");
+    assert_eq!(projection["items"][0]["head"], "0123456789abcdef");
+    let (status, interactions) = fixture.get_signed("/tasks/pr-task/interactions").await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(interactions["items"].as_array().unwrap().iter()
+        .any(|interaction| interaction["id"] == "pr-delivery"));
     assert_ne!(
         fixture.domain.state().unwrap().tasks[&"pr-task".into()].state,
         TaskState::Done
@@ -433,7 +453,7 @@ async fn http_merge_claim_is_admitted_only_with_github_confirmation_and_the_merg
         "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]})).await;
     fixture.user(json!({"kind":"authorize_merge", "authorization_id":"auth-7", "presentation_id":"delivery-7",
         "pr_id":"pr-7", "expected_head":head, "method":"squash"}));
-    let claim = json!({"kind":"claim_merge_authorization", "authorization_id":"auth-7",
+    let claim = json!({"kind":"claim_merge_authorization", "task_id":"claim-task", "authorization_id":"auth-7",
         "remote_head":head, "remote_base":"main", "base_verified":true});
     let envelope = fixture.envelope(claim.clone());
     let (status, body) = fixture.post(&fixture.agent, &envelope).await;

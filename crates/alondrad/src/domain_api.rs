@@ -1,5 +1,5 @@
-//! Versioned domain commands. Both local HTTP and encrypted transport call the
-//! same runtime, and the legacy Hub and the committed v2 daemon share one set of
+//! Resource-oriented domain API. Both local HTTP and encrypted transport call the
+//! same runtime, and the local Hub and authoritative daemon share one set of
 //! handlers through `DomainHost`.
 use crate::auth::{Signed, is_local};
 use crate::domain_authority::Principal;
@@ -12,10 +12,11 @@ use alondra_core::domain_v2::reads;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post, put};
 use axum::{Extension, Json, Router};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::process::Stdio;
 use std::sync::Arc;
@@ -30,6 +31,7 @@ pub(crate) trait DomainHost: Send + Sync + 'static {
     fn cutover_committed(&self) -> bool;
     /// Who confirms a PR's remote head and base before an Agent's merge claim is admitted.
     fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver;
+    fn new_work_client(&self) -> Option<&crate::v2_client_routes::Client> { None }
 }
 impl DomainHost for Hub {
     fn domain(&self) -> &DomainRuntime {
@@ -53,45 +55,56 @@ const LOCAL_COMMAND_BYTES: usize = 8 * 1024 * 1024;
 
 pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
     let router = Router::new()
-        .route("/v2/domain", get(projection::<H>))
-        .route("/v2/domain/schedules", get(schedule_list::<H>).post(schedule_mutation::<H>))
-        .route("/v2/domain/schedules/{id}", get(schedule_detail::<H>).put(schedule_mutation::<H>).delete(schedule_mutation::<H>))
-        .route("/v2/domain/schedules/{id}/run", post(schedule_mutation::<H>))
-        .route("/v2/domain/capabilities", get(capabilities::<H>))
-        .route("/v2/domain/delivery-attempts", get(delivery_evidence::<H>))
-        .route("/v2/domain/merge-authorizations/{id}", get(merge_authorization::<H>))
-        .route("/v2/domain/changes", get(changes::<H>))
-        .route("/v2/domain/pull-requests/{id}/diff", get(pull_request_diff::<H>))
-        .route("/v2/domain/tasks/{id}/actions", get(task_actions::<H>))
-        .route(
-            "/v2/domain/document-revisions/{id}/content",
-            get(document_content::<H>),
-        )
-        .route(
-            "/v2/domain/commands",
-            post(command::<H>).layer(axum::extract::DefaultBodyLimit::max(LOCAL_COMMAND_BYTES)),
-        );
+        .route("/schedules", get(schedule_list::<H>).post(schedule_mutation::<H>))
+        .route("/schedules/{id}", get(schedule_detail::<H>).put(schedule_mutation::<H>).delete(schedule_mutation::<H>))
+        .route("/schedules/{id}/runs", post(schedule_mutation::<H>))
+        .route("/capabilities", get(capabilities::<H>))
+        .route("/delivery-attempts", get(delivery_evidence::<H>))
+        .route("/merge-authorizations/{id}", get(merge_authorization::<H>))
+        .route("/changes", get(changes::<H>))
+        .route("/pull-requests/{id}/diff", get(pull_request_diff::<H>))
+        .route("/tasks/{id}/actions", get(task_actions::<H>))
+        .route("/requests", get(sectioned_read::<H>).post(request_resource::<H>))
+        .route("/tasks/{id}", get(sectioned_read::<H>).patch(resource_command::<H>))
+        .route("/questions", post(resource_command::<H>))
+        .route("/action-requests", post(resource_command::<H>))
+        .route("/messages", post(resource_command::<H>))
+        .route("/document-revisions/{id}/content", get(document_content::<H>));
+    let mutations = [
+        ("/requests/{id}/close", "POST"),
+        ("/requests/{request_id}/tasks", "POST"),
+        ("/tasks/{id}/assignee", "PUT"),
+        ("/tasks/{id}/dependencies", "PUT"), ("/tasks/{id}/start", "POST"),
+        ("/tasks/{id}/documents", "POST"), ("/tasks/{id}/documents/{document_id}", "PUT"),
+        ("/tasks/{id}/documents/{document_id}/review", "PUT"),
+        ("/tasks/{id}/document-links", "POST"), ("/tasks/{id}/pull-requests", "POST"),
+        ("/tasks/{id}/results", "POST"), ("/tasks/{id}/stack-readiness", "POST"),
+        ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
+        ("/tasks/{id}/reopening", "POST"),
+        ("/tasks/{id}/archival", "POST"),
+        ("/merge-authorizations/{id}/claim", "POST"),
+        ("/interactions/{id}/answers", "POST"),
+        ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/subject", "PUT"),
+        ("/interactions/{id}/feedback", "POST"), ("/interactions/{id}/acceptance", "POST"),
+        ("/interactions/{id}/merge-authorizations", "POST"), ("/interactions/{id}/read-state", "PUT"),
+    ];
+    let router = mutations.into_iter().fold(router, |router, (path, method)| {
+        let endpoint = match method {
+            "POST" => post(resource_command::<H>),
+            "PUT" => put(resource_command::<H>),
+            "PATCH" => patch(resource_command::<H>),
+            _ => unreachable!("resource command methods are explicit"),
+        };
+        router.route(path, endpoint
+            .layer(axum::extract::DefaultBodyLimit::max(LOCAL_COMMAND_BYTES)))
+    });
     let sectioned = [
-        "/v2/domain/summary",
-        "/v2/domain/inbox",
-        "/v2/domain/inbox/{id}",
-        "/v2/domain/tasks",
-        "/v2/domain/tasks/{id}",
-        "/v2/domain/tasks/{id}/interactions",
-        "/v2/domain/interactions",
-        "/v2/domain/interactions/{id}",
-        "/v2/domain/interactions/{id}/body",
-        "/v2/domain/requests",
-        "/v2/domain/requests/{id}",
-        "/v2/domain/requests/{id}/body",
-        "/v2/domain/agents",
-        "/v2/domain/pull-requests",
-        "/v2/domain/pull-requests/{id}",
-        "/v2/domain/documents",
-        "/v2/domain/documents/{id}",
-        "/v2/domain/merge-authorizations",
-        "/v2/domain/stack-readiness",
-        "/v2/domain/superseded-acceptances",
+        "/summary", "/inbox", "/inbox/{id}", "/tasks",
+        "/tasks/{id}/interactions", "/interactions", "/interactions/{id}",
+        "/interactions/{id}/body", "/requests/{id}",
+        "/requests/{id}/body", "/agents", "/pull-requests", "/pull-requests/{id}",
+        "/documents", "/documents/{id}", "/merge-authorizations",
+        "/stack-readiness", "/superseded-acceptances",
     ];
     sectioned.into_iter().fold(router, |router, path| router.route(path, get(sectioned_read::<H>)))
 }
@@ -126,13 +139,13 @@ fn schedule_read<H: DomainHost>(host: &H, path: &str) -> Response {
 }
 async fn schedule_list<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>) -> Response {
     if !signed_read(&*host, &signed) { return unsigned_read(); }
-    let response = schedule_read(&*host, "/v2/domain/schedules");
+    let response = schedule_read(&*host, "/schedules");
     if !signed_read(&*host, &signed) { return unsigned_read(); }
     response
 }
 async fn schedule_detail<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>, Path(id): Path<String>) -> Response {
     if !signed_read(&*host, &signed) { return unsigned_read(); }
-    let response = schedule_read(&*host, &format!("/v2/domain/schedules/{id}"));
+    let response = schedule_read(&*host, &format!("/schedules/{id}"));
     if !signed_read(&*host, &signed) { return unsigned_read(); }
     response
 }
@@ -152,7 +165,7 @@ async fn schedule_mutation<H: DomainHost>(
         return domain_error(legacy_write_blocked());
     }
     let bodyless = method == axum::http::Method::DELETE
-        || (method == axum::http::Method::POST && uri.path().ends_with("/run"));
+        || (method == axum::http::Method::POST && uri.path().ends_with("/runs"));
     let body = match body {
         Ok(Json(body)) => Some(body),
         Err(_) if bodyless => None,
@@ -637,23 +650,21 @@ pub(crate) async fn encrypted_read_runtime(
     approved: &crate::service::ApprovedDevice<'_>, path: &str,
 ) -> anyhow::Result<Response> {
     approved.recheck()?;
-    let response = if path == "/v2/domain" {
-        projection_inner(domain)
-    } else if crate::domain_schedule_api::approved_read_path(path) {
+    let response = if crate::domain_schedule_api::approved_read_path(path) {
         crate::domain_schedule_api::response(crate::domain_schedule_api::read(domain, path))
-    } else if path == "/v2/domain/capabilities" {
+    } else if path == "/capabilities" {
         capabilities_inner(domain)
-    } else if let Some(query) = path.strip_prefix("/v2/domain/delivery-attempts?") {
+    } else if let Some(query) = path.strip_prefix("/delivery-attempts?") {
         delivery_evidence_inner(domain, query)
-    } else if let Some(query) = path.strip_prefix("/v2/domain/changes?") {
+    } else if let Some(query) = path.strip_prefix("/changes?") {
         changes_inner(domain, Some(query.to_owned())).await
-    } else if let Some(id) = path.strip_prefix("/v2/domain/pull-requests/")
+    } else if let Some(id) = path.strip_prefix("/pull-requests/")
         .and_then(|suffix| suffix.strip_suffix("/diff")) {
         pull_request_diff_inner(domain, id.to_owned()).await
-    } else if let Some(id) = path.strip_prefix("/v2/domain/tasks/")
+    } else if let Some(id) = path.strip_prefix("/tasks/")
         .and_then(|suffix| suffix.strip_suffix("/actions")) {
         task_actions_inner(domain, id.to_owned())
-    } else if let Some((id, query)) = path.strip_prefix("/v2/domain/document-revisions/")
+    } else if let Some((id, query)) = path.strip_prefix("/document-revisions/")
         .and_then(|suffix| suffix.split_once("/content?")) {
         document_content_inner(domain, home, id.to_owned(), Some(query.to_owned())).await
     } else if let Some(route) = crate::domain_reads::parse(path) {
@@ -674,7 +685,7 @@ pub(crate) fn delivery_evidence_query(query: &str) -> Option<i64> {
 }
 
 pub(crate) fn resolve_delivery_attempt_id(path: &str) -> Option<i64> {
-    let value = path.strip_prefix("/v2/domain/delivery-attempts/")?
+    let value = path.strip_prefix("/delivery-attempts/")?
         .strip_suffix("/resolve")?;
     if value.is_empty() || value.len() > 19 || !value.bytes().all(|b| b.is_ascii_digit()) {
         return None;
@@ -782,19 +793,242 @@ pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Op
     ))
 }
 
-async fn command<H: DomainHost>(
+async fn resource_command<H: DomainHost>(
     State(host): State<Arc<H>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     signed: Option<Extension<Signed>>,
     headers: HeaderMap,
-    body: Result<Json<CommandEnvelope>, JsonRejection>,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(params): Path<HashMap<String, String>>,
+    body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
-    let Ok(Json(envelope)) = body else {
-        return domain_error(DomainError::new(
-            "invalid_input",
-            "invalid domain command envelope",
-        ));
+    let Ok(Json(body)) = body else {
+        return domain_error(DomainError::new("invalid_input", "invalid resource command body"));
     };
+    let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
+        return domain_error(DomainError::new("invalid_input", "unsupported resource operation"));
+    };
+    execute_command(host, peer, signed, headers, envelope).await
+}
+
+/// `POST /requests` accepts the resource form for producers and the established
+/// launch form for a paired User. Both persist through DomainRuntime in one
+/// transaction; only the User form resolves launch options and issue context.
+async fn request_resource<H: DomainHost>(
+    State(host): State<Arc<H>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    signed: Option<Extension<Signed>>,
+    headers: HeaderMap,
+    method: axum::http::Method,
+    uri: axum::http::Uri,
+    Path(params): Path<HashMap<String, String>>,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let Ok(Json(body)) = body else {
+        return domain_error(DomainError::new("invalid_input", "invalid Request body"));
+    };
+    if body.get("text").is_some() {
+        if headers.contains_key("authorization") || !is_local(&peer, &headers) {
+            return domain_error(DomainError::new("forbidden", "the launch form is available to a paired User only"));
+        }
+        if !host.cutover_committed() {
+            return domain_error(legacy_write_blocked());
+        }
+        let Some(device) = signed_device(&*host, &signed) else { return unsigned_read(); };
+        let Some(client) = host.new_work_client() else { return storage_error(); };
+        let user_id = format!("device:{}", device.device_id);
+        let home = host.home().to_owned();
+        return match client.write(&user_id, crate::v2_client_routes::Write::NewRequest, &body, None,
+            &|| approved(&home, &device)).await {
+            Ok(reply) => reply.into_response(),
+            Err(_) => storage_error(),
+        };
+    }
+    if signed_device(&*host, &signed).is_some() {
+        return domain_error(DomainError::new("invalid_input", "a paired User must submit the Request launch form"));
+    }
+    if !headers.contains_key("authorization") {
+        return unsigned_read();
+    }
+    let Some(envelope) = resource_envelope(method.as_str(), uri.path(), &params, body) else {
+        return domain_error(DomainError::new("invalid_input", "invalid Request resource"));
+    };
+    execute_command(host, peer, signed, headers, envelope).await
+}
+
+pub(crate) fn resource_envelope(
+    method: &str,
+    path: &str,
+    params: &HashMap<String, String>,
+    mut body: Value,
+) -> Option<CommandEnvelope> {
+    if params.values().any(|value| !valid_resource_id(value)) { return None; }
+    let task = params.get("id");
+    let request = params.get("request_id");
+    let interaction = params.get("id");
+    let doc = params.get("document_id");
+    let (kind, path_field): (&str, Option<(&str, &str)>) = match (method, path) {
+        ("POST", "/requests") => ("create_request", None),
+        ("POST", "/questions") => ("ask_question", None),
+        ("POST", "/action-requests") => ("request_action", None),
+        ("POST", "/messages") => ("publish_information", None),
+        ("POST", p) if p.starts_with("/requests/") && p.ends_with("/close") => ("close_request", Some(("request_id", params.get("id")?))),
+        ("POST", p) if p.starts_with("/requests/") && p.ends_with("/tasks") => ("create_task", Some(("request_id", request?))),
+        ("PATCH", p) if p.starts_with("/tasks/") => ("retitle_task", Some(("task_id", task?))),
+        ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/assignee") => ("assign_task", Some(("task_id", task?))),
+        ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/dependencies") => ("set_dependencies", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/start") => ("start_task", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/documents") => ("create_document", Some(("task_id", task?))),
+        ("PUT", p) if p.starts_with("/tasks/") && p.ends_with("/review") => {
+            let document_id = doc?;
+            if body.get("document_id").is_some_and(|value| value.as_str() != Some(document_id)) { return None; }
+            body["document_id"] = json!(document_id);
+            ("decide_document_review", Some(("task_id", task?)))
+        }
+        ("PUT", p) if p.starts_with("/tasks/") && p.contains("/documents/") && !p.ends_with("/review") => {
+            let id = params.get("id")?;
+            let document_id = doc?;
+            if body.get("document_id").is_some_and(|value| value.as_str() != Some(document_id)) { return None; }
+            body["document_id"] = json!(document_id);
+            ("revise_document", Some(("task_id", id)))
+        }
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/document-links") => ("link_task_document", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/pull-requests") => ("register_pr", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/results") => ("present_result", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/stack-readiness") => ("publish_stack_readiness", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/completion") => ("complete_task", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cancellation") => ("cancel_task", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/reopening") => ("reopen_task", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/archival") => ("archive_task", Some(("task_id", task?))),
+        ("POST", p) if p.starts_with("/merge-authorizations/") && p.ends_with("/claim") => {
+            let authorization_id = params.get("id")?;
+            if body.get("authorization_id").is_some_and(|value| value.as_str() != Some(authorization_id)) { return None; }
+            body["authorization_id"] = json!(authorization_id);
+            ("claim_merge_authorization", None)
+        }
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw_question", Some(("interaction_id", interaction?))),
+        ("PUT", p) if p.starts_with("/interactions/") && p.ends_with("/subject") => ("link_interaction_subject", Some(("interaction_id", interaction?))),
+        ("PUT", p) if p.starts_with("/interactions/") && p.ends_with("/read-state") => ("mark_read", Some(("interaction_id", interaction?))),
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/feedback") => ("submit_feedback", Some(("presentation_id", interaction?))),
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/acceptance") => ("accept_delivery", Some(("presentation_id", interaction?))),
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/merge-authorizations") => ("authorize_merge", Some(("presentation_id", interaction?))),
+        _ => return None,
+    };
+    let object = body.as_object_mut()?;
+    if object.contains_key("kind") || object.contains_key("protocol_version") { return None; }
+    let data_epoch = object.get("data_epoch")?.clone();
+    let command_id = object.get("command_id")?.clone();
+    let expected_revision = object.get("expected_revision")?.clone();
+    if let Some((field, value)) = path_field {
+        if object.get(field).is_some_and(|existing| existing.as_str() != Some(value)) {
+            return None;
+        }
+        object.insert(field.into(), json!(value));
+    }
+    object.insert("kind".into(), json!(kind));
+    let mut envelope = body.clone();
+    let envelope_body = envelope.as_object_mut()?;
+    for key in ["data_epoch", "command_id", "expected_revision"] { envelope_body.remove(key); }
+    serde_json::from_value(json!({
+        "protocol_version": 2,
+        "data_epoch": data_epoch,
+        "command_id": command_id,
+        "expected_revision": expected_revision,
+        "command": envelope,
+    })).ok()
+}
+
+pub(crate) fn resource_envelope_from_path(method: &str, path: &str, body: Value) -> Option<CommandEnvelope> {
+    let segments: Vec<_> = path.strip_prefix('/')?.split('/').collect();
+    let mut params = HashMap::new();
+    match segments.as_slice() {
+        ["requests", id, "close"] => { params.insert("id".into(), decode_path_id(id)?); }
+        ["requests", request_id, "tasks"] => { params.insert("request_id".into(), decode_path_id(request_id)?); }
+        ["tasks", id, "documents", document_id] => {
+            params.insert("id".into(), decode_path_id(id)?);
+            params.insert("document_id".into(), decode_path_id(document_id)?);
+        }
+        ["tasks", id, "documents", document_id, "review"] => {
+            params.insert("id".into(), decode_path_id(id)?);
+            params.insert("document_id".into(), decode_path_id(document_id)?);
+        }
+        ["merge-authorizations", id, "claim"] => {
+            params.insert("id".into(), decode_path_id(id)?);
+        }
+        ["tasks", id, ..] | ["interactions", id, ..] => { params.insert("id".into(), decode_path_id(id)?); }
+        _ => {}
+    }
+    resource_envelope(method, path, &params, body)
+}
+
+pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
+    let segments: Vec<_> = path.strip_prefix('/').unwrap_or_default().split('/').collect();
+    let registered = match (method, segments.as_slice()) {
+        ("POST", ["requests"] | ["questions"] | ["action-requests"] | ["messages"])
+        | ("POST", ["requests", _, "close"] | ["requests", _, "tasks"])
+        | ("POST", ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
+            | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
+            | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"]
+            | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"]
+            | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"])
+        | ("POST", ["merge-authorizations", _, "claim"]) => true,
+        ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "dependencies"]
+            | ["tasks", _, "documents", _] | ["tasks", _, "documents", _, "review"]
+            | ["interactions", _, "subject"] | ["interactions", _, "read-state"]) => true,
+        ("PATCH", ["tasks", _]) => true,
+        _ => false,
+    };
+    registered && match segments.as_slice() {
+        ["requests"] | ["questions"] | ["action-requests"] | ["messages"] => true,
+        ["requests", id, ..] => valid_resource_id(id),
+        ["merge-authorizations", id, "claim"] => valid_resource_id(id),
+        ["tasks", id, ..] | ["interactions", id, ..] => valid_resource_id(id),
+        _ => false,
+    }
+}
+
+pub(crate) fn approved_resource_read_path(path: &str) -> bool {
+    crate::domain_schedule_api::approved_read_path(path)
+        || crate::domain_reads::approved_read_path(path)
+        || path == "/capabilities"
+        || path.strip_prefix("/merge-authorizations/").is_some_and(valid_resource_id)
+        || path.strip_prefix("/delivery-attempts?").is_some_and(|q| delivery_evidence_query(q).is_some())
+        || path.strip_prefix("/changes?").is_some_and(|q| changes_query(q).is_some())
+        || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(valid_resource_id)
+        || path.strip_prefix("/tasks/").and_then(|s| s.strip_suffix("/actions")).is_some_and(valid_resource_id)
+        || path.strip_prefix("/document-revisions/").and_then(|s| s.split_once("/content?"))
+            .is_some_and(|(id, query)| valid_resource_id(id) && document_content_query(query).is_some())
+}
+
+fn valid_resource_id(value: &str) -> bool {
+    !value.is_empty() && value.len() <= 256 && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn decode_path_id(value: &str) -> Option<String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' {
+            let hi = u8::from_str_radix(std::str::from_utf8(bytes.get(i + 1..i + 2)?).ok()?, 16).ok()?;
+            let lo = u8::from_str_radix(std::str::from_utf8(bytes.get(i + 2..i + 3)?).ok()?, 16).ok()?;
+            decoded.push((hi << 4) | lo);
+            i += 3;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    let decoded = String::from_utf8(decoded).ok()?;
+    valid_resource_id(&decoded).then_some(decoded)
+}
+
+async fn execute_command<H: DomainHost>(
+    host: Arc<H>, peer: SocketAddr, signed: Option<Extension<Signed>>, headers: HeaderMap,
+    envelope: CommandEnvelope,
+) -> Response {
     if let Some(header) = headers.get("authorization") {
         if signed.is_some() || !is_local(&peer, &headers) {
             return domain_error(DomainError::new(
@@ -908,6 +1142,46 @@ pub(crate) fn encrypted_command_runtime(
         Err(StoreError::Storage(error)) => return Err(error),
     })
 }
+
+pub(crate) async fn encrypted_resource_command_runtime(
+    domain: &DomainRuntime, new_work: Option<&crate::v2_client_routes::Client>,
+    sender: &str, method: &str, path: &str, body: Option<&Value>,
+    identity: TransportIdentity<'_>, authorize: impl Fn() -> anyhow::Result<()> + Sync,
+) -> anyhow::Result<Value> {
+    if sender != identity.0 {
+        return Ok(json!({"status":422,"body":DomainError::new("invalid_input", "invalid encrypted sender identity")}));
+    }
+    resource_command_runtime(domain, new_work, sender, method, path, body, Some(identity), authorize).await
+}
+
+pub(crate) async fn resource_command_runtime(
+    domain: &DomainRuntime, new_work: Option<&crate::v2_client_routes::Client>,
+    sender: &str, method: &str, path: &str, body: Option<&Value>,
+    identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()> + Sync,
+) -> anyhow::Result<Value> {
+    if method == "POST" && path == "/requests" && body.is_some_and(|body| body.get("text").is_some()) {
+        let Some(client) = new_work else { anyhow::bail!("request launch support unavailable"); };
+        let Some(body) = body else { anyhow::bail!("request body required"); };
+        let reply = client.write(&format!("device:{sender}"), crate::v2_client_routes::Write::NewRequest,
+            body, identity, &authorize).await?;
+        return Ok(reply.into_value());
+    }
+    let envelope = body.cloned()
+        .and_then(|value| resource_envelope_from_path(method, path, value))
+        .ok_or_else(|| DomainError::new("invalid_input", "invalid resource command"));
+    let Ok(envelope) = envelope else {
+        return Ok(json!({"status":422,"body":DomainError::new("invalid_input", "invalid resource command")}));
+    };
+    let result = domain.execute(
+        &Actor::User { user_id: format!("device:{sender}") }, &envelope, identity,
+        || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into()),
+    );
+    Ok(match result {
+        Ok(outcome) => json!({"status":200,"body":outcome}),
+        Err(StoreError::Domain(error)) => json!({"status":status_for(&error).as_u16(),"body":error}),
+        Err(StoreError::Storage(error)) => return Err(error),
+    })
+}
 pub(crate) fn status_for(error: &DomainError) -> StatusCode {
     match error.code.as_str() {
         "forbidden" | "not_assigned" => StatusCode::FORBIDDEN,
@@ -954,13 +1228,13 @@ mod tests {
     fn delivery_recovery_routes_accept_only_bounded_exact_ids_and_cursors() {
         assert_eq!(delivery_evidence_query("after=0"), Some(0));
         assert_eq!(delivery_evidence_query("after=42"), Some(42));
-        assert_eq!(resolve_delivery_attempt_id("/v2/domain/delivery-attempts/42/resolve"), Some(42));
+        assert_eq!(resolve_delivery_attempt_id("/delivery-attempts/42/resolve"), Some(42));
         for query in ["", "after=-1", "after=1&other=2", "after=999999999999999999999"] {
             assert_eq!(delivery_evidence_query(query), None);
         }
-        for path in ["/v2/domain/delivery-attempts/0/resolve",
-            "/v2/domain/delivery-attempts/1/resolve?retry=1",
-            "/v2/domain/delivery-attempts/../resolve"] {
+        for path in ["/delivery-attempts/0/resolve",
+            "/delivery-attempts/1/resolve?retry=1",
+            "/delivery-attempts/../resolve"] {
             assert_eq!(resolve_delivery_attempt_id(path), None);
         }
     }
@@ -1071,6 +1345,83 @@ mod tests {
             command,
         }
     }
+
+    #[test]
+    fn resource_router_constructs_without_method_collisions() {
+        let _ = routes::<Hub>();
+    }
+
+    #[test]
+    fn resource_mutation_allowlist_tracks_the_registered_methods() {
+        for (method, path) in [
+            ("POST", "/requests"), ("POST", "/requests/r-1/tasks"),
+            ("POST", "/questions"), ("POST", "/action-requests"), ("POST", "/messages"),
+            ("PATCH", "/tasks/t-1"), ("PUT", "/tasks/t-1/assignee"),
+            ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"),
+            ("POST", "/merge-authorizations/auth-1/claim"),
+            ("POST", "/schedules"),
+        ] {
+            let schedule = crate::domain_schedule_api::approved_mutation_path(method, path, true);
+            assert!(is_resource_mutation_path(method, path) || schedule, "{method} {path}");
+        }
+        assert!(!is_resource_mutation_path("POST", "/commands"));
+        assert!(!is_resource_mutation_path("POST", "/tasks/t-1/merge-authorizations/auth-1/claim"));
+        for (method, path) in [
+            ("GET", "/questions"), ("PUT", "/questions"),
+            ("POST", "/questions/extra"), ("POST", "/action-requests/extra"),
+            ("POST", "/messages/extra"),
+        ] {
+            assert!(!is_resource_mutation_path(method, path), "{method} {path}");
+        }
+        assert!(!is_resource_mutation_path("POST", "/tasks/t-1/unknown"));
+        assert!(!approved_resource_read_path("/"));
+        assert!(approved_resource_read_path("/tasks?limit=20"));
+        assert!(!approved_resource_read_path("/tasks?unknown=1"));
+        assert!(approved_resource_read_path("/merge-authorizations/auth-1"));
+        assert!(!approved_resource_read_path("/merge-authorizations/../auth-1"));
+        assert!(!is_resource_mutation_path("POST", "/tasks//start"));
+        assert!(!is_resource_mutation_path("POST", "/tasks/../start"));
+    }
+
+    #[test]
+    fn resource_routes_adapt_to_strict_typed_commands() {
+        let meta = json!({"data_epoch":"epoch","command_id":"stable-1","expected_revision":7});
+        let mut create_task = meta.clone();
+        create_task["task_id"] = json!("task-1");
+        create_task["title"] = json!("Build");
+        create_task["agent_id"] = Value::Null;
+        create_task["review_prs"] = json!(false);
+        create_task["dependencies"] = json!([]);
+        create_task["stack"] = Value::Null;
+        let adapted = resource_envelope_from_path("POST", "/requests/r-1/tasks", create_task).unwrap();
+        assert_eq!(adapted.command, Command::CreateTask {
+            task_id: "task-1".into(), request_id: "r-1".into(), title: "Build".into(),
+            agent_id: None, review_prs: false, dependencies: Default::default(), stack: None,
+        });
+        let mut assign = meta.clone();
+        assign["agent_id"] = json!("node-1");
+        let adapted = resource_envelope_from_path("PUT", "/tasks/task-1/assignee", assign).unwrap();
+        assert_eq!(adapted.command, Command::AssignTask { task_id: "task-1".into(), agent_id: "node-1".into() });
+        let mut mismatched = meta.clone();
+        mismatched["task_id"] = json!("other-task");
+        mismatched["title"] = json!("Build");
+        assert!(resource_envelope_from_path("PATCH", "/tasks/task-1", mismatched).is_none());
+        let mut unknown = meta.clone();
+        unknown["surprise"] = json!(true);
+        assert!(resource_envelope_from_path("POST", "/messages", unknown).is_none());
+        let mut legacy_shape = json!({"data_epoch":"epoch","command_id":"stable-1","expected_revision":7,
+            "protocol_version":2,"request_id":"request-1","body":"Work","auto_merge":false});
+        assert!(resource_envelope_from_path("POST", "/requests", legacy_shape.take()).is_none());
+        let mut claim = meta.clone();
+        claim["authorization_id"] = json!("auth-1");
+        claim["remote_head"] = json!("0123456789abcdef");
+        claim["remote_base"] = json!("main");
+        claim["base_verified"] = json!(true);
+        assert!(resource_envelope_from_path("POST", "/merge-authorizations/auth-1/claim", claim.clone()).is_some());
+        claim["authorization_id"] = json!("auth-other");
+        assert!(resource_envelope_from_path("POST", "/merge-authorizations/auth-1/claim", claim).is_none(),
+            "the capability ID in the body must match the resource URL");
+    }
     fn seeded(hub: &Hub) {
         for (actor, id, command) in [
             (
@@ -1174,35 +1525,6 @@ mod tests {
         });
         (base, handle, key, device.id)
     }
-    fn signed_post(
-        client: &reqwest::Client,
-        base: &str,
-        key: &SigningKey,
-        device_id: &str,
-        envelope: &CommandEnvelope,
-    ) -> reqwest::RequestBuilder {
-        static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-        let body = serde_json::to_vec(envelope).unwrap();
-        let timestamp =
-            alondra_core::now_millis() + NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let message = crate::auth::signed_message(
-            "POST",
-            "/v2/domain/commands",
-            &timestamp.to_string(),
-            &body,
-        );
-        let signature: Signature = key.sign(message.as_bytes());
-        client
-            .post(format!("{base}/v2/domain/commands"))
-            .header("content-type", "application/json")
-            .header("x-alondra-device", device_id)
-            .header("x-alondra-timestamp", timestamp.to_string())
-            .header(
-                "x-alondra-signature",
-                STANDARD.encode(signature.to_der().as_bytes()),
-            )
-            .body(body)
-    }
     fn signed_get(
         client: &reqwest::Client,
         base: &str,
@@ -1246,11 +1568,8 @@ mod tests {
                 interaction_id: "info-a".into(),
             },
         );
-        let first = signed_post(&client, &base, &key, &device_id, &request)
-            .send()
-            .await
-            .unwrap();
-        assert_eq!(first.status(), reqwest::StatusCode::CONFLICT, "no v2 writes before cutover");
+        let first = client.post(format!("{base}/commands")).json(&request).send().await.unwrap();
+        assert_eq!(first.status(), reqwest::StatusCode::NOT_FOUND, "there is no generic command endpoint");
         let body = serde_json::to_value(&request).unwrap();
         let result = encrypted_command_runtime(
             &hub.domain,
@@ -1337,38 +1656,32 @@ mod tests {
         );
         assert_eq!(
             client
-                .get(format!("{base}/v2/domain"))
+                .get(format!("{base}/summary"))
                 .send()
                 .await
                 .unwrap()
                 .status(),
             reqwest::StatusCode::FORBIDDEN
         );
-        let projection: DomainProjection =
-            signed_get(&client, &base, &key, &device_id, "/v2/domain")
-                .send()
-                .await
-                .unwrap()
-                .json()
-                .await
-                .unwrap();
-        assert_eq!(projection, hub.domain.projection().unwrap());
+        let summary: reads::Summary = signed_get(&client, &base, &key, &device_id, "/summary")
+            .send().await.unwrap().json().await.unwrap();
+        let expected = hub.domain.reads.snapshot(&hub.domain).unwrap();
+        assert_eq!(summary.revision, expected.envelope_ids().1);
         assert_eq!(
-            client.get(format!("{base}/v2/domain/summary?include=inbox")).send().await.unwrap().status(),
+            client.get(format!("{base}/summary?include=inbox")).send().await.unwrap().status(),
             reqwest::StatusCode::FORBIDDEN
         );
-        let summary: reads::Summary = signed_get(&client, &base, &key, &device_id, "/v2/domain/summary?include=inbox")
+        let summary: reads::Summary = signed_get(&client, &base, &key, &device_id, "/summary?include=inbox")
             .send().await.unwrap().json().await.unwrap();
-        assert_eq!(summary.revision, projection.revision);
-        assert_eq!(summary.sections["inbox"].count as usize, projection.inbox.len());
-        assert_eq!(summary.expansions["inbox"].items.len(), projection.inbox.len());
+        assert!(summary.sections.contains_key("inbox"));
+        assert_eq!(summary.expansions["inbox"].items.len(), summary.sections["inbox"].count as usize);
         let changes: reads::Changes = signed_get(&client, &base, &key, &device_id,
-            &format!("/v2/domain/changes?data_epoch={}&after={}&wait=0", projection.data_epoch, projection.revision))
+            &format!("/changes?data_epoch={}&after={}&wait=0", summary.data_epoch, summary.revision))
             .send().await.unwrap().json().await.unwrap();
         assert!(!changes.changed);
         assert_eq!(changes.sections, summary.sections.iter().map(|(k, v)| (k.clone(), v.revision.clone())).collect());
         assert_eq!(
-            signed_get(&client, &base, &key, &device_id, "/v2/domain/inbox?filter=all").send().await.unwrap().status(),
+            signed_get(&client, &base, &key, &device_id, "/inbox?filter=all").send().await.unwrap().status(),
             reqwest::StatusCode::UNPROCESSABLE_ENTITY
         );
         crate::auth::Auth::open(&home)
@@ -1376,7 +1689,7 @@ mod tests {
             .revoke(&device_id)
             .unwrap();
         assert_eq!(
-            signed_get(&client, &base, &key, &device_id, "/v2/domain")
+            signed_get(&client, &base, &key, &device_id, "/summary")
                 .send()
                 .await
                 .unwrap()
@@ -1401,28 +1714,23 @@ mod tests {
                 provider_agent_id: None,
             })
             .unwrap();
-        let cursor = client.get(format!("{base}/v2/domain/capabilities"))
+        let cursor = client.get(format!("{base}/capabilities"))
             .bearer_auth(token.expose_for_child_environment()).send().await.unwrap();
         assert_eq!(cursor.status(), reqwest::StatusCode::OK);
         assert_eq!(cursor.json::<Value>().await.unwrap()["protocol_version"], PROTOCOL_VERSION);
-        assert_eq!(client.get(format!("{base}/v2/domain/capabilities"))
+        assert_eq!(client.get(format!("{base}/capabilities"))
             .bearer_auth("not-a-capability").send().await.unwrap().status(),
             reqwest::StatusCode::FORBIDDEN);
-        assert_eq!(client.get(format!("{base}/v2/domain/merge-authorizations/missing"))
+        assert_eq!(client.get(format!("{base}/merge-authorizations/missing"))
             .send().await.unwrap().status(), reqwest::StatusCode::FORBIDDEN);
-        assert_eq!(client.get(format!("{base}/v2/domain/merge-authorizations/missing"))
+        assert_eq!(client.get(format!("{base}/merge-authorizations/missing"))
             .bearer_auth(token.expose_for_child_environment()).send().await.unwrap().status(),
             reqwest::StatusCode::NOT_FOUND);
-        let request = envelope(
-            &hub,
-            "bad-read",
-            Command::MarkRead {
-                interaction_id: "info-a".into(),
-            },
-        );
         let before = hub.domain.state().unwrap();
+        let request = json!({"data_epoch":before.data_epoch,"command_id":"bad-read",
+            "expected_revision":before.revision});
         let anonymous = client
-            .post(format!("{base}/v2/domain/commands"))
+            .put(format!("{base}/interactions/info-a/read-state"))
             .json(&request)
             .send()
             .await
@@ -1430,7 +1738,7 @@ mod tests {
         assert_eq!(anonymous.status(), reqwest::StatusCode::FORBIDDEN);
         for bearer in [token.expose_for_child_environment(), "not-a-capability"] {
             let response = client
-                .post(format!("{base}/v2/domain/commands"))
+                .put(format!("{base}/interactions/info-a/read-state"))
                 .bearer_auth(bearer)
                 .json(&request)
                 .send()
@@ -1441,17 +1749,17 @@ mod tests {
                 "the legacy daemon never writes its v2 sidecar");
         }
         let response = client
-            .post(format!("{base}/v2/domain/commands"))
+            .put(format!("{base}/interactions/info-a/read-state"))
             .header("x-alondra-session", "agent-a")
             .json(&request)
             .send()
             .await
             .unwrap();
         assert_eq!(response.status(), reqwest::StatusCode::CONFLICT);
-        let mut forged = serde_json::to_value(&request).unwrap();
+        let mut forged = request.clone();
         forged["actor"] = json!({"kind":"system"});
         let response = client
-            .post(format!("{base}/v2/domain/commands"))
+            .put(format!("{base}/interactions/info-a/read-state"))
             .json(&forged)
             .send()
             .await
@@ -1466,8 +1774,8 @@ mod tests {
             || anyhow::bail!("device revoked"),
         )
         .unwrap();
-        assert_eq!(revoked["status"], 403);
-        assert_eq!(revoked["body"]["code"], "forbidden");
+        assert_eq!(revoked["status"], 422);
+        assert_eq!(revoked["body"]["code"], "invalid_input");
         assert_eq!(before, hub.domain.state().unwrap());
         server.abort();
         let _ = server.await;
@@ -1531,7 +1839,7 @@ mod tests {
         assert!(managed.starts_with("files/domain-v2/"));
         let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
-        let actions_path = "/v2/domain/tasks/task-a/actions";
+        let actions_path = "/tasks/task-a/actions";
         assert_eq!(
             client
                 .get(format!("{base}{actions_path}"))
@@ -1558,7 +1866,7 @@ mod tests {
             }), None, || Ok(())).unwrap();
         // Replacing the upload after approval cannot alter the accepted revision.
         std::fs::write(home.join("files/design.md"), b"# Changed after review\n").unwrap();
-        let chunk_path = "/v2/domain/document-revisions/rev-a/content?offset=0";
+        let chunk_path = "/document-revisions/rev-a/content?offset=0";
         assert_eq!(
             client
                 .get(format!("{base}{chunk_path}"))

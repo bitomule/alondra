@@ -200,8 +200,8 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
     *fixture.client.gauges.lock().unwrap() = Some((serde_json::from_value(fixture_json("runtime.json")["machine"].clone()).unwrap(),
         serde_json::from_value(fixture_json("runtime.json")["usage"].clone()).ok()));
 
-    assert_eq!(fixture.unsigned_get("/v2/runtime").await, StatusCode::FORBIDDEN, "runtime is for a paired device");
-    let runtime = fixture.get_json("/v2/runtime").await;
+    assert_eq!(fixture.unsigned_get("/runtime").await, StatusCode::FORBIDDEN, "runtime is for a paired device");
+    let runtime = fixture.get_json("/runtime").await;
     let expected = fixture_json("runtime.json");
     for key in ["machine", "usage"] {
         assert_covers(&expected[key], &runtime[key], key);
@@ -250,7 +250,7 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
 async fn times_are_the_commits_own_and_survive_a_restart() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    let before = fixture.get_json("/v2/runtime").await;
+    let before = fixture.get_json("/runtime").await;
     let created = before["requests"]["request-1"]["created_at"].as_i64().unwrap();
     let started = before["tasks"]["task-1"]["state_since"].as_i64().unwrap();
     assert!(created > 0 && started >= created, "the task began after its request");
@@ -260,13 +260,13 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
         attachments: vec![], interaction_id: "info-1".into(),
         scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(),
     });
-    let informed = fixture.get_json("/v2/runtime").await;
+    let informed = fixture.get_json("/runtime").await;
     assert_eq!(informed["tasks"]["task-1"]["state_since"], before["tasks"]["task-1"]["state_since"], "information does not move the task's state");
     let appeared = informed["inbox_times"]["interaction:info-1"].as_i64().unwrap();
     assert!(appeared >= started, "the inbox row carries the time of the commit that added it");
 
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
-    let cancelled = fixture.get_json("/v2/runtime").await;
+    let cancelled = fixture.get_json("/runtime").await;
     assert!(cancelled["tasks"]["task-1"]["state_since"].as_i64().unwrap() >= appeared, "a change of state is timed by the commit that made it");
     let history = fixture.domain.store.lock().unwrap().task_history(&"task-1".into()).unwrap();
     assert_eq!(history.last().map(|step| step.state.as_str()), Some("cancelled"));
@@ -287,7 +287,7 @@ async fn activity_and_search_answer_as_the_fixture_does() {
     live.observe(&hook("agent-a", "SubagentStart", json!({"agent_id": "sub-1", "agent_type": "Explore"})));
     let expected = fixture_json("requests.json");
 
-    let activity = fixture.get_json("/v2/agents/agent-a/activity").await;
+    let activity = fixture.get_json("/agents/agent-a/activity").await;
     assert_covers(&expected["activity"]["response"], &activity, "activity");
     let threads = activity["activity"].as_array().unwrap();
     let main = threads.iter().find(|thread| thread["agent_id"].is_null()).unwrap();
@@ -296,33 +296,34 @@ async fn activity_and_search_answer_as_the_fixture_does() {
     let sub = threads.iter().find(|thread| thread["agent_id"] == "sub-1").unwrap();
     assert_eq!(sub["agent_type"], "Explore");
     assert_covers(&expected["activity"]["response"]["activity"][1], sub, "activity.subagent");
-    let idle = fixture.get_json("/v2/agents/agent-b/activity").await;
+    let idle = fixture.get_json("/agents/agent-b/activity").await;
     assert!(idle["activity"].as_array().unwrap().iter().all(|thread| thread["tool"].is_null()), "{idle}");
-    assert_eq!(fixture.get("/v2/agents/nobody/activity").await.0, StatusCode::NOT_FOUND);
-    assert_eq!(fixture.unsigned_get("/v2/agents/agent-a/activity").await, StatusCode::FORBIDDEN);
+    assert_eq!(fixture.get("/agents/nobody/activity").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(fixture.unsigned_get("/agents/agent-a/activity").await, StatusCode::FORBIDDEN);
 
-    let found = fixture.get_json("/v2/agents/search?q=parser").await;
+    let found = fixture.get_json("/agents/search?q=parser").await;
     assert_covers(&expected["search"]["response"], &found, "search");
     assert_eq!(found["via"], "local");
     assert_eq!(found["sessions"], json!(["agent-b"]), "the parser is in agent-b's last message");
-    assert_eq!(fixture.get_json("/v2/agents/search?q=readable").await["sessions"], json!(["agent-a"]), "a task title is searched");
-    assert_eq!(fixture.get_json("/v2/agents/search?q=nomatchwhatsoever").await["sessions"], json!([]));
+    assert_eq!(fixture.get_json("/agents/search?q=readable").await["sessions"], json!(["agent-a"]), "a task title is searched");
+    assert_eq!(fixture.get_json("/agents/search?q=nomatchwhatsoever").await["sessions"], json!([]));
 }
 
 #[tokio::test]
 async fn unknown_v2_routes_are_a_bare_404_and_reads_are_named_exactly() {
     let fixture = Fixture::start().await;
-    for path in ["/v2/nothing", "/v2/runtime/extra", "/v2/agents", "/v2/agents/a/nothing"] {
+    for path in ["/nothing", "/runtime/extra", "/agents/a/nothing"] {
         let (status, body) = fixture.get(path).await;
         assert_eq!((status, body.len()), (StatusCode::NOT_FOUND, 0), "{path}");
     }
-    assert_eq!(fixture.get("/v2/runtime?x=1").await, (StatusCode::NOT_FOUND, vec![]), "a runtime read takes no query");
-    assert_eq!(fixture.get("/v2/agents/search").await, (StatusCode::NOT_FOUND, vec![]), "a search needs its query");
-    for path in ["/v2/runtime", "/v2/agents/a-1/activity", "/v2/agents/search?q=x%20y"] {
+    assert_eq!(fixture.get("/agents").await.0, StatusCode::OK, "the resource API exposes the agents collection");
+    assert_eq!(fixture.get("/runtime?x=1").await, (StatusCode::NOT_FOUND, vec![]), "a runtime read takes no query");
+    assert_eq!(fixture.get("/agents/search").await, (StatusCode::NOT_FOUND, vec![]), "a search needs its query");
+    for path in ["/runtime", "/agents/a-1/activity", "/agents/search?q=x%20y"] {
         assert!(approved_read_path(path), "{path}");
     }
-    for path in ["/v2/runtime?x=1", "/v2/agents/a%2Fb/activity", "/v2/agents//activity", "/v2/agents/search",
-        "/v2/agents/search?q=", "/v2/agents/search?q=a&q=b", "/v2/agents/search?q=a&x=1", "/v2/runtime/", "/v2/agents/a/activity?x=1"] {
+    for path in ["/runtime?x=1", "/agents/a%2Fb/activity", "/agents//activity", "/agents/search",
+        "/agents/search?q=", "/agents/search?q=a&q=b", "/agents/search?q=a&x=1", "/runtime/", "/agents/a/activity?x=1"] {
         assert!(!approved_read_path(path), "{path}");
     }
 }
@@ -384,7 +385,7 @@ async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fle
     assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
     assert!(!fixture.domain.state().unwrap().agents[&"agent-a".into()].connected, "the domain sees the session gone");
     assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
-    let runtime = fixture.get_json("/v2/runtime").await;
+    let runtime = fixture.get_json("/runtime").await;
     assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
 }
 
@@ -396,7 +397,7 @@ async fn closing_an_interactive_session_only_leaves_the_fleet() {
     fixture.command(Actor::System, "connect-b", Command::ObserveAgent { agent_id: "agent-b".into(), connected: true });
     let sessions = FakeSessions::listing(&[]);
     fixture.client.use_sessions(sessions.clone());
-    let (status, answer) = fixture.send("POST", "/v2/agents/agent-b/close", &json!({"force": false})).await;
+    let (status, answer) = fixture.send("POST", "/agents/agent-b/close", &json!({"force": false})).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["interactive"], true);
     assert!(answer["output"].as_str().unwrap().contains("interactive session"));
@@ -415,31 +416,31 @@ async fn a_busy_session_or_one_with_unsaved_work_is_not_closed() {
         calls: Default::default(), stuck: false,
     });
     fixture.client.use_sessions(sessions.clone());
-    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.send("POST", "/agents/agent-a/close", &json!({"force": true})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(answer["reasons"], json!([{"kind": "busy"}]), "{answer}");
     assert!(answer["error"].as_str().unwrap().contains("still has something pending"));
 
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.send("POST", "/agents/agent-a/close", &json!({"force": true})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(answer["reasons"], json!([{"kind": "worktree", "detail": "2 uncommitted file(s) in /w"}]), "force never discards work: {answer}");
     assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] != "rm"), "nothing was removed");
 
     let stuck = Arc::new(FakeSessions { listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: None, calls: Default::default(), stuck: true });
     fixture.client.use_sessions(stuck);
-    let (status, answer) = fixture.send("POST", "/v2/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.send("POST", "/agents/agent-a/close", &json!({"force": true})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{answer}");
     assert!(answer["error"].as_str().unwrap().contains("is still listed by claude agents"), "{answer}");
-    let (status, error) = fixture.send("POST", "/v2/agents/nobody/close", &json!({"force": true})).await;
+    let (status, error) = fixture.send("POST", "/agents/nobody/close", &json!({"force": true})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
 }
 
 #[test]
 fn writes_are_named_exactly() {
-    assert_eq!(parse_write("/v2/agents/agent-a/close"), Some(Write::Close("agent-a".into())));
-    for path in ["/v2/agents//close", "/v2/agents/a%2Fb/close", "/v2/agents/a/close?x=1", "/v2/agents/a/other", "/v2/close",
-        "/v2/agents/a/close/", "/v2/orchestrator/retry"] {
+    assert_eq!(parse_write("/agents/agent-a/close"), Some(Write::Close("agent-a".into())));
+    for path in ["/agents//close", "/agents/a%2Fb/close", "/agents/a/close?x=1", "/agents/a/other", "/close",
+        "/agents/a/close/", "/orchestrator/retry"] {
         assert_eq!(parse_write(path), None, "{path}");
     }
 }
@@ -453,20 +454,20 @@ async fn chunked_uploads_and_file_chunks_are_for_the_relay_and_not_on_this_mac()
         let (status, _) = fixture.send("POST", request["path"].as_str().unwrap(), &json!({"transfer_id": "x"})).await;
         assert_eq!(status, StatusCode::NOT_FOUND, "{step}");
     }
-    assert_eq!(fixture.get("/v2/files/chunk?path=files%2Fatt-1&offset=0").await, (StatusCode::NOT_FOUND, vec![]));
-    for path in ["/v2/files/chunk?path=files%2Fatt-1&offset=0", "/v2/files/chunk?path=a&offset=5&version=1-2-3",
-        "/v2/files/chunk?offset=0&path=a%2Fb"] {
+    assert_eq!(fixture.get("/files/chunk?path=files%2Fatt-1&offset=0").await, (StatusCode::NOT_FOUND, vec![]));
+    for path in ["/files/chunk?path=files%2Fatt-1&offset=0", "/files/chunk?path=a&offset=5&version=1-2-3",
+        "/files/chunk?offset=0&path=a%2Fb"] {
         assert!(approved_read_path(path), "{path}");
     }
-    for path in ["/v2/files/chunk", "/v2/files/chunk?path=a", "/v2/files/chunk?path=a&offset=5", "/v2/files/chunk?path=&offset=0",
-        "/v2/files/chunk?path=a&offset=-1", "/v2/files/chunk?path=a&offset=0&offset=1", "/v2/files/chunk?path=a&offset=0&x=1",
-        "/v2/files/chunk?path=a&offset=0&version=v1", "/v2/files/chunk?path=a%00b&offset=0"] {
+    for path in ["/files/chunk", "/files/chunk?path=a", "/files/chunk?path=a&offset=5", "/files/chunk?path=&offset=0",
+        "/files/chunk?path=a&offset=-1", "/files/chunk?path=a&offset=0&offset=1", "/files/chunk?path=a&offset=0&x=1",
+        "/files/chunk?path=a&offset=0&version=v1", "/files/chunk?path=a%00b&offset=0"] {
         assert!(!approved_read_path(path), "{path}");
     }
     for step in ["start", "chunk", "finish", "cancel"] {
-        assert_eq!(upload_step(&format!("/v2/domain/uploads/{step}")), Some(step));
+        assert_eq!(upload_step(&format!("/uploads/{step}")), Some(step));
     }
-    for path in ["/v2/domain/uploads", "/v2/domain/uploads/other", "/v2/domain/uploads/start/", "/v2/uploads"] {
+    for path in ["/domain/uploads", "/uploads/other", "/uploads/start/", "/uploads"] {
         assert_eq!(upload_step(path), None, "{path}");
     }
 }
@@ -531,27 +532,27 @@ async fn options_offer_pr_handling_effort_and_the_users_own() {
     let fixture = Fixture::start().await;
     let expected = fixture_json("requests.json");
     let request = &expected["options"];
-    let bare = fixture.get_json("/v2/options").await;
+    let bare = fixture.get_json("/options").await;
     assert_eq!(bare["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap()).collect::<Vec<_>>(), ["pr", "effort"], "without an options file the built-in PR handling and effort are offered");
     let shipped = fixture.get_json(request["path"].as_str().unwrap()).await;
     assert_covers(&request["response"], &shipped, "options");
     assert_eq!((shipped["options"][0]["default"].as_str(), shipped["options"][1]["default"].as_str()), (Some("review"), Some("auto")));
 
     write_options(&fixture, &format!("[defaults]\npr = \"auto_merge\"\n{USER_OPTION}"));
-    let app = fixture.get_json("/v2/options?project=App").await;
+    let app = fixture.get_json("/options?project=App").await;
     let ids = |value: &Value| value["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
     assert_eq!(ids(&app), ["pr", "effort", "tests"], "{app}");
     let pr = app["options"].as_array().unwrap().iter().find(|o| o["id"] == "pr").unwrap();
     assert_eq!(pr["default"], "auto_merge", "the file's default for PR handling is offered as 8ccd131 did");
     assert!(pr["values"].as_array().unwrap().iter().any(|v| v["id"] == "auto_merge"));
-    assert_eq!(ids(&fixture.get_json("/v2/options?project=Web").await), ["pr", "effort", "tests", "deploy"], "a project's own options come with it");
-    assert_eq!(fixture.get_json("/v2/options?project=Web").await["project"], "Web");
+    assert_eq!(ids(&fixture.get_json("/options?project=Web").await), ["pr", "effort", "tests", "deploy"], "a project's own options come with it");
+    assert_eq!(fixture.get_json("/options?project=Web").await["project"], "Web");
 
     std::fs::write(alondra_core::options::path_in(&fixture.home), "this is [not toml").unwrap();
-    let broken = fixture.get_json("/v2/options?project=App").await;
+    let broken = fixture.get_json("/options?project=App").await;
     assert_eq!(ids(&broken), ["pr", "effort", "tests"], "a broken file keeps the last good options in use");
     assert!(broken["error"].as_str().is_some_and(|error| error.contains("options.toml")), "and says why: {broken}");
-    assert_eq!(fixture.unsigned_get("/v2/options").await, StatusCode::FORBIDDEN);
+    assert_eq!(fixture.unsigned_get("/options").await, StatusCode::FORBIDDEN);
 }
 
 #[tokio::test]
@@ -568,7 +569,7 @@ async fn projects_are_the_checkouts_under_the_root_ranked_by_what_the_daemon_saw
     fixture.command(Actor::System, "register-web", Command::RegisterAgent { agent_id: "agent-web".into(), name: "Web agent".into() });
     let cwd = fixture.home.join("Projects").join("Web");
     fixture.domain.live.observe(&hook("agent-web", "SessionStart", json!({"cwd": cwd.to_str().unwrap()})));
-    assert_eq!(names(&fixture.get_json("/v2/projects").await), ["Web", "App"], "the project a session is working in comes first");
+    assert_eq!(names(&fixture.get_json("/projects").await), ["Web", "App"], "the project a session is working in comes first");
 }
 
 #[tokio::test]
@@ -585,11 +586,11 @@ async fn issues_are_searched_once_and_kept_unless_refreshed() {
     assert_covers(&expected["issues"]["response"], &first, "issues");
     assert_eq!(first["issues"].as_array().unwrap().len(), 1, "an excluded repository is never offered");
     assert_eq!(first["issues"][0]["repo"], "me/App");
-    fixture.get_json("/v2/issues").await;
+    fixture.get_json("/issues").await;
     assert_eq!(github.searches(), 1, "the second read is served from memory");
-    fixture.get_json("/v2/issues?refresh=1").await;
+    fixture.get_json("/issues?refresh=1").await;
     assert_eq!(github.searches(), 2, "a refresh asks again");
-    assert_eq!(fixture.get("/v2/issues?refresh=0").await, (StatusCode::NOT_FOUND, vec![]), "refresh takes only 1");
+    assert_eq!(fixture.get("/issues?refresh=0").await, (StatusCode::NOT_FOUND, vec![]), "refresh takes only 1");
 }
 
 #[tokio::test]
@@ -625,7 +626,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
     fixture.user("task-9", Command::CreateTask {
         task_id: "task-9".into(), request_id: "request-9".into(), title: "Ship".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None });
-    let runtime = fixture.get_json("/v2/runtime").await;
+    let runtime = fixture.get_json("/runtime").await;
     assert_eq!((runtime["tasks"]["task-9"]["project"].as_str(), runtime["tasks"]["task-9"]["effort"].as_str()), (Some("App"), Some("hard")), "its tasks carry what it asked for");
 }
 
@@ -633,7 +634,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
 async fn a_request_that_chose_auto_merge_is_recorded_as_one() {
     let fixture = Fixture::start().await;
     for (id, options, auto_merge) in [("auto", json!({"pr": "auto_merge"}), true), ("manual", json!({"pr": "review"}), false)] {
-        let (status, outcome) = fixture.send("POST", "/v2/requests", &json!({"request_id": id, "text": "Ship it", "options": options, "attachments": []})).await;
+        let (status, outcome) = fixture.send("POST", "/requests", &json!({"request_id": id, "text": "Ship it", "options": options, "attachments": []})).await;
         assert_eq!(status, StatusCode::OK, "{outcome}");
         assert_eq!(fixture.domain.state().unwrap().requests[&id.into()].auto_merge, auto_merge, "{id}");
     }
@@ -644,7 +645,7 @@ async fn a_new_request_reaches_the_orchestrators_next_batch() {
     let fixture = Fixture::start().await;
     write_options(&fixture, "");
     let request = json!({"request_id": "request-1", "text": "Make the editor readable", "options": {}, "attachments": []});
-    let (status, outcome) = fixture.send("POST", "/v2/requests", &request).await;
+    let (status, outcome) = fixture.send("POST", "/requests", &request).await;
     assert_eq!(status, StatusCode::OK, "{outcome}");
     assert_eq!(outcome["effects"], json!([{"kind": "notify_orchestrator", "request_id": "request-1"}]));
     let pending = fixture.domain.store.lock().unwrap().pending_messages().unwrap();
@@ -677,7 +678,7 @@ async fn a_new_request_is_refused_whole_and_leaves_nothing_behind() {
     let send = |patch: Value| {
         let body = body(patch);
         let fixture = &fixture;
-        async move { fixture.send("POST", "/v2/requests", &body).await }
+        async move { fixture.send("POST", "/requests", &body).await }
     };
     let (status, error) = send(json!({"options": {"effort": "extreme"}})).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{error}");
@@ -694,7 +695,7 @@ async fn a_new_request_is_refused_whole_and_leaves_nothing_behind() {
     assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
     assert!(fixture.domain.state().unwrap().requests.is_empty(), "no refusal created a request");
     assert!(fixture.domain.request_launch(&"request-1".into()).unwrap().is_none());
-    let unsigned = reqwest::Client::new().post(format!("{}/v2/requests", fixture.base)).json(&body(json!({}))).send().await.unwrap();
+    let unsigned = reqwest::Client::new().post(format!("{}/requests", fixture.base)).json(&body(json!({}))).send().await.unwrap();
     assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
 
     let (status, _) = send(json!({"issue": "me/App#3"})).await;
@@ -704,36 +705,36 @@ async fn a_new_request_is_refused_whole_and_leaves_nothing_behind() {
 
 #[test]
 fn reads_of_new_work_are_named_exactly() {
-    for path in ["/v2/options", "/v2/options?project=App", "/v2/options?project=My%20App", "/v2/projects", "/v2/issues", "/v2/issues?refresh=1"] {
+    for path in ["/options", "/options?project=App", "/options?project=My%20App", "/projects", "/issues", "/issues?refresh=1"] {
         assert!(approved_read_path(path), "{path}");
     }
-    for path in ["/v2/options?project=", "/v2/options?other=1", "/v2/options?project=a&project=b", "/v2/projects?x=1", "/v2/issues?refresh=0",
-        "/v2/issues?refresh=1&x=1", "/v2/issues/", "/v2/option"] {
+    for path in ["/options?project=", "/options?other=1", "/options?project=a&project=b", "/projects?x=1", "/issues?refresh=0",
+        "/issues?refresh=1&x=1", "/issues/", "/option"] {
         assert!(!approved_read_path(path), "{path}");
     }
-    assert_eq!(parse_write("/v2/requests"), Some(Write::NewRequest));
-    assert!(atomic_write_path("/v2/requests"));
+    assert_eq!(parse_write("/requests"), Some(Write::NewRequest));
+    assert!(atomic_write_path("/requests"));
 }
 
 #[tokio::test]
 async fn a_message_to_the_orchestrator_is_a_new_request_with_the_default_options() {
     let fixture = Fixture::start().await;
     let file = json!({"id": "att-1", "name": "shot.png", "content_digest": "d".repeat(64), "content_reference": "files/domain-v2/x", "bytes": 3});
-    let (status, outcome) = fixture.send("POST", "/v2/orchestrator/messages", &json!({"text": "Plan the week", "attachments": [file]})).await;
+    let (status, outcome) = fixture.send("POST", "/orchestrator/messages", &json!({"text": "Plan the week", "attachments": [file]})).await;
     assert_eq!(status, StatusCode::OK, "{outcome}");
     let id = outcome["created_ids"][0].as_str().unwrap().to_owned();
     assert_eq!(fixture.domain.state().unwrap().requests[&id.as_str().into()].body, "Plan the week");
     let launch = fixture.domain.request_launch(&id.as_str().into()).unwrap().unwrap();
     assert_eq!((launch.options.effort.as_str(), launch.attachments.len(), launch.project), ("auto", 1, None));
-    let (status, _) = fixture.send("POST", "/v2/orchestrator/messages", &json!({"text": "Again"})).await;
+    let (status, _) = fixture.send("POST", "/orchestrator/messages", &json!({"text": "Again"})).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(fixture.domain.state().unwrap().requests.len(), 2, "each message is its own request");
     for body in [json!({"text": "  "}), json!({"text": "x", "kind": "reply"}), json!({})] {
-        assert_eq!(fixture.send("POST", "/v2/orchestrator/messages", &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+        assert_eq!(fixture.send("POST", "/orchestrator/messages", &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     }
     assert_eq!(fixture.domain.state().unwrap().requests.len(), 2);
-    assert_eq!(parse_write("/v2/orchestrator/messages"), Some(Write::OrchestratorMessage));
-    assert!(atomic_write_path("/v2/orchestrator/messages"));
+    assert_eq!(parse_write("/orchestrator/messages"), Some(Write::OrchestratorMessage));
+    assert!(atomic_write_path("/orchestrator/messages"));
 }
 
 #[tokio::test]
@@ -758,11 +759,11 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     assert_eq!(steps, [("not_started", ""), ("running", ""), ("needs_you", "Which colour?"), ("running", ""), ("cancelled", "")]);
     let times: Vec<i64> = history["history"].as_array().unwrap().iter().map(|step| step["at"].as_i64().unwrap()).collect();
     assert!(times.iter().all(|at| *at > 0) && times.windows(2).all(|pair| pair[0] <= pair[1]), "{times:?}");
-    let (status, error) = (fixture.get("/v2/tasks/nothing/history").await, ());
+    let (status, error) = (fixture.get("/tasks/nothing/history").await, ());
     let _ = error;
     assert_eq!(status.0, StatusCode::NOT_FOUND);
-    assert_eq!(fixture.unsigned_get("/v2/tasks/task-1/history").await, StatusCode::FORBIDDEN);
-    assert!(approved_read_path("/v2/tasks/task-1/history") && !approved_read_path("/v2/tasks/task-1/history?x=1") && !approved_read_path("/v2/tasks//history"));
+    assert_eq!(fixture.unsigned_get("/tasks/task-1/history").await, StatusCode::FORBIDDEN);
+    assert!(approved_read_path("/tasks/task-1/history") && !approved_read_path("/tasks/task-1/history?x=1") && !approved_read_path("/tasks//history"));
 }
 
 #[tokio::test]
@@ -777,19 +778,19 @@ async fn the_reason_for_cancelling_is_recorded_beside_the_cancelled_task() {
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
     let (status, answer) = fixture.send("PUT", path, &request["body"]).await;
     assert_eq!((status, &answer), (StatusCode::OK, &request["response"]), "{answer}");
-    assert_eq!(fixture.get_json("/v2/runtime").await["tasks"]["task-1"]["cancel_reason"], "Superseded");
+    assert_eq!(fixture.get_json("/runtime").await["tasks"]["task-1"]["cancel_reason"], "Superseded");
     assert_eq!(fixture.send("PUT", path, &json!({"reason": "  Replaced by task-2  "})).await.0, StatusCode::OK);
-    assert_eq!(fixture.get_json("/v2/runtime").await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "the latest words are kept, trimmed");
+    assert_eq!(fixture.get_json("/runtime").await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "the latest words are kept, trimmed");
     for body in [json!({"reason": "   "}), json!({"reason": "x".repeat(4097)}), json!({"reason": "a", "extra": 1}), json!({})] {
         assert_eq!(fixture.send("PUT", path, &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     }
-    assert_eq!(fixture.send("PUT", "/v2/tasks/nothing/cancel-reason", &json!({"reason": "x"})).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(fixture.get_json("/v2/runtime").await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "refusals change nothing");
+    assert_eq!(fixture.send("PUT", "/tasks/nothing/cancel-reason", &json!({"reason": "x"})).await.0, StatusCode::NOT_FOUND);
+    assert_eq!(fixture.get_json("/runtime").await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "refusals change nothing");
     let unsigned = reqwest::Client::new().put(format!("{}{path}", fixture.base)).json(&json!({"reason": "x"})).send().await.unwrap();
     assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
-    assert_eq!(parse_put("/v2/tasks/task-1/cancel-reason"), Some(Write::CancelReason("task-1".into())));
-    assert_eq!(parse_put("/v2/tasks//cancel-reason"), None);
-    assert_eq!(parse_write("/v2/tasks/task-1/cancel-reason"), None, "it replaces, so it is a PUT and never a POST");
+    assert_eq!(parse_put("/tasks/task-1/cancel-reason"), Some(Write::CancelReason("task-1".into())));
+    assert_eq!(parse_put("/tasks//cancel-reason"), None);
+    assert_eq!(parse_write("/tasks/task-1/cancel-reason"), None, "it replaces, so it is a PUT and never a POST");
 }
 
 #[tokio::test]
@@ -801,9 +802,9 @@ async fn the_presence_ping_is_recorded_for_the_client_that_sent_it() {
     let (status, answer) = fixture.send("POST", request["path"].as_str().unwrap(), &request["body"]).await;
     assert_eq!((status, &answer), (StatusCode::OK, &request["response"]));
     assert!(fixture.domain.live.last_touched("tui").is_some_and(|at| at > 0));
-    assert_eq!(fixture.send("POST", "/v2/activity", &json!({"client": ""})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(fixture.send("POST", "/v2/activity", &json!({})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
-    let unsigned = reqwest::Client::new().post(format!("{}/v2/activity", fixture.base)).json(&json!({"client": "x"})).send().await.unwrap();
+    assert_eq!(fixture.send("POST", "/activity", &json!({"client": ""})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(fixture.send("POST", "/activity", &json!({})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    let unsigned = reqwest::Client::new().post(format!("{}/activity", fixture.base)).json(&json!({"client": "x"})).send().await.unwrap();
     assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
     assert!(fixture.domain.live.last_touched("x").is_none());
 }
@@ -824,7 +825,7 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
         (claim.attempt_id, message.id)
     };
     let epoch = fixture.domain.state().unwrap().data_epoch;
-    let path = format!("/v2/domain/delivery-attempts/{attempt}/resolve");
+    let path = format!("/delivery-attempts/{attempt}/resolve");
     let body = |decision: &str, version: u64| json!({"protocol_version": 2, "data_epoch": epoch, "expected_version": version, "decision": decision});
     let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&body("retry", 2)).send().await.unwrap();
     assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
@@ -833,8 +834,8 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
     let (status, resolved) = fixture.send("POST", &path, &body("retry", 2)).await;
     assert_eq!((status, resolved["state"].as_str()), (StatusCode::OK, Some("retryable")), "{resolved}");
     assert!(fixture.domain.store.lock().unwrap().pending_messages().unwrap().iter().any(|item| item.id == message), "a retried message is offered again");
-    assert_eq!(fixture.send("POST", "/v2/domain/delivery-attempts/0/resolve", &body("retry", 2)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
-    assert_eq!(fixture.send("POST", "/v2/domain/delivery-attempts/nothing/resolve", &body("retry", 2)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(fixture.send("POST", "/delivery-attempts/0/resolve", &body("retry", 2)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(fixture.send("POST", "/delivery-attempts/nothing/resolve", &body("retry", 2)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -843,7 +844,7 @@ async fn resolving_conflicts_is_refused_before_anything_is_typed_when_it_cannot_
     seed_work(&fixture);
     let expected = fixture_json("requests.json");
     let path = expected["resolve_conflicts"]["path"].as_str().unwrap();
-    let (status, error) = fixture.send("POST", "/v2/pull-requests/nothing/resolve-conflicts", &json!({})).await;
+    let (status, error) = fixture.send("POST", "/pull-requests/nothing/resolve-conflicts", &json!({})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
     let (status, error) = fixture.send("POST", path, &json!({"extra": 1})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));

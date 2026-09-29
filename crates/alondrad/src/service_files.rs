@@ -84,7 +84,7 @@ fn upload_id(sender: &str, id: &str) -> String {
 impl Transfers {
     pub fn dispatch(&self, home: &Path, sender: &str, route: &str, body: Value) -> Result<Value> {
         let renamed;
-        let route = match route.strip_prefix("/v2/domain/uploads/") {
+        let route = match route.strip_prefix("/uploads/") {
             Some(step) => {
                 renamed = format!("/v1/service/uploads/{step}");
                 renamed.as_str()

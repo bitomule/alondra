@@ -40,7 +40,7 @@ impl Fixture {
     }
 
     fn health(&self) -> Option<String> {
-        self.get("/v1/health").filter(|body| body.contains("version")).or_else(|| self.get("/v2/daemon"))
+        self.get("/v1/health").filter(|body| body.contains("version")).or_else(|| self.get("/daemon"))
     }
 
     fn get(&self, path: &str) -> Option<String> {
@@ -243,5 +243,5 @@ fn a_refusing_daemon_backs_off_without_the_lock_and_serves_once_home_is_cut_over
     assert!(log.contains("HOME was cut over"), "{log}");
     let mut daemon = Running(fixture.command(true).spawn().unwrap());
     serving(&fixture, &mut daemon);
-    assert!(fixture.get("/v2/daemon").is_some_and(|body| body.contains("version")));
+    assert!(fixture.get("/daemon").is_some_and(|body| body.contains("version")));
 }

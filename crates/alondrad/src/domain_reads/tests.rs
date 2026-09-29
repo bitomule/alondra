@@ -136,7 +136,7 @@ fn every_sectioned_read_fits_the_relay_while_the_full_projection_does_not() {
     let fixture = live_shaped();
     let runtime = &fixture.runtime;
     assert!(runtime.snapshot(RELAY_LOCAL_BUDGET).is_err(), "the whole projection must exceed the relay budget for this proof");
-    let (status, summary, bytes) = get(runtime, "/v2/domain/summary");
+    let (status, summary, bytes) = get(runtime, "/summary");
     assert_eq!(status, 200);
     assert!(bytes <= MAX_SUMMARY_BYTES, "summary is {bytes} bytes");
     let summary: Summary = serde_json::from_value(summary).unwrap();
@@ -145,21 +145,21 @@ fn every_sectioned_read_fits_the_relay_while_the_full_projection_does_not() {
     let orchestrator = projection.interactions.iter().filter(|i| matches!(i.scope, Scope::Orchestrator { .. })).count();
     let mut ids = std::collections::HashSet::new();
     for (base, expected) in [
-        ("/v2/domain/inbox", projection.inbox.len()),
-        ("/v2/domain/tasks", projection.tasks.len()),
-        ("/v2/domain/requests", projection.requests.len()),
-        ("/v2/domain/agents", projection.agents.len()),
-        ("/v2/domain/pull-requests", projection.pull_requests.len()),
-        ("/v2/domain/documents", projection.documents.len()),
-        ("/v2/domain/merge-authorizations", projection.merge_authorizations.len()),
-        ("/v2/domain/stack-readiness", projection.stack_readiness.len()),
-        ("/v2/domain/superseded-acceptances", projection.superseded_acceptances.len()),
-        ("/v2/domain/interactions?scope=orchestrator", orchestrator),
+        ("/inbox", projection.inbox.len()),
+        ("/tasks", projection.tasks.len()),
+        ("/requests", projection.requests.len()),
+        ("/agents", projection.agents.len()),
+        ("/pull-requests", projection.pull_requests.len()),
+        ("/documents", projection.documents.len()),
+        ("/merge-authorizations", projection.merge_authorizations.len()),
+        ("/stack-readiness", projection.stack_readiness.len()),
+        ("/superseded-acceptances", projection.superseded_acceptances.len()),
+        ("/interactions?scope=orchestrator", orchestrator),
     ] {
         let (items, _) = walk(runtime, base);
         assert_eq!(items.len(), expected, "{base}");
         if !base.contains('?') {
-            let section = base.trim_start_matches("/v2/domain/").replace('-', "_");
+            let section = base.trim_start_matches("/").replace('-', "_");
             assert_eq!(summary.sections[&section].count as usize, expected, "{section} count");
         }
         ids.clear();
@@ -170,25 +170,25 @@ fn every_sectioned_read_fits_the_relay_while_the_full_projection_does_not() {
     }
     let mut per_task = 0;
     for task in &projection.tasks {
-        let (status, detail, bytes) = get(runtime, &format!("/v2/domain/tasks/{}", task.id));
+        let (status, detail, bytes) = get(runtime, &format!("/tasks/{}", task.id));
         assert_eq!(status, 200);
         assert!(bytes <= MAX_PAGE_BYTES, "task {} detail is {bytes} bytes", task.id);
         let detail: TaskDetail = serde_json::from_value(detail).unwrap();
         assert_eq!(detail.request.id, task.request_id);
-        let (items, _) = walk(runtime, &format!("/v2/domain/tasks/{}/interactions", task.id));
+        let (items, _) = walk(runtime, &format!("/tasks/{}/interactions", task.id));
         assert_eq!(items.len() as u64, detail.interactions);
         per_task += items.len();
     }
     assert_eq!(per_task + orchestrator, projection.interactions.len(), "every interaction is reachable through its scope");
-    let (status, lookup, _) = get(runtime, &format!("/v2/domain/inbox/{}", projection.inbox[0].id));
+    let (status, lookup, _) = get(runtime, &format!("/inbox/{}", projection.inbox[0].id));
     assert_eq!(status, 200);
     assert_eq!(lookup["root_id"], projection.inbox[0].id);
     assert!(projection.inbox[0].id.contains(':'), "the lookup below proves an encoded colon");
     let encoded = projection.inbox[0].id.replace(':', "%3A");
-    let (status, encoded_lookup, _) = get(runtime, &format!("/v2/domain/inbox/{encoded}"));
+    let (status, encoded_lookup, _) = get(runtime, &format!("/inbox/{encoded}"));
     assert_eq!(status, 200);
     assert_eq!(encoded_lookup, lookup, "a percent-encoded id names the same item");
-    let (status, with, bytes) = get(runtime, "/v2/domain/summary?include=inbox,tasks,agents");
+    let (status, with, bytes) = get(runtime, "/summary?include=inbox,tasks,agents");
     assert_eq!(status, 200);
     assert!(bytes <= MAX_PAGE_BYTES, "summary with expansions is {bytes} bytes");
     let with: Summary = serde_json::from_value(with).unwrap();
@@ -208,11 +208,11 @@ fn oversized_text_is_cut_with_a_signal_and_readable_in_chunks() {
     let body: String = (0..6000).map(|i| format!("línea {i} con evidencia larga\n")).collect();
     assert!(body.len() > MAX_PAGE_BYTES);
     publish(runtime, "node-1", "t-1", "huge-info", body.clone());
-    let (_, truncated) = walk(runtime, "/v2/domain/tasks/t-1/interactions");
+    let (_, truncated) = walk(runtime, "/tasks/t-1/interactions");
     assert_eq!(truncated, vec!["huge-info".to_owned()]);
-    let (_, inbox_truncated) = walk(runtime, "/v2/domain/inbox");
+    let (_, inbox_truncated) = walk(runtime, "/inbox");
     assert!(inbox_truncated.contains(&"interaction:huge-info".to_owned()));
-    let (status, detail, bytes) = get(runtime, "/v2/domain/interactions/huge-info");
+    let (status, detail, bytes) = get(runtime, "/interactions/huge-info");
     assert_eq!(status, 200);
     assert!(bytes <= MAX_PAGE_BYTES);
     let detail: Item<Value> = serde_json::from_value(detail).unwrap();
@@ -221,7 +221,7 @@ fn oversized_text_is_cut_with_a_signal_and_readable_in_chunks() {
     assert!(body.starts_with(cut) && cut.len() < body.len());
     let mut assembled = String::new();
     loop {
-        let (status, chunk, bytes) = get(runtime, &format!("/v2/domain/interactions/huge-info/body?offset={}", assembled.len()));
+        let (status, chunk, bytes) = get(runtime, &format!("/interactions/huge-info/body?offset={}", assembled.len()));
         assert_eq!(status, 200, "{chunk}");
         assert!(bytes <= MAX_CHUNK_ENCODED + 512);
         let chunk: TextChunk = serde_json::from_value(chunk).unwrap();
@@ -234,11 +234,11 @@ fn oversized_text_is_cut_with_a_signal_and_readable_in_chunks() {
     }
     assert_eq!(assembled, body);
     let inside_multibyte = body.find('í').unwrap() + 1;
-    let (status, _, _) = get(runtime, &format!("/v2/domain/interactions/huge-info/body?offset={inside_multibyte}"));
+    let (status, _, _) = get(runtime, &format!("/interactions/huge-info/body?offset={inside_multibyte}"));
     assert_eq!(status, 422, "an offset inside a multibyte character is refused");
-    let (status, _, _) = get(runtime, &format!("/v2/domain/interactions/huge-info/body?offset={}", body.len() + 1));
+    let (status, _, _) = get(runtime, &format!("/interactions/huge-info/body?offset={}", body.len() + 1));
     assert_eq!(status, 422);
-    let (status, _, _) = get(runtime, "/v2/domain/interactions/absent/body?offset=0");
+    let (status, _, _) = get(runtime, "/interactions/absent/body?offset=0");
     assert_eq!(status, 404);
 }
 
@@ -259,99 +259,99 @@ fn paging_by_cursor_is_stable_and_malformed_cursors_are_refused() {
     let fixture = live_shaped();
     let runtime = &fixture.runtime;
     let projection = runtime.projection().unwrap();
-    let (single, _) = walk(runtime, "/v2/domain/inbox?limit=1");
-    let (bulk, _) = walk(runtime, "/v2/domain/inbox?limit=200");
+    let (single, _) = walk(runtime, "/inbox?limit=1");
+    let (bulk, _) = walk(runtime, "/inbox?limit=200");
     assert_eq!(single, bulk);
     assert_eq!(single.len(), projection.inbox.len());
-    let (pending, _) = walk(runtime, "/v2/domain/inbox?filter=pending");
+    let (pending, _) = walk(runtime, "/inbox?filter=pending");
     assert_eq!(pending.len(), projection.inbox.iter().filter(|r| r.pending).count());
-    let (by_agent, _) = walk(runtime, "/v2/domain/tasks?agent=node-3");
+    let (by_agent, _) = walk(runtime, "/tasks?agent=node-3");
     assert_eq!(by_agent.len(), projection.tasks.iter().filter(|t| t.agent_id.as_ref().is_some_and(|a| a.0 == "node-3")).count());
     assert!(!by_agent.is_empty());
     for cursor in ["notbase64!".to_owned(), URL_SAFE_NO_PAD.encode(b"{\"i\":\"x\"}"), URL_SAFE_NO_PAD.encode(b"[]")] {
-        let path = format!("/v2/domain/inbox?cursor={cursor}");
+        let path = format!("/inbox?cursor={cursor}");
         match parse(&path) {
             Some(route) => assert_eq!(respond(runtime, &route).status().as_u16(), 422, "{cursor}"),
             None => assert_eq!(cursor, "notbase64!"),
         }
     }
-    let (status, _, _) = get(runtime, &format!("/v2/domain/tasks?cursor={}", URL_SAFE_NO_PAD.encode(b"{\"o\":1,\"i\":\"x\"}")));
+    let (status, _, _) = get(runtime, &format!("/tasks?cursor={}", URL_SAFE_NO_PAD.encode(b"{\"o\":1,\"i\":\"x\"}")));
     assert_eq!(status, 422, "an ordered cursor does not fit an id-ordered section");
 }
 
 #[test]
 fn the_read_grammar_is_exact() {
     for path in [
-        "/v2/domain/summary",
-        "/v2/domain/summary?include=inbox,tasks",
-        "/v2/domain/inbox",
-        "/v2/domain/inbox?filter=pending&limit=200",
-        "/v2/domain/inbox/interaction:abc-1",
-        "/v2/domain/inbox/document:t-1:d-1:r-1",
-        "/v2/domain/inbox/interaction%3Aabc-1",
-        "/v2/domain/inbox/interaction%3aabc-1",
-        "/v2/domain/interactions/i%2D1",
-        "/v2/domain/tasks?request=r-1&agent=node-1",
-        "/v2/domain/tasks/t-1",
-        "/v2/domain/tasks/t-1/interactions?limit=5",
-        "/v2/domain/interactions?scope=orchestrator",
-        "/v2/domain/interactions/i-1",
-        "/v2/domain/interactions/i-1/body?offset=0",
-        "/v2/domain/requests",
-        "/v2/domain/requests/r-1",
-        "/v2/domain/requests/r-1/body?offset=10",
-        "/v2/domain/agents",
-        "/v2/domain/pull-requests",
-        "/v2/domain/pull-requests/pr-1",
-        "/v2/domain/documents",
-        "/v2/domain/documents/d-1",
-        "/v2/domain/merge-authorizations",
-        "/v2/domain/stack-readiness",
-        "/v2/domain/superseded-acceptances",
+        "/summary",
+        "/summary?include=inbox,tasks",
+        "/inbox",
+        "/inbox?filter=pending&limit=200",
+        "/inbox/interaction:abc-1",
+        "/inbox/document:t-1:d-1:r-1",
+        "/inbox/interaction%3Aabc-1",
+        "/inbox/interaction%3aabc-1",
+        "/interactions/i%2D1",
+        "/tasks?request=r-1&agent=node-1",
+        "/tasks/t-1",
+        "/tasks/t-1/interactions?limit=5",
+        "/interactions?scope=orchestrator",
+        "/interactions/i-1",
+        "/interactions/i-1/body?offset=0",
+        "/requests",
+        "/requests/r-1",
+        "/requests/r-1/body?offset=10",
+        "/agents",
+        "/pull-requests",
+        "/pull-requests/pr-1",
+        "/documents",
+        "/documents/d-1",
+        "/merge-authorizations",
+        "/stack-readiness",
+        "/superseded-acceptances",
     ] {
         assert!(approved_read_path(path), "{path}");
     }
     for path in [
         "/v2/domain",
-        "/v2/domain/",
-        "/v2/domain/summary?",
-        "/v2/domain/summary?include=",
-        "/v2/domain/summary?include=schedules",
-        "/v2/domain/summary?include=inbox,inbox",
-        "/v2/domain/summary?include=inbox&include=tasks",
-        "/v2/domain/inbox?limit=0",
-        "/v2/domain/inbox?limit=201",
-        "/v2/domain/inbox?filter=all",
-        "/v2/domain/inbox?cursor=",
-        "/v2/domain/inbox?cursor=a+b",
-        "/v2/domain/inbox?other=1",
-        "/v2/domain/inbox/../x",
-        "/v2/domain/inbox/a%2Fb",
-        "/v2/domain/inbox/a%25",
-        "/v2/domain/inbox/a%3",
-        "/v2/domain/inbox/a%+1",
-        "/v2/domain/inbox/%2e%2e",
-        "/v2/domain/interactions/i%3A1",
-        "/v2/domain/inbox/a/b",
-        "/v2/domain/inbox/a?limit=1",
-        "/v2/domain/tasks/t-1?limit=1",
-        "/v2/domain/tasks/t-1/actions",
-        "/v2/domain/tasks/t-1/interactions/x",
-        "/v2/domain/interactions",
-        "/v2/domain/interactions?scope=all",
-        "/v2/domain/interactions?cursor=abc",
-        "/v2/domain/interactions/i-1/body",
-        "/v2/domain/interactions/i-1/body?offset=",
-        "/v2/domain/interactions/i-1/body?offset=-1",
-        "/v2/domain/interactions/i-1/body?offset=1&offset=2",
-        "/v2/domain/requests/r%201",
-        "/v2/domain/documents/d-1/content",
-        "/v2/domain/schedules",
-        "/v2/domain/changes?data_epoch=e&after=0&wait=0",
+        "/",
+        "/summary?",
+        "/summary?include=",
+        "/summary?include=schedules",
+        "/summary?include=inbox,inbox",
+        "/summary?include=inbox&include=tasks",
+        "/inbox?limit=0",
+        "/inbox?limit=201",
+        "/inbox?filter=all",
+        "/inbox?cursor=",
+        "/inbox?cursor=a+b",
+        "/inbox?other=1",
+        "/inbox/../x",
+        "/inbox/a%2Fb",
+        "/inbox/a%25",
+        "/inbox/a%3",
+        "/inbox/a%+1",
+        "/inbox/%2e%2e",
+        "/interactions/i%3A1",
+        "/inbox/a/b",
+        "/inbox/a?limit=1",
+        "/tasks/t-1?limit=1",
+        "/tasks/t-1/actions",
+        "/tasks/t-1/interactions/x",
+        "/interactions",
+        "/interactions?scope=all",
+        "/interactions?cursor=abc",
+        "/interactions/i-1/body",
+        "/interactions/i-1/body?offset=",
+        "/interactions/i-1/body?offset=-1",
+        "/interactions/i-1/body?offset=1&offset=2",
+        "/requests/r%201",
+        "/documents/d-1/content",
+        "/schedules",
+        "/changes?data_epoch=e&after=0&wait=0",
     ] {
         assert!(!approved_read_path(path), "{path}");
     }
-    assert!(!approved_read_path(&format!("/v2/domain/inbox?cursor={}", "a".repeat(513))));
+    assert!(!approved_read_path(&format!("/inbox?cursor={}", "a".repeat(513))));
 }
 
 /// Cost is pinned by what a command reads and writes, never by the wall clock:

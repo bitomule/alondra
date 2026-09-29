@@ -53,7 +53,7 @@ fn a_reply_to_information_goes_to_its_agent_and_reads_it_in_one_request() {
     assert!(sent(&app).is_empty(), "a reply is not a domain command");
     assert_eq!(
         posted(&app),
-        [("/v2/agents/agent-a/messages".to_string(), serde_json::json!({"text": "Thanks, ship it", "attachments": [], "kind": "reply", "mark_read": true, "interaction_id": "info-1"}))]
+        [("/agents/agent-a/messages".to_string(), serde_json::json!({"text": "Thanks, ship it", "attachments": [], "kind": "reply", "mark_read": true, "interaction_id": "info-1"}))]
     );
     assert!(app.inbox_keys().is_empty(), "the replied information leaves the inbox while the daemon reads it");
 }
@@ -81,7 +81,7 @@ fn more_context_sends_the_question_back_and_takes_an_empty_note() {
     press(&mut app, KeyCode::Char('c'));
     assert!(matches!(composing(&app), Some(Target::Message { message, .. }) if message.kind == ops::MessageKind::MoreContext));
     press(&mut app, KeyCode::Enter);
-    assert_eq!(posted(&app), [("/v2/agents/agent-a/messages".to_string(), serde_json::json!({"text": "", "attachments": [], "kind": "more_context", "mark_read": false, "interaction_id": "question-1"}))]);
+    assert_eq!(posted(&app), [("/agents/agent-a/messages".to_string(), serde_json::json!({"text": "", "attachments": [], "kind": "more_context", "mark_read": false, "interaction_id": "question-1"}))]);
 }
 
 #[test]
@@ -114,7 +114,7 @@ fn a_pr_root_takes_changes_and_questions_but_never_an_authorization() {
     press(&mut app, KeyCode::Char('p'));
     typed(&mut app, "Why squash?");
     press(&mut app, KeyCode::Enter);
-    assert_eq!(posted(&app)[0], ("/v2/agents/agent-a/messages".to_string(), serde_json::json!({"text": "Why squash?", "attachments": [], "kind": "pr_question", "mark_read": false, "pr_id": "pr-1"})));
+    assert_eq!(posted(&app)[0], ("/agents/agent-a/messages".to_string(), serde_json::json!({"text": "Why squash?", "attachments": [], "kind": "pr_question", "mark_read": false, "pr_id": "pr-1"})));
     select(&mut app, "pr:pr-1");
     press(&mut app, KeyCode::Char('x'));
     assert_eq!(posted(&app).len(), 1, "a PR has nothing to mark read");
@@ -135,7 +135,7 @@ fn conflicts_the_runtime_reports_are_resolved_from_the_pr_root_by_its_agent() {
     let shown = screen(&mut app, 140, 34);
     assert!(shown.contains("Conflicts with main") && shown.contains("resolve conflicts"), "{shown}");
     press(&mut app, KeyCode::Char('1'));
-    assert_eq!(posted(&app), [("/v2/pull-requests/pr-1/resolve-conflicts".to_string(), serde_json::json!({}))]);
+    assert_eq!(posted(&app), [("/pull-requests/pr-1/resolve-conflicts".to_string(), serde_json::json!({}))]);
     assert!(sent(&app).is_empty());
 }
 
@@ -228,7 +228,7 @@ fn new_work_with_a_project_goes_to_the_request_route_and_plain_text_stays_a_comm
     typed(&mut app, "Ship it");
     press(&mut app, KeyCode::Enter);
     let (path, body) = posted(&app).remove(0);
-    assert_eq!((path.as_str(), &body["project"], &body["text"], &body["options"]), ("/v2/requests", &serde_json::json!("App"), &serde_json::json!("Ship it"), &serde_json::json!({})));
+    assert_eq!((path.as_str(), &body["project"], &body["text"], &body["options"]), ("/requests", &serde_json::json!("App"), &serde_json::json!("Ship it"), &serde_json::json!({})));
     assert!(body["request_id"].as_str().is_some_and(|id| id.starts_with("request-")));
     assert!(sent(&app).is_empty());
 }
@@ -244,7 +244,7 @@ fn the_header_shows_the_runtime_gauges_the_update_and_unconfirmed_deliveries() {
     app.on_msg(Msg::Daemon(Some(Box::new(serde_json::from_value(daemon).unwrap()))));
     let from_daemon = screen(&mut app, 200, 12);
     for text in ["↑ 0.1.12 · alondra update", "0 working", "Claude", "RAM"] {
-        assert!(from_daemon.contains(text), "the local /v2/daemon alone fills the header: {text}: {from_daemon}");
+        assert!(from_daemon.contains(text), "the local /daemon alone fills the header: {text}: {from_daemon}");
     }
     with_runtime(&mut app, runtime());
     let attempt = serde_json::json!({"attempt_id": 7, "message_id": 3, "state": "uncertain", "version": 2, "recipient_kind": "agent"});
@@ -276,7 +276,7 @@ fn the_orchestrator_strip_recovers_only_on_a_second_press_of_the_same_key() {
     press(&mut app, KeyCode::Char('R'));
     assert!(posted(&app).is_empty(), "moving away starts over");
     press(&mut app, KeyCode::Char('R'));
-    assert_eq!(posted(&app), [("/v2/orchestrator/retry".to_string(), serde_json::json!({"run_id": "run-7"}))]);
+    assert_eq!(posted(&app), [("/orchestrator/retry".to_string(), serde_json::json!({"run_id": "run-7"}))]);
     press(&mut app, KeyCode::Char('x'));
     assert!(flash(&app).contains("manages the orchestrator"), "the orchestrator is never closed as a worker");
 }
@@ -292,7 +292,7 @@ fn closing_an_agents_session_takes_two_presses() {
     press(&mut app, KeyCode::Char('x'));
     assert!(posted(&app).is_empty() && flash(&app).contains("Press x again to close Instance A"));
     press(&mut app, KeyCode::Char('x'));
-    assert_eq!(posted(&app), [("/v2/agents/agent-a/close".to_string(), serde_json::json!({"force": true}))]);
+    assert_eq!(posted(&app), [("/agents/agent-a/close".to_string(), serde_json::json!({"force": true}))]);
     assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Flow::Attach(short) if short == "a1b2c3"), "claude attach takes the session's short id");
 }
 
@@ -315,9 +315,9 @@ fn agents_tasks_and_the_orchestrator_each_take_a_message() {
     assert_eq!(
         paths,
         [
-            ("/v2/orchestrator/messages".to_string(), serde_json::json!("Plan the week")),
-            ("/v2/agents/agent-a/messages".to_string(), serde_json::json!("Use the new API")),
-            ("/v2/agents/agent-a/messages".to_string(), serde_json::json!("Status?")),
+            ("/orchestrator/messages".to_string(), serde_json::json!("Plan the week")),
+            ("/agents/agent-a/messages".to_string(), serde_json::json!("Use the new API")),
+            ("/agents/agent-a/messages".to_string(), serde_json::json!("Status?")),
         ]
     );
     assert!(sent(&app).is_empty());
@@ -468,7 +468,7 @@ fn the_user_at_the_terminal_is_told_once_a_minute() {
     let mut app = app_on(&world);
     app.note_activity();
     app.note_activity();
-    assert_eq!(posted(&app), [("/v2/activity".to_string(), serde_json::json!({"client": "tui"}))]);
+    assert_eq!(posted(&app), [("/activity".to_string(), serde_json::json!({"client": "tui"}))]);
 }
 
 #[test]

@@ -309,14 +309,14 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let initial_revision = domain.state().unwrap().revision;
     let epoch = domain.state().unwrap().data_epoch.0;
     let paths = [
-        "/v2/domain/capabilities".to_owned(),
-        "/v2/domain".to_owned(),
-        "/v2/domain/tasks/task-parity/actions".to_owned(),
-        "/v2/domain/tasks/missing/actions".to_owned(),
-        "/v2/domain/document-revisions/rev-parity/content?offset=0".to_owned(),
-        "/v2/domain/document-revisions/missing/content?offset=0".to_owned(),
-        format!("/v2/domain/changes?data_epoch={epoch}&after={initial_revision}&wait=0"),
-        "/v2/domain/delivery-attempts?after=0".to_owned(),
+        "/capabilities".to_owned(),
+        "/summary".to_owned(),
+        "/tasks/task-parity/actions".to_owned(),
+        "/tasks/missing/actions".to_owned(),
+        "/document-revisions/rev-parity/content?offset=0".to_owned(),
+        "/document-revisions/missing/content?offset=0".to_owned(),
+        format!("/changes?data_epoch={epoch}&after={initial_revision}&wait=0"),
+        "/delivery-attempts?after=0".to_owned(),
     ];
     for (index, path) in paths.iter().enumerate() {
         let local = local_get(&client, &base, &phone_key, device_id, path).await;
@@ -334,19 +334,19 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     // This fixture intentionally has a v1 local Hub and a v2-only encrypted
     // service. Schedule reads must expose the active authority of each mode.
     let local_schedule = local_get(&client, &base, &phone_key, device_id,
-        "/v2/domain/schedules").await;
+        "/schedules").await;
     assert_eq!(local_schedule["status"], 409);
     let remote_schedule = encrypted(&service, &phone_key, &phone_agreement, &responses,
-        "schedule-v2-read", json!({"method":"GET","path":"/v2/domain/schedules"})).await;
+        "schedule-v2-read", json!({"method":"GET","path":"/schedules"})).await;
     assert_eq!(remote_schedule["status"], 200);
     let legacy_service = Service::open(&home, 0, auth.clone()).unwrap().unwrap().with_hub(hub.clone());
     let before_schedule = domain.state().unwrap();
     let blocked = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
-        "schedule-mixed-blocked", json!({"method":"POST","path":"/v2/domain/schedules",
+        "schedule-mixed-blocked", json!({"method":"POST","path":"/schedules",
             "body":{"title":"Review","text":"Review project","frequency":"daily",
                 "hour":9,"minute":0}})).await;
-    assert_eq!(blocked["status"], 409);
-    assert_eq!(blocked["body"]["code"], "incompatible_protocol");
+    assert_eq!(blocked["status"], 409, "{blocked}");
+    assert_eq!(blocked["body"]["code"], "incompatible_protocol", "{blocked}");
     assert_eq!(domain.state().unwrap(), before_schedule);
     // A legacy daemon must never write its v2 sidecar: a non-empty store blocks
     // both cutover and legacy startup. Reads stay open, writes are typed rejections.
@@ -359,20 +359,20 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             interaction_id: "info-parity".into(),
         },
     };
-    let blocked_command = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
-        "legacy-command-blocked", json!({"method":"POST","path":"/v2/domain/commands",
-            "body":legacy_command})).await;
-    assert_eq!(blocked_command["status"], 409);
-    assert_eq!(blocked_command["body"]["code"], "incompatible_protocol");
+    let blocked_command = sealed(&legacy_service, &phone_key, "legacy-command-blocked",
+        json!({"method":"POST","path":"/commands","body":legacy_command}));
+    assert!(legacy_service.prepare_work(&blocked_command).is_err(),
+        "generic command paths are rejected before dispatch");
+    assert_eq!(domain.state().unwrap(), before_schedule);
     let blocked_resolve = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
         "legacy-resolve-blocked", json!({"method":"POST",
-            "path":"/v2/domain/delivery-attempts/1/resolve",
+            "path":"/delivery-attempts/1/resolve",
             "body":{"protocol_version":2,"data_epoch":before_schedule.data_epoch,
                 "expected_version":1,"decision":"retry"}})).await;
     assert_eq!(blocked_resolve["status"], 409);
     assert_eq!(blocked_resolve["body"]["code"], "incompatible_protocol");
     assert_eq!(domain.state().unwrap(), before_schedule);
-    assert_eq!(local_get(&client, &base, &phone_key, device_id, "/v2/domain").await["status"], 200);
+    assert_eq!(local_get(&client, &base, &phone_key, device_id, "/summary").await["status"], 200);
 
     let state = domain.state().unwrap();
     let command = CommandEnvelope {
@@ -384,7 +384,12 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             interaction_id: "info-parity".into(),
         },
     };
-    let request = json!({"method":"POST","path":"/v2/domain/commands","body":command});
+    let request = json!({"method":"PUT","path":"/interactions/info-parity/read-state","body":{
+        "data_epoch":command.data_epoch,
+        "command_id":command.command_id,
+        "expected_revision":command.expected_revision,
+        "interaction_id":"info-parity"
+    }});
     let work = sealed(&service, &phone_key, "command-once", request.clone());
     let ciphertext_digest = Sha256::digest(serde_json::to_vec(&work.envelope).unwrap()).to_vec();
     service
@@ -576,7 +581,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             .len(),
         pending_after_read + 1
     );
-    let updated_path = "/v2/domain";
+    let updated_path = "/summary";
     assert_eq!(
         local_get(&client, &base, &phone_key, device_id, updated_path).await,
         encrypted(
@@ -592,24 +597,24 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
 
     let revision_before_old_clients = domain.state().unwrap().revision;
     let stale = encrypted(&service, &phone_key, &phone_agreement, &responses,
-        "stale-epoch", json!({"method":"POST","path":"/v2/domain/commands",
-            "body":{"protocol_version":2,"data_epoch":"wrong-epoch","command_id":"read-parity-once",
-                "expected_revision":0,"command":{"kind":"mark_read","interaction_id":"info-parity"}}})).await;
+        "stale-epoch", json!({"method":"PUT","path":"/interactions/info-parity/read-state",
+            "body":{"data_epoch":"wrong-epoch","command_id":"stale-read",
+                "expected_revision":0,"interaction_id":"info-parity"}})).await;
     assert_eq!(stale["status"], 409);
     assert_eq!(stale["body"]["code"], "stale_epoch");
     let old_protocol = encrypted(&service, &phone_key, &phone_agreement, &responses,
-        "old-protocol", json!({"method":"POST","path":"/v2/domain/commands",
-            "body":{"protocol_version":1,"data_epoch":epoch,"command_id":"read-parity-once",
-                "expected_revision":0,"command":{"kind":"mark_read","interaction_id":"info-parity"}}})).await;
-    assert_eq!(old_protocol["status"], 409);
-    assert_eq!(old_protocol["body"]["code"], "incompatible_protocol");
+        "old-protocol", json!({"method":"PUT","path":"/interactions/info-parity/read-state",
+            "body":{"protocol_version":1,"data_epoch":epoch,"command_id":"old-read",
+                "expected_revision":0,"interaction_id":"info-parity"}})).await;
+    assert_eq!(old_protocol["status"], 422);
+    assert_eq!(old_protocol["body"]["code"], "invalid_input");
     assert_eq!(
         domain.state().unwrap().revision,
         revision_before_old_clients
     );
     auth.revoke(device_id).unwrap();
     assert_eq!(
-        local_get(&client, &base, &phone_key, device_id, "/v2/domain").await["status"],
+        local_get(&client, &base, &phone_key, device_id, "/summary").await["status"],
         401
     );
     assert!(
@@ -618,7 +623,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
                 &service,
                 &phone_key,
                 "after-revoke",
-                json!({"method":"GET","path":"/v2/domain"})
+                json!({"method":"GET","path":"/summary"})
             ))
             .is_err()
     );

@@ -1,4 +1,4 @@
-//! The routes the TUI and the CLI call on a v2-only daemon beyond the domain itself: the
+//! The routes the TUI and the CLI call on a domain daemon beyond the domain itself: the
 //! live runtime of the Mac and its sessions, and what a session is doing. The domain stays
 //! the only authority; nothing here decides an action.
 mod close;
@@ -81,17 +81,17 @@ pub(crate) enum Write {
 /// The writes of this module by path, the way both the local listener and the relay name them.
 pub(crate) fn parse_write(path: &str) -> Option<Write> {
     match path {
-        "/v2/requests" => return Some(Write::NewRequest),
-        "/v2/activity" => return Some(Write::Presence),
+        "/requests" => return Some(Write::NewRequest),
+        "/activity" => return Some(Write::Presence),
         _ => {}
     }
-    if path == "/v2/orchestrator/messages" {
+    if path == "/orchestrator/messages" {
         return Some(Write::OrchestratorMessage);
     }
-    if let Some(id) = path.strip_prefix("/v2/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
+    if let Some(id) = path.strip_prefix("/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
         return Some(id).filter(|id| plain_id(id)).map(|id| Write::ResolveConflicts(id.to_owned()));
     }
-    path.strip_prefix("/v2/agents/")?.strip_suffix("/close")
+    path.strip_prefix("/agents/")?.strip_suffix("/close")
         .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
 }
 
@@ -101,7 +101,7 @@ pub(crate) fn approved_write_path(path: &str) -> bool {
 
 /// The writes that replace something in place, by path.
 pub(crate) fn parse_put(path: &str) -> Option<Write> {
-    path.strip_prefix("/v2/tasks/")?.strip_suffix("/cancel-reason")
+    path.strip_prefix("/tasks/")?.strip_suffix("/cancel-reason")
         .filter(|id| plain_id(id)).map(|id| Write::CancelReason(id.to_owned()))
 }
 
@@ -163,17 +163,17 @@ fn file_chunk_query(query: &str) -> Option<Route> {
 pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
     let (path, query) = path_and_query.split_once('?').map_or((path_and_query, None), |(p, q)| (p, Some(q)));
     match (path, query) {
-        ("/v2/runtime", None) => Some(Route::Runtime),
-        ("/v2/agents/search", Some(query)) => search_query(query).map(Route::Search),
-        ("/v2/files/chunk", Some(query)) => file_chunk_query(query),
-        ("/v2/options", None) => Some(Route::Options(None)),
-        ("/v2/options", Some(query)) => single_query(query, "project").map(|project| Route::Options(Some(project))),
-        ("/v2/projects", None) => Some(Route::Projects),
-        ("/v2/issues", None) => Some(Route::Issues { refresh: false }),
-        ("/v2/issues", Some(query)) => single_query(query, "refresh").filter(|value| value == "1").map(|_| Route::Issues { refresh: true }),
-        (path, None) if path.starts_with("/v2/tasks/") => path.strip_prefix("/v2/tasks/")?.strip_suffix("/history")
+        ("/runtime", None) => Some(Route::Runtime),
+        ("/agents/search", Some(query)) => search_query(query).map(Route::Search),
+        ("/files/chunk", Some(query)) => file_chunk_query(query),
+        ("/options", None) => Some(Route::Options(None)),
+        ("/options", Some(query)) => single_query(query, "project").map(|project| Route::Options(Some(project))),
+        ("/projects", None) => Some(Route::Projects),
+        ("/issues", None) => Some(Route::Issues { refresh: false }),
+        ("/issues", Some(query)) => single_query(query, "refresh").filter(|value| value == "1").map(|_| Route::Issues { refresh: true }),
+        (path, None) if path.starts_with("/tasks/") => path.strip_prefix("/tasks/")?.strip_suffix("/history")
             .filter(|id| plain_id(id)).map(|id| Route::TaskHistory(id.to_owned())),
-        (path, None) => path.strip_prefix("/v2/agents/")?.strip_suffix("/activity")
+        (path, None) => path.strip_prefix("/agents/")?.strip_suffix("/activity")
             .filter(|id| plain_id(id)).map(|id| Route::Activity(id.to_owned())),
         _ => None,
     }
@@ -186,7 +186,7 @@ pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
 /// The steps of a chunked upload, which only the encrypted relay carries: on this Mac a
 /// file is uploaded in one request.
 pub(crate) fn upload_step(path: &str) -> Option<&str> {
-    path.strip_prefix("/v2/domain/uploads/").filter(|step| matches!(*step, "start" | "chunk" | "finish" | "cancel"))
+    path.strip_prefix("/uploads/").filter(|step| matches!(*step, "start" | "chunk" | "finish" | "cancel"))
 }
 
 impl Client {
@@ -484,20 +484,19 @@ async fn resolve_delivery(
 
 pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
-        .route("/v2/agents/{id}/close", post(write))
-        .route("/v2/requests", post(write))
-        .route("/v2/orchestrator/messages", post(write))
-        .route("/v2/activity", post(write))
-        .route("/v2/tasks/{id}/cancel-reason", put(write))
-        .route("/v2/tasks/{id}/history", get(read))
-        .route("/v2/domain/delivery-attempts/{id}/resolve", post(resolve_delivery))
-        .route("/v2/pull-requests/{id}/resolve-conflicts", post(write))
-        .route("/v2/options", get(read))
-        .route("/v2/projects", get(read))
-        .route("/v2/issues", get(read))
-        .route("/v2/runtime", get(read))
-        .route("/v2/agents/search", get(read))
-        .route("/v2/agents/{id}/activity", get(read))
+        .route("/agents/{id}/close", post(write))
+        .route("/orchestrator/messages", post(write))
+        .route("/activity", post(write))
+        .route("/tasks/{id}/cancel-reason", put(write))
+        .route("/tasks/{id}/history", get(read))
+        .route("/delivery-attempts/{id}/resolve", post(resolve_delivery))
+        .route("/pull-requests/{id}/resolve-conflicts", post(write))
+        .route("/options", get(read))
+        .route("/projects", get(read))
+        .route("/issues", get(read))
+        .route("/runtime", get(read))
+        .route("/agents/search", get(read))
+        .route("/agents/{id}/activity", get(read))
         .with_state(client)
 }
 

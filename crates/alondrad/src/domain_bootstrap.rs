@@ -82,33 +82,32 @@ impl crate::domain_api::DomainHost for V2Only {
     fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver {
         &*self.observer
     }
+    fn new_work_client(&self) -> Option<&crate::v2_client_routes::Client> { Some(&self.client) }
 }
 
 pub(crate) fn router(state: Arc<V2Only>) -> Router {
     let client = state.client();
     Router::new()
-        .route("/v2/daemon", get(daemon))
-        .route("/v2/pairing", post(new_pairing))
-        .route("/v2/pair", post(pair))
-        .route("/v2/devices", get(devices))
-        .route("/v2/devices/{id}", axum::routing::delete(revoke_device))
-        .route("/v2/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(crate::uploads::MAX_UPLOAD_BYTES + 4096)))
-        .route("/v2/files", get(file))
-        .route("/v2/agents/{id}/messages", post(agent_message))
-        .route("/v2/orchestrator/cancel", post(orchestrator_decision))
-        .route("/v2/orchestrator/acknowledge", post(orchestrator_decision))
-        .route("/v2/orchestrator/retry", post(orchestrator_decision))
-        .route("/v2/orchestrator/launch", post(orchestrator_launch))
-        .route("/v2/orchestrator/send", post(orchestrator_send))
-        .route("/v2/orchestrator/interrupt", post(orchestrator_interrupt))
-        .route("/v2/orchestrator/machine", get(orchestrator_machine))
-        .route("/v2/orchestrator/schedules", post(orchestrator_schedule))
-        .route("/v2/orchestrator/fleet", get(orchestrator_fleet))
-        .route("/v2/orchestrator/node", get(orchestrator_node))
-        .route("/v2/orchestrator/candidates", get(orchestrator_candidates))
-        .route("/v2/agents/waiting-machine", post(agent_waiting_machine))
-        .route("/v1", axum::routing::any(legacy_protocol))
-        .route("/v1/{*rest}", axum::routing::any(legacy_protocol))
+        .route("/daemon", get(daemon))
+        .route("/pairing", post(new_pairing))
+        .route("/pair", post(pair))
+        .route("/devices", get(devices))
+        .route("/devices/{id}", axum::routing::delete(revoke_device))
+        .route("/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(crate::uploads::MAX_UPLOAD_BYTES + 4096)))
+        .route("/files", get(file))
+        .route("/agents/{id}/messages", post(agent_message))
+        .route("/orchestrator/cancel", post(orchestrator_decision))
+        .route("/orchestrator/acknowledge", post(orchestrator_decision))
+        .route("/orchestrator/retry", post(orchestrator_decision))
+        .route("/orchestrator/launch", post(orchestrator_launch))
+        .route("/orchestrator/send", post(orchestrator_send))
+        .route("/orchestrator/interrupt", post(orchestrator_interrupt))
+        .route("/orchestrator/machine", get(orchestrator_machine))
+        .route("/orchestrator/schedules", post(orchestrator_schedule))
+        .route("/orchestrator/fleet", get(orchestrator_fleet))
+        .route("/orchestrator/node", get(orchestrator_node))
+        .route("/orchestrator/candidates", get(orchestrator_candidates))
+        .route("/agents/waiting-machine", post(agent_waiting_machine))
         .merge(crate::domain_api::routes())
         .with_state(state)
         .merge(crate::v2_client_routes::router(client))
@@ -116,11 +115,6 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
 
 fn forbidden(message: &str) -> Response {
     crate::domain_api::domain_error(DomainError::new("forbidden", message))
-}
-
-/// A client or session still speaking the legacy protocol after cutover; its body is never read.
-async fn legacy_protocol() -> Response {
-    crate::domain_api::domain_error(DomainError::new("incompatible_protocol", "resume this session with the domain v2 plugin"))
 }
 
 fn local_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
@@ -312,7 +306,7 @@ async fn orchestrator_schedule(State(state): State<Arc<V2Only>>, ConnectInfo(pee
     };
     let home = state.home.clone();
     let domain = state.domain();
-    match tokio::task::spawn_blocking(move || crate::domain_schedule_api::mutation(&domain, &home, "POST", "/v2/domain/schedules",
+    match tokio::task::spawn_blocking(move || crate::domain_schedule_api::mutation(&domain, &home, "POST", "/schedules",
         Some(&body), None, || Ok(()))).await {
         Ok(answer) => crate::domain_schedule_api::response(answer),
         Err(_) => storage(),
@@ -499,17 +493,15 @@ mod tests {
             .unwrap();
         });
         let client = reqwest::Client::new();
-        let daemon: serde_json::Value = client.get(format!("{base}/v2/daemon")).send().await.unwrap().json().await.unwrap();
+        let daemon: serde_json::Value = client.get(format!("{base}/daemon")).send().await.unwrap().json().await.unwrap();
         assert_eq!(daemon["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(daemon["update"]["current"], env!("CARGO_PKG_VERSION"));
-        for (method, path) in [("GET", "/v1/overview"), ("POST", "/v1/nodes/n/messages"), ("PUT", "/v1"), ("DELETE", "/v1/questions/1")] {
+        for (method, path) in [("POST", "/v1/nodes/n/messages"), ("PUT", "/v1"), ("DELETE", "/v1/questions/1")] {
             let response = client.request(method.parse().unwrap(), format!("{base}{path}"))
                 .body(r#"{"text":"legacy"}"#).send().await.unwrap();
-            assert_eq!(response.status(), StatusCode::CONFLICT, "{method} {path}");
-            let body: serde_json::Value = response.json().await.unwrap();
-            assert_eq!(body["code"], "incompatible_protocol", "{method} {path}");
-            assert_eq!(body["message"], "resume this session with the domain v2 plugin");
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {path}");
         }
+        assert_eq!(client.get(format!("{base}/v1/overview")).send().await.unwrap().status(), StatusCode::NOT_FOUND);
         assert_eq!(client.get(format!("{base}/v1x")).send().await.unwrap().status(), StatusCode::NOT_FOUND);
         assert_eq!(
             client
@@ -518,9 +510,9 @@ mod tests {
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::FORBIDDEN
+            StatusCode::NOT_FOUND
         );
-        let path = "/v2/domain";
+        let path = "/summary";
         let timestamp = alondra_core::now_millis().to_string();
         let message = crate::auth::signed_message("GET", path, &timestamp, b"");
         let signature: Signature = key.sign(message.as_bytes());
@@ -539,20 +531,20 @@ mod tests {
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(body["protocol_version"], 2);
         assert_eq!(body["data_epoch"].as_str(), Some(epoch.as_str()));
-        let producer = client.get(format!("{base}/v2/domain/capabilities"))
+        let producer = client.get(format!("{base}/capabilities"))
             .bearer_auth(&bearer).send().await.unwrap();
         assert_eq!(producer.status(), StatusCode::OK);
         let cursor: serde_json::Value = producer.json().await.unwrap();
         assert_eq!(cursor["data_epoch"].as_str(), Some(epoch.as_str()));
-        assert_eq!(client.get(format!("{base}/v2/domain/capabilities"))
+        assert_eq!(client.get(format!("{base}/capabilities"))
             .bearer_auth("invalid").send().await.unwrap().status(), StatusCode::FORBIDDEN);
         for (path, expected) in [
-            ("/v2/domain/schedules", StatusCode::OK),
-            ("/v2/domain/schedules/missing", StatusCode::NOT_FOUND),
-            ("/v2/domain/delivery-attempts?after=0", StatusCode::OK),
-            ("/v2/domain/tasks/missing/actions", StatusCode::NOT_FOUND),
-            ("/v2/domain/document-revisions/missing/content?offset=0", StatusCode::NOT_FOUND),
-            ("/v2/domain/pull-requests/missing/diff", StatusCode::NOT_FOUND),
+            ("/schedules", StatusCode::OK),
+            ("/schedules/missing", StatusCode::NOT_FOUND),
+            ("/delivery-attempts?after=0", StatusCode::OK),
+            ("/tasks/missing/actions", StatusCode::NOT_FOUND),
+            ("/document-revisions/missing/content?offset=0", StatusCode::NOT_FOUND),
+            ("/pull-requests/missing/diff", StatusCode::NOT_FOUND),
         ] {
             assert_eq!(client.get(format!("{base}{path}")).send().await.unwrap().status(),
                 StatusCode::FORBIDDEN, "unsigned {path}");
@@ -570,7 +562,7 @@ mod tests {
                 assert_eq!(body["code"], "not_found", "handler must answer {path}");
             }
         }
-        let merge_path = "/v2/domain/merge-authorizations/missing";
+        let merge_path = "/merge-authorizations/missing";
         assert_eq!(client.get(format!("{base}{merge_path}"))
             .header("authorization", format!("Bearer {}", "a".repeat(64)))
             .send().await.unwrap().status(), StatusCode::FORBIDDEN);
@@ -580,37 +572,37 @@ mod tests {
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
         let body: serde_json::Value = response.json().await.unwrap();
         assert_eq!(body["code"], "not_found", "handler must answer merge authorization read");
-        assert_eq!(client.get(format!("{base}/v2/orchestrator/machine")).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        assert_eq!(client.get(format!("{base}/v2/orchestrator/machine")).bearer_auth(&bearer).send().await.unwrap().status(),
+        assert_eq!(client.get(format!("{base}/orchestrator/machine")).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        assert_eq!(client.get(format!("{base}/orchestrator/machine")).bearer_auth(&bearer).send().await.unwrap().status(),
             StatusCode::FORBIDDEN, "an Agent's bearer is not the orchestrator's");
         let orchestrator = domain.bind_orchestrator("execution-1").unwrap();
-        let machine = client.get(format!("{base}/v2/orchestrator/machine"))
+        let machine = client.get(format!("{base}/orchestrator/machine"))
             .bearer_auth(orchestrator.expose_for_child_environment()).send().await.unwrap();
         assert_eq!(machine.status(), StatusCode::OK);
         assert!(machine.json::<serde_json::Value>().await.unwrap().as_object().unwrap().contains_key("usage"));
-        let launch = client.post(format!("{base}/v2/orchestrator/launch")).bearer_auth(orchestrator.expose_for_child_environment())
+        let launch = client.post(format!("{base}/orchestrator/launch")).bearer_auth(orchestrator.expose_for_child_environment())
             .json(&json!({"name": "n", "cwd": "/tmp", "task": "missing"})).send().await.unwrap();
         assert_eq!(launch.status(), StatusCode::NOT_FOUND);
         std::fs::write(alondra_core::options::path_in(&home), format!("projects_root = {:?}\n", home.to_str().unwrap())).unwrap();
         let draft = json!({"title": "Nightly", "text": "Review the project", "project": null, "frequency": "daily", "hour": 9, "minute": 0});
-        assert_eq!(client.post(format!("{base}/v2/orchestrator/schedules")).bearer_auth(&bearer).json(&draft)
+        assert_eq!(client.post(format!("{base}/orchestrator/schedules")).bearer_auth(&bearer).json(&draft)
             .send().await.unwrap().status(), StatusCode::FORBIDDEN, "an Agent does not create Schedules");
-        let created = client.post(format!("{base}/v2/orchestrator/schedules")).bearer_auth(orchestrator.expose_for_child_environment())
+        let created = client.post(format!("{base}/orchestrator/schedules")).bearer_auth(orchestrator.expose_for_child_environment())
             .json(&draft).send().await.unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
         assert_eq!(domain.state().unwrap().schedule.schedules.values().next().unwrap().title, "Nightly");
         let orchestrator_get = |path: &str| client.get(format!("{base}{path}")).bearer_auth(orchestrator.expose_for_child_environment()).send();
-        assert_eq!(client.get(format!("{base}/v2/orchestrator/fleet")).bearer_auth(&bearer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        let fleet = orchestrator_get("/v2/orchestrator/fleet").await.unwrap();
+        assert_eq!(client.get(format!("{base}/orchestrator/fleet")).bearer_auth(&bearer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        let fleet = orchestrator_get("/orchestrator/fleet").await.unwrap();
         assert_eq!(fleet.status(), StatusCode::OK);
         assert!(fleet.json::<serde_json::Value>().await.unwrap()["nodes"].is_array());
-        assert_eq!(orchestrator_get("/v2/orchestrator/node?node=nobody").await.unwrap().status(), StatusCode::NOT_FOUND);
-        assert_eq!(orchestrator_get("/v2/orchestrator/candidates").await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(orchestrator_get("/orchestrator/node?node=nobody").await.unwrap().status(), StatusCode::NOT_FOUND);
+        assert_eq!(orchestrator_get("/orchestrator/candidates").await.unwrap().status(), StatusCode::UNPROCESSABLE_ENTITY);
         domain.live.observe(&json!({"session_id": "test-agent", "hook_event_name": "UserPromptSubmit", "cwd": "/tmp", "prompt": "go"}));
         let waiting = json!({"reason": "the build queue is full"});
-        assert_eq!(client.post(format!("{base}/v2/agents/waiting-machine")).bearer_auth(orchestrator.expose_for_child_environment())
+        assert_eq!(client.post(format!("{base}/agents/waiting-machine")).bearer_auth(orchestrator.expose_for_child_environment())
             .json(&waiting).send().await.unwrap().status(), StatusCode::FORBIDDEN, "only an Agent waits for the machine");
-        assert_eq!(client.post(format!("{base}/v2/agents/waiting-machine")).bearer_auth(&bearer)
+        assert_eq!(client.post(format!("{base}/agents/waiting-machine")).bearer_auth(&bearer)
             .json(&waiting).send().await.unwrap().status(), StatusCode::OK);
         let node = domain.live.node("test-agent").unwrap();
         assert_eq!(node.turn_signal, Some(alondra_core::TurnSignal::WaitingMachine), "{node:?}");
@@ -618,7 +610,7 @@ mod tests {
         assert_eq!(client.get(format!("{base}{merge_path}"))
             .header("authorization", format!("Bearer {bearer}"))
             .send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        assert_eq!(client.get(format!("{base}/v2/domain/capabilities"))
+        assert_eq!(client.get(format!("{base}/capabilities"))
             .bearer_auth(&bearer).send().await.unwrap().status(), StatusCode::FORBIDDEN);
         server.abort();
         let _ = server.await;
@@ -682,20 +674,18 @@ mod tests {
             axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
         });
         let client = reqwest::Client::new();
-        let envelope = |id: &str, revision: u64| json!({"protocol_version": 2, "data_epoch": epoch,
-            "command_id": id, "expected_revision": revision,
-            "command": {"kind": "create_request", "request_id": format!("request-{id}"), "body": "Work"}});
-        let revision = domain.state().unwrap().revision;
-        assert_eq!(client.post(format!("{base}/v2/domain/commands")).json(&envelope("unsigned", revision))
+        let request = json!({"request_id":"request-one", "text":"Work", "project":null,
+            "options":{}, "issue":null, "attachments":[]});
+        assert_eq!(client.post(format!("{base}/requests")).json(&request)
             .send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        assert_eq!(signed(&client, &base, &stranger, "unknown-device", "POST", "/v2/domain/commands",
-            Some(envelope("unknown", revision))).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(signed(&client, &base, &stranger, &device.id, "POST", "/v2/domain/commands",
-            Some(envelope("forged", revision))).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(signed(&client, &base, &stranger, "unknown-device", "POST", "/requests",
+            Some(request.clone())).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(signed(&client, &base, &stranger, &device.id, "POST", "/requests",
+            Some(request.clone())).send().await.unwrap().status(), StatusCode::UNAUTHORIZED);
         assert!(domain.state().unwrap().requests.is_empty());
 
-        let response = signed(&client, &base, &key, &device.id, "POST", "/v2/domain/commands",
-            Some(envelope("one", revision))).send().await.unwrap();
+        let response = signed(&client, &base, &key, &device.id, "POST", "/requests",
+            Some(request.clone())).send().await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let outcome: serde_json::Value = response.json().await.unwrap();
         assert_eq!(outcome["created_ids"][0], "request-one");
@@ -703,17 +693,35 @@ mod tests {
         let audit: String = rusqlite::Connection::open(home.join("domain-v2.db")).unwrap()
             .query_row("SELECT actor FROM command_audit ORDER BY revision DESC LIMIT 1", [], |row| row.get(0)).unwrap();
         assert!(audit.contains(&format!("device:{}", device.id)), "{audit}");
-        let replay = signed(&client, &base, &key, &device.id, "POST", "/v2/domain/commands",
-            Some(envelope("one", revision))).send().await.unwrap();
+        let replay = signed(&client, &base, &key, &device.id, "POST", "/requests",
+            Some(request.clone())).send().await.unwrap();
         assert_eq!(replay.status(), StatusCode::OK, "the same command id replays its receipt");
         assert_eq!(domain.state().unwrap().requests.len(), 1);
+
+        // Producers use the same Request resource with the flat, typed command
+        // fields. The HTTP adapter supplies the CommandEnvelope metadata itself.
+        let producer = domain.issue(crate::domain_authority::Principal::Orchestrator {
+            generation: 0, execution_id: "exec-1".into(),
+        }).unwrap();
+        let current = domain.state().unwrap();
+        let typed_request = json!({"request_id":"request-mcp", "body":"Define work", "auto_merge":false,
+            "data_epoch":current.data_epoch, "command_id":"mcp-create-request", "expected_revision":current.revision});
+        drop(current);
+        let typed = client.post(format!("{base}/requests")).bearer_auth(producer.expose_for_child_environment())
+            .json(&typed_request).send().await.unwrap();
+        assert_eq!(typed.status(), StatusCode::OK);
+        assert!(domain.state().unwrap().requests.contains_key(&"request-mcp".into()));
+        let wrong_actor = client.post(format!("{base}/requests")).bearer_auth(producer.expose_for_child_environment())
+            .json(&request).send().await.unwrap();
+        assert_eq!(wrong_actor.status(), StatusCode::FORBIDDEN,
+            "a producer cannot submit the User launch form");
 
         let draft = json!({"title": "Nightly", "text": "Review", "project": null, "options": {},
             "disallowed_tools": [], "frequency": "daily", "hour": 9, "minute": 0,
             "weekday": null, "interval": null, "start_at": null, "enabled": false, "revision": 0});
-        assert_eq!(client.post(format!("{base}/v2/domain/schedules")).json(&draft)
+        assert_eq!(client.post(format!("{base}/schedules")).json(&draft)
             .send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        let created = signed(&client, &base, &key, &device.id, "POST", "/v2/domain/schedules", Some(draft.clone()))
+        let created = signed(&client, &base, &key, &device.id, "POST", "/schedules", Some(draft.clone()))
             .send().await.unwrap();
         assert_eq!(created.status(), StatusCode::CREATED);
         let created: serde_json::Value = created.json().await.unwrap();
@@ -722,36 +730,36 @@ mod tests {
         let mut update = draft.clone();
         update["title"] = json!("Nightly review");
         update["revision"] = json!(1);
-        assert_eq!(signed(&client, &base, &key, &device.id, "PUT", &format!("/v2/domain/schedules/{schedule_id}"), Some(update))
+        assert_eq!(signed(&client, &base, &key, &device.id, "PUT", &format!("/schedules/{schedule_id}"), Some(update))
             .send().await.unwrap().status(), StatusCode::OK);
-        assert_eq!(signed(&client, &base, &key, &device.id, "POST", &format!("/v2/domain/schedules/{schedule_id}/run"), None)
+        assert_eq!(signed(&client, &base, &key, &device.id, "POST", &format!("/schedules/{schedule_id}/runs"), None)
             .send().await.unwrap().status(), StatusCode::ACCEPTED);
         assert_eq!(domain.state().unwrap().schedule.runs.len(), 1);
-        assert_eq!(signed(&client, &base, &key, &device.id, "DELETE", &format!("/v2/domain/schedules/{schedule_id}"), None)
+        assert_eq!(signed(&client, &base, &key, &device.id, "DELETE", &format!("/schedules/{schedule_id}"), None)
             .send().await.unwrap().status(), StatusCode::CONFLICT, "a launching run blocks deletion");
 
         // A new terminal pairs over loopback and appears among the devices.
-        let code: serde_json::Value = client.post(format!("{base}/v2/pairing")).json(&json!({})).send().await.unwrap().json().await.unwrap();
+        let code: serde_json::Value = client.post(format!("{base}/pairing")).json(&json!({})).send().await.unwrap().json().await.unwrap();
         assert_eq!(code["expires_in"], 600);
         let newcomer = SigningKey::from_slice(&[23u8; 32]).unwrap();
-        let paired = client.post(format!("{base}/v2/pair")).json(&json!({"code": code["code"], "device_name": "Terminal (test)",
+        let paired = client.post(format!("{base}/pair")).json(&json!({"code": code["code"], "device_name": "Terminal (test)",
             "public_key": STANDARD.encode(newcomer.verifying_key().to_sec1_bytes())})).send().await.unwrap();
         assert_eq!(paired.status(), StatusCode::OK);
         let newcomer_id = paired.json::<serde_json::Value>().await.unwrap()["device_id"].as_str().unwrap().to_owned();
-        assert_eq!(client.post(format!("{base}/v2/pair")).json(&json!({"code": code["code"], "device_name": "Again",
+        assert_eq!(client.post(format!("{base}/pair")).json(&json!({"code": code["code"], "device_name": "Again",
             "public_key": STANDARD.encode(newcomer.verifying_key().to_sec1_bytes())})).send().await.unwrap().status(),
             StatusCode::UNAUTHORIZED, "a pairing code works once");
-        let listed: serde_json::Value = client.get(format!("{base}/v2/devices")).send().await.unwrap().json().await.unwrap();
+        let listed: serde_json::Value = client.get(format!("{base}/devices")).send().await.unwrap().json().await.unwrap();
         assert!(listed["devices"].as_array().unwrap().iter().any(|d| d["id"] == newcomer_id));
-        let proxied = client.get(format!("{base}/v2/devices")).header("x-forwarded-for", "10.0.0.9")
+        let proxied = client.get(format!("{base}/devices")).header("x-forwarded-for", "10.0.0.9")
             .send().await.unwrap().status();
         assert!(proxied == StatusCode::FORBIDDEN || proxied == StatusCode::UNAUTHORIZED, "device management is local only: {proxied}");
 
         // Attachments: the upload answers with the AttachmentRef a v2 command carries.
         let bytes = b"design notes for the task".to_vec();
-        assert_eq!(client.post(format!("{base}/v2/uploads?name=notes.md")).body(bytes.clone())
+        assert_eq!(client.post(format!("{base}/uploads?name=notes.md")).body(bytes.clone())
             .send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        let uploaded = signed_raw(&client, &base, &newcomer, &newcomer_id, "/v2/uploads?name=notes.md", bytes.clone())
+        let uploaded = signed_raw(&client, &base, &newcomer, &newcomer_id, "/uploads?name=notes.md", bytes.clone())
             .send().await.unwrap();
         assert_eq!(uploaded.status(), StatusCode::OK);
         let reference: alondra_core::domain_v2::AttachmentRef = uploaded.json().await.unwrap();
@@ -760,51 +768,52 @@ mod tests {
         assert_eq!(reference.bytes, bytes.len() as u64);
         assert!(reference.content_reference.starts_with("files/uploads/"), "{}", reference.content_reference);
         assert!(home.join(&reference.content_reference).is_file());
-        let path = format!("/v2/files?path={}", reference.content_reference);
+        let path = format!("/files?path={}", reference.content_reference);
         assert_eq!(client.get(format!("{base}{path}")).send().await.unwrap().status(), StatusCode::FORBIDDEN);
         let served = signed(&client, &base, &newcomer, &newcomer_id, "GET", &path, None).send().await.unwrap();
         assert_eq!(served.status(), StatusCode::OK);
         assert_eq!(served.bytes().await.unwrap().to_vec(), bytes);
-        let outside = "/v2/files?path=/etc/hosts";
+        let outside = "/files?path=/etc/hosts";
         assert_eq!(signed(&client, &base, &newcomer, &newcomer_id, "GET", outside, None).send().await.unwrap().status(),
             StatusCode::NOT_FOUND, "only stored copies are served");
         let message = json!({"text": "hi"});
-        assert_eq!(client.post(format!("{base}/v2/agents/agent-z/messages")).json(&message)
+        assert_eq!(client.post(format!("{base}/agents/agent-z/messages")).json(&message)
             .send().await.unwrap().status(), StatusCode::FORBIDDEN, "a message needs the signed user");
-        let unknown = signed(&client, &base, &key, &device.id, "POST", "/v2/agents/agent-z/messages", Some(message)).send().await.unwrap();
+        let unknown = signed(&client, &base, &key, &device.id, "POST", "/agents/agent-z/messages", Some(message)).send().await.unwrap();
         assert_eq!(unknown.status(), StatusCode::NOT_FOUND);
         assert_eq!(unknown.json::<serde_json::Value>().await.unwrap()["code"], "not_found");
-        assert_eq!(client.post(format!("{base}/v2/orchestrator/retry")).json(&json!({"run_id": "run-7"}))
+        assert_eq!(client.post(format!("{base}/orchestrator/retry")).json(&json!({"run_id": "run-7"}))
             .send().await.unwrap().status(), StatusCode::FORBIDDEN, "a decision needs the signed user");
-        let none = signed(&client, &base, &key, &device.id, "POST", "/v2/orchestrator/acknowledge", Some(json!({"run_id": "run-7"})))
+        let none = signed(&client, &base, &key, &device.id, "POST", "/orchestrator/acknowledge", Some(json!({"run_id": "run-7"})))
             .send().await.unwrap();
         assert_eq!(none.status(), StatusCode::CONFLICT);
         assert_eq!(none.json::<serde_json::Value>().await.unwrap()["code"], "conflict");
-        let publish = json!({"protocol_version": 2, "data_epoch": epoch, "command_id": "attached",
-            "expected_revision": domain.state().unwrap().revision,
-            "command": {"kind": "create_request", "request_id": "request-attached", "body": "Work with a file"}});
-        assert_eq!(signed(&client, &base, &newcomer, &newcomer_id, "POST", "/v2/domain/commands", Some(publish))
+        let publish = json!({"request_id":"request-attached", "text":"Work with a file", "project":null,
+            "options":{}, "issue":null, "attachments":[]});
+        assert_eq!(signed(&client, &base, &newcomer, &newcomer_id, "POST", "/requests", Some(publish))
             .send().await.unwrap().status(), StatusCode::OK, "the newly paired terminal is the user too");
 
         // Machine gauges and usage travel with the daemon read once sampled.
-        let daemon: serde_json::Value = client.get(format!("{base}/v2/daemon")).send().await.unwrap().json().await.unwrap();
+        let daemon: serde_json::Value = client.get(format!("{base}/daemon")).send().await.unwrap().json().await.unwrap();
         assert!(daemon["machine"].is_null());
         *gauges.lock().unwrap() = Some((alondra_core::Machine { at: 1, memory_total: 16, memory_available: 8,
             memory_free_percent: Some(50), load: [1.0, 1.0, 1.0], cpus: 8, cpu_usage: 12.5, disk_total: 100,
             disk_available: 40, unreliable: false }, None));
-        let daemon: serde_json::Value = client.get(format!("{base}/v2/daemon")).send().await.unwrap().json().await.unwrap();
+        let daemon: serde_json::Value = client.get(format!("{base}/daemon")).send().await.unwrap().json().await.unwrap();
         assert_eq!(daemon["machine"]["memory_free_percent"], 50);
         assert_eq!(daemon["machine"]["cpus"], 8);
         assert_eq!(daemon["version"], env!("CARGO_PKG_VERSION"));
 
-        assert_eq!(client.delete(format!("{base}/v2/devices/{newcomer_id}")).send().await.unwrap().status(), StatusCode::OK);
+        assert_eq!(client.delete(format!("{base}/devices/{newcomer_id}")).send().await.unwrap().status(), StatusCode::OK);
         assert_eq!(signed(&client, &base, &newcomer, &newcomer_id, "GET", &path, None).send().await.unwrap().status(),
             StatusCode::UNAUTHORIZED, "an unpaired terminal reads nothing");
 
         Auth::open(&home).unwrap().revoke(&device.id).unwrap();
-        assert_eq!(signed(&client, &base, &key, &device.id, "POST", "/v2/domain/commands",
-            Some(envelope("two", domain.state().unwrap().revision))).send().await.unwrap().status(), StatusCode::FORBIDDEN);
-        assert_eq!(domain.state().unwrap().requests.len(), 2);
+        let revoked_request = json!({"request_id":"request-two", "text":"Work", "project":null,
+            "options":{}, "issue":null, "attachments":[]});
+        assert_eq!(signed(&client, &base, &key, &device.id, "POST", "/requests",
+            Some(revoked_request)).send().await.unwrap().status(), StatusCode::FORBIDDEN);
+        assert_eq!(domain.state().unwrap().requests.len(), 3);
         server.abort();
         let _ = server.await;
         drop(domain);

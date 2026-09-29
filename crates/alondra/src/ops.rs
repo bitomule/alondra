@@ -51,8 +51,8 @@ impl Message {
 
     pub fn path(&self) -> String {
         match &self.agent {
-            Some(a) => format!("/v2/agents/{}/messages", urlencode(&a.0)),
-            None => "/v2/orchestrator/messages".into(),
+            Some(a) => format!("/agents/{}/messages", urlencode(&a.0)),
+            None => "/orchestrator/messages".into(),
         }
     }
 
@@ -76,7 +76,7 @@ impl Message {
 }
 
 pub fn close(agent: &AgentId, force: bool) -> (String, Value) {
-    (format!("/v2/agents/{}/close", urlencode(&agent.0)), json!({"force": force}))
+    (format!("/agents/{}/close", urlencode(&agent.0)), json!({"force": force}))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -92,42 +92,42 @@ pub fn orchestrator(action: Recovery, run_id: &str) -> (String, Value) {
         Recovery::Acknowledge => "acknowledge",
         Recovery::Retry => "retry",
     };
-    (format!("/v2/orchestrator/{step}"), json!({"run_id": run_id}))
+    (format!("/orchestrator/{step}"), json!({"run_id": run_id}))
 }
 
 pub fn resolve_conflicts(pr: &PrId) -> (String, Value) {
-    (format!("/v2/pull-requests/{}/resolve-conflicts", urlencode(&pr.0)), json!({}))
+    (format!("/pull-requests/{}/resolve-conflicts", urlencode(&pr.0)), json!({}))
 }
 
 pub fn cancel_reason(task: &TaskId, reason: &str) -> (String, Value) {
-    (format!("/v2/tasks/{}/cancel-reason", urlencode(&task.0)), json!({"reason": reason}))
+    (format!("/tasks/{}/cancel-reason", urlencode(&task.0)), json!({"reason": reason}))
 }
 
 pub fn history(task: &TaskId) -> String {
-    format!("/v2/tasks/{}/history", urlencode(&task.0))
+    format!("/tasks/{}/history", urlencode(&task.0))
 }
 
 pub fn activity(agent: &AgentId) -> String {
-    format!("/v2/agents/{}/activity", urlencode(&agent.0))
+    format!("/agents/{}/activity", urlencode(&agent.0))
 }
 
 pub fn search(query: &str) -> String {
-    format!("/v2/agents/search?q={}", urlencode(query))
+    format!("/agents/search?q={}", urlencode(query))
 }
 
-pub const PRESENCE: &str = "/v2/activity";
-pub const REQUESTS: &str = "/v2/requests";
-pub const PROJECTS: &str = "/v2/projects";
+pub const PRESENCE: &str = "/activity";
+pub const REQUESTS: &str = "/requests";
+pub const PROJECTS: &str = "/projects";
 
 pub fn options(project: Option<&str>) -> String {
     match project {
-        Some(p) => format!("/v2/options?project={}", urlencode(p)),
-        None => "/v2/options".into(),
+        Some(p) => format!("/options?project={}", urlencode(p)),
+        None => "/options".into(),
     }
 }
 
 pub fn issues(refresh: bool) -> &'static str {
-    if refresh { "/v2/issues?refresh=1" } else { "/v2/issues" }
+    if refresh { "/issues?refresh=1" } else { "/issues" }
 }
 
 /// A new request carrying what the plain `create_request` command cannot: its project, launch
@@ -150,10 +150,10 @@ mod tests {
         let mut m = Message::to(Some("session/1".into()), MessageKind::Reply, "Thanks".into());
         m.interaction = Some("info-1".into());
         m.mark_read = true;
-        assert_eq!(m.path(), "/v2/agents/session%2F1/messages");
+        assert_eq!(m.path(), "/agents/session%2F1/messages");
         assert_eq!(m.body(), json!({"text": "Thanks", "attachments": [], "kind": "reply", "mark_read": true, "interaction_id": "info-1"}));
         let o = Message::to(None, MessageKind::Message, "Plan the week".into());
-        assert_eq!((o.path(), o.body()), ("/v2/orchestrator/messages".to_string(), json!({"text": "Plan the week", "attachments": []})));
+        assert_eq!((o.path(), o.body()), ("/orchestrator/messages".to_string(), json!({"text": "Plan the week", "attachments": []})));
     }
 
     #[test]

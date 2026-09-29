@@ -284,7 +284,7 @@ pub(crate) fn parse(path: &str) -> Option<Route> {
         Some((path, query)) => (path, Some(query)),
         None => (path, None),
     };
-    let rest = path.strip_prefix("/v2/domain/")?;
+    let rest = path.strip_prefix("/")?;
     let mut segments = rest.split('/');
     let (head, first, second, more) = (segments.next()?, segments.next(), segments.next(), segments.next());
     if more.is_some() {

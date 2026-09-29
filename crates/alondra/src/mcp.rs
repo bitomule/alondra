@@ -516,16 +516,18 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "reopen_task" => {
             let bearer = domain_bearer()?;
             let envelope = domain_envelope(name, args)?;
-            serde_json::to_string_pretty(&client.domain_post(
-                "/v2/domain/commands",
-                &bearer,
-                &envelope,
-            )?)?
+            let (method, path) = resource_target(name, &envelope["command"])?;
+            let mut body = envelope["command"].clone();
+            body.as_object_mut().expect("typed command object").remove("kind");
+            for key in ["data_epoch", "command_id", "expected_revision"] {
+                body[key] = envelope[key].clone();
+            }
+            serde_json::to_string_pretty(&client.domain_call(method, &path, &bearer, Some(&body))?)?
         }
         "launch" | "send" | "interrupt" => {
             let bearer = domain_bearer()?;
             serde_json::to_string_pretty(&client.domain_post(
-                &format!("/v2/orchestrator/{name}"),
+                &format!("/orchestrator/{name}"),
                 &bearer,
                 args,
             )?)?
@@ -533,7 +535,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         "schedule_create" => {
             let bearer = domain_bearer()?;
             serde_json::to_string_pretty(&client.domain_post(
-                "/v2/orchestrator/schedules",
+                "/orchestrator/schedules",
                 &bearer,
                 args,
             )?)?
@@ -541,7 +543,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         "fleet" => {
             let bearer = domain_bearer()?;
             serde_json::to_string_pretty(&fleet_summary(
-                &client.domain_get("/v2/orchestrator/fleet", &bearer)?,
+                &client.domain_get("/orchestrator/fleet", &bearer)?,
                 flag(args, "all"),
             ))?
         }
@@ -555,7 +557,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
             };
             serde_json::to_string_pretty(&node_view(
                 &client.domain_get(
-                    &format!("/v2/orchestrator/node?node={}", urlencode(key)),
+                    &format!("/orchestrator/node?node={}", urlencode(key)),
                     &bearer,
                 )?,
                 page,
@@ -573,7 +575,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
                 })
                 .collect();
             serde_json::to_string_pretty(&client.domain_get(
-                &format!("/v2/orchestrator/candidates?{}", query.join("&")),
+                &format!("/orchestrator/candidates?{}", query.join("&")),
                 &bearer,
             )?)?
         }
@@ -581,7 +583,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
             let bearer = domain_bearer()?;
             let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");
             client.domain_post(
-                "/v2/agents/waiting-machine",
+                "/agents/waiting-machine",
                 &bearer,
                 &json!({"reason": reason}),
             )?;
@@ -589,10 +591,51 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         }
         "machine" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&client.domain_get("/v2/orchestrator/machine", &bearer)?)?
+            serde_json::to_string_pretty(&client.domain_get("/orchestrator/machine", &bearer)?)?
         }
         other => anyhow::bail!("unknown tool: {other}"),
     })
+}
+
+pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static str, String)> {
+    let value = |key: &str| -> Result<&str> {
+        command.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("{name} requires {key}"))
+    };
+    let id = |key: &str| -> Result<String> { Ok(urlencode(value(key)?)) };
+    let target = match name {
+        "ask" | "ask_question" => ("POST", "/questions".to_owned()),
+        "request_action" => ("POST", "/action-requests".to_owned()),
+        "publish_information" => ("POST", "/messages".to_owned()),
+        "withdraw_question" => ("POST", format!("/interactions/{}/withdrawal", id("interaction_id")?)),
+        "answer_question" => ("POST", format!("/interactions/{}/answers", id("interaction_id")?)),
+        "mark_read" => ("PUT", format!("/interactions/{}/read-state", id("interaction_id")?)),
+        "submit_feedback" => ("POST", format!("/interactions/{}/feedback", id("presentation_id")?)),
+        "accept_delivery" => ("POST", format!("/interactions/{}/acceptance", id("presentation_id")?)),
+        "authorize_merge" => ("POST", format!("/interactions/{}/merge-authorizations", id("presentation_id")?)),
+        "create_request" => ("POST", "/requests".to_owned()),
+        "close_request" => ("POST", format!("/requests/{}/close", id("request_id")?)),
+        "create_task" => ("POST", format!("/requests/{}/tasks", id("request_id")?)),
+        "assign_task" => ("PUT", format!("/tasks/{}/assignee", id("task_id")?)),
+        "retitle_task" => ("PATCH", format!("/tasks/{}", id("task_id")?)),
+        "set_dependencies" => ("PUT", format!("/tasks/{}/dependencies", id("task_id")?)),
+        "start_task" => ("POST", format!("/tasks/{}/start", id("task_id")?)),
+        "create_document" => ("POST", format!("/tasks/{}/documents", id("task_id")?)),
+        "revise_document" => ("PUT", format!("/tasks/{}/documents/{}", id("task_id")?, id("document_id")?)),
+        "decide_document_review" => ("PUT", format!("/tasks/{}/documents/{}/review", id("task_id")?, id("document_id")?)),
+        "link_task_document" => ("POST", format!("/tasks/{}/document-links", id("task_id")?)),
+        "register_pr" => ("POST", format!("/tasks/{}/pull-requests", id("task_id")?)),
+        "link_interaction_subject" => ("PUT", format!("/interactions/{}/subject", id("interaction_id")?)),
+        "present_result" => ("POST", format!("/tasks/{}/results", id("task_id")?)),
+        "publish_stack_readiness" => ("POST", format!("/tasks/{}/stack-readiness", id("task_id")?)),
+        "complete_task" => ("POST", format!("/tasks/{}/completion", id("task_id")?)),
+        "claim_merge_authorization" => ("POST", format!("/merge-authorizations/{}/claim", id("authorization_id")?)),
+        "cancel_task" => ("POST", format!("/tasks/{}/cancellation", id("task_id")?)),
+        "reopen_task" => ("POST", format!("/tasks/{}/reopening", id("task_id")?)),
+        "archive_task" => ("POST", format!("/tasks/{}/archival", id("task_id")?)),
+        _ => anyhow::bail!("unknown domain resource operation: {name}"),
+    };
+    Ok(target)
 }
 
 fn domain_envelope(name: &str, args: &Value) -> Result<Value> {
@@ -1075,6 +1118,8 @@ mod tests {
         assert_eq!(answer["inputSchema"]["properties"]["inputs"]["additionalProperties"]["oneOf"][0]["properties"]["kind"]["const"],"text");
         let claim=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="claim_merge_authorization").unwrap();
         assert_eq!(claim["inputSchema"]["properties"]["base_verified"]["const"],true);
+        assert!(claim["inputSchema"]["properties"].get("task_id").is_none(),
+            "the authorization resource ID determines the claim target");
     }
 
     #[test]

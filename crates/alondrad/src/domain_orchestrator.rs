@@ -356,12 +356,12 @@ pub(crate) fn executor(domain: Arc<DomainRuntime>, home: &Path) -> Executor {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Decision { Cancel, Acknowledge, Retry }
 
-/// `POST /v2/orchestrator/{cancel,acknowledge,retry}`, the user's decision on an execution.
+/// `POST /orchestrator/{cancel,acknowledge,retry}`, the user's decision on an execution.
 pub(crate) fn decision_route(path: &str) -> Option<Decision> {
     match path {
-        "/v2/orchestrator/cancel" => Some(Decision::Cancel),
-        "/v2/orchestrator/acknowledge" => Some(Decision::Acknowledge),
-        "/v2/orchestrator/retry" => Some(Decision::Retry),
+        "/orchestrator/cancel" => Some(Decision::Cancel),
+        "/orchestrator/acknowledge" => Some(Decision::Acknowledge),
+        "/orchestrator/retry" => Some(Decision::Retry),
         _ => None,
     }
 }
@@ -682,8 +682,8 @@ mod tests {
         let acknowledged = decide(&f.executor, Decision::Acknowledge, Some(&serde_json::json!({"run_id": run.id})));
         assert_eq!(acknowledged, serde_json::json!({"status": 200, "body": {}}));
         assert_eq!(status(&f.executor).unwrap()["phase"], "idle");
-        assert_eq!(decision_route("/v2/orchestrator/retry"), Some(Decision::Retry));
-        assert_eq!(decision_route("/v2/orchestrator/messages"), None);
+        assert_eq!(decision_route("/orchestrator/retry"), Some(Decision::Retry));
+        assert_eq!(decision_route("/orchestrator/messages"), None);
     }
 
     #[tokio::test]
