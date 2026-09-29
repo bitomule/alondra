@@ -35,7 +35,7 @@ final class RelaySessionTests: XCTestCase {
         let fixture = try Fixture()
         let session = fixture.session(now: { UInt64.max })
         do {
-            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+            _ = try await session.execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state", body: command)
             XCTFail("Invalid envelope time must remain a definite rejection")
         } catch RelaySessionError.invalidRequest { }
         let posts = await fixture.http.mutations
@@ -50,7 +50,7 @@ final class RelaySessionTests: XCTestCase {
             let session = fixture.session()
             let absent = try await session.recoveryStatus(requestID: "operation-1")
             XCTAssertEqual(absent, .notDispatched)
-            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+            _ = try await session.execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state", body: command)
             let restored = try await session.recoveryStatus(requestID: "operation-1")
             switch mode {
             case .success: XCTAssertEqual(restored, .completed(status: 200, body: ok))
@@ -65,7 +65,7 @@ final class RelaySessionTests: XCTestCase {
     func testReadCannotReuseMutationIdentityInEitherDirection() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+        _ = try await session.execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state", body: command)
         _ = try await session.execute(requestID: "operation-1", method: "GET", path: "/summary")
         let requests = await fixture.http.mutations
         XCTAssertEqual(requests.count, 2)
@@ -73,7 +73,7 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertNotEqual(read.requestID, "operation-1")
         XCTAssertTrue(read.requestID.hasPrefix("read-"))
         do {
-            _ = try await session.execute(requestID: read.requestID, method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+            _ = try await session.execute(requestID: read.requestID, method: "PUT", path: "/interactions/interaction-1/read-state", body: command)
             XCTFail("Mutation must not reuse an internal read identity")
         } catch RelaySessionError.invalidRequest { }
         let after = await fixture.http.mutations
@@ -101,11 +101,11 @@ final class RelaySessionTests: XCTestCase {
     func testMutationIdentityRejectsChangedRequestBeforeAndAfterRetirement() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+        _ = try await session.execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state", body: command)
         for retired in [false, true] {
             if retired { try await session.retireAppliedResponse(requestID: "operation-1") }
             for (method, path, body) in [
-                ("POST", "/interactions/interaction-1/read-state", changedCommand),
+                ("PUT", "/interactions/interaction-1/read-state", changedCommand),
                 ("POST", "/schedules", command),
                 ("PUT", "/schedules/schedule-1", command)
             ] {
@@ -124,7 +124,7 @@ final class RelaySessionTests: XCTestCase {
         let session = fixture.session()
         @Sendable func attempt(_ body: Data) async throws -> Bool {
             do {
-                let outcome = try await session.execute(requestID: "operation-1", method: "POST",
+                let outcome = try await session.execute(requestID: "operation-1", method: "PUT",
                     path: "/interactions/interaction-1/read-state", body: body)
                 XCTAssertEqual(outcome, .completed(status: 200, body: ok))
                 return true
@@ -154,7 +154,7 @@ final class RelaySessionTests: XCTestCase {
     func testUnifiedAPIRecoversLostMutationAcrossClientRecreation() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        let endpoint = Endpoint<Data>.data(.post, path: ["interactions", "interaction-1", "read-state"], body: command)
+        let endpoint = Endpoint<Data>.data(.put, path: ["interactions", "interaction-1", "read-state"], body: command)
         let result = try await api(fixture, session).send(endpoint, operationID: "command-1")
         XCTAssertEqual(result, ok)
         let recovered = try await api(fixture, session).send(endpoint, operationID: "command-1")
@@ -166,10 +166,10 @@ final class RelaySessionTests: XCTestCase {
     func testLostPOSTResponseResolvesEncryptedResultWithoutReplayingMutation() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        let initial = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state",
+        let initial = try await session.execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state",
                                                 body: command, statusPolls: 0)
         XCTAssertEqual(initial, .unknown)
-        let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state",
+        let result = try await session.execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state",
                                                body: command)
         XCTAssertEqual(result, .completed(status: 200, body: ok))
         let requests = await fixture.http.mutations
@@ -179,19 +179,19 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual((local["body"] as? [String: Any])?["command_id"] as? String, "command-1")
     }
 
-    func testV2CommandRecoveryReusesExactIdentityAndNeverReposts() async throws {
+    func testResourceMutationRecoveryReusesExactIdentityAndNeverReposts() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        let first = try await session.execute(requestID: "command-1", method: "POST",
+        let first = try await session.execute(requestID: "command-1", method: "PUT",
             path: "/interactions/interaction-1/read-state", body: command, statusPolls: 0)
         XCTAssertEqual(first, .unknown)
-        let recovered = try await session.execute(requestID: "command-1", method: "POST",
+        let recovered = try await session.execute(requestID: "command-1", method: "PUT",
             path: "/interactions/interaction-1/read-state", body: command)
         XCTAssertEqual(recovered, .completed(status: 200, body: ok))
         do {
-            _ = try await session.execute(requestID: "command-1", method: "POST",
+            _ = try await session.execute(requestID: "command-1", method: "PUT",
                 path: "/interactions/interaction-1/read-state", body: changedCommand)
-            XCTFail("A changed v2 envelope reused an existing command identity")
+            XCTFail("A changed resource request reused an existing command identity")
         } catch RelaySessionError.operationIdentityConflict { }
         let posts = await fixture.http.mutations
         XCTAssertEqual(posts.count, 1)
@@ -264,7 +264,7 @@ final class RelaySessionTests: XCTestCase {
 
     func testRestartRefreshesChallengeForStatusWithoutRepostingMutation() async throws {
         let fixture = try Fixture(mode: .restart)
-        let result = try await fixture.session().execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+        let result = try await fixture.session().execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state", body: command)
         XCTAssertEqual(result, .completed(status: 200, body: ok))
         let mutations = await fixture.http.mutations
         let headers = await fixture.http.statusEpochs
@@ -406,7 +406,7 @@ final class RelaySessionTests: XCTestCase {
         for mode in [FakeHTTP.Mode.oversized, .wrongSender, .wrongRequest, .expired] {
             let fixture = try Fixture(mode: mode)
             let session = fixture.session()
-            let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+            let result = try await session.execute(requestID: "operation-1", method: "PUT", path: "/interactions/interaction-1/read-state", body: command)
             XCTAssertEqual(result, .unknown)
             let mutations = await fixture.http.mutations
             XCTAssertEqual(mutations.count, 1)

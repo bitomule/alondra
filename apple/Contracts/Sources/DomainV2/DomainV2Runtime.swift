@@ -1,6 +1,6 @@
 import Foundation
 
-/// `GET /v2/runtime`: what alondrad knows about the Mac and its Claude sessions beyond the
+/// `GET /runtime`: what alondrad knows about the Mac and its Claude sessions beyond the
 /// domain, keyed by domain IDs. Display only; it never decides an action. Every entry is read
 /// on its own, so one this build cannot decode costs only that entry.
 extension DomainV2 {
@@ -144,7 +144,7 @@ extension DomainV2 {
         public var hasConflicts: Bool { conflicts }
     }
 
-    /// `GET /v2/tasks/{id}/history`: the brief the Task was launched with and each state it went through.
+    /// `GET /tasks/{id}/history`: the brief the Task was launched with and each state it went through.
     public struct TaskHistory: Decodable, Equatable, Sendable {
         public let brief: String?
         public let history: [TaskStep]

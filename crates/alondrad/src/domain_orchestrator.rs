@@ -331,7 +331,7 @@ fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain_v2::Reque
     text
 }
 
-/// What `/v2/runtime` shows of the orchestrator: its phase and what the user may do about it.
+/// The orchestrator phase and the actions available to the user.
 pub(crate) fn status(executor: &Executor) -> Result<serde_json::Value> {
     let runtime = load(&executor.home)?;
     let queue_depth = executor.pending()?.len();

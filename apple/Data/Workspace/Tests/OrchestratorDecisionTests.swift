@@ -26,8 +26,8 @@ final class OrchestratorDecisionTests: XCTestCase {
         let acknowledged = await operations.acknowledgeOrchestrator("run-9", "op-3")
 
         XCTAssertEqual([retried, cancelled, acknowledged], [.confirmed, .confirmed, .confirmed])
-        let decisions = daemon.requests.filter { $0.target.hasPrefix("/v2/orchestrator/") }
-        XCTAssertEqual(decisions.map(\.target), ["/v2/orchestrator/retry", "/v2/orchestrator/cancel", "/v2/orchestrator/acknowledge"])
+        let decisions = daemon.requests.filter { $0.target.hasPrefix("/orchestrator/") }
+        XCTAssertEqual(decisions.map(\.target), ["/orchestrator/retry", "/orchestrator/cancel", "/orchestrator/acknowledge"])
         XCTAssertEqual(try decisions.map { try XCTUnwrap(JSONSerialization.jsonObject(with: $0.body) as? [String: String])["run_id"] },
                        ["run-7", "run-8", "run-9"])
         XCTAssertTrue(decisions.allSatisfy { $0.method == "POST" && $0.headers["X-Alondra-Signature"] != nil })
@@ -45,8 +45,8 @@ final class OrchestratorDecisionTests: XCTestCase {
     private func mac(_ decision: @escaping (StubDaemon.Received) -> StubDaemon.Reply) -> StubDaemon {
         StubDaemon { request in
             switch request.target {
-            case "/v2/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
-            case "/v2/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
+            case "/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
+            case "/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
             default: decision(request)
             }
         }

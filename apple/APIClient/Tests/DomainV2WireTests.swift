@@ -33,6 +33,14 @@ final class DomainV2WireTests: XCTestCase {
         XCTAssertFalse(ServiceRequest.validResourceMutationPath(method: .get, path: "/interactions/question-1/answers"))
         XCTAssertFalse(ServiceRequest.validResourceMutationPath(method: .post, path: "/tasks/task-1/unknown"))
         XCTAssertTrue(ServiceRequest.isDomainMutationRoute(method: .post, path: ["merge-authorizations", "authorization-1", "claim"], hasBody: true))
+        XCTAssertTrue(ServiceRequest.validResourceMutationPath(method: .put, path: "/tasks/task-1/documents/document-1/review"))
+        XCTAssertFalse(ServiceRequest.validResourceMutationPath(method: .put, path: "/tasks/task-1/documents/../review"))
+        XCTAssertTrue(ServiceRequest.isDomainReadRoute(method: .get, path: ["inbox", "interaction:q-1"], query: [], hasBody: false))
+        XCTAssertFalse(ServiceRequest.isDomainReadRoute(method: .post, path: ["inbox"], query: [], hasBody: true))
+        XCTAssertTrue(ServiceRequest.validClientContractRoute(method: .get, path: ["runtime"]))
+        XCTAssertFalse(ServiceRequest.validClientContractRoute(method: .get, path: ["v2", "runtime"]))
+        XCTAssertTrue(ServiceRequest.validClientContractRoute(method: .post, path: ["uploads", "finish"]))
+        XCTAssertFalse(ServiceRequest.validClientContractRoute(method: .post, path: ["uploads", "transfer-1", "finish"]))
     }
 
     func testCommandUsesSpecificResourceAndKeepsDurableIdentityWithoutGenericCommandRoute() async throws {

@@ -45,7 +45,7 @@ public actor LoopbackSession: ServiceOperationTransport {
 
     /// Unsigned and side-effect free, so it answers before this Mac has paired with the daemon.
     public static func isDaemonRunning(at base: URL = defaultBase, urlSession: URLSession = makeURLSession()) async -> Bool {
-        let request = URLRequest(url: base.appending(path: "v2/daemon"), timeoutInterval: 2)
+        let request = URLRequest(url: base.appending(path: "daemon"), timeoutInterval: 2)
         guard let (_, response) = try? await urlSession.data(for: request) else { return false }
         return (response as? HTTPURLResponse)?.statusCode == 200
     }
@@ -69,7 +69,7 @@ public actor LoopbackSession: ServiceOperationTransport {
         switch (request.method, route) {
         case ("POST", let path) where path.hasPrefix("/uploads/"):
             result = try await upload(String(path.dropFirst("/uploads/".count)), request: request)
-        case ("GET", "/v2/files/chunk"):
+        case ("GET", "/files/chunk"):
             result = try await fileChunk(request.path)
         default:
             result = try await exchange(method: request.method, target: request.path, body: request.body,
@@ -165,13 +165,13 @@ public actor LoopbackSession: ServiceOperationTransport {
     private func pair() async throws -> String {
         struct Invitation: Decodable { let code: String }
         struct Paired: Decodable { let device_id: String }
-        var invite = URLRequest(url: base.appending(path: "v2/pairing"), timeoutInterval: 10)
+        var invite = URLRequest(url: base.appending(path: "pairing"), timeoutInterval: 10)
         invite.httpMethod = "POST"
         let (inviteStatus, inviteBody) = try await send(invite)
         guard inviteStatus == 200 else { throw LoopbackSessionError.pairingRefused(inviteStatus) }
         let code = try JSONDecoder().decode(Invitation.self, from: inviteBody).code
         let publicKey = try await identity.signingKey().publicKey.x963Representation.base64EncodedString()
-        var pair = URLRequest(url: base.appending(path: "v2/pair"), timeoutInterval: 10)
+        var pair = URLRequest(url: base.appending(path: "pair"), timeoutInterval: 10)
         pair.httpMethod = "POST"
         pair.setValue("application/json", forHTTPHeaderField: "Content-Type")
         pair.httpBody = try JSONSerialization.data(withJSONObject: [

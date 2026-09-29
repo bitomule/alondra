@@ -379,7 +379,7 @@ async fn agent_waiting_machine(State(state): State<Arc<V2Only>>, ConnectInfo(pee
     Json(json!({"ok": true})).into_response()
 }
 
-/// Machine capacity and the subscription's usage, as the `/v2/daemon` gauges hold them.
+/// Machine capacity and the subscription's usage, as the `/daemon` gauges hold them.
 async fn orchestrator_machine(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
     if let Err(refused) = tool_caller(&state, &peer, &headers) {
         return refused;

@@ -400,7 +400,7 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
 fn status() -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
     let mut runtime = client.runtime().unwrap_or(None);
-    let daemon: Option<runtime::Runtime> = client.get::<serde_json::Value>("/v2/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
+    let daemon: Option<runtime::Runtime> = client.get::<serde_json::Value>("/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
     if let Some(machine) = daemon.and_then(|d| d.machine).filter(|_| runtime.as_ref().is_none_or(|r| r.machine.is_none())) {
         runtime.get_or_insert_with(Default::default).machine = Some(machine);
     }
@@ -462,7 +462,7 @@ fn status_text(d: &alondra_core::domain_v2::DomainProjection, runtime: Option<&r
 
 fn pair(url: &str) -> Result<()> {
     let client = Client::new(Duration::from_secs(10));
-    let r = client.post("/v2/pairing", &json!({}))?;
+    let r = client.post("/pairing", &json!({}))?;
     let code = r.get("code").and_then(|c| c.as_str()).unwrap_or_default();
     let payload = json!({"url": url.trim_end_matches('/'), "code": code}).to_string();
     let qr = qrcode::QrCode::new(payload.as_bytes())?;
@@ -476,12 +476,12 @@ fn pair(url: &str) -> Result<()> {
 fn devices(revoke: Option<String>) -> Result<()> {
     let client = Client::new(Duration::from_secs(10));
     if let Some(id) = revoke {
-        let path = format!("/v2/devices/{}", mcp::urlencode(&id));
+        let path = format!("/devices/{}", mcp::urlencode(&id));
         client.delete(&path)?;
         println!("{}", trf!("Device {id} unpaired.", "Dispositivo {id} desvinculado."));
         return Ok(());
     }
-    let v: serde_json::Value = client.get("/v2/devices")?;
+    let v: serde_json::Value = client.get("/devices")?;
     let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
     if list.is_empty() {
         println!("{}", tr!("No paired devices. Use: alondra pair --url <public URL>", "No hay dispositivos vinculados. Usa: alondra pair --url <URL pública>"));

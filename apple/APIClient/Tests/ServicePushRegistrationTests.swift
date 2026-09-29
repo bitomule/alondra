@@ -12,7 +12,7 @@ import Testing
         let events = await transport.events
         #expect(events == ["registration", "binding"])
         let request = try #require(await transport.request)
-        #expect(request.path == "/v2/device/push-binding")
+        #expect(request.path == "/device/push-binding")
         let body = try #require(request.body)
         let object = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
         #expect(object["push_binding"] as? String == binding)

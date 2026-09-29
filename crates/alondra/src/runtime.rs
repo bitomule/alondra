@@ -1,6 +1,6 @@
 //! What alondrad knows about the Mac and its Claude sessions beyond the domain: machine and
 //! usage readings, each session's live state, PR checks and timestamps. Read from
-//! `/v2/runtime`, shown next to the projection and never used to decide an action.
+//! `/runtime`, shown next to the projection and never used to decide an action.
 
 use std::collections::HashMap;
 
@@ -10,7 +10,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Deserializer};
 use serde_json::Value;
 
-pub const RUNTIME: &str = "/v2/runtime";
+pub const RUNTIME: &str = "/runtime";
 
 /// A Claude session as the daemon sees it; `session_id` is the domain's AgentId.
 #[derive(Deserialize, Clone)]

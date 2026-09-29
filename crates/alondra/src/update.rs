@@ -81,7 +81,7 @@ fn installed_version(daemon: &Path) -> Option<String> {
 }
 
 fn daemon_info(client: &Client) -> Option<Value> {
-    client.get::<Value>("/v2/daemon").ok()
+    client.get::<Value>("/daemon").ok()
 }
 
 /// A daemon older than self-relaunch never restarts on its own: check the new binary the way
@@ -215,7 +215,7 @@ mod tests {
     }
 
     #[test]
-    fn the_daemon_is_asked_on_v2_only() {
+    fn the_daemon_is_asked_at_the_root_resource_route() {
         use std::io::{Read, Write};
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let client = Client::at(format!("http://{}", listener.local_addr().unwrap()));
@@ -238,6 +238,6 @@ mod tests {
             requested
         });
         assert_eq!(daemon_info(&client), Some(json!({"version": "0.2.0"})));
-        assert_eq!(server.join().unwrap(), ["/v2/daemon"]);
+        assert_eq!(server.join().unwrap(), ["/daemon"]);
     }
 }

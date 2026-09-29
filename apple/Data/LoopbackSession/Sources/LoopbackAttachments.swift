@@ -22,7 +22,7 @@ struct LoopbackDownload: Sendable {
 }
 
 /// The app speaks the relay's chunked attachment protocol. Locally alondrad takes one raw
-/// upload (`POST /v2/uploads?name=`) and serves a whole stored file (`GET /v2/files?path=`), so
+/// upload (`POST /uploads?name=`) and serves a whole stored file (`GET /files?path=`), so
 /// this session buffers the chunks and slices the file itself.
 extension LoopbackSession {
     private static let chunkBytes = 64 * 1024
@@ -70,7 +70,7 @@ extension LoopbackSession {
                 return Self.rejected(422, "attachment bytes do not match")
             }
             let name = upload.name.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? "attachment"
-            let result = try await exchange(method: "POST", target: "/v2/uploads?name=\(name)", body: upload.data,
+            let result = try await exchange(method: "POST", target: "/uploads?name=\(name)", body: upload.data,
                                             operationID: request.operationID, contentType: "application/octet-stream")
             guard case let .completed(status, reference) = result, (200..<300).contains(status) else { return result }
             let attachment = try JSONSerialization.jsonObject(with: reference)
@@ -88,7 +88,7 @@ extension LoopbackSession {
         }
     }
 
-    /// `GET /v2/files/chunk?path=&offset=&version=`, answered from one whole-file read.
+    /// `GET /files/chunk?path=&offset=&version=`, answered from one whole-file read.
     func fileChunk(_ target: String) async throws -> LoopbackOutcome {
         let items = URLComponents(string: target)?.queryItems ?? []
         guard let path = items.first(where: { $0.name == "path" })?.value, !path.isEmpty,
@@ -98,7 +98,7 @@ extension LoopbackSession {
         let version = items.first { $0.name == "version" }?.value
         if downloads[path] == nil || offset == 0 {
             let encoded = path.addingPercentEncoding(withAllowedCharacters: Self.unreserved) ?? ""
-            let result = try await exchange(method: "GET", target: "/v2/files?path=\(encoded)", body: nil, operationID: nil)
+            let result = try await exchange(method: "GET", target: "/files?path=\(encoded)", body: nil, operationID: nil)
             guard case let .completed(status, data) = result, (200..<300).contains(status) else { return result }
             guard data.count <= Self.maximumBytes else { return Self.rejected(413, "file too large") }
             downloads[path] = LoopbackDownload(digest: LoopbackDigest.hex(data), data: data)

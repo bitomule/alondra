@@ -130,7 +130,7 @@ struct V2Fixture {
         return root
     }
 
-    /// Runtime telemetry as the Mac serves it at `/v2/runtime`.
+    /// Runtime telemetry as the Mac serves it at `/runtime`.
     static func runtime(_ body: String = #""nodes":[]"#) -> DomainV2.Runtime {
         try! DomainV2.Runtime.decode(from: Data(#"{\#(body)}"#.utf8))
     }

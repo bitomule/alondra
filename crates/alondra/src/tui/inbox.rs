@@ -576,7 +576,7 @@ impl App {
         let key = key.clone();
         self.flash(tr!("Loading the PR diff…", "Cargando el diff del PR…"));
         self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(90)).get::<Value>(&format!("/v2/domain/pull-requests/{}/diff", urlencode(&pr.0))).map_err(|e| e.to_string());
+            let result = Client::for_tui(Duration::from_secs(90)).get::<Value>(&ops::pull_request_diff(&pr)).map_err(|e| e.to_string());
             let _ = tx.send(Msg::Diff { key, result });
         });
     }

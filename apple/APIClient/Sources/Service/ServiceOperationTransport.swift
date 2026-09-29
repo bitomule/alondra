@@ -23,7 +23,7 @@ public struct ServiceRequest: Sendable, Equatable {
     public let body: Data?
 
     init<Response>(endpoint: Endpoint<Response>, operationID: String) throws {
-        let domainV2 = endpoint.path == ["capabilities"] && endpoint.method == .get
+        let resourceRead = endpoint.path == ["capabilities"] && endpoint.method == .get
             || endpoint.path == ["changes"] && endpoint.method == .get
         let domainDetail = endpoint.method == .get && endpoint.path.count == 3
             && ((endpoint.path[0] == "pull-requests" && endpoint.path[2] == "diff")
@@ -46,7 +46,7 @@ public struct ServiceRequest: Sendable, Equatable {
         }.joined(separator: "&")
         let path = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
         let domainRead = endpoint.method == .get && endpoint.body == nil && DomainReadPath.isValid(path)
-        guard !operationID.isEmpty, (domainV2 || domainRead || domainDetail || domainDelivery || domainMutation || domainSchedule || clientContract),
+        guard !operationID.isEmpty, (resourceRead || domainRead || domainDetail || domainDelivery || domainMutation || domainSchedule || clientContract),
               endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ServiceAPIError.invalidEndpoint
         }
@@ -56,12 +56,11 @@ public struct ServiceRequest: Sendable, Equatable {
         self.body = endpoint.body
     }
 
-    /// The v2 daemon's routes beyond the domain (docs/domain-v2-apple-client-contracts.md).
+    /// The daemon's runtime and file routes beyond domain resources.
     public static func validClientContractRoute(method: HTTPMethod, path: [String]) -> Bool {
-        if method == .post, path.count == 3, path[0] == "uploads",
-           !path[1].isEmpty, ["start", "chunk", "finish", "cancel"].contains(path[2]) { return true }
-        guard path.starts(with: ["v2"]), path.count >= 2 else { return false }
-        switch (method, Array(path.dropFirst())) {
+        if method == .post, path.count == 2, path[0] == "uploads",
+           ["start", "chunk", "finish", "cancel"].contains(path[1]) { return true }
+        switch (method, path) {
         case (.get, ["runtime"]), (.get, ["agents", "search"]), (.get, ["projects"]), (.get, ["options"]),
              (.get, ["issues"]), (.post, ["requests"]), (.post, ["device", "push-binding"]), (.post, ["orchestrator", "messages"]):
             return true
@@ -92,28 +91,53 @@ public struct ServiceRequest: Sendable, Equatable {
             || validDomainScheduleRoute(method: method, path: path, hasBody: hasBody)
     }
 
+    public static func isDomainReadRoute(method: HTTPMethod, path: [String], query: [(String, String)], hasBody: Bool) -> Bool {
+        guard method == .get, !hasBody else { return false }
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        let segments = path.map { $0.addingPercentEncoding(withAllowedCharacters: unreserved)! }
+        let query = query.map {
+            $0.0.addingPercentEncoding(withAllowedCharacters: unreserved)! + "="
+                + $0.1.addingPercentEncoding(withAllowedCharacters: unreserved)!
+        }.joined(separator: "&")
+        let target = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
+        return DomainReadPath.isValid(target)
+    }
+
     /// Exact resource mutations admitted by the daemon's resource router.
     public static func validResourceMutationRoute(method: HTTPMethod, path: [String]) -> Bool {
-        switch (method, path) {
-        case (.post, ["requests"]), (.post, ["questions"]), (.post, ["action-requests"]), (.post, ["messages"]):
-            return true
-        case (.post, ["requests", _, "close"]), (.post, ["requests", _, "tasks"]):
-            return validResourceID(path[1])
-        case (.post, ["tasks", _, "start"]), (.post, ["tasks", _, "documents"]),
-             (.post, ["tasks", _, "document-links"]), (.post, ["tasks", _, "pull-requests"]),
-             (.post, ["tasks", _, "results"]), (.post, ["tasks", _, "stack-readiness"]),
-             (.post, ["tasks", _, "completion"]), (.post, ["tasks", _, "cancellation"]),
-             (.post, ["tasks", _, "reopening"]), (.post, ["tasks", _, "archival"]),
-             (.post, ["tasks", _, "questions"]), (.post, ["tasks", _, "action-requests"]),
-             (.post, ["tasks", _, "messages"]), (.post, ["merge-authorizations", _, "claim"]),
-             (.put, ["tasks", _, "assignee"]), (.put, ["tasks", _, "dependencies"]),
-             (.put, ["tasks", _, "documents", _]), (.put, ["tasks", _, "documents", _, "review"]),
-             (.patch, ["tasks", _]), (.post, ["interactions", _, "answers"]),
-             (.post, ["interactions", _, "withdrawal"]), (.post, ["interactions", _, "feedback"]),
-             (.post, ["interactions", _, "acceptance"]), (.post, ["interactions", _, "merge-authorizations"]),
-             (.put, ["interactions", _, "subject"]), (.put, ["interactions", _, "read-state"]):
-            let ids = [path[1]] + (path.count >= 4 && path[2] == "documents" ? [path[3]] : [])
-            return ids.allSatisfy(validResourceID)
+        guard let resource = path.first else { return false }
+        switch method {
+        case .post:
+            if path.count == 1 {
+                return ["requests", "questions", "action-requests", "messages"].contains(resource)
+            }
+            guard path.count == 3, validResourceID(path[1]) else { return false }
+            let action = path[2]
+            switch resource {
+            case "requests": return ["close", "tasks"].contains(action)
+            case "tasks":
+                return ["start", "documents", "document-links", "pull-requests", "results",
+                        "stack-readiness", "completion", "cancellation", "reopening", "archival",
+                        "questions", "action-requests", "messages"].contains(action)
+            case "interactions":
+                return ["answers", "withdrawal", "feedback", "acceptance", "merge-authorizations"].contains(action)
+            case "merge-authorizations": return action == "claim"
+            default: return false
+            }
+        case .put:
+            if path.count == 3, validResourceID(path[1]) {
+                return (resource == "tasks" && ["assignee", "dependencies"].contains(path[2]))
+                    || (resource == "interactions" && ["subject", "read-state"].contains(path[2]))
+            }
+            if path.count == 4, resource == "tasks", path[2] == "documents" {
+                return validResourceID(path[1]) && validResourceID(path[3])
+            }
+            if path.count == 5, resource == "tasks", path[2] == "documents", path[4] == "review" {
+                return validResourceID(path[1]) && validResourceID(path[3])
+            }
+            return false
+        case .patch:
+            return resource == "tasks" && path.count == 2 && validResourceID(path[1])
         default:
             return false
         }

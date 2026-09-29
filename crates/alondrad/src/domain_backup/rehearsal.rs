@@ -267,7 +267,7 @@ async fn wait_listening(child: &mut Child, base: &str) -> Result<Duration> {
         if let Some(status) = child.try_wait()? {
             anyhow::bail!("daemon exited during startup: {status}");
         }
-        if let Ok(response) = client.get(format!("{base}/v2/daemon")).send().await {
+        if let Ok(response) = client.get(format!("{base}/daemon")).send().await {
             if response.status().is_success() {
                 return Ok(started.elapsed());
             }

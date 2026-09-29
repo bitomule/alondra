@@ -1,7 +1,7 @@
 import Foundation
 
 extension DomainV2 {
-    /// One slice of a stored file, `GET /v2/files/chunk?path=&offset=&version=`.
+    /// One slice of a stored file, `GET /files/chunk?path=&offset=&version=`.
     public struct AttachmentContentChunk: Codable, Equatable, Sendable {
         public let contentDigest: String
         public let version: String

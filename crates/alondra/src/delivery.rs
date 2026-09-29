@@ -8,7 +8,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
 
-pub const ATTEMPTS: &str = "/v2/domain/delivery-attempts";
+pub const ATTEMPTS: &str = "/delivery-attempts";
 
 #[derive(Args)]
 pub struct Options {
@@ -297,6 +297,7 @@ mod tests {
 
     #[test]
     fn every_page_of_the_evidence_is_read_and_a_reset_between_pages_stops() {
+        assert_eq!(ATTEMPTS, "/delivery-attempts");
         let mut asked = vec![];
         let listing = list(|path| {
             asked.push(path.to_string());

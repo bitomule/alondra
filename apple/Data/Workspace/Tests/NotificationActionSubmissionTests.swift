@@ -43,8 +43,8 @@ final class NotificationActionSubmissionTests: XCTestCase {
         XCTAssertNil(commands.first?["kind"])
         XCTAssertNil(commands.first?["interaction_id"])
         let reads = daemon.requests.map(\.target).filter { $0.hasPrefix("/inbox") || $0.hasPrefix("/interactions") }
-        XCTAssertEqual(reads, ["/inbox/interaction%3Aq-1", "/interactions/q-1",
-                               "/inbox/interaction%3Aq-1", "/interactions/q-1"])
+        XCTAssertEqual(reads, ["/inbox/interaction%3Aq-1", "/interactions/q-1", "/interactions/q-1/answers",
+                               "/inbox/interaction%3Aq-1", "/interactions/q-1", "/interactions/q-1/answers"])
     }
 
     func testAnAlreadyAnsweredItemIsNoLongerPendingAndNothingIsSent() async throws {
@@ -97,8 +97,8 @@ final class NotificationActionSubmissionTests: XCTestCase {
     private func mac(lookup: (Int, Data)) -> StubDaemon {
         StubDaemon { [interaction] request in
             switch request.target {
-            case "/v2/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
-            case "/v2/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
+            case "/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
+            case "/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
             case "/inbox/interaction%3Aq-1": .status(lookup.0, lookup.1)
             case "/interactions/q-1": .status(200, interaction)
             case "/interactions/q-1/answers": .status(200, Data(#"{"revision":13,"changed":true,"effects":[],"created_ids":[]}"#.utf8))

@@ -385,7 +385,7 @@ impl App {
         }
         self.spawn(move |tx| {
             let result = Client::for_tui(Duration::from_secs(10))
-                .get::<Value>(&format!("/v2/domain/tasks/{}/actions", urlencode(&id.0)))
+                .get::<Value>(&ops::task_actions(&id))
                 .map_err(|e| e.to_string())
                 .and_then(|v| serde_json::from_value::<Vec<AvailableAction>>(v["actions"].clone()).map_err(|e| e.to_string()));
             let _ = tx.send(Msg::TaskActions { task: id, revision, result });

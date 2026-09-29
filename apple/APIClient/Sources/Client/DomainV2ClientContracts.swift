@@ -6,39 +6,39 @@ import Foundation
 /// TUI and CLI send the same bodies; fixtures/client-v2/requests.json holds each one.
 extension AlondraAPIClient {
     public func domainRuntime() async throws -> DomainV2.Runtime {
-        try await send(Endpoint<DomainV2.Runtime>(.get, path: ["v2", "runtime"]) { try DomainV2.Runtime.decode(from: $0) })
+        try await send(Endpoint<DomainV2.Runtime>(.get, path: ["runtime"]) { try DomainV2.Runtime.decode(from: $0) })
     }
 
     public func domainAgentActivity(_ agent: DomainV2.AgentId) async throws -> [NodeActivity] {
-        try await send(Endpoint<NodeThreads>.json(.get, path: ["v2", "agents", agent.rawValue, "activity"])).activity ?? []
+        try await send(Endpoint<NodeThreads>.json(.get, path: ["agents", agent.rawValue, "activity"])).activity ?? []
     }
 
     public func domainTaskHistory(_ task: DomainV2.TaskId) async throws -> DomainV2.TaskHistory {
-        try await send(Endpoint<DomainV2.TaskHistory>.json(.get, path: ["v2", "tasks", task.rawValue, "history"]))
+        try await send(Endpoint<DomainV2.TaskHistory>.json(.get, path: ["tasks", task.rawValue, "history"]))
     }
 
     public func domainProjects() async throws -> [String] {
-        try await send(Endpoint<ProjectList>.json(.get, path: ["v2", "projects"])).projects.map(\.name)
+        try await send(Endpoint<ProjectList>.json(.get, path: ["projects"])).projects.map(\.name)
     }
 
     /// The daemon answers the options of the project asked for; the catalog records which one.
     public func domainOptions(project: String?) async throws -> OptionsCatalog {
-        let served = try await send(Endpoint<OptionsCatalog>.json(.get, path: ["v2", "options"],
+        let served = try await send(Endpoint<OptionsCatalog>.json(.get, path: ["options"],
                                                                   query: project.map { [("project", $0)] } ?? []))
         return OptionsCatalog(project: project, options: served.options, error: served.error)
     }
 
     public func domainIssues(refresh: Bool) async throws -> IssueList {
-        try await send(Endpoint<IssueList>.json(.get, path: ["v2", "issues"], query: refresh ? [("refresh", "1")] : []))
+        try await send(Endpoint<IssueList>.json(.get, path: ["issues"], query: refresh ? [("refresh", "1")] : []))
     }
 
     public func domainSearch(_ query: String) async throws -> SearchResult {
-        try await send(Endpoint<SearchResult>.json(.get, path: ["v2", "agents", "search"], query: [("q", query)]))
+        try await send(Endpoint<SearchResult>.json(.get, path: ["agents", "search"], query: [("q", query)]))
     }
 
     /// Types the message into the agent's session. The kind tells the daemon how to word it.
     public func sendAgentMessage(_ agent: DomainV2.AgentId, _ message: AgentMessage, operationID: String) async throws -> AgentMessageReceipt {
-        return try await send(Endpoint<AgentMessageReceipt>.json(.post, path: ["v2", "agents", agent.rawValue, "messages"],
+        return try await send(Endpoint<AgentMessageReceipt>.json(.post, path: ["agents", agent.rawValue, "messages"],
                                                                  body: try DomainV2.encode(message)),
                               operationID: operationID)
     }
@@ -46,20 +46,20 @@ extension AlondraAPIClient {
     /// The orchestrator is not a domain agent: its messages have a route of their own.
     public func sendOrchestratorMessage(_ message: AgentMessage, operationID: String) async throws -> AgentMessageReceipt {
         let body = try DomainV2.encode(OrchestratorMessage(text: message.text, attachments: message.attachments))
-        return try await send(Endpoint<AgentMessageReceipt>.json(.post, path: ["v2", "orchestrator", "messages"], body: body),
+        return try await send(Endpoint<AgentMessageReceipt>.json(.post, path: ["orchestrator", "messages"], body: body),
                               operationID: operationID)
     }
 
     public func closeAgent(_ agent: DomainV2.AgentId, force: Bool, operationID: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["force": force])
-        _ = try await send(Endpoint<Data>.data(.post, path: ["v2", "agents", agent.rawValue, "close"], body: body,
+        _ = try await send(Endpoint<Data>.data(.post, path: ["agents", agent.rawValue, "close"], body: body,
                                                contentType: "application/json", requiresJSONObjectResponse: true),
                            operationID: operationID)
     }
 
     /// A request with its project, launch options, issue and attachments, created in one step.
     public func createRequest(_ request: NewRequestSubmission, operationID: String) async throws -> DomainV2.CommandOutcome {
-        try await send(Endpoint<DomainV2.CommandOutcome>(.post, path: ["v2", "requests"], body: try DomainV2.encode(request),
+        try await send(Endpoint<DomainV2.CommandOutcome>(.post, path: ["requests"], body: try DomainV2.encode(request),
                                                          contentType: "application/json", requiresJSONObjectResponse: true) {
             try DomainV2.decode(DomainV2.CommandOutcome.self, from: $0)
         }, operationID: operationID)
@@ -74,7 +74,7 @@ extension AlondraAPIClient {
         var total: UInt64?
         repeat {
             let next = collected.count
-            let endpoint = Endpoint<DomainV2.AttachmentContentChunk>(.get, path: ["v2", "files", "chunk"],
+            let endpoint = Endpoint<DomainV2.AttachmentContentChunk>(.get, path: ["files", "chunk"],
                 query: [("path", attachment.contentReference), ("offset", String(next))] + (version.map { [("version", $0)] } ?? [])) {
                     try DomainV2.decode(DomainV2.AttachmentContentChunk.self, from: $0)
                 }
@@ -150,7 +150,7 @@ extension AlondraAPIClient {
     /// idempotency key: after an unknown outcome the same decision reuses it.
     public func decideOrchestratorRun(_ decision: OrchestratorDecision, runID: String, operationID: String) async throws {
         let body = try JSONSerialization.data(withJSONObject: ["run_id": runID])
-        _ = try await send(Endpoint<Data>.data(.post, path: ["v2", "orchestrator", decision.rawValue], body: body,
+        _ = try await send(Endpoint<Data>.data(.post, path: ["orchestrator", decision.rawValue], body: body,
                                                contentType: "application/json", requiresJSONObjectResponse: true),
                            operationID: operationID)
     }
@@ -176,7 +176,7 @@ extension AlondraAPIClient {
     }
 }
 
-/// `POST /v2/orchestrator/{cancel,acknowledge,retry}` with the execution's `run_id`.
+/// `POST /orchestrator/{cancel,acknowledge,retry}` with the execution's `run_id`.
 public enum OrchestratorDecision: String, Sendable {
     case cancel, acknowledge, retry
 }

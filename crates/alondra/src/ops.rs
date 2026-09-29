@@ -1,6 +1,6 @@
 //! Requests the user makes of a session or of the daemon that are not domain commands: a
 //! message to an agent, closing a session, the orchestrator's recovery and the like. Each is
-//! one route of the v2 daemon; the TUI and the CLI build them here so both send the same body.
+//! one resource route; the TUI and the CLI build them here so both send the same body.
 
 use alondra_core::domain_v2::{AgentId, AttachmentRef, InteractionId, PrId, TaskId};
 use serde_json::{Value, json};
@@ -107,6 +107,18 @@ pub fn history(task: &TaskId) -> String {
     format!("/tasks/{}/history", urlencode(&task.0))
 }
 
+pub fn task_actions(task: &TaskId) -> String {
+    format!("/tasks/{}/actions", urlencode(&task.0))
+}
+
+pub fn pull_request_diff(pr: &PrId) -> String {
+    format!("/pull-requests/{}/diff", urlencode(&pr.0))
+}
+
+pub fn schedule_run(schedule_id: &str) -> String {
+    format!("/schedules/{}/runs", urlencode(schedule_id))
+}
+
 pub fn activity(agent: &AgentId) -> String {
     format!("/agents/{}/activity", urlencode(&agent.0))
 }
@@ -154,6 +166,28 @@ mod tests {
         assert_eq!(m.body(), json!({"text": "Thanks", "attachments": [], "kind": "reply", "mark_read": true, "interaction_id": "info-1"}));
         let o = Message::to(None, MessageKind::Message, "Plan the week".into());
         assert_eq!((o.path(), o.body()), ("/orchestrator/messages".to_string(), json!({"text": "Plan the week", "attachments": []})));
+    }
+
+    #[test]
+    fn operational_routes_use_unversioned_resource_paths() {
+        assert_eq!(close(&"agent-1".into(), false).0, "/agents/agent-1/close");
+        assert_eq!(Message::to(Some("agent-1".into()), MessageKind::Message, "x".into()).path(), "/agents/agent-1/messages");
+        assert_eq!(activity(&"agent-1".into()), "/agents/agent-1/activity");
+        assert_eq!(search("two words"), "/agents/search?q=two%20words");
+        assert_eq!(orchestrator(Recovery::Cancel, "run-1").0, "/orchestrator/cancel");
+        assert_eq!(orchestrator(Recovery::Acknowledge, "run-1").0, "/orchestrator/acknowledge");
+        assert_eq!(orchestrator(Recovery::Retry, "run-1").0, "/orchestrator/retry");
+        assert_eq!(history(&"task-1".into()), "/tasks/task-1/history");
+        assert_eq!(task_actions(&"task/1".into()), "/tasks/task%2F1/actions");
+        assert_eq!(pull_request_diff(&"pr/1".into()), "/pull-requests/pr%2F1/diff");
+        assert_eq!(schedule_run("schedule/1"), "/schedules/schedule%2F1/runs");
+        assert_eq!(cancel_reason(&"task-1".into(), "done").0, "/tasks/task-1/cancel-reason");
+        assert_eq!(PRESENCE, "/activity");
+        assert_eq!(PROJECTS, "/projects");
+        assert_eq!(options(None), "/options");
+        assert_eq!(options(Some("My App")), "/options?project=My%20App");
+        assert_eq!(issues(false), "/issues");
+        assert_eq!(issues(true), "/issues?refresh=1");
     }
 
     #[test]

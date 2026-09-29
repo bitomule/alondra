@@ -37,8 +37,8 @@ final class ServiceAttachmentTests: XCTestCase {
             XCTFail("A changed version must not produce a mixed file")
         } catch { XCTAssertEqual((error as? DomainV2.DomainError)?.code, "content_unavailable") }
         let paths = await transport.recorded().map(\.path)
-        XCTAssertEqual(paths, ["/v2/files/chunk?path=files%2Ffile&offset=0",
-                               "/v2/files/chunk?path=files%2Ffile&offset=65536&version=version-one"])
+        XCTAssertEqual(paths, ["/files/chunk?path=files%2Ffile&offset=0",
+                               "/files/chunk?path=files%2Ffile&offset=65536&version=version-one"])
     }
 }
 

@@ -389,7 +389,7 @@ pub struct App {
     chip_seq: u64,
     /// What alondrad knows about the Mac and its sessions beyond the domain.
     pub runtime: Option<Runtime>,
-    /// The local daemon's machine, usage and update readings from `/v2/daemon`.
+    /// The local daemon's machine, usage and update readings from `/daemon`.
     pub daemon: Option<Runtime>,
     pub deliveries: Vec<crate::delivery::Attempt>,
     pub delivery_help: bool,
@@ -507,7 +507,7 @@ fn runtime_loop(tx: SyncSender<Msg>, client: Client) {
             return;
         }
         if !remote && round.is_multiple_of(2) {
-            let daemon = client.get::<Value>("/v2/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
+            let daemon = client.get::<Value>("/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
             let _ = tx.send(Msg::Daemon(daemon.map(Box::new)));
         }
         if round.is_multiple_of(3)
@@ -620,7 +620,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
     }
 }
 
-const SCHEDULES: &str = "/v2/domain/schedules";
+const SCHEDULES: &str = "/schedules";
 
 /// The fields a schedule write accepts; what the daemon adds when it lists one stays out.
 fn schedule_draft(value: &Value) -> Value {
@@ -1381,7 +1381,7 @@ impl App {
             KeyCode::Enter => {
                 if let Some(value) = selected {
                     let id = value["id"].as_str().unwrap_or("");
-                    match Client::for_tui(Duration::from_secs(15)).post(&format!("{SCHEDULES}/{}/run", urlencode(id)), &json!(null)) {
+                    match Client::for_tui(Duration::from_secs(15)).post(&ops::schedule_run(id), &json!(null)) {
                         Ok(_) => {
                             self.flash(tr!("Run requested", "Ejecución pedida"));
                             self.reload_schedules();

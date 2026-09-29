@@ -339,7 +339,7 @@ pub fn run(json_out: bool) -> Result<()> {
     let local = Config::load().unwrap_or_else(|_| Config::defaults());
 
     let client = Client::new(Duration::from_secs(5));
-    let health = client.get::<Value>("/v2/daemon").map_err(|e| e.to_string());
+    let health = client.get::<Value>("/daemon").map_err(|e| e.to_string());
     let up = health.is_ok();
     if let Some(value) = health.as_ref().ok().filter(|v| v.get("integrity_issues").is_some()) {
         checks.push(state_integrity_check(value));
@@ -389,10 +389,10 @@ pub fn run(json_out: bool) -> Result<()> {
 
     checks.extend(notification_checks(&home));
     if up {
-        checks.push(check("apns push", Status::Pass, tr!("delivery round trip not available on v2", "prueba de entrega no disponible en v2"), ""));
+        checks.push(check("apns push", Status::Pass, tr!("delivery round trip is not checked here", "aquí no se comprueba la entrega de extremo a extremo"), ""));
     }
     if up {
-        let devices = client.get::<Value>("/v2/devices").ok().and_then(|v| v.get("devices").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
+        let devices = client.get::<Value>("/devices").ok().and_then(|v| v.get("devices").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
         checks.push(if devices > 0 {
             check("pairing", Status::Pass, trf!("{devices} paired device(s)", "{devices} dispositivo(s) vinculado(s)"), "")
         } else {

@@ -13,7 +13,7 @@ pub async fn run(hub: Arc<Hub>) {
     sample_loop(|machine, usage| hub.set_machine(machine, usage)).await
 }
 
-/// The latest gauges of a v2-only daemon, read by `/v2/daemon` for the TUI header.
+/// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header.
 pub(crate) type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>)>>>;
 
 pub(crate) async fn run_v2(gauges: Gauges) {

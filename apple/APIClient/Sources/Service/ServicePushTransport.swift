@@ -17,7 +17,7 @@ public extension AlondraAPIClient {
         let body = try JSONSerialization.data(withJSONObject: [
             "push_binding": binding, "preferences_revision": preferencesRevision, "quiet_start": quietStart as Any? ?? NSNull(), "quiet_end": quietEnd as Any? ?? NSNull()
         ], options: [.sortedKeys])
-        let endpoint = Endpoint<Data>.data(.post, path: ["v2", "device", "push-binding"], body: body, contentType: "application/json")
+        let endpoint = Endpoint<Data>.data(.post, path: ["device", "push-binding"], body: body, contentType: "application/json")
         let request = try ServiceRequest(endpoint: endpoint, operationID: registrationID.uuidString)
         try Task.checkCancellation()
         switch try await operations.perform(request) {

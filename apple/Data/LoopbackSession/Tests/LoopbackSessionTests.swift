@@ -31,8 +31,8 @@ final class LoopbackSessionTests: XCTestCase {
         let key = P256.Signing.PrivateKey()
         let daemon = StubDaemon { request in
             switch request.target {
-            case "/v2/pairing": .status(200, Data(#"{"code":"482913","expires_in":600}"#.utf8))
-            case "/v2/pair": .status(200, Data(#"{"device_id":"mac-device"}"#.utf8))
+            case "/pairing": .status(200, Data(#"{"code":"482913","expires_in":600}"#.utf8))
+            case "/pair": .status(200, Data(#"{"device_id":"mac-device"}"#.utf8))
             default: .status(200, Data(#"{"revision":7}"#.utf8))
             }
         }
@@ -42,7 +42,7 @@ final class LoopbackSessionTests: XCTestCase {
         try await read(api)
 
         let requests = daemon.requests
-        XCTAssertEqual(requests.map(\.target), ["/v2/pairing", "/v2/pair", "/summary", "/summary"])
+        XCTAssertEqual(requests.map(\.target), ["/pairing", "/pair", "/summary", "/summary"])
         let pair = try JSONSerialization.jsonObject(with: requests[1].body) as? [String: String]
         XCTAssertEqual(pair?["code"], "482913")
         XCTAssertEqual(pair?["public_key"], key.publicKey.x963Representation.base64EncodedString())
@@ -60,8 +60,8 @@ final class LoopbackSessionTests: XCTestCase {
         let paired = Counter()
         let daemon = StubDaemon { request in
             switch request.target {
-            case "/v2/pairing": return .status(200, Data(#"{"code":"1"}"#.utf8))
-            case "/v2/pair": return .status(200, Data(#"{"device_id":"device-\#(paired.next())"}"#.utf8))
+            case "/pairing": return .status(200, Data(#"{"code":"1"}"#.utf8))
+            case "/pair": return .status(200, Data(#"{"device_id":"device-\#(paired.next())"}"#.utf8))
             default:
                 return request.headers["X-Alondra-Device"] == "device-2"
                     ? .status(200, Data(#"{"revision":1}"#.utf8))
@@ -73,8 +73,8 @@ final class LoopbackSessionTests: XCTestCase {
 
         try await read(api)
 
-        XCTAssertEqual(daemon.requests.map(\.target), ["/v2/pairing", "/v2/pair", "/summary",
-                                                      "/v2/pairing", "/v2/pair", "/summary"])
+        XCTAssertEqual(daemon.requests.map(\.target), ["/pairing", "/pair", "/summary",
+                                                      "/pairing", "/pair", "/summary"])
         let saved = await identity.deviceID()
         XCTAssertEqual(saved, "device-2")
     }
@@ -82,8 +82,8 @@ final class LoopbackSessionTests: XCTestCase {
     func testPersistentRejectionIsReportedWithoutPairingInALoop() async throws {
         let daemon = StubDaemon { request in
             switch request.target {
-            case "/v2/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
-            case "/v2/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
+            case "/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
+            case "/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
             default: .status(401, Data(#"{"error":"wrong signature"}"#.utf8))
             }
         }
@@ -94,7 +94,7 @@ final class LoopbackSessionTests: XCTestCase {
         } catch let error as APIError {
             XCTAssertEqual(error, .unauthorized)
         }
-        XCTAssertEqual(daemon.requests.filter { $0.target == "/v2/pair" }.count, 2)
+        XCTAssertEqual(daemon.requests.filter { $0.target == "/pair" }.count, 2)
     }
 
     func testCommandWhoseResponseIsLostIsUnknownAndNeverSentAgain() async throws {
@@ -164,12 +164,12 @@ final class LoopbackSessionTests: XCTestCase {
 
         XCTAssertEqual(stored.id, "upload-1")
         XCTAssertEqual(stored.contentDigest, digest)
-        let uploads = daemon.requests.filter { $0.target.hasPrefix("/v2/uploads") }
-        XCTAssertEqual(uploads.map(\.target), ["/v2/uploads?name=informe%20a%C3%B1o.pdf"])
+        let uploads = daemon.requests.filter { $0.target.hasPrefix("/uploads") }
+        XCTAssertEqual(uploads.map(\.target), ["/uploads?name=informe%20a%C3%B1o.pdf"])
         XCTAssertEqual(uploads.first?.body, payload)
         XCTAssertEqual(uploads.first?.headers["Content-Type"], "application/octet-stream")
         XCTAssertNotNil(uploads.first?.headers["X-Alondra-Signature"])
-        XCTAssertFalse(daemon.requests.contains { $0.target.hasPrefix("/uploads") }, "the chunks stay in this process")
+        XCTAssertFalse(daemon.requests.contains { $0.target.hasPrefix("/uploads/") }, "the chunks stay in this process")
         XCTAssertEqual(lock.withLock { progress.last }, 1)
     }
 
@@ -183,15 +183,15 @@ final class LoopbackSessionTests: XCTestCase {
         let bytes = try await client(daemon).domainAttachmentContent(attachment)
 
         XCTAssertEqual(bytes, file)
-        XCTAssertEqual(daemon.requests.filter { $0.target.hasPrefix("/v2/files") }.map(\.target),
-                       ["/v2/files?path=files%2Fuploads%2Fa%20b.txt"])
+        XCTAssertEqual(daemon.requests.filter { $0.target.hasPrefix("/files") }.map(\.target),
+                       ["/files?path=files%2Fuploads%2Fa%20b.txt"])
     }
 
     private func pairedDaemon(_ work: @escaping (StubDaemon.Received) -> StubDaemon.Reply) -> StubDaemon {
         StubDaemon { request in
             switch request.target {
-            case "/v2/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
-            case "/v2/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
+            case "/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
+            case "/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
             default: work(request)
             }
         }

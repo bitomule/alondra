@@ -9,7 +9,7 @@ public enum AgentMessageKind: String, Encodable, Sendable {
     case prQuestion = "pr_question"
 }
 
-/// `POST /v2/agents/{id}/messages`: text typed into the agent's session.
+/// `POST /agents/{id}/messages`: text typed into the agent's session.
 public struct AgentMessage: Encodable, Equatable, Sendable {
     public var kind: AgentMessageKind
     public var text: String
@@ -48,7 +48,7 @@ public struct AgentMessageReceipt: Decodable, Equatable, Sendable {
     public var uncertain: Bool { deliveryState == "uncertain" }
 }
 
-/// `POST /v2/requests`: a request with what the plain `create_request` command cannot carry.
+/// `POST /requests`: a request with what the plain `create_request` command cannot carry.
 public struct NewRequestSubmission: Encodable, Equatable, Sendable {
     public let requestID: String
     public let text: String
