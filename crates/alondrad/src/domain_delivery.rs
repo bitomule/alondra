@@ -296,7 +296,7 @@ mod tests {
             attachments: vec![], interaction_id: "question-a".into(),
             scope: Scope::Task { task_id: "task-a".into() }, recipient: Recipient::User,
             body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
         });
         let push = Push::open(&home).unwrap();
         let user = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
@@ -464,6 +464,7 @@ mod tests {
                 options: vec![QuestionOption {
                     id: "yes".into(),
                     label: "Yes".into(),
+                    description: None,
                     inputs: vec![],
                 }],
             },

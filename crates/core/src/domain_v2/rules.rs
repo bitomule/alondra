@@ -2365,6 +2365,9 @@ fn validate_options(options: &[QuestionOption]) -> Result<()> {
     for option in options {
         id(&option.id)?;
         nonempty(&option.label)?;
+        if let Some(description) = &option.description {
+            nonempty(description)?;
+        }
         if !ids.insert(&option.id) {
             return fail("invalid_input", "Duplicate option ID");
         };

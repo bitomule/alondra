@@ -816,6 +816,7 @@
             {
               "id": "proceed",
               "label": "Proceed",
+              "description": "Merge once the checks pass",
               "inputs": []
             }
           ],

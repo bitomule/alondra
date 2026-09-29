@@ -365,6 +365,7 @@ pub(crate) fn materialize_legacy(
                 .map(|(index, option)| d::QuestionOption {
                     id: format!("legacy-option-{}", index + 1),
                     label: nonempty(&option.label, "Option"),
+                    description: option.description.as_deref().map(str::trim).filter(|d| !d.is_empty()).map(String::from),
                     inputs: vec![],
                 })
                 .collect();

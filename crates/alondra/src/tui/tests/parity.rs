@@ -176,7 +176,7 @@ fn without_a_local_clone_the_diff_opens_in_the_reader() {
 #[test]
 fn attachments_are_listed_loaded_and_drawn_in_the_detail() {
     let mut world = World::base(false);
-    let options = vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }];
+    let options = vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }];
     world.run("agent-a", Command::AskQuestion { attachments: vec![attachment("att-1", "plan.md"), attachment("att-2", "shot.png")], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "Approve the plan?".into(), blocking: true, options });
     let mut app = app_on(&world);
     let loading = screen(&mut app, 140, 40);

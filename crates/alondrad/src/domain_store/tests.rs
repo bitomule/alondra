@@ -659,6 +659,7 @@ fn restart_preserves_decisions_documents_and_relations() {
             options: vec![QuestionOption {
                 id: "continue".into(),
                 label: "Continue".into(),
+                description: None,
                 inputs: vec![],
             }],
         },
@@ -804,6 +805,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
             options: vec![QuestionOption {
                 id: "yes".into(),
                 label: "Yes".into(),
+                description: None,
                 inputs: vec![],
             }],
             attachments: vec![attachment("question-file")],
