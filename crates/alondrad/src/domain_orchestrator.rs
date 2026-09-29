@@ -7,6 +7,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, Invocation, Ownership};
 use alondra_core::delivery::State;
+use alondra_core::domain_v2::{DomainError, DomainState};
 use alondra_core::now_millis;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -17,6 +18,8 @@ use std::time::Duration;
 const MAX_BATCH_MESSAGES: usize = 32;
 const MAX_BATCH_BYTES: usize = 128 * 1024;
 const FILE: &str = "orchestrator-v2.json";
+const SUMMARY_LINE: usize = 200;
+const MAX_SUMMARY_BYTES: usize = 32 * 1024;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct Runtime {
@@ -167,6 +170,7 @@ impl Executor {
         if !resume {
             text.push_str("This is a new conversation. Read the durable domain before acting; do not infer that existing Tasks need to be started again.\n");
         }
+        text.push_str(&summary(&state));
         for message in messages {
             text.push_str(&format!("\n--- Alondra inbox message {} ---\n{}\n", message.id, crate::domain_transport::render(&state, message)));
         }
@@ -290,6 +294,79 @@ impl Executor {
             self.finish(&run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
         }
         save(&self.home, &runtime)
+    }
+}
+
+/// The durable domain as the orchestrator needs it to act on a batch: its MCP has no read
+/// tool, so every open Request and every Task not archived travels in the prompt.
+fn summary(state: &DomainState) -> String {
+    let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
+    let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
+    for request in state.requests.values().filter(|request| !request.closed) {
+        text.push_str(&format!("request {}: {}\n", request.id, one_line(&request.body)));
+    }
+    for task in state.tasks.values().filter(|task| !task.archived) {
+        let agent = task.agent_id.as_ref().map_or("none".to_owned(), |agent| agent.0.clone());
+        let pr = task.pr_id.as_ref().map(|pr| format!(" pr={pr}")).unwrap_or_default();
+        text.push_str(&format!("task {} of request {}: \"{}\" state={} agent={agent}{pr}\n",
+            task.id, task.request_id, one_line(&task.title),
+            serde_json::to_value(task.state).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()));
+        if text.len() > MAX_SUMMARY_BYTES {
+            text.push_str("(more Tasks not listed)\n");
+            break;
+        }
+    }
+    text
+}
+
+/// What `/v2/runtime` shows of the orchestrator: its phase and what the user may do about it.
+pub(crate) fn status(executor: &Executor) -> Result<serde_json::Value> {
+    let runtime = load(&executor.home)?;
+    let queue_depth = executor.pending()?.len();
+    let ambiguous = runtime.active_run.is_some() && runtime.last_error.is_some();
+    let phase = match (&runtime.active_run, &runtime.last_error) {
+        (Some(_), None) => "running",
+        (_, Some(_)) => "failed",
+        (None, None) => "idle",
+    };
+    Ok(serde_json::json!({
+        "phase": phase, "can_retry": ambiguous, "can_cancel": runtime.active_run.is_some() && !ambiguous,
+        "cancel_requested": runtime.cancel_requested,
+        "active_run_id": runtime.active_run.as_ref().map(|run| run.id.clone()),
+        "queue_depth": queue_depth, "last_error": runtime.last_error, "retry_at": runtime.retry_at,
+    }))
+}
+
+pub(crate) fn executor(domain: Arc<DomainRuntime>, home: &Path) -> Executor {
+    Executor { domain, home: home.to_owned(), claude_home: crate::watcher::claude_home(), executable: PathBuf::from("claude") }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Decision { Cancel, Acknowledge, Retry }
+
+/// `POST /v2/orchestrator/{cancel,acknowledge,retry}`, the user's decision on an execution.
+pub(crate) fn decision_route(path: &str) -> Option<Decision> {
+    match path {
+        "/v2/orchestrator/cancel" => Some(Decision::Cancel),
+        "/v2/orchestrator/acknowledge" => Some(Decision::Acknowledge),
+        "/v2/orchestrator/retry" => Some(Decision::Retry),
+        _ => None,
+    }
+}
+
+/// The decision as a local response: `{}` once applied, a conflict when no such execution waits.
+pub(crate) fn decide(executor: &Executor, decision: Decision, body: Option<&serde_json::Value>) -> serde_json::Value {
+    let Some(run_id) = body.and_then(|body| body.get("run_id")).and_then(serde_json::Value::as_str) else {
+        return serde_json::json!({"status": 422, "body": DomainError::new("invalid_input", "run_id is required")});
+    };
+    let applied = match decision {
+        Decision::Cancel => executor.cancel(run_id),
+        Decision::Acknowledge => executor.acknowledge(run_id),
+        Decision::Retry => executor.retry(run_id),
+    };
+    match applied {
+        Ok(()) => serde_json::json!({"status": 200, "body": {}}),
+        Err(error) => serde_json::json!({"status": 409, "body": DomainError::new("conflict", error.to_string())}),
     }
 }
 
@@ -423,6 +500,7 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
         assert!(prompt.contains("data_epoch=") && prompt.contains("inbox message 1") && prompt.contains("inbox message 2")
             && prompt.contains("interaction_id=q2") && prompt.contains("new conversation"), "{prompt}");
+        assert!(prompt.contains("request r: Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
         assert!(outbox(domain).is_empty());
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
         let runtime = load(&f.executor.home).unwrap();
@@ -481,6 +559,32 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
         assert_eq!(recovered.pending_resolutions[0].run_id, "interrupted");
         assert!(outbox(domain).is_empty(), "the interrupted batch is not replayed");
         assert!(attempts(domain).iter().any(|(id, state, _)| *id == claim.message.id && state == "discarded"));
+    }
+
+    #[tokio::test]
+    async fn the_user_decides_on_an_ambiguous_execution_through_its_status() {
+        let f = fixture("exit 1");
+        let domain = &f.executor.domain;
+        assert_eq!(status(&f.executor).unwrap()["phase"], "idle");
+        ask_orchestrator(domain, 1);
+        assert_eq!(status(&f.executor).unwrap()["queue_depth"], 1);
+        f.executor.tick(&f.ownership).await.unwrap();
+        let run = load(&f.executor.home).unwrap().active_run.unwrap();
+        let shown = status(&f.executor).unwrap();
+        assert_eq!((shown["phase"].as_str(), shown["can_retry"].as_bool(), shown["can_cancel"].as_bool()), (Some("failed"), Some(true), Some(false)));
+        assert_eq!(shown["active_run_id"], serde_json::json!(run.id));
+        assert!(shown["last_error"].is_string());
+        let missing = decide(&f.executor, Decision::Acknowledge, Some(&serde_json::json!({})));
+        assert_eq!((missing["status"].as_u64(), missing["body"]["code"].as_str()), (Some(422), Some("invalid_input")));
+        let other = decide(&f.executor, Decision::Acknowledge, Some(&serde_json::json!({"run_id": "other"})));
+        assert_eq!((other["status"].as_u64(), other["body"]["code"].as_str()), (Some(409), Some("conflict")));
+        let cancel = decide(&f.executor, Decision::Cancel, Some(&serde_json::json!({"run_id": "other"})));
+        assert_eq!(cancel["status"], 409);
+        let acknowledged = decide(&f.executor, Decision::Acknowledge, Some(&serde_json::json!({"run_id": run.id})));
+        assert_eq!(acknowledged, serde_json::json!({"status": 200, "body": {}}));
+        assert_eq!(status(&f.executor).unwrap()["phase"], "idle");
+        assert_eq!(decision_route("/v2/orchestrator/retry"), Some(Decision::Retry));
+        assert_eq!(decision_route("/v2/orchestrator/messages"), None);
     }
 
     #[tokio::test]
