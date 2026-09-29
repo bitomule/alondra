@@ -33,8 +33,6 @@ import Testing
         let upper = try train(2, openedAt: 5, bottom: 1, position: 1, trainOpenedAt: 3)
         #expect(upper.stackedOn == "On top of PR #11")
         #expect(upper.mergeBlockedReason == "Merge PR #11 first")
-        let setAsideBelow = try pr(#","below_number":11,"below_set_aside":true"#)
-        #expect(setAsideBelow.mergeBlockedReason == "PR #11 is still open on GitHub: merge or close it first")
         let alone = try pr("")
         #expect(alone.stackedOn == nil)
         #expect(alone.mergeBlockedReason == nil)
@@ -53,7 +51,6 @@ import Testing
         ("ready", #","mergeable":"MERGEABLE","merge_methods":["merge","squash"],"preferred_method":"squash""#, PullRequest.MainAction.merge(methods: ["squash", "merge"], blockedBy: nil)),
         ("GitHub still checking", #","mergeable":"UNKNOWN""#, .merge(methods: PullRequest.allMethods, blockedBy: nil)),
         ("on top of an open PR", #","below_number":11"#, .merge(methods: PullRequest.allMethods, blockedBy: "Merge PR #11 first")),
-        ("on top of a PR set aside", #","below_number":11,"below_set_aside":true"#, .merge(methods: PullRequest.allMethods, blockedBy: "PR #11 is still open on GitHub: merge or close it first")),
         ("conflicts", #","mergeable":"CONFLICTING""#, .resolveConflicts),
         ("conflicts before the PR under it", #","merge_state":"DIRTY","below_number":11"#, .resolveConflicts),
     ])

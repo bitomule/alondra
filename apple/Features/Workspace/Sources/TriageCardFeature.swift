@@ -43,7 +43,7 @@ public enum CardContent: Equatable, Sendable {
 public struct TriageCardFeature {
     public init() {}
     public enum Resolution: Equatable {
-        case answer(String?), read, sent, contextRequested, commentsSent, approved, changesRequested, merged, conflictsSent, setAside
+        case answer(String?), read, sent, contextRequested, commentsSent, approved, changesRequested, merged, conflictsSent
     }
     @ObservableState
     public struct State: Equatable, Identifiable {
@@ -209,9 +209,6 @@ public struct TriageCardFeature {
                 return .none
             case .pullRequest(.pr(.resolveConflictsTapped)):
                 state.pendingStamp = .conflictsSent
-                return .none
-            case .pullRequest(.pr(.setAsideTapped)):
-                state.pendingStamp = .setAside
                 return .none
             case .question, .document, .pullRequest:
                 // Asking keeps this card open. A confirmed ask must allow the next draft.

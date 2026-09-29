@@ -89,7 +89,13 @@ struct PullRequestFeatureTests {
     @Test
     func authorizingAgainAfterAnUnknownOutcomeReusesTheCommandID() async throws {
         let recorder = Recorder()
-        let workspace = try workspace()
+        var projection = try workspace().projection
+        projection.pullRequests = projection.pullRequests.map { pr in
+            var pr = pr
+            pr.allowedMethods = [.squash, .merge]
+            return pr
+        }
+        let workspace = DomainWorkspace(projection)
         let initial = PullRequestFeature.State(card: try card(workspace), workspace: workspace)
         let store = TestStore(initialState: initial) { PullRequestFeature() } withDependencies: {
             $0.domainWorkspace = client(recorder, result: .uncertain)
@@ -101,12 +107,11 @@ struct PullRequestFeatureTests {
         #expect(store.state.mutationOutcome == .unknown)
         await store.send(.mergeMethodConfirmed(.squash))
         await store.receive(\.mutationFinished)
-        await store.send(.setAsideTapped)
+        await store.send(.mergeMethodConfirmed(.merge))
         await store.receive(\.mutationFinished)
         let ids = await recorder.commandIDs
         #expect(ids[0] == ids[1])
-        #expect(ids[2] != ids[0], "A different action is a different command")
-        #expect(await recorder.intents.last == .setAsidePullRequest("pr"))
+        #expect(ids[2] != ids[0], "A different merge method is a different command")
     }
 
     @Test

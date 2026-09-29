@@ -18,7 +18,6 @@ public enum DomainIntent: Equatable, Sendable {
     // Client contracts the daemon does not accept yet; see DomainV2.Command.
     case requestMoreContext(DomainV2.InteractionId, body: String, attachments: [DomainV2.AttachmentRef] = [])
     case replyToInformation(DomainV2.InteractionId, body: String, attachments: [DomainV2.AttachmentRef] = [])
-    case setAsidePullRequest(DomainV2.PrId)
     case askAboutPullRequest(DomainV2.PrId, head: String, body: String, attachments: [DomainV2.AttachmentRef] = [])
     case requestConflictResolution(DomainV2.PrId, head: String)
     case messageAgent(DomainV2.AgentId, body: String, attachments: [DomainV2.AttachmentRef] = [])
@@ -49,7 +48,6 @@ public enum DomainIntent: Equatable, Sendable {
         case .closeRequest: "close_request"
         case .requestMoreContext: "request_more_context"
         case .replyToInformation: "reply_to_information"
-        case .setAsidePullRequest: "set_aside_pull_request"
         case .askAboutPullRequest: "ask_about_pull_request"
         case .requestConflictResolution: "request_conflict_resolution"
         case .messageAgent: "message_agent"
@@ -70,7 +68,7 @@ public enum DomainIntent: Equatable, Sendable {
         case .cancelTask(let id), .reopenTask(let id), .archiveTask(let id, _): "task:" + id.rawValue
         case .createRequest: "request:new"
         case .closeRequest(let id): "request:" + id.rawValue
-        case .setAsidePullRequest(let id), .askAboutPullRequest(let id, _, _, _), .requestConflictResolution(let id, _):
+        case .askAboutPullRequest(let id, _, _, _), .requestConflictResolution(let id, _):
             "pr:" + id.rawValue
         case .messageAgent(let id, _, _), .closeAgent(let id, _): "agent:" + id.rawValue
         case .retryOrchestratorRun(let id), .cancelOrchestratorRun(let id), .acknowledgeOrchestratorRun(let id):
@@ -179,9 +177,6 @@ public struct DomainCommandFactory: Sendable {
             guard !text.isEmpty || !attachments.isEmpty else { throw DomainIntentError.feedbackRequired }
             guard workspace.interaction(id) != nil else { throw DomainIntentError.notFound }
             return (.replyToInformation(attachments: attachments, interactionId: id, body: text), workspace.revision)
-        case .setAsidePullRequest(let id):
-            guard workspace.pullRequest(id) != nil else { throw DomainIntentError.notFound }
-            return (.setAsidePullRequest(prId: id), workspace.revision)
         case let .askAboutPullRequest(id, head, body, attachments):
             let text = body.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !text.isEmpty else { throw DomainIntentError.feedbackRequired }

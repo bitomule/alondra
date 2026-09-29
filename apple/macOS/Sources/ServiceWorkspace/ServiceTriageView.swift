@@ -76,9 +76,7 @@ private struct ServiceInboxRow: View {
             HStack {
                 Button("Later", action: skip)
                 Spacer()
-                if item.isPullRequest {
-                    Button("Dismiss", action: hide)
-                } else if item.availableActions.contains(where: { $0.actionKind == .markRead && $0.enabled }) {
+                if item.availableActions.contains(where: { $0.actionKind == .markRead && $0.enabled }) {
                     Button("Mark read", action: hide)
                 }
             }.font(.subheadline).buttonStyle(.borderless)

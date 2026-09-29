@@ -34,7 +34,6 @@ public struct PullRequest: Codable, Identifiable, Hashable, Sendable {
     public let openedAt: Int64
     public let preferredMethod: String?
     public let belowNumber: UInt64?
-    public let belowSetAside: Bool?
     public let stackBottom: UInt64?
     public let stackOpenedAt: Int64?
     public let stackPosition: Int?

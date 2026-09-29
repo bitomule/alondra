@@ -95,7 +95,7 @@ struct ServicePullRequestView: View {
             }
             Group {
                 ServicePRMainAction(store: store.scope(state: \.pr, action: \.pr), placement: .bar(prominent: !store.diff.hasDraft))
-                PRFooter(card: store.lastKnownCard) { _ = store.send(.pr(.setAsideTapped)) }.padding(.horizontal, 4)
+                PRFooter(card: store.lastKnownCard).padding(.horizontal, 4)
             }.disabled(store.diff.isSending || !store.pr.canAct)
             if store.diff.commentsNeedReview {
                 Text("The diff changed. Check each comment before confirming.").font(.caption)

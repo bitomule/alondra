@@ -7,9 +7,6 @@ extension PullRequest {
     }
     public var mergeBlockedReason: String? {
         guard let below = belowNumber.map(String.init) else { return nil }
-        if belowSetAside == true {
-            return String(localized: "PR #\(below) is still open on GitHub: merge or close it first", table: "AlondraShared", bundle: #bundle)
-        }
         return String(localized: "Merge PR #\(below) first", table: "AlondraShared", bundle: #bundle)
     }
     public var summary: String {

@@ -180,7 +180,7 @@ public struct TriageFeature {
                 }
             case .hide(let id):
                 guard let item = state.queue.first(where: { $0.id == id }),
-                      let intent = readIntent(for: item) ?? setAsideIntent(for: item), let workspace = state.workspace,
+                      let intent = readIntent(for: item), let workspace = state.workspace,
                       let identity = state.identity, !state.pendingIDs.contains(id) else { return .none }
                 var ring = InboxRing(cursor: state.cursor)
                 ring.resolve(item, in: state.items.filter { !state.hiddenIDs.contains($0.id) })
@@ -257,12 +257,6 @@ public struct TriageFeature {
         let id = state.commandIDs[item] ?? uuid().uuidString.lowercased()
         state.commandIDs[item] = id
         return id
-    }
-
-    /// Setting a pull request aside hides its card without deciding anything about the PR.
-    private func setAsideIntent(for item: DomainV2.InboxItem) -> DomainIntent? {
-        guard case .pullRequest(let id) = item.subject else { return nil }
-        return .setAsidePullRequest(id)
     }
 
     /// Only an information root offered `mark_read` by the server leaves the queue by reading.

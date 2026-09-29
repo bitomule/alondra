@@ -98,8 +98,6 @@ struct ServicePullRequestView: View {
 
     private func actions(_ card: DomainPullRequestCard) -> some View {
         CardActions {
-            Button("Set Aside") { store.send(.pr(.setAsideTapped)) }
-                .help("Take the card out of the inbox without merging")
         } trailing: {
             if !card.hasConflicts, let reason = store.observation?.mergeBlockedReason {
                 Text(reason)

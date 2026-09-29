@@ -5,12 +5,11 @@ import AlondraShared
 import ComposableArchitecture
 import Foundation
 
-/// Authorizes a merge of the presented head, asks the Agent to resolve conflicts, or sets the
-/// PR aside. A recorded authorization is pending the agent, never "merged": only the PR state
+/// Authorizes a merge of the presented head or asks the Agent to resolve conflicts. A recorded authorization is pending the agent, never "merged": only the PR state
 /// the server observes from GitHub says that.
 @Reducer
 public struct PullRequestFeature {
-    public enum Mutation: Equatable, Sendable { case authorize(DomainV2.MergeMethod), resolveConflicts, setAside }
+    public enum Mutation: Equatable, Sendable { case authorize(DomainV2.MergeMethod), resolveConflicts }
 
     @ObservableState
     public struct State: Equatable {
@@ -59,7 +58,6 @@ public struct PullRequestFeature {
         case cancelMerge
         case confirmMerge
         case resolveConflictsTapped
-        case setAsideTapped
         case mutationFinished(PRMutationOutcome, UInt64)
     }
 
@@ -122,9 +120,6 @@ public struct PullRequestFeature {
                 guard state.canManage, let card = state.card, card.hasConflicts,
                       let head = card.presentedHead ?? state.pr?.head else { return .none }
                 return perform(.requestConflictResolution(card.id, head: head), .resolveConflicts, &state)
-            case .setAsideTapped:
-                guard state.canManage, let id = state.card?.id else { return .none }
-                return perform(.setAsidePullRequest(id), .setAside, &state)
             case .mutationFinished(let outcome, let epoch):
                 guard epoch == state.presentationEpoch, state.isSending else { return .none }
                 state.isSending = false

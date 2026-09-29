@@ -125,7 +125,7 @@ struct TriageFeatureTests {
     }
 
     @Test
-    func questionsCannotBeReadOrHiddenAwayAndAPullRequestIsOnlySetAside() async throws {
+    func onlyAnUnreadNoticeLeavesTheInboxByReading() async throws {
         let recorder = Recorder()
         var initial = TriageFeature.State()
         initial.identity = a
@@ -144,10 +144,9 @@ struct TriageFeatureTests {
         await store.send(.readWithPresentation("interaction:q"))
         await store.send(.readWithPresentation("pr:pr"))
         await store.send(.hide("interaction:done"))
-        #expect(await recorder.intents.isEmpty)
         await store.send(.hide("pr:pr"))
-        await store.receive(\.mutationFinished)
-        #expect(await recorder.intents == [.setAsidePullRequest("pr")])
+        #expect(await recorder.intents.isEmpty, "A question, a pull request and a read notice stay until decided")
+        #expect(store.state.hiddenIDs.isEmpty)
     }
 
     @Test

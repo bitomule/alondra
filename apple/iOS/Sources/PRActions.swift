@@ -33,10 +33,9 @@ struct PRStatus: View {
     }
 }
 
-/// Open the PR on GitHub, or set it aside: the quiet line under its main button.
+/// Open the PR on GitHub: the quiet line under its main button.
 struct PRFooter: View {
     let card: DomainPullRequestCard
-    let onSetAside: () -> Void
 
     var body: some View {
         HStack {
@@ -46,7 +45,6 @@ struct PRFooter: View {
                 }
             }
             Spacer()
-            Button("Set Aside", action: onSetAside)
         }
         .font(.subheadline.weight(.medium))
         .foregroundStyle(.secondary)

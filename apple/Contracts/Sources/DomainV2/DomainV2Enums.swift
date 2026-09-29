@@ -345,7 +345,6 @@ extension DomainV2 {
         case createRequestWithContext(requestId: RequestId, body: String, project: String?, options: [String: OptionChoice], issue: String?, attachments: [AttachmentRef])
         case requestMoreContext(attachments: [AttachmentRef], interactionId: InteractionId, body: String)
         case replyToInformation(attachments: [AttachmentRef], interactionId: InteractionId, body: String)
-        case setAsidePullRequest(prId: PrId)
         case askAboutPullRequest(attachments: [AttachmentRef], prId: PrId, head: String, body: String)
         case requestConflictResolution(prId: PrId, head: String)
         case messageAgent(attachments: [AttachmentRef], agentId: AgentId, body: String)
@@ -450,7 +449,6 @@ extension DomainV2 {
             case "archive_task": self = .archiveTask(taskId: try container.decode(TaskId.self, forKey: .taskId), archived: try container.decode(Bool.self, forKey: .archived))
             case "request_more_context": self = .requestMoreContext(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), body: try container.decode(String.self, forKey: .body))
             case "reply_to_information": self = .replyToInformation(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], interactionId: try container.decode(InteractionId.self, forKey: .interactionId), body: try container.decode(String.self, forKey: .body))
-            case "set_aside_pull_request": self = .setAsidePullRequest(prId: try container.decode(PrId.self, forKey: .prId))
             case "ask_about_pull_request": self = .askAboutPullRequest(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], prId: try container.decode(PrId.self, forKey: .prId), head: try container.decode(String.self, forKey: .head), body: try container.decode(String.self, forKey: .body))
             case "request_conflict_resolution": self = .requestConflictResolution(prId: try container.decode(PrId.self, forKey: .prId), head: try container.decode(String.self, forKey: .head))
             case "message_agent": self = .messageAgent(attachments: try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? [], agentId: try container.decode(AgentId.self, forKey: .agentId), body: try container.decode(String.self, forKey: .body))
@@ -660,9 +658,6 @@ extension DomainV2 {
                 try container.encode(attachments, forKey: .attachments)
                 try container.encode(interactionId, forKey: .interactionId)
                 try container.encode(body, forKey: .body)
-            case let .setAsidePullRequest(prId):
-                try container.encode("set_aside_pull_request", forKey: .kind)
-                try container.encode(prId, forKey: .prId)
             case let .askAboutPullRequest(attachments, prId, head, body):
                 try container.encode("ask_about_pull_request", forKey: .kind)
                 try container.encode(attachments, forKey: .attachments)

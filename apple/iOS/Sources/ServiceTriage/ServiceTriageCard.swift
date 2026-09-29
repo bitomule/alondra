@@ -41,7 +41,6 @@ struct ServiceTriageCard: View {
         case .changesRequested: return Stamp(label: String(localized: "Changes requested"), symbol: "arrow.uturn.backward", tint: Palette.dawn)
         case .merged: return Stamp(label: String(localized: "Merged"), symbol: "arrow.triangle.merge", tint: Palette.sage)
         case .conflictsSent: return Stamp(label: String(localized: "Sent to its node"), symbol: "arrow.triangle.branch", tint: Palette.dawn)
-        case .setAside: return Stamp(label: String(localized: "Set aside"), symbol: "tray.and.arrow.down", tint: Palette.slate)
         }
     }
     private var showNodeContext: Bool { store.showNodeContext }
@@ -493,10 +492,7 @@ struct ServiceTriageCard: View {
                 .buttonStyle(.plain)
                 .disabled(!store.canSend || store.busy)
                 ServicePRMainAction(store: child.scope(state: \.pr, action: \.pr), placement: .card, willSubmit: { replyFocused = false })
-                PRFooter(card: child.lastKnownCard) {
-                    replyFocused = false
-                    store.send(.pullRequest(.pr(.setAsideTapped)))
-                }
+                PRFooter(card: child.lastKnownCard)
             }
         }
     }

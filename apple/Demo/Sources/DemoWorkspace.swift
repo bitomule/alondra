@@ -224,7 +224,6 @@ struct DemoState {
     var runtime: DomainV2.Runtime
     /// Interactions the user has dealt with: they stay in history but leave the inbox.
     var settled: Set<DomainV2.InteractionId> = []
-    var setAside: Set<DomainV2.PrId> = []
 
     static func initial(now: Int64) -> DemoState {
         func interaction(_ id: String, task: DomainV2.TaskId, body: String, blocking: Bool = false,
@@ -319,7 +318,7 @@ struct DemoState {
                 roots.append(entry); continue
             }
             if case .pullRequest(let prID, _) = targets.first, let pr = pullRequests.first(where: { $0.id == prID }) {
-                guard pr.state == .open, !setAside.contains(prID) else { continue }
+                guard pr.state == .open else { continue }
                 roots.append(.init(id: "pr:\(prID.rawValue)", kind: "pull_request", subject: .pullRequest(prId: prID),
                                    title: "\(pr.repository) #\(pr.number)", body: nil, taskId: task.id, requestId: task.requestId,
                                    agentId: task.agentId, revision: revision, order: interaction.order, pending: true,
@@ -392,8 +391,6 @@ struct DemoState {
             }
             if let task = task(of: id) { _ = setTask(task) { $0.state = .closing } }
             report("Example pull request merged in demo.", nextID: &nextID)
-        case .setAsidePullRequest(let id):
-            setAside.insert(id)
         case .askAboutPullRequest(_, let head, let body, _):
             guard head == Self.head else { return "The example diff changed; reload it" }
             report("Your demo review: " + body, nextID: &nextID)
