@@ -154,6 +154,9 @@ pub fn send(name: &str, text: &str) -> Result<()> {
 }
 
 fn sent_notice(answer: &Value, name: &str) -> String {
+    if let Some(note) = answer.get("note").and_then(Value::as_str) {
+        return note.to_string();
+    }
     match answer.get("delivery_state").and_then(Value::as_str) {
         Some("uncertain") => trf!("It may not have reached {name}'s session; check it before sending again", "Puede que no haya llegado a la sesión de {name}; revísala antes de reenviar"),
         Some("handed") => trf!("Typed into {name}'s session", "Escrito en la sesión de {name}"),

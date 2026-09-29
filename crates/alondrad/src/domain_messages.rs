@@ -121,7 +121,12 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     let text = wording(&body, task, name, home)?;
     let short = match sessions.find(&agent.0).await {
         Some(Session { interactive: true, .. }) => {
-            return Err(refused("interactive_session", "this agent runs in an interactive terminal; write to it there"));
+            domain.held.lock().expect("held messages poisoned").entry(agent.clone()).or_default().push(text);
+            let name = &state.agents[agent].name;
+            let answer = json!({"interactive": true, "note": format!("{name} is an interactive terminal session, not a background job: \
+                Alondra cannot type into it, so the message reaches it when its current turn ends. If it is sitting idle at its \
+                prompt, it arrives after the next thing typed in its terminal.")});
+            return Ok(read_after(domain, user, &body, answer));
         }
         Some(session) => session.short,
         None => crate::domain_transport::terminals(&state).remove(agent)
@@ -133,13 +138,37 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         Ok(Err(WriteFailure::NotStarted)) => return Err(refused("session_unreachable", "the agent's session did not open; nothing was typed")),
         Ok(Err(WriteFailure::Uncertain)) | Err(_) => State::Uncertain,
     };
-    let mut answer = json!({"delivery_state": delivered});
-    if let (true, Some(interaction)) = (body.mark_read, body.interaction_id) {
+    Ok(read_after(domain, user, &body, json!({"delivery_state": delivered})))
+}
+
+/// The same message relayed from a paired device, answered as a local response.
+pub(crate) async fn relayed(domain: &DomainRuntime, home: &Path, sender: &str, agent: AgentId, body: Option<&Value>) -> Value {
+    let Some(body) = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok()) else {
+        return json!({"status": 422, "body": refused("invalid_input", "invalid message")});
+    };
+    let user = Actor::User { user_id: format!("device:{sender}") };
+    match deliver(domain, home, &user, &user_name(), &agent, body, &ClaudeAgents, &Arc::new(crate::domain_transport::Tmux)).await {
+        Ok(answer) => json!({"status": 200, "body": answer}),
+        Err(error) => json!({"status": crate::domain_api::status_for(&error).as_u16(), "body": error}),
+    }
+}
+
+pub(crate) fn user_name() -> String {
+    alondra_core::config::Config::load().map(|config| config.name).unwrap_or_else(|_| "The user".into())
+}
+
+fn read_after(domain: &DomainRuntime, user: &Actor, body: &MessageBody, mut answer: Value) -> Value {
+    if let (true, Some(interaction)) = (body.mark_read, body.interaction_id.clone()) {
         if let Err(error) = mark_read(domain, user, interaction) {
             answer["mark_read_error"] = json!(error);
         }
     }
-    Ok(answer)
+    answer
+}
+
+/// What the user wrote to this session while it was in its own terminal, once.
+pub(crate) fn take_held(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> {
+    domain.held.lock().expect("held messages poisoned").remove(agent).unwrap_or_default()
 }
 
 fn mark_read(domain: &DomainRuntime, user: &Actor, interaction_id: InteractionId) -> Result<(), DomainError> {
@@ -249,7 +278,6 @@ mod tests {
             ("agent-a", json!({"text": "  "}), session("s", false), "invalid_input"),
             ("agent-b", json!({"text": "hi", "task_id": "t"}), session("s", false), "not_assigned"),
             ("agent-a", json!({"text": "hi", "task_id": "missing"}), session("s", false), "not_found"),
-            ("agent-a", json!({"text": "hi"}), session("s", true), "interactive_session"),
             ("agent-a", json!({"text": "hi"}), Listed(None), "session_unreachable"),
         ];
         for (agent, request, sessions, code) in cases {
@@ -257,6 +285,19 @@ mod tests {
             assert_eq!(error.code, code, "{agent} {request}");
         }
         assert!(terminal.0.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_session_in_the_users_terminal_holds_the_message_for_its_next_stop_hook() {
+        let (fixture, domain) = world();
+        let terminal = Arc::new(Typed::default());
+        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
+            body(json!({"text": "Use the new API", "task_id": "t"})), &session("s", true), &terminal).await.unwrap();
+        assert_eq!(answer["interactive"], true);
+        assert!(answer["note"].as_str().unwrap().starts_with("A is an interactive terminal session"));
+        assert!(terminal.0.lock().unwrap().is_empty(), "nothing is typed into the user's terminal");
+        assert_eq!(take_held(&domain, &"agent-a".into()), ["[Task t “Build it”] Use the new API"]);
+        assert!(take_held(&domain, &"agent-a".into()).is_empty());
     }
 
     #[tokio::test]
@@ -307,6 +348,15 @@ mod tests {
             body(json!({"text": "Look", "attachments": [forged]})), &session("s", false), &terminal).await.unwrap_err();
         assert_eq!(error.code, "invalid_input");
         assert_eq!(terminal.0.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_relayed_message_answers_with_the_local_status() {
+        let (fixture, domain) = world();
+        let invalid = relayed(&domain, &fixture.0, "phone", "agent-a".into(), Some(&json!({"txt": "hi"}))).await;
+        assert_eq!((invalid["status"].as_u64(), invalid["body"]["code"].as_str()), (Some(422), Some("invalid_input")));
+        let unknown = relayed(&domain, &fixture.0, "phone", "agent-z".into(), Some(&json!({"text": "hi"}))).await;
+        assert_eq!((unknown["status"].as_u64(), unknown["body"]["code"].as_str()), (Some(404), Some("not_found")));
     }
 
     #[test]

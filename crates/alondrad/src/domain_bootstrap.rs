@@ -203,8 +203,7 @@ async fn agent_message(State(state): State<Arc<V2Only>>, signed: Option<Extensio
         return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid message"));
     };
     let user = alondra_core::domain_v2::Actor::User { user_id: format!("device:{}", device.device_id) };
-    let name = alondra_core::config::Config::load().map(|config| config.name).unwrap_or_else(|_| "The user".into());
-    match crate::domain_messages::deliver(&state.domain, &state.home, &user, &name, &id.into(), body,
+    match crate::domain_messages::deliver(&state.domain, &state.home, &user, &crate::domain_messages::user_name(), &id.into(), body,
         &crate::domain_messages::ClaudeAgents, &Arc::new(crate::domain_transport::Tmux)).await {
         Ok(answer) => Json(answer).into_response(),
         Err(error) => crate::domain_api::domain_error(error),

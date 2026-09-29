@@ -287,6 +287,7 @@ impl Service {
     fn atomic_local(&self, request: &LocalRequest) -> bool {
         if self.domain.is_some() {
             return request.method == "POST" && (request.path == "/v2/domain/commands"
+                || agent_message(&request.path).is_some()
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some())
                 || crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some());
         }
@@ -323,6 +324,8 @@ impl Service {
                     &envelope.sender, attempt_id, request.body.as_ref(),
                     (&envelope.sender, &envelope.request_id, digest),
                     || self.require_device_approval(&envelope.sender, device))?
+            } else if let Some(agent) = agent_message(&request.path) {
+                crate::domain_messages::relayed(domain, &self.home, &envelope.sender, agent, request.body.as_ref()).await
             } else if crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()) {
                 crate::domain_schedule_api::encrypted_mutation(domain, &self.home,
                     &envelope.sender, &request.method, &request.path, request.body.as_ref(),
@@ -657,7 +660,8 @@ impl Service {
             .map_err(|error| anyhow!("invalid encrypted work: {error}"))?;
         let request: LocalRequest = serde_json::from_slice(&plaintext)?;
         if self.domain.is_some() {
-            anyhow::ensure!(request.path.starts_with("/v2/domain") && approved_method(&request).is_ok(),
+            anyhow::ensure!((request.path.starts_with("/v2/domain") || agent_message(&request.path).is_some())
+                && approved_method(&request).is_ok(),
                 "v2-only service route is not approved");
         }
         let body = serde_json::to_vec(e)?;
@@ -1198,6 +1202,11 @@ fn id_action(path: &str, prefix: &str, action: &str, numeric: bool) -> bool {
         .is_some_and(|s| if numeric { number(s) } else { id(s) })
 }
 
+/// The agent a relayed `POST /v2/agents/{id}/messages` writes to.
+fn agent_message(path: &str) -> Option<alondra_core::domain_v2::AgentId> {
+    path.strip_prefix("/v2/agents/")?.strip_suffix("/messages").filter(|id| v2_read_id(id)).map(Into::into)
+}
+
 fn v2_read_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 256
@@ -1230,6 +1239,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                 || crate::domain_reads::approved_read_path(&request.path),
             "POST" if request.body.is_some() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, true)
                 || request.path == "/v2/domain/commands"
+                || agent_message(&request.path).is_some()
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some(),
             "POST" if request.body.is_none() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, false),
             "PUT" | "DELETE" => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()),
@@ -2677,6 +2687,17 @@ agreement_key = "{}"
                 "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
             serde_json::from_slice(&bytes).unwrap()
         }).collect()
+    }
+
+    #[test]
+    fn a_message_to_an_agent_is_a_relayed_mutation_with_a_body() {
+        let post = |path: &str, body: Option<Value>| LocalRequest { method: "POST".into(), path: path.into(), body };
+        assert!(approved_method(&post("/v2/agents/agent-a/messages", Some(json!({"text": "hi"})))).is_ok());
+        assert!(approved_method(&post("/v2/agents/agent-a/messages", None)).is_err());
+        for path in ["/v2/agents//messages", "/v2/agents/a/b/messages", "/v2/agents/../messages", "/v2/agents/agent-a/close"] {
+            assert!(approved_method(&post(path, Some(json!({"text": "hi"})))).is_err(), "{path}");
+        }
+        assert!(approved_method(&LocalRequest { method: "GET".into(), path: "/v2/agents/agent-a/messages".into(), body: None }).is_err());
     }
 
     #[test]
