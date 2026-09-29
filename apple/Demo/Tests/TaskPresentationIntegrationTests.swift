@@ -78,13 +78,15 @@ import Testing
         #expect(store.waitingReason(for: waiting) == "It started, and what is left of it waits for PR #264 of “PhotoKit off the pool” to be merged: it goes on once that PR is merged.")
     }
 
-    @MainActor @Test func aRequestGoesByItsOnlyTaskThenWhatTheUserWrote() throws {
+    @MainActor @Test func aRequestGoesByItsTitleThenItsOnlyTaskThenWhatTheUserWrote() throws {
         var fixture = V2Fixture()
-        fixture.requests = ["r-one", "r-two", "r-new"].map { .init(id: .init(rawValue: $0), body: "Do the thing\nin detail", closed: false) }
-        fixture.tasks = [V2Fixture.makeTask("one", request: "r-one"),
+        fixture.requests = ["r-given", "r-one", "r-two", "r-new"].map { .init(id: .init(rawValue: $0), body: "Do the thing\nin detail", closed: false) }
+        fixture.requests[0].title = "Ship the thing"
+        fixture.tasks = [V2Fixture.makeTask("a", request: "r-given"), V2Fixture.makeTask("one", request: "r-one"),
                          V2Fixture.makeTask("b", request: "r-two"), V2Fixture.makeTask("c", request: "r-two")]
         let store = ServiceTaskPresentation(workspace: fixture.workspace)
         let title = { (id: String) in store.board.request(.init(rawValue: id)).map(store.title(of:)) }
+        #expect(title("r-given") == "Ship the thing", "the orchestrator's title wins")
         #expect(title("r-one") == "Task one", "its only task's title, not the prompt")
         #expect(title("r-two") == "Do the thing", "several tasks and no title: what the user wrote")
         #expect(title("r-new") == "Do the thing", "still being split: what the user wrote")

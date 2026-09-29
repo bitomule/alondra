@@ -71,6 +71,10 @@ final class DomainCommandFactoryTests: XCTestCase {
         XCTAssertEqual(result.command, .markRead(interactionId: "info"))
     }
 
+    func testWithdrawingARequestSaysTheUserWithdrewIt() throws {
+        XCTAssertEqual(try envelope(.closeRequest("r"), "information").command, .closeRequest(requestId: "r", withdrawn: true))
+    }
+
     func testAnswerRequiresTheOptionsDeclaredInputNotItsLabel() throws {
         XCTAssertThrowsError(try envelope(.answer("q", optionID: "proceed", inputs: [:]), "question")) {
             XCTAssertEqual($0 as? DomainIntentError, .inputRequired("explanation"))

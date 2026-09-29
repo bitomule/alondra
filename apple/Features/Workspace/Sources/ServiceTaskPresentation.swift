@@ -130,6 +130,7 @@ public struct ServiceTaskPresentation {
     }
 
     public static func title(of request: DomainV2.Request, in board: TaskBoard) -> String {
+        if let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
         let tasks = board.tree(for: request.id)?.tasks ?? []
         if tasks.count == 1 { return tasks[0].title }
         return request.headline ?? tasks.first?.title ?? String(localized: "Request")

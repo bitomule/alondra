@@ -39,6 +39,7 @@ extension DomainV2 {
         case dependencyNotDone = "dependency_not_done"
         case dependencyCycle = "dependency_cycle"
         case alreadyRead = "already_read"
+        case withdrawn
         case incompatibleProtocol = "incompatible_protocol"
         case idempotencyConflict = "idempotency_conflict"
         case deliveryUncertain = "delivery_uncertain"

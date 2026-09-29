@@ -13,10 +13,13 @@ extension DomainV2 {
         public let pullRequests: [String: PullRequestRuntime]
         /// When each inbox entry arrived, by inbox ID.
         public let inboxTimes: [String: Int64]
+        /// The orchestrator's executions: phase, the run waiting for a decision, queue depth.
+        public let orchestrator: OrchestratorRuntime?
 
         public init(machine: Machine? = nil, usage: Usage? = nil, nodes: [Node] = [], tasks: [String: TaskRuntime] = [:],
                     requests: [String: RequestRuntime] = [:], pullRequests: [String: PullRequestRuntime] = [:],
-                    inboxTimes: [String: Int64] = [:]) {
+                    inboxTimes: [String: Int64] = [:], orchestrator: OrchestratorRuntime? = nil) {
+            self.orchestrator = orchestrator
             self.machine = machine
             self.usage = usage
             self.nodes = nodes
@@ -46,13 +49,20 @@ extension DomainV2 {
                     return try? JSONDecoder().decode(Value.self, from: bytes)
                 }
             }
+            let status = object["orchestrator"].flatMap { $0 is NSNull ? nil : $0 }
             let nodes = (object["nodes"] as? [Any] ?? []).compactMap { value -> Node? in
+                var value = value
+                if let status, var node = value as? [String: Any], node["is_orchestrator"] as? Bool == true,
+                   node["orchestrator_runtime"] == nil || node["orchestrator_runtime"] is NSNull {
+                    node["orchestrator_runtime"] = status
+                    value = node
+                }
                 guard let bytes = try? JSONSerialization.data(withJSONObject: value) else { return nil }
                 return try? snake.decode(Node.self, from: bytes)
             }
             return Runtime(machine: one("machine", Machine.self), usage: one("usage", Usage.self), nodes: nodes,
                            tasks: map("tasks"), requests: map("requests"), pullRequests: map("pull_requests"),
-                           inboxTimes: map("inbox_times"))
+                           inboxTimes: map("inbox_times"), orchestrator: one("orchestrator", OrchestratorRuntime.self))
         }
 
         public func request(_ id: RequestId?) -> RequestRuntime? { id.flatMap { requests[$0.rawValue] } }

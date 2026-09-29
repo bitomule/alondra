@@ -7,12 +7,22 @@ extension DomainV2 {
         public var closed: Bool
         /// Client contract: the files attached when the request was created.
         public var attachments: [AttachmentRef]?
+        /// A short name the user reads in place of the whole text.
+        public var title: String?
+        /// What the orchestrator answered when it closed the request without Tasks.
+        public var answer: String?
+        /// Closed because the user withdrew it.
+        public var withdrawn: Bool
 
-        public init(id: RequestId, body: String, closed: Bool, attachments: [AttachmentRef]? = nil) {
+        public init(id: RequestId, body: String, closed: Bool, attachments: [AttachmentRef]? = nil, title: String? = nil,
+                    answer: String? = nil, withdrawn: Bool = false) {
             self.id = id
             self.body = body
             self.closed = closed
             self.attachments = attachments
+            self.title = title
+            self.answer = answer
+            self.withdrawn = withdrawn
         }
 
         enum CodingKeys: String, CodingKey {
@@ -20,6 +30,20 @@ extension DomainV2 {
             case body = "body"
             case closed = "closed"
             case attachments = "attachments"
+            case title = "title"
+            case answer = "answer"
+            case withdrawn = "withdrawn"
+        }
+
+        public init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            id = try container.decode(RequestId.self, forKey: .id)
+            body = try container.decode(String.self, forKey: .body)
+            closed = try container.decode(Bool.self, forKey: .closed)
+            attachments = try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments)
+            title = try container.decodeIfPresent(String.self, forKey: .title)
+            answer = try container.decodeIfPresent(String.self, forKey: .answer)
+            withdrawn = try container.decodeIfPresent(Bool.self, forKey: .withdrawn) ?? false
         }
     }
 
@@ -451,8 +475,11 @@ extension DomainV2 {
         public var payload: InteractionPayload
         public var revision: Revision
         public var order: Revision
+        /// A question its author withdrew: it no longer waits for an answer.
+        public var withdrawn: Bool
 
-        public init(attachments: [AttachmentRef], id: InteractionId, scope: Scope, author: Author, recipient: Recipient, body: String, blocking: Bool, subject: InteractionSubject?, payload: InteractionPayload, revision: Revision, order: Revision) {
+        public init(attachments: [AttachmentRef], id: InteractionId, scope: Scope, author: Author, recipient: Recipient, body: String, blocking: Bool, subject: InteractionSubject?, payload: InteractionPayload, revision: Revision, order: Revision, withdrawn: Bool = false) {
+            self.withdrawn = withdrawn
             self.attachments = attachments
             self.id = id
             self.scope = scope
@@ -478,10 +505,12 @@ extension DomainV2 {
             case payload = "payload"
             case revision = "revision"
             case order = "order"
+            case withdrawn = "withdrawn"
         }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
+            withdrawn = try container.decodeIfPresent(Bool.self, forKey: .withdrawn) ?? false
             attachments = try container.decodeIfPresent([AttachmentRef].self, forKey: .attachments) ?? []
             id = try container.decode(InteractionId.self, forKey: .id)
             scope = try container.decode(Scope.self, forKey: .scope)

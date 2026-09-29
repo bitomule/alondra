@@ -66,8 +66,33 @@ final class ClientV2FixtureTests: XCTestCase {
         XCTAssertEqual(pr.checks.map(\.failed), [false, true])
         XCTAssertEqual(runtime.inboxTime("interaction:info-1"), 1000)
         XCTAssertEqual(runtime.node("agent-a")?.lastMessage, "Running the suite")
+        XCTAssertEqual(runtime.orchestrator?.activeRunId, "run-7")
+        XCTAssertEqual(runtime.nodes.first { $0.isOrchestrator }?.orchestratorRuntime?.canRetry, true)
         XCTAssertNotNil(runtime.machine)
         XCTAssertNotNil(runtime.usage)
+    }
+
+    func testTheOrchestratorNodeCarriesTheRuntimesOrchestratorStatus() throws {
+        let body = #"""
+        {"orchestrator":{"phase":"failed","can_retry":true,"can_cancel":false,"active_run_id":"run-3","queue_depth":1},
+         "nodes":[{"session_id":"alondra-orchestrator","short_id":"o","is_orchestrator":true,"has_plugin":true,"state":"working","created_at":1,
+                   "state_since":1,"state_source":"daemon","busy":true,"waiting_permission":false,"turn":1,"usage_limited":false,"last_seen":1}]}
+        """#
+        let runtime = try DomainV2.Runtime.decode(from: Data(body.utf8))
+        XCTAssertEqual(runtime.nodes.first?.orchestratorRuntime?.activeRunId, "run-3")
+        XCTAssertEqual(runtime.nodes.first?.orchestratorRuntime?.canRetry, true)
+    }
+
+    func testNewCommandKindsAndUnknownOnesDecode() throws {
+        func decode(_ json: String) throws -> DomainV2.Command { try JSONDecoder().decode(DomainV2.Command.self, from: Data(json.utf8)) }
+        XCTAssertEqual(try decode(#"{"kind":"retitle_task","task_id":"t","title":"New"}"#), .retitleTask(taskId: "t", title: "New"))
+        XCTAssertEqual(try decode(#"{"kind":"withdraw_question","interaction_id":"q"}"#), .withdrawQuestion(interactionId: "q"))
+        XCTAssertEqual(try decode(#"{"kind":"close_request","request_id":"r","answer":"Done already","title":"Fix"}"#),
+                       .closeRequest(requestId: "r", answer: "Done already", title: "Fix"))
+        XCTAssertEqual(try decode(#"{"kind":"launch_rocket","x":1}"#), .unknown(kind: "launch_rocket"))
+        let withdraw = try JSONSerialization.jsonObject(with: JSONEncoder().encode(DomainV2.Command.closeRequest(requestId: "r", withdrawn: true)))
+        XCTAssertEqual(withdraw as? NSDictionary, ["kind": "close_request", "request_id": "r", "withdrawn": true])
+        XCTAssertThrowsError(try JSONEncoder().encode(DomainV2.Command.unknown(kind: "launch_rocket")))
     }
 
     func testMessageToAnAgent() async throws {

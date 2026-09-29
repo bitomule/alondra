@@ -167,7 +167,7 @@ public struct DomainCommandFactory: Sendable {
         case .closeRequest(let id):
             guard let request = workspace.request(id) else { throw DomainIntentError.notFound }
             guard !request.closed else { throw DomainIntentError.unavailable(reason: nil) }
-            return (.closeRequest(requestId: id), workspace.revision)
+            return (.closeRequest(requestId: id, withdrawn: true), workspace.revision)
         case let .requestMoreContext(id, body, attachments):
             guard workspace.interaction(id) != nil else { throw DomainIntentError.notFound }
             return (.requestMoreContext(attachments: attachments, interactionId: id,
