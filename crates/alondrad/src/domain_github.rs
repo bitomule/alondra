@@ -9,6 +9,7 @@ use alondra_core::domain_v2::{
 };
 use anyhow::Result;
 use serde_json::Value;
+use std::collections::BTreeSet;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -104,14 +105,10 @@ fn execute_system(domain: &DomainRuntime, command: Command) -> Result<(), StoreE
     domain.execute(&Actor::System, &envelope, None, || Ok(())).map(|_| ())
 }
 
-/// PRs worth asking GitHub about: those of a Task that is not finished, plus
-/// any PR whose merge attempt is still claimed or uncertain.
+/// Only registered, open PRs need periodic observation. One final observation
+/// records a remote close or merge, then removes the PR from this set.
 fn watched(state: &DomainState) -> Vec<PullRequest> {
-    state.pull_requests.values().filter(|pr| {
-        state.tasks.get(&pr.task_id).is_some_and(|task| !task.state.terminal())
-            || state.merge_authorizations.values().any(|authorization| authorization.pr_id == pr.id
-                && matches!(authorization.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain))
-    }).cloned().collect()
+    state.pull_requests.values().filter(|pr| pr.state == PrState::Open).cloned().collect()
 }
 
 /// Bring the domain's view of each watched PR up to date with GitHub. A PR
@@ -170,9 +167,40 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
 }
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>) -> Result<()> {
+    let mut changed = domain.subscribe();
     loop {
+        let mut open = watched(&domain.state()?);
+        if open.is_empty() {
+            // No timer exists while there is no open PR. A registration wakes
+            // this receiver because it commits a new domain revision.
+            changed.changed().await?;
+            continue;
+        }
+        let mut known: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
         reconcile(&domain, &*observer).await?;
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        open = watched(&domain.state()?);
+        if open.is_empty() {
+            continue;
+        }
+        let mut interval = tokio::time::interval(Duration::from_secs(60));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await; // consume the immediate tick after the initial read
+        loop {
+            tokio::select! {
+                change = changed.changed() => { change?; }
+                _ = interval.tick() => { reconcile(&domain, &*observer).await?; }
+            }
+            open = watched(&domain.state()?);
+            if open.is_empty() {
+                break;
+            }
+            let current: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
+            if !current.is_subset(&known) {
+                // A hook or register_pr committed a newly registered PR.
+                reconcile(&domain, &*observer).await?;
+            }
+            known = current;
+        }
     }
 }
 
@@ -346,6 +374,128 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         let domain = DomainRuntime::open(&home).unwrap();
         (Fixture(home), domain)
+    }
+
+    #[tokio::test]
+    async fn only_open_registered_prs_are_polled() {
+        for (tag, remote) in [("closed-pr", PrState::Closed), ("merged-pr", PrState::Merged)] {
+            let (_fixture, domain) = open(tag);
+            presented(&domain, false);
+            assert_eq!(watched(&domain.state().unwrap()).len(), 1);
+            let observer = FakeObserver::new();
+            observer.set(7, Ok(facts(HEAD, remote)));
+            reconcile(&domain, &observer).await.unwrap();
+            assert!(watched(&domain.state().unwrap()).is_empty());
+            observer.set(7, Err("should not be queried again".into()));
+            let before = domain.state().unwrap().revision;
+            reconcile(&domain, &observer).await.unwrap();
+            assert_eq!(domain.state().unwrap().revision, before);
+        }
+    }
+
+    #[tokio::test]
+    async fn registration_wakes_an_idle_observer() {
+        struct SignallingObserver(tokio::sync::mpsc::UnboundedSender<u64>);
+        impl PrObserver for SignallingObserver {
+            fn observe<'a>(&'a self, _: &'a str, _: &'a str, number: u64) -> Observed<'a> {
+                let _ = self.0.send(number);
+                Box::pin(async move { Ok(facts(HEAD, PrState::Open)) })
+            }
+        }
+
+        let (_fixture, domain) = open("wake");
+        let domain = Arc::new(domain);
+        let (tx, mut calls) = tokio::sync::mpsc::unbounded_channel();
+        let worker = tokio::spawn(run(domain.clone(), Arc::new(SignallingObserver(tx))));
+        tokio::task::yield_now().await;
+        assert!(calls.try_recv().is_err(), "an empty registry makes no GitHub call");
+        presented(&domain, false);
+        assert_eq!(tokio::time::timeout(Duration::from_secs(1), calls.recv()).await.unwrap(), Some(7));
+        worker.abort();
+    }
+
+    #[tokio::test]
+    async fn registration_during_reconciliation_is_observed_without_waiting_for_the_interval() {
+        struct BlockingObserver {
+            calls: tokio::sync::mpsc::UnboundedSender<u64>,
+            first_release: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+        }
+        impl PrObserver for BlockingObserver {
+            fn observe<'a>(&'a self, _: &'a str, _: &'a str, number: u64) -> Observed<'a> {
+                let calls = self.calls.clone();
+                let release = self.first_release.lock().unwrap().take();
+                Box::pin(async move {
+                    let _ = calls.send(number);
+                    if let Some(release) = release {
+                        release
+                            .await
+                            .map_err(|_| "test released observer was dropped".to_owned())?;
+                    }
+                    Ok(facts(HEAD, PrState::Open))
+                })
+            }
+        }
+
+        let (_fixture, domain) = open("registration-during-reconcile");
+        presented(&domain, false);
+        let domain = Arc::new(domain);
+        let (calls_tx, mut calls) = tokio::sync::mpsc::unbounded_channel();
+        let (release_tx, release_rx) = tokio::sync::oneshot::channel();
+        let observer = Arc::new(BlockingObserver {
+            calls: calls_tx,
+            first_release: std::sync::Mutex::new(Some(release_rx)),
+        });
+        let worker = tokio::spawn(run(domain.clone(), observer));
+
+        assert_eq!(calls.recv().await, Some(7), "the initial PR observation is in flight");
+        command(
+            &domain,
+            Actor::User { user_id: "u".into() },
+            "request-2",
+            Command::CreateRequest {
+                request_id: "r-2".into(),
+                body: "Second task".into(),
+                auto_merge: false,
+            },
+        );
+        command(
+            &domain,
+            Actor::User { user_id: "u".into() },
+            "task-2",
+            Command::CreateTask {
+                task_id: "t-2".into(),
+                request_id: "r-2".into(),
+                title: "Second task".into(),
+                agent_id: Some("a".into()),
+                review_prs: false,
+                dependencies: BTreeSet::new(),
+                stack: None,
+            },
+        );
+        command(
+            &domain,
+            Actor::Agent { agent_id: "a".into() },
+            "pr-2",
+            Command::RegisterPr {
+                task_id: "t-2".into(),
+                pr_id: "pr-2".into(),
+                host: "github.com".into(),
+                repository: "owner/repo".into(),
+                number: 8,
+                head: HEAD.into(),
+                base: "main".into(),
+                allowed_methods: vec![MergeMethod::Squash],
+            },
+        );
+
+        release_tx.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while calls.recv().await != Some(8) {}
+        })
+        .await
+        .expect("the newly registered PR is reconciled after the in-flight older snapshot");
+        worker.abort();
+        let _ = worker.await;
     }
 
     #[tokio::test]
