@@ -71,14 +71,14 @@ def tag_state(ver, source, retry):
     return bool(local), bool(remote.strip())
 
 
-def disk_warning(path):
+def require_disk_space(path):
     ancestor = path
     while not ancestor.exists():
         ancestor = ancestor.parent
     free = shutil.disk_usage(ancestor).free
     if free < LOW_FREE:
-        print(f'Warning: {free / 1024**3:.1f} GiB free on the volume containing {path}; the build may run out of space',
-              file=sys.stderr)
+        raise RuntimeError(f'At least 8 GiB must be free on the volume containing {path}; '
+                           f'only {free / 1024**3:.1f} GiB is available')
 
 
 def manifest(ver, source, output):
@@ -192,12 +192,13 @@ def build_cache(target_dir, ephemeral, phase):
 def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     if platform.system() != 'Darwin' or platform.machine() != 'arm64':
         raise RuntimeError('Preparation requires this Apple Silicon Mac')
+    # Check each destination volume before creating artifacts or starting tests/builds.
+    require_disk_space(target_dir)
+    require_disk_space(output)
     toolchain_name, tools = rust_toolchain()
     identities = run('security', 'find-identity', '-v', '-p', 'codesigning', capture=True)
     if not any(len(parts := line.split()) > 1 and parts[1] == IDENTITY for line in identities.splitlines()):
         raise RuntimeError('The approved Developer ID identity is not available in the local keychain')
-    disk_warning(target_dir)
-    disk_warning(output)
     # Never overwrite prior archives, including partially prepared artifacts.
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
@@ -205,7 +206,7 @@ def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     run('bazelisk', 'test', '//crates/...')
     for target in release.TARGETS:
         with build_cache(target_dir, ephemeral_build_cache, 'build') as build_target:
-            disk_warning(build_target)
+            require_disk_space(build_target)
             env = cargo_environment(build_target, toolchain_name, tools)
             run(tools['cargo'], 'build', '--locked', '--release', '--target', target, '--jobs', '1',
                 '-p', 'alondra', '-p', 'alondrad', env=env)

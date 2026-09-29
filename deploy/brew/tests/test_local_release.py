@@ -105,7 +105,7 @@ class LocalReleaseTests(unittest.TestCase):
     def test_failed_checks_leave_no_manifest_tag_or_published_artifacts(self):
         patch.object(l.platform, 'system', return_value='Darwin').start()
         patch.object(l.platform, 'machine', return_value='arm64').start()
-        patch.object(l, 'disk_warning').start()
+        patch.object(l, 'require_disk_space').start()
         patch.object(l, 'rust_toolchain', return_value=('stable', {'cargo': '/pinned/cargo', 'rustc': '/pinned/rustc', 'rustdoc': '/pinned/rustdoc'})).start()
         calls = []
         def fake(*args, **kwargs):
@@ -121,14 +121,28 @@ class LocalReleaseTests(unittest.TestCase):
         self.assertFalse((output / 'manifest.json').exists())
         self.assertFalse(any(c[0] in ('git', 'codesign') for c in calls))
 
-    def test_low_disk_warns_without_stopping(self):
-        from contextlib import redirect_stderr
-        usage = type('Usage', (), {'free': l.LOW_FREE - 1})()
-        stderr = io.StringIO()
-        with patch.object(l.shutil, 'disk_usage', return_value=usage), redirect_stderr(stderr):
-            l.disk_warning(self.root / 'not-created')
-        self.assertIn('Warning', stderr.getvalue())
+    def test_disk_guard_accepts_threshold_and_rejects_below_it(self):
+        sufficient = type('Usage', (), {'free': l.LOW_FREE})()
+        insufficient = type('Usage', (), {'free': l.LOW_FREE - 1})()
+        path = self.root / 'not-created'
+        with patch.object(l.shutil, 'disk_usage', return_value=sufficient):
+            l.require_disk_space(path)
+        with patch.object(l.shutil, 'disk_usage', return_value=insufficient), \
+             self.assertRaisesRegex(RuntimeError, 'At least 8 GiB must be free'):
+            l.require_disk_space(path)
         self.assertFalse((self.root / 'not-created').exists())
+
+    def test_prepare_rejects_low_disk_before_toolchain_or_artifact_creation(self):
+        patch.object(l.platform, 'system', return_value='Darwin').start()
+        patch.object(l.platform, 'machine', return_value='arm64').start()
+        insufficient = type('Usage', (), {'free': l.LOW_FREE - 1})()
+        output = self.root / 'artifacts'
+        with patch.object(l.shutil, 'disk_usage', return_value=insufficient), \
+             patch.object(l, 'rust_toolchain') as toolchain, \
+             self.assertRaisesRegex(RuntimeError, 'At least 8 GiB must be free'):
+            l.prepare('0.1.2', 'source', output, self.root / 'target')
+        toolchain.assert_not_called()
+        self.assertFalse(output.exists())
 
     def test_retry_only_publishes_verified_original_artifacts(self):
         output = self.root / 'artifacts'
@@ -220,7 +234,7 @@ class LocalReleaseTests(unittest.TestCase):
             return ''
         with patch.dict(os.environ, {'PATH': '/opt/homebrew/bin:/usr/bin', 'RUSTC': '/opt/homebrew/bin/rustc', 'RUSTDOC': '/opt/homebrew/bin/rustdoc', 'RUSTC_WRAPPER': 'unwanted-wrapper'}), \
              patch.object(l.platform, 'system', return_value='Darwin'), patch.object(l.platform, 'machine', return_value='arm64'), \
-             patch.object(l, 'rust_toolchain', return_value=('pinned', tools)), patch.object(l, 'disk_warning'), \
+             patch.object(l, 'rust_toolchain', return_value=('pinned', tools)), patch.object(l, 'require_disk_space'), \
              patch.object(l, 'sign'), patch.object(l, 'smoke'), patch.object(l, 'run', side_effect=fake):
             l.prepare('0.1.2', 'source', output, target_dir)
         self.assertEqual(len(rust_calls), len(l.release.TARGETS))
@@ -308,7 +322,7 @@ class LocalReleaseTests(unittest.TestCase):
         patch.object(l, 'run', side_effect=fake).start()
         patch.object(l, 'sign', side_effect=sign).start()
         patch.object(l, 'smoke', side_effect=smoke).start()
-        patch.object(l, 'disk_warning', side_effect=guard).start()
+        patch.object(l, 'require_disk_space', side_effect=guard).start()
         return output, target, sentinel, caches, stages, archive_bytes, guards
 
     def test_ephemeral_caches_are_freed_per_stage_and_exact_signed_archives_survive(self):
