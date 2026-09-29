@@ -350,7 +350,7 @@ fn retire_empty_older_sidecar(home: &Path) -> Result<Option<std::path::PathBuf>>
     Ok(Some(kept))
 }
 
-fn unix_seconds() -> u64 {
+pub(crate) fn unix_seconds() -> u64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
@@ -373,8 +373,7 @@ fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<b
     let application: i64 = conn.pragma_query_value(None, "application_id", |row| row.get(0))?;
     anyhow::ensure!(
         application == 0x414c4432
-            && (version == domain_store::SCHEMA_VERSION
-                || (allow_older_empty_schema && version >= 3 && version < domain_store::SCHEMA_VERSION)),
+            && (version == domain_store::SCHEMA_VERSION || allow_older_empty_schema),
         "markerless domain database has unknown schema");
     let (revision, generation): (i64, i64) = conn.query_row(
         "SELECT revision,orchestrator_generation FROM domain_meta WHERE singleton=1",
