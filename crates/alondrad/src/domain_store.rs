@@ -13,6 +13,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 pub(crate) const SCHEMA_VERSION: i64 = 1;
+pub(crate) const ORCHESTRATOR_MESSAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::ProjectionTooLarge;
@@ -590,7 +591,7 @@ impl DomainStore {
         Ok(rows.collect::<rusqlite::Result<_>>()?)
     }
     pub(crate) fn pending_messages(&self) -> Result<Vec<OutboxMessage>> {
-        let mut q=self.conn.prepare("SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,m.agent_id,m.task_id,m.interaction_id,m.message,o.state FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id LEFT JOIN domain_message_user_targets u ON u.message_id=m.id WHERE o.state IN('pending','retryable') ORDER BY m.id")?;
+        let mut q=self.conn.prepare("SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,m.agent_id,m.task_id,m.interaction_id,m.message,o.state FROM domain_messages m JOIN command_audit a ON a.revision=m.revision JOIN domain_outbox o ON o.message_id=m.id LEFT JOIN domain_message_user_targets u ON u.message_id=m.id WHERE o.state IN('pending','retryable') ORDER BY a.at,m.id")?;
         Ok(q.query_map([], |r| {
             Ok(OutboxMessage {
                 id: r.get(0)?,
@@ -604,15 +605,91 @@ impl DomainStore {
         })?
         .collect::<rusqlite::Result<_>>()?)
     }
+    /// Expire orchestrator inbox entries older than the supplied cutoff.
+    /// User notifications share the `orchestrator` recipient kind but are
+    /// distinguished by their user-target row and keep their own delivery policy.
+    pub(crate) fn discard_expired_orchestrator_messages(&mut self, cutoff: i64) -> Result<usize> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        check_schema(&tx)?;
+        let changed = tx.execute(
+            "UPDATE domain_outbox SET state='discarded' WHERE state IN('pending','retryable') AND message_id IN (
+                SELECT m.id FROM domain_messages m JOIN command_audit a ON a.revision=m.revision
+                WHERE m.recipient_kind='orchestrator' AND a.at<?1
+                AND NOT EXISTS (SELECT 1 FROM domain_message_user_targets u WHERE u.message_id=m.id)
+            )",
+            [cutoff],
+        )?;
+        tx.commit()?;
+        if changed > 0 { self.note_side_write(); }
+        Ok(changed)
+    }
+    #[cfg(test)]
+    pub(crate) fn set_message_created_at_for_test(&mut self, id: i64, at: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE command_audit SET at=?1 WHERE revision=(SELECT revision FROM domain_messages WHERE id=?2)",
+            params![at, id],
+        )?;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn message_outbox_state_for_test(&self, id: i64) -> Result<String> {
+        Ok(self.conn.query_row(
+            "SELECT state FROM domain_outbox WHERE message_id=?1", [id], |row| row.get(0),
+        )?)
+    }
     pub(crate) fn claim_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
+        self.claim_message_inner(id, false, None)
+    }
+    pub(crate) fn claim_orchestrator_message(&mut self, id: i64) -> Result<Option<DeliveryClaim>> {
+        self.claim_message_inner(id, true, None)
+    }
+    #[cfg(test)]
+    pub(crate) fn claim_orchestrator_message_at_for_test(
+        &mut self,
+        id: i64,
+        now: i64,
+    ) -> Result<Option<DeliveryClaim>> {
+        self.claim_message_inner(id, true, Some(now))
+    }
+    fn claim_message_inner(
+        &mut self,
+        id: i64,
+        expire_orchestrator: bool,
+        test_now: Option<i64>,
+    ) -> Result<Option<DeliveryClaim>> {
         let tx = self
             .conn
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         check_schema(&tx)?;
-        let message=tx.query_row("SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,m.agent_id,m.task_id,m.interaction_id,m.message,o.state FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id LEFT JOIN domain_message_user_targets u ON u.message_id=m.id WHERE m.id=?1 AND o.state IN('pending','retryable')",[id],|r|Ok(OutboxMessage{id:r.get(0)?,recipient_kind:r.get(1)?,agent_id:r.get(2)?,task_id:r.get(3)?,interaction_id:r.get(4)?,message:r.get(5)?,state:r.get(6)?})).optional()?;
-        let Some(message) = message else {
+        let row = tx.query_row(
+            "SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,
+                m.agent_id,m.task_id,m.interaction_id,m.message,o.state,a.at,m.recipient_kind,
+                u.message_id IS NOT NULL
+             FROM domain_messages m JOIN command_audit a ON a.revision=m.revision
+             JOIN domain_outbox o ON o.message_id=m.id
+             LEFT JOIN domain_message_user_targets u ON u.message_id=m.id
+             WHERE m.id=?1 AND o.state IN('pending','retryable')",
+            [id],
+            |r| Ok((OutboxMessage {
+                id: r.get(0)?, recipient_kind: r.get(1)?, agent_id: r.get(2)?,
+                task_id: r.get(3)?, interaction_id: r.get(4)?, message: r.get(5)?, state: r.get(6)?,
+            }, r.get::<_, i64>(7)?, r.get::<_, String>(8)?, r.get::<_, bool>(9)?)),
+        ).optional()?;
+        let Some((message, created_at, actual_recipient, user_target)) = row else {
             return Ok(None);
         };
+        if expire_orchestrator && actual_recipient == "orchestrator" && !user_target {
+            let now = test_now.unwrap_or_else(alondra_core::now_millis);
+            if created_at < now.saturating_sub(ORCHESTRATOR_MESSAGE_TTL_MS) {
+                tx.execute(
+                    "UPDATE domain_outbox SET state='discarded' WHERE message_id=?1 AND state IN('pending','retryable')",
+                    [id],
+                )?;
+                tx.commit()?;
+                self.note_side_write();
+                return Ok(None);
+            }
+        }
         tx.execute("INSERT INTO delivery_attempts(message_id,state,version,reason) VALUES(?1,'dispatching',1,NULL)",[id])?;
         let attempt_id = tx.last_insert_rowid();
         tx.execute(

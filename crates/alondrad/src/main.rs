@@ -264,6 +264,7 @@ async fn supervise_v2_workers<S>(server: S, outbox: tokio::task::JoinHandle<Resu
     scheduler: tokio::task::JoinHandle<Result<()>>,
     transport: tokio::task::JoinHandle<Result<()>>,
     github: tokio::task::JoinHandle<Result<()>>,
+    orchestrator: Option<tokio::task::JoinHandle<Result<()>>>,
     connector: Option<tokio::task::JoinHandle<()>>) -> Result<()>
 where S: std::future::Future<Output = std::io::Result<()>> {
     tokio::select! {
@@ -297,6 +298,18 @@ where S: std::future::Future<Output = std::io::Result<()>> {
                 Ok(Ok(())) => anyhow::bail!("v2 Schedule worker stopped unexpectedly"),
                 Ok(Err(error)) => anyhow::bail!("v2 Schedule worker failed: {error:#}"),
                 Err(error) => anyhow::bail!("v2 Schedule worker panicked: {error}"),
+            }
+        },
+        result = async {
+            match orchestrator {
+                Some(task) => Some(task.await),
+                None => std::future::pending().await,
+            }
+        } => {
+            match result.expect("orchestrator future has task") {
+                Ok(Ok(())) => anyhow::bail!("v2 orchestrator executor stopped unexpectedly"),
+                Ok(Err(error)) => anyhow::bail!("v2 orchestrator executor failed: {error:#}"),
+                Err(error) => anyhow::bail!("v2 orchestrator executor panicked: {error}"),
             }
         },
         result = async {
@@ -417,14 +430,13 @@ async fn run_v2_only(config: &Config) -> Result<()> {
     let github = tokio::spawn(domain_github::run(domain, Arc::new(domain_github::GhCli::new())));
     tokio::spawn(machine::run_v2(gauges));
     tokio::spawn(client.run(Arc::new(v2_client_routes::GhView)));
-    if config.wake {
-        tokio::spawn(domain_orchestrator::run(state_domain.clone(), config.home.clone(), watcher::claude_home()));
-    }
+    let orchestrator = config.wake.then(|| tokio::spawn(domain_orchestrator::run(
+        state_domain, config.home.clone(), watcher::claude_home())));
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();
     tokio::select! {
-        stopped = supervise_v2_workers(server, outbox, scheduler, transport, github, connector) => stopped,
+        stopped = supervise_v2_workers(server, outbox, scheduler, transport, github, orchestrator, connector) => stopped,
         () = replaced(config) => relaunch_now(),
     }
 }
@@ -438,26 +450,26 @@ mod v2_worker_supervision_tests {
         let server = || std::future::pending::<std::io::Result<()>>();
         let pending = || tokio::spawn(std::future::pending::<Result<()>>());
         let exit = supervise_v2_workers(server(), pending(), pending(), pending(), pending(),
-            Some(tokio::spawn(async {}))).await.unwrap_err();
+            None, Some(tokio::spawn(async {}))).await.unwrap_err();
         assert!(exit.to_string().contains("connector stopped unexpectedly"));
         let panic = supervise_v2_workers(server(), pending(), pending(), pending(), pending(),
-            Some(tokio::spawn(async { panic!("synthetic failure") }))).await.unwrap_err();
+            None, Some(tokio::spawn(async { panic!("synthetic failure") }))).await.unwrap_err();
         assert!(panic.to_string().contains("connector failed"));
         let stopped_outbox = supervise_v2_workers(server(), tokio::spawn(async { Ok(()) }),
-            pending(), pending(), pending(), None).await.unwrap_err();
+            pending(), pending(), pending(), None, None).await.unwrap_err();
         assert!(stopped_outbox.to_string().contains("outbox worker stopped unexpectedly"));
         let failed_outbox = supervise_v2_workers(server(),
             tokio::spawn(async { anyhow::bail!("synthetic SQL failure") }),
-            pending(), pending(), pending(), None).await.unwrap_err();
+            pending(), pending(), pending(), None, None).await.unwrap_err();
         assert!(failed_outbox.to_string().contains("synthetic SQL failure"));
         let failed_scheduler = supervise_v2_workers(server(), pending(),
-            tokio::spawn(async { anyhow::bail!("synthetic Schedule failure") }), pending(), pending(), None).await.unwrap_err();
+            tokio::spawn(async { anyhow::bail!("synthetic Schedule failure") }), pending(), pending(), None, None).await.unwrap_err();
         assert!(failed_scheduler.to_string().contains("synthetic Schedule failure"));
         let failed_transport = supervise_v2_workers(server(), pending(), pending(),
-            tokio::spawn(async { anyhow::bail!("synthetic hook failure") }), pending(), None).await.unwrap_err();
+            tokio::spawn(async { anyhow::bail!("synthetic hook failure") }), pending(), None, None).await.unwrap_err();
         assert!(failed_transport.to_string().contains("synthetic hook failure"));
         let failed_github = supervise_v2_workers(server(), pending(), pending(), pending(),
-            tokio::spawn(async { anyhow::bail!("synthetic GitHub failure") }), None).await.unwrap_err();
+            tokio::spawn(async { anyhow::bail!("synthetic GitHub failure") }), None, None).await.unwrap_err();
         assert!(failed_github.to_string().contains("synthetic GitHub failure"));
     }
 

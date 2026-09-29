@@ -186,6 +186,12 @@ impl Executor {
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
             return Ok(());
         }
+        {
+            let mut store = self.domain.store.lock().expect("domain store poisoned");
+            store.discard_expired_orchestrator_messages(
+                now.saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
+            )?;
+        }
         let mut size = 0;
         let pending: Vec<OutboxMessage> = self.pending()?.into_iter().take(MAX_BATCH_MESSAGES)
             .take_while(|message| {
@@ -213,7 +219,7 @@ impl Executor {
         {
             let mut store = self.domain.store.lock().expect("domain store poisoned");
             for message in pending {
-                if let Some(claim) = store.claim_message(message.id)? {
+                if let Some(claim) = store.claim_orchestrator_message(message.id)? {
                     attempts.push((claim.attempt_id, claim.version));
                     claimed.push(claim.message);
                 }
@@ -376,7 +382,7 @@ pub(crate) fn decide(executor: &Executor, decision: Decision, body: Option<&serd
     }
 }
 
-pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf) {
+pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: PathBuf) -> Result<()> {
     let executor = Executor { domain, home: home.clone(), claude_home, executable: PathBuf::from("claude") };
     let directory = home.join("runtime/orchestrator");
     let ownership = loop {
@@ -393,8 +399,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
         tokio::time::sleep(Duration::from_secs(5)).await;
     };
     if let Err(error) = executor.recover() {
-        log!("v2 orchestrator recovery failed; executor stopped: {error:#}");
-        return;
+        return Err(error.context("v2 orchestrator recovery failed"));
     }
     let mut changed = executor.domain.subscribe();
     loop {
@@ -532,6 +537,74 @@ mod tests {
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
         assert!(!prompt.contains("new conversation") && prompt.contains("inbox message 3") && !prompt.contains("inbox message 1"), "{prompt}");
         assert_eq!(load(&f.executor.home).unwrap().session_id, runtime.session_id, "the conversation is resumed");
+    }
+
+    #[tokio::test]
+    async fn stale_orchestrator_messages_expire_before_execution_but_boundary_messages_remain() {
+        let f = fixture(SUCCESS);
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        ask_orchestrator(domain, 2);
+        command(domain, Actor::Agent { agent_id: "a".into() }, "user-info", Command::PublishInformation {
+            interaction_id: "info-user".into(), scope: Scope::Task { task_id: "t".into() },
+            recipient: Recipient::User, body: "User notification".into(), attachments: vec![],
+        });
+        let cutoff = now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS);
+        {
+            let mut store = domain.store.lock().unwrap();
+            store.set_message_created_at_for_test(1, cutoff - 1).unwrap();
+            store.set_message_created_at_for_test(2, cutoff).unwrap();
+            let user_message = store.pending_messages().unwrap().into_iter()
+                .find(|message| message.recipient_kind == "user").unwrap();
+            store.set_message_created_at_for_test(user_message.id, cutoff - 1).unwrap();
+            store.discard_expired_orchestrator_messages(cutoff).unwrap();
+            assert_eq!(store.message_outbox_state_for_test(1).unwrap(), "discarded");
+            assert_eq!(store.message_outbox_state_for_test(2).unwrap(), "pending");
+            assert_eq!(store.message_outbox_state_for_test(user_message.id).unwrap(), "pending");
+            store.set_message_created_at_for_test(
+                2,
+                now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS) + 60_000,
+            ).unwrap();
+        }
+
+        f.executor.tick(&f.ownership).await.unwrap();
+
+        let store = domain.store.lock().unwrap();
+        assert_eq!(store.message_outbox_state_for_test(1).unwrap(), "discarded");
+        assert_eq!(store.message_outbox_state_for_test(2).unwrap(), "handed");
+        assert_eq!(store.pending_messages().unwrap().iter().filter(|message| message.recipient_kind == "user").count(), 1,
+            "user notifications retain their separate delivery policy");
+        assert!(store.pending_messages().unwrap().iter().all(|message| message.id != 1));
+        drop(store);
+        assert_eq!(std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/starts")).unwrap().lines().count(), 1,
+            "the fresh message remains eligible for execution");
+    }
+
+    #[test]
+    fn orchestrator_claim_rechecks_expiry_and_keeps_the_exact_cutoff_eligible() {
+        let f = fixture(SUCCESS);
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        ask_orchestrator(domain, 2);
+        let created_at = 1_000;
+        let mut store = domain.store.lock().unwrap();
+        store.set_message_created_at_for_test(1, created_at).unwrap();
+        store.set_message_created_at_for_test(2, created_at).unwrap();
+
+        let exact_cutoff = store.claim_orchestrator_message_at_for_test(
+            1,
+            created_at + crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS,
+        ).unwrap().expect("a message exactly 24 hours old remains eligible");
+        assert_eq!(store.message_outbox_state_for_test(1).unwrap(), "dispatching");
+        assert!(store.finish_message(exact_cutoff.attempt_id, exact_cutoff.version, State::Handed, None).unwrap());
+
+        assert!(store.claim_orchestrator_message_at_for_test(
+            2,
+            created_at + crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS + 1,
+        ).unwrap().is_none(), "a message older than 24 hours is not claimed");
+        assert_eq!(store.message_outbox_state_for_test(2).unwrap(), "discarded");
+        assert!(!store.delivery_evidence().unwrap().iter().any(|item| item.message_id == 2),
+            "discarding an unclaimed message does not invent a delivery attempt");
     }
 
     #[tokio::test]

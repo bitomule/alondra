@@ -45,9 +45,8 @@ pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) 
     }
 }
 
-/// V2-only dispatcher: all receipts live in domain-v2.db. Producer messages
-/// stay pending until a v2 Agent transport exists; nothing claims them, so
-/// nothing is marked retryable and then filtered out.
+/// V2-only dispatcher: all receipts live in domain-v2.db. User hints are sent
+/// here; the orchestrator executor and producer transport own producer messages.
 pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
     push: Arc<Push>, service: Option<Arc<Service>>) -> Result<()> {
     let mut changed = domain.subscribe();
@@ -55,7 +54,10 @@ pub async fn run_v2(domain: Arc<DomainRuntime>, home: std::path::PathBuf,
     loop {
         retry_after.retain(|_, at| at.elapsed() < RETRY_BACKOFF);
         let pending = {
-            let store = domain.store.lock().expect("domain store poisoned");
+            let mut store = domain.store.lock().expect("domain store poisoned");
+            store.discard_expired_orchestrator_messages(
+                alondra_core::now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS),
+            )?;
             store.pending_messages()?
         };
         // SQLite errors stop this worker. The daemon supervisor then fails the
