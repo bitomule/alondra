@@ -1,11 +1,11 @@
 //! The one-command cutover of a stopped HOME to domain v2, and its rollback.
 //! The marker fences daemon startup before any legacy store moves; it is
-//! committed only after the new database and content have been verified.
+//! committed only after the empty domain database exists and the legacy stores
+//! are archived. Nothing from the legacy data is imported.
 use alondra_core::home_lock::HomeLock;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::ffi::CString;
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -146,37 +146,6 @@ fn rename_exclusive(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-fn file_digest(path: &Path) -> Result<(u64, String)> {
-    let meta = fs::symlink_metadata(path)?;
-    ensure!(
-        meta.is_file() && meta.nlink() == 1 && meta.uid() == unsafe { libc::geteuid() },
-        "unsafe domain stage file"
-    );
-    let mut input = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW)
-        .open(path)?;
-    let mut digest = Sha256::new();
-    let mut bytes = 0;
-    let mut buffer = [0u8; 65536];
-    loop {
-        let count = input.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        bytes += count as u64;
-        digest.update(&buffer[..count]);
-    }
-    Ok((
-        bytes,
-        digest
-            .finalize()
-            .iter()
-            .map(|b| format!("{b:02x}"))
-            .collect(),
-    ))
-}
-
 fn validate_owned_sqlite_files(path: &Path) -> Result<()> {
     for suffix in ["", "-wal", "-shm", "-journal"] {
         let candidate = path.with_file_name(format!(
@@ -219,125 +188,6 @@ fn remove_owned_sqlite_files(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn staged_state(stage: &Path) -> Result<alondra_core::domain_v2::DomainState> {
-    crate::domain_store::DomainStore::open_readonly(&stage.join("domain-v2.db"))?.load()
-}
-
-fn verify_no_stage_effects(database: &Path) -> Result<()> {
-    let connection = Connection::open_with_flags(
-        database,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    for table in [
-        "semantic_receipts",
-        "local_command_results",
-        "command_audit",
-        "domain_messages",
-        "domain_outbox",
-        "delivery_attempts",
-    ] {
-        let count: i64 =
-            connection.query_row(&format!("SELECT count(*) FROM {table}"), [], |row| {
-                row.get(0)
-            })?;
-        ensure!(
-            count == 0,
-            "stage contains live command or delivery rows in {table}"
-        );
-    }
-    let invalid: i64 =
-        connection.query_row("SELECT count(*) FROM pragma_foreign_key_check", [], |row| {
-            row.get(0)
-        })?;
-    ensure!(invalid == 0, "stage has broken foreign keys");
-    let integrity: String = connection.query_row("PRAGMA integrity_check", [], |row| row.get(0))?;
-    ensure!(integrity == "ok", "stage database integrity check failed");
-    Ok(())
-}
-
-const CONTENT_NEXT: &str = "domain-v2-content-next";
-
-fn clean_content_next(home: &Path) -> Result<()> {
-    let directory = home.join(CONTENT_NEXT);
-    let meta = match fs::symlink_metadata(&directory) {
-        Ok(meta) => meta,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    ensure!(
-        meta.is_dir()
-            && meta.uid() == unsafe { libc::geteuid() }
-            && meta.permissions().mode() & 0o077 == 0,
-        "unsafe interrupted content staging directory"
-    );
-    for entry in fs::read_dir(&directory)? {
-        let path = entry?.path();
-        let meta = fs::symlink_metadata(&path)?;
-        ensure!(
-            meta.is_file() && meta.nlink() == 1 && meta.uid() == unsafe { libc::geteuid() },
-            "unsafe interrupted content staging file"
-        );
-        fs::remove_file(path)?;
-    }
-    fs::remove_dir(directory)?;
-    File::open(home)?.sync_all()?;
-    Ok(())
-}
-
-fn promote_content(source: &Path, target: &Path, staging: &Path) -> Result<()> {
-    let meta = fs::symlink_metadata(source)?;
-    ensure!(
-        meta.is_dir() && meta.uid() == unsafe { libc::geteuid() },
-        "unsafe stage content directory"
-    );
-    match fs::create_dir(target) {
-        Ok(()) => fs::set_permissions(target, fs::Permissions::from_mode(0o700))?,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-            let meta = fs::symlink_metadata(target)?;
-            ensure!(
-                meta.is_dir() && meta.uid() == unsafe { libc::geteuid() },
-                "unsafe existing content directory"
-            );
-        }
-        Err(error) => return Err(error.into()),
-    }
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let from = entry.path();
-        let to = target.join(entry.file_name());
-        if entry.file_type()?.is_dir() {
-            promote_content(&from, &to, staging)?;
-        } else {
-            let expected = file_digest(&from)?;
-            match fs::symlink_metadata(&to) {
-                Ok(_) => ensure!(
-                    file_digest(&to)? == expected,
-                    "existing HOME content differs from stage"
-                ),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    let temporary = staging.join(crate::auth::random_hex(16));
-                    crate::domain_migration::copy_regular(&from, &temporary)?;
-                    rename_exclusive(&temporary, &to)?;
-                    ensure!(
-                        file_digest(&to)? == expected,
-                        "promoted content differs from stage"
-                    );
-                }
-                Err(error) => return Err(error.into()),
-            }
-        }
-    }
-    File::open(target)?.sync_all()?;
-    Ok(())
-}
-
-/// Where the imported store waits until it is promoted: beside the backup,
-/// outside HOME, so the backup directory holds exactly the verified copy.
-fn stage_of(backup: &Path) -> Result<std::path::PathBuf> {
-    let name = backup.file_name().context("backup directory has no name")?;
-    Ok(backup.with_file_name(format!("{}.stage", name.to_string_lossy())))
-}
-
 fn canonical_parent(path: &Path) -> Result<std::path::PathBuf> {
     let parent = path.parent().context("path has no parent")?.canonicalize()?;
     Ok(parent.join(path.file_name().context("path has no name")?))
@@ -345,7 +195,7 @@ fn canonical_parent(path: &Path) -> Result<std::path::PathBuf> {
 
 /// Where the legacy stores stay after the cutover, renamed inside HOME.
 pub(crate) const ARCHIVE: &str = "legacy-v1";
-const LEGACY_STORES: [&str; 2] = ["alondra.db", "schedules.db"];
+pub(crate) const LEGACY_STORES: [&str; 2] = ["alondra.db", "schedules.db"];
 
 /// A daemon built for domain v2 must not run a HOME that still holds legacy
 /// data. It refuses before taking the HOME lock, so the cutover can take it.
@@ -406,7 +256,6 @@ pub(crate) struct Cutover {
     pub marker: Marker,
     pub resumed: bool,
     pub already_committed: bool,
-    pub imported: Option<crate::domain_migration::ImportReport>,
     pub rollback: String,
 }
 
@@ -443,50 +292,14 @@ fn archive_legacy_stores(home: &Path) -> Result<()> {
     Ok(())
 }
 
-fn promote(home: &Path, stage: &Path) -> Result<alondra_core::domain_v2::DomainState> {
-    let staged = staged_state(stage)?;
-    verify_no_stage_effects(&stage.join("domain-v2.db"))?;
-    let database = home.join("domain-v2.db");
-    let installed = if database.exists() && !crate::replaceable_cutover_sidecar_is_empty(&database)? {
-        crate::domain_runtime::DomainRuntime::open(home)?.state()?
-    } else {
-        remove_owned_sqlite_files(&database)?;
-        let next = home.join("domain-v2.db.next");
-        remove_owned_sqlite_files(&next)?;
-        crate::domain_migration::sqlite_backup(&stage.join("domain-v2.db"), &next)?;
-        rename_exclusive(&next, &database)?;
-        File::open(home)?.sync_all()?;
-        crate::domain_runtime::DomainRuntime::open(home)?.state()?
-    };
-    ensure!(installed == staged, "HOME holds another domain store than the stage");
-    clean_content_next(home)?;
-    if stage.join("files").exists() {
-        let staging = home.join(CONTENT_NEXT);
-        fs::DirBuilder::new().mode(0o700).create(&staging)?;
-        promote_content(&stage.join("files"), &home.join("files"), &staging)?;
-        clean_content_next(home)?;
-    }
-    for revision in installed.document_revisions.values() {
-        crate::domain_migration::verify_content(home, &revision.content_reference, &revision.content_digest)?;
-    }
-    for interaction in installed.interactions.values() {
-        for attachment in &interaction.attachments {
-            crate::domain_migration::verify_content(home, &attachment.content_reference, &attachment.content_digest)?;
-        }
-    }
-    Ok(installed)
-}
-
 /// The whole cutover of a stopped HOME in one command: wait for the daemon to
-/// release HOME, copy it coherently into `backup`, import the work in flight,
-/// archive the legacy stores inside HOME, install the v2 store and commit the
-/// marker. Re-running after an interruption resumes; after a commit it only
-/// reports. `recorded_home` is where the legacy events were written (HOME
-/// itself, except when rehearsing on a copy).
+/// release HOME, copy it coherently into `backup`, archive the legacy stores
+/// inside HOME, start an empty v2 store and commit the marker. Nothing legacy
+/// is imported. Re-running after an interruption resumes; after a commit it
+/// only reports.
 pub(crate) fn cutover_offline(
     home: &Path,
     backup: &Path,
-    recorded_home: &Path,
     legacy_binaries: &[&Path],
     wait: &LockWait,
     progress: impl FnMut(u32),
@@ -495,57 +308,55 @@ pub(crate) fn cutover_offline(
     let home = home.canonicalize()?;
     let backup = &canonical_parent(backup)?;
     let _lock = exclusive_lock(&home, wait, progress)?;
-    let stage = stage_of(backup)?;
     let rollback = rollback_command(backup);
     match read_marker(&home)? {
         Some(marker) if marker.phase == Phase::Committed => {
-            crate::domain_migration::verify_backup_expected(backup, &marker.backup_manifest_sha256)
+            crate::domain_backup::verify_backup_expected(backup, &marker.backup_manifest_sha256)
                 .context("HOME was cut over with another backup")?;
-            return Ok(Cutover { marker, resumed: false, already_committed: true, imported: None, rollback });
+            return Ok(Cutover { marker, resumed: false, already_committed: true, rollback });
         }
         Some(marker) => {
-            crate::domain_migration::verify_backup_expected(backup, &marker.backup_manifest_sha256)
-                .context("an interrupted cutover belongs to another backup; roll it back first")?;            ensure!(
-                staged_state(&stage).is_ok_and(|state| state.data_epoch.0 == marker.data_epoch),
-                "the interrupted cutover's stage is missing; roll it back with {rollback}"
+            crate::domain_backup::verify_backup_expected(backup, &marker.backup_manifest_sha256)
+                .context("an interrupted cutover belongs to another backup; roll it back first")?;
+            ensure!(
+                crate::domain_runtime::DomainRuntime::open(&home)
+                    .and_then(|runtime| runtime.state())
+                    .is_ok_and(|state| state.data_epoch.0 == marker.data_epoch),
+                "the interrupted cutover's domain store is missing; roll it back with {rollback}"
             );
             archive_legacy_stores(&home)?;
-            promote(&home, &stage)?;
             let mut committed = marker.clone();
             committed.phase = Phase::Committed;
             write_marker(&home, &committed, false)?;
-            fs::remove_dir_all(&stage)?;
-            return Ok(Cutover { marker: committed, resumed: true, already_committed: false, imported: None, rollback });
+            return Ok(Cutover { marker: committed, resumed: true, already_committed: false, rollback });
         }
         None => (),
     }
     ensure!(home.join("alondra.db").exists(), "HOME holds no legacy store to cut over");
-    validate_owned_sqlite_files(&home.join("domain-v2.db"))?;
+    let database = home.join("domain-v2.db");
+    validate_owned_sqlite_files(&database)?;
     ensure!(
-        !home.join("domain-v2.db").exists() || crate::replaceable_cutover_sidecar_is_empty(&home.join("domain-v2.db"))?,
+        !database.exists() || crate::replaceable_cutover_sidecar_is_empty(&database)?,
         "HOME already has domain data"
     );
     ensure!(!home.join(ARCHIVE).exists(), "HOME already has a legacy archive");
-    ensure!(!stage.exists(), "a stage from an earlier attempt is in the way: {}", stage.display());
-    let manifest = crate::domain_migration::backup_home(&home, recorded_home, backup, legacy_binaries)?;
-    let digest = crate::domain_migration::backup_manifest_digest(backup)?;
-    let (staged, imported) = crate::domain_migration::import_backup(backup, recorded_home, &stage)?;
-    ensure!(staged.revision > 0 && imported.source_seq == manifest.source_seq, "stage does not match the backup");
+    let manifest = crate::domain_backup::backup_home(&home, backup, legacy_binaries)?;
+    let digest = crate::domain_backup::backup_manifest_digest(backup)?;
+    remove_owned_sqlite_files(&database)?;
+    let data_epoch = crate::domain_runtime::DomainRuntime::open(&home)?.state()?.data_epoch.0;
     let marker = Marker {
         format: 1,
         phase: Phase::Prepared,
         backup_manifest_sha256: digest,
         source_seq: manifest.source_seq,
-        data_epoch: staged.data_epoch.0.clone(),
+        data_epoch,
     };
     write_marker(&home, &marker, true)?;
     archive_legacy_stores(&home)?;
-    promote(&home, &stage)?;
     let mut committed = marker;
     committed.phase = Phase::Committed;
     write_marker(&home, &committed, false)?;
-    fs::remove_dir_all(&stage)?;
-    Ok(Cutover { marker: committed, resumed: false, already_committed: false, imported: Some(imported), rollback })
+    Ok(Cutover { marker: committed, resumed: false, already_committed: false, rollback })
 }
 
 fn absolute(path: &Path) -> Result<std::path::PathBuf> {
@@ -572,7 +383,7 @@ fn rollback_steps(backup: &Path, binaries: &[&Path], label: &str) -> String {
         let name = binary.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default();
         steps.push_str(&format!(
             "   install -m 755 {} \"$(realpath \"$(command -v {name})\")\"\n",
-            backup.join(crate::domain_migration::LEGACY_BINARIES).join(&name).display()
+            backup.join(crate::domain_backup::LEGACY_BINARIES).join(&name).display()
         ));
     }
     steps.push_str(&format!("   brew pin alondra\n4. Restart: launchctl kickstart -k gui/$(id -u)/{label}"));
@@ -582,13 +393,11 @@ fn rollback_steps(backup: &Path, binaries: &[&Path], label: &str) -> String {
 pub(crate) fn cutover_cli(backup: &Path, binaries: &[&Path]) -> Result<()> {
     let config = alondra_core::config::Config::load().map_err(|error| anyhow::anyhow!("config.toml unreadable: {error}"))?;
     let backup = absolute(backup)?;
-    let recorded = std::env::var_os(crate::domain_migration::RECORDED_HOME)
-        .map_or_else(|| config.home.clone(), std::path::PathBuf::from);
     eprintln!("Cutting {} over to domain v2; backup in {}", config.home.display(), backup.display());
-    let result = cutover_offline(&config.home, &backup, &recorded, binaries, &LockWait::LIVE, waiting)?;
+    let result = cutover_offline(&config.home, &backup, binaries, &LockWait::LIVE, waiting)?;
     println!("{}", serde_json::to_string_pretty(&result)?);
-    eprintln!("Domain v2 committed (legacy seq {}). To roll back:\n{}",
-        result.marker.source_seq, rollback_steps(&backup, binaries, &config.service_label));
+    eprintln!("Domain v2 started empty; the legacy data is archived in {} (legacy seq {}). To roll back:\n{}",
+        config.home.join(ARCHIVE).display(), result.marker.source_seq, rollback_steps(&backup, binaries, &config.service_label));
     Ok(())
 }
 
@@ -609,7 +418,7 @@ pub(crate) fn rollback_offline(home: &Path, backup: &Path, wait: &LockWait, prog
     let backup = &backup.canonicalize()?;
     let _lock = exclusive_lock(&home, wait, progress)?;
     let marker = read_marker(&home)?.context("HOME has no domain cutover to roll back")?;
-    let manifest = crate::domain_migration::verify_backup_expected(backup, &marker.backup_manifest_sha256)
+    let manifest = crate::domain_backup::verify_backup_expected(backup, &marker.backup_manifest_sha256)
         .context("backup does not belong to this cutover")?;
     ensure!(manifest.source_seq == marker.source_seq, "backup does not match the cutover marker");
     let aside = home.join(format!("domain-v2-rolled-back-{}", alondra_core::now_millis()));
@@ -629,8 +438,8 @@ pub(crate) fn rollback_offline(home: &Path, backup: &Path, wait: &LockWait, prog
         set_aside(name)?;
     }
     set_aside(ARCHIVE)?;
-    for file in manifest.files.iter().filter(|file| !file.path.starts_with(crate::domain_migration::LEGACY_BINARIES)) {
-        let names = if crate::domain_migration::BACKUP_DATABASES.contains(&file.path.as_str()) {
+    for file in manifest.files.iter().filter(|file| !file.path.starts_with(crate::domain_backup::LEGACY_BINARIES)) {
+        let names = if crate::domain_backup::BACKUP_DATABASES.contains(&file.path.as_str()) {
             sqlite_trio(&file.path).to_vec()
         } else {
             vec![file.path.clone()]
@@ -642,9 +451,8 @@ pub(crate) fn rollback_offline(home: &Path, backup: &Path, wait: &LockWait, prog
         if let Some(parent) = target.parent() {
             fs::DirBuilder::new().recursive(true).mode(0o700).create(parent)?;
         }
-        crate::domain_migration::copy_regular(&backup.join(&file.path), &target)?;
+        crate::domain_backup::copy_regular(&backup.join(&file.path), &target)?;
     }
-    clean_content_next(&home)?;
     File::open(&home)?.sync_all()?;
     set_aside(MARKER)?;
     File::open(&home)?.sync_all()?;
@@ -686,29 +494,6 @@ mod tests {
         fs::remove_dir_all(home).unwrap();
     }
 
-    #[test]
-    fn promote_reads_the_stage_without_writing_it() {
-        let stage = std::env::temp_dir().join(format!(
-            "alondra-domain-cutover-stage-{}",
-            crate::auth::random_hex(8)
-        ));
-        fs::DirBuilder::new().mode(0o700).create(&stage).unwrap();
-        let database = stage.join("domain-v2.db");
-        let epoch = crate::domain_store::DomainStore::open(&database)
-            .unwrap()
-            .load()
-            .unwrap()
-            .data_epoch;
-        let imported = fs::read(&database).unwrap();
-        assert_eq!(staged_state(&stage).unwrap().data_epoch, epoch);
-        assert_eq!(
-            fs::read(&database).unwrap(),
-            imported,
-            "the stage hashed for provenance must hold only the importer's writes"
-        );
-        fs::remove_dir_all(stage).unwrap();
-    }
-
     /// Holds the shared HOME lock like a daemon that keeps restarting, until told to stop.
     #[test]
     fn lock_holder_child() {
@@ -724,20 +509,42 @@ mod tests {
         drop(lock);
     }
 
-    fn live_shaped(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
-        let root = std::env::temp_dir().join(format!("alondra-cutover-{name}-{}", crate::auth::random_hex(8)))
-            .to_path_buf();
+    fn legacy_home(name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let root = std::env::temp_dir().join(format!("alondra-cutover-{name}-{}", crate::auth::random_hex(8)));
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         let root = root.canonicalize().unwrap();
         let home = root.join("home");
         fs::DirBuilder::new().mode(0o700).create(&home).unwrap();
-        crate::domain_migration::synthetic::write_live_shaped_home(&home);
+        let events = Connection::open(home.join("alondra.db")).unwrap();
+        events
+            .execute_batch(
+                "PRAGMA journal_mode=WAL;
+                 CREATE TABLE event_log(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,kind TEXT NOT NULL,session TEXT,body TEXT NOT NULL);
+                 CREATE TABLE snapshots(seq INTEGER PRIMARY KEY,at INTEGER NOT NULL,body TEXT NOT NULL);
+                 INSERT INTO event_log(seq,at,kind,body) VALUES(1,1,'note','{}'),(2,2,'note','{}');",
+            )
+            .unwrap();
+        let schedules = Connection::open(home.join("schedules.db")).unwrap();
+        schedules.execute_batch("CREATE TABLE schedules(id TEXT); INSERT INTO schedules VALUES('nightly');").unwrap();
+        fs::write(home.join("config.toml"), "name = \"Test\"\n").unwrap();
+        fs::write(home.join("devices.json"), "[]").unwrap();
         (root, home)
+    }
+
+    fn quick() -> LockWait {
+        LockWait { attempts: 1, interval: std::time::Duration::ZERO }
+    }
+
+    fn legacy_digests(home: &Path) -> Vec<String> {
+        ["alondra.db", "schedules.db"]
+            .iter()
+            .map(|name| crate::domain_backup::rehearsal::sqlite_content_digest(&home.join(name)).unwrap())
+            .collect()
     }
 
     #[test]
     fn the_cutover_waits_for_a_restarting_daemon_to_release_home() {
-        let (root, home) = live_shaped("lock");
+        let (root, home) = legacy_home("lock");
         let signals = root.join("signals");
         fs::create_dir(&signals).unwrap();
         let mut holder = std::process::Command::new(std::env::current_exe().unwrap())
@@ -751,9 +558,9 @@ mod tests {
             assert!(started.elapsed() < std::time::Duration::from_secs(60), "holder never took the lock");
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
-        let quick = LockWait { attempts: 3, interval: std::time::Duration::from_millis(1) };
+        let three = LockWait { attempts: 3, interval: std::time::Duration::from_millis(1) };
         let mut reported = vec![];
-        let error = cutover_offline(&home, &root.join("refused"), &home, &[], &quick, |attempt| reported.push(attempt))
+        let error = cutover_offline(&home, &root.join("refused"), &[], &three, |attempt| reported.push(attempt))
             .unwrap_err();
         assert!(format!("{error:#}").contains("still in use after 3 attempts"), "{error:#}");
         assert_eq!(reported, vec![1, 2], "every failed attempt is reported");
@@ -761,7 +568,7 @@ mod tests {
 
         let patient = LockWait { attempts: 60_000, interval: std::time::Duration::from_millis(1) };
         let mut waited = 0;
-        let cutover = cutover_offline(&home, &root.join("backup"), &home, &[], &patient, |_| {
+        let cutover = cutover_offline(&home, &root.join("backup"), &[], &patient, |_| {
             waited += 1;
             if waited == 1 {
                 fs::write(signals.join("release"), b"").unwrap();
@@ -776,29 +583,88 @@ mod tests {
     }
 
     #[test]
-    fn an_interrupted_cutover_resumes_from_its_backup_and_stage() {
-        let (root, home) = live_shaped("resume");
+    fn the_cutover_starts_v2_empty_and_archives_the_legacy_data_without_importing_it() {
+        let (root, home) = legacy_home("empty");
+        let before = legacy_digests(&home);
+        assert!(refuse_legacy_home(&home).is_err());
         let backup = root.join("backup");
-        let stage = stage_of(&backup).unwrap();
-        let manifest = crate::domain_migration::backup_home(&home, &home, &backup, &[]).unwrap();
-        let (staged, _) = crate::domain_migration::import_backup(&backup, &home, &stage).unwrap();
+        let cutover = cutover_offline(&home, &backup, &[], &quick(), |_| ()).unwrap();
+        assert_eq!(cutover.marker.phase, Phase::Committed);
+        assert_eq!(cutover.marker.source_seq, 2);
+        assert_eq!(read_marker(&home).unwrap().unwrap(), cutover.marker);
+
+        let state = crate::domain_runtime::DomainRuntime::open(&home).unwrap().state().unwrap();
+        assert_eq!(state.data_epoch.0, cutover.marker.data_epoch);
+        assert_eq!(state.revision, 0);
+        assert!(
+            state.requests.is_empty()
+                && state.tasks.is_empty()
+                && state.agents.is_empty()
+                && state.interactions.is_empty()
+                && state.document_revisions.is_empty()
+                && state.schedule.schedules.is_empty(),
+            "nothing from the legacy stores reaches domain v2"
+        );
+
+        let archive = home.join(ARCHIVE);
+        for name in ["alondra.db", "schedules.db"] {
+            assert!(!home.join(name).exists(), "{name} left in HOME");
+            assert!(archive.join(name).exists(), "{name} not archived");
+        }
+        let archived = ["alondra.db", "schedules.db"]
+            .map(|name| crate::domain_backup::rehearsal::sqlite_content_digest(&archive.join(name)).unwrap());
+        assert_eq!(archived.to_vec(), before, "the archive holds the original rows");
+        assert!(home.join("config.toml").exists() && home.join("devices.json").exists());
+        refuse_legacy_home(&home).unwrap();
+
+        let again = cutover_offline(&home, &backup, &[], &quick(), |_| ()).unwrap();
+        assert!(again.already_committed && !again.resumed);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn an_interrupted_cutover_resumes_from_its_backup_and_empty_store() {
+        let (root, home) = legacy_home("resume");
+        let backup = root.join("backup");
+        let manifest = crate::domain_backup::backup_home(&home, &backup, &[]).unwrap();
+        let epoch = crate::domain_runtime::DomainRuntime::open(&home).unwrap().state().unwrap().data_epoch.0;
         let prepared = Marker {
             format: 1,
             phase: Phase::Prepared,
-            backup_manifest_sha256: crate::domain_migration::backup_manifest_digest(&backup).unwrap(),
+            backup_manifest_sha256: crate::domain_backup::backup_manifest_digest(&backup).unwrap(),
             source_seq: manifest.source_seq,
-            data_epoch: staged.data_epoch.0.clone(),
+            data_epoch: epoch.clone(),
         };
         write_marker(&home, &prepared, true).unwrap();
-        archive_legacy_stores(&home).unwrap();
-        let error = refuse_legacy_home(&home);
-        assert!(error.is_ok(), "a Prepared HOME is fenced by protocol mode, not treated as legacy");
-        let wait = LockWait { attempts: 1, interval: std::time::Duration::ZERO };
-        let resumed = cutover_offline(&home, &backup, &home, &[], &wait, |_| ()).unwrap();
+        assert!(refuse_legacy_home(&home).is_ok(), "a Prepared HOME is fenced by protocol mode, not treated as legacy");
+        let resumed = cutover_offline(&home, &backup, &[], &quick(), |_| ()).unwrap();
         assert!(resumed.resumed);
         assert_eq!(resumed.marker.phase, Phase::Committed);
-        assert_eq!(crate::domain_runtime::DomainRuntime::open(&home).unwrap().state().unwrap(), staged);
-        assert!(!stage.exists());
+        assert_eq!(resumed.marker.data_epoch, epoch);
+        assert!(!home.join("alondra.db").exists() && home.join(ARCHIVE).join("alondra.db").exists());
+        assert_eq!(crate::domain_runtime::DomainRuntime::open(&home).unwrap().state().unwrap().revision, 0);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn rollback_restores_the_legacy_home_and_sets_the_empty_v2_store_aside() {
+        let (root, home) = legacy_home("rollback");
+        let before = legacy_digests(&home);
+        let backup = root.join("backup");
+        cutover_offline(&home, &backup, &[], &quick(), |_| ()).unwrap();
+        let (other_root, other_home) = legacy_home("other");
+        let stranger = other_root.join("backup");
+        crate::domain_backup::backup_home(&other_home, &stranger, &[]).unwrap();
+        assert!(rollback_offline(&home, &stranger, &quick(), |_| ()).is_err(), "another backup must not restore this HOME");
+        assert!(read_marker(&home).unwrap().is_some());
+
+        let aside = rollback_offline(&home, &backup, &quick(), |_| ()).unwrap();
+        assert!(read_marker(&home).unwrap().is_none());
+        assert_eq!(legacy_digests(&home), before);
+        assert!(aside.join("domain-v2.db").exists() && aside.join(ARCHIVE).join("alondra.db").exists());
+        assert!(!home.join(ARCHIVE).exists() && !home.join("domain-v2.db").exists());
+        assert!(refuse_legacy_home(&home).is_err());
+        fs::remove_dir_all(other_root).unwrap();
         fs::remove_dir_all(root).unwrap();
     }
 }
