@@ -93,12 +93,19 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/orchestrator/cancel", post(orchestrator_decision))
         .route("/v2/orchestrator/acknowledge", post(orchestrator_decision))
         .route("/v2/orchestrator/retry", post(orchestrator_decision))
+        .route("/v1", axum::routing::any(legacy_protocol))
+        .route("/v1/{*rest}", axum::routing::any(legacy_protocol))
         .merge(crate::domain_api::routes())
         .with_state(state)
 }
 
 fn forbidden(message: &str) -> Response {
     crate::domain_api::domain_error(DomainError::new("forbidden", message))
+}
+
+/// A client or session still speaking the legacy protocol after cutover; its body is never read.
+async fn legacy_protocol() -> Response {
+    crate::domain_api::domain_error(DomainError::new("incompatible_protocol", "resume this session with the domain v2 plugin"))
 }
 
 fn local_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
@@ -327,15 +334,15 @@ mod tests {
         let daemon: serde_json::Value = client.get(format!("{base}/v2/daemon")).send().await.unwrap().json().await.unwrap();
         assert_eq!(daemon["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(daemon["update"]["current"], env!("CARGO_PKG_VERSION"));
-        assert_eq!(
-            client
-                .get(format!("{base}/v1/overview"))
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::NOT_FOUND
-        );
+        for (method, path) in [("GET", "/v1/overview"), ("POST", "/v1/nodes/n/messages"), ("PUT", "/v1"), ("DELETE", "/v1/questions/1")] {
+            let response = client.request(method.parse().unwrap(), format!("{base}{path}"))
+                .body(r#"{"text":"legacy"}"#).send().await.unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT, "{method} {path}");
+            let body: serde_json::Value = response.json().await.unwrap();
+            assert_eq!(body["code"], "incompatible_protocol", "{method} {path}");
+            assert_eq!(body["message"], "resume this session with the domain v2 plugin");
+        }
+        assert_eq!(client.get(format!("{base}/v1x")).send().await.unwrap().status(), StatusCode::NOT_FOUND);
         assert_eq!(
             client
                 .get(format!("{base}/v2/domain"))
