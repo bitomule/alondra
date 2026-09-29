@@ -95,6 +95,14 @@ final class ClientV2FixtureTests: XCTestCase {
         XCTAssertThrowsError(try JSONEncoder().encode(DomainV2.Command.unknown(kind: "launch_rocket")))
     }
 
+    func testEffectsFromNewerDaemonsDecode() throws {
+        func decode(_ json: String) throws -> DomainV2.DomainEffect { try JSONDecoder().decode(DomainV2.DomainEffect.self, from: Data(json.utf8)) }
+        XCTAssertEqual(try decode(#"{"kind":"notify_orchestrator","request_id":"r"}"#), .notifyOrchestrator(interactionId: nil, requestId: "r"))
+        XCTAssertEqual(try decode(#"{"kind":"notify_orchestrator","interaction_id":"q"}"#), .notifyOrchestrator(interactionId: "q", requestId: nil))
+        XCTAssertEqual(try decode(#"{"kind":"notify_user","task_id":null,"interaction_id":"i"}"#), .notifyUser(taskId: nil, interactionId: "i"))
+        XCTAssertEqual(try decode(#"{"kind":"notify_moon"}"#), .unknown(kind: "notify_moon"))
+    }
+
     func testMessageToAnAgent() async throws {
         let attachments = try attachments(of: "message")
         try await check("message") { api in
@@ -124,7 +132,7 @@ final class ClientV2FixtureTests: XCTestCase {
         try await check("options") { api in
             let catalog = try await api.domainOptions(project: "App")
             XCTAssertEqual(catalog.project, "App")
-            XCTAssertEqual(catalog.options.map(\.id), ["effort"])
+            XCTAssertEqual(catalog.options.map(\.id), ["pr", "effort"])
         }
         try await check("projects") { let projects = try await $0.domainProjects(); XCTAssertEqual(projects, ["App", "Web"]) }
         try await check("issues") { let issues = try await $0.domainIssues(refresh: false); XCTAssertEqual(issues.issues.map(\.number), [3]) }

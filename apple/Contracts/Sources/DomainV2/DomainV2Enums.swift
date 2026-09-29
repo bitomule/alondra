@@ -713,13 +713,17 @@ extension DomainV2 {
     public enum DomainEffect: Codable, Equatable, Sendable {
         case notifyUser(taskId: TaskId?, interactionId: InteractionId)
         case notifyAgent(agentId: AgentId, taskId: TaskId?, interactionId: InteractionId?, message: String)
-        case notifyOrchestrator(interactionId: InteractionId)
+        /// An interaction addressed to the orchestrator, or a request the user created.
+        case notifyOrchestrator(interactionId: InteractionId?, requestId: RequestId?)
+        /// A kind this build does not know; it decodes so a command outcome that carries one still reads.
+        case unknown(kind: String)
 
         enum CodingKeys: String, CodingKey {
             case kind = "kind"
             case agentId = "agent_id"
             case taskId = "task_id"
             case interactionId = "interaction_id"
+            case requestId = "request_id"
             case message = "message"
         }
 
@@ -728,8 +732,8 @@ extension DomainV2 {
             switch try container.decode(String.self, forKey: .kind) {
             case "notify_user": self = .notifyUser(taskId: try container.decodeIfPresent(TaskId.self, forKey: .taskId), interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
             case "notify_agent": self = .notifyAgent(agentId: try container.decode(AgentId.self, forKey: .agentId), taskId: try container.decodeIfPresent(TaskId.self, forKey: .taskId), interactionId: try container.decodeIfPresent(InteractionId.self, forKey: .interactionId), message: try container.decode(String.self, forKey: .message))
-            case "notify_orchestrator": self = .notifyOrchestrator(interactionId: try container.decode(InteractionId.self, forKey: .interactionId))
-            default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown domain v2 DomainEffect kind")
+            case "notify_orchestrator": self = .notifyOrchestrator(interactionId: try container.decodeIfPresent(InteractionId.self, forKey: .interactionId), requestId: try container.decodeIfPresent(RequestId.self, forKey: .requestId))
+            case let kind: self = .unknown(kind: kind)
             }
         }
 
@@ -746,9 +750,12 @@ extension DomainV2 {
                 try container.encodeIfPresent(taskId, forKey: .taskId)
                 try container.encodeIfPresent(interactionId, forKey: .interactionId)
                 try container.encode(message, forKey: .message)
-            case let .notifyOrchestrator(interactionId):
+            case let .notifyOrchestrator(interactionId, requestId):
                 try container.encode("notify_orchestrator", forKey: .kind)
-                try container.encode(interactionId, forKey: .interactionId)
+                try container.encodeIfPresent(interactionId, forKey: .interactionId)
+                try container.encodeIfPresent(requestId, forKey: .requestId)
+            case let .unknown(kind):
+                throw EncodingError.invalidValue(kind, .init(codingPath: encoder.codingPath, debugDescription: "Unknown domain v2 DomainEffect kind \(kind) cannot be encoded"))
             }
         }
     }
