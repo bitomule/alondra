@@ -27,8 +27,8 @@ struct Daemon {
 
 impl Daemon {
     async fn start(home: &Path) -> Self {
-        let epoch = DomainRuntime::open(home).unwrap().state().unwrap().data_epoch.0;
-        let state = V2Only::open(home, &epoch).unwrap();
+        drop(DomainRuntime::open(home).unwrap());
+        let state = V2Only::open(home).unwrap();
         let domain = state.domain();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
