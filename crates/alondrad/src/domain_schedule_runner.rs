@@ -9,7 +9,6 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use anyhow::{Context, Result};
 use axum::http::StatusCode;
-use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -79,21 +78,7 @@ pub(crate) fn prepare_intent(
     Ok(launch)
 }
 
-/// The Claude session one Run launches. Derived from the Run, so a crash between
-/// registering the Agent and spawning never leaves a second identity behind.
-pub(crate) fn session_for_run(run_id: &ScheduleRunId) -> String {
-    let digest = Sha256::digest(format!("alondra-schedule-session:{}", run_id.0).as_bytes());
-    let mut bytes = [0u8; 16];
-    bytes.copy_from_slice(&digest[..16]);
-    bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    bytes[8] = (bytes[8] & 0x3f) | 0x80;
-    let h: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
-    format!("{}-{}-{}-{}-{}", &h[..8], &h[8..12], &h[12..16], &h[16..20], &h[20..])
-}
-
 pub(crate) struct ProducerLaunch<'a> {
-    pub session: &'a str,
-    pub capability: &'a str,
     pub task_id: &'a TaskId,
     pub request_id: &'a RequestId,
     pub state: &'a DomainState,
@@ -107,8 +92,8 @@ pub(crate) fn producer_prompt(text: &str, resolved: &Resolved, producer: &Produc
         String::new(),
         "## Alondra domain v2".into(),
         String::new(),
-        format!("Load the alondra-domain-v2 skill. This session is Agent {} assigned to Task {} of Request {}.",
-            producer.session, producer.task_id, producer.request_id),
+        format!("Load the alondra-domain-v2 skill. This session is the Agent assigned to Task {} of Request {}.",
+            producer.task_id, producer.request_id),
         format!("Cursor: data_epoch={} revision={}. Send an expected_revision of 0 when you hold no newer cursor; the daemon fills the current revision for a producer.",
             producer.state.data_epoch.0, producer.state.revision),
         String::new(),
@@ -134,8 +119,10 @@ async fn invoke_claimed(
     launch: &ScheduleLaunchIntent,
     producer: &ProducerLaunch<'_>,
     disallowed_tools: &[String],
+    home: &Path,
+    key: &str,
     launcher: &impl crate::orchestrate::Launcher,
-) -> Result<Option<String>, crate::orchestrate::Refusal> {
+) -> Result<(Option<String>, PathBuf), crate::orchestrate::Refusal> {
     if let Some(reason) = crate::http::launch_blocked(launcher.usage().as_ref(), false) {
         return Err((StatusCode::CONFLICT, reason));
     }
@@ -147,21 +134,23 @@ async fn invoke_claimed(
     };
     let resolved: Resolved = serde_json::from_str(&launch.options_json)
         .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, error.to_string()))?;
-    let mut args: Vec<String> = ["--bg", "--name", &launch.name, "--permission-mode", "auto",
-        "--session-id", producer.session].map(String::from).into();
+    let settings = crate::domain_sessions::prepare(home, key, &[plugin.as_path()])
+        .map_err(|error| (StatusCode::INTERNAL_SERVER_ERROR, format!("Could not write the session's settings: {error}")))?;
+    let mut args: Vec<String> = ["--bg", "--name", &launch.name, "--permission-mode", "auto"].map(String::from).into();
     args.extend(resolved.launch_flags(None));
-    args.extend(crate::plugins::launch_flags(&[plugin.as_path()]));
+    args.extend(crate::domain_sessions::flags(&[plugin.as_path()], &settings));
     if !disallowed_tools.is_empty() {
         args.extend(["--disallowedTools".into(), disallowed_tools.join(" ")]);
     }
     args.push("--".into());
     args.push(producer_prompt(&launch.prompt, &resolved, producer));
-    let env = [
-        ("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
-        ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), producer.capability.to_owned()),
-    ];
-    let output = launcher.run_with_env(&launch.cwd, &args, &env).await?;
-    Ok(alondra_core::sessions::launched_short(&output))
+    match launcher.run(&launch.cwd, &args).await {
+        Ok(output) => Ok((alondra_core::sessions::launched_short(&output), settings)),
+        Err(refusal) => {
+            crate::domain_sessions::remove(&settings);
+            Err(refusal)
+        }
+    }
 }
 
 fn execute_system(domain: &DomainRuntime, command: Command) -> Result<CommandOutcome, StoreError> {
@@ -264,7 +253,7 @@ fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId) -> 
 /// The successful ClaimScheduleLaunch commit is the irreversible boundary:
 /// exactly one caller may invoke Claude, even if the process dies afterward.
 async fn dispatch_pending(
-    domain: &DomainRuntime, run_id: &ScheduleRunId,
+    domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId,
     launcher: &impl crate::orchestrate::Launcher,
 ) -> Result<()> {
     let state = domain.state()?;
@@ -292,39 +281,48 @@ async fn dispatch_pending(
         Err(error) if ordinary_conflict(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    // The session is an Agent with a bearer before Claude starts, so its first
-    // command can already be authorized; nothing is inferred from the process.
-    let session = session_for_run(run_id);
+    let state = domain.state()?;
+    let producer = ProducerLaunch { task_id: &task_id, request_id: &request_id, state: &state };
+    let (short, settings) = match invoke_claimed(&intent, &producer, &policy, home, &run_id.0, launcher).await {
+        Ok(launched) => launched,
+        Err((_, reason)) => {
+            fail_run(domain, run_id, reason)?;
+            return Ok(());
+        }
+    };
+    // `claude --bg` picks the session id, so the Agent is the session Claude lists.
+    let session = match &short {
+        Some(short) => launcher.session_of(short).await,
+        None => None,
+    };
+    let Some(session) = session else {
+        crate::domain_sessions::remove(&settings);
+        fail_run(domain, run_id, "Claude did not list the launched session".into())?;
+        return Ok(());
+    };
     let agent_id = AgentId(session.clone());
     match execute_system(domain, Command::RegisterAgent { agent_id: agent_id.clone(), name: intent.name.clone() }) {
         Ok(_) => (),
         Err(StoreError::Domain(error)) if error.code == "invalid_input" => (),
         Err(error) => return Err(error.into()),
     }
-    let capability = match domain.bind_agent(&session) {
-        Ok(capability) => capability,
-        Err(error) => {
-            fail_run(domain, run_id, format!("Could not issue the session's domain capability: {error}"))?;
-            return Ok(());
-        }
-    };
-    let state = domain.state()?;
-    let producer = ProducerLaunch {
-        session: &session, capability: capability.expose_for_child_environment(),
-        task_id: &task_id, request_id: &request_id, state: &state,
-    };
-    let launched = invoke_claimed(&intent, &producer, &policy, launcher).await;
-    let handed = match launched {
-        Ok(short_id) => execute_system(domain, Command::RecordScheduleLaunchHanded {
-            run_id: run_id.clone(), session_id: short_id, agent_id: Some(agent_id),
-            finished_at: alondra_core::now_millis(),
-        }).map(|_| ()),
-        Err((_, reason)) => Err(StoreError::Domain(alondra_core::domain_v2::DomainError::new("conflict", reason))),
-    };
+    let bound = domain.bind_agent(&session).map_err(anyhow::Error::from)
+        .and_then(|capability| crate::domain_sessions::bind(&settings, &agent_id, capability.expose_for_child_environment()));
+    if let Err(error) = bound {
+        domain.revoke_agent(&session)?;
+        crate::domain_sessions::remove(&settings);
+        fail_run(domain, run_id, format!("Could not issue the session's domain capability: {error}"))?;
+        return Ok(());
+    }
+    let handed = execute_system(domain, Command::RecordScheduleLaunchHanded {
+        run_id: run_id.clone(), session_id: short, agent_id: Some(agent_id),
+        finished_at: alondra_core::now_millis(),
+    });
     match handed {
-        Ok(()) => (),
+        Ok(_) => (),
         Err(error) if ordinary_conflict(&error) => {
             domain.revoke_agent(&session)?;
+            crate::domain_sessions::remove(&settings);
             fail_run(domain, run_id, match error {
                 StoreError::Domain(error) => error.message,
                 error => error.to_string(),
@@ -370,7 +368,7 @@ pub(crate) async fn run_cycle(
     let pending: Vec<_> = state.schedule.runs.values()
         .filter(|run| run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Pending))
         .map(|run| run.id.clone()).collect();
-    for run_id in pending { dispatch_pending(domain, &run_id, launcher).await?; }
+    for run_id in pending { dispatch_pending(domain, home, &run_id, launcher).await?; }
     Ok(())
 }
 
@@ -389,14 +387,16 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    struct FakeLauncher(Mutex<Vec<(String, Vec<String>, Vec<(String, String)>)>>);
+    const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
+
+    struct FakeLauncher(Mutex<Vec<(String, Vec<String>)>>);
     impl crate::orchestrate::Launcher for FakeLauncher {
-        async fn run(&self, _: &str, _: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            panic!("a v2 producer launch must carry its environment");
-        }
-        async fn run_with_env(&self, cwd: &str, args: &[String], env: &[(String, String)]) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            self.0.lock().unwrap().push((cwd.into(), args.to_vec(), env.to_vec()));
+        async fn run(&self, cwd: &str, args: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+            self.0.lock().unwrap().push((cwd.into(), args.to_vec()));
             Ok("backgrounded · ab1234 · scheduled/run-1".into())
+        }
+        async fn run_with_env(&self, _: &str, _: &[String], _: &[(String, String)]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+            panic!("a background session never sees the launcher's environment");
         }
         fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
         fn plugin(&self) -> Option<std::path::PathBuf> { Some("/synthetic/claude-plugin".into()) }
@@ -438,26 +438,24 @@ mod tests {
         ).unwrap();
         let fake = FakeLauncher(Mutex::new(vec![]));
         let state = DomainState::new("epoch");
-        let session = session_for_run(&ScheduleRunId::from("run-1"));
-        assert_eq!(session, session_for_run(&ScheduleRunId::from("run-1")));
-        assert_ne!(session, session_for_run(&ScheduleRunId::from("run-2")));
-        let producer = ProducerLaunch { session: &session, capability: &"c".repeat(64),
-            task_id: &"task-1".into(), request_id: &"request-1".into(), state: &state };
-        let short = invoke_claimed(&intent, &producer, &definition.disallowed_tools, &fake).await.unwrap();
+        let producer = ProducerLaunch { task_id: &"task-1".into(), request_id: &"request-1".into(), state: &state };
+        let home = root.join("home");
+        let (short, settings) = invoke_claimed(&intent, &producer, &definition.disallowed_tools, &home, "run-1", &fake).await.unwrap();
         assert_eq!(short.as_deref(), Some("ab1234"));
         let calls = fake.0.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, project.to_str().unwrap());
         let args = &calls[0].1;
         assert!(args.windows(2).any(|pair| pair == ["--name", "scheduled/schedule-run-1"]));
-        assert!(args.windows(2).any(|pair| pair == ["--session-id", session.as_str()]));
+        assert!(!args.iter().any(|arg| arg == "--session-id"), "claude --bg ignores it");
         assert!(args.windows(2).any(|pair| pair == ["--disallowedTools", "Bash"]));
+        assert!(args.windows(2).any(|pair| pair == ["--settings", settings.to_str().unwrap()]));
+        let written: serde_json::Value = serde_json::from_slice(&std::fs::read(&settings).unwrap()).unwrap();
+        assert_eq!(written["env"]["ALONDRA_DOMAIN_PROTOCOL"], "2");
         let prompt = args.last().unwrap();
         assert!(prompt.starts_with("Review project\n") && prompt.contains("request-1") && prompt.contains("task-1")
-            && prompt.contains(&session) && prompt.contains("data_epoch=epoch"), "{prompt}");
+            && prompt.contains("data_epoch=epoch"), "{prompt}");
         assert!(!prompt.contains("auto-merge"), "{prompt}");
-        assert_eq!(calls[0].2, vec![("ALONDRA_DOMAIN_PROTOCOL".to_owned(), "2".to_owned()),
-            ("ALONDRA_DOMAIN_CAPABILITY".to_owned(), "c".repeat(64))]);
         drop(calls);
         std::fs::remove_dir_all(root).unwrap();
     }
@@ -497,18 +495,24 @@ mod tests {
 
     struct CountingLauncher { calls: Mutex<usize>, fail: bool }
     impl crate::orchestrate::Launcher for CountingLauncher {
-        async fn run(&self, _: &str, _: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            panic!("a v2 producer launch must carry its environment");
-        }
-        async fn run_with_env(&self, _: &str, _: &[String], env: &[(String, String)]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+        async fn run(&self, _: &str, args: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
             *self.calls.lock().unwrap() += 1;
-            assert!(env.iter().any(|(key, value)| key == "ALONDRA_DOMAIN_CAPABILITY" && value.len() == 64));
+            assert!(args.iter().any(|arg| arg == "--settings"));
             tokio::task::yield_now().await;
             if self.fail { Err((StatusCode::BAD_GATEWAY, "synthetic Claude failure".into())) }
             else { Ok("backgrounded · ab1234 · scheduled/run".into()) }
         }
+        async fn session_of(&self, short: &str) -> Option<String> {
+            (short == "ab1234").then(|| SESSION.to_owned())
+        }
         fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
         fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
+    }
+
+    fn settings_files(home: &Path) -> Vec<serde_json::Value> {
+        std::fs::read_dir(home.join("runtime/sessions")).map(|entries| entries.map(|entry| {
+            serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap()).unwrap()
+        }).collect()).unwrap_or_default()
     }
 
     #[tokio::test]
@@ -528,13 +532,17 @@ mod tests {
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
         assert_eq!(state.tasks.len(), 1);
         assert_eq!(state.requests.len(), 1);
-        let session = session_for_run(&ScheduleRunId::from("manual-1"));
+        let session = SESSION.to_owned();
         let task = state.tasks.values().next().unwrap();
         assert_eq!(task.agent_id.as_ref().map(|id| id.0.as_str()), Some(session.as_str()));
         assert_eq!(run.launch.as_ref().unwrap().agent_id.as_ref().map(|id| id.0.as_str()), Some(session.as_str()));
         assert_eq!(state.agents[&AgentId(session.clone())].name, run.launch.as_ref().unwrap().intent.name);
         let registry = std::fs::read_to_string(fixture.home.join("domain-capabilities.json")).unwrap();
-        assert!(registry.contains(&session), "the launched session holds a durable bearer");
+        assert!(registry.contains(&session), "the session Claude listed holds a durable bearer");
+        let settings = settings_files(&fixture.home);
+        assert_eq!(settings.len(), 1);
+        assert_eq!(settings[0]["env"]["ALONDRA_DOMAIN_AGENT"], SESSION);
+        assert_eq!(settings[0]["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().unwrap().len(), 64);
         run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
         assert_eq!(*launcher.calls.lock().unwrap(), 1);
     }
@@ -575,10 +583,31 @@ mod tests {
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
         let request_id = run.request_id.as_ref().unwrap();
         assert!(fixture.domain.was_schedule_launch_failed(request_id).unwrap());
-        let session = session_for_run(&ScheduleRunId::from("failed"));
         assert!(state.tasks[run.task_id.as_ref().unwrap()].agent_id.is_none(), "a failed launch assigns nothing");
-        let registry = std::fs::read_to_string(fixture.home.join("domain-capabilities.json")).unwrap();
-        assert!(!registry.contains(&session), "a failed launch revokes the bearer it issued");
+        assert!(state.agents.is_empty(), "no Agent before Claude reports a session");
+        assert!(settings_files(&fixture.home).is_empty(), "a failed launch leaves no settings file");
+    }
+
+    struct Unlisted;
+    impl crate::orchestrate::Launcher for Unlisted {
+        async fn run(&self, _: &str, _: &[String]) -> std::result::Result<String, crate::orchestrate::Refusal> {
+            Ok("backgrounded · ab1234 · scheduled/run".into())
+        }
+        async fn session_of(&self, _: &str) -> Option<String> { None }
+        fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
+        fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
+    }
+
+    #[tokio::test]
+    async fn a_session_claude_does_not_list_fails_the_run_without_an_agent() {
+        let fixture = Fixture::new();
+        fixture.claim("unlisted");
+        run_cycle(&fixture.domain, &fixture.home, false, &Unlisted).await.unwrap();
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("unlisted")];
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        assert!(state.agents.is_empty());
+        assert!(settings_files(&fixture.home).is_empty());
     }
 
     #[tokio::test]

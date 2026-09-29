@@ -9,10 +9,13 @@ mod domain_content;
 mod domain_delivery;
 mod domain_github;
 mod domain_migration;
+mod domain_orchestrator;
 mod domain_runtime;
 mod domain_schedule_runner;
 mod domain_store;
 mod domain_transport;
+mod domain_messages;
+mod domain_sessions;
 #[cfg(test)]
 mod domain_e2e_tests;
 mod domain_api;
@@ -403,6 +406,7 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let service = service::Service::open(&config.home, config.port, auth.clone())?
         .map(|service| Arc::new(service.with_domain(state.domain()).with_client(state.client())));
     let domain = state.domain();
+    let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();
     let push = Arc::new(push::Push::open(&config.home)?);
@@ -422,6 +426,9 @@ async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
     let github = tokio::spawn(domain_github::run(domain, Arc::new(domain_github::GhCli::new())));
     tokio::spawn(machine::run_v2(gauges));
     tokio::spawn(client.run(Arc::new(v2_client_routes::GhView)));
+    if config.wake {
+        tokio::spawn(domain_orchestrator::run(state_domain.clone(), config.home.clone(), watcher::claude_home()));
+    }
     let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();

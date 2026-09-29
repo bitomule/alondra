@@ -71,7 +71,7 @@ enum Cmd {
         option: Option<String>,
         text: Vec<String>,
     },
-    #[command(about = tr!("Send a message to an agent (name, short id or session_id) or to the orchestrator", "Manda un mensaje a un agente (nombre, id corto o session_id) o al orquestador"))]
+    #[command(about = tr!("Send a message to a Task's agent (task id), an agent (name, short id or session_id) or the orchestrator", "Manda un mensaje al agente de una tarea (id de tarea), a un agente (nombre, id corto o session_id) o al orquestador"))]
     Send { node: String, text: Vec<String> },
     #[command(about = tr!("Cancel tasks by id", "Cancela tareas por su id"))]
     Cancel {

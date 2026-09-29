@@ -136,7 +136,7 @@ async fn execute_tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership
         text
     };
     let output = process::execute(Invocation { executable, cwd: directory, home: &hub.home,
-        plugins, domain_v2: false, session: &session, resume, execution: &run_id,
+        plugins, domain_v2: false, capability: None, session: &session, resume, execution: &run_id,
         prompt: &prompt, ownership },
         |_| Ok(()),
         || transition(hub, Transition::Running { run_id: run_id.clone() }), async {
