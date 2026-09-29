@@ -141,6 +141,28 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     Ok(read_after(domain, user, &body, json!({"delivery_state": delivered})))
 }
 
+/// Asks the Agent that owns an open pull request to resolve its conflicts with its base, typed
+/// into its session like any other message about its Task.
+pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, pr_id: &PrId,
+    sessions: &impl Sessions, terminal: &Arc<impl Terminal>) -> Result<Value, DomainError> {
+    let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
+    let pr = state.pull_requests.get(pr_id).ok_or_else(|| refused("not_found", "PR does not exist"))?;
+    let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
+    if pr.state != alondra_core::domain_v2::PrState::Open {
+        return Err(refused("pr_not_open", format!("{url} is no longer open")));
+    }
+    let agent = state.tasks.get(&pr.task_id).and_then(|task| task.agent_id.clone())
+        .ok_or_else(|| refused("not_assigned", "the PR's task has no agent to ask"))?;
+    let text = format!(
+        "{name} asks you to resolve the conflicts of {url} with {base}: bring {base} into the branch, resolve them, \
+         run the tests and push. The PR card goes back to {name} once GitHub can merge it.",
+        base = pr.base
+    );
+    let body = MessageBody { text, attachments: vec![], kind: Kind::Message, mark_read: false,
+        interaction_id: None, pr_id: None, task_id: Some(pr.task_id.clone()) };
+    deliver(domain, home, user, name, &agent, body, sessions, terminal).await
+}
+
 /// The same message relayed from a paired device, answered as a local response.
 pub(crate) async fn relayed(domain: &DomainRuntime, home: &Path, sender: &str, agent: AgentId, body: Option<&Value>) -> Value {
     let Some(body) = body.cloned().and_then(|body| serde_json::from_value::<MessageBody>(body).ok()) else {
@@ -243,6 +265,32 @@ mod tests {
 
     fn session(short: &str, interactive: bool) -> Listed {
         Listed(Some(Session { short: short.into(), interactive }))
+    }
+
+    #[tokio::test]
+    async fn conflicts_are_typed_to_the_agent_that_owns_an_open_pr_and_to_nobody_else() {
+        let (fixture, domain) = world();
+        let run = |actor: Actor, id: &str, command: Command| {
+            let state = domain.state().unwrap();
+            let envelope = CommandEnvelope { protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch,
+                command_id: id.into(), expected_revision: state.revision, command };
+            domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
+        };
+        run(Actor::Agent { agent_id: "agent-a".into() }, "pr", Command::RegisterPr {
+            task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7,
+            head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
+            allowed_methods: vec![alondra_core::domain_v2::MergeMethod::Squash] });
+        let terminal = Arc::new(Typed::default());
+        let answer = resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into(), &session("7c5dcf5d", false), &terminal).await.unwrap();
+        assert_eq!(answer, json!({"delivery_state": "handed"}));
+        let typed = terminal.0.lock().unwrap().clone();
+        assert_eq!(typed.len(), 1);
+        assert!(typed[0].1.starts_with("[Task t “Build it”] Ana asks you to resolve the conflicts of https://github.com/me/app/pull/7 with main: "), "{}", typed[0].1);
+        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"none".into(), &session("x", false), &terminal).await.unwrap_err().code, "not_found");
+        run(Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: "0123456789abcdef0123456789abcdef01234567".into(),
+            base: "main".into(), state: alondra_core::domain_v2::PrState::Closed, merged_head: None });
+        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into(), &session("x", false), &terminal).await.unwrap_err().code, "pr_not_open");
+        assert_eq!(terminal.0.lock().unwrap().len(), 1, "a refusal types nothing");
     }
 
     #[tokio::test]
