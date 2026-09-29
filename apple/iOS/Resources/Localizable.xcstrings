@@ -1,6 +1,32 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Add a note or line comment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añade una nota o un comentario en una línea"}}}},
+    "Choose a valid time.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una hora válida."}}}},
+    "Could not verify the latest diff; review was not sent: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo comprobar el último diff; la revisión no se envió: %@"}}}},
+    "It started, and what is left of it waits for PR #%@ of “%@” to be merged: it goes on once that PR is merged.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Empezó, y lo que queda espera a que se fusione el PR #%1$@ de «%2$@»: sigue en cuanto ese PR se fusione."}}}},
+    "Send your comments or clear them before accepting.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Envía tus comentarios o bórralos antes de aceptar."}}}},
+    "The PR changed; review the new diff before sending": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El PR ha cambiado; revisa el nuevo diff antes de enviar"}}}},
+    "The diff changed; refresh before sending line comments": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El diff ha cambiado; actualiza antes de enviar comentarios en líneas"}}}},
+    "The document changed. Review it again before sending comments.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El documento ha cambiado. Revísalo de nuevo antes de enviar comentarios."}}}},
+    "This PR is no longer open": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este PR ya no está abierto"}}}},
+    "This diff is too large to verify; review was not sent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este diff es demasiado grande para comprobarlo; la revisión no se envió"}}}},
+    "We couldn’t confirm the request. Your draft is kept; sending it again won’t create it twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar la petición. Tu borrador se conserva; enviarla de nuevo no la creará dos veces."}}}},
+    "We couldn’t confirm the result. Sending it again won’t apply it twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Enviarlo de nuevo no lo aplicará dos veces."}}}},
+    "We couldn’t confirm the result. Try again; it won’t be applied twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Inténtalo de nuevo; no se aplicará dos veces."}}}},
+    "We couldn’t confirm the result. Your draft is kept; sending it again won’t apply it twice.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No pudimos confirmar el resultado. Tu borrador se conserva; enviarlo de nuevo no lo aplicará dos veces."}}}},
+    "document: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "documento: %@"}}}},
+    "question: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "pregunta: %@"}}}},
+    "waits for PR #%@ to be merged": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "espera a que se fusione el PR #%@"}}}},
+    "the orchestrator is splitting it": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "el orquestador la está dividiendo"}}}},
+    "finished without tasks": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "terminada sin tareas"}}}},
+    "The orchestrator is splitting it into tasks.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El orquestador la está dividiendo en tareas."}}}},
+    "Ask for more context": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir más contexto"}}}},
+    "No longer pending": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ya no está pendiente"}}}},
+    "This was already handled or changed. Open Alondra to see where it stands.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ya se había resuelto o ha cambiado. Abre Alondra para ver en qué punto está."}}}},
+    "%@ was already handled or changed. Open Alondra to see where it stands.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "%@ ya se había resuelto o ha cambiado. Abre Alondra para ver en qué punto está."}}}},
+    "Write your answer": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Escribe tu respuesta"}}}},
+    "%lld nodes": {"localizations": {"en": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld node"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld nodes"}}}}}, "es": {"variations": {"plural": {"one": {"stringUnit": {"state": "translated", "value": "%lld nodo"}}, "other": {"stringUnit": {"state": "translated", "value": "%lld nodos"}}}}}}},
     "Edit Again": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Editar de nuevo"}}}},
     "Discard Draft": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Descartar borrador"}}}},
     "This diff is too long to show in full. Open the PR on GitHub for the rest.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este diff es demasiado largo para mostrarlo entero. Abre la PR en GitHub para ver el resto."}}}},
@@ -1654,26 +1680,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Servidor"
-          }
-        }
-      }
-    },
-    "Set Aside": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apartar"
-          }
-        }
-      }
-    },
-    "Set aside": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Apartado"
           }
         }
       }
