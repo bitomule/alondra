@@ -103,6 +103,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     if !domain.state()?.agents.contains_key(&agent_id) {
         return Ok(Reply::Plain(json!({})));
     }
+    domain.live.observe(payload);
     match event.as_str() {
         "SessionStart" | "SessionEnd" => {
             let connected = event == "SessionStart";
@@ -516,6 +517,20 @@ mod tests {
         let (reply, _) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
             "tool_name": "mcp__plugin_alondra_alondra__domain_command"}), Some(6)).await;
         assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "allow");
+    }
+
+    #[tokio::test]
+    async fn hooks_of_a_known_session_are_observed_live_and_a_stranger_is_not() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into() });
+        let (_, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
+            "tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": "/Users/me/Projects/App"}), Some(6)).await;
+        result.unwrap();
+        hook(&domain, json!({"session_id": "stranger", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        let nodes = domain.live.nodes();
+        assert_eq!(nodes.iter().map(|node| node.session_id.as_str()).collect::<Vec<_>>(), ["session-a"]);
+        assert!(nodes[0].busy && nodes[0].tool.is_some());
     }
 
     struct FakeTerminal {
