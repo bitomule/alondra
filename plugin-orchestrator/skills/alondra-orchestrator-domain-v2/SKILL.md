@@ -50,7 +50,8 @@ ambiguous merge or interrupted execution, reconcile its external effects. Techni
 stay in their own channel and must not be synthesized as business Questions.
 
 For user-facing information use a Task or Request scoped `publish_information`. For a decision
-use `ask_question` or `request_action` with complete context and options. Present a final result
+use `ask_question` or `request_action` with complete context and options, each with a
+`description` when its label alone does not say what it means. Present a final result
 with `present_result`; wait for current User acceptance, then the assigned Agent calls
 `complete_task`. A report, invocation end, merge observation or User read receipt alone cannot
 complete the Task.

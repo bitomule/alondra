@@ -213,8 +213,8 @@ mod tests {
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-ab".into(), name: "Instance AB".into() });
         run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
         let options = vec![
-            QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] },
-            QuestionOption { id: "other".into(), label: "Other".into(), inputs: vec![InputSpec { id: "why".into(), kind: InputKind::Text, required: true }] },
+            QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "other".into(), label: "Other".into(), description: None, inputs: vec![InputSpec { id: "why".into(), kind: InputKind::Text, required: true }] },
         ];
         run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options });
         s

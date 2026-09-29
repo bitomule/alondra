@@ -59,7 +59,7 @@ impl World {
     }
 
     pub fn question(&mut self, id: &str, body: &str, options: &[(&str, bool)]) {
-        let options = options.iter().map(|(o, writes)| QuestionOption { id: (*o).into(), label: format!("Option {o}"), inputs: if *writes { vec![InputSpec { id: "why".into(), kind: InputKind::Text, required: true }] } else { vec![] } }).collect();
+        let options = options.iter().map(|(o, writes)| QuestionOption { id: (*o).into(), label: format!("Option {o}"), description: None, inputs: if *writes { vec![InputSpec { id: "why".into(), kind: InputKind::Text, required: true }] } else { vec![] } }).collect();
         self.run("agent-a", Command::AskQuestion { attachments: vec![], interaction_id: id.into(), scope: Self::task(), recipient: Recipient::User, body: body.into(), blocking: true, options });
     }
 

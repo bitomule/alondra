@@ -632,7 +632,7 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     execute(&mut store, &agent(), "question", Command::AskQuestion {
         attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Ship?".into(), blocking: true,
-        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }],
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
     });
     execute(&mut store, &agent(), "withdraw", Command::WithdrawQuestion { interaction_id: "question-1".into() });
     let orchestrator = Actor::Orchestrator { generation: 0 };
@@ -687,6 +687,7 @@ fn restart_preserves_decisions_documents_and_relations() {
             options: vec![QuestionOption {
                 id: "continue".into(),
                 label: "Continue".into(),
+                description: None,
                 inputs: vec![],
             }],
         },
@@ -832,6 +833,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
             options: vec![QuestionOption {
                 id: "yes".into(),
                 label: "Yes".into(),
+                description: None,
                 inputs: vec![],
             }],
             attachments: vec![attachment("question-file")],
