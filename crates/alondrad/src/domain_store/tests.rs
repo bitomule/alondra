@@ -653,6 +653,25 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
 }
 
 #[test]
+fn a_schema_7_store_is_migrated_in_place_with_its_rows() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false });
+    store.conn.execute_batch("ALTER TABLE requests DROP COLUMN auto_merge;").unwrap();
+    store.conn.pragma_update(None, "user_version", 7).unwrap();
+    drop(store);
+    let mut migrated = DomainStore::open(&fixture.path()).unwrap();
+    let version: i64 = migrated.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
+    assert_eq!(version, SCHEMA_VERSION);
+    let old = migrated.load().unwrap().requests[&"old".into()].clone();
+    assert_eq!((old.body.as_str(), old.auto_merge), ("Made before", false));
+    execute(&mut migrated, &user(), "new", Command::CreateRequest { request_id: "new".into(), body: "After".into(), auto_merge: true });
+    drop(migrated);
+    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert!(reopened.requests[&"new".into()].auto_merge && !reopened.requests[&"old".into()].auto_merge);
+}
+
+#[test]
 fn a_requests_auto_merge_choice_survives_restart() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();

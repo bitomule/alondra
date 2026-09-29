@@ -9,7 +9,7 @@ enum DemoFixture {
             ["id": "pr", "label": "PR handling", "kind": "choice", "default": "review", "builtin": true,
              "values": [
                 ["id": "review", "label": "review each PR", "description": "Each PR the node opens is a card for you; the node waits for your merge"],
-                ["id": "auto_merge", "label": "auto-merge", "description": "Alondra merges the node's PR once its checks pass"]]],
+                ["id": "auto_merge", "label": "auto-merge", "description": "The node merges its own PR once its checks pass"]]],
             ["id": "effort", "label": "Effort", "kind": "choice", "default": "auto", "builtin": true,
              "values": [
                 ["id": "auto", "label": "auto", "description": "The orchestrator picks the model and effort from the task"],
