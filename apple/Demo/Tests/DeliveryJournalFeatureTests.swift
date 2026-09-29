@@ -7,7 +7,12 @@ import Testing
 
 @MainActor struct DeliveryJournalFeatureTests {
     private let scope = CommandScope(server: URL(string: "https://relay.test")!, deviceID: "phone", credentialRevision: "mac-a", generation: 1)
-    private let attempt = DeliveryAttempt(id: 7, sessionID: "s", channel: "menu_decision", state: "uncertain", version: 2, questionID: 42)
+    private let attempt = Self.attempt(version: 2)
+
+    private static func attempt(version: UInt64) -> DomainV2.DeliveryAttempt {
+        let json = #"{"attempt_id":7,"message_id":42,"state":"uncertain","current_state":"uncertain","version":\#(version),"recipient_kind":"agent","task_id":"t1","interaction_id":"q42"}"#
+        return try! DomainV2.decode(DomainV2.DeliveryAttempt.self, from: Data(json.utf8))
+    }
 
     @Test func successfulRefreshClearsErrorAndKeepsUnchangedObservedDecision() async {
         let snapshot = DeliveryJournalSnapshot(scope: scope, macID: "mac-a", attempts: [attempt])
@@ -32,7 +37,7 @@ import Testing
         await store.send(.select(7)) { $0.selected = self.attempt }
         await store.send(.terminalChecked(true)) { $0.terminalChecked = true }
         await store.send(.duplicateRisk(true)) { $0.duplicateRisk = true }
-        let changed = DeliveryJournalSnapshot(scope: scope, macID: "mac-a", attempts: [DeliveryAttempt(id: 7, sessionID: "s", channel: "menu_decision", state: "uncertain", version: 3, questionID: 42)])
+        let changed = DeliveryJournalSnapshot(scope: scope, macID: "mac-a", attempts: [Self.attempt(version: 3)])
         await store.send(.loaded(1, changed)) {
             $0.snapshot = changed; $0.selected = nil; $0.terminalChecked = false; $0.duplicateRisk = false
             $0.error = DeliveryJournalError.changed.localizedDescription

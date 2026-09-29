@@ -1,3 +1,5 @@
+import AlondraAttachmentsFeature
+import AlondraDomain
 import AlondraQuestionsFeature
 import AlondraShared
 import AlondraWorkspaceFeature
@@ -7,80 +9,83 @@ import Testing
 
 @MainActor
 struct AttachedQuestionIntegrationTests {
-    enum FailureRoute { case submission, recovery, attachmentImport }
+    enum FailureRoute: CaseIterable { case submission, attachmentUpload }
 
-    @Test(arguments: [false, true], [FailureRoute.submission, .recovery, .attachmentImport])
+    private let file = AttachmentDraft(id: UUID(uuidString: "00000000-0000-0000-0000-000000000071")!, name: "proof.txt", data: Data("proof".utf8))
+
+    private func card(questions: [String] = ["q1"]) -> (TriageCardFeature.State, DomainWorkspace) {
+        var fixture = V2Fixture()
+        let root = fixture.pullRequest(5, questions: questions)
+        return (TriageCardFeature.State(item: root, workspace: fixture.workspace, identity: V2Fixture.workIdentity), fixture.workspace)
+    }
+
+    @Test(arguments: [false, true], FailureRoute.allCases)
     func attachedFailuresUseGlobalToast(inCard: Bool, route: FailureRoute) async throws {
-        let recovery = route == .recovery
-        let decoder = JSONDecoder()
-        let question = try decoder.decode(Question.self, from: Data(#"{"id":1,"sessionId":"s","title":"Proceed?","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":1}"#.utf8))
-        let pr = try decoder.decode(PullRequest.self, from: Data(#"{"id":5,"sessionId":"s","url":"https://example.com/p/5","repo":"a/b","number":5,"title":"PR","state":"open","openedAt":1}"#.utf8))
-        let command = UUID()
-        var child = ServicePullRequestFeature.State(pr: pr, questions: [question])
-        child.questionFeatures[id: 1]?.question.draft.text = "Keep the answer"
-        child.questionFeatures[id: 1]?.question.isSubmitting = route == .submission
-        child.questionFeatures[id: 1]?.question.needsReconciliation = recovery
-        child.questionFeatures[id: 1]?.question.uncertainCommandID = recovery ? command : nil
+        var (card, _) = card()
+        var child = try #require(card.pullRequest)
+        child.questionFeatures[id: "q1"]?.question.draft.selectedOption = "reply"
+        child.questionFeatures[id: "q1"]?.question.draft.text = "Keep the answer"
+        switch route {
+        case .submission:
+            child.questionFeatures[id: "q1"]?.question.isSubmitting = true
+        case .attachmentUpload:
+            child.questionFeatures[id: "q1"]?.question.attachmentPicker.entries = [.init(draft: file, status: .uploading)]
+            child.questionFeatures[id: "q1"]?.question.pendingSubmission = .answer
+        }
         var initial = ServiceRootFeature.State()
         if inCard {
-            var card = TriageCardFeature.State(item: .pullRequest(pr), identity: nil)
             card.pullRequest = child
             initial.triage.cards = [card]
         } else { initial.pullRequest = child }
         let clock = TestClock()
         let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: { $0.continuousClock = clock }
-        let failure: QuestionFeature.Action
-        switch route {
-        case .submission: failure = .submissionFinished(0, .failed("Rejected"))
-        case .recovery: failure = .commandResolved(command, rejection: "Rejected")
-        case .attachmentImport: failure = .attachedSubmissionFailed("Rejected")
+        let failure: QuestionFeature.Action = switch route {
+        case .submission: .submissionFinished(0, V2Fixture.rejected())
+        case .attachmentUpload: .attachmentPicker(.uploaded(file.id, .failure(AttachmentFailure(message: "Rejected"))))
         }
-        let action = ServicePullRequestFeature.Action.attachedQuestion(.element(id: 1, action: .question(failure)))
-        let task = store.send(inCard ? .triage(.cards(.element(id: "p5", action: .pullRequest(action)))) : .pullRequests(.element(id: 5, action: action)))
+        let action = ServicePullRequestFeature.Action.attachedQuestion(.element(id: "q1", action: .question(failure)))
+        let task = store.send(inCard ? .triage(.cards(.element(id: card.id, action: .pullRequest(action)))) : .pullRequests(.element(id: "pr-5", action: action)))
         #expect(store.notice?.event == .failure(couldNotSendMessage("Rejected")))
-        let draft = inCard ? store.triage.cards[id: "p5"]?.pullRequest?.questionFeatures[id: 1]?.question.draft : store.pullRequest?.questionFeatures[id: 1]?.question.draft
-        #expect(draft?.text == "Keep the answer")
+        let question = inCard ? store.triage.cards[id: card.id]?.pullRequest?.questionFeatures[id: "q1"]?.question
+            : store.pullRequest?.questionFeatures[id: "q1"]?.question
+        #expect(question?.draft.text == "Keep the answer")
+        #expect(question?.pendingSubmission == nil && question?.isSubmitting == false)
         await clock.advance(by: .seconds(6))
         await task.finish()
         #expect(store.notice == nil)
     }
 
     @Test
-    func cardAttachedQuestionPreservesDraftAcrossSnapshotAndDoesNotDuplicateSubmission() async throws {
-        let decoder = JSONDecoder()
-        let question = try decoder.decode(Question.self, from: Data(#"{"id":1,"sessionId":"s","title":"Proceed?","options":[],"links":[],"attachments":[],"origin":"ask","status":"open","askedAt":1}"#.utf8))
-        let pr = try decoder.decode(PullRequest.self, from: Data(#"{"id":5,"sessionId":"s","url":"https://example.com/p/5","repo":"a/b","number":5,"title":"PR","state":"open","openedAt":1}"#.utf8))
-        let clock = TestClock()
-        let calls = LockIsolated(0)
-        let started = AsyncStream<Void>.makeStream()
-        let store = Store(initialState: TriageCardFeature.State(item: .pullRequest(pr), identity: nil)) { TriageCardFeature() } withDependencies: {
-            $0.questionWorkService = QuestionWorkService(submit: { operation in
-                calls.withValue { $0 += 1 }
-                started.continuation.yield(())
-                #expect(operation == .answer(id: 1, text: "Keep this draft", option: nil, attachments: []))
-                try? await clock.sleep(for: .seconds(1))
-                return .failed("Offline")
-            }, document: { _ in "" })
+    func cardAttachedQuestionPreservesDraftAcrossRefreshAndDoesNotDuplicateSubmission() async throws {
+        let (card, workspace) = card()
+        let pr = try #require(card.pullRequest?.lastKnownCard)
+        let log = CommandLog()
+        let gate = CommandGate()
+        let store = Store(initialState: card) { TriageCardFeature() } withDependencies: {
+            $0.domainWorkspace = .scripted(log) { _ in await gate.run() }
         }
-        await store.send(.pullRequest(.contextUpdated(reports: [], questions: [question]))).finish()
-        #expect(store.pullRequest?.questions == [question])
-        #expect(store.pullRequest?.questionFeatures.map(\.id) == [1])
-        await store.send(.pullRequest(.attachedQuestion(.element(id: 1, action: .question(.textChanged("Keep this draft")))))).finish()
-        await store.send(.pullRequest(.contextUpdated(reports: [], questions: [question]))).finish()
-        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.draft.text == "Keep this draft")
-        let submission = store.send(.pullRequest(.attachedQuestion(.element(id: 1, action: .question(.answerTapped)))))
-        #expect(store.pullRequest?.questionFeatures[id: 1]?.question.isSubmitting == true)
-        var iterator = started.stream.makeAsyncIterator()
-        _ = await iterator.next()
-        await store.send(.pullRequest(.attachedQuestion(.element(id: 1, action: .question(.answerTapped))))).finish()
-        await clock.advance(by: .seconds(1))
+        #expect(store.pullRequest?.questions.map(\.id) == ["q1"])
+        #expect(store.pullRequest?.questionFeatures.map(\.id) == ["q1"])
+        func question(_ action: QuestionFeature.Action) -> TriageCardFeature.Action {
+            .pullRequest(.attachedQuestion(.element(id: "q1", action: .question(action))))
+        }
+        await store.send(question(.optionSelected("reply"))).finish()
+        await store.send(question(.textChanged("Keep this draft"))).finish()
+        await store.send(.pullRequest(.updated(pr, workspace))).finish()
+        #expect(store.pullRequest?.questionFeatures[id: "q1"]?.question.draft.text == "Keep this draft")
+        let submission = store.send(question(.answerTapped))
+        #expect(store.pullRequest?.questionFeatures[id: "q1"]?.question.isSubmitting == true)
+        await gate.waitUntilStarted()
+        await store.send(question(.answerTapped)).finish()
+        await gate.release(V2Fixture.rejected("Offline"))
         await submission.finish()
-        #expect(calls.value == 1)
-        let completed = try #require(store.pullRequest?.questionFeatures[id: 1]?.question)
+        #expect(log.count == 1)
+        #expect(log.intents.first == .answer("q1", optionID: "reply", inputs: ["text": .text(value: "Keep this draft")]))
+        let completed = try #require(store.pullRequest?.questionFeatures[id: "q1"]?.question)
         #expect(!completed.isSubmitting && completed.notice == "Offline" && completed.noticeIsSubmissionFailure)
         #expect(completed.draft.text == "Keep this draft")
-        await store.send(.pullRequest(.contextUpdated(reports: [], questions: []))).finish()
+        let (answered, after) = self.card(questions: [])
+        await store.send(.pullRequest(.updated(answered.pullRequest?.lastKnownCard, after))).finish()
         #expect(store.pullRequest?.questions.isEmpty == true && store.pullRequest?.questionFeatures.isEmpty == true)
-        started.continuation.finish()
     }
 }

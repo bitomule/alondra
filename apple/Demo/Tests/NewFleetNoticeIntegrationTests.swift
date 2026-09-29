@@ -85,7 +85,7 @@ struct NewFleetNoticeIntegrationTests {
                 projects: { [] }, options: { _ in fatalError("Unexpected catalogue read") },
                 issues: { _ in fatalError("Unexpected issue read") },
                 captureSubmissionScope: {
-                    .init(upload: { _ in fatalError("No attachments") }, isCurrent: { true }, create: { body in
+                    .init(upload: { _ in fatalError("No attachments") }, isCurrent: { true }, create: { body, _ in
                         sent.withValue { $0.append(body) }
                         return .failed("Rejected")
                     })
@@ -116,7 +116,7 @@ struct NewFleetNoticeIntegrationTests {
             sections: [.init(name: "Alondra", nodes: [entry])])
         let closed = LockIsolated<[String]>([])
         let store = Store(initialState: initial) { ServiceRootFeature() } withDependencies: {
-            $0.nodeOperations = .init(send: { _, _ in fatalError("Unexpected send") }, close: { id in
+            $0.nodeOperations = .init(send: { _, _, _ in fatalError("Unexpected send") }, close: { id, _ in
                 closed.withValue { $0.append(id) }
                 return .rejected("Worktree still present")
             }, threads: { _ in [] })

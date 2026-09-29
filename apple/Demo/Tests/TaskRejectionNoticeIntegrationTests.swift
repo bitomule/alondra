@@ -11,43 +11,17 @@ struct TaskRejectionNoticeIntegrationTests {
     enum Route: CaseIterable { case archive, withdraw, cancelSheet, reopenSheet, cancelPath, reopenPath }
 
     @Test(.timeLimit(.minutes(1)), arguments: Route.allCases, [false, true])
-    func taskFailuresUseToastAndUncertainCommandsStayBlocked(route: Route, uncertain: Bool) async throws {
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let reopening = route == .reopenSheet || route == .reopenPath
-        let task = try decoder.decode(WorkTask.self, from: Data("""
-        {"id":"t-1","request":"r-1","title":"Task","state":"\(reopening ? "done" : "running")","state_since":1,"created_at":1}
-        """.utf8))
-        let request = try decoder.decode(WorkRequest.self, from: Data("""
-        {"id":"r-1","text":"Request","created_at":1,"state":"\(route == .withdraw ? "defining" : "in_progress")","tasks":\(route == .withdraw ? "[]" : "[\"t-1\"]")}
-        """.utf8))
-        var initial = ServiceRootFeature.State()
-        initial.tasks.taskBoard = TaskBoard(requests: [request], tasks: [task])
-        initial.tasks.board.canArchive = true
-        var detail = TaskDetailFeature.State(taskID: task.id)
-        detail.task = task
-        initial.tasks.detail = detail
-        initial.tasks.taskPath.append(detail)
-        let pathID = try #require(initial.tasks.taskPath.ids.first)
-        func detailAction(_ action: TaskDetailFeature.Action) -> ServiceRootFeature.Action {
-            switch route {
-            case .cancelPath, .reopenPath: return .tasks(.taskPath(.element(id: pathID, action: action)))
-            default: return .tasks(.detail(.presented(action)))
-            }
-        }
-        func resolved(_ id: UUID) -> ServiceRootFeature.Action {
-            switch route {
-            case .archive: return .tasks(.board(.commandResolved(id, rejection: "Rejected")))
-            case .withdraw: return .tasks(.withdrawalResolved(id, rejection: "Rejected"))
-            default: return detailAction(.commandResolved(id, rejection: "Rejected"))
-            }
-        }
-        let command = UUID()
-        let result: TaskMutationOutcome = uncertain ? .unknown(command) : .rejected("Rejected")
-        let calls = LockIsolated<[String]>([])
+    func taskFailuresUseToastAndUnknownOutcomesRetryTheSameCommand(route: Route, uncertain: Bool) async throws {
+        let finished = route == .reopenSheet || route == .reopenPath || route == .archive
+        var fixture = V2Fixture()
+        fixture.tasks = route == .withdraw ? [] : [V2Fixture.makeTask("t1", state: finished ? .done : .running)]
+        let actions = finished ? [fixture.action(.reopenTask), fixture.action(.archiveTask)] : [fixture.action(.cancelTask)]
+        let log = CommandLog()
         let observed = AsyncStream<Void>.makeStream()
+        let loaded = AsyncStream<Void>.makeStream()
         let clock = TestClock()
-        let store = Store(initialState: initial) {
+        let result = uncertain ? DomainCommandResult.uncertain : V2Fixture.rejected()
+        let store = Store(initialState: ServiceRootFeature.State()) {
             CombineReducers {
                 ServiceRootFeature()
                 Reduce<ServiceRootFeature.State, ServiceRootFeature.Action> { _, action in
@@ -55,6 +29,8 @@ struct TaskRejectionNoticeIntegrationTests {
                     case .tasks(.board(.archiveFinished)), .tasks(.withdrawFinished),
                          .tasks(.detail(.presented(.mutationFinished))),
                          .tasks(.taskPath(.element(_, .mutationFinished))): observed.continuation.yield(())
+                    case .tasks(.detail(.presented(.actionsLoaded))), .tasks(.taskPath(.element(_, .actionsLoaded))):
+                        loaded.continuation.yield(())
                     default: break
                     }
                     return .none
@@ -62,62 +38,82 @@ struct TaskRejectionNoticeIntegrationTests {
             }
         } withDependencies: {
             $0.continuousClock = clock
-            $0.taskOperations = TaskOperations(
-                withdraw: { value in #expect(value.id == "r-1"); calls.withValue { $0.append("withdraw") }; return result },
-                cancel: { value in #expect(value.id == "t-1"); calls.withValue { $0.append("cancel") }; return result },
-                reopen: { value in #expect(value.id == "t-1"); calls.withValue { $0.append("reopen") }; return result },
-                archiveCompleted: { calls.withValue { $0.append("archive") }; return result }, details: { _ in nil })
+            $0.uuid = .incrementing
+            $0.domainWorkspace = .scripted(log, taskActions: actions) { _ in result }
         }
-        // Enter the tasks scope to mount the seeded sheet and stack lifetimes.
-        // A root-only action does not run this scoped reducer.
-        let presentation = store.send(.tasks(.showSchedules(false)))
-        let submit: ServiceRootFeature.Action
+        await store.send(.triage(.triage(.workspaceUpdated(fixture.update())))).finish()
+        // Presenting a detail keeps an effect alive until it is dismissed, so the test waits
+        // for the server's task actions instead of for the presentation to end.
+        var actionsLoaded = loaded.stream.makeAsyncIterator()
+        let presentation: StoreTask?
         switch route {
-        case .archive: submit = .tasks(.board(.archiveTapped))
-        case .withdraw:
-            await store.send(.tasks(.withdrawRequested("r-1"))).finish()
-            try #require(store.tasks.withdrawingRequestID == "r-1")
-            submit = .tasks(.withdrawConfirmed)
-        default:
-            if !reopening { await store.send(detailAction(.cancelTapped)).finish() }
-            submit = detailAction(reopening ? .reopenTapped : .cancelConfirmed)
+        case .cancelSheet, .reopenSheet: presentation = store.send(.tasks(.openTask("t1")))
+        case .cancelPath, .reopenPath: presentation = store.send(.tasks(.pushTask("t1")))
+        case .archive, .withdraw: presentation = nil
         }
-        let operation = store.send(submit)
+        if presentation != nil { _ = await actionsLoaded.next() }
+        let pathID = store.tasks.taskPath.ids.first
+        func detailAction(_ action: TaskDetailFeature.Action) -> ServiceRootFeature.Action {
+            if let pathID { return .tasks(.taskPath(.element(id: pathID, action: action))) }
+            return .tasks(.detail(.presented(action)))
+        }
+        func submit() async throws -> StoreTask {
+            switch route {
+            case .archive:
+                try #require(store.tasks.board.canArchive)
+                return store.send(.tasks(.board(.archiveTapped)))
+            case .withdraw:
+                await store.send(.tasks(.withdrawRequested(V2Fixture.request))).finish()
+                try #require(store.tasks.withdrawingRequestID == V2Fixture.request)
+                return store.send(.tasks(.withdrawConfirmed))
+            case .cancelSheet, .cancelPath:
+                await store.send(detailAction(.cancelTapped)).finish()
+                return store.send(detailAction(.cancelConfirmed))
+            case .reopenSheet, .reopenPath:
+                return store.send(detailAction(.reopenTapped))
+            }
+        }
+        let expected: DomainIntent = switch route {
+        case .archive: .archiveTask("t1", archived: true)
+        case .withdraw: .closeRequest(V2Fixture.request)
+        case .cancelSheet, .cancelPath: .cancelTask("t1")
+        case .reopenSheet, .reopenPath: .reopenTask("t1")
+        }
         var iterator = observed.stream.makeAsyncIterator()
+        let operation = try await submit()
         _ = await iterator.next()
-        let expected = route == .archive ? "archive" : route == .withdraw ? "withdraw" : reopening ? "reopen" : "cancel"
-        #expect(calls.value == [expected])
+        #expect(log.intents == [expected])
         if uncertain {
             #expect(store.notice == nil)
-            await store.send(submit).finish()
-            #expect(calls.value == [expected])
-            await store.send(resolved(UUID())).finish()
+            await operation.finish()
+            let retry = try await submit()
+            _ = await iterator.next()
+            await retry.finish()
+            #expect(log.intents == [expected, expected])
+            #expect(Set(log.commandIDs).count == 1, "trying again after an unknown outcome is the same command")
             #expect(store.notice == nil)
-            let recovery = store.send(resolved(command))
-            #expect(store.notice?.event == .failure(couldNotSendMessage("Rejected")))
-            await clock.advance(by: .seconds(6))
-            await recovery.finish()
         } else {
             #expect(store.notice?.event == .failure(couldNotSendMessage("Rejected")))
             await clock.advance(by: .seconds(6))
+            await operation.finish()
         }
-        await operation.finish()
         #expect(store.notice == nil)
         // Duplicate and stale completions cannot create a second toast.
         for epoch in [UInt64.max, 0] {
             let stale: ServiceRootFeature.Action
             switch route {
-            case .archive: stale = .tasks(.board(.archiveFinished(.rejected("Late"), epoch)))
-            case .withdraw: stale = .tasks(.withdrawFinished("r-1", .rejected("Late")))
-            default: stale = detailAction(.mutationFinished(.rejected("Late"), reopening ? .reopen : .cancel, epoch))
+            case .archive: stale = .tasks(.board(.archiveFinished(["t1": .rejected("Late")], epoch)))
+            case .withdraw: stale = .tasks(.withdrawFinished(V2Fixture.request, .rejected("Late")))
+            default: stale = detailAction(.mutationFinished(.rejected("Late"), epoch))
             }
             await store.send(stale).finish()
             #expect(store.notice == nil)
         }
-        #expect(calls.value == [expected])
-        await store.send(.tasks(.detail(.dismiss))).finish()
-        await store.send(.tasks(.taskPath(.popFrom(id: pathID)))).finish()
-        await presentation.finish()
+        #expect(log.count == (uncertain ? 2 : 1))
+        if let pathID { await store.send(.tasks(.taskPath(.popFrom(id: pathID)))).finish() }
+        if store.tasks.detail != nil { await store.send(.tasks(.detail(.dismiss))).finish() }
+        await presentation?.finish()
         observed.continuation.finish()
+        loaded.continuation.finish()
     }
 }
