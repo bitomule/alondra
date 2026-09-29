@@ -17,6 +17,7 @@ rust_test(
         "//crates/core:fixtures/ctrl_trivial_2.jsonl",
         "//crates/core:fixtures/quill.jsonl",
         "//crates/core:src/domain_v2/tests.rs",
+        "//fixtures/client-v2",
         "//fixtures/domain-v2:acceptance.json",
     ],
     crate = ":alondrad",
