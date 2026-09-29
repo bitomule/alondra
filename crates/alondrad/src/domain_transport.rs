@@ -111,6 +111,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
             lifecycle::observe_instance(domain, &agent_id, connected, &event)?;
             if !connected {
                 domain.revoke_agent(&session_id)?;
+                crate::domain_sessions::remove_for(domain.home(), &agent_id)?;
             }
             Ok(Reply::Plain(json!({})))
         }

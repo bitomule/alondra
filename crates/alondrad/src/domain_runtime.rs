@@ -57,6 +57,9 @@ impl DomainRuntime {
                 }
             })
     }
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
+    }
     pub fn state(&self) -> Result<DomainState> {
         self.store.lock().expect("domain store poisoned").load()
     }
