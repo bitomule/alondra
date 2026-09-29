@@ -41,8 +41,8 @@ fn instructions_for_mode(role: Role, user: &str, v2: bool) -> String {
     };
     let common = format!("Alondra domain protocol 2. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every mutation needs a fresh expected_revision and a stable command_id; retry the same exact payload with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant domain authority.");
     match role {
-        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. Ending a Claude turn does not complete it. The current MCP has no exact merge authorization read adapter; do not execute a domain v2 merge until one is available. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions."),
-        Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
+        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. Ending a Claude turn does not complete it. The current MCP has no exact merge authorization read adapter; do not execute a domain v2 merge until one is available. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a question of yours that no longer needs an answer with withdraw_question."),
+        Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a node that already has the context; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a question you asked that no longer needs an answer with withdraw_question, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the live nodes a Task or project could go to. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
     }
 }
 
@@ -212,6 +212,14 @@ fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
         // A v2 producer must not see the old business mutators, whose final-report
         // and automatic-merge semantics contradict the durable domain contract.
         list.retain(|tool| v2_tool_allowed(role, tool["name"].as_str().unwrap_or_default()));
+        for tool in &mut list {
+            if tool["name"] == "launch" {
+                tool["description"] = json!(format!("Launch a new node with the Alondra plugin for a Task no connected node works on: it gets the Task's mission (its title and its Request) unless you pass a prompt, the options {user} chose for the Request, its domain capability, and the Task. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."));
+                let properties = tool["inputSchema"]["properties"].as_object_mut().expect("launch properties");
+                properties.remove("request_id");
+                tool["inputSchema"]["required"] = json!(["name", "cwd", "task"]);
+            }
+        }
     } else {
         // A HOME without a committed cutover marker keeps the old MCP catalog.
         list.retain(|tool| !matches!(tool["name"].as_str().unwrap_or_default(),
@@ -223,6 +231,8 @@ fn tools_for_mode(role: Role, user: &str, v2: bool) -> Value {
 fn v2_tool_allowed(role: Role, name: &str) -> bool {
     matches!(name, "domain_command" | "ask")
         || (role == Role::Node && name == "register_pr")
+        || (role == Role::Orchestrator && matches!(name, "launch" | "send" | "interrupt" | "machine" | "schedule_create" | "fleet" | "node" | "candidates"))
+        || (role == Role::Node && name == "wait_for_machine")
 }
 
 pub fn caller() -> Value {
@@ -321,6 +331,41 @@ fn call(client: &Client, role: Role, user: &str, name: &str, args: &Value) -> Re
                 anyhow::bail!("ask requires a typed ask_question domain command");
             }
             serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
+        }
+        "launch" | "send" | "interrupt" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_post(&format!("/v2/orchestrator/{name}"), &bearer, args)?)?
+        }
+        "schedule_create" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_post("/v2/orchestrator/schedules", &bearer, args)?)?
+        }
+        "fleet" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&fleet_summary(&client.domain_get("/v2/orchestrator/fleet", &bearer)?, flag(args, "all")))?
+        }
+        "node" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            let key = args.get("node").and_then(Value::as_str).unwrap_or("");
+            let page = if flag(args, "history") { Page::History { before: None } } else { Page::Recent };
+            serde_json::to_string_pretty(&node_view(&client.domain_get(&format!("/v2/orchestrator/node?node={}", urlencode(key)), &bearer)?, page))?
+        }
+        "candidates" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            let query: Vec<String> = ["task", "repo"].iter()
+                .filter_map(|k| args.get(*k).and_then(Value::as_str).filter(|v| !v.trim().is_empty()).map(|v| format!("{k}={}", urlencode(v))))
+                .collect();
+            serde_json::to_string_pretty(&client.domain_get(&format!("/v2/orchestrator/candidates?{}", query.join("&")), &bearer)?)?
+        }
+        "wait_for_machine" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");
+            client.domain_post("/v2/agents/waiting-machine", &bearer, &json!({"reason": reason}))?;
+            "Noted: you are waiting for the machine.".to_string()
+        }
+        "machine" if domain_v2_mode() => {
+            let bearer = domain_bearer()?;
+            serde_json::to_string_pretty(&client.domain_get("/v2/orchestrator/machine", &bearer)?)?
         }
         "domain_command" | "register_pr" => {
             let bearer = domain_bearer()?;
@@ -868,7 +913,7 @@ mod tests {
         for role in [Role::Node, Role::Orchestrator] {
             assert!(v2_tool_allowed(role, "domain_command"));
             assert!(v2_tool_allowed(role, "ask"));
-            for legacy in ["report", "define", "new_task", "schedule_create", "claim_task"] {
+            for legacy in ["report", "define", "new_task", "claim_task"] {
                 assert!(!v2_tool_allowed(role, legacy), "{legacy}");
             }
         }
@@ -876,11 +921,47 @@ mod tests {
         assert!(!v2_tool_allowed(Role::Node, "domain_cursor"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "domain_cursor"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "register_pr"));
-        assert!(!v2_tool_allowed(Role::Orchestrator, "launch"));
-        assert!(!v2_tool_allowed(Role::Orchestrator, "fleet"));
+        for runtime in ["launch", "send", "interrupt", "machine", "schedule_create", "fleet", "node", "candidates"] {
+            assert!(v2_tool_allowed(Role::Orchestrator, runtime), "{runtime}");
+            assert!(!v2_tool_allowed(Role::Node, runtime), "{runtime}");
+        }
+        assert!(v2_tool_allowed(Role::Node, "wait_for_machine"));
+        assert!(!v2_tool_allowed(Role::Orchestrator, "wait_for_machine"));
+        let catalog = tools_for_mode(Role::Orchestrator, "Ana", true);
+        let launch = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "launch").unwrap();
+        assert_eq!(launch["inputSchema"]["required"], json!(["name", "cwd", "task"]));
+        assert!(launch["inputSchema"]["properties"].get("request_id").is_none());
         assert!(!v2_tool_allowed(Role::Node, "merge_authorization"));
         assert!(!v2_tool_allowed(Role::Orchestrator, "merge_authorization"));
         assert!(!v2_tool_allowed(Role::Node, "launch"));
+    }
+
+    #[test]
+    fn the_v2_fleet_and_node_answers_read_through_the_8ccd131_summaries() {
+        let fleet = json!({
+            "nodes": [{"session_id": "agent-a", "name": "Instance A", "short_id": "", "project": "App", "state": "working", "alive": true, "in_daemon": false}],
+            "open_questions": [{"id": "q", "title": "Ship?", "node_name": "Instance A", "to_orchestrator": false, "action": false, "session_id": "agent-a"}],
+            "reports": [{"id": "info", "title": "Found it", "kind": "notice", "read": false, "node_name": "Instance A", "session_id": "agent-a"}],
+            "orchestrator_messages": [{"id": 3, "text": "New request", "handed_at": null}],
+            "requests": [{"id": "r", "state": "working", "text": "Make the editor readable"}],
+            "tasks": [{"id": "t1", "title": "Colours", "state": "running", "request": "r", "depends_on": [], "assignee": {"session_id": "agent-a"}}],
+            "machine": {"cpus": 10}, "usage": null,
+        });
+        let summary = fleet_summary(&fleet, false);
+        assert_eq!(summary["nodes"][0]["name"], "Instance A");
+        assert_eq!(summary["open_questions"][0]["id"], "q");
+        assert_eq!(summary["unread_reports"][0]["id"], "info");
+        assert_eq!(summary["orchestrator_messages"][0]["id"], 3);
+        assert_eq!(summary["requests"][0]["tasks"][0]["node"], "Instance A");
+        let node = json!({"node": {"name": "Instance A", "state": "working", "alive": true},
+            "questions": [{"id": "q", "title": "Ship?", "status": "open", "blocking": false}, {"id": "old", "title": "Before", "status": "answered"}],
+            "reports": [{"id": "info", "title": "Found it", "kind": "notice", "read": false}],
+            "messages": [{"id": 4, "from": "alondra", "text": "Answer", "handed_at": null}], "messages_held_for_turn_end": 1, "timeline": []});
+        let view = node_view(&node, Page::Recent);
+        assert_eq!(view["node"]["name"], "Instance A");
+        assert_eq!(view["open_questions"].as_array().unwrap().len(), 1);
+        assert_eq!(view["messages"][0]["id"], 4);
+        assert_eq!(view["messages_held_for_turn_end"], 1);
     }
 
     #[test]

@@ -625,6 +625,34 @@ fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
 }
 
 #[test]
+fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &agent(), "question", Command::AskQuestion {
+        attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task-1".into() },
+        recipient: Recipient::User, body: "Ship?".into(), blocking: true,
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+    });
+    execute(&mut store, &agent(), "withdraw", Command::WithdrawQuestion { interaction_id: "question-1".into() });
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    execute(&mut store, &orchestrator, "retitle", Command::RetitleTask { task_id: "task-1".into(), title: "Editor colours".into() });
+    execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into() });
+    execute(&mut store, &orchestrator, "close-2", Command::CloseRequest { request_id: "request-2".into(),
+        answer: Some("Main is green".into()), withdrawn: false, title: Some("CI status".into()) });
+    execute(&mut store, &user(), "request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into() });
+    execute(&mut store, &user(), "close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: None });
+    let before = store.load().unwrap();
+    drop(store);
+    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert_eq!(reopened, before);
+    assert!(reopened.interactions[&"question-1".into()].withdrawn);
+    assert_eq!(reopened.tasks[&"task-1".into()].title, "Editor colours");
+    assert_eq!(reopened.requests[&"request-2".into()].answer.as_deref(), Some("Main is green"));
+    assert!(reopened.requests[&"request-3".into()].withdrawn);
+}
+
+#[test]
 fn restart_preserves_decisions_documents_and_relations() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -938,9 +966,7 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
         &mut store,
         &user(),
         "close-request",
-        Command::CloseRequest {
-            request_id: "request-1".into(),
-        },
+        Command::CloseRequest { request_id: "request-1".into(), answer: None, withdrawn: false, title: None },
     );
     let before = store.load().unwrap();
     let receipts = count(&store, "semantic_receipts");
@@ -1131,35 +1157,6 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
 }
 
 #[test]
-fn import_replaces_a_projection_cached_before_it() {
-    let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    let empty = store.load().unwrap();
-    let before = store.project_bounded(1 << 20).unwrap();
-    let mut imported = empty.clone();
-    imported.requests.insert(
-        "legacy-request".into(),
-        Request {
-            id: "legacy-request".into(),
-            body: "Imported mission".into(),
-            closed: false,
-        },
-    );
-    assert_eq!(imported.revision, empty.revision);
-    store
-        .import_initial(
-            &imported,
-            &[],
-            1,
-            &crate::domain_migration::LegacyScheduleInventory::default(),
-        )
-        .unwrap();
-    let after = store.project_bounded(1 << 20).unwrap();
-    assert_ne!(after, before);
-    assert_eq!(after, serde_json::to_vec(&imported.projection()).unwrap());
-}
-
-#[test]
 fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
@@ -1268,7 +1265,7 @@ fn a_request_and_what_the_user_chose_for_its_launch_commit_together_or_not_at_al
     assert!(matches!(create(&mut store, "empty", "request-1", "  "), Err(StoreError::Domain(_))), "a refused request records no launch");
     assert!(store.request_launch(&"request-1".into()).unwrap().is_none());
     assert!(store.load().unwrap().requests.is_empty());
-    let not_a_request = envelope(&mut store, "other", Command::CloseRequest { request_id: "request-1".into() });
+    let not_a_request = envelope(&mut store, "other", Command::CloseRequest { request_id: "request-1".into(), answer: None, withdrawn: false, title: None });
     assert!(matches!(store.execute_launching(&user(), &not_a_request, None, &launch), Err(StoreError::Domain(_))), "only a new Request has a launch");
 
     let first = create(&mut store, "first", "request-1", "Ship it").unwrap();

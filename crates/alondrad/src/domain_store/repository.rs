@@ -127,6 +127,7 @@ fn s(v: &Value) -> Result<&str> {
 /// Save schedule definitions before their runs so the run FK and claim-revision
 /// guard see the current definition. Callers own the transaction containing any
 /// Request/Task rows linked by a newly sent run.
+#[cfg(test)]
 pub(super) fn save_schedule_state(c: &Connection, schedule: &ScheduleState) -> Result<()> {
     schedule.validate()?;
     for definition in schedule.schedules.values() {
@@ -246,56 +247,6 @@ pub(super) fn load_request_launch(c: &Connection, request_id: &RequestId) -> Res
         })
     })
     .transpose()
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct LegacyScheduleReceipt {
-    pub sender: String,
-    pub request_id: String,
-    pub digest: Vec<u8>,
-    /// Original JSON text is retained byte for byte for legacy idempotency replies.
-    pub result: String,
-}
-
-pub(super) fn save_legacy_schedule_receipt(
-    c: &Connection,
-    receipt: &LegacyScheduleReceipt,
-) -> Result<()> {
-    serde_json::from_str::<Value>(&receipt.result).context("invalid legacy receipt JSON")?;
-    let stored = load_legacy_schedule_receipt(c, &receipt.sender, &receipt.request_id)?;
-    if let Some(stored) = stored {
-        ensure!(stored == *receipt, "legacy schedule receipt is immutable");
-    } else {
-        c.execute(
-            "INSERT INTO legacy_schedule_receipts(sender,request_id,digest,result) VALUES(?1,?2,?3,?4)",
-            params![receipt.sender, receipt.request_id, receipt.digest, receipt.result],
-        )?;
-    }
-    Ok(())
-}
-
-pub(super) fn load_legacy_schedule_receipt(
-    c: &Connection,
-    sender: &str,
-    request_id: &str,
-) -> Result<Option<LegacyScheduleReceipt>> {
-    let stored: Option<(Vec<u8>, String)> = c
-        .query_row(
-            "SELECT digest,result FROM legacy_schedule_receipts WHERE sender=?1 AND request_id=?2",
-            params![sender, request_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .optional()?;
-    stored
-        .map(|(digest, result)| {
-            Ok(LegacyScheduleReceipt {
-                sender: sender.into(),
-                request_id: request_id.into(),
-                digest,
-                result,
-            })
-        })
-        .transpose()
 }
 
 pub(super) fn remember_schedule_failed_launch(
@@ -744,62 +695,6 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
 }
-/// Write a whole validated state into a store whose rows may be stale or absent.
-pub(super) fn save(c: &Connection, state: &DomainState) -> Result<()> {
-    state.validate()?;
-    exec(
-        c,
-        "UPDATE domain_meta SET revision=?1,orchestrator_generation=?2 WHERE singleton=1",
-        params![state.revision as i64, state.orchestrator_generation as i64],
-    )?;
-    for x in state.requests.values() {
-        upsert(c, "requests", &["id"], object(x)?)?;
-    }
-    for x in state.agents.values() {
-        upsert(c, "agents", &["id"], object(x)?)?;
-    }
-    for x in state.tasks.values() {
-        upsert(c, "tasks", &["id"], task_row(x)?)?;
-    }
-    for x in state.documents.values() {
-        upsert(c, "documents", &["id"], object(x)?)?;
-    }
-    for x in state.document_revisions.values() {
-        upsert(c, "document_revisions", &["id"], object(x)?)?;
-    }
-    for t in state.tasks.values() {
-        save_task_links(c, t, None)?;
-    }
-    for p in state.pull_requests.values() {
-        save_pull_request(c, p, None)?;
-    }
-    for i in state.interactions.values() {
-        upsert(c, "interactions", &["id"], interaction_row(i)?)?;
-    }
-    exec(c, "DELETE FROM interaction_attachments", [])?;
-    for i in state.interactions.values() {
-        save_interaction_relations(c, i, None)?;
-    }
-    for r in &state.document_reviews {
-        save_document_review(c, r, None)?;
-    }
-    for p in state.pull_requests.values() {
-        save_pr_decisions(c, p, None)?;
-    }
-    for a in state.merge_authorizations.values() {
-        upsert(c, "merge_authorizations", &["id"], object(a)?)?;
-    }
-    for t in state.tasks.values() {
-        save_task_stack(c, t, None)?;
-    }
-    exec(c, "DELETE FROM stack_readiness", [])?;
-    for r in state.stack_readiness.values() {
-        upsert(c, "stack_readiness", &["task_id"], object(r)?)?;
-    }
-    save_schedule_state(c, &state.schedule)?;
-    Ok(())
-}
-
 pub(super) fn load(c: &Connection) -> Result<DomainState> {
     let (epoch, revision, generation): (String, i64, i64) = c.query_row(
         "SELECT data_epoch,revision,orchestrator_generation FROM domain_meta WHERE singleton=1",
@@ -809,7 +704,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     let mut state = DomainState::new(epoch);
     state.revision = revision.try_into().context("negative revision")?;
     state.orchestrator_generation = generation.try_into().context("negative generation")?;
-    for row in rows(c, "requests", &["closed"], &[])? {
+    for row in rows(c, "requests", &["closed", "withdrawn"], &[])? {
         let x: Request = decode(row)?;
         state.requests.insert(x.id.clone(), x);
     }
@@ -863,7 +758,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     for mut row in rows(
         c,
         "interactions",
-        &["blocking", "is_final", "acceptance_valid"],
+        &["blocking", "is_final", "acceptance_valid", "withdrawn"],
         &["options", "answer"],
     )? {
         let kind = take(&mut row, "scope_kind");

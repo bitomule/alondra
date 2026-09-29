@@ -177,7 +177,7 @@ fn ordinary_conflict(error: &StoreError) -> bool {
     matches!(error, StoreError::Domain(domain) if matches!(domain.code.as_str(), "conflict" | "not_found" | "stale_revision"))
 }
 
-fn options_at(home: &Path) -> Result<OptionsFile> {
+pub(crate) fn options_at(home: &Path) -> Result<OptionsFile> {
     match std::fs::read_to_string(options::path_in(home)) {
         Ok(contents) => OptionsFile::parse(&contents).map_err(anyhow::Error::msg),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(OptionsFile::default()),
@@ -187,7 +187,7 @@ fn options_at(home: &Path) -> Result<OptionsFile> {
 
 fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
     let request_id: RequestId = format!("r-{}", crate::auth::random_hex(16)).into();
-    let request = Request { id: request_id.clone(), body: snapshot.text.clone(), closed: false };
+    let request = Request::new(request_id.clone(), snapshot.text.clone());
     let task = Task {
         id: format!("t-{}", crate::auth::random_hex(16)).into(),
         request_id,

@@ -132,11 +132,7 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
     let request_id = format!("request-{suffix}");
     Command::RecordScheduleRunSent {
         run_id: run.into(),
-        request: Request {
-            id: request_id.clone().into(),
-            body: "Synthetic mission".into(),
-            closed: false,
-        },
+        request: Request::new(request_id.clone().into(), "Synthetic mission".into()),
         task: Task {
             id: format!("task-{suffix}").into(),
             request_id: request_id.into(),
@@ -525,7 +521,7 @@ fn schedule_catalog_has_explicit_partial_cs_evidence_and_pending_layers() {
         .unwrap()
         .contains("complete scenario pending"));
     let cases = [
-        "V54", "V55", "V56", "V57", "V58", "V59", "V60", "V61", "V62",
+        "V54", "V55", "V56", "V57", "V58", "V62",
     ];
     for id in cases {
         let case = scenario(id);

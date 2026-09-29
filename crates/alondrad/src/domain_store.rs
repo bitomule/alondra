@@ -12,10 +12,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 6;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
-pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
+pub(crate) use bounded::ProjectionTooLarge;
 #[cfg(test)]
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
@@ -177,8 +177,8 @@ impl DomainStore {
             after_commit: None,
         }
     }
-    /// For verifying a prepared stage: no schema creation, no restart recovery
-    /// and no write of any kind, so the bytes hashed afterwards are the importer's.
+    /// No schema creation, no restart recovery and no write of any kind.
+    #[cfg(test)]
     pub(crate) fn open_readonly(path: &Path) -> Result<Self> {
         use std::os::unix::fs::MetadataExt;
         let parent = std::fs::canonicalize(path.parent().context("database parent required")?)?;
@@ -228,92 +228,6 @@ impl DomainStore {
             self.remember(state.clone(), version);
         }
         Ok(state)
-    }
-    /// Offline one-shot cutover. The imported state carries a freshly created
-    /// epoch from this empty store; no legacy command or delivery is replayed.
-    pub(crate) fn import_initial(&mut self, state: &DomainState,
-        links: &[crate::domain_migration::ImportLink], source_seq: u64,
-        schedules: &crate::domain_migration::LegacyScheduleInventory) -> Result<()> {
-        state.validate()?;
-        ensure!(state.schedule == schedules.state,
-            "imported Schedule state differs from legacy inventory");
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-        check_schema(&tx)?;
-        let (epoch, revision): (String, i64) = tx.query_row(
-            "SELECT data_epoch,revision FROM domain_meta WHERE singleton=1", [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )?;
-        ensure!(revision == 0 && epoch == state.data_epoch.0,
-            "domain import requires an empty store and its fresh data epoch");
-        let existing: i64 = tx.query_row(
-            "SELECT (SELECT count(*) FROM requests) + (SELECT count(*) FROM schedules)
-                + (SELECT count(*) FROM schedule_runs) + (SELECT count(*) FROM schedule_request_tools)
-                + (SELECT count(*) FROM legacy_schedule_receipts)
-                + (SELECT count(*) FROM schedule_failed_launches)", [], |r| r.get(0))?;
-        ensure!(existing == 0, "domain import target already has business rows");
-        repository::save(&tx, state)?;
-        for (request_id, patterns) in &schedules.request_tools {
-            repository::remember_schedule_request_tools(&tx, request_id, patterns)?;
-        }
-        for receipt in &schedules.legacy_schedule_receipts {
-            repository::save_legacy_schedule_receipt(&tx, &repository::LegacyScheduleReceipt {
-                sender: receipt.sender.clone(), request_id: receipt.request_id.clone(),
-                digest: receipt.digest.clone(), result: receipt.result.clone(),
-            })?;
-        }
-        for request_id in &schedules.failed_launches {
-            repository::remember_schedule_failed_launch(&tx, request_id)?;
-        }
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS legacy_import_map (
-            source_kind TEXT NOT NULL,source_id TEXT NOT NULL,role TEXT NOT NULL,
-            target_kind TEXT NOT NULL,target_id TEXT NOT NULL,
-            source_digest TEXT NOT NULL CHECK(length(source_digest)=64),source_seq INTEGER NOT NULL,
-            PRIMARY KEY(source_kind,source_id,role),UNIQUE(target_kind,target_id,role)
-        );")?;
-        for link in links {
-            tx.execute("INSERT INTO legacy_import_map(source_kind,source_id,role,target_kind,target_id,source_digest,source_seq)
-                VALUES(?1,?2,?3,?4,?5,?6,?7)", params![link.source_kind,link.source_id,link.role,
-                link.target_kind,link.target_id,link.source_digest,i64::try_from(source_seq)?])?;
-        }
-        let mapped: i64 = tx.query_row("SELECT count(*) FROM legacy_import_map", [], |r|r.get(0))?;
-        ensure!(mapped as usize == links.len(), "legacy mapping count changed during import");
-        let version = data_version(&tx)?;
-        tx.commit()?;
-        self.remember(state.clone(), version);
-        self.projection = None;
-        Ok(())
-    }
-    pub(crate) fn legacy_schedule_inventory(
-        &mut self,
-    ) -> Result<crate::domain_migration::LegacyScheduleInventory> {
-        let tx = self.conn.transaction()?;
-        check_schema(&tx)?;
-        let state = repository::load(&tx)?.schedule;
-        let mut request_tools = std::collections::BTreeMap::new();
-        for row in tx.prepare("SELECT request_id,patterns FROM schedule_request_tools ORDER BY request_id")?
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-        {
-            let (request_id, patterns) = row?;
-            request_tools.insert(RequestId(request_id), serde_json::from_str(&patterns)?);
-        }
-        let mut legacy_schedule_receipts = Vec::new();
-        for row in tx.prepare("SELECT sender,request_id,digest,result FROM legacy_schedule_receipts ORDER BY sender,request_id")?
-            .query_map([], |r| Ok(crate::domain_migration::LegacyScheduleReceiptRow {
-                sender: r.get(0)?, request_id: r.get(1)?, digest: r.get(2)?, result: r.get(3)?,
-            }))?
-        {
-            legacy_schedule_receipts.push(row?);
-        }
-        let mut failed_launches = std::collections::BTreeSet::new();
-        for row in tx.prepare("SELECT request_id FROM schedule_failed_launches ORDER BY request_id")?
-            .query_map([], |r| r.get::<_, String>(0))?
-        {
-            failed_launches.insert(RequestId(row?));
-        }
-        tx.commit()?;
-        Ok(crate::domain_migration::LegacyScheduleInventory {
-            state, request_tools, legacy_schedule_receipts, failed_launches,
-        })
     }
     pub(crate) fn project(&mut self) -> Result<DomainProjection> {
         Ok(self.load()?.projection())

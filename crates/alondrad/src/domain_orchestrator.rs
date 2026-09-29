@@ -170,7 +170,9 @@ impl Executor {
         if !resume {
             text.push_str("This is a new conversation. Read the durable domain before acting; do not infer that existing Tasks need to be started again.\n");
         }
-        text.push_str(&summary(&state));
+        let user = crate::domain_messages::user_name();
+        text.push_str(&summary(&state, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
+            .map(|choices| crate::domain_orchestrator_tools::choices_text(&user, &self.home, &choices))));
         for message in messages {
             text.push_str(&format!("\n--- Alondra inbox message {} ---\n{}\n", message.id, crate::domain_transport::render(&state, message)));
         }
@@ -299,11 +301,15 @@ impl Executor {
 
 /// The durable domain as the orchestrator needs it to act on a batch: its MCP has no read
 /// tool, so every open Request and every Task not archived travels in the prompt.
-fn summary(state: &DomainState) -> String {
+fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain_v2::RequestId) -> Option<String>) -> String {
     let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
     let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
     for request in state.requests.values().filter(|request| !request.closed) {
         text.push_str(&format!("request {}: {}\n", request.id, one_line(&request.body)));
+        if let Some(chosen) = choices(&request.id) {
+            text.push_str(&chosen);
+            text.push('\n');
+        }
     }
     for task in state.tasks.values().filter(|task| !task.archived) {
         let agent = task.agent_id.as_ref().map_or("none".to_owned(), |agent| agent.0.clone());
@@ -559,6 +565,15 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
         assert_eq!(recovered.pending_resolutions[0].run_id, "interrupted");
         assert!(outbox(domain).is_empty(), "the interrupted batch is not replayed");
         assert!(attempts(domain).iter().any(|(id, state, _)| *id == claim.message.id && state == "discarded"));
+    }
+
+    #[test]
+    fn each_open_request_carries_the_choices_it_was_asked_with() {
+        let f = fixture(SUCCESS);
+        ask_orchestrator(&f.executor.domain, 1);
+        let state = f.executor.domain.state().unwrap();
+        let text = summary(&state, |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
+        assert!(text.contains("request r: Work\n  options: project App · Effort: hard\ntask t"), "{text}");
     }
 
     #[tokio::test]

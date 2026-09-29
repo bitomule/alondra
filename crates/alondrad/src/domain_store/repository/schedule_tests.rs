@@ -192,16 +192,10 @@ fn schedule_state_rejects_wrong_request_task_relation() {
 }
 
 #[test]
-fn historical_policy_receipt_and_failed_launch_survive_restart() {
+fn historical_policy_and_failed_launch_survive_restart() {
     let (directory, path) = temporary_database("historical");
     let request_id = RequestId::from("request-1");
     let patterns = vec!["Bash".into(), "mcp__danger__*".into()];
-    let receipt = LegacyScheduleReceipt {
-        sender: "phone".into(),
-        request_id: "legacy-command-1".into(),
-        digest: vec![7; 32],
-        result: r#"{ "status": 201, "body": {"id":"schedule-1"}}"#.into(),
-    };
     {
         let c = Connection::open(&path).unwrap();
         database(&c);
@@ -220,11 +214,6 @@ fn historical_policy_receipt_and_failed_launch_survive_restart() {
         remember_schedule_request_tools(&c, &request_id, &patterns).unwrap();
         remember_schedule_request_tools(&c, &request_id, &patterns).unwrap();
         assert!(remember_schedule_request_tools(&c, &request_id, &["Other".into()]).is_err());
-        save_legacy_schedule_receipt(&c, &receipt).unwrap();
-        save_legacy_schedule_receipt(&c, &receipt).unwrap();
-        let mut changed = receipt.clone();
-        changed.result = r#"{"status":500}"#.into();
-        assert!(save_legacy_schedule_receipt(&c, &changed).is_err());
         remember_schedule_failed_launch(&c, &request_id).unwrap();
     }
     {
@@ -237,10 +226,6 @@ fn historical_policy_receipt_and_failed_launch_survive_restart() {
         assert_eq!(
             load_schedule_request_tools(&c, &request_id).unwrap(),
             Some(patterns)
-        );
-        assert_eq!(
-            load_legacy_schedule_receipt(&c, "phone", "legacy-command-1").unwrap(),
-            Some(receipt)
         );
         assert!(was_schedule_launch_failed(&c, &request_id).unwrap());
         assert!(!was_schedule_launch_failed(&c, &RequestId::from("other")).unwrap());
@@ -283,11 +268,7 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
         .unwrap();
     let sent = Command::RecordScheduleRunSent {
         run_id: "run-1".into(),
-        request: Request {
-            id: "request-1".into(),
-            body: "Review project".into(),
-            closed: false,
-        },
+        request: Request::new("request-1".into(), "Review project".into()),
         task: Task {
             id: "task-1".into(),
             request_id: "request-1".into(),
