@@ -14,8 +14,8 @@ mod domain_runtime;
 mod domain_schedule_runner;
 mod domain_store;
 mod domain_transport;
-mod domain_sessions;
 mod domain_messages;
+mod domain_sessions;
 mod domain_orchestrator_tools;
 #[cfg(test)]
 mod domain_e2e_tests;
