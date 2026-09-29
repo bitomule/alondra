@@ -231,7 +231,7 @@ mod tests {
         };
         run(Actor::System, "a", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
         run(Actor::System, "b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into() });
-        run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into() });
+        run(user(), "r", Command::CreateRequest { request_id: "r".into(), body: "Build".into(), auto_merge: false });
         run(user(), "t", Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build it".into(),
             agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
         (Fixture(home), domain)

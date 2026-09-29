@@ -353,7 +353,7 @@ mod approval_tests {
             expected_revision: state.revision,
             command: Command::CreateRequest {
                 request_id: "request-lease".into(),
-                body: "Work".into(),
+                body: "Work".into(), auto_merge: false,
             },
         };
         let (checked_tx, checked_rx) = mpsc::channel();
@@ -449,7 +449,7 @@ mod producer_revision_tests {
             Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() }), None, || Ok(())).unwrap();
         let user = Actor::User { user_id: "u".into() };
         runtime.execute(&user, &envelope(&runtime, "request", None,
-            Command::CreateRequest { request_id: "request-a".into(), body: "Work".into() }), None, || Ok(())).unwrap();
+            Command::CreateRequest { request_id: "request-a".into(), body: "Work".into(), auto_merge: false }), None, || Ok(())).unwrap();
         runtime.execute(&user, &envelope(&runtime, "task", None, Command::CreateTask {
             task_id: "task-a".into(), request_id: "request-a".into(), title: "Task".into(),
             agent_id: Some("agent-a".into()), review_prs: false,
@@ -474,7 +474,7 @@ mod producer_revision_tests {
             "a retry with the bytes the producer sent replays its receipt");
         assert_eq!(runtime.state().unwrap().revision, revision + 1);
         let stale = runtime.execute(&user, &CommandEnvelope { expected_revision: 0, ..envelope(&runtime, "user-zero", None,
-            Command::CreateRequest { request_id: "request-b".into(), body: "More".into() }) }, None, || Ok(()));
+            Command::CreateRequest { request_id: "request-b".into(), body: "More".into(), auto_merge: false }) }, None, || Ok(()));
         assert!(matches!(stale, Err(StoreError::Domain(error)) if error.code == "stale_revision"),
             "a user command is never filled");
         drop(runtime);

@@ -68,7 +68,7 @@ fn live_shaped() -> Fixture {
     let user = Actor::User { user_id: "device:phone".into() };
     for index in 0..AGENTS {
         run(&runtime, &user, &format!("request-{index}"),
-            Command::CreateRequest { request_id: format!("r-{index}").into(), body: format!("Request {index}") });
+            Command::CreateRequest { request_id: format!("r-{index}").into(), body: format!("Request {index}"), auto_merge: false });
         run(&runtime, &Actor::System, &format!("agent-{index}"),
             Command::RegisterAgent { agent_id: format!("node-{index}").into(), name: format!("Node {index}") });
         run(&runtime, &user, &format!("task-{index}"), Command::CreateTask {
@@ -370,7 +370,7 @@ fn a_command_on_a_live_sized_store_writes_a_handful_of_rows_and_reloads_no_table
             publish(runtime, "node-0", "t-0", &format!("cost-info-{index}"), format!("Progress {index}"));
         } else {
             run(runtime, &Actor::User { user_id: "device:phone".into() }, &format!("cost-request-{index}"),
-                Command::CreateRequest { request_id: format!("cost-request-{index}").into(), body: format!("Request {index}") });
+                Command::CreateRequest { request_id: format!("cost-request-{index}").into(), body: format!("Request {index}"), auto_merge: false });
         }
         let (writes_after, scans_after) = counts();
         assert_eq!(scans_after, scans_before, "command {index} reloaded a table from SQL");

@@ -285,7 +285,7 @@ mod tests {
             agent_id: "agent-a".into(), name: "A".into(),
         });
         v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
-            request_id: "request-a".into(), body: "Request".into(),
+            request_id: "request-a".into(), body: "Request".into(), auto_merge: false,
         });
         v2_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "task-a".into(), request_id: "request-a".into(), title: "Task".into(),
@@ -382,7 +382,7 @@ mod tests {
             "request",
             Command::CreateRequest {
                 request_id: "request-a".into(),
-                body: "Request".into(),
+                body: "Request".into(), auto_merge: false,
             },
         );
         command(

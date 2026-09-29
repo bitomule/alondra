@@ -38,7 +38,7 @@ fn fixture() -> DomainState {
         user(),
         Command::CreateRequest {
             request_id: "r".into(),
-            body: "Build requested result".into(),
+            body: "Build requested result".into(), auto_merge: false,
         },
     )
     .unwrap();
@@ -707,6 +707,33 @@ fn authorize(s: &mut DomainState) {
     )
     .unwrap();
 }
+fn merged_by_someone_else(s: &mut DomainState) {
+    exec(s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
+        state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
+}
+fn complete() -> Command {
+    Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() }
+}
+#[test]
+fn an_observed_merge_completes_an_auto_merge_task_without_the_users_authorization() {
+    let mut s = fixture();
+    s.requests.get_mut(&"r".into()).unwrap().auto_merge = true;
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    reject_unchanged(&mut s, agent(), complete(), "merge_not_confirmed");
+    merged_by_someone_else(&mut s);
+    assert_eq!(s.pull_requests[&"pr".into()].state, PrState::Merged);
+    exec(&mut s, agent(), complete()).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn an_observed_merge_of_a_task_that_did_not_ask_for_auto_merge_still_needs_the_users_acceptance() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    merged_by_someone_else(&mut s);
+    reject_unchanged(&mut s, agent(), complete(), "acceptance_missing");
+}
 #[test]
 fn authorization_merge_and_completion_are_three_distinct_steps() {
     let mut s = fixture();
@@ -768,36 +795,6 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
     )
     .unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
-}
-#[test]
-fn the_daemon_authorizes_and_claims_an_auto_merge_and_the_agent_completes_after_it() {
-    let mut s = fixture();
-    register(&mut s);
-    present(&mut s, "d", pr_targets());
-    let authorize = |id: &str| Command::AuthorizeMerge { authorization_id: id.into(), presentation_id: "d".into(),
-        pr_id: "pr".into(), expected_head: "head1".into(), method: MergeMethod::Squash };
-    reject_unchanged(&mut s, agent(), authorize("auto"), "forbidden");
-    exec(&mut s, Actor::System, authorize("auto")).unwrap();
-    assert_eq!(s.merge_authorizations[&"auto".into()].user_id, AUTO_MERGE_USER);
-    let claim = |id: &str| Command::ClaimMergeAuthorization { authorization_id: id.into(), remote_head: "head1".into(),
-        remote_base: "main".into(), base_verified: true };
-    exec(&mut s, Actor::System, claim("auto")).unwrap();
-    assert_eq!(s.merge_authorizations[&"auto".into()].attempt, MergeAttemptState::Claimed);
-    assert_eq!(s.merge_authorizations[&"auto".into()].claimed_by, Some("a".into()), "the merge is on the Task's behalf");
-    exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(), base: "main".into(),
-        state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
-    assert_eq!(s.merge_authorizations[&"auto".into()].attempt, MergeAttemptState::Confirmed);
-    exec(&mut s, agent(), Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() }).unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
-}
-#[test]
-fn the_daemon_cannot_claim_a_merge_the_user_authorized() {
-    let mut s = fixture();
-    register(&mut s);
-    present(&mut s, "d", pr_targets());
-    authorize(&mut s);
-    reject_unchanged(&mut s, Actor::System, Command::ClaimMergeAuthorization { authorization_id: "auth".into(),
-        remote_head: "head1".into(), remote_base: "main".into(), base_verified: true }, "not_assigned");
 }
 #[test]
 fn head_push_invalidates_authorization_and_merge_external_does_not_accept() {
@@ -908,7 +905,7 @@ fn orchestrator() -> Actor {
 #[test]
 fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let mut s = fixture();
-    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into() }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "q".into(), body: "Is main green?".into(), auto_merge: false }).unwrap();
     reject_unchanged(&mut s, agent(), Command::CloseRequest { request_id: "q".into(), answer: Some("Yes".into()), withdrawn: false, title: None }, "forbidden");
     reject_unchanged(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some(" ".into()), withdrawn: false, title: None }, "invalid_input");
     exec(&mut s, orchestrator(), Command::CloseRequest { request_id: "q".into(), answer: Some("Main is green".into()),
@@ -916,7 +913,7 @@ fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     let closed = &s.requests[&"q".into()];
     assert!(closed.closed && !closed.withdrawn);
     assert_eq!((closed.answer.as_deref(), closed.title.as_deref()), (Some("Main is green"), Some("CI status")));
-    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into() }).unwrap();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "w".into(), body: "Never mind".into(), auto_merge: false }).unwrap();
     exec(&mut s, user(), Command::CloseRequest { request_id: "w".into(), answer: None, withdrawn: true, title: None }).unwrap();
     assert!(s.requests[&"w".into()].withdrawn);
     reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None }, "task_not_active");
@@ -2550,7 +2547,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     assert_eq!(s.tasks[&"t".into()].agent_id, Some("b".into()));
     // Commands without a narrower subject still need the current revision.
     assert_eq!(
-        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into() })
+        run(&mut s, user(), "r2", seen, Command::CreateRequest { request_id: "r2".into(), body: "More".into(), auto_merge: false })
             .unwrap_err()
             .code,
         "stale_revision"
@@ -2648,7 +2645,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RecordScheduleLaunchHanded { run_id: ids.run.into(), session_id: None, agent_id: None, finished_at: 1 }, false),
         (Command::RecordScheduleRunFailed { run_id: ids.run.into(), reason: "boom".into(), finished_at: 1 }, false),
         (Command::InterruptScheduleRunsOnRestart, true),
-        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into() }, true),
+        (Command::CreateRequest { request_id: ids.request.into(), body: "Work".into(), auto_merge: false }, true),
         (Command::CloseRequest { request_id: ids.request.into(), answer: None, withdrawn: false, title: None }, false),
         (Command::RegisterAgent { agent_id: ids.agent.into(), name: "Ghost".into() }, true),
         (Command::ObserveAgent { agent_id: ids.agent.into(), connected: true }, false),

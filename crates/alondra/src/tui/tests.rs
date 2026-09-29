@@ -42,7 +42,7 @@ impl World {
     /// A request, one connected agent and its running task.
     pub fn base(review_prs: bool) -> Self {
         let mut w = World::new();
-        w.run("user-a", Command::CreateRequest { request_id: "request-1".into(), body: "Synthetic request".into() });
+        w.run("user-a", Command::CreateRequest { request_id: "request-1".into(), body: "Synthetic request".into(), auto_merge: false });
         w.run("system", Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
         w.run("system", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
         w.run("user-a", Command::CreateTask { task_id: "task-1".into(), request_id: "request-1".into(), title: "Synthetic task".into(), agent_id: Some("agent-a".into()), review_prs, dependencies: BTreeSet::new(), stack: None });

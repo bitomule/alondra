@@ -196,7 +196,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             actor("user-a"),
             Command::CreateRequest {
                 request_id: id.into(),
-                body: string(field(request, "content")).into(),
+                body: string(field(request, "content")).into(), auto_merge: false,
             },
         );
     }

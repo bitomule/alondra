@@ -1,16 +1,12 @@
-//! GitHub facts for domain v2 pull requests. `gh` is the only reader. An
-//! observation records remote reality, it never accepts a delivery or
-//! completes a Task. The daemon merges a PR itself only for a Request the user
-//! asked to auto-merge (`auto_merge`).
+//! GitHub facts for domain v2 pull requests. `gh` is the only reader; the
+//! daemon never merges a v2 PR itself. An observation records remote reality,
+//! it never accepts a delivery or completes a Task.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain_v2::{
     Actor, AuthorizationId, Command, CommandEnvelope, DomainState, MergeAttemptState,
-    MergeMethod, PrState, PullRequest, PROTOCOL_VERSION,
+    PrState, PullRequest, PROTOCOL_VERSION,
 };
-
-mod auto_merge;
-pub(crate) use auto_merge::{AutoMerging, Sessions, Tell};
 use anyhow::Result;
 use serde_json::Value;
 use std::future::Future;
@@ -22,42 +18,23 @@ use std::time::Duration;
 /// What GitHub reports for one PR. `merged_head` is the PR head at merge time,
 /// never the merge commit: squash and rebase produce a different commit that
 /// can never match the presented and authorized head.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PrFacts {
     pub head: String,
     pub base: String,
     pub state: PrState,
     pub merged_head: Option<String>,
-    pub checks: Vec<alondra_core::pr::Check>,
-    /// GitHub's `mergeable`: MERGEABLE, CONFLICTING or UNKNOWN while it works it out.
-    pub mergeable: Option<String>,
-    pub draft: bool,
 }
 
 type Observed<'a> = Pin<Box<dyn Future<Output = Result<PrFacts, String>> + Send + 'a>>;
-type Merged<'a> = Pin<Box<dyn Future<Output = Result<(), String>> + Send + 'a>>;
 
 pub(crate) trait PrObserver: Send + Sync + 'static {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a>;
-    /// `gh pr merge` pinned to the head whose checks passed: GitHub refuses the merge if a push
-    /// moved the branch since.
-    fn merge<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a>;
 }
 
 impl<T: PrObserver> PrObserver for Arc<T> {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         (**self).observe(host, repository, number)
-    }
-    fn merge<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a> {
-        (**self).merge(host, repository, number, method, head)
-    }
-}
-
-fn merge_flag(method: MergeMethod) -> &'static str {
-    match method {
-        MergeMethod::Merge => "--merge",
-        MergeMethod::Squash => "--squash",
-        MergeMethod::Rebase => "--rebase",
     }
 }
 
@@ -80,7 +57,7 @@ impl PrObserver for GhCli {
         Box::pin(async move {
             let url = format!("https://{host}/{repository}/pull/{number}");
             let run = tokio::process::Command::new(&self.program)
-                .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName,statusCheckRollup,mergeable,isDraft"])
+                .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName"])
                 .kill_on_drop(true)
                 .output();
             let output = match tokio::time::timeout(Duration::from_secs(30), run).await {
@@ -91,22 +68,6 @@ impl PrObserver for GhCli {
             };
             let value: Value = serde_json::from_slice(&output.stdout).map_err(|e| e.to_string())?;
             parse(&value)
-        })
-    }
-
-    fn merge<'a>(&'a self, host: &'a str, repository: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a> {
-        Box::pin(async move {
-            let url = format!("https://{host}/{repository}/pull/{number}");
-            let run = tokio::process::Command::new(&self.program)
-                .args(["pr", "merge", &url, merge_flag(method), "--match-head-commit", head])
-                .kill_on_drop(true)
-                .output();
-            match tokio::time::timeout(Duration::from_secs(90), run).await {
-                Ok(Ok(output)) if output.status.success() => Ok(()),
-                Ok(Ok(output)) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
-                Ok(Err(error)) => Err(error.to_string()),
-                Err(_) => Err("gh pr merge did not finish within 90 s".into()),
-            }
         })
     }
 }
@@ -128,9 +89,6 @@ fn parse(value: &Value) -> Result<PrFacts, String> {
         base: base.to_owned(),
         merged_head: (state == PrState::Merged).then(|| head.to_owned()),
         state,
-        checks: value["statusCheckRollup"].as_array().map(|checks| checks.iter().filter_map(crate::prs::check).collect()).unwrap_or_default(),
-        mergeable: value["mergeable"].as_str().map(str::to_owned),
-        draft: value["isDraft"].as_bool().unwrap_or(false),
     })
 }
 
@@ -212,10 +170,8 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
 }
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>) -> Result<()> {
-    let mut merging = AutoMerging::default();
     loop {
         reconcile(&domain, &*observer).await?;
-        auto_merge::run_once(&domain, &*observer, &mut merging, &Sessions, alondra_core::now_millis()).await?;
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
 }
@@ -255,12 +211,11 @@ async fn observed_authorization(
 }
 
 #[cfg(test)]
-pub(crate) struct FakeObserver(pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>,
-    pub std::sync::Mutex<Vec<(u64, MergeMethod, String)>>, pub std::sync::Mutex<Option<String>>);
+pub(crate) struct FakeObserver(pub std::sync::Mutex<std::collections::BTreeMap<u64, Result<PrFacts, String>>>);
 #[cfg(test)]
 impl FakeObserver {
     pub(crate) fn new() -> Self {
-        Self(Default::default(), Default::default(), Default::default())
+        Self(std::sync::Mutex::new(Default::default()))
     }
     pub(crate) fn set(&self, number: u64, facts: Result<PrFacts, String>) {
         self.0.lock().unwrap().insert(number, facts);
@@ -272,11 +227,6 @@ impl PrObserver for FakeObserver {
         let facts = self.0.lock().unwrap().get(&number).cloned()
             .unwrap_or_else(|| Err("no such PR".into()));
         Box::pin(async move { facts })
-    }
-    fn merge<'a>(&'a self, _: &'a str, _: &'a str, number: u64, method: MergeMethod, head: &'a str) -> Merged<'a> {
-        self.1.lock().unwrap().push((number, method, head.to_owned()));
-        let refusal = self.2.lock().unwrap().clone();
-        Box::pin(async move { refusal.map_or(Ok(()), Err) })
     }
 }
 
@@ -307,13 +257,13 @@ mod tests {
 
     fn facts(head: &str, state: PrState) -> PrFacts {
         PrFacts { head: head.into(), base: "main".into(), state,
-            merged_head: (state == PrState::Merged).then(|| head.to_owned()), checks: vec![], mergeable: None, draft: false }
+            merged_head: (state == PrState::Merged).then(|| head.to_owned()) }
     }
 
     /// A Task with a registered PR, a presented final and the user's merge authorization.
     fn authorized(domain: &DomainRuntime) {
         command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into() });
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false });
         command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
             task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
             review_prs: true, dependencies: BTreeSet::new(), stack: None,
@@ -330,6 +280,65 @@ mod tests {
             authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
             expected_head: HEAD.into(), method: MergeMethod::Squash,
         });
+    }
+
+    fn presented(domain: &DomainRuntime, auto_merge: bool) {
+        command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge });
+        command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
+            review_prs: true, dependencies: BTreeSet::new(), stack: None,
+        });
+        let register = Command::RegisterPr {
+            task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+            number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+        };
+        command(domain, Actor::Agent { agent_id: "a".into() }, "pr", register.clone());
+        assert_eq!(crate::domain_api::auto_merge_notice(domain, &register).is_some(), auto_merge);
+        command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
+            attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true,
+        });
+    }
+
+    fn complete(domain: &DomainRuntime) -> Result<(), StoreError> {
+        let state = domain.state().unwrap();
+        domain.execute(&Actor::Agent { agent_id: "a".into() }, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "complete".into(),
+            expected_revision: state.revision,
+            command: Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() },
+        }, None, || Ok(())).map(|_| ())
+    }
+
+    #[tokio::test]
+    async fn a_merge_the_agent_made_is_observed_and_accepted_only_for_an_auto_merge_request() {
+        for (auto_merge, code) in [(true, None), (false, Some("acceptance_missing"))] {
+            let (_fixture, domain) = open("agent-merge");
+            presented(&domain, auto_merge);
+            let observer = FakeObserver::new();
+            observer.set(7, Ok(facts(HEAD, PrState::Merged)));
+            reconcile(&domain, &observer).await.unwrap();
+            assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Merged);
+            let done = complete(&domain);
+            assert_eq!(done.as_ref().err().map(|error| match error {
+                StoreError::Domain(error) => error.code.as_str(),
+                StoreError::Storage(_) => "storage",
+            }), code, "{done:?}");
+        }
+    }
+
+    #[test]
+    fn the_notice_names_the_pr_the_method_the_head_and_the_stack_condition() {
+        let (_fixture, domain) = open("notice");
+        presented(&domain, true);
+        let register = Command::RegisterPr {
+            task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+            number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+        };
+        let notice = crate::domain_api::auto_merge_notice(&domain, &register).unwrap();
+        assert!(notice.contains("https://github.com/owner/repo/pull/7"), "{notice}");
+        assert!(notice.contains(&format!("gh pr merge --squash --match-head-commit {HEAD}")), "{notice}");
+        assert!(notice.contains("for a stacked PR, once the PR it is stacked on is merged"), "{notice}");
     }
 
     fn open(tag: &str) -> (Fixture, DomainRuntime) {
@@ -426,15 +435,11 @@ mod tests {
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let gh = GhCli::at(program);
         let merged = gh.observe("github.com", "owner/repo", 7).await.unwrap();
-        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()),
-            checks: vec![], mergeable: None, draft: false });
+        assert_eq!(merged, PrFacts { head: HEAD.into(), base: "main".into(), state: PrState::Merged, merged_head: Some(HEAD.into()) });
         assert_eq!(gh.observe("github.com", "owner/repo", 8).await.unwrap_err(), "gh reported no PR head");
         assert!(gh.observe("github.com", "owner/repo", 9).await.unwrap_err().contains("no pull requests found"));
         let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName,statusCheckRollup,mergeable,isDraft"), "{calls}");
-        assert!(!calls.contains("pr merge"), "observing never merges");
-        assert!(gh.merge("github.com", "owner/repo", 9, MergeMethod::Squash, HEAD).await.unwrap_err().contains("no pull requests found"));
-        let calls = std::fs::read_to_string(&log).unwrap();
-        assert!(calls.contains(&format!("pr merge https://github.com/owner/repo/pull/9 --squash --match-head-commit {HEAD}")), "{calls}");
+        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName"), "{calls}");
+        assert!(!calls.contains("merge"), "the daemon never merges a v2 PR");
     }
 }

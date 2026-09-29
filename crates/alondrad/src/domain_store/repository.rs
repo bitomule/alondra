@@ -704,7 +704,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     let mut state = DomainState::new(epoch);
     state.revision = revision.try_into().context("negative revision")?;
     state.orchestrator_generation = generation.try_into().context("negative generation")?;
-    for row in rows(c, "requests", &["closed", "withdrawn"], &[])? {
+    for row in rows(c, "requests", &["closed", "withdrawn", "auto_merge"], &[])? {
         let x: Request = decode(row)?;
         state.requests.insert(x.id.clone(), x);
     }

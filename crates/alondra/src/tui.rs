@@ -1606,7 +1606,7 @@ impl App {
                     }
                     None if attachments.is_empty() => {
                         let Some(revision) = self.domain.as_ref().map(|d| d.revision) else { return };
-                        let command = Command::CreateRequest { request_id: request_id.into(), body: text.clone() };
+                        let command = Command::CreateRequest { request_id: request_id.into(), body: text.clone(), auto_merge: false };
                         self.send(format!("request:{text}"), None, revision, command, tr!("Sent to the orchestrator", "Enviado al orquestador").into(), draft);
                     }
                     None => {

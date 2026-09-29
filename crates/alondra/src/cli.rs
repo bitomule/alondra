@@ -208,7 +208,7 @@ mod tests {
             s.execute(&actor, &envelope).unwrap();
         };
         let user = || Actor::User { user_id: "u".into() };
-        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into() });
+        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
         run(Actor::System, Command::RegisterAgent { agent_id: "agent-ab".into(), name: "Instance AB".into() });
         run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
