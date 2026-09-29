@@ -680,7 +680,7 @@ mod tests {
         ));
         std::fs::create_dir(&home).unwrap();
         drop(DomainRuntime::open(&home).unwrap());
-        rusqlite::Connection::open(home.join("domain-v2.db"))
+        rusqlite::Connection::open(home.join("domain.db"))
             .unwrap()
             .pragma_update(None, "user_version", 99)
             .unwrap();
@@ -1240,7 +1240,7 @@ mod tests {
                 .requests
                 .contains_key(&"request-one".into())
         );
-        let audit: String = rusqlite::Connection::open(home.join("domain-v2.db"))
+        let audit: String = rusqlite::Connection::open(home.join("domain.db"))
             .unwrap()
             .query_row(
                 "SELECT actor FROM command_audit ORDER BY revision DESC LIMIT 1",
@@ -1695,7 +1695,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         assert!(V2Only::open(&home).is_err());
         assert!(
-            !home.join("domain-v2.db").exists(),
+            !home.join("domain.db").exists(),
             "must not create an empty authority on missing stage"
         );
         std::fs::remove_dir_all(home).unwrap();

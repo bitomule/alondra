@@ -25,26 +25,14 @@ pub fn run(config: &Config) -> Result<String> {
     start(&copy)
 }
 
-/// The same selection and bootstrap `run` performs, on a HOME it may freely write.
+/// The same canonical bootstrap `run` performs, on a HOME it may freely write.
 fn start(config: &Config) -> Result<String> {
     let (_, _source_fence) = crate::domain_database_migration::migrate_and_fence(&config.home)?;
     crate::retire_empty_older_sidecar(&config.home)?;
-    match crate::protocol_mode(&config.home)? {
-        crate::ProtocolMode::Legacy => {
-            let hub = crate::hub::Hub::open(config.clone(), false)?;
-            Ok(format!(
-                "legacy state starts: {} nodes",
-                hub.read(|v| v.nodes.len())
-            ))
-        }
-        crate::ProtocolMode::Prepared => {
-            anyhow::bail!("domain cutover is prepared but not committed")
-        }
-        crate::ProtocolMode::Committed(_) => {
-            crate::domain_bootstrap::V2Only::open(&config.home)?;
-            Ok("domain v2 state starts".into())
-        }
-    }
+    crate::ensure_domain_protocol(&config.home)?;
+    let _domain = crate::domain_runtime::DomainRuntime::open(&config.home)?;
+    crate::domain_bootstrap::V2Only::open(&config.home)?;
+    Ok("canonical domain state starts".into())
 }
 
 /// A consistent copy of each database, read through SQLite so a live writer's WAL is included.
@@ -234,7 +222,11 @@ mod tests {
     fn preflight_migrates_a_markerless_database_only_in_its_snapshot() {
         let (home, config) = committed_domain_home("migration-markerless");
         let before = contents(&home);
-        assert!(run(&config).unwrap().contains("domain v2 state starts"));
+        assert!(
+            run(&config)
+                .unwrap()
+                .contains("canonical domain state starts")
+        );
         assert_eq!(contents(&home), before);
         assert!(!home.join("domain.db").exists());
         std::fs::remove_dir_all(home).unwrap();
@@ -245,7 +237,11 @@ mod tests {
         let (home, config) = committed_domain_home("migration-prepared");
         crate::domain_database_migration::prepare_test_migration(&home);
         let before = contents(&home);
-        assert!(run(&config).unwrap().contains("domain v2 state starts"));
+        assert!(
+            run(&config)
+                .unwrap()
+                .contains("canonical domain state starts")
+        );
         assert_eq!(contents(&home), before);
         assert!(!home.join("domain.db").exists());
         std::fs::remove_dir_all(home).unwrap();
@@ -256,7 +252,11 @@ mod tests {
         let (home, config) = committed_domain_home("migration-committed");
         assert!(crate::domain_database_migration::migrate(&home).unwrap());
         let before = contents(&home);
-        assert!(run(&config).unwrap().contains("domain v2 state starts"));
+        assert!(
+            run(&config)
+                .unwrap()
+                .contains("canonical domain state starts")
+        );
         assert_eq!(contents(&home), before);
         std::fs::remove_dir_all(home).unwrap();
     }

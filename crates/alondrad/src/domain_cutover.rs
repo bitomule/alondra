@@ -203,12 +203,9 @@ pub(crate) const LEGACY_STORES: [&str; 2] = ["alondra.db", "schedules.db"];
 /// A daemon built for domain v2 must not run a HOME that still holds legacy
 /// data. It refuses before taking the HOME lock, so the cutover can take it.
 pub(crate) fn refuse_legacy_home(home: &Path) -> Result<()> {
-    if read_marker(home)?.is_some() {
-        return Ok(());
-    }
     ensure!(
-        !legacy_data(&home.join("alondra.db")),
-        "this HOME still holds legacy data; cut it over first with `alondrad --cutover-domain-v2` (see docs/domain-v2-live-cutover.md)"
+        !legacy_data(&home.join("alondra.db")) && !legacy_data(&home.join("schedules.db")),
+        "this HOME still holds legacy data; it was left untouched. Restore or migrate it explicitly before starting the domain daemon"
     );
     Ok(())
 }
@@ -736,10 +733,11 @@ mod tests {
         assert_eq!(cutover.marker.source_seq, 2);
         assert_eq!(read_marker(&home).unwrap().unwrap(), cutover.marker);
 
-        let state = crate::domain_runtime::DomainRuntime::open(&home)
-            .unwrap()
-            .state()
-            .unwrap();
+        let state =
+            crate::domain_runtime::DomainRuntime::open_at(&home, &home.join("domain-v2.db"))
+                .unwrap()
+                .state()
+                .unwrap();
         assert_eq!(state.data_epoch.0, cutover.marker.data_epoch);
         assert_eq!(state.revision, 0);
         assert!(
@@ -778,12 +776,13 @@ mod tests {
         let (root, home) = legacy_home("resume");
         let backup = root.join("backup");
         let manifest = crate::domain_backup::backup_home(&home, &backup, &[]).unwrap();
-        let epoch = crate::domain_runtime::DomainRuntime::open(&home)
-            .unwrap()
-            .state()
-            .unwrap()
-            .data_epoch
-            .0;
+        let epoch =
+            crate::domain_runtime::DomainRuntime::open_at(&home, &home.join("domain-v2.db"))
+                .unwrap()
+                .state()
+                .unwrap()
+                .data_epoch
+                .0;
         let prepared = Marker {
             format: 1,
             phase: Phase::Prepared,
@@ -793,8 +792,8 @@ mod tests {
         };
         write_marker(&home, &prepared, true).unwrap();
         assert!(
-            refuse_legacy_home(&home).is_ok(),
-            "a Prepared HOME is fenced by protocol mode, not treated as legacy"
+            refuse_legacy_home(&home).is_err(),
+            "prepared cutover with legacy files still present fails closed"
         );
         let resumed = cutover_offline(&home, &backup, &[], &quick(), |_| ()).unwrap();
         assert!(resumed.resumed);
@@ -804,7 +803,7 @@ mod tests {
             !home.join("alondra.db").exists() && home.join(ARCHIVE).join("alondra.db").exists()
         );
         assert_eq!(
-            crate::domain_runtime::DomainRuntime::open(&home)
+            crate::domain_runtime::DomainRuntime::open_at(&home, &home.join("domain-v2.db"))
                 .unwrap()
                 .state()
                 .unwrap()

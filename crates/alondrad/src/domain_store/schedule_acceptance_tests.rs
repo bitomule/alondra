@@ -1,7 +1,7 @@
 //! Executable C/S slices of V54–V62. These use real domain commands and SQLite;
 //! the catalog keeps the complete A/U and runner scenarios pending.
 use super::*;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 use std::os::unix::fs::DirBuilderExt;
 
@@ -21,7 +21,7 @@ impl Fixture {
             .mode(0o700)
             .create(&directory)
             .unwrap();
-        let path = directory.join("domain-v2.db");
+        let path = directory.join("domain.db");
         Self { directory, path }
     }
     fn open(&self) -> DomainStore {
@@ -46,14 +46,19 @@ fn scenario(id: &str) -> Value {
         .find(|case| case["id"] == id)
         .unwrap_or_else(|| panic!("missing {id} scenario"));
     assert!(
-        matches!(case["execution_status"].as_str(), Some("schedule_runner" | "test_evidence")),
+        matches!(
+            case["execution_status"].as_str(),
+            Some("schedule_runner" | "test_evidence")
+        ),
         "{id} is executed here or by the named tests; its runner/A/U layers stay listed as remaining"
     );
-    assert!(case["layers"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .any(|layer| layer == "S"));
+    assert!(
+        case["layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|layer| layer == "S")
+    );
     case.clone()
 }
 fn expected<'a>(case: &'a Value, key: &str) -> &'a Value {
@@ -153,8 +158,12 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
             name: format!("scheduled/{run}"),
             cwd: "/synthetic/Projects".into(),
             prompt: "Synthetic mission".into(),
-            options_json: serde_json::to_string(&alondra_core::options::OptionsFile::default()
-                .resolve(None, &BTreeMap::new()).unwrap()).unwrap(),
+            options_json: serde_json::to_string(
+                &alondra_core::options::OptionsFile::default()
+                    .resolve(None, &BTreeMap::new())
+                    .unwrap(),
+            )
+            .unwrap(),
         },
         finished_at,
     }
@@ -417,9 +426,11 @@ fn v58_cs_sent_links_policy_and_receipt_commit_together() {
         BEGIN SELECT RAISE(ABORT,'synthetic policy failure'); END;",
         )
         .unwrap();
-    assert!(store
-        .execute_authenticated(&Actor::System, &sent, None)
-        .is_err());
+    assert!(
+        store
+            .execute_authenticated(&Actor::System, &sent, None)
+            .is_err()
+    );
     assert_eq!(store.load().unwrap(), before);
     for table in ["requests", "tasks", "schedule_request_tools"] {
         assert_eq!(rows(&store, table), 0, "{table} must roll back");
@@ -516,13 +527,13 @@ fn v62_cs_older_launch_failure_does_not_replace_latest_run() {
 
 #[test]
 fn schedule_catalog_has_explicit_partial_cs_evidence_and_pending_layers() {
-    assert!(catalog()["schedule_acceptance_status_note"]
-        .as_str()
-        .unwrap()
-        .contains("complete scenario pending"));
-    let cases = [
-        "V54", "V55", "V56", "V57", "V58", "V62",
-    ];
+    assert!(
+        catalog()["schedule_acceptance_status_note"]
+            .as_str()
+            .unwrap()
+            .contains("complete scenario pending")
+    );
+    let cases = ["V54", "V55", "V56", "V57", "V58", "V62"];
     for id in cases {
         let case = scenario(id);
         assert!(
@@ -568,11 +579,18 @@ fn schedule_mutations_are_judged_by_their_schedule_not_by_unrelated_writes() {
         "unrelated",
         Command::CreateRequest {
             request_id: "unrelated-request".into(),
-            body: "Unrelated work".into(), auto_merge: false,
+            body: "Unrelated work".into(),
+            auto_merge: false,
         },
     );
     store
-        .execute_authenticated(&Actor::User { user_id: "user-1".into() }, &unrelated, None)
+        .execute_authenticated(
+            &Actor::User {
+                user_id: "user-1".into(),
+            },
+            &unrelated,
+            None,
+        )
         .unwrap();
     store
         .execute_authenticated(&Actor::System, &update, None)

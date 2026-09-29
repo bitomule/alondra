@@ -27,23 +27,7 @@ pub(crate) const MARKER: &str = "database-migration.json";
 const APPLICATION_ID: i64 = 0x414c4432;
 
 pub(crate) fn active_path(home: &Path) -> std::path::PathBuf {
-    let canonical = home.join(DATABASE);
-    #[cfg(test)]
-    if !canonical.exists() {
-        // Existing unit fixtures predate the filename migration.
-        return home.join(SOURCE);
-    }
-    #[cfg(not(test))]
-    {
-        let committed = crate::domain_cutover::read_marker(home)
-            .ok()
-            .flatten()
-            .is_some_and(|marker| marker.phase == crate::domain_cutover::Phase::Committed);
-        if !committed && !home.join(MARKER).exists() {
-            return home.join(SOURCE);
-        }
-    }
-    canonical
+    home.join(DATABASE)
 }
 
 /// A private preflight snapshot uses SQLite backup, so its source file bytes
@@ -122,8 +106,8 @@ enum Checkpoint {
     Cleaned,
 }
 
-/// Migrate only a HOME that has already completed the domain cutover. A
-/// markerless legacy HOME is left for the legacy protocol selector to handle.
+/// Migrate a HOME that has already completed the domain cutover. A legacy HOME
+/// is rejected before this function; a fresh HOME creates `domain.db` directly.
 pub(crate) fn migrate(home: &Path) -> Result<bool> {
     let (migrated, _fence) = migrate_and_fence(home)?;
     Ok(migrated)

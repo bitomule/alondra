@@ -51,6 +51,14 @@ fn source_database(home: &Path) -> Connection {
     conn.execute("INSERT INTO schedules
         (id,title,text,project,options,disallowed_tools,frequency,hour,minute,weekday,interval,start_at,enabled,next_run,revision,deleted_at)
         VALUES ('schedule-keep','Synthetic schedule','Synthetic task',NULL,'{}','[]','daily',9,30,NULL,NULL,NULL,1,4102444800000,7,NULL)", []).unwrap();
+    for index in 1..10 {
+        conn.execute(
+            "INSERT INTO schedules
+             (id,title,text,project,options,disallowed_tools,frequency,hour,minute,weekday,interval,start_at,enabled,next_run,revision,deleted_at)
+             VALUES (?1,?2,'Synthetic task',NULL,'{}','[]','daily',9,30,NULL,NULL,NULL,1,4102444800000,1,NULL)",
+            params![format!("schedule-{index}"), format!("Synthetic schedule {index}")],
+        ).unwrap();
+    }
     conn.execute("INSERT INTO schedule_runs
         (id,schedule_id,origin,claim_revision,due_at,claimed_at,finished_at,state,request_id,task_id,error,definition_snapshot,launch)
         VALUES ('run-keep','schedule-keep','legacy_last_observed',NULL,NULL,NULL,100,'interrupted',NULL,NULL,'legacy outcome unavailable',NULL,NULL)", []).unwrap();
@@ -96,6 +104,13 @@ fn assert_migrated(home: &Path) {
         })
         .unwrap();
     assert_eq!(schedule, ("schedule-keep".into(), 4_102_444_799_000, 7));
+    let schedules: i64 = conn
+        .query_row("SELECT count(*) FROM schedules", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(
+        schedules, 10,
+        "every active schedule must survive filename migration"
+    );
     assert_eq!(
         conn.query_row(
             "SELECT count(*) FROM schedule_runs WHERE id='run-keep'",

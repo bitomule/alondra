@@ -1256,7 +1256,7 @@ mod tests {
     async fn failed_marker_write_rolls_back_run_and_launch_result_without_retrying_claude() {
         let fixture = Fixture::new();
         fixture.claim("rollback");
-        let conn = rusqlite::Connection::open(fixture.home.join("domain-v2.db")).unwrap();
+        let conn = rusqlite::Connection::open(fixture.home.join("domain.db")).unwrap();
         conn.execute_batch(
             "CREATE TRIGGER reject_failed_marker BEFORE INSERT ON schedule_failed_launches
             BEGIN SELECT RAISE(ABORT,'synthetic marker failure'); END;",

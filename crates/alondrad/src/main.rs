@@ -74,7 +74,7 @@ fn main() -> Result<()> {
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
             println!(
-                "Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --cutover-domain-v2 <new-backup-dir> <legacy-alondrad> <legacy-alondra>\n                                   Cut this HOME over to domain v2: waits for the daemon to release HOME, backs it up with the legacy binaries, archives the legacy data in HOME/legacy-v1 and starts domain v2 empty\n      --rollback-domain-v2 <backup-dir>\n                                   Restore the legacy HOME from a cutover backup\n      --rehearse-domain-cutover <live-home> <new-work-dir> <legacy-daemon> <report-prefix>\n\nWithout options, starts the local daemon and configured service connector."
+                "Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n\nWithout options, starts the local domain daemon and configured service connector."
             );
             return Ok(());
         }
@@ -95,29 +95,6 @@ fn main() -> Result<()> {
                     );
                     std::process::exit(1);
                 }
-            }
-            return Ok(());
-        }
-        [flag, backup, legacy_daemon, legacy_cli] if flag == "--cutover-domain-v2" => {
-            domain_cutover::cutover_cli(
-                Path::new(backup),
-                &[Path::new(legacy_daemon), Path::new(legacy_cli)],
-            )?;
-            return Ok(());
-        }
-        [flag, backup] if flag == "--rollback-domain-v2" => {
-            domain_cutover::rollback_cli(Path::new(backup))?;
-            return Ok(());
-        }
-        [flag, live, work, legacy, report] if flag == "--rehearse-domain-cutover" => {
-            let passed = domain_backup::rehearsal::run_and_write(
-                Path::new(live),
-                Path::new(work),
-                Path::new(legacy),
-                Path::new(report),
-            )?;
-            if !passed {
-                std::process::exit(1);
             }
             return Ok(());
         }
@@ -183,20 +160,11 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     }
     let _home_lock = alondra_core::home_lock::HomeLock::shared(&config.home)?;
     alondra_core::home_lock::ensure_ready(&config.home)?;
-    // Select durable protocol mode before opening the legacy Hub or starting
-    // any watcher, delivery worker, schedule, hook or v1 HTTP route.
-    match protocol_mode(&config.home)? {
-        ProtocolMode::Legacy => (),
-        ProtocolMode::Prepared => anyhow::bail!("domain cutover is prepared but not committed"),
-        ProtocolMode::Committed(_) => {
-            anyhow::ensure!(
-                diagnostic.is_none(),
-                "legacy diagnostic push is unavailable after domain cutover"
-            );
-            return run_v2_only(&config).await;
-        }
-    }
+    ensure_domain_protocol(&config.home)?;
+    let _domain = domain_runtime::DomainRuntime::open(&config.home)?;
     if let Some(device) = diagnostic {
+        // Diagnostic delivery uses the same canonical domain store but does not
+        // start the long-running workers or HTTP listener.
         let auth = Arc::new(auth::Auth::open(&config.home)?);
         let service = service::Service::open(&config.home, config.port, auth)?
             .context("service is not configured; run alondra setup first")?;
@@ -206,88 +174,23 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
         );
         return Ok(());
     }
-    let claude_home = watcher::claude_home();
-    let hold = std::env::var("ALONDRA_HOLD")
-        .map(|v| v != "0")
-        .unwrap_or(true);
-    let addr = SocketAddr::new(config.listen, config.port);
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .with_context(|| format!("cannot listen on {addr}"))?;
+    run_domain(&config).await
+}
 
-    // Own the per-home socket before recovery/migration can change durable delivery state.
-    std::fs::create_dir_all(&config.home)?;
-    let hooks = hook_socket::bind(&config.home).await?;
-    let hub = Arc::new(hub::Hub::open(config.clone(), hold)?);
-    let (drain, draining) = tokio::sync::watch::channel(false);
-    let hooks = tokio::spawn(hook_socket::serve(hooks, hub.clone(), draining));
-    tokio::spawn(watcher::run(hub.clone(), claude_home.clone()));
-    if config.legacy_bridge {
-        tokio::spawn(legacy::run(hub.clone(), claude_home.clone()));
-    }
-    tokio::spawn(machine::run(hub.clone()));
-    if config.wake {
-        tokio::spawn(wake::run(hub.clone()));
-        tokio::spawn(keeper::run(hub.clone(), claude_home.clone()));
-        tokio::spawn(menus::run(hub.clone()));
-        if config.resume_dead_nodes {
-            tokio::spawn(wake::resume_loop(hub.clone()));
+fn ensure_domain_protocol(home: &std::path::Path) -> Result<()> {
+    match domain_cutover::read_marker(home)? {
+        Some(marker) if marker.phase == domain_cutover::Phase::Prepared => {
+            anyhow::bail!("domain cutover is prepared but not committed")
+        }
+        Some(_) => Ok(()),
+        None => {
+            anyhow::ensure!(
+                legacy_sidecar_is_empty(&home.join("domain-v2.db"))?,
+                "domain database contains state without a committed cutover marker; refusing to start and preserving the database"
+            );
+            Ok(())
         }
     }
-    tokio::spawn(notifier::run(hub.clone()));
-    tokio::spawn(retention(hub.clone(), config.retention_hours));
-    tokio::spawn(updates::updater(&config).run());
-    tokio::spawn(sentinel::run(hub.clone()));
-    tokio::spawn(prs::run(hub.clone()));
-    tokio::spawn(orchestrate::run(hub.clone()));
-    if config.wake {
-        tokio::spawn(schedules::run(hub.clone()));
-    }
-
-    let auth = Arc::new(auth::Auth::open(&config.home)?);
-    let service = match service::Service::open(&config.home, config.port, auth.clone()) {
-        Ok(Some(service)) => Some(Arc::new(service.with_hub(hub.clone()))),
-        Ok(None) => None,
-        Err(error) => {
-            log!("service connector disabled: {error:#}");
-            None
-        }
-    };
-    if let Some(service) = service.clone() {
-        tokio::spawn(async move { service.run().await });
-    }
-    let push = Arc::new(push::Push::open(&config.home)?);
-    tokio::spawn(domain_delivery::run(
-        hub.clone(),
-        push.clone(),
-        service.clone(),
-    ));
-    tokio::spawn(push::run(hub.clone(), push.clone(), service));
-    log!(
-        "listening on http://{addr}, data in {}, for {} (legacy bridge {}, wake nodes {})",
-        config.home.display(),
-        config.name,
-        if config.legacy_bridge { "yes" } else { "no" },
-        if config.wake { "yes" } else { "no" },
-    );
-    let app = http::router(hub.clone(), auth.clone(), push)
-        .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
-    let server = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .into_future();
-    start_guard::served();
-    tokio::select! {
-        served = server => served?,
-        () = replaced(&config) => {
-            drain.send_replace(true);
-            let _ = hooks.await;
-            hub.read_settled(|_| ());
-            relaunch_now();
-        }
-    }
-    Ok(())
 }
 
 /// Resolves once the launchd job's binary was replaced by one that passed preflight.
@@ -304,28 +207,6 @@ fn relaunch_now() -> ! {
         relaunch::RELAUNCH
     );
     std::process::exit(relaunch::RELAUNCH)
-}
-
-enum ProtocolMode {
-    Legacy,
-    Prepared,
-    Committed(String),
-}
-
-fn protocol_mode(home: &Path) -> Result<ProtocolMode> {
-    match domain_cutover::read_marker(home)? {
-        Some(marker) if marker.phase == domain_cutover::Phase::Prepared => {
-            Ok(ProtocolMode::Prepared)
-        }
-        Some(marker) => Ok(ProtocolMode::Committed(marker.data_epoch)),
-        None => {
-            anyhow::ensure!(
-                legacy_sidecar_is_empty(&home.join("domain-v2.db"))?,
-                "domain database contains v2 state without cutover marker; refusing legacy startup"
-            );
-            Ok(ProtocolMode::Legacy)
-        }
-    }
 }
 
 /// Critical v2 workers must not disappear while the local listener remains healthy.
@@ -410,7 +291,7 @@ pub(crate) fn legacy_sidecar_is_empty(path: &Path) -> Result<bool> {
 /// A pre-release build left an empty domain database on an older schema. Legacy
 /// startup refuses unknown schemas, so under the exclusive HOME lock it is copied
 /// aside and removed; the legacy Hub then creates the current empty one. Anything
-/// holding rows, or not recognisable as ours, is left for `protocol_mode` to refuse.
+/// holding rows, or not recognisable as ours, is left for `ensure_domain_protocol` to refuse.
 fn retire_empty_older_sidecar(home: &Path) -> Result<Option<std::path::PathBuf>> {
     let database = home.join("domain-v2.db");
     if !database.exists() || domain_cutover::read_marker(home)?.is_some() {
@@ -500,7 +381,7 @@ fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<b
 }
 
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
-async fn run_v2_only(config: &Config) -> Result<()> {
+async fn run_domain(config: &Config) -> Result<()> {
     let state = domain_bootstrap::V2Only::open(&config.home)?;
     let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?.map(|service| {
@@ -719,157 +600,65 @@ mod argument_tests {
     }
 
     #[test]
-    fn staged_database_without_marker_never_falls_back_to_legacy() {
-        let home = std::env::temp_dir().join(format!("alondra-mode-{}", auth::random_hex(8)));
+    fn empty_new_home_selects_domain_startup() {
+        let home =
+            std::env::temp_dir().join(format!("alondra-domain-start-{}", auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        assert!(matches!(
-            protocol_mode(&home).unwrap(),
-            ProtocolMode::Legacy
-        ));
-        std::fs::write(home.join("domain-v2.db"), b"stage left behind").unwrap();
-        assert!(protocol_mode(&home).is_err());
+        domain_cutover::refuse_legacy_home(&home).unwrap();
+        ensure_domain_protocol(&home).unwrap();
+        let _domain = domain_runtime::DomainRuntime::open(&home).unwrap();
+        domain_bootstrap::V2Only::open(&home).unwrap();
+        assert!(home.join("domain.db").is_file());
+        assert!(!home.join("alondra.db").exists());
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn empty_legacy_sidecar_survives_two_boots_but_v2_rows_require_marker() {
+    fn legacy_only_home_fails_closed_without_creating_domain_database() {
         let home =
-            std::env::temp_dir().join(format!("alondra-mode-sidecar-{}", auth::random_hex(8)));
+            std::env::temp_dir().join(format!("alondra-domain-legacy-{}", auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        let config = Config::resolve(
-            home.clone(),
-            &Default::default(),
-            |_| None,
-            || Some("Test".into()),
+        std::fs::write(home.join("alondra.db"), b"preserve legacy bytes").unwrap();
+        let error = domain_cutover::refuse_legacy_home(&home).unwrap_err();
+        assert!(error.to_string().contains("legacy data"));
+        assert!(!home.join("domain.db").exists());
+        assert_eq!(
+            std::fs::read(home.join("alondra.db")).unwrap(),
+            b"preserve legacy bytes"
         );
-        drop(hub::Hub::open(config.clone(), false).unwrap());
-        assert!(matches!(
-            protocol_mode(&home).unwrap(),
-            ProtocolMode::Legacy
-        ));
-        drop(hub::Hub::open(config, false).unwrap());
-        assert!(matches!(
-            protocol_mode(&home).unwrap(),
-            ProtocolMode::Legacy
-        ));
-        let conn = rusqlite::Connection::open(home.join("domain-v2.db")).unwrap();
-        conn.execute("UPDATE domain_meta SET revision=1 WHERE singleton=1", [])
-            .unwrap();
-        assert!(protocol_mode(&home).is_err());
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    fn older_empty_sidecar(home: &Path) -> rusqlite::Connection {
-        let conn = rusqlite::Connection::open(home.join("domain-v2.db")).unwrap();
-        conn.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA application_id=1095517234; PRAGMA user_version=3;
-            CREATE TABLE domain_meta(singleton INTEGER PRIMARY KEY,revision INTEGER NOT NULL,
-                orchestrator_generation INTEGER NOT NULL);
-            INSERT INTO domain_meta VALUES(1,0,0);
-            CREATE TABLE command_receipts(id TEXT PRIMARY KEY);",
-        )
-        .unwrap();
-        conn
-    }
-
-    #[test]
-    fn an_empty_sidecar_from_an_older_build_is_kept_aside_and_legacy_starts() {
-        let home = std::env::temp_dir().join(format!("alondra-retire-{}", auth::random_hex(8)));
-        std::fs::create_dir(&home).unwrap();
-        drop(older_empty_sidecar(&home));
-        assert!(protocol_mode(&home).is_err());
-        let kept = retire_empty_older_sidecar(&home).unwrap().unwrap();
-        assert!(!home.join("domain-v2.db").exists());
-        assert!(replaceable_cutover_sidecar_is_empty(&kept.join("domain-v2.db")).unwrap());
-        assert!(matches!(
-            protocol_mode(&home).unwrap(),
-            ProtocolMode::Legacy
-        ));
         std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
-    fn an_older_sidecar_with_rows_is_never_moved_and_startup_refuses() {
-        let home =
-            std::env::temp_dir().join(format!("alondra-retire-rows-{}", auth::random_hex(8)));
-        std::fs::create_dir(&home).unwrap();
-        let conn = older_empty_sidecar(&home);
-        conn.execute("INSERT INTO command_receipts(id) VALUES('existing')", [])
-            .unwrap();
-        drop(conn);
-        assert!(retire_empty_older_sidecar(&home).unwrap().is_none());
-        assert!(home.join("domain-v2.db").exists());
-        assert!(protocol_mode(&home).is_err());
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn a_busy_home_leaves_the_sidecar_alone() {
-        let home =
-            std::env::temp_dir().join(format!("alondra-retire-busy-{}", auth::random_hex(8)));
-        std::fs::create_dir(&home).unwrap();
-        drop(older_empty_sidecar(&home));
-        let _running = alondra_core::home_lock::HomeLock::shared(&home).unwrap();
-        assert!(retire_empty_older_sidecar(&home).unwrap().is_none());
-        assert!(home.join("domain-v2.db").exists());
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn cutover_replaces_only_an_empty_older_domain_sidecar() {
-        let home =
-            std::env::temp_dir().join(format!("alondra-empty-sidecar-{}", auth::random_hex(8)));
-        std::fs::create_dir(&home).unwrap();
-        let path = home.join("domain-v2.db");
-        let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch(
-            "PRAGMA application_id=1095517234; PRAGMA user_version=3;
-            CREATE TABLE domain_meta(singleton INTEGER PRIMARY KEY,revision INTEGER NOT NULL,
-                orchestrator_generation INTEGER NOT NULL);
-            INSERT INTO domain_meta VALUES(1,0,0);
-            CREATE TABLE command_receipts(id TEXT PRIMARY KEY);",
-        )
-        .unwrap();
-        assert!(legacy_sidecar_is_empty(&path).is_err());
-        assert!(replaceable_cutover_sidecar_is_empty(&path).unwrap());
-        conn.execute("INSERT INTO command_receipts(id) VALUES('existing')", [])
-            .unwrap();
-        assert!(!replaceable_cutover_sidecar_is_empty(&path).unwrap());
-        conn.execute("DELETE FROM command_receipts", []).unwrap();
-        conn.execute_batch("PRAGMA application_id=0").unwrap();
-        assert!(replaceable_cutover_sidecar_is_empty(&path).is_err());
-        drop(conn);
-        std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn prepared_and_committed_markers_select_only_v2_paths() {
+    fn markerless_domain_rows_and_prepared_cutover_refuse_startup() {
         use std::os::unix::fs::PermissionsExt;
         let home =
-            std::env::temp_dir().join(format!("alondra-mode-marker-{}", auth::random_hex(8)));
+            std::env::temp_dir().join(format!("alondra-domain-guard-{}", auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        let path = home.join(domain_cutover::MARKER);
-        let mut marker = domain_cutover::Marker {
+        let legacy_domain = home.join("domain-v2.db");
+        drop(domain_store::DomainStore::open(&legacy_domain).unwrap());
+        let conn = rusqlite::Connection::open(&legacy_domain).unwrap();
+        conn.execute("UPDATE domain_meta SET revision=1 WHERE singleton=1", [])
+            .unwrap();
+        drop(conn);
+        assert!(ensure_domain_protocol(&home).is_err());
+        std::fs::remove_file(&legacy_domain).unwrap();
+
+        let marker = domain_cutover::Marker {
             format: 1,
             phase: domain_cutover::Phase::Prepared,
             backup_manifest_sha256: "a".repeat(64),
             source_seq: 42,
             data_epoch: "b".repeat(64),
         };
-        std::fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
-        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
-        assert!(matches!(
-            protocol_mode(&home).unwrap(),
-            ProtocolMode::Prepared
-        ));
-        marker.phase = domain_cutover::Phase::Committed;
-        std::fs::write(&path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        let marker_path = home.join(domain_cutover::MARKER);
+        std::fs::write(&marker_path, serde_json::to_vec(&marker).unwrap()).unwrap();
+        std::fs::set_permissions(&marker_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         assert!(
-            matches!(protocol_mode(&home).unwrap(), ProtocolMode::Committed(epoch) if epoch == marker.data_epoch)
-        );
-        assert!(
-            !home.join("alondra.db").exists(),
-            "mode selection must not construct the legacy store"
+            ensure_domain_protocol(&home)
+                .unwrap_err()
+                .to_string()
+                .contains("prepared")
         );
         std::fs::remove_dir_all(home).unwrap();
     }

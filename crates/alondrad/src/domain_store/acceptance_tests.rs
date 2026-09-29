@@ -80,7 +80,7 @@ impl TemporaryStore {
         Self(path)
     }
     fn database(&self) -> std::path::PathBuf {
-        self.0.join("domain-v2.db")
+        self.0.join("domain.db")
     }
 }
 impl Drop for TemporaryStore {
@@ -196,7 +196,8 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             actor("user-a"),
             Command::CreateRequest {
                 request_id: id.into(),
-                body: string(field(request, "content")).into(), auto_merge: false,
+                body: string(field(request, "content")).into(),
+                auto_merge: false,
             },
         );
     }
@@ -287,7 +288,10 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
                         QuestionOption {
                             id: string(field(option, "option_id")).into(),
                             label: string(field(option, "label")).into(),
-                            description: option.get("description").and_then(|d| d.as_str()).map(String::from),
+                            description: option
+                                .get("description")
+                                .and_then(|d| d.as_str())
+                                .map(String::from),
                             inputs: vec![],
                         }
                     })
@@ -488,7 +492,15 @@ fn deliveries(state: &DomainState) -> (usize, usize) {
     let acceptances = state
         .interactions
         .values()
-        .filter(|i| matches!(i.payload, InteractionPayload::Delivery { acceptance: Some(_), .. }))
+        .filter(|i| {
+            matches!(
+                i.payload,
+                InteractionPayload::Delivery {
+                    acceptance: Some(_),
+                    ..
+                }
+            )
+        })
         .count();
     (presentations, acceptances)
 }
@@ -517,21 +529,29 @@ fn measured(
     let mut relinked = 0;
     let mut closed = 0;
     for (id, interaction) in &state.interactions {
-        let subject = interaction.subject.as_ref().map(|s| json!({"id": subject_id(s)}));
+        let subject = interaction
+            .subject
+            .as_ref()
+            .map(|s| json!({"id": subject_id(s)}));
         let earlier = before.state.interactions.get(id);
         match &interaction.payload {
             InteractionPayload::Information { read_by } => {
                 interactions.insert(id.0.clone(), json!({"read_by": read_by}));
             }
             InteractionPayload::Question { answer, .. } => {
-                interactions.insert(id.0.clone(), json!({"answer":answer,"scope":interaction.scope,
-                    "recipient":interaction.recipient,"subject":subject}));
+                interactions.insert(
+                    id.0.clone(),
+                    json!({"answer":answer,"scope":interaction.scope,
+                    "recipient":interaction.recipient,"subject":subject}),
+                );
                 if !touched.contains(id) {
                     if earlier.is_some_and(|e| e.subject != interaction.subject) {
                         relinked += 1;
                     }
                     if answer.is_some()
-                        && earlier.is_some_and(|e| matches!(e.payload, InteractionPayload::Question { answer: None, .. }))
+                        && earlier.is_some_and(|e| {
+                            matches!(e.payload, InteractionPayload::Question { answer: None, .. })
+                        })
                     {
                         closed += 1;
                     }
@@ -579,7 +599,10 @@ fn measured(
                 .rev()
                 .find(|decision| decision.accepted)
                 .map(|decision| decision.revision_id.clone());
-            (format!("doc-review-{}", index + 1), json!({"accepted_revision_id": accepted}))
+            (
+                format!("doc-review-{}", index + 1),
+                json!({"accepted_revision_id": accepted}),
+            )
         })
         .collect();
     let mut pull_requests: serde_json::Map<String, Value> = state
@@ -689,7 +712,14 @@ fn shared_catalog_domain_and_sql_cases() {
                 }
                 "environment" => {
                     let state = store.load().unwrap();
-                    (Actor::System, observation(string(field(step, "operation")), field(step, "parameters"), &state))
+                    (
+                        Actor::System,
+                        observation(
+                            string(field(step, "operation")),
+                            field(step, "parameters"),
+                            &state,
+                        ),
+                    )
                 }
                 other => panic!("{case_id}: unsupported step type {other}"),
             };
@@ -746,7 +776,10 @@ fn shared_catalog_domain_and_sql_cases() {
             );
             let path = string(field(assertion, "path"));
             if client_assertion(path) {
-                assert!(layers.iter().any(|layer| layer == "U"), "{case_id}: {path} needs a U layer");
+                assert!(
+                    layers.iter().any(|layer| layer == "U"),
+                    "{case_id}: {path} needs a U layer"
+                );
                 continue;
             }
             let found = path.split('.').fold(&actual, |node, key| {
@@ -774,7 +807,9 @@ fn shared_catalog_domain_and_sql_cases() {
 #[test]
 fn catalog_execution_status_is_explicit_and_evidenced() {
     let catalog: Value = serde_json::from_str(CATALOG).unwrap();
-    let legend = field(&catalog, "execution_status_legend").as_object().unwrap();
+    let legend = field(&catalog, "execution_status_legend")
+        .as_object()
+        .unwrap();
     let sources = [
         include_str!("tests.rs"),
         include_str!("schedule_acceptance_tests.rs"),
@@ -789,7 +824,10 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
     for case in field(&catalog, "scenarios").as_array().unwrap() {
         let id = string(field(case, "id"));
         let status = string(field(case, "execution_status"));
-        assert!(legend.contains_key(status), "{id}: status {status} is not in the legend");
+        assert!(
+            legend.contains_key(status),
+            "{id}: status {status} is not in the legend"
+        );
         match status {
             "store_runner" => {
                 runner.insert(id);
@@ -799,11 +837,16 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
             }
             "test_evidence" => {
                 let evidence = field(case, "cs_evidence").as_array().unwrap();
-                assert!(!evidence.is_empty(), "{id}: test_evidence needs cs_evidence");
+                assert!(
+                    !evidence.is_empty(),
+                    "{id}: test_evidence needs cs_evidence"
+                );
                 for name in evidence {
                     let function = string(name).rsplit("::").next().unwrap();
                     assert!(
-                        sources.iter().any(|source| source.contains(&format!("fn {function}("))),
+                        sources
+                            .iter()
+                            .any(|source| source.contains(&format!("fn {function}("))),
                         "{id}: evidence {} names no existing test",
                         string(name)
                     );
@@ -811,12 +854,16 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
             }
             _ => {
                 assert!(
-                    case.get("cs_evidence").is_none_or(|e| e.as_array().unwrap().is_empty()),
+                    case.get("cs_evidence")
+                        .is_none_or(|e| e.as_array().unwrap().is_empty()),
                     "{id}: a pending scenario cannot also claim evidence"
                 );
             }
         }
     }
     assert_eq!(runner, CASES.iter().copied().collect::<BTreeSet<_>>());
-    assert_eq!(schedule_runner, SCHEDULE_CASES.iter().copied().collect::<BTreeSet<_>>());
+    assert_eq!(
+        schedule_runner,
+        SCHEDULE_CASES.iter().copied().collect::<BTreeSet<_>>()
+    );
 }

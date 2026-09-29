@@ -279,7 +279,7 @@ mod tests {
         ));
         std::fs::create_dir_all(&home).unwrap();
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
-        rusqlite::Connection::open(home.join("domain-v2.db"))
+        rusqlite::Connection::open(home.join("domain.db"))
             .unwrap()
             .execute_batch("DROP TABLE domain_outbox")
             .unwrap();
