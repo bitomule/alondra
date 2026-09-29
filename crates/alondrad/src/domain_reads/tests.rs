@@ -151,6 +151,11 @@ fn every_sectioned_read_fits_the_relay_while_the_full_projection_does_not() {
     let (status, lookup, _) = get(runtime, &format!("/v2/domain/inbox/{}", projection.inbox[0].id));
     assert_eq!(status, 200);
     assert_eq!(lookup["root_id"], projection.inbox[0].id);
+    assert!(projection.inbox[0].id.contains(':'), "the lookup below proves an encoded colon");
+    let encoded = projection.inbox[0].id.replace(':', "%3A");
+    let (status, encoded_lookup, _) = get(runtime, &format!("/v2/domain/inbox/{encoded}"));
+    assert_eq!(status, 200);
+    assert_eq!(encoded_lookup, lookup, "a percent-encoded id names the same item");
     let (status, with, bytes) = get(runtime, "/v2/domain/summary?include=inbox,tasks,agents");
     assert_eq!(status, 200);
     assert!(bytes <= MAX_PAGE_BYTES, "summary with expansions is {bytes} bytes");
@@ -251,6 +256,9 @@ fn the_read_grammar_is_exact() {
         "/v2/domain/inbox?filter=pending&limit=200",
         "/v2/domain/inbox/interaction:abc-1",
         "/v2/domain/inbox/document:t-1:d-1:r-1",
+        "/v2/domain/inbox/interaction%3Aabc-1",
+        "/v2/domain/inbox/interaction%3aabc-1",
+        "/v2/domain/interactions/i%2D1",
         "/v2/domain/tasks?request=r-1&agent=node-1",
         "/v2/domain/tasks/t-1",
         "/v2/domain/tasks/t-1/interactions?limit=5",
@@ -286,6 +294,12 @@ fn the_read_grammar_is_exact() {
         "/v2/domain/inbox?cursor=a+b",
         "/v2/domain/inbox?other=1",
         "/v2/domain/inbox/../x",
+        "/v2/domain/inbox/a%2Fb",
+        "/v2/domain/inbox/a%25",
+        "/v2/domain/inbox/a%3",
+        "/v2/domain/inbox/a%+1",
+        "/v2/domain/inbox/%2e%2e",
+        "/v2/domain/interactions/i%3A1",
         "/v2/domain/inbox/a/b",
         "/v2/domain/inbox/a?limit=1",
         "/v2/domain/tasks/t-1?limit=1",

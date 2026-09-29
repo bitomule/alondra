@@ -30,16 +30,30 @@ final class DomainV2ReadTests: XCTestCase {
             "/v2/domain/interactions?scope=orchestrator", "/v2/domain/interactions/q1", "/v2/domain/interactions/q1/body?offset=0",
             "/v2/domain/requests/r1/body?offset=49152", "/v2/domain/pull-requests/p1", "/v2/domain/documents/d1",
             "/v2/domain/merge-authorizations", "/v2/domain/stack-readiness?limit=200", "/v2/domain/superseded-acceptances",
+            "/v2/domain/inbox/interaction%3Aq", "/v2/domain/inbox/interaction%3aq",
         ]
         let invalid = [
             "/v2/domain", "/v2/domain/snapshot", "/v2/domain/summary?include=schedules", "/v2/domain/summary?include=inbox,inbox",
             "/v2/domain/inbox?filter=all", "/v2/domain/inbox?limit=0", "/v2/domain/inbox?limit=201", "/v2/domain/inbox?cursor=",
             "/v2/domain/inbox?cursor=a&cursor=b", "/v2/domain/tasks/t1?x=1", "/v2/domain/tasks/t%2F1", "/v2/domain/interactions",
             "/v2/domain/interactions/q1/body", "/v2/domain/agents/a1", "/v2/domain/tasks/t1/interactions/extra",
-            "/v2/domain/inbox/interaction%3Aq",
+            "/v2/domain/inbox/a%2Fb", "/v2/domain/inbox/a%25", "/v2/domain/inbox/a%3", "/v2/domain/inbox/%2e%2e",
+            "/v2/domain/interactions/q%3A1",
         ]
         for path in valid { XCTAssertTrue(DomainReadPath.isValid(path), path) }
         for path in invalid { XCTAssertFalse(DomainReadPath.isValid(path), path) }
+    }
+
+    func testAnInboxItemIsReadByItsPercentEncodedID() async throws {
+        let server = ReadServer { _ in
+            (200, envelope.merging(["root_id": "interaction:q", "item": [
+                "id": "interaction:q", "kind": "question", "subject": ["kind": "interaction", "interaction_id": "q"],
+                "title": "Q", "revision": 9, "order": 1, "pending": true, "children": [], "available_actions": []]]) { $1 })
+        }
+        let lookup = try await client(server).domainInboxItem("interaction:q")
+        XCTAssertEqual(lookup.item.id, "interaction:q")
+        let paths = await server.paths()
+        XCTAssertEqual(paths, ["/v2/domain/inbox/interaction%3Aq"])
     }
 
     func testTheWholeProjectionIsNoLongerRead() async {

@@ -9,8 +9,10 @@ public enum DomainReadPath {
         let parts = path.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false)
         let query = parts.count == 2 ? String(parts[1]) : nil
         guard parts[0].hasPrefix("/v2/domain/") else { return false }
-        let segments = parts[0].dropFirst("/v2/domain/".count).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
-        guard (1...3).contains(segments.count) else { return false }
+        let encoded = parts[0].dropFirst("/v2/domain/".count).split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        // Segments are percent-encoded on the wire; the daemon checks the decoded id.
+        let segments = encoded.compactMap { $0.removingPercentEncoding }
+        guard segments.count == encoded.count, (1...3).contains(segments.count) else { return false }
         let page = ["cursor", "limit"]
         switch (segments[0], segments.count > 1 ? segments[1] : nil, segments.count > 2 ? segments[2] : nil) {
         case ("summary", nil, nil): return valid(query, allowed: ["include"])
@@ -129,6 +131,15 @@ extension AlondraAPIClient {
         })
         try Self.check(detail.protocolVersion, detail.revision)
         return detail
+    }
+
+    /// One inbox entry, root or child, with its current actions and the root that holds it.
+    public func domainInboxItem(_ id: String) async throws -> DomainV2.InboxLookup {
+        let lookup = try await send(Endpoint<DomainV2.InboxLookup>(.get, path: ["v2", "domain", "inbox", id]) {
+            try DomainV2.decode(DomainV2.InboxLookup.self, from: $0)
+        })
+        try Self.check(lookup.protocolVersion, lookup.revision)
+        return lookup
     }
 
     /// The whole interaction: a row cut to fit the budget is completed from `…/body` chunks.
