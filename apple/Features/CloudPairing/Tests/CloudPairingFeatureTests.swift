@@ -1,5 +1,6 @@
 import AlondraCloudPairingFeature
 import ComposableArchitecture
+import Foundation
 import Testing
 
 @MainActor
@@ -22,6 +23,23 @@ struct CloudPairingFeatureTests {
         continuation.yield(())
         await store.receive(\.approved) { $0.phase = .approved; $0.configuration = .saved }
         continuation.finish()
+        await store.finish()
+    }
+    @Test func failedScanStopsTheCameraInsteadOfResubmittingTheSameQR() async {
+        struct Refused: LocalizedError { var errorDescription: String? { "Pairing refused (409)" } }
+        var state = CloudPairingFeature.State()
+        state.phase = .scanning
+        state.configuration = .missing
+        state.cameraReady = true
+        let store = TestStore(initialState: state) { CloudPairingFeature() } withDependencies: {
+            $0.cloudPairing = CloudPairingService(restore: { false }, login: {}, begin: { _ in throw Refused() },
+                approve: {}, cancel: {}, logout: {})
+        }
+        await store.send(.scanned("QR")) { $0.payload = "QR" }
+        await store.receive(\.submit) { $0.payload = ""; $0.phase = .submitting }
+        await store.receive(\.failed) {
+            $0.phase = .scanning; $0.cameraReady = false; $0.error = "Pairing refused (409)"
+        }
         await store.finish()
     }
     @Test func cancelledGenerationCannotUnlockContent() async {

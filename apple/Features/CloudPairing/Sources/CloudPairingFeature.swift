@@ -216,7 +216,11 @@ public struct CloudPairingFeature {
                     state.configuration = .saved
                     state.logoutIncomplete = true
                     state.reauthenticationRequired = false
-                case .submitting, .pending: state.phase = .scanning
+                case .submitting, .pending:
+                    // The Mac still shows the QR this attempt consumed; a live camera would
+                    // submit it again at once. Scanning again is the person's choice.
+                    state.phase = .scanning
+                    state.cameraReady = false
                 default: state.phase = .signedOut
                 }
                 return .none
