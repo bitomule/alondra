@@ -71,6 +71,12 @@ pub enum Command {
     },
     CloseRequest {
         request_id: RequestId,
+        #[serde(default)]
+        answer: Option<String>,
+        #[serde(default)]
+        withdrawn: bool,
+        #[serde(default)]
+        title: Option<String>,
     },
     RegisterAgent {
         agent_id: AgentId,
@@ -95,6 +101,10 @@ pub enum Command {
     AssignTask {
         task_id: TaskId,
         agent_id: AgentId,
+    },
+    RetitleTask {
+        task_id: TaskId,
+        title: String,
     },
     SetDependencies {
         task_id: TaskId,
@@ -133,6 +143,9 @@ pub enum Command {
         options: Vec<QuestionOption>,
     },
     MarkRead {
+        interaction_id: InteractionId,
+    },
+    WithdrawQuestion {
         interaction_id: InteractionId,
     },
     AnswerQuestion {

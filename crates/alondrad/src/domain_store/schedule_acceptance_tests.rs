@@ -132,11 +132,7 @@ fn sent(run: &str, suffix: &str, finished_at: i64) -> Command {
     let request_id = format!("request-{suffix}");
     Command::RecordScheduleRunSent {
         run_id: run.into(),
-        request: Request {
-            id: request_id.clone().into(),
-            body: "Synthetic mission".into(),
-            closed: false,
-        },
+        request: Request::new(request_id.clone().into(), "Synthetic mission".into()),
         task: Task {
             id: format!("task-{suffix}").into(),
             request_id: request_id.into(),

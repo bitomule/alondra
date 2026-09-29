@@ -504,7 +504,7 @@ impl App {
             return;
         }
         let revision = self.domain.as_ref().map_or(0, |d| d.revision);
-        self.send(slot, None, revision, Command::CloseRequest { request_id: r.id.clone() }, trf!("Withdrawn: {title}", "Retirada: {title}"), None);
+        self.send(slot, None, revision, Command::CloseRequest { request_id: r.id.clone(), answer: None, withdrawn: true, title: None }, trf!("Withdrawn: {title}", "Retirada: {title}"), None);
     }
 
     /// Archives every finished task, one command each.
