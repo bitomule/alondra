@@ -475,23 +475,39 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
 }
 
 #[test]
-fn incompatible_schema_and_legacy_writer_are_rejected_without_rewriting_rows() {
+fn a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     let expected = store.load().unwrap();
     assert!(crate::store::Store::open(&fixture.path()).is_err());
-    store.conn.pragma_update(None, "user_version", 3).unwrap();
     drop(store);
-    assert!(DomainStore::open(&fixture.path()).is_err());
-    let conn = Connection::open(fixture.path()).unwrap();
-    conn.pragma_update(None, "user_version", SCHEMA_VERSION).unwrap();
-    drop(conn);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(store.load().unwrap(), expected);
-    store.conn.pragma_update(None, "user_version", SCHEMA_VERSION + 1).unwrap();
-    drop(store);
-    assert!(DomainStore::open(&fixture.path()).is_err());
+    assert_eq!(store.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")));
+}
+
+#[test]
+fn a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_one() {
+    for other in [7, 8, SCHEMA_VERSION + 1] {
+        let fixture = Fixture::new();
+        let mut store = DomainStore::open(&fixture.path()).unwrap();
+        execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false });
+        let old_epoch = store.load().unwrap().data_epoch;
+        store.conn.pragma_update(None, "user_version", other).unwrap();
+        drop(store);
+        let mut fresh = DomainStore::open(&fixture.path()).unwrap();
+        let state = fresh.load().unwrap();
+        assert!(state.requests.is_empty() && state.revision == 0 && state.data_epoch != old_epoch);
+        assert_eq!(fresh.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 1);
+        let kept: Vec<_> = fixture.0.read_dir().unwrap().map(|e| e.unwrap().path())
+            .filter(|p| p.to_string_lossy().contains("domain.sqlite.old-")).collect();
+        assert_eq!(kept.len(), 1, "one moved-aside database for schema {other}");
+        let old = Connection::open(&kept[0]).unwrap();
+        assert_eq!(old.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), other);
+        assert_eq!(old.query_row("SELECT body FROM requests", [], |r| r.get::<_, String>(0)).unwrap(), "Made before");
+    }
 }
 
 #[test]
@@ -650,25 +666,6 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     assert_eq!(reopened.tasks[&"task-1".into()].title, "Editor colours");
     assert_eq!(reopened.requests[&"request-2".into()].answer.as_deref(), Some("Main is green"));
     assert!(reopened.requests[&"request-3".into()].withdrawn);
-}
-
-#[test]
-fn a_schema_7_store_is_migrated_in_place_with_its_rows() {
-    let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false });
-    store.conn.execute_batch("ALTER TABLE requests DROP COLUMN auto_merge;").unwrap();
-    store.conn.pragma_update(None, "user_version", 7).unwrap();
-    drop(store);
-    let mut migrated = DomainStore::open(&fixture.path()).unwrap();
-    let version: i64 = migrated.conn.pragma_query_value(None, "user_version", |r| r.get(0)).unwrap();
-    assert_eq!(version, SCHEMA_VERSION);
-    let old = migrated.load().unwrap().requests[&"old".into()].clone();
-    assert_eq!((old.body.as_str(), old.auto_merge), ("Made before", false));
-    execute(&mut migrated, &user(), "new", Command::CreateRequest { request_id: "new".into(), body: "After".into(), auto_merge: true });
-    drop(migrated);
-    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
-    assert!(reopened.requests[&"new".into()].auto_merge && !reopened.requests[&"old".into()].auto_merge);
 }
 
 #[test]
