@@ -75,6 +75,7 @@ pub(crate) enum Write {
     OrchestratorMessage,
     Presence,
     CancelReason(String),
+    ResolveConflicts(String),
 }
 
 /// The writes of this module by path, the way both the local listener and the relay name them.
@@ -86,6 +87,9 @@ pub(crate) fn parse_write(path: &str) -> Option<Write> {
     }
     if path == "/v2/orchestrator/messages" {
         return Some(Write::OrchestratorMessage);
+    }
+    if let Some(id) = path.strip_prefix("/v2/pull-requests/").and_then(|rest| rest.strip_suffix("/resolve-conflicts")) {
+        return Some(id).filter(|id| plain_id(id)).map(|id| Write::ResolveConflicts(id.to_owned()));
     }
     path.strip_prefix("/v2/agents/")?.strip_suffix("/close")
         .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
@@ -217,6 +221,10 @@ impl Client {
                 authorize()?;
                 self.close_session(&id, body).await
             }
+            Write::ResolveConflicts(pr) => {
+                authorize()?;
+                Ok(self.resolve_conflicts(user_id, &pr, body).await)
+            }
             Write::NewRequest => self.new_request(user_id, body, transport, authorize).await,
             Write::OrchestratorMessage => self.orchestrator_message(user_id, body, transport, authorize).await,
             Write::Presence => {
@@ -227,6 +235,18 @@ impl Client {
                 authorize()?;
                 self.cancel_reason(&id, body)
             }
+        }
+    }
+
+    async fn resolve_conflicts(&self, user_id: &str, pr: &str, body: &Value) -> Reply {
+        if !body.as_object().is_some_and(|fields| fields.is_empty()) {
+            return Reply::error(DomainError::new("invalid_input", "invalid request"));
+        }
+        let user = alondra_core::domain_v2::Actor::User { user_id: user_id.to_owned() };
+        match crate::domain_messages::resolve_conflicts(&self.domain, &self.home, &user, &crate::domain_messages::user_name(), &pr.into(),
+            &crate::domain_messages::ClaudeAgents, &Arc::new(crate::domain_transport::Tmux)).await {
+            Ok(answer) => Reply::ok(answer),
+            Err(error) => Reply::error(error),
         }
     }
 
@@ -471,6 +491,7 @@ pub(crate) fn router(client: Arc<Client>) -> Router {
         .route("/v2/tasks/{id}/cancel-reason", put(write))
         .route("/v2/tasks/{id}/history", get(read))
         .route("/v2/domain/delivery-attempts/{id}/resolve", post(resolve_delivery))
+        .route("/v2/pull-requests/{id}/resolve-conflicts", post(write))
         .route("/v2/options", get(read))
         .route("/v2/projects", get(read))
         .route("/v2/issues", get(read))
