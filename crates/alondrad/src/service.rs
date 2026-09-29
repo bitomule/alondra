@@ -3910,8 +3910,6 @@ agreement_key = "{}"
         assert_eq!((answer["status"].as_i64(), answer["body"]["created_ids"].clone()), (Some(200), json!(["request-9"])), "{answer}");
         assert_eq!(domain.request_launch(&"request-9".into()).unwrap().unwrap().options.effort, "hard", "the phone's choices are kept with its request");
 
-        let aside = service.dispatch("phone-a", &LocalRequest { method: "POST".into(), path: "/v2/pull-requests/nothing/set-aside".into(), body: Some(json!({})) }).await.unwrap();
-        assert_eq!(aside["body"]["code"], "not_found", "setting aside is relayed and answered by the daemon");
         auth.revoke("phone-a").unwrap();
         assert!(service.dispatch("phone-a", &read("/v2/runtime")).await.is_err(), "a revoked phone reads nothing");
         drop(service);

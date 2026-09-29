@@ -190,7 +190,6 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     observe_sessions(&fixture);
-    fixture.client.stamp().unwrap();
     let github = PrGithub(json!({"title": "Editor covers readable text", "state": "OPEN", "mergeable": "CONFLICTING",
         "mergeStateStatus": "DIRTY", "statusCheckRollup": [
             {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
@@ -238,36 +237,41 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
     assert_eq!(runtime["pull_requests"]["pr-1"]["title"], "Editor covers readable text");
     assert_eq!(runtime["pull_requests"]["pr-1"]["conflicts"], true);
     assert_eq!(runtime["pull_requests"]["pr-1"]["checks"].as_array().unwrap().len(), 2);
-    assert_eq!(runtime["pull_requests"]["pr-1"]["set_aside"], false);
     let _: alondra_core::pr::Check = serde_json::from_value(runtime["pull_requests"]["pr-1"]["checks"][0].clone()).unwrap();
-    assert!(runtime["inbox_times"].as_object().unwrap().is_empty(), "work that predates the first look has no time");
+    assert!(runtime["tasks"]["task-1"]["state_since"].as_i64().unwrap() > 0 && runtime["requests"]["request-1"]["created_at"].as_i64().unwrap() > 0,
+        "each time is the commit's own");
 }
 
 #[tokio::test]
-async fn times_are_kept_from_the_first_look_and_survive_a_restart() {
+async fn times_are_the_commits_own_and_survive_a_restart() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    fixture.client.stamp().unwrap();
     let before = fixture.get_json("/v2/runtime").await;
-    assert_eq!(before["tasks"]["task-1"]["state_since"], Value::Null, "a change from before the daemon kept times has no time");
-    assert_eq!(before["requests"]["request-1"]["created_at"], Value::Null);
+    let created = before["requests"]["request-1"]["created_at"].as_i64().unwrap();
+    let started = before["tasks"]["task-1"]["state_since"].as_i64().unwrap();
+    assert!(created > 0 && started >= created, "the task began after its request");
+    assert_eq!(before["requests"]["request-2"]["created_at"].as_i64().map(|at| at >= created), Some(true));
 
-    fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Later".into() });
     fixture.agent("agent-a", "ask", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(),
         scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(),
     });
-    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
-    fixture.client.stamp().unwrap();
-    let after = fixture.get_json("/v2/runtime").await;
-    assert!(after["requests"]["request-3"]["created_at"].as_i64().unwrap() > 0);
-    assert!(after["tasks"]["task-1"]["state_since"].as_i64().unwrap() > 0, "a change after the first look is timed");
-    assert!(after["inbox_times"]["interaction:info-1"].as_i64().unwrap() > 0);
+    let informed = fixture.get_json("/v2/runtime").await;
+    assert_eq!(informed["tasks"]["task-1"]["state_since"], before["tasks"]["task-1"]["state_since"], "information does not move the task's state");
+    let appeared = informed["inbox_times"]["interaction:info-1"].as_i64().unwrap();
+    assert!(appeared >= started, "the inbox row carries the time of the commit that added it");
 
-    let reopened = Client::open(fixture.domain.clone(), &fixture.home, Default::default());
-    assert_eq!(reopened.sidecar.snapshot(), fixture.client.sidecar.snapshot(), "times are kept on disk");
-    reopened.sidecar.set_aside("pr-1", true).unwrap();
-    assert!(Client::open(fixture.domain.clone(), &fixture.home, Default::default()).sidecar.snapshot().set_aside.contains("pr-1"));
+    fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
+    let cancelled = fixture.get_json("/v2/runtime").await;
+    assert!(cancelled["tasks"]["task-1"]["state_since"].as_i64().unwrap() >= appeared, "a change of state is timed by the commit that made it");
+    let history = fixture.domain.store.lock().unwrap().task_history(&"task-1".into()).unwrap();
+    assert_eq!(history.last().map(|step| step.state.as_str()), Some("cancelled"));
+    assert_eq!(history.len(), 2, "one step per state the task entered: {history:?}");
+    assert_eq!(history.last().map(|step| step.at), cancelled["tasks"]["task-1"]["state_since"].as_i64());
+
+    let reopened = DomainRuntime::open(&fixture.home).unwrap();
+    assert_eq!(reopened.store.lock().unwrap().task_state_times().unwrap(), fixture.domain.store.lock().unwrap().task_state_times().unwrap(), "times are in the database");
+    assert_eq!(reopened.store.lock().unwrap().request_times().unwrap().len(), 2);
 }
 
 #[tokio::test]
@@ -437,25 +441,6 @@ fn writes_are_named_exactly() {
 }
 
 #[tokio::test]
-async fn setting_a_pull_request_aside_is_the_users_preference_kept_outside_the_domain() {
-    let fixture = Fixture::start().await;
-    seed_work(&fixture);
-    let revision = fixture.domain.state().unwrap().revision;
-    let expected = fixture_json("requests.json");
-    let request = &expected["set_aside"];
-    let path = request["path"].as_str().unwrap();
-    assert_eq!(fixture.get_json("/v2/runtime").await["pull_requests"]["pr-1"]["set_aside"], false);
-    let (status, answer) = fixture.send("POST", path, &request["body"]).await;
-    assert_eq!((status, &answer), (StatusCode::OK, &request["response"]));
-    assert_eq!(fixture.send("POST", path, &json!({})).await.0, StatusCode::OK, "setting it aside twice is the same");
-    assert_eq!(fixture.get_json("/v2/runtime").await["pull_requests"]["pr-1"]["set_aside"], true);
-    assert_eq!(fixture.domain.state().unwrap().revision, revision, "the domain never heard of it");
-    let (status, error) = fixture.send("POST", "/v2/pull-requests/nothing/set-aside", &json!({})).await;
-    assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
-    assert_eq!(fixture.send("POST", path, &json!({"extra": 1})).await.0, StatusCode::UNPROCESSABLE_ENTITY);
-}
-
-#[tokio::test]
 async fn chunked_uploads_and_file_chunks_are_for_the_relay_and_not_on_this_mac() {
     let fixture = Fixture::start().await;
     let expected = fixture_json("requests.json");
@@ -480,7 +465,6 @@ async fn chunked_uploads_and_file_chunks_are_for_the_relay_and_not_on_this_mac()
     for path in ["/v2/domain/uploads", "/v2/domain/uploads/other", "/v2/domain/uploads/start/", "/v2/uploads"] {
         assert_eq!(upload_step(path), None, "{path}");
     }
-    assert_eq!(parse_write("/v2/pull-requests/pr-1/set-aside"), Some(Write::SetAside("pr-1".into())));
 }
 
 fn write_options(fixture: &Fixture, extra: &str) {
