@@ -175,7 +175,7 @@ impl Auth {
             .map_err(|_| "invalid service nonce")?.try_into().map_err(|_| "invalid service nonce")?;
         self.service_verifier.lock().expect("service verifier lock poisoned")
             .verify(&key, h("x-device-signature")?, &public.mac_id, "POST",
-                "/v1/service/approve-device", body, ts, &nonce, now_millis() as u64)
+                "/service/approve-device", body, ts, &nonce, now_millis() as u64)
             .map_err(|_| "invalid or replayed service signature".into())
     }
 
@@ -384,7 +384,7 @@ mod tests {
         let nonce = [3u8; 16];
         let body = br#"{"device_id":"phone-a","name":"iPhone","signing_key":"key"}"#;
         let signature = alondra_e2e::sign_http_challenge(&mac, "mac-test", "POST",
-            "/v1/service/approve-device", &epoch, body, now, &nonce).unwrap();
+            "/service/approve-device", &epoch, body, now, &nonce).unwrap();
         let mut headers = HeaderMap::new();
         headers.insert("x-device-id", "mac-test".parse().unwrap());
         headers.insert("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch).parse().unwrap());

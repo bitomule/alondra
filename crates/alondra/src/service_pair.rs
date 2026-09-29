@@ -300,7 +300,7 @@ fn local_approve(
 ) -> Result<()> {
     let local_origin = format!("http://127.0.0.1:{}", crate::client::config().port);
     let mut local_boot = agent
-        .get(format!("{local_origin}/v1/service/bootstrap"))
+        .get(format!("{local_origin}/service/bootstrap"))
         .call()?;
     if local_boot.status().as_u16() != 200 {
         bail!("Mac approval service is unavailable");
@@ -322,7 +322,7 @@ fn local_approve(
         agent,
         &local_origin,
         "POST",
-        "/v1/service/approve-device",
+        "/service/approve-device",
         &local_body,
         &public.mac_id,
         signing,
