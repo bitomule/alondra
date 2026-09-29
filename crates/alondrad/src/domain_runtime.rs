@@ -249,6 +249,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
     match command {
         Command::CreateTask { task_id, .. }
         | Command::AssignTask { task_id, .. }
+        | Command::RetitleTask { task_id, .. }
         | Command::SetDependencies { task_id, .. }
         | Command::StartTask { task_id }
         | Command::CreateDocument { task_id, .. }
@@ -269,6 +270,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
             Scope::Orchestrator { .. } => None,
         },
         Command::MarkRead { interaction_id }
+        | Command::WithdrawQuestion { interaction_id }
         | Command::AnswerQuestion { interaction_id, .. }
         | Command::LinkInteractionSubject { interaction_id, .. } => {
             interaction_task(state, interaction_id)

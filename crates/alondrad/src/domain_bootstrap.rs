@@ -106,6 +106,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/v2/orchestrator/send", post(orchestrator_send))
         .route("/v2/orchestrator/interrupt", post(orchestrator_interrupt))
         .route("/v2/orchestrator/machine", get(orchestrator_machine))
+        .route("/v2/orchestrator/schedules", post(orchestrator_schedule))
         .route("/v1", axum::routing::any(legacy_protocol))
         .route("/v1/{*rest}", axum::routing::any(legacy_protocol))
         .merge(crate::domain_api::routes())
@@ -300,6 +301,24 @@ async fn orchestrator_interrupt(State(state): State<Arc<V2Only>>, ConnectInfo(pe
     tool_answer(crate::domain_orchestrator_tools::interrupt(&state.domain, body, &crate::domain_messages::ClaudeAgents, crate::wake::interrupt).await)
 }
 
+/// A Schedule the orchestrator creates for the user, materialized as the user's own drafts are.
+async fn orchestrator_schedule(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap,
+    body: Result<Json<Value>, JsonRejection>) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    let Ok(Json(body)) = body else {
+        return crate::domain_api::domain_error(DomainError::new("invalid_input", "invalid Schedule draft"));
+    };
+    let home = state.home.clone();
+    let domain = state.domain();
+    match tokio::task::spawn_blocking(move || crate::domain_schedule_api::mutation(&domain, &home, "POST", "/v2/domain/schedules",
+        Some(&body), None, || Ok(()))).await {
+        Ok(answer) => crate::domain_schedule_api::response(answer),
+        Err(_) => storage(),
+    }
+}
+
 /// Machine capacity and the subscription's usage, as the `/v2/daemon` gauges hold them.
 async fn orchestrator_machine(State(state): State<Arc<V2Only>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
     if let Err(refused) = tool_caller(&state, &peer, &headers) {
@@ -492,6 +511,14 @@ mod tests {
         let launch = client.post(format!("{base}/v2/orchestrator/launch")).bearer_auth(orchestrator.expose_for_child_environment())
             .json(&json!({"name": "n", "cwd": "/tmp", "task": "missing"})).send().await.unwrap();
         assert_eq!(launch.status(), StatusCode::NOT_FOUND);
+        std::fs::write(alondra_core::options::path_in(&home), format!("projects_root = {:?}\n", home.to_str().unwrap())).unwrap();
+        let draft = json!({"title": "Nightly", "text": "Review the project", "project": null, "frequency": "daily", "hour": 9, "minute": 0});
+        assert_eq!(client.post(format!("{base}/v2/orchestrator/schedules")).bearer_auth(&bearer).json(&draft)
+            .send().await.unwrap().status(), StatusCode::FORBIDDEN, "an Agent does not create Schedules");
+        let created = client.post(format!("{base}/v2/orchestrator/schedules")).bearer_auth(orchestrator.expose_for_child_environment())
+            .json(&draft).send().await.unwrap();
+        assert_eq!(created.status(), StatusCode::CREATED);
+        assert_eq!(domain.state().unwrap().schedule.schedules.values().next().unwrap().title, "Nightly");
         domain.revoke_agent("test-agent").unwrap();
         assert_eq!(client.get(format!("{base}{merge_path}"))
             .header("authorization", format!("Bearer {bearer}"))

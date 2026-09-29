@@ -187,7 +187,7 @@ pub(crate) fn options_at(home: &Path) -> Result<OptionsFile> {
 
 fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
     let request_id: RequestId = format!("r-{}", crate::auth::random_hex(16)).into();
-    let request = Request { id: request_id.clone(), body: snapshot.text.clone(), closed: false };
+    let request = Request::new(request_id.clone(), snapshot.text.clone());
     let task = Task {
         id: format!("t-{}", crate::auth::random_hex(16)).into(),
         request_id,

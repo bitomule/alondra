@@ -161,7 +161,9 @@ fn seed_work(fixture: &Fixture) {
         scope: Scope::Orchestrator { request_id: Some("request-2".into()) }, recipient: Recipient::User,
         body: "Nothing to change: it already works".into(),
     });
-    fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into() });
+    fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
+    fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into() });
+    fixture.user("close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: Some("Dropped idea".into()) });
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
         number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
@@ -233,6 +235,7 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
     }
     assert_eq!(runtime["requests"]["request-2"]["answer"], "Nothing to change: it already works");
     assert_eq!(runtime["requests"]["request-2"]["withdrawn"], false);
+    assert_eq!((runtime["requests"]["request-3"]["withdrawn"].as_bool(), runtime["requests"]["request-3"]["title"].as_str()), (Some(true), Some("Dropped idea")));
     assert_eq!(runtime["requests"]["request-1"]["answer"], Value::Null);
     assert_covers(&expected["pull_requests"]["pr-1"], &runtime["pull_requests"]["pr-1"], "pull_requests.pr-1");
     assert_eq!(runtime["pull_requests"]["pr-1"]["title"], "Editor covers readable text");
@@ -272,7 +275,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
 
     let reopened = DomainRuntime::open(&fixture.home).unwrap();
     assert_eq!(reopened.store.lock().unwrap().task_state_times().unwrap(), fixture.domain.store.lock().unwrap().task_state_times().unwrap(), "times are in the database");
-    assert_eq!(reopened.store.lock().unwrap().request_times().unwrap().len(), 2);
+    assert_eq!(reopened.store.lock().unwrap().request_times().unwrap().len(), 3);
 }
 
 #[tokio::test]

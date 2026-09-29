@@ -141,11 +141,8 @@ pub(crate) fn materialize_legacy(
         let request_id = d::RequestId((*id).clone());
         let Some(request) = view.board.requests.get(*id) else {
             let task = active.values().find(|task| &task.request == *id).context("request owner missing")?;
-            state.requests.insert(request_id.clone(), d::Request {
-                id: request_id,
-                body: format!("Legacy request for Task {} (original request missing)", task.id),
-                closed: false,
-            });
+            state.requests.insert(request_id.clone(), d::Request::new(request_id,
+                format!("Legacy request for Task {} (original request missing)", task.id)));
             report.links.push(link(task, "task", &task.id, "synthetic_request", "request", id)?);
             report.requests += 1;
             continue;
@@ -157,9 +154,11 @@ pub(crate) fn materialize_legacy(
             .or(request.title.as_deref())
             .unwrap_or("Legacy request without text");
         state.requests.insert(request_id.clone(), d::Request {
-            id: request_id.clone(),
-            body: body.to_owned(),
             closed: request.closed.is_some(),
+            title: request.title.clone().filter(|title| !title.trim().is_empty()),
+            answer: request.closed.as_ref().and_then(|closure| closure.answer.clone()),
+            withdrawn: request.closed.as_ref().is_some_and(|closure| closure.withdrawn),
+            ..d::Request::new(request_id.clone(), body.to_owned())
         });
         report.links.push(link(request, "request", &request.id, "entity", "request", &request.id)?);
         report.requests += 1;
@@ -251,11 +250,8 @@ pub(crate) fn materialize_legacy(
                     .map(|task| task.request_id.clone())
                     .unwrap_or_else(|| d::RequestId(UNOWNED_PR_REQUEST.into()));
                 if !state.requests.contains_key(&request_id) {
-                    state.requests.insert(request_id.clone(), d::Request {
-                        id: request_id.clone(),
-                        body: "Imported pull requests without a task".into(),
-                        closed: false,
-                    });
+                    state.requests.insert(request_id.clone(),
+                        d::Request::new(request_id.clone(), "Imported pull requests without a task".into()));
                     report.requests += 1;
                 }
                 state.tasks.insert(task_id.clone(), d::Task {
@@ -388,6 +384,7 @@ pub(crate) fn materialize_legacy(
             attachments,
             revision: state.revision,
             order: 0,
+            withdrawn: false,
         }));
         report.links.push(link(q, "question", q.id, "entity", "interaction", id)?);
     }
@@ -532,6 +529,7 @@ pub(crate) fn materialize_legacy(
             attachments: vec![],
             revision: state.revision,
             order: 0,
+            withdrawn: false,
         }));
         state.tasks.get_mut(&task_id).unwrap().final_presentation = Some(d::InteractionId(interaction_id.clone()));
         report.links.push(link(&task_id.0, "task", &task_id.0, "final_presentation", "interaction", &interaction_id)?);
@@ -696,6 +694,7 @@ fn info(
         },
         revision,
         order: 0,
+        withdrawn: false,
     }
 }
 pub(super) fn stored_file(source: &Source<'_>, attachment: &old::Attachment) -> Result<PathBuf> {

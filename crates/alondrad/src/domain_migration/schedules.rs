@@ -466,11 +466,7 @@ mod tests {
                 );
                 imported.requests.insert(
                     request.clone().into(),
-                    d::Request {
-                        id: request.clone().into(),
-                        body: "Synthetic mission".into(),
-                        closed: false,
-                    },
+                    d::Request::new(request.clone().into(), "Synthetic mission".into()),
                 );
                 imported.tasks.insert(
                     task.clone().into(),
