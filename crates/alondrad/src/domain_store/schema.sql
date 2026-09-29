@@ -229,3 +229,9 @@ CREATE TRIGGER immutable_request_launch BEFORE UPDATE ON request_launch
  BEGIN SELECT RAISE(ABORT,'request launch is immutable'); END;
 CREATE TRIGGER retain_request_launch BEFORE DELETE ON request_launch
  BEGIN SELECT RAISE(ABORT,'request launch is retained'); END;
+
+-- Why the user cancelled a Task, in their words, recorded beside the cancelled Task.
+CREATE TABLE task_cancel_reason (
+ task_id TEXT PRIMARY KEY REFERENCES tasks(id),
+ reason TEXT NOT NULL CHECK(length(trim(reason))>0)
+);
