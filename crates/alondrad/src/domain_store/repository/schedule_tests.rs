@@ -283,11 +283,7 @@ fn sent_run_request_task_policy_and_receipt_commit_together() {
         .unwrap();
     let sent = Command::RecordScheduleRunSent {
         run_id: "run-1".into(),
-        request: Request {
-            id: "request-1".into(),
-            body: "Review project".into(),
-            closed: false,
-        },
+        request: Request::new("request-1".into(), "Review project".into()),
         task: Task {
             id: "task-1".into(),
             request_id: "request-1".into(),

@@ -809,7 +809,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     let mut state = DomainState::new(epoch);
     state.revision = revision.try_into().context("negative revision")?;
     state.orchestrator_generation = generation.try_into().context("negative generation")?;
-    for row in rows(c, "requests", &["closed"], &[])? {
+    for row in rows(c, "requests", &["closed", "withdrawn"], &[])? {
         let x: Request = decode(row)?;
         state.requests.insert(x.id.clone(), x);
     }
@@ -863,7 +863,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     for mut row in rows(
         c,
         "interactions",
-        &["blocking", "is_final", "acceptance_valid"],
+        &["blocking", "is_final", "acceptance_valid", "withdrawn"],
         &["options", "answer"],
     )? {
         let kind = take(&mut row, "scope_kind");

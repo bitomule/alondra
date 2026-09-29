@@ -433,6 +433,23 @@
             },
             "request_id": {
               "$ref": "#/$defs/RequestId"
+            },
+            "answer": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
+            },
+            "withdrawn": {
+              "type": "boolean"
+            },
+            "title": {
+              "type": [
+                "string",
+                "null"
+              ],
+              "minLength": 1
             }
           },
           "required": [
@@ -573,6 +590,27 @@
             "kind",
             "task_id",
             "agent_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "retitle_task"
+            },
+            "task_id": {
+              "$ref": "#/$defs/TaskId"
+            },
+            "title": {
+              "type": "string",
+              "minLength": 1
+            }
+          },
+          "required": [
+            "kind",
+            "task_id",
+            "title"
           ]
         },
         {
@@ -755,6 +793,22 @@
           "properties": {
             "kind": {
               "const": "mark_read"
+            },
+            "interaction_id": {
+              "$ref": "#/$defs/InteractionId"
+            }
+          },
+          "required": [
+            "kind",
+            "interaction_id"
+          ]
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "kind": {
+              "const": "withdraw_question"
             },
             "interaction_id": {
               "$ref": "#/$defs/InteractionId"

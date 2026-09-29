@@ -3,7 +3,7 @@ CREATE TABLE domain_meta (
  revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991),
  orchestrator_generation INTEGER NOT NULL CHECK(orchestrator_generation>=0)
 );
-CREATE TABLE requests (id TEXT PRIMARY KEY CHECK(length(id)>0), body TEXT NOT NULL, closed INTEGER NOT NULL CHECK(closed IN(0,1)), created_at INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE requests (id TEXT PRIMARY KEY CHECK(length(id)>0), body TEXT NOT NULL, closed INTEGER NOT NULL CHECK(closed IN(0,1)), created_at INTEGER NOT NULL DEFAULT 0, title TEXT, answer TEXT, withdrawn INTEGER NOT NULL DEFAULT 0 CHECK(withdrawn IN(0,1)), CHECK(withdrawn=0 OR closed=1));
 CREATE TABLE agents (id TEXT PRIMARY KEY CHECK(length(id)>0), name TEXT NOT NULL, connected INTEGER NOT NULL CHECK(connected IN(0,1)));
 CREATE TABLE tasks (
  id TEXT PRIMARY KEY CHECK(length(id)>0), request_id TEXT NOT NULL REFERENCES requests(id), agent_id TEXT REFERENCES agents(id), title TEXT NOT NULL,
@@ -32,6 +32,8 @@ CREATE TABLE interactions (
  revision INTEGER NOT NULL CHECK(revision BETWEEN 0 AND 9007199254740991),ordering INTEGER NOT NULL CHECK(ordering BETWEEN 0 AND 9007199254740991),
  options TEXT CHECK(options IS NULL OR json_valid(options)),answer TEXT CHECK(answer IS NULL OR json_valid(answer)),is_final INTEGER CHECK(is_final IN(0,1)),
  acceptance_user TEXT,acceptance_revision INTEGER,acceptance_valid INTEGER CHECK(acceptance_valid IN(0,1)),
+ withdrawn INTEGER NOT NULL DEFAULT 0 CHECK(withdrawn IN(0,1)),
+ CHECK(withdrawn=0 OR (kind IN('question','action_request') AND answer IS NULL)),
  UNIQUE(task_id,id),
  CHECK((scope_kind='task' AND task_id IS NOT NULL AND request_id IS NULL) OR (scope_kind='orchestrator' AND task_id IS NULL)),
  CHECK((author_kind='agent' AND author_agent_id IS NOT NULL AND author_generation IS NULL) OR (author_kind='orchestrator' AND author_agent_id IS NULL AND author_generation IS NOT NULL) OR (author_kind='system' AND author_agent_id IS NULL AND author_generation IS NULL)),

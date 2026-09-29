@@ -309,10 +309,9 @@ impl Client {
                 "effort": effort, "cancel_reason": cancel_reasons.get(id)}))
         }).collect();
         let requests: serde_json::Map<String, Value> = state.requests.iter().map(|(id, request)| {
-            let answer = request_answer(&state, &id.0);
-            let has_tasks = state.tasks.values().any(|task| task.request_id == *id);
+            let answer = request.answer.clone().or_else(|| request_answer(&state, &id.0));
             (id.0.clone(), json!({"created_at": request_times.get(id),
-                "withdrawn": request.closed && answer.is_none() && !has_tasks, "answer": answer}))
+                "withdrawn": request.withdrawn, "answer": answer, "title": request.title}))
         }).collect();
         let pull_requests: serde_json::Map<String, Value> = state.pull_requests.keys().map(|id| {
             (id.0.clone(), self.details.get(&id.0).map_or_else(|| json!({}), |details| json!(details)))
@@ -323,6 +322,7 @@ impl Client {
             "machine": machine, "usage": usage, "update": crate::updates::status(&self.home),
             "nodes": nodes, "tasks": tasks, "requests": requests,
             "pull_requests": pull_requests, "inbox_times": inbox_times,
+            "orchestrator": crate::domain_orchestrator::status(&crate::domain_orchestrator::executor(self.domain.clone(), &self.home)).ok(),
         })).into_response()
     }
 
