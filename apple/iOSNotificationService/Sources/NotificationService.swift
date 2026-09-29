@@ -188,7 +188,7 @@ enum QuestionCategories {
     }
 
     private static func category(for question: NotificationPayload.Question, identifier: String) -> UNNotificationCategory {
-        let options = question.options.map { option in
+        let options = question.options.filter { $0.textInput == nil }.map { option in
             UNNotificationAction(identifier: NotificationPayload.Action.option(option.id), title: title(for: option.label), options: [.authenticationRequired])
         }
         return UNNotificationCategory(identifier: identifier, actions: options + [

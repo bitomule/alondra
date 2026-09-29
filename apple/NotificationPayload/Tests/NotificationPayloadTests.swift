@@ -141,4 +141,31 @@ final class NotificationPayloadTests: XCTestCase {
             XCTAssertEqual(bound.item.epoch, fixture["data_epoch"] as? String)
         }
     }
+
+    func testTheDaemonsQuestionPushesOfferTheirOptionsAsButtons() throws {
+        let fixture = try daemonPushes()
+        for name in ["question", "action_request"] {
+            let push = try XCTUnwrap(fixture[name])
+            let question = try XCTUnwrap(NotificationPayload.Question(userInfo: push), name)
+            XCTAssertEqual((push["aps"] as? [String: Any])?["category"] as? String, NotificationPayload.Category.question)
+            XCTAssertEqual((push["aps"] as? [String: Any])?["mutable-content"] as? Int, 1)
+            XCTAssertEqual(NotificationPayload.Item(userInfo: push)?.expectedRevision, 1)
+            XCTAssertEqual(question.options.map(\.id), ["yes", "changes"])
+            XCTAssertEqual(question.options.map(\.label), ["Yes", "Request changes"])
+            XCTAssertEqual(question.replyOption?.id, "changes")
+        }
+        let information = try XCTUnwrap(fixture["information"])
+        XCTAssertEqual((information["aps"] as? [String: Any])?["category"] as? String, NotificationPayload.Category.read)
+        XCTAssertNil(NotificationPayload.Question(userInfo: information))
+        XCTAssertNil((try XCTUnwrap(fixture["delivery_text"])["aps"] as? [String: Any])?["category"])
+    }
+
+    private func daemonPushes() throws -> [String: [String: Any]] {
+        let env = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: env["TEST_SRCDIR"] ?? "").appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
+        let data = try Data(contentsOf: root.appendingPathComponent("fixtures/client-v2/push-payloads.json"))
+        let fixture = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let cases = try XCTUnwrap(fixture["cases"] as? [[String: Any]])
+        return Dictionary(uniqueKeysWithValues: try cases.map { (try XCTUnwrap($0["interaction"] as? String), try XCTUnwrap($0["payload"] as? [String: Any])) })
+    }
 }
