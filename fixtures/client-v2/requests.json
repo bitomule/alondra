@@ -4,7 +4,7 @@
     "path": "/v2/agents/agent-a/messages",
     "body": {"text": "Rename it", "kind": "pr_changes", "mark_read": false, "pr_id": "pr-1",
              "attachments": [{"id": "att-1", "name": "shot.png", "content_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "content_reference": "files/domain-v2/x", "bytes": 3}]},
-    "response": {"message_id": 41, "delivery_state": "handed"}
+    "response": {"delivery_state": "handed"}
   },
   "close": {"method": "POST", "path": "/v2/agents/agent-a/close", "body": {"force": true}, "response": {"interactive": false}},
   "orchestrator_retry": {"method": "POST", "path": "/v2/orchestrator/retry", "body": {"run_id": "run-7"}, "response": {}},

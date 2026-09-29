@@ -884,7 +884,7 @@ pub(crate) fn encrypted_command_runtime(
         Err(StoreError::Storage(error)) => return Err(error),
     })
 }
-fn status_for(error: &DomainError) -> StatusCode {
+pub(crate) fn status_for(error: &DomainError) -> StatusCode {
     match error.code.as_str() {
         "forbidden" | "not_assigned" => StatusCode::FORBIDDEN,
         "not_found" => StatusCode::NOT_FOUND,
