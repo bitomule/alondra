@@ -177,7 +177,7 @@ fn ordinary_conflict(error: &StoreError) -> bool {
     matches!(error, StoreError::Domain(domain) if matches!(domain.code.as_str(), "conflict" | "not_found" | "stale_revision"))
 }
 
-fn options_at(home: &Path) -> Result<OptionsFile> {
+pub(crate) fn options_at(home: &Path) -> Result<OptionsFile> {
     match std::fs::read_to_string(options::path_in(home)) {
         Ok(contents) => OptionsFile::parse(&contents).map_err(anyhow::Error::msg),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(OptionsFile::default()),
