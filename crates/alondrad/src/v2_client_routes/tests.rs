@@ -688,7 +688,7 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     fixture.agent("agent-a", "ask", Command::AskQuestion {
         attachments: vec![], interaction_id: "q-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Which colour?\nThe blue or the green one.".into(), blocking: true,
-        options: vec![alondra_core::domain_v2::QuestionOption { id: "blue".into(), label: "Blue".into(), inputs: vec![] }],
+        options: vec![alondra_core::domain_v2::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None, inputs: vec![] }],
     });
     fixture.user("answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "q-1".into(), option_id: "blue".into(), inputs: Default::default() });
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });

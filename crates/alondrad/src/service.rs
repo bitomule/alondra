@@ -173,6 +173,9 @@ fn snapshot_receipt_digest(envelope: &[u8], binding: &str) -> [u8;32] {
     hash.finalize().into()
 }
 
+/// Where a v2 client registers its push preferences; the v1 route serves the legacy daemon.
+const PUSH_BINDING_V2: &str = "/v2/device/push-binding";
+
 fn parse_push_preferences(
     request: &LocalRequest,
 ) -> Result<(String, Option<QuietHours>, Option<i64>)> {
@@ -292,6 +295,7 @@ impl Service {
     fn atomic_local(&self, request: &LocalRequest) -> bool {
         if self.domain.is_some() {
             return request.method == "POST" && (request.path == "/v2/domain/commands"
+                || request.path == PUSH_BINDING_V2
                 || crate::v2_client_routes::atomic_write_path(&request.path)
                 || agent_message(&request.path).is_some()
                 || crate::domain_orchestrator::decision_route(&request.path).is_some()
@@ -306,7 +310,7 @@ impl Service {
 
     async fn execute_atomic_local(&self, envelope: &EnvelopeV1, device: &Device, request: &LocalRequest, digest: &[u8; 32]) -> Result<Vec<u8>> {
         self.require_device_approval(&envelope.sender, device)?;
-        if request.path == "/v1/service/push-binding" {
+        if request.path == "/v1/service/push-binding" || self.domain.is_some() && request.path == PUSH_BINDING_V2 {
             let (binding, quiet, revision) = match parse_push_preferences(request) {
                 Ok(parsed) => parsed,
                 Err(_) => {
@@ -318,7 +322,12 @@ impl Service {
             return approval_bound_commit(&self.home,
                 || self.require_device_approval(&envelope.sender, device),
                 || self.journal.complete_push_preferences(&envelope.sender, &envelope.request_id, digest,
-                    &binding, quiet, revision, |result| self.encode_response(envelope, device, &result, request)));
+                    &binding, quiet, revision, |mut result| {
+                        if request.path == PUSH_BINDING_V2 && result["error"] == "stale_push_preferences" {
+                            result["kind"] = json!("stale_push_preferences");
+                        }
+                        self.encode_response(envelope, device, &result, request)
+                    }));
         }
         approved_method(request)?;
         if let Some(domain) = &self.domain {
@@ -677,8 +686,11 @@ impl Service {
         if self.domain.is_some() {
             anyhow::ensure!((request.path.starts_with("/v2/domain") || crate::v2_client_routes::approved_read_path(&request.path)
                 || crate::v2_client_routes::approved_write_path(&request.path) || crate::v2_client_routes::parse_put(&request.path).is_some()
-                || agent_message(&request.path).is_some() || crate::domain_orchestrator::decision_route(&request.path).is_some())
+                || agent_message(&request.path).is_some() || crate::domain_orchestrator::decision_route(&request.path).is_some()
+                || request.path == PUSH_BINDING_V2)
                 && approved_method(&request).is_ok(), "v2-only service route is not approved");
+        } else {
+            anyhow::ensure!(request.path != PUSH_BINDING_V2, "a v2 route is not served by the legacy daemon");
         }
         let body = serde_json::to_vec(e)?;
         let approval_bound_read = request.body.is_none() && (crate::service_overview::route(&request.method,&request.path)
@@ -1285,6 +1297,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
                     .is_some_and(|(id, query)| v2_read_id(id) && crate::domain_api::document_content_query(query).is_some())
                 || crate::domain_reads::approved_read_path(&request.path),
             "POST" if request.body.is_some() => crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, true)
+                || request.path == PUSH_BINDING_V2
                 || crate::v2_client_routes::approved_write_path(&request.path)
                 || crate::v2_client_routes::upload_step(&request.path).is_some()
                 || request.path == "/v2/domain/commands"
@@ -2739,6 +2752,55 @@ agreement_key = "{}"
                 "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
             serde_json::from_slice(&bytes).unwrap()
         }).collect()
+    }
+
+    #[tokio::test]
+    async fn a_v2_only_service_registers_the_phones_push_preferences_and_the_legacy_one_refuses_the_route() {
+        let (service, phone_agreement) = push_fixture();
+        let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
+        let home = service.home.clone();
+        let sealed = |service: &Service, request_id: &str, body: Value| Work {
+            request_id: request_id.into(),
+            envelope: EnvelopeV1::seal_random(EnvelopeContext {
+                route: "mac-1", sender: "phone-1", recipient: "mac-1", request_id,
+                kind: "request", expires_at_ms: now_ms() + 60_000,
+            }, serde_json::to_vec(&json!({"method":"POST","path":"/v2/device/push-binding","body":body})).unwrap().as_slice(),
+            &phone_signing, &service.agreement.public_key()).unwrap(),
+        };
+        let binding = URL_SAFE_NO_PAD.encode([4u8; 32]);
+        service.journal.reserve_enrollment("phone-1", &phone_signing.verifying_key().to_sec1_bytes()).unwrap();
+        service.journal.activate_enrollment("phone-1").unwrap();
+        assert!(service.prepare_work(&sealed(&service, "legacy", json!({"push_binding": binding}))).is_err(), "the legacy daemon does not serve v2 routes");
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let service = service.with_domain(domain);
+        let register = |request_id: &'static str, body: Value| {
+            let service = &service;
+            let phone_agreement = &phone_agreement;
+            let work = sealed(service, request_id, body);
+            async move {
+                let prepared = service.prepare_work(&work).unwrap().unwrap();
+                assert!(service.atomic_local(&prepared.request), "a registration commits atomically with its receipt");
+                service.journal.accept("phone-1", request_id, &prepared.digest).unwrap();
+                service.journal.executing_local("phone-1", request_id, &prepared.digest).unwrap();
+                let device = service.devices.get("phone-1").unwrap();
+                let bytes = service.execute_atomic_local(&work.envelope, device, &prepared.request, &prepared.digest).await.unwrap();
+                let answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
+                serde_json::from_slice::<Value>(&answer.open(service.signing.verifying_key(), phone_agreement,
+                    "mac-1", "phone-1", "mac-1", now_ms()).unwrap()).unwrap()
+            }
+        };
+        let first = register("first", json!({"push_binding": binding, "preferences_revision": 2, "quiet_start": "23:00", "quiet_end": "08:00"})).await;
+        assert_eq!(first["status"], 204, "{first}");
+        assert_eq!(service.journal.push_binding("phone-1").unwrap().as_deref(), Some(binding.as_str()));
+        let stale = register("stale", json!({"push_binding": URL_SAFE_NO_PAD.encode([9u8; 32]), "preferences_revision": 1, "quiet_start": "22:00", "quiet_end": "07:00"})).await;
+        assert_eq!((stale["status"].as_i64(), stale["kind"].as_str(), stale["current_revision"].as_i64()), (Some(409), Some("stale_push_preferences"), Some(2)), "{stale}");
+        assert_eq!(service.journal.push_binding("phone-1").unwrap().as_deref(), Some(binding.as_str()), "a stale registration changes nothing");
+        let refused = register("invalid", json!({"push_binding": binding, "unexpected": true})).await;
+        assert_eq!(refused["status"], 422, "{refused}");
+        assert!(approved_method(&LocalRequest { method: "POST".into(), path: PUSH_BINDING_V2.into(), body: None }).is_err(), "it needs its body");
+        assert!(approved_method(&LocalRequest { method: "GET".into(), path: PUSH_BINDING_V2.into(), body: None }).is_err());
+        drop(service);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
