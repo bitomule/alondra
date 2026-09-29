@@ -156,7 +156,7 @@ fn claim_batch(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<Batc
     Ok(Some(Batch { text: batch_text(&state, &claims), claims }))
 }
 
-fn cursor(state: &DomainState) -> String {
+pub(crate) fn cursor(state: &DomainState) -> String {
     format!("[Alondra domain v2] data_epoch={} revision={}", state.data_epoch.0, state.revision)
 }
 
@@ -164,7 +164,7 @@ const FOOTER: &str = "Refresh the v2 Task with this cursor and respond with a v2
 
 /// A message names its interaction; the recorded answer or feedback the
 /// Agent must act on is rendered with it, since producers have no read API.
-fn render(state: &DomainState, message: &OutboxMessage) -> String {
+pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     let mut text = format!("[Alondra domain v2 message {}] {}", message.id, message.message);
     if let Some(task) = &message.task_id {
         text.push_str(&format!(" task_id={task}"));
