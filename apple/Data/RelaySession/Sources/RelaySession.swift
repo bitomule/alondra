@@ -28,6 +28,7 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     private let sleep: @Sendable () async throws -> Void
     private let waitForReadDeadline: @Sendable (ContinuousClock.Instant) async throws -> Void
     private var active = true
+    private var relayBootstrap: RelayBootstrap?
 
     public init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
@@ -276,14 +277,23 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
 
     private func readUntilChange(requestID: String, path: String, deadline: ContinuousClock.Instant) async throws -> RelayOperationResult {
         let clock = ContinuousClock()
-        let bootstrap = try await client.bootstrap()
+        var bootstrap = try await currentBootstrap()
         try checkReadDeadline(deadline)
         let envelope = try sealRequest(requestID: requestID, method: "GET", path: path, body: nil)
         try checkReadDeadline(deadline)
         do {
             let receipt: RelayReceipt
             do {
-                receipt = try await client.submitRequest(envelope)
+                do {
+                    receipt = try await client.submitRequest(envelope)
+                } catch RelayWireError.unauthorized {
+                    // The relay refused the request outright, so nothing was queued: refresh the epoch once.
+                    relayBootstrap = nil
+                    try checkReadDeadline(deadline)
+                    bootstrap = try await currentBootstrap()
+                    try checkReadDeadline(deadline)
+                    receipt = try await client.submitRequest(envelope)
+                }
             } catch is CancellationError { throw CancellationError() }
             catch {
                 // A lost submission response authorizes only GET reconciliation, never POST.
@@ -312,7 +322,18 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
             }
             return .unknown
         } catch is CancellationError { throw CancellationError() }
-        catch { return .unknown }
+        catch {
+            if case RelayWireError.unauthorized = error { relayBootstrap = nil }
+            if case RelayWireError.conflict = error { relayBootstrap = nil }
+            return .unknown
+        }
     }
 
+    /// The relay epoch only changes when the relay restarts; a rejection clears it.
+    private func currentBootstrap() async throws -> RelayBootstrap {
+        if let relayBootstrap { return relayBootstrap }
+        let fresh = try await client.bootstrap()
+        relayBootstrap = fresh
+        return fresh
+    }
 }

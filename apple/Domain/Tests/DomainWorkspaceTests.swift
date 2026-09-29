@@ -152,3 +152,16 @@ final class DomainCommandFactoryTests: XCTestCase {
         }
     }
 }
+
+final class DomainScreenTests: XCTestCase {
+    func testEverySyncedSectionBelongsToAScreenSoNoDataIsUnreachable() {
+        let reachable = DomainScreen.allCases.reduce(into: Set<DomainV2.Section>()) { $0.formUnion($1.sections) }
+        let synced = Set(DomainV2.Section.allCases).subtracting([.inbox, .schedules])
+        XCTAssertEqual(synced.subtracting(reachable), [])
+    }
+
+    func testTheInboxScreenNeedsNoTelemetry() {
+        XCTAssertFalse(DomainScreen.inbox.needsRuntime)
+        XCTAssertTrue(DomainScreen.fleet.needsRuntime)
+    }
+}

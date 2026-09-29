@@ -34,6 +34,10 @@ extension CloudAppServices {
                 let history = try await self.api.domainTaskHistory(id)
                 try await self.checkActive()
                 return history
+            },
+            open: { screen in
+                guard (try? await self.checkActive()) != nil else { return }
+                await self.domainSync.require(DomainSyncDemand(sections: screen.sections, runtime: screen.needsRuntime))
             })
     }
 

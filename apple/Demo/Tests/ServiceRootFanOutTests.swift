@@ -67,4 +67,41 @@ struct ServiceRootFanOutTests {
         await store.send(.triage(.triage(.workspaceUpdated(without.update())))).finish()
         #expect(store.pullRequests.isEmpty)
     }
+
+    @Test func eachScreenAsksTheClientForWhatItShowsWhenItOpens() async throws {
+        let opened = LockIsolated<[DomainScreen]>([])
+        var client = DomainWorkspaceClient.scripted(CommandLog()) { _ in .obsolete }
+        client.open = { screen in opened.withValue { $0.append(screen) } }
+        let store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
+            $0.domainWorkspace = client
+        }
+        await store.send(.appeared).finish()
+        #expect(opened.value == [.inbox], "The inbox is what the app opens on")
+
+        await store.send(.tabSelected(.tasks)).finish()
+        await store.send(.tabSelected(.fleet)).finish()
+        await store.send(.tabSelected(.newRequest)).finish()
+        await store.send(.tabSelected(.account)).finish()
+        await store.send(.tabSelected(.inbox)).finish()
+        #expect(opened.value == [.inbox, .tasks, .fleet, .newRequest])
+
+        await store.send(.triage(.machinePresented(true))).finish()
+        await store.send(.triage(.machinePresented(false))).finish()
+        #expect(opened.value.last == .machine)
+        #expect(opened.value.filter { $0 == .machine }.count == 1)
+    }
+
+    @Test func openingAPullRequestAsksForItsData() async throws {
+        let opened = LockIsolated<[DomainScreen]>([])
+        var client = DomainWorkspaceClient.scripted(CommandLog()) { _ in .obsolete }
+        client.open = { screen in opened.withValue { $0.append(screen) } }
+        var fixture = V2Fixture()
+        fixture.pullRequest(5)
+        let store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
+            $0.domainWorkspace = client
+        }
+        await store.send(.triage(.triage(.workspaceUpdated(fixture.update())))).finish()
+        await store.send(.focusInbox("pr:pr-5")).finish()
+        #expect(opened.value == [.pullRequest])
+    }
 }
