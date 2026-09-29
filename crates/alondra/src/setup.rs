@@ -836,10 +836,23 @@ pub fn run(args: Args) -> Result<()> {
     if args.skip_pair || args.skip_service {
         return Ok(());
     }
-    if !crate::service_pair::has_paired_device(&paths.alondra_home)? {
-        crate::service_pair::run(&paths.alondra_home)?;
+    pair_unless_paired(
+        &mut home_lock,
+        || crate::service_pair::has_paired_device(&paths.alondra_home),
+        || crate::service_pair::run(&paths.alondra_home),
+    )
+}
+
+/// Pairing restarts the daemon, which cannot start while setup still shares HOME.
+fn pair_unless_paired(
+    home_lock: &mut Option<alondra_core::home_lock::HomeLock>,
+    paired: impl FnOnce() -> Result<bool>,
+    pair: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    if paired()? {
+        return Ok(());
     }
-    Ok(())
+    release_home_lock_then(home_lock, pair)
 }
 
 fn print_step(step: &Step, dry: bool) {
@@ -1468,6 +1481,22 @@ mod brew_upgrade_tests {
             Ok(())
         }).unwrap();
         assert!(lock.is_none());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn setup_releases_shared_home_lock_before_pairing_restarts_the_daemon() {
+        let home = fixture_home();
+        let mut lock = Some(alondra_core::home_lock::HomeLock::shared(&home).unwrap());
+        pair_unless_paired(&mut lock, || Ok(false), || {
+            let daemon_start = alondra_core::home_lock::HomeLock::recovery(&home)?;
+            drop(daemon_start);
+            Ok(())
+        }).unwrap();
+        assert!(lock.is_none());
+        let mut paired = Some(alondra_core::home_lock::HomeLock::shared(&home).unwrap());
+        pair_unless_paired(&mut paired, || Ok(true), || anyhow::bail!("already paired")).unwrap();
+        assert!(paired.is_some());
         std::fs::remove_dir_all(home).unwrap();
     }
 

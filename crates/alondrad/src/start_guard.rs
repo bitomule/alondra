@@ -47,9 +47,26 @@ pub fn wait(total: Duration, step: Duration, mut replaced: impl FnMut() -> bool)
     false
 }
 
+/// A condition that already held when the wait began is not news: only a change ends it.
+pub fn became_true(mut check: impl FnMut() -> bool) -> impl FnMut() -> bool {
+    let before = check();
+    move || !before && check()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_home_already_cut_over_does_not_end_the_wait() {
+        let mut already = became_true(|| true);
+        assert!(!already());
+        assert!(!already());
+        let mut checks = 0;
+        let mut during = became_true(|| { checks += 1; checks > 2 });
+        assert!(!during());
+        assert!(during());
+    }
 
     #[test]
     fn a_replaced_binary_ends_the_wait_early() {

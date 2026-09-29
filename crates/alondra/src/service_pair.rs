@@ -8,6 +8,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use alondra_core::home_lock::HomeLock;
 use alondra_e2e::{EnvelopeV1, sign_http_challenge};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{
@@ -24,6 +25,8 @@ use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 
 const MAX_WAIT: Duration = Duration::from_secs(600);
+const DAEMON_POLL: Duration = Duration::from_millis(500);
+const DAEMON_POLLS: u32 = 120;
 
 #[derive(Serialize, Deserialize)]
 struct ServiceConfig {
@@ -277,7 +280,7 @@ pub fn has_paired_device(home: &Path) -> Result<bool> {
     }))
 }
 
-fn restart_daemon() -> Result<()> {
+fn kickstart_daemon() -> Result<()> {
     let target = format!(
         "gui/{}/{}",
         unsafe { libc::getuid() },
@@ -292,13 +295,61 @@ fn restart_daemon() -> Result<()> {
     Ok(())
 }
 
+/// Each daemon process answers with its own random challenge epoch.
+fn local_epoch(agent: &ureq::Agent, local_origin: &str) -> Option<[u8; 16]> {
+    let mut response = agent
+        .get(format!("{local_origin}/service/bootstrap"))
+        .call()
+        .ok()?;
+    if response.status().as_u16() != 200 {
+        return None;
+    }
+    let boot: Bootstrap = response.body_mut().with_config().limit(1024).read_json().ok()?;
+    URL_SAFE_NO_PAD.decode(boot.epoch).ok()?.try_into().ok()
+}
+
+fn pause() {
+    std::thread::sleep(DAEMON_POLL);
+}
+
+fn wait_for_daemon(mut ready: impl FnMut() -> bool, pause: impl Fn()) -> Result<()> {
+    for _ in 0..DAEMON_POLLS {
+        if ready() {
+            return Ok(());
+        }
+        pause();
+    }
+    bail!("alondrad is not answering on this Mac; check ~/.alondra/alondrad.log, then rerun alondra pair")
+}
+
+/// A starting daemon needs HOME exclusively, so no lock may be held across its restart.
+/// Returns once a new daemon process answers, holding the shared lock again.
+fn restart_daemon(
+    home: &Path,
+    lock: &mut Option<HomeLock>,
+    kickstart: impl FnOnce() -> Result<()>,
+    mut epoch: impl FnMut() -> Option<[u8; 16]>,
+    pause: impl Fn(),
+) -> Result<()> {
+    let previous = epoch();
+    drop(lock.take());
+    kickstart()?;
+    wait_for_daemon(
+        || epoch().is_some_and(|current| Some(current) != previous),
+        pause,
+    )?;
+    *lock = Some(HomeLock::shared(home)?);
+    alondra_core::home_lock::ensure_ready(home)?;
+    Ok(())
+}
+
 fn local_approve(
     agent: &ureq::Agent,
+    local_origin: &str,
     public: &PublicMac,
     signing: &SigningKey,
     phone: &CandidatePlain,
 ) -> Result<()> {
-    let local_origin = format!("http://127.0.0.1:{}", crate::client::config().port);
     let mut local_boot = agent
         .get(format!("{local_origin}/service/bootstrap"))
         .call()?;
@@ -320,7 +371,7 @@ fn local_approve(
     }))?;
     let (status, detail) = call(
         agent,
-        &local_origin,
+        local_origin,
         "POST",
         "/service/approve-device",
         &local_body,
@@ -337,8 +388,15 @@ fn local_approve(
     Ok(())
 }
 
+/// This Mac's daemon: where it answers and how to restart it without holding HOME.
+struct LocalDaemon<'a> {
+    origin: &'a str,
+    restart: &'a mut dyn FnMut() -> Result<()>,
+}
+
 fn complete_pending(
     home: &Path,
+    daemon: &mut LocalDaemon<'_>,
     config: &mut ServiceConfig,
     public: &PublicMac,
     signing: &SigningKey,
@@ -356,7 +414,7 @@ fn complete_pending(
         bail!("pending pairing expired");
     }
     let phone = &pending.phone;
-    local_approve(agent, public, signing, phone)?;
+    local_approve(agent, daemon.origin, public, signing, phone)?;
     let found = config
         .devices
         .iter()
@@ -427,7 +485,7 @@ fn complete_pending(
     if status != 202 {
         bail!("relay approval handoff failed ({status})");
     }
-    restart_daemon()?;
+    (daemon.restart)()?;
     fs::remove_file(home.join("service-pairing-pending.json"))?;
     fs::File::open(home)?.sync_all()?;
     println!("Client approved and Alondra restarted on this Mac.");
@@ -436,6 +494,7 @@ fn complete_pending(
 
 fn abandon_expired(
     home: &Path,
+    daemon: &mut LocalDaemon<'_>,
     config: &mut ServiceConfig,
     public: &PublicMac,
     signing: &SigningKey,
@@ -466,16 +525,12 @@ fn abandon_expired(
         &home.join("service.toml"),
         toml::to_string_pretty(config)?.as_bytes(),
     )?;
-    let local_url = format!(
-        "http://127.0.0.1:{}/v1/devices/{}",
-        crate::client::config().port,
-        pending.phone.device_id
-    );
+    let local_url = format!("{}/devices/{}", daemon.origin, pending.phone.device_id);
     let response = agent.delete(local_url).call()?;
     if !matches!(response.status().as_u16(), 200 | 404) {
         bail!("could not revoke expired phone locally");
     }
-    restart_daemon()?;
+    (daemon.restart)()?;
     fs::remove_file(home.join("service-pairing-pending.json"))?;
     fs::File::open(home)?.sync_all()?;
     Ok(())
@@ -553,8 +608,22 @@ fn confirm_and_persist_candidate(
 }
 
 pub fn run(home: &Path) -> Result<()> {
-    let _home_lock = alondra_core::home_lock::HomeLock::shared(home)?;
+    let agent = http();
+    let local = format!("http://127.0.0.1:{}", crate::client::config().port);
+    // A daemon that is starting needs HOME exclusively: wait for it before sharing HOME.
+    if local_epoch(&agent, &local).is_none() {
+        println!("Waiting for alondrad to answer on this Mac…");
+        wait_for_daemon(|| local_epoch(&agent, &local).is_some(), pause)?;
+    }
+    let mut home_lock = Some(HomeLock::shared(home)?);
     alondra_core::home_lock::ensure_ready(home)?;
+    let mut restart = || {
+        restart_daemon(home, &mut home_lock, kickstart_daemon, || local_epoch(&agent, &local), pause)
+    };
+    let mut daemon = LocalDaemon {
+        origin: &local,
+        restart: &mut restart,
+    };
     let path = home.join("service.toml");
     let mut config: ServiceConfig = toml::from_str(&fs::read_to_string(&path)?)?;
     let origin = url::Url::parse(&config.relay_url)?;
@@ -580,7 +649,6 @@ pub fn run(home: &Path) -> Result<()> {
     {
         bail!("service public keys differ from private keys");
     }
-    let agent = http();
     let mut boot = agent
         .get(format!(
             "{}/v1/bootstrap",
@@ -601,6 +669,7 @@ pub fn run(home: &Path) -> Result<()> {
         if now_ms()? >= pending.expires_at_ms {
             abandon_expired(
                 home,
+                &mut daemon,
                 &mut config,
                 &public,
                 &signing,
@@ -612,6 +681,7 @@ pub fn run(home: &Path) -> Result<()> {
         } else {
             return complete_pending(
                 home,
+                &mut daemon,
                 &mut config,
                 &public,
                 &signing,
@@ -688,6 +758,7 @@ pub fn run(home: &Path) -> Result<()> {
     )?;
     complete_pending(
         home,
+        &mut daemon,
         &mut config,
         &public,
         &signing,
@@ -736,6 +807,171 @@ mod tests {
             candidate(&original,26),&mut io::Cursor::new(answers.as_bytes()),&mut Vec::new()).unwrap();
         let pending: Pending=serde_json::from_slice(&fs::read(home.join("service-pairing-pending.json")).unwrap()).unwrap();
         assert_eq!(pending.phone.signing_key,URL_SAFE_NO_PAD.encode(original.verifying_key().to_sec1_bytes()));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    fn temp_home(name: &str) -> std::path::PathBuf {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-{name}-{}",
+            URL_SAFE_NO_PAD.encode(random::<8>().unwrap())
+        ));
+        fs::create_dir(&home).unwrap();
+        home
+    }
+
+    #[test]
+    fn restart_lets_the_daemon_take_home_and_waits_for_its_new_process() {
+        let home = temp_home("pair-restart");
+        let mut lock = Some(HomeLock::shared(&home).unwrap());
+        // Old process, still the old process, down while launchd restarts it, new process.
+        let mut epochs = [Some([1; 16]), Some([1; 16]), None, Some([2; 16])].into_iter();
+        let mut probes = 0;
+        let started = std::cell::Cell::new(false);
+        restart_daemon(
+            &home,
+            &mut lock,
+            || {
+                let daemon_start = HomeLock::recovery(&home)?;
+                drop(daemon_start);
+                started.set(true);
+                Ok(())
+            },
+            || {
+                probes += 1;
+                epochs.next().flatten()
+            },
+            || {},
+        )
+        .unwrap();
+        assert!(started.get());
+        assert_eq!(probes, 4);
+        assert!(lock.is_some(), "pairing continues holding HOME shared");
+        assert!(HomeLock::recovery(&home).is_err());
+        drop(lock);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn restart_fails_when_no_new_daemon_answers() {
+        let home = temp_home("pair-restart-stuck");
+        let mut lock = Some(HomeLock::shared(&home).unwrap());
+        let pauses = std::cell::Cell::new(0);
+        let error = restart_daemon(
+            &home,
+            &mut lock,
+            || Ok(()),
+            || Some([1; 16]),
+            || pauses.set(pauses.get() + 1),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("alondrad is not answering"));
+        assert_eq!(pauses.get(), DAEMON_POLLS);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    /// Answers every request on its own connection and records `METHOD path`.
+    fn fake_server(
+        requests: usize,
+        answer: impl Fn(&str) -> &'static str + Send + 'static,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> (String, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let origin = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for _ in 0..requests {
+                let (stream, _) = listener.accept().unwrap();
+                let mut reader = BufReader::new(stream.try_clone().unwrap());
+                let mut line = String::new();
+                reader.read_line(&mut line).unwrap();
+                let request = line.split_whitespace().take(2).collect::<Vec<_>>().join(" ");
+                loop {
+                    let mut header = String::new();
+                    reader.read_line(&mut header).unwrap();
+                    if header == "\r\n" || header.is_empty() {
+                        break;
+                    }
+                }
+                let status = answer(&request);
+                seen.lock().unwrap().push(request);
+                (&stream)
+                    .write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes())
+                    .unwrap();
+            }
+        });
+        (origin, server)
+    }
+
+    #[test]
+    fn expired_pending_is_revoked_on_the_relay_and_this_mac_then_cleared() {
+        let home = temp_home("pair-expired");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (origin, relay) = fake_server(
+            1,
+            |request| match request {
+                "DELETE /v1/devices/phone-test" => "204 No Content",
+                _ => "404 Not Found",
+            },
+            seen.clone(),
+        );
+        // alondrad's local route is `/devices/{id}`; it answers 404 to any other path.
+        let (local, daemon_server) = fake_server(
+            1,
+            |request| match request {
+                "DELETE /devices/phone-test" => "200 OK",
+                _ => "404 Not Found",
+            },
+            seen.clone(),
+        );
+        let mac = SigningKey::from_slice(&[21; 32]).unwrap();
+        let public = PublicMac {
+            mac_id: "mac-test".into(),
+            signing_key: URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes()),
+            agreement_key: "unused".into(),
+        };
+        let mut config = ServiceConfig {
+            journal_path: None,
+            relay_url: origin.clone(),
+            mac_id: "mac-test".into(),
+            owner_sub: "owner".into(),
+            signing_key_path: "signing.key".into(),
+            agreement_key_path: "agreement.key".into(),
+            devices: vec![ServiceDevice {
+                device_id: "phone-test".into(),
+                signing_key: "key".into(),
+                agreement_key: "key".into(),
+            }],
+        };
+        let pending = Pending {
+            session_id: "pair-test".into(),
+            mac_id: "mac-test".into(),
+            expires_at_ms: 1,
+            phone: CandidatePlain {
+                device_id: "phone-test".into(),
+                signing_key: "key".into(),
+                agreement_key: "key".into(),
+                display_name: "iPhone".into(),
+                owner_sub: "owner".into(),
+                session_id: "pair-test".into(),
+            },
+        };
+        fs::write(home.join("service-pairing-pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
+        let restarted = seen.clone();
+        let mut restart = move || {
+            restarted.lock().unwrap().push("restart".into());
+            Ok(())
+        };
+        let mut daemon = LocalDaemon { origin: &local, restart: &mut restart };
+        abandon_expired(&home, &mut daemon, &mut config, &public, &mac, &http(), &[3; 16], &pending).unwrap();
+        relay.join().unwrap();
+        daemon_server.join().unwrap();
+        assert_eq!(
+            *seen.lock().unwrap(),
+            ["DELETE /v1/devices/phone-test", "DELETE /devices/phone-test", "restart"]
+        );
+        assert!(!home.join("service-pairing-pending.json").exists());
+        let saved: ServiceConfig = toml::from_str(&fs::read_to_string(home.join("service.toml")).unwrap()).unwrap();
+        assert!(saved.devices.is_empty());
         fs::remove_dir_all(home).unwrap();
     }
 
