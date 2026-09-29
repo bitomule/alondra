@@ -1,6 +1,6 @@
 use super::*;
 use crate::wake::WriteFailure;
-use alondra_core::domain_v2::TaskState;
+use alondra_core::domain_v2::{AttachmentRef, TaskState};
 use alondra_core::options::OptionsFile;
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -219,6 +219,17 @@ async fn an_interrupt_presses_esc_in_a_background_session_only() {
     let gone = interrupt(&f.domain, node(), &Listed(None), record(pressed.clone())).await;
     assert_eq!(gone.unwrap_err().code, "session_unreachable");
     assert_eq!(*pressed.lock().unwrap(), ["b1"]);
+}
+
+#[test]
+fn the_choices_are_the_ones_recorded_with_the_request() {
+    let f = world();
+    let state = f.domain.state().unwrap();
+    let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "asked".into(),
+        expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into() } };
+    f.domain.execute_with(&user(), &envelope, None, Some(&hard_choices()), || Ok(())).unwrap();
+    assert_eq!(request_choices(&f.domain, &"r2".into()).unwrap(), Some(hard_choices()));
+    assert_eq!(request_choices(&f.domain, &"r".into()).unwrap(), None);
 }
 
 #[test]

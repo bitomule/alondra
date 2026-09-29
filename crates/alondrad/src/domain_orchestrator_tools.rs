@@ -5,28 +5,17 @@
 use crate::domain_messages::{Session, Sessions};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_transport::Terminal;
-use alondra_core::domain_v2::{Actor, AgentId, AttachmentRef, Command, CommandEnvelope, DomainError, DomainState, RequestId, TaskId, PROTOCOL_VERSION};
-use alondra_core::options::Resolved;
+use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, RequestId, TaskId, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
 use std::sync::Arc;
 
 /// What the user chose when asking for a Request: its project, options, issue and files.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct Choices {
-    pub project: Option<String>,
-    pub options: Resolved,
-    pub issue: Option<String>,
-    pub issue_text: Option<String>,
-    pub attachments: Vec<AttachmentRef>,
-}
+pub(crate) type Choices = crate::domain_store::RequestLaunch;
 
-/// The choices recorded with a Request. Requests carry none until the new-request route stores
-/// them (#461), so every Request falls back to the options file's defaults for now.
 pub(crate) fn request_choices(domain: &DomainRuntime, request: &RequestId) -> anyhow::Result<Option<Choices>> {
-    let _ = (domain, request);
-    Ok(None)
+    domain.request_launch(request)
 }
 
 /// 8ccd131's request text for the orchestrator: the options the user chose, the effort rule, the

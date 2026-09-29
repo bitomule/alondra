@@ -2499,6 +2499,12 @@ fn canonical_pr(host: &str, repo: &str, number: u64) -> Result<()> {
     }
 }
 
+impl AttachmentRef {
+    /// The bounds every command puts on the files it carries.
+    pub fn validate_list(attachments: &[AttachmentRef]) -> std::result::Result<(), DomainError> {
+        validate_attachments(attachments)
+    }
+}
 fn validate_attachments(attachments: &[AttachmentRef]) -> Result<()> {
     if attachments.len() > 32 {
         return fail("payload_too_large", "Too many attachments");

@@ -12,8 +12,13 @@ pub struct Loaded {
 /// Reads `options.toml` on every call, so an edit applies at once. A broken file keeps the last
 /// good one in use and says why; no file means only the built-ins.
 pub fn load(hub: &Hub) -> Loaded {
-    let path = options::path_in(&hub.home);
-    let mut last = hub.options.lock().expect("options lock poisoned");
+    load_in(&hub.home, &hub.options)
+}
+
+/// `load`, for a daemon that keeps its last good options somewhere other than a hub.
+pub fn load_in(home: &Path, last: &std::sync::Mutex<Option<OptionsFile>>) -> Loaded {
+    let path = options::path_in(home);
+    let mut last = last.lock().expect("options lock poisoned");
     let parsed = match std::fs::read_to_string(&path) {
         Ok(text) => OptionsFile::parse(&text).map_err(|e| format!("{}: {e}", path.display())),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(OptionsFile::default()),
