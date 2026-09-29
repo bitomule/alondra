@@ -45,6 +45,17 @@ pub trait Launcher: Sync {
     fn plugin(&self) -> Option<std::path::PathBuf> {
         crate::plugins::dir(&crate::watcher::claude_home(), crate::plugins::NODE)
     }
+
+    /// The session id behind the short id `claude --bg` printed, which it chose itself.
+    fn session_of(&self, short: &str) -> impl Future<Output = Option<String>> + Send {
+        let short = short.to_owned();
+        async move {
+            let out = tokio::time::timeout(std::time::Duration::from_secs(20), tokio::process::Command::new("claude")
+                .args(["agents", "--json", "--all"]).kill_on_drop(true).stdin(std::process::Stdio::null()).output())
+                .await.ok()?.ok()?;
+            crate::domain_sessions::session_of_short(&String::from_utf8_lossy(&out.stdout), &short)
+        }
+    }
 }
 
 pub struct ClaudeCli;

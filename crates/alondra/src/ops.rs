@@ -38,13 +38,15 @@ pub struct Message {
     pub attachments: Vec<AttachmentRef>,
     pub interaction: Option<InteractionId>,
     pub pr: Option<PrId>,
+    /// The Task the message is about, which must be the agent's.
+    pub task: Option<TaskId>,
     /// Marks `interaction` read in the same step, for a reply to information.
     pub mark_read: bool,
 }
 
 impl Message {
     pub fn to(agent: Option<AgentId>, kind: MessageKind, text: String) -> Self {
-        Message { agent, kind, text, attachments: vec![], interaction: None, pr: None, mark_read: false }
+        Message { agent, kind, text, attachments: vec![], interaction: None, pr: None, task: None, mark_read: false }
     }
 
     pub fn path(&self) -> String {
@@ -64,6 +66,9 @@ impl Message {
             }
             if let Some(p) = &self.pr {
                 body["pr_id"] = json!(p);
+            }
+            if let Some(t) = &self.task {
+                body["task_id"] = json!(t);
             }
         }
         body

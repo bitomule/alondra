@@ -463,10 +463,18 @@ fn domain_bearer() -> Result<String> {
     if !domain_v2_mode() {
         anyhow::bail!("incompatible_protocol: this session has no domain v2 MCP channel")
     }
-    let bearer = std::env::var("ALONDRA_DOMAIN_CAPABILITY")
-        .map_err(|_| anyhow::anyhow!("incompatible_protocol: domain producer capability unavailable"))?;
+    let bearer = std::env::var("ALONDRA_DOMAIN_CAPABILITY").ok().or_else(settings_bearer)
+        .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: domain producer capability unavailable"))?;
     validate_domain_bearer(&bearer)?;
     Ok(bearer)
+}
+
+/// A background session's bearer, written by the daemon into the settings file it was launched
+/// with once the session was bound; read on every call, since it can arrive after startup.
+fn settings_bearer() -> Option<String> {
+    let path = std::env::var_os("ALONDRA_DOMAIN_SETTINGS")?;
+    let settings: Value = serde_json::from_slice(&std::fs::read(path).ok()?).ok()?;
+    settings["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().map(str::to_owned)
 }
 
 fn domain_v2_mode() -> bool {
