@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock, atomic::{AtomicBool, Ordering}},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
@@ -115,6 +115,59 @@ struct Device {
     signing_wire: String,
 }
 
+/// The approved phones, replaceable in place when `service.toml` changes.
+#[derive(Default)]
+struct Devices(RwLock<HashMap<String, Arc<Device>>>);
+
+impl Devices {
+    fn get(&self, id: &str) -> Option<Arc<Device>> {
+        self.0.read().expect("devices lock poisoned").get(id).cloned()
+    }
+
+    fn snapshot(&self) -> Vec<(String, Arc<Device>)> {
+        self.0.read().expect("devices lock poisoned")
+            .iter().map(|(id, device)| (id.clone(), device.clone())).collect()
+    }
+
+    fn replace(&self, devices: HashMap<String, Device>) {
+        *self.0.write().expect("devices lock poisoned") =
+            devices.into_iter().map(|(id, device)| (id, Arc::new(device))).collect();
+    }
+}
+
+impl From<HashMap<String, Device>> for Devices {
+    fn from(devices: HashMap<String, Device>) -> Self {
+        let set = Self::default();
+        set.replace(devices);
+        set
+    }
+}
+
+fn load_devices(mac_id: &str, configured: Vec<DeviceConfig>) -> Result<HashMap<String, Device>> {
+    let mut devices = HashMap::new();
+    for d in configured {
+        if d.device_id.is_empty() || d.device_id == mac_id {
+            bail!("invalid approved device ID");
+        }
+        let signing_key = VerifyingKey::from_sec1_bytes(&decoded(&d.signing_key)?)?;
+        let agreement_key = PublicKey::from_sec1_bytes(&decoded(&d.agreement_key)?)?;
+        if devices
+            .insert(
+                d.device_id,
+                Device {
+                    signing: signing_key,
+                    agreement: agreement_key,
+                    signing_wire: d.signing_key,
+                },
+            )
+            .is_some()
+        {
+            bail!("duplicate approved device ID");
+        }
+    }
+    Ok(devices)
+}
+
 pub struct Service {
     relay: Url,
     client: Client,
@@ -122,7 +175,9 @@ pub struct Service {
     owner_sub: String,
     signing: SigningKey,
     agreement: SecretKey,
-    devices: HashMap<String, Device>,
+    devices: Devices,
+    resync: AtomicBool,
+    wake: tokio::sync::Notify,
     auth: Arc<Auth>,
     journal: Journal,
     local_port: u16,
@@ -400,27 +455,7 @@ impl Service {
             SigningKey::from_slice(&private_key(&resolve(home, &config.signing_key_path))?)?;
         let agreement =
             SecretKey::from_slice(&private_key(&resolve(home, &config.agreement_key_path))?)?;
-        let mut devices = HashMap::new();
-        for d in config.devices {
-            if d.device_id.is_empty() || d.device_id == config.mac_id {
-                bail!("invalid approved device ID");
-            }
-            let signing_key = VerifyingKey::from_sec1_bytes(&decoded(&d.signing_key)?)?;
-            let agreement_key = PublicKey::from_sec1_bytes(&decoded(&d.agreement_key)?)?;
-            if devices
-                .insert(
-                    d.device_id,
-                    Device {
-                        signing: signing_key,
-                        agreement: agreement_key,
-                        signing_wire: d.signing_key,
-                    },
-                )
-                .is_some()
-            {
-                bail!("duplicate approved device ID");
-            }
-        }
+        let devices = load_devices(&config.mac_id, config.devices)?;
         let client = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
             // PR merge and GitHub issue refresh can take close to 90 seconds locally.
@@ -443,7 +478,9 @@ impl Service {
             owner_sub: config.owner_sub,
             signing,
             agreement,
-            devices,
+            devices: devices.into(),
+            resync: AtomicBool::new(false),
+            wake: tokio::sync::Notify::new(),
             auth,
             journal,
             local_port,
@@ -451,6 +488,24 @@ impl Service {
             transfers: Arc::default(),
             inflight: Arc::default(), hub: None, domain: None, routes: None,
         }))
+    }
+
+    /// Applies the device list in `service.toml` to the running connector: the new
+    /// list is live before this returns and the loop re-enrolls and re-syncs revocations.
+    pub fn reload_devices(&self) -> Result<()> {
+        let file = self.home.join("service.toml");
+        let config: Config = toml::from_str(&std::fs::read_to_string(&file)?)
+            .with_context(|| format!("invalid {}", file.display()))?;
+        anyhow::ensure!(config.mac_id == self.mac_id, "service Mac ID changed; restart alondrad");
+        self.devices.replace(load_devices(&self.mac_id, config.devices)?);
+        self.resync.store(true, Ordering::SeqCst);
+        self.wake.notify_one();
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn has_device(&self, id: &str) -> bool {
+        self.devices.get(id).is_some()
     }
 
     fn endpoint(&self, path: &str) -> Result<Url> {
@@ -508,7 +563,7 @@ impl Service {
     }
 
     async fn enroll(&self, epoch: &[u8; 16]) -> Result<()> {
-        for (id, device) in &self.devices {
+        for (id, device) in &self.devices.snapshot() {
             if !self.auth.approved_key_matches(id, &device.signing) {
                 continue;
             }
@@ -595,6 +650,9 @@ impl Service {
     /// are never replayed here; work redelivery keeps its durable journal rules.
     async fn poll_work(self: &Arc<Self>, enrolled_epoch: &mut Option<[u8;16]>,
         revoked_this_epoch: &mut HashSet<String>, changes: &mut tokio::task::JoinSet<Result<()>>) -> Result<()> {
+        if self.resync.swap(false, Ordering::SeqCst) {
+            *enrolled_epoch = None;
+        }
         let result = async {
                 let epoch = match *enrolled_epoch {
                     Some(epoch) => epoch,
@@ -610,10 +668,10 @@ impl Service {
                     *enrolled_epoch = Some(epoch);
                 }
                 let path = "/v1/work?wait_s=25";
-                let response = self
-                    .signed(Method::GET, path, Vec::new(), &epoch)
-                    .await?
-                    .error_for_status()?;
+                let response = tokio::select! {
+                    response = self.signed(Method::GET, path, Vec::new(), &epoch) => response?.error_for_status()?,
+                    () = self.wake.notified() => return Ok(()),
+                };
                 if response.status() == StatusCode::NO_CONTENT {
                     return Ok::<_, anyhow::Error>(());
                 }
@@ -667,7 +725,7 @@ impl Service {
             .devices
             .get(&e.sender)
             .context("work from unapproved device")?;
-        self.require_device_approval(&e.sender, device)?;
+        self.require_device_approval(&e.sender, &device)?;
         let plaintext = e
             .open(
                 &device.signing,
@@ -694,7 +752,7 @@ impl Service {
         let digest: [u8; 32] = if approval_bound_read {
             // Completed encrypted receipts must not bypass a newer approval generation.
             // Legacy routes retain their original digest contract.
-            let binding = match self.read_receipt_binding(&e.sender,device) {
+            let binding = match self.read_receipt_binding(&e.sender,&device) {
                 Ok(binding) => binding,
                 Err(error) => return Err(error),
             };
@@ -741,29 +799,29 @@ impl Service {
         )
         .await?;
         if request.body.is_none() && v2_read_route(&request) {
-            let binding = self.read_receipt_binding(&e.sender,device)?;
+            let binding = self.read_receipt_binding(&e.sender,&device)?;
             let current = approval_bound_read_digest(&serde_json::to_vec(e)?,&binding);
             anyhow::ensure!(current == digest,"resource read approval generation changed while acknowledging work");
         }
-        self.require_device_approval(&e.sender, device)?;
+        self.require_device_approval(&e.sender, &device)?;
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
-                self.execute_atomic_local(e, device, &request, &digest).await?
+                self.execute_atomic_local(e, &device, &request, &digest).await?
             }
             Disposition::Executing => {
-                let bytes = self.encode_response(e, device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
+                let bytes = self.encode_response(e, &device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
                 self.journal.complete(&e.sender, &e.request_id, &bytes)?;
                 bytes
             }
             Disposition::Accepted => {
                 // Receipt upload can wait on the relay; re-read durable local
                 // approval and enrollment immediately before loopback dispatch.
-                self.require_device_approval(&e.sender, device)?;
+                self.require_device_approval(&e.sender, &device)?;
                 if self.atomic_local(&request) {
                     self.journal
                         .executing_local(&e.sender, &e.request_id, &digest)?;
-                    self.execute_atomic_local(e, device, &request, &digest).await?
+                    self.execute_atomic_local(e, &device, &request, &digest).await?
                 } else {
                     self.journal.executing(&e.sender, &e.request_id, &digest)?;
                     let result = if guard.saturated {
@@ -782,7 +840,7 @@ impl Service {
                             }
                         }
                     };
-                    let bytes = self.encode_response(e, device, &result, &request)?;
+                    let bytes = self.encode_response(e, &device, &result, &request)?;
                     self.journal.complete(&e.sender, &e.request_id, &bytes)?;
                     bytes
                 }
@@ -790,7 +848,7 @@ impl Service {
         };
         let response_path = format!("/v1/work/{}/response", e.request_id);
         approval_bound_delivery(&self.home,
-            || self.require_device_approval(&e.sender, device),
+            || self.require_device_approval(&e.sender, &device),
             || async {
                 Self::drain_ack(self.signed(Method::POST, &response_path, response, epoch).await?).await
             }).await?;
@@ -843,7 +901,7 @@ impl Service {
         sender: &str, request: &LocalRequest) -> Result<Value> {
         approved_method(request)?;
         let device = self.devices.get(sender).context("unapproved device")?;
-        let approved = self.approved_device(sender, device)?;
+        let approved = self.approved_device(sender, &device)?;
         if request.method == "POST" || request.method == "PUT" {
             if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
                 let body = request.body.as_ref().context("resource body required")?;
@@ -900,7 +958,7 @@ impl Service {
         if request.path == "/schedules" || request.path.starts_with("/schedules/") {
             approved_method(request)?;
             let device = self.devices.get(sender).context("unapproved device")?;
-            self.require_device_approval(sender, device)?;
+            self.require_device_approval(sender, &device)?;
             return Ok(json!({"status":409,"body":{
                 "code":"incompatible_protocol",
                 "message":"Schedule v2 requires v2-only domain authority",
@@ -915,7 +973,7 @@ impl Service {
             approved_method(request)?;
             let hub = self.hub.clone().context("domain read requires local hub")?;
             let device = self.devices.get(sender).context("unapproved device")?;
-            let approved = self.approved_device(sender, device)?;
+            let approved = self.approved_device(sender, &device)?;
             let response = crate::domain_api::encrypted_read(hub, &approved, &request.path).await?;
             let status = response.status().as_u16();
             let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
@@ -983,7 +1041,7 @@ impl Service {
         let device = self.devices.get(sender).context("unapproved device")?;
         let response = crate::http::prepared_service_request_with(hub.clone(), &request.path,
             request.body.clone().context("prepared operation body required")?, gh, reader,
-            || self.require_device_approval(sender, device)).await;
+            || self.require_device_approval(sender, &device)).await;
         let status = response.status().as_u16();
         let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
         let body: Value = serde_json::from_slice(&bytes)?;
@@ -1002,7 +1060,7 @@ impl Service {
         let mut epoch = None;
         let mut attempted = 0;
         let mut accepted = 0;
-        for (id, device) in &self.devices {
+        for (id, device) in &self.devices.snapshot() {
             if !self.auth.approved_key_matches(id, &device.signing)
                 || !self.journal.enrollment_active(id)? {
                 continue;
@@ -1021,13 +1079,13 @@ impl Service {
     /// An explicit local diagnostic: no Hub, task, report or legacy APNs sender.
     pub async fn test_push(&self, id: &str) -> Result<()> {
         let device = self.devices.get(id).context("device is not configured for the service")?;
-        self.require_device_approval(id, device)?;
+        self.require_device_approval(id, &device)?;
         let binding = self.journal.push_binding(id)?.context("device has no active push binding")?;
         let payload = json!({"aps":{"alert":{
             "title":"Prueba cifrada de Alondra",
             "body":"Diagnóstico enviado desde tu Mac. Si lees este texto, tu dispositivo ha descifrado la notificación."
         }}, "alondra": {}});
-        self.send_device_push(id, device, &binding, &payload, true, &mut None).await
+        self.send_device_push(id, &device, &binding, &payload, true, &mut None).await
     }
 
     fn approval_binding(&self, id: &str, device: &Device) -> Result<String> {
@@ -2125,7 +2183,7 @@ agreement_key = "{}"
                 let request = LocalRequest { method:"POST".into(), path:route.into(), body:Some(body) };
                 assert!(crate::http::prepared_service_path(route));
                 assert!(!service.atomic_local(&request), "preserve conservative external receipt recovery");
-                service.require_device_approval("phone-1", &service.devices["phone-1"]).unwrap();
+                service.require_device_approval("phone-1", &service.devices.get("phone-1").unwrap()).unwrap();
                 service.journal.accept("phone-1", "prepared", &[4;32]).unwrap();
                 service.journal.executing("phone-1", "prepared", &[4;32]).unwrap();
                 let seq = hub.read(|v| v.seq);
@@ -2177,7 +2235,8 @@ agreement_key = "{}"
             service.journal.executing_local("phone-1","waiting-message",&[1;32]).unwrap();
             let seq=hub.read(|v|v.seq);
             let held=hub.starts.lock().await;
-            let mut pending=Box::pin(service.execute_atomic_local(&work.envelope,&service.devices["phone-1"],&request,&[1;32]));
+            let phone=service.devices.get("phone-1").unwrap();
+            let mut pending=Box::pin(service.execute_atomic_local(&work.envelope,&phone,&request,&[1;32]));
             // Poll exactly to the mutex wait: authorization already passed, mutation has not run.
             let waker=std::task::Waker::noop();
             assert!(std::future::Future::poll(pending.as_mut(),&mut std::task::Context::from_waker(waker)).is_pending());
@@ -2379,7 +2438,7 @@ agreement_key = "{}"
             "a reference that itself exceeds the budget cannot be pushed");
     }
     fn activate_push(service: &Service) {
-        let key = service.devices["phone-1"].signing.to_sec1_bytes();
+        let key = service.devices.get("phone-1").unwrap().signing.to_sec1_bytes();
         service.journal.reserve_enrollment("phone-1", &key).unwrap();
         service.journal.activate_enrollment("phone-1").unwrap();
         service.journal.set_push_preferences("phone-1", &URL_SAFE_NO_PAD.encode([4u8;32]), None).unwrap();
@@ -2503,7 +2562,7 @@ agreement_key = "{}"
         let (service, _) = push_fixture();
         assert!(service.test_push("wrong").await.unwrap_err().to_string().contains("not configured"));
         assert!(service.test_push("phone-1").await.unwrap_err().to_string().contains("not actively enrolled"));
-        let key = service.devices["phone-1"].signing.to_sec1_bytes();
+        let key = service.devices.get("phone-1").unwrap().signing.to_sec1_bytes();
         service.journal.reserve_enrollment("phone-1", &key).unwrap();
         service.journal.activate_enrollment("phone-1").unwrap();
         assert!(service.test_push("phone-1").await.unwrap_err().to_string().contains("no active push binding"));
@@ -2688,7 +2747,7 @@ agreement_key = "{}"
                 service.journal.accept("phone-1", request_id, &prepared.digest).unwrap();
                 service.journal.executing_local("phone-1", request_id, &prepared.digest).unwrap();
                 let device = service.devices.get("phone-1").unwrap();
-                let bytes = service.execute_atomic_local(&work.envelope, device, &prepared.request, &prepared.digest).await.unwrap();
+                let bytes = service.execute_atomic_local(&work.envelope, &device, &prepared.request, &prepared.digest).await.unwrap();
                 let answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
                 serde_json::from_slice::<Value>(&answer.open(service.signing.verifying_key(), phone_agreement,
                     "mac-1", "phone-1", "mac-1", now_ms()).unwrap()).unwrap()
@@ -3057,7 +3116,7 @@ agreement_key = "{}"
             relay: Url::parse("http://127.0.0.1:1/").unwrap(), client: Client::new(),
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
-            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
+            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new().into(), resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
             home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
@@ -3098,7 +3157,7 @@ agreement_key = "{}"
             relay: Url::parse("http://127.0.0.1:1/").unwrap(), client: Client::new(),
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
-            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
+            agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new().into(), resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
             home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
@@ -3351,7 +3410,7 @@ agreement_key = "{}"
                     agreement: phone_agreement.public_key(),
                     signing_wire: URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes()),
                 },
-            )]),
+            )]).into(), resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
             home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
@@ -3506,7 +3565,7 @@ agreement_key = "{}"
                     signing_wire: URL_SAFE_NO_PAD
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
-            )]),
+            )]).into(), resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
             home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: auth.clone(),
             journal: Journal::open(journal_path.clone()).unwrap(),
@@ -3535,7 +3594,7 @@ agreement_key = "{}"
                     signing_wire: URL_SAFE_NO_PAD
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
-            )]),
+            )]).into(), resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
             home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path.clone()).unwrap(),
@@ -3563,7 +3622,7 @@ agreement_key = "{}"
             &service.agreement.public_key(),
         )
         .unwrap();
-        let oversized = service.encode_response(&e, service.devices.get("phone-1").unwrap(),
+        let oversized = service.encode_response(&e, &service.devices.get("phone-1").unwrap(),
             &json!({"status":200,"body":{"text":"\u{0}".repeat(MAX_LOCAL_RESPONSE)}}),
             &LocalRequest { method: "GET".into(), path: "/v1/file?path=test".into(), body: None }).unwrap();
         assert!(oversized.len() <= MAX_RELAY_RESPONSE);
@@ -3691,7 +3750,7 @@ agreement_key = "{}"
             owner_sub: service.owner_sub.clone(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
-            devices: HashMap::new(),
+            devices: HashMap::new().into(), resync: AtomicBool::new(false), wake: tokio::sync::Notify::new(),
             home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
@@ -3736,6 +3795,59 @@ agreement_key = "{}"
         local_task.abort();
         relay_task.abort();
     }
+    #[tokio::test]
+    async fn reloading_service_toml_adds_and_removes_a_phone_without_a_restart() {
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!("alondra-service-reload-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let phone_signing = SigningKey::from_slice(&[3u8; 32]).unwrap();
+        let phone_agreement = SecretKey::from_slice(&[4u8; 32]).unwrap();
+        let signing_wire = URL_SAFE_NO_PAD.encode(phone_signing.verifying_key().to_sec1_bytes());
+        let agreement_wire = URL_SAFE_NO_PAD.encode(phone_agreement.public_key().to_sec1_bytes());
+        for (name, secret) in [("mac-signing.key", [1u8; 32]), ("mac-agreement.key", [2u8; 32])] {
+            let path = home.join(name);
+            std::fs::write(&path, URL_SAFE_NO_PAD.encode(secret)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let config = |devices: &str| format!(
+            "relay_url = \"http://127.0.0.1:1/\"\nmac_id = \"mac-1\"\nowner_sub = \"owner\"\nsigning_key_path = \"mac-signing.key\"\nagreement_key_path = \"mac-agreement.key\"\n{devices}"
+        );
+        std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
+        let auth = Arc::new(Auth::open(&home).unwrap());
+        let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap();
+        let work = Work {
+            request_id: "request-1".into(),
+            envelope: EnvelopeV1::seal_random(EnvelopeContext {
+                route: "mac-1", sender: "phone-a", recipient: "mac-1", request_id: "request-1",
+                kind: "request", expires_at_ms: now_ms() + 60_000,
+            }, serde_json::to_vec(&json!({"method":"GET","path":"/capabilities"})).unwrap().as_slice(),
+            &phone_signing, &service.agreement.public_key()).unwrap(),
+        };
+        assert!(service.prepare_work(&work).is_err(), "no phone is configured yet");
+
+        auth.approve_service("phone-a", "Test", &signing_wire).unwrap();
+        service.journal.reserve_enrollment("phone-a", &phone_signing.verifying_key().to_sec1_bytes()).unwrap();
+        service.journal.activate_enrollment("phone-a").unwrap();
+        std::fs::write(home.join("service.toml"), config(&format!(
+            "[[devices]]\ndevice_id = \"phone-a\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n"
+        ))).unwrap();
+        assert!(service.prepare_work(&work).is_err(), "the running service still has the list it started with");
+        service.reload_devices().unwrap();
+        assert!(service.resync.load(Ordering::SeqCst), "the connector loop must enroll the new phone");
+        assert!(service.prepare_work(&work).unwrap().is_some(), "the reloaded service accepts the phone");
+
+        std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
+        service.reload_devices().unwrap();
+        assert!(!service.has_device("phone-a"), "a phone removed from service.toml is gone without a restart");
+        assert!(service.prepare_work(&work).is_err());
+
+        std::fs::write(home.join("service.toml"), "not toml").unwrap();
+        assert!(service.reload_devices().is_err());
+        drop(service);
+        drop(auth);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[tokio::test]
     async fn committed_service_accepts_only_encrypted_v2_routes_and_fences_revoked_reader() {
         use std::os::unix::fs::PermissionsExt;
@@ -3913,7 +4025,7 @@ agreement_key = "{}"
         service.journal.accept("phone-a", "request-1", &prepared.digest).unwrap();
         service.journal.executing_local("phone-a", "request-1", &prepared.digest).unwrap();
         let device = service.devices.get("phone-a").unwrap();
-        let bytes = service.execute_atomic_local(&new_request.envelope, device, &prepared.request, &prepared.digest).await.unwrap();
+        let bytes = service.execute_atomic_local(&new_request.envelope, &device, &prepared.request, &prepared.digest).await.unwrap();
         let sealed_answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
         let answer: Value = serde_json::from_slice(&sealed_answer.open(service.signing.verifying_key(), &phone_agreement,
             "mac-1", "phone-a", "mac-1", now_ms()).unwrap()).unwrap();
