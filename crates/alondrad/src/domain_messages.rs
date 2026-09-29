@@ -86,7 +86,7 @@ fn wording(body: &MessageBody, task_title: Option<(&TaskId, &str)>, user: &str, 
     let task = task_title.map(|(id, title)| format!("[Task {id} “{title}”] ")).unwrap_or_default();
     let mut files = vec![];
     for attachment in &body.attachments {
-        crate::domain_migration::verify_content(home, &attachment.content_reference, &attachment.content_digest)
+        crate::domain_backup::verify_content(home, &attachment.content_reference, &attachment.content_digest)
             .map_err(|_| refused("invalid_input", format!("attachment {} does not match its stored copy", attachment.id)))?;
         files.push(alondra_core::Attachment {
             name: attachment.name.clone(), source_path: attachment.name.clone(),

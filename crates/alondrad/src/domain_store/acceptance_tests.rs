@@ -777,9 +777,7 @@ fn catalog_execution_status_is_explicit_and_evidenced() {
     let sources = [
         include_str!("tests.rs"),
         include_str!("schedule_acceptance_tests.rs"),
-        include_str!("../domain_migration.rs"),
-        include_str!("../domain_migration/schedules.rs"),
-        include_str!("../domain_migration/synthetic.rs"),
+        include_str!("../domain_cutover.rs"),
         include_str!("../domain_authority.rs"),
         include_str!("../domain_api.rs"),
         include_str!("../service/domain_v2_parity_tests.rs"),
