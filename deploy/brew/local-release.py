@@ -202,14 +202,8 @@ def prepare(ver, source, output, target_dir, *, ephemeral_build_cache=False):
     output.mkdir(parents=True, exist_ok=False)
     output.chmod(0o700)
     run(sys.executable, '-m', 'unittest', 'discover', '-s', 'deploy/brew/tests', '-v')
+    run('bazelisk', 'test', '//crates/...')
     for target in release.TARGETS:
-        with build_cache(target_dir, ephemeral_build_cache, 'tests') as test_target:
-            disk_warning(test_target)
-            env = cargo_environment(test_target, toolchain_name, tools)
-            with tempfile.TemporaryDirectory(prefix='alondra-release-test-home-') as home:
-                test_env = dict(env, HOME=home)
-                run(tools['cargo'], 'test', '--locked', '--target', target, '--jobs', '1',
-                    '-p', 'alondra', '-p', 'alondrad', '-p', 'alondra-e2e', env=test_env)
         with build_cache(target_dir, ephemeral_build_cache, 'build') as build_target:
             disk_warning(build_target)
             env = cargo_environment(build_target, toolchain_name, tools)

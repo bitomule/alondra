@@ -110,9 +110,7 @@ class LocalReleaseTests(unittest.TestCase):
         calls = []
         def fake(*args, **kwargs):
             calls.append(args)
-            if args[:2] == ('/pinned/cargo', 'test'):
-                self.assertEqual(kwargs['env']['CARGO_BUILD_JOBS'], '1')
-                self.assertEqual(kwargs['env']['CARGO_INCREMENTAL'], '0')
+            if args[:2] == ('bazelisk', 'test'):
                 raise subprocess.CalledProcessError(1, args)
             if args[0] == 'rustup': return '\n'.join(l.release.TARGETS)
             if args[0] == 'security': return f'1) {l.IDENTITY} "local identity"'
@@ -225,7 +223,7 @@ class LocalReleaseTests(unittest.TestCase):
              patch.object(l, 'rust_toolchain', return_value=('pinned', tools)), patch.object(l, 'disk_warning'), \
              patch.object(l, 'sign'), patch.object(l, 'smoke'), patch.object(l, 'run', side_effect=fake):
             l.prepare('0.1.2', 'source', output, target_dir)
-        self.assertEqual(len(rust_calls), 2 * len(l.release.TARGETS))
+        self.assertEqual(len(rust_calls), len(l.release.TARGETS))
         self.assertEqual({args[args.index('--target') + 1] for args, _ in rust_calls}, set(l.release.TARGETS))
         for args, environment in rust_calls:
             self.assertEqual(args[0], tools['cargo'])
@@ -316,19 +314,16 @@ class LocalReleaseTests(unittest.TestCase):
     def test_ephemeral_caches_are_freed_per_stage_and_exact_signed_archives_survive(self):
         output, target, sentinel, caches, stages, originals, guards = self.ephemeral_fixture()
         l.prepare('0.1.2', 'source', output, target, ephemeral_build_cache=True)
-        self.assertEqual(stages, ['test', 'build'] * len(l.release.TARGETS))
-        self.assertEqual(len(set(caches)), 2 * len(l.release.TARGETS))
+        self.assertEqual(stages, ['build'] * len(l.release.TARGETS))
+        self.assertEqual(len(set(caches)), len(l.release.TARGETS))
         self.assertTrue(all(not cache.exists() for cache in caches))
         self.assertEqual(sentinel.read_bytes(), b'preserve user cache')
         self.assertEqual(list(target.iterdir()), [sentinel])
-        self.assertEqual(len(guards), 2 + 2 * len(l.release.TARGETS), 'initial target/output plus every heavy stage')
+        self.assertEqual(len(guards), 2 + len(l.release.TARGETS), 'initial target/output plus every build stage')
         self.assertEqual(len(originals), len(l.release.TARGETS))
         for name, original in originals.items():
             self.assertEqual((output / name).read_bytes(), original)
         l.verify_prepared('0.1.2', 'source', output)
-
-    def test_failed_ephemeral_test_cleans_only_its_cache(self):
-        self.check_ephemeral_failure('test')
 
     def test_failed_ephemeral_build_cleans_only_its_cache(self):
         self.check_ephemeral_failure('build')
