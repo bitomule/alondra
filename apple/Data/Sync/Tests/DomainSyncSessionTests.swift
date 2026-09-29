@@ -24,10 +24,21 @@ private actor SectionServer: DomainSyncTransport {
     /// Called after a page is served, to move data between pages.
     var afterPage: (@Sendable (isolated SectionServer, String, Int) -> Void)?
     var holdSummaries = false
+    var holdPages = false
+    var holdInteractions = false
+    private var heldReads: [CheckedContinuation<Void, Never>] = []
     private(set) var requests: [Request] = []
     private var pendingSummaries: [Int: CheckedContinuation<DomainV2.Summary, Error>] = [:]
     private var pendingChanges: [Int: CheckedContinuation<DomainV2.Changes, Error>] = [:]
     private var waiters: [(Int, CheckedContinuation<Void, Never>)] = []
+
+    private func holdRead() async { await withCheckedContinuation { heldReads.append($0) } }
+
+    func releaseHeldReads() {
+        let held = heldReads
+        heldReads = []
+        held.forEach { $0.resume() }
+    }
 
     func set(_ change: (isolated SectionServer) -> Void) { change(self) }
 
@@ -54,6 +65,7 @@ private actor SectionServer: DomainSyncTransport {
         _ section: DomainV2.Section, of row: Row.Type, cursor: String?, pendingOnly: Bool
     ) async throws -> DomainV2.Page<Row> {
         append(.page(section.rawValue, cursor: cursor))
+        if holdPages { await holdRead() }
         let all = rows[section.rawValue] ?? []
         let start = cursor.flatMap(Int.init) ?? 0
         let end = min(all.count, start + pageSize)
@@ -70,6 +82,7 @@ private actor SectionServer: DomainSyncTransport {
 
     func domainInteraction(_ id: DomainV2.InteractionId) async throws -> DomainV2.Item<DomainV2.Interaction> {
         append(.interaction(id.rawValue))
+        if holdInteractions { await holdRead() }
         guard let row = interactions[id.rawValue] else {
             throw DomainV2.DomainError(code: "not_found", message: "gone", currentRevision: revision, subject: id.rawValue)
         }
@@ -171,6 +184,69 @@ final class DomainSectionsTests: XCTestCase {
         XCTAssertEqual(second.tasks.map(\.id.rawValue), ["t1", "t2"])
         let secondPages = await server.pages(since: mark)
         XCTAssertEqual(secondPages, ["tasks"], "An unchanged token must not be read again")
+    }
+
+    func testStaleSectionsAreAllInFlightBeforeAnyOfThemReturns() async throws {
+        let server = SectionServer()
+        await server.set { $0.holdPages = true; $0.rows["tasks"] = [task("t1")] }
+        let summary = try await server.summary()
+        let refresh = Task {
+            var sections = DomainSections()
+            return try await sections.refresh(to: summary, from: server)
+        }
+        await server.waitForRequests(DomainSections.synced.count)
+        await server.releaseHeldReads()
+        let projection = try await refresh.value
+        XCTAssertEqual(projection.tasks.map(\.id.rawValue), ["t1"])
+    }
+
+    func testInteractionsAreAllInFlightBeforeAnyOfThemReturns() async throws {
+        let server = SectionServer()
+        await server.set {
+            $0.holdInteractions = true
+            $0.rows["inbox"] = ["q1", "q2", "q3"].map { inboxEntry(for: $0, revision: 1) }
+            for id in ["q1", "q2", "q3"] { $0.interactions[id] = question(id, revision: 1) }
+        }
+        let summary = try await server.summary()
+        let refresh = Task {
+            var sections = DomainSections()
+            return try await sections.refresh(to: summary, from: server)
+        }
+        await server.waitForRequests(DomainSections.synced.count + 3)
+        await server.releaseHeldReads()
+        let projection = try await refresh.value
+        XCTAssertEqual(projection.interactions.map(\.id.rawValue), ["q1", "q2", "q3"])
+    }
+
+    func testOnlyTheDemandedSectionsAreReadAndTheRestWaitForAScreen() async throws {
+        let server = SectionServer()
+        await server.set { $0.rows["tasks"] = [task("t1")]; $0.tokens["tasks"] = "a"; $0.tokens["agents"] = "a" }
+        var sections = DomainSections()
+        let first = try await sections.refresh(to: try await server.summary(), from: server, demand: [.inbox])
+        XCTAssertEqual(first.tasks, [])
+        let firstPages = await server.pages(since: 0)
+        XCTAssertEqual(firstPages, ["inbox"])
+
+        let mark = await server.requests.count
+        let second = try await sections.refresh(to: try await server.summary(), from: server, demand: [.inbox, .tasks])
+        XCTAssertEqual(second.tasks.map(\.id.rawValue), ["t1"])
+        let secondPages = await server.pages(since: mark)
+        XCTAssertEqual(secondPages, ["tasks"], "A section already read stays as it is")
+    }
+
+    func testEveryInteractionIsReadOnlyWhenAScreenAsksForThemAll() async throws {
+        let server = SectionServer()
+        await server.set {
+            $0.rows["inbox"] = ["q1", "q2"].enumerated().map { inboxEntry(for: $1, revision: UInt64($0 + 1)) }
+            for id in ["q1", "q2"] { $0.interactions[id] = question(id, revision: 1) }
+        }
+        var sections = DomainSections()
+        let first = try await sections.refresh(to: try await server.summary(), from: server, demand: [.inbox])
+        XCTAssertEqual(first.interactions.map(\.id.rawValue), ["q1"])
+        let all = try await sections.refresh(to: try await server.summary(), from: server, demand: [.inbox, .interactions])
+        XCTAssertEqual(all.interactions.map(\.id.rawValue), ["q1", "q2"])
+        let reads = await server.requests.filter { $0 == .interaction("q1") }
+        XCTAssertEqual(reads.count, 1, "The first card's interaction is not read again")
     }
 
     func testEverySectionIsPagedToTheEnd() async throws {
@@ -291,6 +367,7 @@ final class DomainSyncSessionTests: XCTestCase {
         let server = SectionServer()
         await server.set { $0.revision = 4 }
         let session = DomainSyncSession(transport: server, identity: identity("one"))
+        await session.require(DomainSyncDemand(sections: [.tasks]))
         var updates = await session.subscribe().makeAsyncIterator()
         _ = await nextProjection(&updates)
         let poll = await server.waitForChangesRequest()
@@ -307,6 +384,41 @@ final class DomainSyncSessionTests: XCTestCase {
         XCTAssertEqual(updated?.projection?.tasks.map(\.id.rawValue), ["t1"])
         let reread = await server.requests[(poll + 2)...].filter { if case .page = $0 { true } else { false } }
         XCTAssertEqual(reread, [.page("tasks", cursor: nil)])
+        await session.stop()
+    }
+
+    func testFirstLoadReadsTheSummaryTheInboxAndTheFirstCardOnly() async throws {
+        let server = SectionServer()
+        await server.set {
+            $0.rows["inbox"] = [inboxEntry(for: "q1", revision: 1), inboxEntry(for: "q2", revision: 2)]
+            $0.rows["tasks"] = [task("t1")]
+            for id in ["q1", "q2"] { $0.interactions[id] = question(id, revision: id == "q1" ? 1 : 2) }
+        }
+        let session = DomainSyncSession(transport: server, identity: identity("one"))
+        var updates = await session.subscribe().makeAsyncIterator()
+        let first = await nextProjection(&updates)
+        let poll = await server.waitForChangesRequest()
+        let reads = await server.requests[..<poll]
+        XCTAssertEqual(Array(reads), [.summary, .page("inbox", cursor: nil), .interaction("q1")])
+        XCTAssertEqual(first?.projection?.inbox.count, 2)
+        XCTAssertEqual(first?.projection?.interactions.map(\.id.rawValue), ["q1"])
+        XCTAssertEqual(first?.projection?.tasks, [])
+        XCTAssertNil(first?.runtime)
+        await session.stop()
+    }
+
+    func testARequiredSectionIsReadWhenAScreenAsksForIt() async throws {
+        let server = SectionServer()
+        await server.set { $0.rows["tasks"] = [task("t1")]; $0.tokens["tasks"] = "a" }
+        let session = DomainSyncSession(transport: server, identity: identity("one"))
+        var updates = await session.subscribe().makeAsyncIterator()
+        _ = await nextProjection(&updates)
+        let poll = await server.waitForChangesRequest()
+        await session.require(DomainSyncDemand(sections: [.tasks]))
+        let loaded = await nextProjection(&updates)
+        XCTAssertEqual(loaded?.projection?.tasks.map(\.id.rawValue), ["t1"])
+        let after = await server.requests[(poll + 1)...].filter { if case .changes = $0 { false } else { true } }
+        XCTAssertEqual(after, [.summary, .page("tasks", cursor: nil)], "Only the section that was asked for is read")
         await session.stop()
     }
 

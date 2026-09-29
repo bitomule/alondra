@@ -74,6 +74,7 @@ private final class MacServiceWindowContext {
         let newWork = await services.newWorkOperations()
         let downloads = await services.attachmentDownloadClient()
         let sync = await services.domainSync
+        await sync.require(.everything)
         guard !Task.isCancelled else { return }
         store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
             $0.macConversationSearch = MacConversationSearch(run: { try await services.searchConversations($0) })

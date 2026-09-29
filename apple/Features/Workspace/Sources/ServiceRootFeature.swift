@@ -95,6 +95,7 @@ public struct ServiceRootFeature {
         case pullRequestDismissed(DomainV2.PrId)
     }
     @Dependency(\.continuousClock) var noticeClock
+    @Dependency(\.domainWorkspace) var domain
     private enum NoticeCancelID { case timeout, macTimeout }
     public var body: some ReducerOf<Self> {
         // Observe the accepted operation before child navigation removes its state.
@@ -146,7 +147,7 @@ public struct ServiceRootFeature {
             state.tasks.connection = state.triage.triage.connection
             switch action {
             case .appeared:
-                return .merge(.send(.deliveryJournal(.appeared)), .send(.triage(.triage(.appeared))))
+                return .merge(.send(.deliveryJournal(.appeared)), .send(.triage(.triage(.appeared))), open(.inbox))
             case .disappeared:
                 state.triage.cancelPendingSubmissions()
                 state.fleet.cancelPendingSubmissions()
@@ -159,7 +160,12 @@ public struct ServiceRootFeature {
                     state.pullRequest?.cancelPendingSubmission()
                 }
                 state.tab = tab
-                return .none
+                switch tab {
+                case .tasks: return open(.tasks)
+                case .fleet: return open(.fleet)
+                case .newRequest: return open(.newRequest)
+                case .inbox, .account: return .none
+                }
             case .settingsPresented(let value): state.settingsPresented = value; return .none
             case .focusInbox(let id):
                 state.triage.cancelPendingSubmissions()
@@ -222,7 +228,7 @@ public struct ServiceRootFeature {
                         state.pullRequests[id: card.id]?.diff = DiffReviewFeature.State(card: card, workspace: workspace)
                     }
                 }
-                return .send(.pullRequests(.element(id: card.id, action: .updated(card, workspace))))
+                return .merge(.send(.pullRequests(.element(id: card.id, action: .updated(card, workspace)))), open(.pullRequest))
             case .pullRequestDismissed(let id):
                 guard state.pullRequestID == id else { return .none }
                 state.pullRequest?.cancelPendingSubmission()
@@ -238,6 +244,8 @@ public struct ServiceRootFeature {
                 }
                 return .none
             case .newRequest(.appeared): return .send(.newRequest(.availabilityChanged(state.newRequest.canSubmit)))
+            case .triage(.machinePresented(true)):
+                return open(.machine)
             case .triage:
                 let hidden = state.triage.triage.hiddenIDs
                 return .merge(.send(.fleet(.hiddenInboxChanged(hidden))), .send(.tasks(.hiddenInboxChanged(hidden))))
@@ -257,6 +265,10 @@ public struct ServiceRootFeature {
                 await send(.dismissMacError(notice.id))
             }.cancellable(id: NoticeCancelID.macTimeout, cancelInFlight: true)
         }
+    }
+
+    private func open(_ screen: DomainScreen) -> Effect<Action> {
+        .run { [domain] _ in await domain.open(screen) }
     }
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {

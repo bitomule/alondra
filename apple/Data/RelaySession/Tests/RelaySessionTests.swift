@@ -325,6 +325,39 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual(elapsed, 50, "Two server-held intervals; the first response contains immediate unrelated/received events")
     }
 
+    func testOrdinaryReadWaitsForRelayWakeupInsteadOfPollingStatusOnATimer() async throws {
+        let fixture = try Fixture(mode: .longChange)
+        let sleeps = SleepCounter()
+        let session = fixture.session(sleep: { await sleeps.record() })
+        let body = try await summary(fixture, session)
+        XCTAssertEqual(try DomainV2.decode(DomainV2.Changes.self, from: body),
+                       try DomainV2.decode(DomainV2.Changes.self, from: Data(changesBody.utf8)))
+        let timerWaits = await sleeps.count
+        let wakeups = await fixture.http.changeQueries
+        XCTAssertEqual(timerWaits, 0, "A pending read is woken by the relay, not re-asked every second")
+        XCTAssertFalse(wakeups.isEmpty)
+    }
+
+    func testReadsShareOneRelayBootstrap() async throws {
+        let fixture = try Fixture(mode: .overview)
+        let session = fixture.session()
+        for _ in 0..<3 { _ = try await summary(fixture, session) }
+        let bootstraps = await fixture.http.bootstrapCount
+        XCTAssertEqual(bootstraps, 1, "The relay epoch is fetched once, not before every read")
+    }
+
+    func testRelayRejectionMakesTheNextReadFetchTheEpochAgain() async throws {
+        let fixture = try Fixture(mode: .restart)
+        let session = fixture.session()
+        do { _ = try await summary(fixture, session); XCTFail("Rejected read became content") }
+        catch ServiceAPIError.outcomeUnknown { }
+        _ = try await summary(fixture, session)
+        let bootstraps = await fixture.http.bootstrapCount
+        let epochs = await fixture.http.statusEpochs
+        XCTAssertEqual(bootstraps, 2)
+        XCTAssertEqual(epochs.last, "AQEBAQEBAQEBAQEBAQEBAQ")
+    }
+
     func testReadWakeupRejectsEpochErrorsAndForgedCompletionWithoutReposting() async throws {
         for mode in [FakeHTTP.Mode.changeUnauthorized, .changeConflict, .changeEpoch, .changeForged] {
             let fixture = try Fixture(mode: mode)
@@ -441,6 +474,7 @@ private actor FakeHTTP: ServiceHTTPTransport {
     let mode: Mode
     var mutations: [Data] = []
     var statusEpochs: [String] = []
+    var bootstrapCount = 0
     var restarted = false
     struct ChangeQuery { let since: UInt64; let epoch: String; let wait: UInt64 }
     var changeQueries: [ChangeQuery] = []
@@ -467,6 +501,7 @@ private actor FakeHTTP: ServiceHTTPTransport {
             try await stallGate.wait()
         }
         if request.url?.path == "/v1/bootstrap" {
+            bootstrapCount += 1
             if mode == .bootstrapFailure { return ServiceHTTPResponse(status: 401, body: Data()) }
             let epoch = restarted ? "AQEBAQEBAQEBAQEBAQEBAQ" : "AAAAAAAAAAAAAAAAAAAAAA"
             return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: ["protocol": 1, "epoch": epoch]))
@@ -521,6 +556,11 @@ private actor FakeHTTP: ServiceHTTPTransport {
         json["response"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(envelope))
         return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: json))
     }
+}
+
+private actor SleepCounter {
+    private(set) var count = 0
+    func record() { count += 1 }
 }
 
 private actor TimerGate {

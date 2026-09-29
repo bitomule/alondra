@@ -19,6 +19,20 @@ public protocol DomainSyncTransport: Sendable {
 
 extension AlondraAPIClient: DomainSyncTransport {}
 
+/// What the running screens need. A session starts with the inbox only and grows this as screens
+/// open; it never shrinks, so a section a screen once asked for stays fresh.
+public struct DomainSyncDemand: Equatable, Sendable {
+    public var sections: Set<DomainV2.Section> = [.inbox]
+    public var runtime = false
+
+    public init(sections: Set<DomainV2.Section> = [.inbox], runtime: Bool = false) {
+        self.sections = sections
+        self.runtime = runtime
+    }
+
+    public static let everything = DomainSyncDemand(sections: DomainSections.everything, runtime: true)
+}
+
 public struct DomainSyncState: Equatable, Sendable {
     public let identity: SyncIdentity
     public let generation: UInt64
@@ -42,6 +56,8 @@ public actor DomainSyncSession {
     private var loop: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<DomainSyncState>.Continuation] = [:]
     private var sections = DomainSections()
+    private var demand = DomainSyncDemand()
+    private var idle = false
     public private(set) var state: DomainSyncState
 
     public init(transport: any DomainSyncTransport, identity: SyncIdentity,
@@ -74,6 +90,18 @@ public actor DomainSyncSession {
         sections = DomainSections()
         publish(identity: identity, connection: .connecting, projection: nil)
         startIfNeeded()
+    }
+
+    /// Adds what a screen shows to what the session keeps in sync. While the first load is still
+    /// running the request waits for it; afterwards the idle long poll ends so the new sections are
+    /// read now.
+    public func require(_ needed: DomainSyncDemand) {
+        var next = demand
+        next.sections.formUnion(needed.sections)
+        next.runtime = next.runtime || needed.runtime
+        guard next != demand else { return }
+        demand = next
+        if idle { refresh() }
     }
 
     /// Skips the rest of the current backoff wait, for when the network returns or the app comes
@@ -134,25 +162,28 @@ public actor DomainSyncSession {
 
     private func run(transport: any DomainSyncTransport, generation current: UInt64) async {
         while !Task.isCancelled && generation == current && !subscribers.isEmpty {
+            idle = false
             do {
+                let wanted = demand
                 let summary = try await transport.domainSummary()
                 guard !Task.isCancelled, generation == current else { return }
                 var next = sections
-                let projection = try await next.refresh(to: summary, from: transport)
+                let projection = try await next.refresh(to: summary, from: transport, demand: wanted.sections)
                 guard !Task.isCancelled, generation == current else { return }
                 sections = next
                 failures = 0
-                var runtime = await Self.runtime(transport) ?? state.runtime
+                var runtime = wanted.runtime ? await Self.runtime(transport) ?? state.runtime : state.runtime
                 guard !Task.isCancelled, generation == current else { return }
                 publish(identity: state.identity, connection: .online, projection: projection, runtime: runtime)
-                while !Task.isCancelled && generation == current && !subscribers.isEmpty {
+                idle = true
+                while !Task.isCancelled && generation == current && !subscribers.isEmpty && demand == wanted {
                     let changes = try await transport.domainChanges(
                         epoch: projection.dataEpoch, after: projection.revision, wait: 10)
                     guard !Task.isCancelled, generation == current else { return }
                     if changes.changed || changes.revision != projection.revision
                         || changes.sections.contains(where: { summary.sections[$0.key]?.revision != $0.value }) { break }
                     // Telemetry moves without a domain revision; refresh it on each idle wait.
-                    if let fresh = await Self.runtime(transport), fresh != runtime {
+                    if wanted.runtime, let fresh = await Self.runtime(transport), fresh != runtime {
                         guard !Task.isCancelled, generation == current else { return }
                         runtime = fresh
                         publish(identity: state.identity, connection: .online, projection: projection, runtime: fresh)
@@ -172,6 +203,7 @@ public actor DomainSyncSession {
                 publish(identity: state.identity, connection: .offline(.unexpected), projection: nil)
                 do { try await Task.sleep(for: nextDelay()) } catch { return }
             } catch {
+                idle = false
                 guard !Task.isCancelled, generation == current else { return }
                 publish(identity: state.identity, connection: .offline(classify(error)),
                         projection: state.projection, runtime: state.runtime)

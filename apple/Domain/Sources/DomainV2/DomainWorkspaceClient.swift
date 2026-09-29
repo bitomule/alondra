@@ -46,6 +46,8 @@ public struct DomainWorkspaceClient: Sendable {
     public var documentContent: @Sendable (DomainV2.DocumentRevisionId, String) async throws -> String
     /// The brief a Task was launched with and each state it went through, for its detail.
     public var taskHistory: @Sendable (DomainV2.TaskId) async throws -> DomainV2.TaskHistory
+    /// A screen appeared: the client loads what it shows. Calling it again is harmless.
+    public var open: @Sendable (DomainScreen) async -> Void
 
     public init(
         observe: @escaping @Sendable () async -> AsyncStream<DomainWorkspaceUpdate>,
@@ -53,7 +55,8 @@ public struct DomainWorkspaceClient: Sendable {
         taskActions: @escaping @Sendable (DomainV2.TaskId, DomainV2.DataEpoch) async throws -> [DomainV2.AvailableAction],
         pullRequestDiff: @escaping @Sendable (DomainV2.PrId, String) async throws -> DomainV2.PullRequestDiff,
         documentContent: @escaping @Sendable (DomainV2.DocumentRevisionId, String) async throws -> String,
-        taskHistory: @escaping @Sendable (DomainV2.TaskId) async throws -> DomainV2.TaskHistory = { _ in DomainV2.TaskHistory() }
+        taskHistory: @escaping @Sendable (DomainV2.TaskId) async throws -> DomainV2.TaskHistory = { _ in DomainV2.TaskHistory() },
+        open: @escaping @Sendable (DomainScreen) async -> Void = { _ in }
     ) {
         self.observe = observe
         self.perform = perform
@@ -61,6 +64,7 @@ public struct DomainWorkspaceClient: Sendable {
         self.pullRequestDiff = pullRequestDiff
         self.documentContent = documentContent
         self.taskHistory = taskHistory
+        self.open = open
     }
 
     /// Neither observes nor sends anything: an unconfigured feature stays inert.

@@ -27,40 +27,90 @@ struct DomainSections: Sendable {
         .mergeAuthorizations, .stackReadiness, .supersededAcceptances,
     ]
 
-    /// Brings every synced section to the summary's tokens and returns the assembled view.
-    mutating func refresh(to summary: DomainV2.Summary, from transport: any DomainSyncTransport) async throws -> DomainV2.DomainProjection {
+    /// Every synced section and every interaction: what a screen that shows everything needs.
+    static let everything: Set<DomainV2.Section> = Set(synced).union([.interactions])
+
+    /// Brings the sections in `demand` to the summary's tokens and returns the assembled view;
+    /// the others stay as they were, empty until a screen asks for them. Stale sections are read
+    /// concurrently; each one is still paged at a single token, and nothing is applied unless
+    /// every read succeeded. `.interactions` in `demand` means every interaction the inbox and
+    /// the open tasks point at; without it only the first pending card's are read.
+    mutating func refresh(to summary: DomainV2.Summary, from transport: any DomainSyncTransport,
+                          demand: Set<DomainV2.Section> = DomainSections.everything) async throws -> DomainV2.DomainProjection {
         if epoch != summary.dataEpoch { self = DomainSections() }
         guard summary.revision >= revision else {
             throw DomainV2.DomainError(code: "incompatible_protocol", message: "Domain revision moved backwards within one epoch",
                                        currentRevision: summary.revision, subject: nil)
         }
         epoch = summary.dataEpoch
-        for section in Self.synced {
+        let stale = Self.synced.filter { section in
+            guard demand.contains(section) else { return false }
             let token = summary.sections[section.rawValue]?.revision
-            guard token == nil || tokens[section] != token else { continue }
-            try await read(section, epoch: summary.dataEpoch, from: transport)
+            return token == nil || tokens[section] != token
         }
-        try await readInteractions(epoch: summary.dataEpoch, from: transport)
+        let dataEpoch = summary.dataEpoch
+        let reads = try await withThrowingTaskGroup(of: SectionRead.self) { group in
+            for section in stale {
+                group.addTask { try await Self.read(section, epoch: dataEpoch, from: transport) }
+            }
+            var reads: [SectionRead] = []
+            for try await read in group { reads.append(read) }
+            return reads
+        }
+        reads.forEach { apply($0) }
+        try await readInteractions(epoch: summary.dataEpoch, all: demand.contains(.interactions), from: transport)
         revision = summary.revision
         return projection(summary)
     }
 
-    private mutating func read(_ section: DomainV2.Section, epoch: DomainV2.DataEpoch,
-                               from transport: any DomainSyncTransport) async throws {
+    private mutating func apply(_ read: SectionRead) {
+        switch read {
+        case .inbox(let rows, let token): (inbox, tokens[.inbox]) = (rows, token)
+        case .tasks(let rows, let token): (tasks, tokens[.tasks]) = (rows, token)
+        case .requests(let rows, let token): (requests, tokens[.requests]) = (rows, token)
+        case .agents(let rows, let token): (agents, tokens[.agents]) = (rows, token)
+        case .pullRequests(let rows, let token): (pullRequests, tokens[.pullRequests]) = (rows, token)
+        case .documents(let rows, let token): (documents, tokens[.documents]) = (rows, token)
+        case .mergeAuthorizations(let rows, let token): (mergeAuthorizations, tokens[.mergeAuthorizations]) = (rows, token)
+        case .stackReadiness(let rows, let token): (stackReadiness, tokens[.stackReadiness]) = (rows, token)
+        case .supersededAcceptances(let rows, let token): (supersededAcceptances, tokens[.supersededAcceptances]) = (rows, token)
+        case .none: break
+        }
+    }
+
+    private static func read(_ section: DomainV2.Section, epoch: DomainV2.DataEpoch,
+                             from transport: any DomainSyncTransport) async throws -> SectionRead {
         switch section {
-        case .inbox: (inbox, tokens[section]) = try await Self.all(section, DomainV2.InboxItem.self, epoch, transport)
-        case .tasks: (tasks, tokens[section]) = try await Self.all(section, DomainV2.Task.self, epoch, transport)
+        case .inbox:
+            let (rows, token) = try await all(section, DomainV2.InboxItem.self, epoch, transport)
+            return .inbox(rows, token)
+        case .tasks:
+            let (rows, token) = try await all(section, DomainV2.Task.self, epoch, transport)
+            return .tasks(rows, token)
         case .requests:
-            (requests, tokens[section]) = try await Self.all(section, DomainV2.Request.self, epoch, transport) { id in
+            let (rows, token) = try await all(section, DomainV2.Request.self, epoch, transport) { id in
                 try await transport.domainRequest(.init(rawValue: id)).item
             }
-        case .agents: (agents, tokens[section]) = try await Self.all(section, DomainV2.Agent.self, epoch, transport)
-        case .pullRequests: (pullRequests, tokens[section]) = try await Self.all(section, DomainV2.PullRequest.self, epoch, transport)
-        case .documents: (documents, tokens[section]) = try await Self.all(section, DomainV2.DocumentBundle.self, epoch, transport)
-        case .mergeAuthorizations: (mergeAuthorizations, tokens[section]) = try await Self.all(section, DomainV2.MergeAuthorization.self, epoch, transport)
-        case .stackReadiness: (stackReadiness, tokens[section]) = try await Self.all(section, DomainV2.StackReadiness.self, epoch, transport)
-        case .supersededAcceptances: (supersededAcceptances, tokens[section]) = try await Self.all(section, DomainV2.SupersededAcceptance.self, epoch, transport)
-        case .interactions, .schedules: return
+            return .requests(rows, token)
+        case .agents:
+            let (rows, token) = try await all(section, DomainV2.Agent.self, epoch, transport)
+            return .agents(rows, token)
+        case .pullRequests:
+            let (rows, token) = try await all(section, DomainV2.PullRequest.self, epoch, transport)
+            return .pullRequests(rows, token)
+        case .documents:
+            let (rows, token) = try await all(section, DomainV2.DocumentBundle.self, epoch, transport)
+            return .documents(rows, token)
+        case .mergeAuthorizations:
+            let (rows, token) = try await all(section, DomainV2.MergeAuthorization.self, epoch, transport)
+            return .mergeAuthorizations(rows, token)
+        case .stackReadiness:
+            let (rows, token) = try await all(section, DomainV2.StackReadiness.self, epoch, transport)
+            return .stackReadiness(rows, token)
+        case .supersededAcceptances:
+            let (rows, token) = try await all(section, DomainV2.SupersededAcceptance.self, epoch, transport)
+            return .supersededAcceptances(rows, token)
+        case .interactions, .schedules: return .none
         }
     }
 
@@ -103,32 +153,50 @@ struct DomainSections: Sendable {
         throw SectionReadError.unsettled(section.rawValue)
     }
 
-    private mutating func readInteractions(epoch: DomainV2.DataEpoch, from transport: any DomainSyncTransport) async throws {
+    private mutating func readInteractions(epoch: DomainV2.DataEpoch, all: Bool,
+                                            from transport: any DomainSyncTransport) async throws {
         var wanted: [DomainV2.InteractionId: DomainV2.Revision?] = [:]
         func visit(_ item: DomainV2.InboxItem) {
             if case .interaction(let id) = item.subject { wanted[id] = .some(item.revision) }
             item.children.forEach(visit)
         }
-        inbox.forEach(visit)
-        for task in tasks where !task.archived {
-            if let id = task.finalPresentation, wanted[id] == nil { wanted[id] = .some(nil) }
+        if all {
+            inbox.forEach(visit)
+            for task in tasks where !task.archived {
+                if let id = task.finalPresentation, wanted[id] == nil { wanted[id] = .some(nil) }
+            }
+        } else if let first = inbox.filter(\.pending).min(by: { ($0.order, $0.id) < ($1.order, $1.id) }) {
+            visit(first)
         }
         var next: [DomainV2.InteractionId: DomainV2.Interaction] = [:]
-        for (id, hint) in wanted.sorted(by: { $0.key.rawValue < $1.key.rawValue }) {
+        var missing: [DomainV2.InteractionId] = []
+        for (id, hint) in wanted {
             if let cached = interactions[id], hint == nil || cached.revision == hint {
                 next[id] = cached
-                continue
-            }
-            do {
-                let item = try await transport.domainInteraction(id)
-                guard item.dataEpoch == epoch else {
-                    throw DomainV2.DomainError(code: "stale_epoch", message: "Interaction read crossed an epoch", currentRevision: item.revision, subject: id.rawValue)
-                }
-                next[id] = item.item
-            } catch let error as DomainV2.DomainError where error.code == "not_found" {
-                // It left the projection since the section was read; the next summary drops it.
+            } else {
+                missing.append(id)
             }
         }
+        let fetched = try await withThrowingTaskGroup(of: DomainV2.Interaction?.self) { group in
+            for id in missing {
+                group.addTask {
+                    do {
+                        let item = try await transport.domainInteraction(id)
+                        guard item.dataEpoch == epoch else {
+                            throw DomainV2.DomainError(code: "stale_epoch", message: "Interaction read crossed an epoch", currentRevision: item.revision, subject: id.rawValue)
+                        }
+                        return item.item
+                    } catch let error as DomainV2.DomainError where error.code == "not_found" {
+                        // It left the projection since the section was read; the next summary drops it.
+                        return nil
+                    }
+                }
+            }
+            var fetched: [DomainV2.Interaction] = []
+            for try await interaction in group { if let interaction { fetched.append(interaction) } }
+            return fetched
+        }
+        for interaction in fetched { next[interaction.id] = interaction }
         interactions = next
     }
 
@@ -142,6 +210,19 @@ struct DomainSections: Sendable {
             mergeAuthorizations: mergeAuthorizations, stackReadiness: stackReadiness,
             supersededAcceptances: supersededAcceptances)
     }
+}
+
+private enum SectionRead: Sendable {
+    case inbox([DomainV2.InboxItem], String)
+    case tasks([DomainV2.Task], String)
+    case requests([DomainV2.Request], String)
+    case agents([DomainV2.Agent], String)
+    case pullRequests([DomainV2.PullRequest], String)
+    case documents([DomainV2.DocumentBundle], String)
+    case mergeAuthorizations([DomainV2.MergeAuthorization], String)
+    case stackReadiness([DomainV2.StackReadiness], String)
+    case supersededAcceptances([DomainV2.SupersededAcceptance], String)
+    case none
 }
 
 enum SectionReadError: Error, Equatable {
