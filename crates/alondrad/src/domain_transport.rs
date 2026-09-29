@@ -547,7 +547,7 @@ mod tests {
             expected_schedule_revision: None,
         });
         let snapshot = domain.state().unwrap().schedule.runs[&"run-1".into()].definition_snapshot.clone().unwrap();
-        let request = Request { id: "scheduled-request".into(), body: snapshot.text.clone(), closed: false };
+        let request = Request::new("scheduled-request".into(), snapshot.text.clone());
         let task = Task {
             id: "scheduled-task".into(), request_id: request.id.clone(), agent_id: None,
             title: snapshot.title.clone(), state: TaskState::NotStarted, revision: 0, started: false,

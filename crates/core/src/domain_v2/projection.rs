@@ -169,8 +169,10 @@ impl DomainState {
             ),
             InteractionPayload::Question { answer, .. }
             | InteractionPayload::ActionRequest { answer, .. } => {
-                let enabled = answer.is_none() && active && i.recipient == Recipient::User;
-                let reason = if i.recipient != Recipient::User {
+                let enabled = answer.is_none() && !i.withdrawn && active && i.recipient == Recipient::User;
+                let reason = if i.withdrawn {
+                    Some("withdrawn".into())
+                } else if i.recipient != Recipient::User {
                     Some("forbidden".into())
                 } else if !active {
                     Some("task_not_active".into())
@@ -185,7 +187,7 @@ impl DomainState {
                     } else {
                         "action_request"
                     },
-                    answer.is_none(),
+                    answer.is_none() && !i.withdrawn,
                     vec![AvailableAction {
                         kind: "answer_question".into(),
                         enabled,

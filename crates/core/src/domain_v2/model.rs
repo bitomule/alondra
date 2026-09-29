@@ -62,6 +62,20 @@ pub struct Request {
     pub id: RequestId,
     pub body: String,
     pub closed: bool,
+    /// A short name the user reads in place of the whole text.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// What the orchestrator told the user when it closed a Request that needed no Task.
+    #[serde(default)]
+    pub answer: Option<String>,
+    /// Closed because the user withdrew it.
+    #[serde(default)]
+    pub withdrawn: bool,
+}
+impl Request {
+    pub fn new(id: RequestId, body: String) -> Self {
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Agent {
@@ -304,6 +318,9 @@ pub struct Interaction {
     pub payload: InteractionPayload,
     pub revision: Revision,
     pub order: Revision,
+    /// A question its author withdrew: it no longer waits for an answer.
+    #[serde(default)]
+    pub withdrawn: bool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

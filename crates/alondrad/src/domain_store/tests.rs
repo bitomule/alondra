@@ -502,7 +502,7 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
     let before = store.load().unwrap();
     let mut upgraded = store;
     assert_eq!(upgraded.load().unwrap(), before);
-    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
+    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), super::SCHEMA_VERSION);
     upgraded.conn.execute_batch("INSERT INTO schedules
         (id,title,text,project,options,disallowed_tools,frequency,hour,minute,weekday,interval,start_at,enabled,next_run,revision,deleted_at)
         VALUES ('schedule-1','Daily work','Do work',NULL,'{}','[]','daily',9,30,7,0,-1,1,2000000,2,NULL);
@@ -622,6 +622,34 @@ fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
         )
         .unwrap());
     upgraded.integrity_check().unwrap();
+}
+
+#[test]
+fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_restart() {
+    let fixture = Fixture::new();
+    let mut store = DomainStore::open(&fixture.path()).unwrap();
+    seeded(&mut store);
+    execute(&mut store, &agent(), "question", Command::AskQuestion {
+        attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task-1".into() },
+        recipient: Recipient::User, body: "Ship?".into(), blocking: true,
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), inputs: vec![] }],
+    });
+    execute(&mut store, &agent(), "withdraw", Command::WithdrawQuestion { interaction_id: "question-1".into() });
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    execute(&mut store, &orchestrator, "retitle", Command::RetitleTask { task_id: "task-1".into(), title: "Editor colours".into() });
+    execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into() });
+    execute(&mut store, &orchestrator, "close-2", Command::CloseRequest { request_id: "request-2".into(),
+        answer: Some("Main is green".into()), withdrawn: false, title: Some("CI status".into()) });
+    execute(&mut store, &user(), "request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into() });
+    execute(&mut store, &user(), "close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: None });
+    let before = store.load().unwrap();
+    drop(store);
+    let reopened = DomainStore::open(&fixture.path()).unwrap().load().unwrap();
+    assert_eq!(reopened, before);
+    assert!(reopened.interactions[&"question-1".into()].withdrawn);
+    assert_eq!(reopened.tasks[&"task-1".into()].title, "Editor colours");
+    assert_eq!(reopened.requests[&"request-2".into()].answer.as_deref(), Some("Main is green"));
+    assert!(reopened.requests[&"request-3".into()].withdrawn);
 }
 
 #[test]
@@ -936,9 +964,7 @@ fn closed_request_reopen_rejection_survives_sql_restart() {
         &mut store,
         &user(),
         "close-request",
-        Command::CloseRequest {
-            request_id: "request-1".into(),
-        },
+        Command::CloseRequest { request_id: "request-1".into(), answer: None, withdrawn: false, title: None },
     );
     let before = store.load().unwrap();
     let receipts = count(&store, "semantic_receipts");
@@ -1137,11 +1163,7 @@ fn import_replaces_a_projection_cached_before_it() {
     let mut imported = empty.clone();
     imported.requests.insert(
         "legacy-request".into(),
-        Request {
-            id: "legacy-request".into(),
-            body: "Imported mission".into(),
-            closed: false,
-        },
+        Request::new("legacy-request".into(), "Imported mission".into()),
     );
     assert_eq!(imported.revision, empty.revision);
     store
