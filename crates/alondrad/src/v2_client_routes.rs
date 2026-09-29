@@ -71,12 +71,16 @@ impl IntoResponse for Reply {
 pub(crate) enum Write {
     Close(String),
     NewRequest,
+    OrchestratorMessage,
 }
 
 /// The writes of this module by path, the way both the local listener and the relay name them.
 pub(crate) fn parse_write(path: &str) -> Option<Write> {
     if path == "/v2/requests" {
         return Some(Write::NewRequest);
+    }
+    if path == "/v2/orchestrator/messages" {
+        return Some(Write::OrchestratorMessage);
     }
     path.strip_prefix("/v2/agents/")?.strip_suffix("/close")
         .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
@@ -88,7 +92,7 @@ pub(crate) fn approved_write_path(path: &str) -> bool {
 
 /// The writes that are one domain command, which the relay journals atomically with it.
 pub(crate) fn atomic_write_path(path: &str) -> bool {
-    matches!(parse_write(path), Some(Write::NewRequest))
+    matches!(parse_write(path), Some(Write::NewRequest | Write::OrchestratorMessage))
 }
 
 #[derive(Debug, PartialEq)]
@@ -200,6 +204,7 @@ impl Client {
                 self.close_session(&id, body).await
             }
             Write::NewRequest => self.new_request(user_id, body, transport, authorize).await,
+            Write::OrchestratorMessage => self.orchestrator_message(user_id, body, transport, authorize).await,
         }
     }
 
@@ -406,6 +411,7 @@ pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
         .route("/v2/agents/{id}/close", post(write))
         .route("/v2/requests", post(write))
+        .route("/v2/orchestrator/messages", post(write))
         .route("/v2/options", get(read))
         .route("/v2/projects", get(read))
         .route("/v2/issues", get(read))

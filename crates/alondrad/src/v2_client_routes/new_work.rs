@@ -119,6 +119,29 @@ impl Client {
         Json(json!(crate::issues::list_in(&self.issue_cache, &file, refresh, &Issues(&*github)).await)).into_response()
     }
 
+    /// A user's message to the orchestrator is a new Request with the default options.
+    pub(super) async fn orchestrator_message(
+        &self,
+        user_id: &str,
+        body: &Value,
+        transport: Option<TransportIdentity<'_>>,
+        authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
+    ) -> anyhow::Result<Reply> {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Message {
+            text: String,
+            #[serde(default)]
+            attachments: Vec<AttachmentRef>,
+        }
+        let Ok(message) = serde_json::from_value::<Message>(body.clone()) else {
+            return Ok(Reply::error(DomainError::new("invalid_input", "invalid message")));
+        };
+        let request = json!({"request_id": format!("request-{}", crate::auth::random_hex(16)),
+            "text": message.text, "options": {}, "attachments": message.attachments});
+        self.new_request(user_id, &request, transport, authorize).await
+    }
+
     /// The Request and what the user chose for its launch, in one commit. The options are
     /// resolved now, so a later edit of `options.toml` cannot change what was asked for.
     pub(super) async fn new_request(
