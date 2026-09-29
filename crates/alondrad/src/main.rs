@@ -122,14 +122,14 @@ fn main() -> Result<()> {
         );
         let watcher = relaunch::watcher(&label);
         let home = alondra_core::config::alondra_home(&env);
-        let committed = || {
+        let mut cut_over = start_guard::became_true(|| {
             domain_cutover::read_marker(&home)
                 .ok()
                 .flatten()
                 .is_some_and(|marker| marker.phase == domain_cutover::Phase::Committed)
-        };
+        });
         if start_guard::wait(wait, std::time::Duration::from_secs(2), || {
-            watcher.as_ref().is_some_and(|w| w.replaced()) || committed()
+            watcher.as_ref().is_some_and(|w| w.replaced()) || cut_over()
         }) {
             log!("the binary was replaced or HOME was cut over; exiting now so launchd starts it");
         }
