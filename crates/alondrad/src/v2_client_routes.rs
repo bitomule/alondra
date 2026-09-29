@@ -297,6 +297,7 @@ impl Client {
             "machine": machine, "usage": usage, "update": crate::updates::status(&self.home),
             "nodes": nodes, "tasks": tasks, "requests": requests,
             "pull_requests": pull_requests, "inbox_times": inbox_times,
+            "orchestrator": crate::domain_orchestrator::status(&crate::domain_orchestrator::executor(self.domain.clone(), &self.home)).ok(),
         })).into_response()
     }
 

@@ -227,6 +227,7 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
         assert!(runtime["tasks"]["task-1"].get(key).is_some(), "tasks.task-1.{key} is always present, null when unknown");
     }
     assert_eq!(runtime["tasks"]["task-1"]["project"], "App");
+    assert_eq!(runtime["orchestrator"]["phase"], "idle", "the orchestrator runner's status travels with the runtime");
     for key in expected["requests"]["request-2"].as_object().unwrap().keys() {
         assert!(runtime["requests"]["request-2"].get(key).is_some(), "requests.request-2.{key} is always present, null when unknown");
     }
