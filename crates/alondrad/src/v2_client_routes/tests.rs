@@ -836,3 +836,24 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
     assert_eq!(fixture.send("POST", "/v2/domain/delivery-attempts/0/resolve", &body("retry", 2)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
     assert_eq!(fixture.send("POST", "/v2/domain/delivery-attempts/nothing/resolve", &body("retry", 2)).await.0, StatusCode::UNPROCESSABLE_ENTITY);
 }
+
+#[tokio::test]
+async fn resolving_conflicts_is_refused_before_anything_is_typed_when_it_cannot_be_asked() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let expected = fixture_json("requests.json");
+    let path = expected["resolve_conflicts"]["path"].as_str().unwrap();
+    let (status, error) = fixture.send("POST", "/v2/pull-requests/nothing/resolve-conflicts", &json!({})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
+    let (status, error) = fixture.send("POST", path, &json!({"extra": 1})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
+    fixture.command(Actor::System, "closed", Command::ObservePrState {
+        pr_id: "pr-1".into(), head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
+        state: alondra_core::domain_v2::PrState::Closed, merged_head: None });
+    let (status, error) = fixture.send("POST", path, &json!({})).await;
+    assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
+    let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&json!({})).send().await.unwrap();
+    assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
+    assert_eq!(parse_write(path), Some(Write::ResolveConflicts("pr-1".into())));
+    assert!(!atomic_write_path(path), "typing into a session is never replayed");
+}
