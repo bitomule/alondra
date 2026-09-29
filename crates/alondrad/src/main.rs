@@ -8,7 +8,7 @@ mod domain_authority;
 mod domain_content;
 mod domain_delivery;
 mod domain_github;
-mod domain_migration;
+mod domain_backup;
 mod domain_orchestrator;
 mod domain_runtime;
 mod domain_schedule_runner;
@@ -71,7 +71,7 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.as_slice() {
         [flag] if flag == "--help" || flag == "-h" => {
-            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --inspect-domain-migration <source-home>\n      --rehearse-domain-migration <source-home> <new-stage-home>\n      --cutover-domain-v2 <new-backup-dir> <legacy-alondrad> <legacy-alondra>\n                                   Cut this HOME over to domain v2: waits for the daemon to release HOME, backs it up with the legacy binaries, imports the work in flight and commits\n      --rollback-domain-v2 <backup-dir>\n                                   Restore the legacy HOME from a cutover backup\n      --rehearse-domain-cutover <live-home> <new-work-dir> <legacy-daemon> <report-prefix>\n\nWithout options, starts the local daemon and configured service connector.");
+            println!("Alondra daemon\n\nUsage: alondrad [OPTIONS]\n\nOptions:\n  -h, --help                       Print help\n  -V, --version                    Print version\n      --preflight                  Check that this binary can start on the configured HOME, without changing it\n      --test-service-push <device-id>\n                                   Send an encrypted diagnostic push to one paired device\n      --cutover-domain-v2 <new-backup-dir> <legacy-alondrad> <legacy-alondra>\n                                   Cut this HOME over to domain v2: waits for the daemon to release HOME, backs it up with the legacy binaries, archives the legacy data in HOME/legacy-v1 and starts domain v2 empty\n      --rollback-domain-v2 <backup-dir>\n                                   Restore the legacy HOME from a cutover backup\n      --rehearse-domain-cutover <live-home> <new-work-dir> <legacy-daemon> <report-prefix>\n\nWithout options, starts the local daemon and configured service connector.");
             return Ok(());
         }
         [flag] if flag == "--version" || flag == "-V" => {
@@ -90,16 +90,6 @@ fn main() -> Result<()> {
             }
             return Ok(());
         }
-        [flag, source] if flag == "--inspect-domain-migration" => {
-            let view = domain_migration::load_legacy_readonly(&std::path::Path::new(source).join("alondra.db"))?;
-            println!("{}", serde_json::to_string_pretty(&domain_migration::inventory(&view))?);
-            return Ok(());
-        }
-        [flag, source, target] if flag == "--rehearse-domain-migration" => {
-            let result = domain_migration::rehearse(std::path::Path::new(source), std::path::Path::new(target))?;
-            println!("{}", serde_json::to_string_pretty(&result)?);
-            return Ok(());
-        }
         [flag, backup, legacy_daemon, legacy_cli] if flag == "--cutover-domain-v2" => {
             domain_cutover::cutover_cli(Path::new(backup), &[Path::new(legacy_daemon), Path::new(legacy_cli)])?;
             return Ok(());
@@ -109,7 +99,7 @@ fn main() -> Result<()> {
             return Ok(());
         }
         [flag, live, work, legacy, report] if flag == "--rehearse-domain-cutover" => {
-            let passed = domain_migration::rehearsal::run_and_write(
+            let passed = domain_backup::rehearsal::run_and_write(
                 Path::new(live), Path::new(work), Path::new(legacy), Path::new(report))?;
             if !passed { std::process::exit(1); }
             return Ok(());
