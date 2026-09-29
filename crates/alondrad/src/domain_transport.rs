@@ -103,6 +103,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     if !domain.state()?.agents.contains_key(&agent_id) {
         return Ok(Reply::Plain(json!({})));
     }
+    domain.live.observe(payload);
     match event.as_str() {
         "SessionStart" | "SessionEnd" => {
             let connected = event == "SessionStart";
@@ -518,6 +519,20 @@ mod tests {
         assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "allow");
     }
 
+    #[tokio::test]
+    async fn hooks_of_a_known_session_are_observed_live_and_a_stranger_is_not() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into() });
+        let (_, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
+            "tool_name": "Bash", "tool_input": {"command": "ls"}, "cwd": "/Users/me/Projects/App"}), Some(6)).await;
+        result.unwrap();
+        hook(&domain, json!({"session_id": "stranger", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        let nodes = domain.live.nodes();
+        assert_eq!(nodes.iter().map(|node| node.session_id.as_str()).collect::<Vec<_>>(), ["session-a"]);
+        assert!(nodes[0].busy && nodes[0].tool.is_some());
+    }
+
     struct FakeTerminal {
         writes: Mutex<Vec<(String, String)>>,
         outcome: Mutex<std::result::Result<(), WriteFailure>>,
@@ -547,7 +562,7 @@ mod tests {
             expected_schedule_revision: None,
         });
         let snapshot = domain.state().unwrap().schedule.runs[&"run-1".into()].definition_snapshot.clone().unwrap();
-        let request = Request { id: "scheduled-request".into(), body: snapshot.text.clone(), closed: false };
+        let request = Request::new("scheduled-request".into(), snapshot.text.clone());
         let task = Task {
             id: "scheduled-task".into(), request_id: request.id.clone(), agent_id: None,
             title: snapshot.title.clone(), state: TaskState::NotStarted, revision: 0, started: false,

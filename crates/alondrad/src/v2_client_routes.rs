@@ -1,0 +1,419 @@
+//! The routes the TUI and the CLI call on a v2-only daemon beyond the domain itself: the
+//! live runtime of the Mac and its sessions, and what a session is doing. The domain stays
+//! the only authority; nothing here decides an action.
+mod close;
+mod live;
+mod new_work;
+mod pr_details;
+
+use crate::auth::Signed;
+use crate::domain_runtime::DomainRuntime;
+use alondra_core::domain_v2::{
+    AgentId, DomainError, DomainState, InteractionPayload, Recipient, Scope, TaskId,
+};
+use axum::extract::rejection::JsonRejection;
+use axum::extract::State;
+use axum::http::{StatusCode, Uri};
+use axum::response::{IntoResponse, Response};
+use axum::routing::{get, post};
+use axum::{Extension, Json, Router};
+use serde_json::{Value, json};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
+
+pub(crate) use close::Sessions;
+pub(crate) use new_work::Github;
+pub(crate) use live::Live;
+pub(crate) use pr_details::{GhView, PrView};
+
+const DETAILS_INTERVAL: Duration = Duration::from_secs(60);
+
+pub(crate) struct Client {
+    domain: Arc<DomainRuntime>,
+    home: PathBuf,
+    gauges: crate::machine::Gauges,
+    details: pr_details::PrDetails,
+    sessions: std::sync::Mutex<Arc<dyn Sessions>>,
+    github: std::sync::Mutex<Arc<dyn Github>>,
+    options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
+    issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
+}
+
+/// What a route answers: the status and the JSON body both the local listener and the relay
+/// carry.
+pub(crate) struct Reply {
+    pub status: StatusCode,
+    pub body: Value,
+}
+
+impl Reply {
+    fn ok(body: Value) -> Self {
+        Self { status: StatusCode::OK, body }
+    }
+
+    fn error(error: DomainError) -> Self {
+        Self { status: crate::domain_api::status_for(&error), body: json!(error) }
+    }
+
+    pub(crate) fn into_value(self) -> Value {
+        json!({"status": self.status.as_u16(), "body": self.body})
+    }
+}
+
+impl IntoResponse for Reply {
+    fn into_response(self) -> Response {
+        (self.status, Json(self.body)).into_response()
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Write {
+    Close(String),
+    NewRequest,
+}
+
+/// The writes of this module by path, the way both the local listener and the relay name them.
+pub(crate) fn parse_write(path: &str) -> Option<Write> {
+    if path == "/v2/requests" {
+        return Some(Write::NewRequest);
+    }
+    path.strip_prefix("/v2/agents/")?.strip_suffix("/close")
+        .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
+}
+
+pub(crate) fn approved_write_path(path: &str) -> bool {
+    parse_write(path).is_some()
+}
+
+/// The writes that are one domain command, which the relay journals atomically with it.
+pub(crate) fn atomic_write_path(path: &str) -> bool {
+    matches!(parse_write(path), Some(Write::NewRequest))
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum Route {
+    Runtime,
+    Activity(String),
+    Search(String),
+    FileChunk { reference: String, offset: u64, version: Option<String> },
+    Options(Option<String>),
+    Projects,
+    Issues { refresh: bool },
+}
+
+fn plain_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+/// Exactly one named parameter with a value.
+fn single_query(query: &str, name: &str) -> Option<String> {
+    let mut pairs = url::form_urlencoded::parse(query.as_bytes());
+    let (key, value) = pairs.next()?;
+    (key == name && !value.is_empty() && value.len() <= 2048 && pairs.next().is_none()).then(|| value.into_owned())
+}
+
+fn search_query(query: &str) -> Option<String> {
+    single_query(query, "q")
+}
+
+fn file_chunk_query(query: &str) -> Option<Route> {
+    let (mut reference, mut offset, mut version) = (None, None, None);
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "path" if reference.is_none() && !value.is_empty() && value.len() <= 2048 && !value.contains('\0') => {
+                reference = Some(value.into_owned());
+            }
+            "offset" if offset.is_none() && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => {
+                offset = value.parse::<u64>().ok();
+            }
+            "version" if version.is_none() && !value.is_empty() && value.len() <= 256
+                && value.bytes().all(|b| b.is_ascii_digit() || b == b'-') => {
+                version = Some(value.into_owned());
+            }
+            _ => return None,
+        }
+    }
+    let offset = offset?;
+    (offset == 0 || version.is_some()).then_some(Route::FileChunk { reference: reference?, offset, version })
+}
+
+/// The reads of this module by path and query, the way both the local listener and the
+/// relay name them.
+pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
+    let (path, query) = path_and_query.split_once('?').map_or((path_and_query, None), |(p, q)| (p, Some(q)));
+    match (path, query) {
+        ("/v2/runtime", None) => Some(Route::Runtime),
+        ("/v2/agents/search", Some(query)) => search_query(query).map(Route::Search),
+        ("/v2/files/chunk", Some(query)) => file_chunk_query(query),
+        ("/v2/options", None) => Some(Route::Options(None)),
+        ("/v2/options", Some(query)) => single_query(query, "project").map(|project| Route::Options(Some(project))),
+        ("/v2/projects", None) => Some(Route::Projects),
+        ("/v2/issues", None) => Some(Route::Issues { refresh: false }),
+        ("/v2/issues", Some(query)) => single_query(query, "refresh").filter(|value| value == "1").map(|_| Route::Issues { refresh: true }),
+        (path, None) => path.strip_prefix("/v2/agents/")?.strip_suffix("/activity")
+            .filter(|id| plain_id(id)).map(|id| Route::Activity(id.to_owned())),
+        _ => None,
+    }
+}
+
+pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
+    parse_read(path_and_query).is_some()
+}
+
+/// The steps of a chunked upload, which only the encrypted relay carries: on this Mac a
+/// file is uploaded in one request.
+pub(crate) fn upload_step(path: &str) -> Option<&str> {
+    path.strip_prefix("/v2/domain/uploads/").filter(|step| matches!(*step, "start" | "chunk" | "finish" | "cancel"))
+}
+
+impl Client {
+    pub(crate) fn open(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges) -> Arc<Self> {
+        Arc::new(Self {
+            domain,
+            home: home.to_owned(),
+            gauges,
+            details: Default::default(),
+            sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
+            github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
+            options: Default::default(),
+            issue_cache: Default::default(),
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn use_sessions(&self, sessions: Arc<dyn Sessions>) {
+        *self.sessions.lock().expect("session control poisoned") = sessions;
+    }
+
+    pub(crate) async fn write(
+        &self,
+        user_id: &str,
+        route: Write,
+        body: &Value,
+        transport: Option<crate::domain_store::TransportIdentity<'_>>,
+        authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
+    ) -> anyhow::Result<Reply> {
+        match route {
+            Write::Close(id) => {
+                authorize()?;
+                self.close_session(&id, body).await
+            }
+            Write::NewRequest => self.new_request(user_id, body, transport, authorize).await,
+        }
+    }
+
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
+    }
+
+    /// Keeps the GitHub details of open pull requests current until the daemon stops.
+    pub(crate) async fn run(self: Arc<Self>, source: Arc<dyn PrView>) {
+        loop {
+            match self.domain.state() {
+                Ok(state) => self.details.refresh(&state, &*source).await,
+                Err(error) => log!("could not read pull requests for their details: {error:#}"),
+            }
+            tokio::time::sleep(DETAILS_INTERVAL).await;
+        }
+    }
+
+    pub(crate) async fn read(&self, path_and_query: &str) -> Option<Response> {
+        Some(match parse_read(path_and_query)? {
+            Route::Runtime => self.runtime(),
+            Route::Activity(id) => self.activity(&id),
+            Route::Search(query) => self.search(&query),
+            Route::FileChunk { reference, offset, version } => self.file_chunk(reference, offset, version).await,
+            Route::Options(project) => self.options_answer(project),
+            Route::Projects => self.projects_answer(),
+            Route::Issues { refresh } => self.issues_answer(refresh).await,
+        })
+    }
+
+    /// A stored copy in verified chunks, for the relay.
+    async fn file_chunk(&self, reference: String, offset: u64, version: Option<String>) -> Response {
+        let home = self.home.clone();
+        let chunk = tokio::task::spawn_blocking(move || crate::service_files::read_stored_chunk(&home, &reference, offset, version)).await;
+        match chunk {
+            Ok(Ok(chunk)) => Json(chunk).into_response(),
+            _ => crate::domain_api::domain_error(DomainError::new("content_unavailable", "stored file content is unavailable")),
+        }
+    }
+
+    fn runtime(&self) -> Response {
+        let state = match self.domain.state() {
+            Ok(state) => state,
+            Err(_) => return storage(),
+        };
+        let snapshot = match self.domain.reads.snapshot(&self.domain) {
+            Ok(snapshot) => snapshot,
+            Err(_) => return storage(),
+        };
+        let orders = snapshot.inbox_orders();
+        let (state_times, request_times, revision_times) = {
+            let store = self.domain.store.lock().expect("domain store poisoned");
+            let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();
+            match (store.task_state_times(), store.request_times(), store.revision_times(&revisions)) {
+                (Ok(tasks), Ok(requests), Ok(revisions)) => (tasks, requests, revisions),
+                _ => return storage(),
+            }
+        };
+        let (machine, usage) = match &*self.gauges.lock().expect("machine gauges poisoned") {
+            Some((machine, usage)) => (json!(machine), json!(usage)),
+            None => (Value::Null, Value::Null),
+        };
+        let nodes: Vec<Value> = self.domain.live.nodes().iter()
+            .filter(|node| state.agents.contains_key(&AgentId(node.session_id.clone())))
+            .map(|node| {
+                let name = state.agents.get(&AgentId(node.session_id.clone())).map(|agent| agent.name.as_str());
+                live::client_node(node, name)
+            })
+            .collect();
+        let launches = match self.domain.store.lock().expect("domain store poisoned").request_launch_summaries() {
+            Ok(launches) => launches,
+            Err(_) => return storage(),
+        };
+        let live = self.domain.live.nodes();
+        let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
+            let (asked_project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
+            let project = asked_project.or_else(|| task.agent_id.as_ref()
+                .and_then(|agent| live.iter().find(|node| node.session_id == agent.0))
+                .map(|node| node.project()));
+            (id.0.clone(), json!({"project": project, "state_since": state_times.get(id),
+                "effort": effort, "cancel_reason": null}))
+        }).collect();
+        let requests: serde_json::Map<String, Value> = state.requests.iter().map(|(id, request)| {
+            let answer = request.answer.clone().or_else(|| request_answer(&state, &id.0));
+            (id.0.clone(), json!({"created_at": request_times.get(id),
+                "withdrawn": request.withdrawn, "answer": answer, "title": request.title}))
+        }).collect();
+        let pull_requests: serde_json::Map<String, Value> = state.pull_requests.keys().map(|id| {
+            (id.0.clone(), self.details.get(&id.0).map_or_else(|| json!({}), |details| json!(details)))
+        }).collect();
+        let inbox_times: serde_json::Map<String, Value> = orders.iter()
+            .filter_map(|(id, order)| revision_times.get(order).map(|at| (id.clone(), json!(at)))).collect();
+        Json(json!({
+            "machine": machine, "usage": usage, "update": crate::updates::status(&self.home),
+            "nodes": nodes, "tasks": tasks, "requests": requests,
+            "pull_requests": pull_requests, "inbox_times": inbox_times,
+            "orchestrator": crate::domain_orchestrator::status(&crate::domain_orchestrator::executor(self.domain.clone(), &self.home)).ok(),
+        })).into_response()
+    }
+
+    fn activity(&self, id: &str) -> Response {
+        let state = match self.domain.state() {
+            Ok(state) => state,
+            Err(_) => return storage(),
+        };
+        let agent = AgentId(id.to_owned());
+        if !state.agents.contains_key(&agent) {
+            return crate::domain_api::domain_error(DomainError::new("not_found", "agent does not exist"));
+        }
+        let mut threads = self.domain.live.threads(id).unwrap_or_default();
+        let only_task = single_open_task(&state, &agent);
+        for thread in &mut threads {
+            let known = thread.task.as_ref().is_some_and(|task| state.tasks.contains_key(&TaskId(task.clone())));
+            if !known {
+                thread.task = only_task.clone();
+            }
+        }
+        Json(json!({"activity": threads})).into_response()
+    }
+
+    fn search(&self, query: &str) -> Response {
+        let state = match self.domain.state() {
+            Ok(state) => state,
+            Err(_) => return storage(),
+        };
+        let nodes = self.domain.live.nodes();
+        let candidates: Vec<(String, String)> = state.agents.values().map(|agent| {
+            let node = nodes.iter().find(|node| node.session_id == agent.id.0);
+            let tasks: Vec<&str> = state.tasks.values()
+                .filter(|task| task.agent_id.as_ref() == Some(&agent.id)).map(|task| task.title.as_str()).collect();
+            let text = format!("{} {} {} {} {}", agent.name, node.map_or(String::new(), |n| n.short_id.clone()),
+                node.map_or(String::new(), |n| n.project()),
+                node.and_then(|n| n.last_message.clone()).unwrap_or_default(), tasks.join(" "));
+            (agent.id.0.clone(), text)
+        }).collect();
+        Json(json!({"via": "local", "sessions": crate::classify::search(query, candidates)})).into_response()
+    }
+}
+
+/// The one task of the agent still open: a thread that names no task of the domain works on it.
+fn single_open_task(state: &DomainState, agent: &AgentId) -> Option<String> {
+    let mut open = state.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.state.terminal());
+    let only = open.next()?;
+    open.next().is_none().then(|| only.id.0.clone())
+}
+
+/// What the orchestrator told the user when it closed a request that needed no task.
+fn request_answer(state: &DomainState, request: &str) -> Option<String> {
+    state.interactions.values()
+        .filter(|interaction| {
+            matches!(&interaction.scope, Scope::Orchestrator { request_id: Some(id) } if id.0 == request)
+                && interaction.recipient == Recipient::User
+                && matches!(interaction.payload, InteractionPayload::Information { .. })
+        })
+        .max_by_key(|interaction| interaction.order)
+        .map(|interaction| interaction.body.clone())
+}
+
+fn storage() -> Response {
+    crate::domain_api::domain_error(DomainError::new("storage_unavailable", "daemon storage could not be read"))
+}
+
+fn forbidden() -> Response {
+    crate::domain_api::domain_error(DomainError::new("forbidden", "signed user device required"))
+}
+
+async fn read(State(client): State<Arc<Client>>, signed: Option<Extension<Signed>>, uri: Uri) -> Response {
+    if crate::domain_bootstrap::signed_device(client.home(), &signed).is_none() {
+        return forbidden();
+    }
+    let path_and_query = uri.path_and_query().map_or("/", |value| value.as_str());
+    client.read(path_and_query).await.unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+}
+
+async fn write(
+    State(client): State<Arc<Client>>,
+    signed: Option<Extension<Signed>>,
+    uri: Uri,
+    body: Result<Json<Value>, JsonRejection>,
+) -> Response {
+    let home = client.home().to_owned();
+    let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
+        return forbidden();
+    };
+    let Some(route) = parse_write(uri.path()) else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let Ok(Json(body)) = body else {
+        return Reply::error(DomainError::new("invalid_input", "invalid request body")).into_response();
+    };
+    let authorize = || {
+        crate::domain_bootstrap::signed_device(&home, &signed)
+            .map(|_| ())
+            .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
+    };
+    match client.write(&format!("device:{}", device.device_id), route, &body, None, &authorize).await {
+        Ok(reply) => reply.into_response(),
+        Err(_) => storage(),
+    }
+}
+
+pub(crate) fn router(client: Arc<Client>) -> Router {
+    Router::new()
+        .route("/v2/agents/{id}/close", post(write))
+        .route("/v2/requests", post(write))
+        .route("/v2/options", get(read))
+        .route("/v2/projects", get(read))
+        .route("/v2/issues", get(read))
+        .route("/v2/runtime", get(read))
+        .route("/v2/agents/search", get(read))
+        .route("/v2/agents/{id}/activity", get(read))
+        .with_state(client)
+}
+
+#[cfg(test)]
+mod tests;

@@ -266,6 +266,7 @@ impl DomainState {
                 payload,
                 revision: self.revision + 1,
                 order: self.revision + 1,
+                withdrawn: false,
             },
         );
         Ok(())
@@ -481,6 +482,7 @@ impl DomainState {
         self.interactions.values().any(|i| {
             i.scope == (Scope::Task { task_id: t.clone() })
                 && i.blocking
+                && !i.withdrawn
                 && matches!(
                     i.payload,
                     InteractionPayload::Question { answer: None, .. }
@@ -603,6 +605,7 @@ impl DomainState {
             |id: &InteractionId| Some(self.interactions.get(id).map_or(0, |i| i.revision));
         match c {
             Command::AssignTask { task_id, .. }
+            | Command::RetitleTask { task_id, .. }
             | Command::SetDependencies { task_id, .. }
             | Command::StartTask { task_id }
             | Command::CreateDocument { task_id, .. }
@@ -623,6 +626,7 @@ impl DomainState {
                 Scope::Orchestrator { .. } => None,
             },
             Command::MarkRead { interaction_id }
+            | Command::WithdrawQuestion { interaction_id }
             | Command::AnswerQuestion { interaction_id, .. }
             | Command::LinkInteractionSubject { interaction_id, .. }
             | Command::SubmitFeedback {
@@ -935,15 +939,11 @@ impl DomainState {
                 };
                 self.requests.insert(
                     request_id.clone(),
-                    Request {
-                        id: request_id.clone(),
-                        body: body.clone(),
-                        closed: false,
-                    },
+                    Request::new(request_id.clone(), body.clone()),
                 );
                 created.push(request_id.0.clone());
             }
-            Command::CloseRequest { request_id } => {
+            Command::CloseRequest { request_id, answer, withdrawn, title } => {
                 self.manager(actor)?;
                 if self
                     .tasks
@@ -952,10 +952,21 @@ impl DomainState {
                 {
                     return fail("task_not_active", "Request still has unfinished Tasks");
                 };
-                self.requests
+                for text in answer.iter().chain(title) {
+                    nonempty(text)?;
+                }
+                let request = self
+                    .requests
                     .get_mut(request_id)
-                    .ok_or_else(|| DomainError::new("not_found", "Request missing"))?
-                    .closed = true;
+                    .ok_or_else(|| DomainError::new("not_found", "Request missing"))?;
+                request.closed = true;
+                request.withdrawn = *withdrawn;
+                if answer.is_some() {
+                    request.answer = answer.clone();
+                }
+                if title.is_some() {
+                    request.title = title.clone();
+                }
             }
             Command::RegisterAgent { agent_id, name } => {
                 system(actor)?;
@@ -1052,6 +1063,12 @@ impl DomainState {
                     self.invalidate(task_id);
                     self.tasks.get_mut(task_id).unwrap().agent_id = Some(agent_id.clone());
                 }
+            }
+            Command::RetitleTask { task_id, title } => {
+                self.manager(actor)?;
+                nonempty(title)?;
+                self.task(task_id)?;
+                self.tasks.get_mut(task_id).unwrap().title = title.clone();
             }
             Command::SetDependencies {
                 task_id,
@@ -1166,6 +1183,27 @@ impl DomainState {
                     });
                 }
             }
+            Command::WithdrawQuestion { interaction_id } => {
+                let i = self.interaction(interaction_id)?;
+                match (&i.author, actor) {
+                    (Author::Agent { agent_id }, Actor::Agent { agent_id: a }) if agent_id == a => {}
+                    (Author::Orchestrator { .. }, Actor::Orchestrator { .. }) => {}
+                    _ => return fail("forbidden", "Only the question's author can withdraw it"),
+                }
+                match &i.payload {
+                    InteractionPayload::Question { answer: None, .. }
+                    | InteractionPayload::ActionRequest { answer: None, .. } => {}
+                    InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. } => {
+                        return fail("invalid_action_for_kind", "Question already answered");
+                    }
+                    _ => return fail("invalid_action_for_kind", "Only a question can be withdrawn"),
+                }
+                if !i.withdrawn {
+                    let i = self.interactions.get_mut(interaction_id).unwrap();
+                    i.withdrawn = true;
+                    i.revision = self.revision + 1;
+                }
+            }
             Command::MarkRead { interaction_id } => {
                 let u = user(actor)?;
                 let i = self
@@ -1218,6 +1256,9 @@ impl DomainState {
                 if answer.is_some() {
                     return fail("invalid_action_for_kind", "Question already answered");
                 };
+                if i.withdrawn {
+                    return fail("withdrawn", "Its author withdrew this question");
+                }
                 validate_answer(options, option_id, inputs)?;
                 validate_attachments(attachments)?;
                 let a = Answer {
@@ -2458,6 +2499,12 @@ fn canonical_pr(host: &str, repo: &str, number: u64) -> Result<()> {
     }
 }
 
+impl AttachmentRef {
+    /// The bounds every command puts on the files it carries.
+    pub fn validate_list(attachments: &[AttachmentRef]) -> std::result::Result<(), DomainError> {
+        validate_attachments(attachments)
+    }
+}
 fn validate_attachments(attachments: &[AttachmentRef]) -> Result<()> {
     if attachments.len() > 32 {
         return fail("payload_too_large", "Too many attachments");

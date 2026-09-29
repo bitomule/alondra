@@ -100,7 +100,7 @@ fn the_inbox_lists_what_waits_then_pull_requests_then_what_to_read() {
 }
 
 #[test]
-fn a_pr_root_takes_changes_questions_and_set_aside_but_never_an_authorization() {
+fn a_pr_root_takes_changes_and_questions_but_never_an_authorization() {
     let mut world = super::pr_with_question_child();
     let mut app = app_on(&world);
     select(&mut app, "pr:pr-1");
@@ -117,8 +117,8 @@ fn a_pr_root_takes_changes_questions_and_set_aside_but_never_an_authorization() 
     assert_eq!(posted(&app)[0], ("/v2/agents/agent-a/messages".to_string(), serde_json::json!({"text": "Why squash?", "attachments": [], "kind": "pr_question", "mark_read": false, "pr_id": "pr-1"})));
     select(&mut app, "pr:pr-1");
     press(&mut app, KeyCode::Char('x'));
-    assert_eq!(posted(&app)[1], ("/v2/pull-requests/pr-1/set-aside".to_string(), serde_json::json!({})));
-    assert!(!app.inbox_keys().contains(&Key("pr:pr-1".into())));
+    assert_eq!(posted(&app).len(), 1, "a PR has nothing to mark read");
+    assert!(app.inbox_keys().contains(&Key("pr:pr-1".into())));
     assert_eq!(sent(&app).len(), 1, "none of these is a merge authorization");
     assert!(world.state.merge_authorizations.is_empty());
 }
@@ -435,7 +435,7 @@ fn a_stacked_task_lists_its_prs_in_merge_order_and_its_row_says_what_it_goes_on(
 fn tasks_group_by_project_and_a_taskless_request_says_how_it_closed() {
     let mut world = World::base(false);
     world.run("user-a", Command::CreateRequest { request_id: "request-2".into(), body: "Is it broken?".into() });
-    world.run("user-a", Command::CloseRequest { request_id: "request-2".into() });
+    world.run("user-a", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
     world.run("user-a", Command::CancelTask { task_id: "task-1".into() });
     let mut app = app_on(&world);
     with_runtime(&mut app, runtime());

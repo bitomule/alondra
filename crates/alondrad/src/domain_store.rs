@@ -12,13 +12,23 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 5;
+pub(crate) const SCHEMA_VERSION: i64 = 7;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
 #[cfg(test)]
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
+
+/// What the user chose when asking for new work, kept with the Request it created.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RequestLaunch {
+    pub project: Option<String>,
+    pub options: alondra_core::options::Resolved,
+    pub issue: Option<String>,
+    pub issue_text: Option<String>,
+    pub attachments: Vec<AttachmentRef>,
+}
 
 /// The last state this connection loaded or committed, valid while no other
 /// connection committed (`data_version`) and this one wrote nothing outside
@@ -340,7 +350,33 @@ impl DomainStore {
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
     ) -> std::result::Result<Commit, StoreError> {
-        self.execute_envelope(actor, envelope, transport, false)
+        self.execute_envelope(actor, envelope, transport, false, None)
+    }
+    /// A `CreateRequest` that also records what the user chose for its launch, in the same
+    /// transaction.
+    pub(crate) fn execute_launching(
+        &mut self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        transport: Option<TransportIdentity<'_>>,
+        launch: &RequestLaunch,
+    ) -> std::result::Result<Commit, StoreError> {
+        if !matches!(envelope.command, Command::CreateRequest { .. }) {
+            return Err(DomainError::new("invalid_input", "only a new Request has a launch").into());
+        }
+        self.execute_envelope(actor, envelope, transport, true, Some(launch))
+    }
+    /// The project and effort each Request was asked for with, by Request.
+    pub(crate) fn request_launch_summaries(&self) -> Result<std::collections::BTreeMap<RequestId, (Option<String>, Option<String>)>> {
+        let mut query = self.conn.prepare("SELECT request_id,project,json_extract(options,'$.effort') FROM request_launch")?;
+        let rows = query.query_map([], |row| Ok((RequestId(row.get(0)?), (row.get(1)?, row.get(2)?))))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn request_launch(&mut self, request_id: &RequestId) -> Result<Option<RequestLaunch>> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let launch = repository::load_request_launch(&tx, request_id)?;
+        tx.commit()?;
+        Ok(launch)
     }
     /// Producers have no protocol read for the cursor: an expected_revision of
     /// zero is filled with the current revision under the writer lock, while
@@ -350,7 +386,7 @@ impl DomainStore {
         actor: &Actor,
         envelope: &CommandEnvelope,
     ) -> std::result::Result<Commit, StoreError> {
-        self.execute_envelope(actor, envelope, None, true)
+        self.execute_envelope(actor, envelope, None, true, None)
     }
     fn execute_envelope(
         &mut self,
@@ -358,6 +394,7 @@ impl DomainStore {
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
         fill_revision: bool,
+        launch: Option<&RequestLaunch>,
     ) -> std::result::Result<Commit, StoreError> {
         let actor_key = String::from_utf8(canonical::bytes(&match actor {
             Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}),
@@ -454,7 +491,18 @@ impl DomainStore {
             {
                 repository::remember_schedule_failed_launch(&tx, request_id)?;
             }
-            repository::exec(&tx, "INSERT INTO command_audit(revision,actor,command_id,data_epoch,command) VALUES(?1,?2,?3,?4,?5)",params![outcome.revision as i64,actor_key,envelope.command_id.0,envelope.data_epoch.0,String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?])?;
+            if let (Some(launch), Command::CreateRequest { request_id, .. }) = (launch, &envelope.command) {
+                repository::remember_request_launch(&tx, request_id, launch)?;
+            }
+            let at = alondra_core::now_millis();
+            repository::exec(&tx, "INSERT INTO command_audit(revision,actor,command_id,data_epoch,command,at) VALUES(?1,?2,?3,?4,?5,?6)",params![outcome.revision as i64,actor_key,envelope.command_id.0,envelope.data_epoch.0,String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?,at])?;
+            for request in next.requests.keys().filter(|id| !state.requests.contains_key(*id)) {
+                repository::exec(&tx, "UPDATE requests SET created_at=?1 WHERE id=?2", params![at, request.0])?;
+            }
+            for (id, task) in next.tasks.iter().filter(|(id, task)| state.tasks.get(*id).map(|before| before.state) != Some(task.state)) {
+                repository::exec(&tx, "INSERT INTO task_history(revision,task_id,state,summary) VALUES(?1,?2,?3,?4)",
+                    params![outcome.revision as i64, id.0, serde_json::to_value(task.state)?.as_str().unwrap_or_default(), history_summary(&envelope.command)])?;
+            }
             for (index, effect) in outcome.effects.iter().enumerate() {
                 let (kind, agent, task, interaction, message) = match effect {
                     DomainEffect::NotifyUser {
@@ -522,6 +570,15 @@ impl DomainStore {
         })
     }
 }
+/// What a Task's history says about the step, when the command that moved it carried words.
+fn history_summary(command: &Command) -> String {
+    let words = match command {
+        Command::PresentResult { body, .. } | Command::AskQuestion { body, .. } | Command::RequestAction { body, .. } => body,
+        _ => return String::new(),
+    };
+    words.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().chars().take(200).collect()
+}
+
 fn check_schema(conn: &Connection) -> Result<()> {
     ensure!(
         conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))? == SCHEMA_VERSION
@@ -555,7 +612,44 @@ pub(crate) struct DeliveryClaim {
     pub version: u64,
     pub message: OutboxMessage,
 }
+/// One step of a Task's history.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub(crate) struct HistoryStep {
+    pub at: i64,
+    pub state: String,
+    pub summary: String,
+}
+
 impl DomainStore {
+    /// When each Task last entered its state.
+    pub(crate) fn task_state_times(&self) -> Result<std::collections::BTreeMap<TaskId, i64>> {
+        let mut query = self.conn.prepare("SELECT h.task_id,a.at FROM task_history h JOIN command_audit a ON a.revision=h.revision
+            WHERE h.revision=(SELECT max(revision) FROM task_history WHERE task_id=h.task_id)")?;
+        let rows = query.query_map([], |row| Ok((TaskId(row.get(0)?), row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn request_times(&self) -> Result<std::collections::BTreeMap<RequestId, i64>> {
+        let mut query = self.conn.prepare("SELECT id,created_at FROM requests")?;
+        let rows = query.query_map([], |row| Ok((RequestId(row.get(0)?), row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    /// When the commits of these revisions were made.
+    pub(crate) fn revision_times(&self, revisions: &[Revision]) -> Result<std::collections::BTreeMap<Revision, i64>> {
+        let mut query = self.conn.prepare("SELECT at FROM command_audit WHERE revision=?1")?;
+        let mut times = std::collections::BTreeMap::new();
+        for revision in revisions {
+            if let Some(at) = query.query_row([*revision as i64], |row| row.get(0)).optional()? {
+                times.insert(*revision, at);
+            }
+        }
+        Ok(times)
+    }
+    pub(crate) fn task_history(&self, task_id: &TaskId) -> Result<Vec<HistoryStep>> {
+        let mut query = self.conn.prepare("SELECT a.at,h.state,h.summary FROM task_history h JOIN command_audit a ON a.revision=h.revision
+            WHERE h.task_id=?1 ORDER BY h.revision")?;
+        let rows = query.query_map([&task_id.0], |row| Ok(HistoryStep { at: row.get(0)?, state: row.get(1)?, summary: row.get(2)? }))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
     pub(crate) fn pending_messages(&self) -> Result<Vec<OutboxMessage>> {
         let mut q=self.conn.prepare("SELECT m.id,CASE WHEN u.message_id IS NOT NULL THEN 'user' ELSE m.recipient_kind END,m.agent_id,m.task_id,m.interaction_id,m.message,o.state FROM domain_messages m JOIN domain_outbox o ON o.message_id=m.id LEFT JOIN domain_message_user_targets u ON u.message_id=m.id WHERE o.state IN('pending','retryable') ORDER BY m.id")?;
         Ok(q.query_map([], |r| {
