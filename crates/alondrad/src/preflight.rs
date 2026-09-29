@@ -28,8 +28,8 @@ fn start(config: &Config) -> Result<String> {
             Ok(format!("legacy state starts: {} nodes", hub.read(|v| v.nodes.len())))
         }
         crate::ProtocolMode::Prepared => anyhow::bail!("domain cutover is prepared but not committed"),
-        crate::ProtocolMode::Committed(epoch) => {
-            crate::domain_bootstrap::V2Only::open(&config.home, &epoch)?;
+        crate::ProtocolMode::Committed(_) => {
+            crate::domain_bootstrap::V2Only::open(&config.home)?;
             Ok("domain v2 state starts".into())
         }
     }

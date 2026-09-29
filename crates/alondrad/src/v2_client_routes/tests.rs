@@ -42,11 +42,11 @@ impl Fixture {
     pub(super) async fn start() -> Self {
         let home = std::env::temp_dir().join(format!("alondra-v2-client-{}", crate::auth::random_hex(8)));
         std::fs::create_dir(&home).unwrap();
-        let epoch = DomainRuntime::open(&home).unwrap().state().unwrap().data_epoch.0;
+        drop(DomainRuntime::open(&home).unwrap());
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let state = V2Only::open(&home, &epoch).unwrap();
+        let state = V2Only::open(&home).unwrap();
         let domain = state.domain();
         let client = state.client();
         let app = crate::domain_bootstrap::router(state.clone())

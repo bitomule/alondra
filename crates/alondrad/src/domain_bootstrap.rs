@@ -26,11 +26,11 @@ pub(crate) struct V2Only {
 }
 
 impl V2Only {
-    pub(crate) fn open(home: &Path, expected_epoch: &str) -> Result<Arc<Self>> {
-        Self::open_with(home, expected_epoch, Box::new(crate::domain_github::GhCli::new()))
+    pub(crate) fn open(home: &Path) -> Result<Arc<Self>> {
+        Self::open_with(home, Box::new(crate::domain_github::GhCli::new()))
     }
 
-    pub(crate) fn open_with(home: &Path, expected_epoch: &str,
+    pub(crate) fn open_with(home: &Path,
         observer: Box<dyn crate::domain_github::PrObserver>) -> Result<Arc<Self>> {
         let database = home.join("domain-v2.db");
         let metadata = std::fs::symlink_metadata(&database).with_context(|| {
@@ -42,10 +42,6 @@ impl V2Only {
         );
         let domain = Arc::new(DomainRuntime::open(home)?);
         let gauges = crate::machine::Gauges::default();
-        ensure!(
-            domain.state()?.data_epoch.0 == expected_epoch,
-            "cutover epoch does not match domain database"
-        );
         Ok(Arc::new(Self {
             home: home.to_owned(),
             observer,
@@ -446,6 +442,21 @@ mod tests {
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::net::SocketAddr;
 
+    #[test]
+    fn a_store_reset_for_another_schema_still_boots() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-v2-bootstrap-reset-{}",
+            crate::auth::random_hex(8)
+        ));
+        std::fs::create_dir(&home).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        rusqlite::Connection::open(home.join("domain-v2.db")).unwrap()
+            .pragma_update(None, "user_version", 99).unwrap();
+        let state = V2Only::open(&home).unwrap();
+        assert_eq!(state.domain().state().unwrap().revision, 0);
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
     #[tokio::test]
     async fn standalone_router_reads_real_domain_and_has_no_legacy_routes() {
         let home = std::env::temp_dir().join(format!(
@@ -466,8 +477,7 @@ mod tests {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let state = V2Only::open(&home, &epoch).unwrap();
-        assert!(V2Only::open(&home, "wrong-epoch").is_err());
+        let state = V2Only::open(&home).unwrap();
         let domain = state.domain();
         let auth = state.auth();
         let capability = domain.issue(crate::domain_authority::Principal::Agent {
@@ -661,7 +671,7 @@ mod tests {
         let device = auth.pair(&auth.new_pairing_code(), "terminal",
             &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
         let stranger = SigningKey::from_slice(&[22u8; 32]).unwrap();
-        let state = V2Only::open(&home, &epoch).unwrap();
+        let state = V2Only::open(&home).unwrap();
         let domain = state.domain();
         let gauges = state.gauges();
         let auth = state.auth();
@@ -808,7 +818,7 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir(&home).unwrap();
-        assert!(V2Only::open(&home, "epoch").is_err());
+        assert!(V2Only::open(&home).is_err());
         assert!(
             !home.join("domain-v2.db").exists(),
             "must not create an empty authority on missing stage"

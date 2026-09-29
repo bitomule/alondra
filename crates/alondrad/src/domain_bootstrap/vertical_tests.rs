@@ -67,7 +67,7 @@ impl Fixture {
             )
             .unwrap();
         let github = Arc::new(crate::domain_github::FakeObserver::new());
-        let state = V2Only::open_with(&home, &epoch, Box::new(github.clone())).unwrap();
+        let state = V2Only::open_with(&home, Box::new(github.clone())).unwrap();
         let domain = state.domain();
         let registration = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,

@@ -143,9 +143,9 @@ async fn run(diagnostic: Option<String>) -> Result<()> {
     match protocol_mode(&config.home)? {
         ProtocolMode::Legacy => (),
         ProtocolMode::Prepared => anyhow::bail!("domain cutover is prepared but not committed"),
-        ProtocolMode::Committed(epoch) => {
+        ProtocolMode::Committed(_) => {
             anyhow::ensure!(diagnostic.is_none(), "legacy diagnostic push is unavailable after domain cutover");
-            return run_v2_only(&config, &epoch).await;
+            return run_v2_only(&config).await;
         }
     }
     if let Some(device) = diagnostic {
@@ -391,8 +391,8 @@ fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<b
 }
 
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
-async fn run_v2_only(config: &Config, expected_epoch: &str) -> Result<()> {
-    let state = domain_bootstrap::V2Only::open(&config.home, expected_epoch)?;
+async fn run_v2_only(config: &Config) -> Result<()> {
+    let state = domain_bootstrap::V2Only::open(&config.home)?;
     let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?
         .map(|service| Arc::new(service.with_domain(state.domain()).with_client(state.client())));
