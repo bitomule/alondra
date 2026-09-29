@@ -80,9 +80,8 @@ fn installed_version(daemon: &Path) -> Option<String> {
     String::from_utf8_lossy(&out.stdout).split_whitespace().last().map(str::to_string)
 }
 
-/// The legacy daemon answers `/v1/health`; after the domain cutover it answers `/v2/daemon`.
 fn daemon_info(client: &Client) -> Option<Value> {
-    client.get::<Value>("/v1/health").ok().or_else(|| client.get::<Value>("/v2/daemon").ok())
+    client.get::<Value>("/v2/daemon").ok()
 }
 
 /// A daemon older than self-relaunch never restarts on its own: check the new binary the way
@@ -213,5 +212,32 @@ mod tests {
         assert!(availability("0.1.12", Some("0.1.13")).contains("0.1.13"));
         assert!(!availability("0.1.13", Some("0.1.13")).contains("0.1.12"));
         assert!(availability("0.1.13", None).contains("0.1.13"));
+    }
+
+    #[test]
+    fn the_daemon_is_asked_on_v2_only() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let client = Client::at(format!("http://{}", listener.local_addr().unwrap()));
+        let server = std::thread::spawn(move || {
+            let mut requested = vec![];
+            for stream in listener.incoming() {
+                let mut stream = stream.unwrap();
+                let mut bytes = [0; 4096];
+                let n = stream.read(&mut bytes).unwrap();
+                if n == 0 {
+                    break;
+                }
+                let request = String::from_utf8_lossy(&bytes[..n]).into_owned();
+                requested.push(request.split_whitespace().nth(1).unwrap().to_owned());
+                let body = br#"{"version": "0.2.0"}"#;
+                write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+                stream.write_all(body).unwrap();
+                break;
+            }
+            requested
+        });
+        assert_eq!(daemon_info(&client), Some(json!({"version": "0.2.0"})));
+        assert_eq!(server.join().unwrap(), ["/v2/daemon"]);
     }
 }
