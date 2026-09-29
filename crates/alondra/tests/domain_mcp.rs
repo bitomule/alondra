@@ -61,7 +61,6 @@ fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, 
             std::env::temp_dir().join(format!("alondra-domain-mcp-{}-{port}", std::process::id())),
         )
         .env("ALONDRA_PORT", port.to_string())
-        .env("ALONDRA_DOMAIN_PROTOCOL", "2")
         .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -198,7 +197,6 @@ fn v2_mcp_without_a_producer_capability_fails_closed() {
             "ALONDRA_HOME",
             std::env::temp_dir().join(format!("alondra-domain-mcp-missing-{}", std::process::id())),
         )
-        .env("ALONDRA_DOMAIN_PROTOCOL", "2")
         .env_remove("ALONDRA_DOMAIN_CAPABILITY")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
