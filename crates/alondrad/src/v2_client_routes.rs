@@ -4,7 +4,6 @@
 mod close;
 mod live;
 mod pr_details;
-mod sidecar;
 
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
@@ -32,7 +31,6 @@ pub(crate) struct Client {
     domain: Arc<DomainRuntime>,
     home: PathBuf,
     gauges: crate::machine::Gauges,
-    sidecar: sidecar::Sidecar,
     details: pr_details::PrDetails,
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
 }
@@ -119,7 +117,6 @@ impl Client {
             domain,
             home: home.to_owned(),
             gauges,
-            sidecar: sidecar::Sidecar::open(home),
             details: Default::default(),
             sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
         })
@@ -148,25 +145,8 @@ impl Client {
         &self.home
     }
 
-    /// Keeps the times clients show and the GitHub details of open pull requests current
-    /// until the daemon stops.
+    /// Keeps the GitHub details of open pull requests current until the daemon stops.
     pub(crate) async fn run(self: Arc<Self>, source: Arc<dyn PrView>) {
-        tokio::join!(self.keep_times(), self.keep_details(source));
-    }
-
-    async fn keep_times(&self) {
-        let mut changed = self.domain.subscribe();
-        loop {
-            if let Err(error) = self.stamp() {
-                log!("could not record client times: {error:#}");
-            }
-            if changed.changed().await.is_err() {
-                return;
-            }
-        }
-    }
-
-    async fn keep_details(&self, source: Arc<dyn PrView>) {
         loop {
             match self.domain.state() {
                 Ok(state) => self.details.refresh(&state, &*source).await,
@@ -174,11 +154,6 @@ impl Client {
             }
             tokio::time::sleep(DETAILS_INTERVAL).await;
         }
-    }
-
-    pub(crate) fn stamp(&self) -> anyhow::Result<()> {
-        let snapshot = self.domain.reads.snapshot(&self.domain)?;
-        self.sidecar.stamp(snapshot.state(), &snapshot.inbox_ids(), alondra_core::now_millis())
     }
 
     pub(crate) fn read(&self, path_and_query: &str) -> Option<Response> {
@@ -194,7 +169,19 @@ impl Client {
             Ok(state) => state,
             Err(_) => return storage(),
         };
-        let times = self.sidecar.snapshot();
+        let snapshot = match self.domain.reads.snapshot(&self.domain) {
+            Ok(snapshot) => snapshot,
+            Err(_) => return storage(),
+        };
+        let orders = snapshot.inbox_orders();
+        let (state_times, request_times, revision_times) = {
+            let store = self.domain.store.lock().expect("domain store poisoned");
+            let revisions: Vec<_> = orders.iter().map(|(_, order)| *order).collect();
+            match (store.task_state_times(), store.request_times(), store.revision_times(&revisions)) {
+                (Ok(tasks), Ok(requests), Ok(revisions)) => (tasks, requests, revisions),
+                _ => return storage(),
+            }
+        };
         let (machine, usage) = match &*self.gauges.lock().expect("machine gauges poisoned") {
             Some((machine, usage)) => (json!(machine), json!(usage)),
             None => (Value::Null, Value::Null),
@@ -210,23 +197,20 @@ impl Client {
             let project = task.agent_id.as_ref()
                 .and_then(|agent| self.domain.live.nodes().into_iter().find(|node| node.session_id == agent.0))
                 .map(|node| node.project());
-            let stamp = times.tasks.get(&id.0);
-            (id.0.clone(), json!({"project": project, "state_since": stamp.and_then(|s| s.since),
+            (id.0.clone(), json!({"project": project, "state_since": state_times.get(id),
                 "effort": null, "cancel_reason": null}))
         }).collect();
         let requests: serde_json::Map<String, Value> = state.requests.iter().map(|(id, request)| {
             let answer = request_answer(&state, &id.0);
             let has_tasks = state.tasks.values().any(|task| task.request_id == *id);
-            (id.0.clone(), json!({"created_at": times.requests.get(&id.0).copied().flatten(),
+            (id.0.clone(), json!({"created_at": request_times.get(id),
                 "withdrawn": request.closed && answer.is_none() && !has_tasks, "answer": answer}))
         }).collect();
         let pull_requests: serde_json::Map<String, Value> = state.pull_requests.keys().map(|id| {
-            let mut entry = self.details.get(&id.0).map_or_else(|| json!({}), |details| json!(details));
-            entry["set_aside"] = json!(times.set_aside.contains(&id.0));
-            (id.0.clone(), entry)
+            (id.0.clone(), self.details.get(&id.0).map_or_else(|| json!({}), |details| json!(details)))
         }).collect();
-        let inbox_times: serde_json::Map<String, Value> = times.inbox.iter()
-            .filter_map(|(id, at)| at.map(|at| (id.clone(), json!(at)))).collect();
+        let inbox_times: serde_json::Map<String, Value> = orders.iter()
+            .filter_map(|(id, order)| revision_times.get(order).map(|at| (id.clone(), json!(at)))).collect();
         Json(json!({
             "machine": machine, "usage": usage, "update": crate::updates::status(&self.home),
             "nodes": nodes, "tasks": tasks, "requests": requests,
