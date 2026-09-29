@@ -2865,13 +2865,13 @@
     {
       "id": "V44",
       "rules": [],
-      "title": "Fresh v2 base and legacy import with data",
+      "title": "Cutover starts v2 on an empty base and archives the legacy data",
       "layers": ["S"],
       "base": "synthetic_offline_backup",
-      "cs_expected": {"schema_created_once": true, "cards_lost": 0, "partial_state_published": false, "foreign_key_check": [], "integrity_check": ["ok"]},
+      "cs_expected": {"schema_created_once": true, "cards_lost": 0, "partial_state_published": false, "foreign_key_check": [], "integrity_check": ["ok"], "imported_rows": 0, "legacy_archived": true},
       "cs_evidence_status": "passed",
       "remaining": ["rehearsal of the live HOME at cutover"],
-      "cs_evidence": ["domain_migration::tests::one_command_cutover_imports_work_in_flight_and_rolls_back_exactly", "domain_migration::synthetic::live_shaped_home_rehearses_with_its_counts_and_reports_command_latency"],
+      "cs_evidence": ["domain_cutover::tests::the_cutover_starts_v2_empty_and_archives_the_legacy_data_without_importing_it", "domain_cutover::tests::rollback_restores_the_legacy_home_and_sets_the_empty_v2_store_aside"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -3574,39 +3574,6 @@
       "cs_evidence_status": "passed",
       "remaining": ["runner launch receipt", "process crash windows"],
       "execution_status": "schedule_runner"
-    },
-    {
-      "id": "V59",
-      "title": "Import 11 definitions and five observed runs without history invention",
-      "layers": ["C", "S", "A"],
-      "base": "synthetic_offline_backup",
-      "cs_expected": {"schedule_rows": 11, "run_rows": 5},
-      "cs_evidence": ["domain_migration::schedules::tests::offline_import_roundtrips_schedule_rows_and_exact_side_tables"],
-      "cs_evidence_status": "passed",
-      "remaining": ["live cutover with runner and consumers"],
-      "execution_status": "test_evidence"
-    },
-    {
-      "id": "V60",
-      "title": "A link to finished work is dropped; an ambiguous or uncertain legacy link blocks import",
-      "layers": ["S", "A"],
-      "base": "synthetic_offline_backup",
-      "cs_expected": {"finished_link_dropped": true, "ambiguous_or_uncertain_blocked": true},
-      "cs_evidence": ["domain_migration::schedules::tests::finished_links_are_dropped_but_ambiguous_and_uncertain_ones_fail_without_rewriting_source"],
-      "cs_evidence_status": "passed",
-      "remaining": ["full offline cutover rehearsal"],
-      "execution_status": "test_evidence"
-    },
-    {
-      "id": "V61",
-      "title": "The one-command cutover imports the populated Schedule store from its verified backup",
-      "layers": ["S", "A", "U"],
-      "base": "synthetic_offline_backup",
-      "cs_expected": {"schedule_rows": 2, "run_rows": 1, "tool_rows": 1, "receipt_rows": 1, "failed_launch_rows": 1, "tampered_backup_blocks": true, "unknown_table_blocks": true},
-      "cs_evidence": ["domain_migration::tests::one_command_cutover_imports_work_in_flight_and_rolls_back_exactly", "domain_migration::tests::populated_schedule_store_is_readable_and_unsafe_or_unknown_stores_are_refused"],
-      "cs_evidence_status": "passed",
-      "remaining": ["runner and consumer validation", "rollback smoke"],
-      "execution_status": "test_evidence"
     },
     {
       "id": "V62",

@@ -1155,31 +1155,6 @@ fn a_commit_landing_right_after_ours_is_never_served_from_the_cache() {
 }
 
 #[test]
-fn import_replaces_a_projection_cached_before_it() {
-    let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    let empty = store.load().unwrap();
-    let before = store.project_bounded(1 << 20).unwrap();
-    let mut imported = empty.clone();
-    imported.requests.insert(
-        "legacy-request".into(),
-        Request::new("legacy-request".into(), "Imported mission".into()),
-    );
-    assert_eq!(imported.revision, empty.revision);
-    store
-        .import_initial(
-            &imported,
-            &[],
-            1,
-            &crate::domain_migration::LegacyScheduleInventory::default(),
-        )
-        .unwrap();
-    let after = store.project_bounded(1 << 20).unwrap();
-    assert_ne!(after, before);
-    assert_eq!(after, serde_json::to_vec(&imported.projection()).unwrap());
-}
-
-#[test]
 fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
