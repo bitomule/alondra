@@ -96,9 +96,8 @@ impl Executor {
     fn give_up(&self, run: &Run, reason: &str) -> Result<()> {
         let mut store = self.domain.store.lock().expect("domain store poisoned");
         for (attempt, version) in &run.attempts {
-            if !store.finish_message(*attempt, *version, State::Uncertain, Some(reason))? {
-                store.resolve_uncertain(*attempt, *version + 1, false)?;
-            }
+            store.finish_message(*attempt, *version, State::Uncertain, Some(reason))?;
+            store.resolve_uncertain(*attempt, *version + 1, false)?;
         }
         Ok(())
     }
@@ -441,7 +440,6 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
     }
 
     #[tokio::test]
-    #[ignore = "WIP: hangs after the acknowledged re-run; see tmp/p4-handoff.md"]
     async fn a_failed_execution_is_ambiguous_until_acknowledged_and_resolved_at_restart() {
         let f = fixture("exit 1");
         let domain = &f.executor.domain;
@@ -473,7 +471,8 @@ printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","p
         // A daemon restart during an execution resolves it without the user.
         let mut runtime = load(&f.executor.home).unwrap();
         ask_orchestrator(domain, 3);
-        let claim = domain.store.lock().unwrap().claim_message(outbox(domain)[0].0).unwrap().unwrap();
+        let pending = outbox(domain)[0].0;
+        let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
         runtime.active_run = Some(Run { id: "interrupted".into(), message_ids: vec![claim.message.id],
             attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true });
         save(&f.executor.home, &runtime).unwrap();
