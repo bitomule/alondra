@@ -3,6 +3,7 @@
 //! the only authority; nothing here decides an action.
 mod close;
 mod live;
+mod new_work;
 mod pr_details;
 
 use crate::auth::Signed;
@@ -22,6 +23,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 pub(crate) use close::Sessions;
+pub(crate) use new_work::Github;
 pub(crate) use live::Live;
 pub(crate) use pr_details::{GhView, PrView};
 
@@ -33,6 +35,9 @@ pub(crate) struct Client {
     gauges: crate::machine::Gauges,
     details: pr_details::PrDetails,
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
+    github: std::sync::Mutex<Arc<dyn Github>>,
+    options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
+    issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
 }
 
 /// What a route answers: the status and the JSON body both the local listener and the relay
@@ -65,10 +70,14 @@ impl IntoResponse for Reply {
 #[derive(Debug, PartialEq)]
 pub(crate) enum Write {
     Close(String),
+    NewRequest,
 }
 
 /// The writes of this module by path, the way both the local listener and the relay name them.
 pub(crate) fn parse_write(path: &str) -> Option<Write> {
+    if path == "/v2/requests" {
+        return Some(Write::NewRequest);
+    }
     path.strip_prefix("/v2/agents/")?.strip_suffix("/close")
         .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
 }
@@ -77,22 +86,35 @@ pub(crate) fn approved_write_path(path: &str) -> bool {
     parse_write(path).is_some()
 }
 
+/// The writes that are one domain command, which the relay journals atomically with it.
+pub(crate) fn atomic_write_path(path: &str) -> bool {
+    matches!(parse_write(path), Some(Write::NewRequest))
+}
+
 #[derive(Debug, PartialEq)]
 pub(crate) enum Route {
     Runtime,
     Activity(String),
     Search(String),
     FileChunk { reference: String, offset: u64, version: Option<String> },
+    Options(Option<String>),
+    Projects,
+    Issues { refresh: bool },
 }
 
 fn plain_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-fn search_query(query: &str) -> Option<String> {
+/// Exactly one named parameter with a value.
+fn single_query(query: &str, name: &str) -> Option<String> {
     let mut pairs = url::form_urlencoded::parse(query.as_bytes());
     let (key, value) = pairs.next()?;
-    (key == "q" && !value.is_empty() && value.len() <= 2048 && pairs.next().is_none()).then(|| value.into_owned())
+    (key == name && !value.is_empty() && value.len() <= 2048 && pairs.next().is_none()).then(|| value.into_owned())
+}
+
+fn search_query(query: &str) -> Option<String> {
+    single_query(query, "q")
 }
 
 fn file_chunk_query(query: &str) -> Option<Route> {
@@ -124,6 +146,11 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
         ("/v2/runtime", None) => Some(Route::Runtime),
         ("/v2/agents/search", Some(query)) => search_query(query).map(Route::Search),
         ("/v2/files/chunk", Some(query)) => file_chunk_query(query),
+        ("/v2/options", None) => Some(Route::Options(None)),
+        ("/v2/options", Some(query)) => single_query(query, "project").map(|project| Route::Options(Some(project))),
+        ("/v2/projects", None) => Some(Route::Projects),
+        ("/v2/issues", None) => Some(Route::Issues { refresh: false }),
+        ("/v2/issues", Some(query)) => single_query(query, "refresh").filter(|value| value == "1").map(|_| Route::Issues { refresh: true }),
         (path, None) => path.strip_prefix("/v2/agents/")?.strip_suffix("/activity")
             .filter(|id| plain_id(id)).map(|id| Route::Activity(id.to_owned())),
         _ => None,
@@ -148,6 +175,9 @@ impl Client {
             gauges,
             details: Default::default(),
             sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
+            github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
+            options: Default::default(),
+            issue_cache: Default::default(),
         })
     }
 
@@ -158,8 +188,10 @@ impl Client {
 
     pub(crate) async fn write(
         &self,
+        user_id: &str,
         route: Write,
         body: &Value,
+        transport: Option<crate::domain_store::TransportIdentity<'_>>,
         authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
     ) -> anyhow::Result<Reply> {
         match route {
@@ -167,6 +199,7 @@ impl Client {
                 authorize()?;
                 self.close_session(&id, body).await
             }
+            Write::NewRequest => self.new_request(user_id, body, transport, authorize).await,
         }
     }
 
@@ -191,6 +224,9 @@ impl Client {
             Route::Activity(id) => self.activity(&id),
             Route::Search(query) => self.search(&query),
             Route::FileChunk { reference, offset, version } => self.file_chunk(reference, offset, version).await,
+            Route::Options(project) => self.options_answer(project),
+            Route::Projects => self.projects_answer(),
+            Route::Issues { refresh } => self.issues_answer(refresh).await,
         })
     }
 
@@ -233,12 +269,18 @@ impl Client {
                 live::client_node(node, name)
             })
             .collect();
+        let launches = match self.domain.store.lock().expect("domain store poisoned").request_launch_summaries() {
+            Ok(launches) => launches,
+            Err(_) => return storage(),
+        };
+        let live = self.domain.live.nodes();
         let tasks: serde_json::Map<String, Value> = state.tasks.iter().map(|(id, task)| {
-            let project = task.agent_id.as_ref()
-                .and_then(|agent| self.domain.live.nodes().into_iter().find(|node| node.session_id == agent.0))
-                .map(|node| node.project());
+            let (asked_project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
+            let project = asked_project.or_else(|| task.agent_id.as_ref()
+                .and_then(|agent| live.iter().find(|node| node.session_id == agent.0))
+                .map(|node| node.project()));
             (id.0.clone(), json!({"project": project, "state_since": state_times.get(id),
-                "effort": null, "cancel_reason": null}))
+                "effort": effort, "cancel_reason": null}))
         }).collect();
         let requests: serde_json::Map<String, Value> = state.requests.iter().map(|(id, request)| {
             let answer = request_answer(&state, &id.0);
@@ -340,9 +382,9 @@ async fn write(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let home = client.home().to_owned();
-    if crate::domain_bootstrap::signed_device(&home, &signed).is_none() {
+    let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
         return forbidden();
-    }
+    };
     let Some(route) = parse_write(uri.path()) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -354,7 +396,7 @@ async fn write(
             .map(|_| ())
             .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
     };
-    match client.write(route, &body, &authorize).await {
+    match client.write(&format!("device:{}", device.device_id), route, &body, None, &authorize).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -363,6 +405,10 @@ async fn write(
 pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
         .route("/v2/agents/{id}/close", post(write))
+        .route("/v2/requests", post(write))
+        .route("/v2/options", get(read))
+        .route("/v2/projects", get(read))
+        .route("/v2/issues", get(read))
         .route("/v2/runtime", get(read))
         .route("/v2/agents/search", get(read))
         .route("/v2/agents/{id}/activity", get(read))

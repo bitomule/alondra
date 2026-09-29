@@ -214,3 +214,18 @@ CREATE TRIGGER immutable_task_history BEFORE UPDATE ON task_history
  BEGIN SELECT RAISE(ABORT,'task history is immutable'); END;
 CREATE TRIGGER retain_task_history BEFORE DELETE ON task_history
  BEGIN SELECT RAISE(ABORT,'task history is retained'); END;
+
+-- What the user chose when asking for new work: the project, the options resolved at that
+-- moment, the issue it comes from and the files attached. Written with the Request.
+CREATE TABLE request_launch (
+ request_id TEXT PRIMARY KEY REFERENCES requests(id),
+ project TEXT CHECK(project IS NULL OR length(trim(project))>0),
+ options TEXT NOT NULL CHECK(json_valid(options) AND json_type(options)='object'),
+ issue TEXT,
+ issue_text TEXT,
+ attachments TEXT NOT NULL CHECK(json_valid(attachments) AND json_type(attachments)='array')
+);
+CREATE TRIGGER immutable_request_launch BEFORE UPDATE ON request_launch
+ BEGIN SELECT RAISE(ABORT,'request launch is immutable'); END;
+CREATE TRIGGER retain_request_launch BEFORE DELETE ON request_launch
+ BEGIN SELECT RAISE(ABORT,'request launch is retained'); END;

@@ -20,6 +20,16 @@ pub(crate) use bounded::{ProjectionLimit, ProjectionTooLarge};
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
 
+/// What the user chose when asking for new work, kept with the Request it created.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct RequestLaunch {
+    pub project: Option<String>,
+    pub options: alondra_core::options::Resolved,
+    pub issue: Option<String>,
+    pub issue_text: Option<String>,
+    pub attachments: Vec<AttachmentRef>,
+}
+
 /// The last state this connection loaded or committed, valid while no other
 /// connection committed (`data_version`) and this one wrote nothing outside
 /// the paths that refresh it (`total_changes`). Any miss falls back to a full
@@ -340,7 +350,33 @@ impl DomainStore {
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
     ) -> std::result::Result<Commit, StoreError> {
-        self.execute_envelope(actor, envelope, transport, false)
+        self.execute_envelope(actor, envelope, transport, false, None)
+    }
+    /// A `CreateRequest` that also records what the user chose for its launch, in the same
+    /// transaction.
+    pub(crate) fn execute_launching(
+        &mut self,
+        actor: &Actor,
+        envelope: &CommandEnvelope,
+        transport: Option<TransportIdentity<'_>>,
+        launch: &RequestLaunch,
+    ) -> std::result::Result<Commit, StoreError> {
+        if !matches!(envelope.command, Command::CreateRequest { .. }) {
+            return Err(DomainError::new("invalid_input", "only a new Request has a launch").into());
+        }
+        self.execute_envelope(actor, envelope, transport, true, Some(launch))
+    }
+    /// The project and effort each Request was asked for with, by Request.
+    pub(crate) fn request_launch_summaries(&self) -> Result<std::collections::BTreeMap<RequestId, (Option<String>, Option<String>)>> {
+        let mut query = self.conn.prepare("SELECT request_id,project,json_extract(options,'$.effort') FROM request_launch")?;
+        let rows = query.query_map([], |row| Ok((RequestId(row.get(0)?), (row.get(1)?, row.get(2)?))))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+    pub(crate) fn request_launch(&mut self, request_id: &RequestId) -> Result<Option<RequestLaunch>> {
+        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Deferred)?;
+        let launch = repository::load_request_launch(&tx, request_id)?;
+        tx.commit()?;
+        Ok(launch)
     }
     /// Producers have no protocol read for the cursor: an expected_revision of
     /// zero is filled with the current revision under the writer lock, while
@@ -350,7 +386,7 @@ impl DomainStore {
         actor: &Actor,
         envelope: &CommandEnvelope,
     ) -> std::result::Result<Commit, StoreError> {
-        self.execute_envelope(actor, envelope, None, true)
+        self.execute_envelope(actor, envelope, None, true, None)
     }
     fn execute_envelope(
         &mut self,
@@ -358,6 +394,7 @@ impl DomainStore {
         envelope: &CommandEnvelope,
         transport: Option<TransportIdentity<'_>>,
         fill_revision: bool,
+        launch: Option<&RequestLaunch>,
     ) -> std::result::Result<Commit, StoreError> {
         let actor_key = String::from_utf8(canonical::bytes(&match actor {
             Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}),
@@ -453,6 +490,9 @@ impl DomainStore {
                 && let Some(request_id) = &next.schedule.runs[run_id].request_id
             {
                 repository::remember_schedule_failed_launch(&tx, request_id)?;
+            }
+            if let (Some(launch), Command::CreateRequest { request_id, .. }) = (launch, &envelope.command) {
+                repository::remember_request_launch(&tx, request_id, launch)?;
             }
             let at = alondra_core::now_millis();
             repository::exec(&tx, "INSERT INTO command_audit(revision,actor,command_id,data_epoch,command,at) VALUES(?1,?2,?3,?4,?5,?6)",params![outcome.revision as i64,actor_key,envelope.command_id.0,envelope.data_epoch.0,String::from_utf8(canonical::bytes(&envelope.command)?).context("command encoding")?,at])?;

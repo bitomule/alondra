@@ -292,6 +292,7 @@ impl Service {
     fn atomic_local(&self, request: &LocalRequest) -> bool {
         if self.domain.is_some() {
             return request.method == "POST" && (request.path == "/v2/domain/commands"
+                || crate::v2_client_routes::atomic_write_path(&request.path)
                 || agent_message(&request.path).is_some()
                 || crate::domain_orchestrator::decision_route(&request.path).is_some()
                 || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some())
@@ -334,6 +335,12 @@ impl Service {
                 crate::domain_messages::relayed(domain, &self.home, &envelope.sender, agent, request.body.as_ref()).await
             } else if let Some(decision) = crate::domain_orchestrator::decision_route(&request.path) {
                 crate::domain_orchestrator::decide(&crate::domain_orchestrator::executor(domain.clone(), &self.home), decision, request.body.as_ref())
+            } else if let Some(route) = crate::v2_client_routes::parse_write(&request.path).filter(|_| crate::v2_client_routes::atomic_write_path(&request.path)) {
+                let routes = self.routes.as_ref().context("client routes unavailable")?;
+                let body = request.body.as_ref().context("request body required")?;
+                let identity = (envelope.sender.as_str(), envelope.request_id.as_str(), digest);
+                routes.write(&format!("device:{}", envelope.sender), route, body, Some(identity),
+                    &|| self.require_device_approval(&envelope.sender, device)).await?.into_value()
             } else if crate::domain_schedule_api::approved_mutation_path(&request.method, &request.path, request.body.is_some()) {
                 crate::domain_schedule_api::encrypted_mutation(domain, &self.home,
                     &envelope.sender, &request.method, &request.path, request.body.as_ref(),
@@ -866,7 +873,7 @@ impl Service {
             let routes = self.routes.as_ref().context("client routes unavailable")?;
             let route = crate::v2_client_routes::parse_write(&request.path).context("v2-only write is not approved")?;
             let body = request.body.as_ref().context("write body required")?;
-            let reply = routes.write(route, body, &|| approved.recheck()).await?;
+            let reply = routes.write(&format!("device:{sender}"), route, body, None, &|| approved.recheck()).await?;
             approved.recheck()?;
             return Ok(reply.into_value());
         }
@@ -3912,6 +3919,32 @@ agreement_key = "{}"
         assert_eq!(step("cancel", json!({"transfer_id": other})).await.unwrap()["body"], json!({"cancelled": true}));
         let after_cancel = step("chunk", json!({"transfer_id": other, "offset": 0, "data": "AAEC"})).await.unwrap();
         assert_eq!((after_cancel["status"].as_i64(), after_cancel["body"]["error"].as_str()), (Some(422), Some("attachment_transfer_unknown")));
+
+        for path in ["/v2/options", "/v2/options?project=App", "/v2/projects", "/v2/issues?refresh=1"] {
+            assert!(approved_method(&LocalRequest { method: "GET".into(), path: path.into(), body: None }).is_ok(), "{path} is relayed");
+        }
+        let options = service.dispatch("phone-a", &read("/v2/options")).await.unwrap();
+        assert_eq!((options["status"].as_i64(), options["body"]["options"][0]["id"].as_str()), (Some(200), Some("effort")));
+        assert_eq!(service.dispatch("phone-a", &read("/v2/projects")).await.unwrap()["status"], 200);
+        assert!(service.atomic_local(&LocalRequest { method: "POST".into(), path: "/v2/requests".into(), body: Some(json!({})) }));
+        let new_request = Work {
+            request_id: "request-1".into(),
+            envelope: EnvelopeV1::seal_random(EnvelopeContext {
+                route: "mac-1", sender: "phone-a", recipient: "mac-1", request_id: "request-1",
+                kind: "request", expires_at_ms: now_ms() + 60_000,
+            }, serde_json::to_vec(&json!({"method":"POST","path":"/v2/requests","body":{"request_id": "request-9", "text": "Ship it", "options": {"effort": "hard"}, "attachments": []}})).unwrap().as_slice(),
+            &phone_signing, &service.agreement.public_key()).unwrap(),
+        };
+        let prepared = service.prepare_work(&new_request).unwrap().unwrap();
+        service.journal.accept("phone-a", "request-1", &prepared.digest).unwrap();
+        service.journal.executing_local("phone-a", "request-1", &prepared.digest).unwrap();
+        let device = service.devices.get("phone-a").unwrap();
+        let bytes = service.execute_atomic_local(&new_request.envelope, device, &prepared.request, &prepared.digest).await.unwrap();
+        let sealed_answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
+        let answer: Value = serde_json::from_slice(&sealed_answer.open(service.signing.verifying_key(), &phone_agreement,
+            "mac-1", "phone-a", "mac-1", now_ms()).unwrap()).unwrap();
+        assert_eq!((answer["status"].as_i64(), answer["body"]["created_ids"].clone()), (Some(200), json!(["request-9"])), "{answer}");
+        assert_eq!(domain.request_launch(&"request-9".into()).unwrap().unwrap().options.effort, "hard", "the phone's choices are kept with its request");
 
         auth.revoke("phone-a").unwrap();
         assert!(service.dispatch("phone-a", &read("/v2/runtime")).await.is_err(), "a revoked phone reads nothing");
