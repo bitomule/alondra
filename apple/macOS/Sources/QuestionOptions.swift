@@ -3,12 +3,13 @@ import SwiftUI
 
 /// A question's options as buttons, side by side when they fit and stacked when they do not.
 struct QuestionOptions: View {
-    let options: [QuestionOption]
+    let options: [DomainV2.QuestionOption]
+    /// The chosen option's ID.
     var selected: String?
     var showsKeys = true
-    var detail: (QuestionOption) -> String? = \.displayDescription
-    var prominent: (QuestionOption, Int) -> Bool = { _, _ in false }
-    let choose: (QuestionOption) -> Void
+    var detail: (DomainV2.QuestionOption) -> String? = { _ in nil }
+    var prominent: (DomainV2.QuestionOption, Int) -> Bool = { _, _ in false }
+    let choose: (DomainV2.QuestionOption) -> Void
 
     var body: some View {
         ViewThatFits(in: .horizontal) {
@@ -24,17 +25,10 @@ struct QuestionOptions: View {
                 label: option.displayLabel,
                 detail: detail(option),
                 prominent: prominent(option, index),
-                selected: selected == option.label,
+                selected: selected == option.id,
                 showsKey: showsKeys,
                 action: { choose(option) }
             )
         }
-    }
-}
-
-extension QuestionOption {
-    /// An option the node wants explained in words, like "Request changes: write what to change".
-    var needsText: Bool {
-        ["write", "escribe"].contains { description?.lowercased().hasPrefix($0) == true }
     }
 }

@@ -133,7 +133,7 @@ struct ServiceSchedulesView: View {
             Divider()
             Button("Delete", systemImage: "trash", role: .destructive) { store.send(.deleteSchedule(task.id)) }
         }
-        .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)) || store.schedules.uncertainByTarget[.schedule(task.id)] != nil)
+        .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)))
     }
 
     private func detail(_ task: ScheduledTask) -> some View {
@@ -187,7 +187,7 @@ struct ServiceSchedulesView: View {
                 Menu { taskActions(task) } label: { Label("More", systemImage: "ellipsis") }
                     .labelStyle(.iconOnly)
             }
-            .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)) || store.schedules.uncertainByTarget[.schedule(task.id)] != nil)
+            .disabled(store.schedules.inFlightTargets.contains(.schedule(task.id)))
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
         }

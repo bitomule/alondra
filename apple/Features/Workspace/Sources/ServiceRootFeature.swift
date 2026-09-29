@@ -64,6 +64,11 @@ public struct ServiceRootFeature {
             guard item.isPullRequest, let workspace else { return false }
             return DomainPullRequestCard(root: item, in: workspace)?.questions.isEmpty == false
         }
+        /// What a sidebar row shows besides the title: who, when, and the PR it stacks on.
+        public func rowContext(_ item: DomainV2.InboxItem) -> (agent: String?, date: Int64?, stackedOn: String?) {
+            let pr: DomainV2.PrId? = if case .pullRequest(let id) = item.subject { id } else { nil }
+            return (workspace?.agentName(of: item), workspace?.createdAt(of: item), workspace?.runtime?.pullRequest(pr)?.stackedOn)
+        }
         public func taskTitle(forInboxID id: String) -> String? {
             guard let item = triage.triage.items.first(where: { $0.id == id }) else { return nil }
             return triage.task(for: item)?.title

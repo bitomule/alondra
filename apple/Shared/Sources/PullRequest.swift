@@ -36,3 +36,27 @@ extension PullRequest {
         hasConflicts ? .resolveConflicts : .merge(methods: methods, blockedBy: mergeBlockedReason)
     }
 }
+
+extension DomainPullRequestCard {
+    public enum MainAction: Equatable, Sendable {
+        case resolveConflicts
+        case merge(methods: [DomainV2.MergeMethod], blockedBy: String?)
+    }
+
+    public var mainAction: MainAction {
+        hasConflicts ? .resolveConflicts : .merge(methods: pullRequest.allowedMethods, blockedBy: observation?.mergeBlockedReason)
+    }
+
+    public var summary: String {
+        observation?.summary ?? "\(pullRequest.repository) #\(pullRequest.number)"
+    }
+
+    public var webURL: URL? {
+        observation.flatMap { URL(string: $0.url) }
+            ?? URL(string: "https://\(pullRequest.host)/\(pullRequest.repository)/pull/\(pullRequest.number)")
+    }
+}
+
+extension DomainV2.MergeMethod {
+    public var label: String { PullRequest.methodLabel(rawValue) }
+}

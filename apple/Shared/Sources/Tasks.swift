@@ -74,6 +74,7 @@ extension TaskStateGroup {
             case .cancelled: String(localized: "Cancelled", table: "AlondraShared", bundle: #bundle)
             case .running: String(localized: "Running", table: "AlondraShared", bundle: #bundle)
             }
+        case .defining: String(localized: "Defining", table: "AlondraShared", bundle: #bundle)
         case .archived: String(localized: "Archived", table: "AlondraShared", bundle: #bundle)
         }
     }

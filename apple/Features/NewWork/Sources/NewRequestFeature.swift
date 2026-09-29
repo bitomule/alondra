@@ -18,6 +18,8 @@ public struct NewRequestFeature {
         /// The requests already sent, newest first when the Mac reports when each was sent.
         public var sentRequests: [DomainV2.Request] = []
         public var sentAt: [DomainV2.RequestId: Int64] = [:]
+        /// Requests the orchestrator already turned into Tasks.
+        public var pickedUp: Set<DomainV2.RequestId> = []
         public var attachments: [NewRequestAttachment] = []
         public var selection = NewWorkSelection()
         public var projects: [String] = []
@@ -126,6 +128,7 @@ public struct NewRequestFeature {
                     workspace?.runtime?.request(request.id)?.createdAt.map { (request.id, $0) }
                 }, uniquingKeysWith: { first, _ in first })
                 state.sentAt = sentAt
+                state.pickedUp = Set(workspace?.projection.tasks.map(\.requestId) ?? [])
                 state.sentRequests = (workspace?.projection.requests ?? []).reversed()
                     .sorted { (sentAt[$0.id] ?? 0) > (sentAt[$1.id] ?? 0) }
                 // A request is stored by the Mac and picked up when the orchestrator runs.

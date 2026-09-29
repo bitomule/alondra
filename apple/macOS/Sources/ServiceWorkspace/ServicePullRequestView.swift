@@ -10,48 +10,28 @@ struct ServicePullRequestView: View {
     let store: StoreOf<ServicePullRequestFeature>
     var taskTitle: String? = nil
     @FocusState private var focus: DetailField?
-    private var pr: PullRequest? { store.displayedPR }
+    private var workspace: DomainWorkspace? { store.pr.workspace }
     private var comments: [ReviewComment] {
         (store.diff.files ?? []).flatMap(\.lines).compactMap { line in
             guard let anchor = line.anchor, let text = store.diff.comments[anchor] else { return nil }
             return ReviewComment(anchor: anchor, quote: line.text, text: text)
         }
     }
-    var body: some View {
-        if let pr { content(pr) }
-    }
-    private func content(_ pr: PullRequest) -> some View {
+    var body: some View { content(store.lastKnownCard) }
+    private func content(_ card: DomainPullRequestCard) -> some View {
         DetailScaffold {
             VStack(alignment: .leading, spacing: 22) {
-                DetailHeader(style: InboxItem.pullRequest(pr).style, node: pr.nodeName, date: pr.openedAt, title: pr.title, task: taskTitle)
-                nodeSays(pr)
-                nodeAsks(pr)
-                Text(pr.summary)
+                DetailHeader(style: card.root.style, node: workspace?.agentName(of: card.root),
+                    date: card.presentation.flatMap { workspace?.createdAt(of: $0) },
+                    title: store.observation?.title ?? card.root.title, task: taskTitle)
+                nodeSays
+                nodeAsks
+                Text(card.summary)
                     .font(.callout.monospaced())
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
-                if pr.hasConflicts {
-                    Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
-                        .foregroundStyle(.orange)
-                } else if pr.mergeabilityUnknown {
-                    Label("GitHub is checking whether it can be merged", systemImage: "clock")
-                        .foregroundStyle(.secondary)
-                }
-                if let stackedOn = pr.stackedOn {
-                    Label(stackedOn, systemImage: "square.stack.3d.up")
-                        .foregroundStyle(.secondary)
-                }
-                if let checks = pr.checks, !checks.isEmpty {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(checks, id: \.self) { check in
-                            CheckRow(check: check)
-                        }
-                    }
-                }
-                if let body = pr.body, !body.isEmpty {
-                    MarkdownText(text: body)
-                }
-                if let url = URL(string: pr.url) {
+                if let pr = store.observation { observed(pr) }
+                if let url = card.webURL {
                     Link(destination: url) {
                         Label("Open on GitHub", systemImage: "arrow.up.right.square")
                     }
@@ -70,33 +50,58 @@ struct ServicePullRequestView: View {
                     submit: { store.send(.diff(.requestChangesTapped)) },
                     attachmentsStore: store.scope(state: \.diff.attachmentPicker, action: \.diff.attachmentPicker)
                 )
-                actions(pr)
+                actions(card)
                 ServicePROutcome(outcome: store.pr.mutationOutcome)
                 ServicePROutcome(outcome: store.diff.mutationOutcome)
                 if let error = store.diff.validationError { Text(error).foregroundStyle(.red) }
             }
             .animation(.snappy(duration: 0.2), value: store.diff.comments.count)
         }
-        .confirmationDialog("Merge PR #\(pr.number)?", isPresented: Binding(get: { store.pr.mergeConfirmationPresented }, set: { store.send(.pr(.presentMergeConfirmation($0))) })) {
-            ForEach(pr.methods, id: \.self) { method in
-                Button("Merge (\(PullRequest.methodLabel(method)))") { store.send(.pr(.mergeMethodConfirmed(method))) }
+        .confirmationDialog("Merge PR #\(card.pullRequest.number)?", isPresented: Binding(get: { store.pr.mergeConfirmationPresented }, set: { store.send(.pr(.presentMergeConfirmation($0))) })) {
+            ForEach(card.pullRequest.allowedMethods, id: \.self) { method in
+                Button("Merge (\(method.label))") { store.send(.pr(.mergeMethodConfirmed(method))) }
             }
         } message: {
-            Text(pr.summary)
+            Text(card.summary)
         }
         .task { await store.send(.diff(.appeared)).finish() }
         .onDisappear { store.send(.diff(.disappeared)) }
         .attachmentDownloadPresentation(store: store.scope(state: \.downloads, action: \.downloads))
     }
 
+    @ViewBuilder
+    private func observed(_ pr: PullRequest) -> some View {
+        if pr.hasConflicts {
+            Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+        } else if pr.mergeabilityUnknown {
+            Label("GitHub is checking whether it can be merged", systemImage: "clock")
+                .foregroundStyle(.secondary)
+        }
+        if let stackedOn = pr.stackedOn {
+            Label(stackedOn, systemImage: "square.stack.3d.up")
+                .foregroundStyle(.secondary)
+        }
+        if let checks = pr.checks, !checks.isEmpty {
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(checks, id: \.self) { check in
+                    CheckRow(check: check)
+                }
+            }
+        }
+        if let body = pr.body, !body.isEmpty {
+            MarkdownText(text: body)
+        }
+    }
+
     private var hasChanges: Bool { store.diff.hasDraft || !store.diff.attachmentPicker.entries.isEmpty }
 
-    private func actions(_ pr: PullRequest) -> some View {
+    private func actions(_ card: DomainPullRequestCard) -> some View {
         CardActions {
             Button("Set Aside") { store.send(.pr(.setAsideTapped)) }
                 .help("Take the card out of the inbox without merging")
         } trailing: {
-            if !pr.hasConflicts, let reason = pr.mergeBlockedReason {
+            if !card.hasConflicts, let reason = store.observation?.mergeBlockedReason {
                 Text(reason)
                     .font(.callout)
                     .foregroundStyle(.secondary)
@@ -117,17 +122,17 @@ struct ServicePullRequestView: View {
                 }
             }
             .help("Send the node what should change; the card comes back when it pushes again")
-            if pr.hasConflicts {
+            if card.hasConflicts {
                 Button("Resolve Conflicts") { store.send(.pr(.resolveConflictsTapped)) }
                     .buttonStyle(.borderedProminent)
                     .help("Its node brings the base into the branch, resolves the conflicts and pushes; the card comes back when it can be merged")
             } else if hasChanges {
                 Button("Merge…") { store.send(.pr(.presentMergeConfirmation(true))) }
-                    .disabled(pr.mergeBlockedReason != nil)
+                    .disabled(store.observation?.mergeBlockedReason != nil)
             } else {
                 Button("Merge…") { store.send(.pr(.presentMergeConfirmation(true))) }
                     .buttonStyle(.borderedProminent)
-                    .disabled(pr.mergeBlockedReason != nil)
+                    .disabled(store.observation?.mergeBlockedReason != nil)
             }
         }
         .animation(.snappy(duration: 0.18), value: hasChanges)
@@ -138,28 +143,29 @@ struct ServicePullRequestView: View {
     }
 
     @ViewBuilder
-    private func nodeSays(_ pr: PullRequest) -> some View {
-        let reports = store.reports
+    private var nodeSays: some View {
+        let reports = store.information
         if !reports.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("The node says")
                     .font(.title3.weight(.semibold))
                 ForEach(reports) { report in
-                    ServiceAttachedReport(report: report, pullRequestURL: pr.url, downloads: store.scope(state: \.downloads, action: \.downloads))
+                    ServiceAttachedReport(report: report, attachments: workspace?.interaction(of: report)?.attachments ?? [],
+                                          downloads: store.scope(state: \.downloads, action: \.downloads))
                 }
             }
         }
     }
 
     @ViewBuilder
-    private func nodeAsks(_ pr: PullRequest) -> some View {
+    private var nodeAsks: some View {
         let questions = store.questions
         if !questions.isEmpty {
             VStack(alignment: .leading, spacing: 10) {
                 Text("The node asks")
                     .font(.title3.weight(.semibold))
                 ForEach(store.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { store.visibleQuestionIDs.contains($0.id) }) { child in
-                    ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question), pullRequestURL: pr.url)
+                    ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question))
                 }
             }
             .animation(.snappy, value: questions.map(\.id))
@@ -176,7 +182,7 @@ struct ServicePullRequestView: View {
                         .font(.caption).foregroundStyle(.orange)
                 }
                 ServicePRDiffReview(store: store.scope(state: \.diff, action: \.diff), focus: $focus)
-                    .disabled(store.diff.isSending || store.diff.mutationOutcome?.uncertainID != nil)
+                    .disabled(store.diff.isSending)
             } else if let error = store.diff.loadError {
                 Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
                 Button("Retry") { store.send(.diff(.retryTapped)) }

@@ -14,7 +14,7 @@ struct AlondraMacApp: App {
         let auth = AuthSession(browser: SystemAuthBrowser(anchor: {
             NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow
         }))
-        let storage = CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
+        let storage = AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
         let account = CloudPairingOwner(auth: auth, displayName: "Mac", storageDirectory: storage)
         _owner = State(initialValue: MacWorkspaceOwner(account: account, storageDirectory: storage,
             deviceName: "Mac (\(Host.current().localizedName ?? ProcessInfo.processInfo.hostName))"))

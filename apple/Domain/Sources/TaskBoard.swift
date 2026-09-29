@@ -35,30 +35,36 @@ public struct RequestTree: Identifiable, Hashable, Sendable {
 public struct TaskStateGroup: Identifiable, Hashable, Sendable {
     public enum Kind: Hashable, Sendable {
         case task(DomainV2.TaskState)
+        /// Requests the orchestrator has not split into Tasks yet.
+        case defining
         case archived
     }
 
     public let kind: Kind
     public let tasks: [DomainV2.Task]
+    /// Requests without Tasks: open ones under `defining`, closed ones with the finished Tasks.
+    public let requests: [DomainV2.Request]
 
-    public init(kind: Kind, tasks: [DomainV2.Task]) {
+    public init(kind: Kind, tasks: [DomainV2.Task], requests: [DomainV2.Request] = []) {
         self.kind = kind
         self.tasks = tasks
+        self.requests = requests
     }
 
     public var id: Kind { kind }
-    public var count: Int { tasks.count }
+    public var count: Int { tasks.count + requests.count }
 
     public var isFinished: Bool {
         switch kind {
         case .task(let state): state.isFinished
+        case .defining: false
         case .archived: true
         }
     }
 
     public static let order: [Kind] = [
         .task(.needsYou), .task(.inReview), .task(.closing), .task(.running), .task(.waitingDependency),
-        .task(.notStarted), .task(.done), .task(.cancelled), .archived,
+        .task(.notStarted), .defining, .task(.done), .task(.cancelled), .archived,
     ]
 }
 
@@ -123,10 +129,35 @@ public struct TaskBoard: Equatable, Sendable {
         ordered.filter { $0.dependencies.contains(task.id) }
     }
 
+    /// The task among what it builds on and what builds on it, bottom first: the order their
+    /// PRs merge in.
+    public func mergeOrder(around task: DomainV2.Task) -> [DomainV2.Task] {
+        var below: [DomainV2.Task] = []
+        var seen: Set<DomainV2.TaskId> = [task.id]
+        func down(_ current: DomainV2.Task) {
+            for dependency in dependencies(of: current) where seen.insert(dependency.id).inserted {
+                down(dependency)
+                below.append(dependency)
+            }
+        }
+        down(task)
+        var above: [DomainV2.Task] = []
+        var frontier = [task]
+        while !frontier.isEmpty {
+            let next = frontier.flatMap(dependents(of:)).filter { seen.insert($0.id).inserted }
+            above.append(contentsOf: next)
+            frontier = next
+        }
+        return below + [task] + above
+    }
+
     public var groups: [TaskStateGroup] {
         let active = ordered.filter { !$0.archived }
+        let taskless = requests.filter { request in !ordered.contains { $0.requestId == request.id } }
         return TaskStateGroup.order.compactMap { kind in
             let group: TaskStateGroup = switch kind {
+            case .defining: TaskStateGroup(kind: kind, tasks: [], requests: taskless.filter { !$0.closed })
+            case .task(.done): TaskStateGroup(kind: kind, tasks: active.filter { $0.state == .done }, requests: taskless.filter(\.closed))
             case .task(let state): TaskStateGroup(kind: kind, tasks: active.filter { $0.state == state })
             case .archived: TaskStateGroup(kind: kind, tasks: ordered.filter(\.archived))
             }
@@ -134,7 +165,10 @@ public struct TaskBoard: Equatable, Sendable {
         }
     }
 
-    public var openCount: Int { ordered.count { !$0.state.isFinished && !$0.archived } }
+    public var openCount: Int {
+        ordered.count { !$0.state.isFinished && !$0.archived }
+            + requests.count { request in !request.closed && !ordered.contains { $0.requestId == request.id } }
+    }
 
     /// Each task under the dependency it goes after (the last listed when it has several);
     /// tasks with no dependency in the request are roots, in parallel.

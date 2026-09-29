@@ -3,7 +3,7 @@ import SwiftUI
 
 /// What the node reported about the PR it sits in, read right there without leaving the PR.
 struct AttachedReport: View {
-    let report: Report
+    let report: DomainV2.InboxItem
     var showsBody = false
 
     var body: some View {

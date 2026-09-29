@@ -7,21 +7,22 @@ import AlondraAttachmentsFeature
 
 struct ServiceTriageCard: View {
     @Bindable var store: StoreOf<TriageCardFeature>
-    var item: InboxItem { store.item }
+    var item: DomainV2.InboxItem { store.item }
     let node: Node?
-    let task: WorkTask?
+    let agent: DomainV2.Agent?
+    let task: DomainV2.Task?
+    let date: Int64?
+    let mission: String?
     let isFront: Bool
     let zoom: Namespace.ID
     let onReview: () -> Void
     let onSkip: () -> Void
     let onHide: () -> Void
-    let questions: [Question]
-    let reports: [Report]
 
     @Environment(\.dynamicTypeSize) private var typeSize
     @State private var contentHeight: CGFloat?
     @FocusState private var replyFocused: Bool
-    private var pickedOption: QuestionOption? { store.selectedOption }
+    private var pickedOption: DomainV2.QuestionOption? { store.selectedOption }
     private var stamp: Stamp? {
         guard let resolution = store.stamp else { return nil }
         switch resolution {
@@ -168,11 +169,13 @@ struct ServiceTriageCard: View {
         HStack(alignment: .center, spacing: 8) {
             KindBadge(kind: kind)
             Spacer()
-            Text(relative(item.date))
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .fixedSize()
+            if let date {
+                Text(relative(date))
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
             Button(action: onSkip) {
                 Image(systemName: "arrow.uturn.forward")
                     .font(.footnote.weight(.semibold))
@@ -196,7 +199,7 @@ struct ServiceTriageCard: View {
                     .frame(width: 22, height: 22)
                     .background(node.state.tint.opacity(0.15), in: .circle)
             }
-            Text(item.nodeName ?? node?.displayName ?? String(localized: "node"))
+            Text(agent?.name ?? node?.displayName ?? String(localized: "node"))
                 .font(.mono(.subheadline, weight: .medium))
                 .foregroundStyle(Palette.ink.opacity(0.85))
             if let project = node?.projectName {
@@ -213,86 +216,58 @@ struct ServiceTriageCard: View {
 
     @ViewBuilder
     private var bodyContent: some View {
-        if let mission = item.missionExcerpt {
+        if let mission, !mission.isEmpty {
             (Text("Mission").fontWeight(.semibold) + Text(verbatim: " · \(mission)"))
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(3)
         }
-        switch item {
-        case .question(let question):
-            if question.origin == "plan", let plan = question.detail {
-                excerpt(plan, cta: String(localized: "Review the plan"))
-            } else {
-                if let detail = question.readableDetail, !detail.isEmpty {
-                    if question.origin == "permission" {
-                        Text(detail)
-                            .font(.mono(.callout))
-                            .foregroundStyle(Palette.ink)
-                            .padding(14)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(Palette.night.opacity(0.7), in: .rect(cornerRadius: 14, style: .continuous))
-                            .textSelection(.enabled)
-                    } else if detail.count > 600 {
-                        excerpt(detail, cta: String(localized: "Read it all"))
-                    } else {
-                        blocks(detail)
-                    }
-                }
-                ForEach(question.attachments.filter { $0.storedPath != nil }, id: \.sourcePath) { attachment in
-                    reviewButton(String(localized: "Review the attachment"), detail: attachment.name, symbol: "doc.text.magnifyingglass")
+        if let question = store.question?.question {
+            if !question.body.isEmpty {
+                if question.body.count > 600 {
+                    excerpt(question.body, cta: String(localized: "Read it all"))
+                } else {
+                    blocks(question.body)
                 }
             }
-            links(question.links)
-            ForEach(question.aboutReports) { report in
-                aboutReport(report)
+            ForEach(question.attachments, id: \.id) { attachment in
+                reviewButton(String(localized: "Review the attachment"), detail: attachment.name, symbol: "doc.text.magnifyingglass")
             }
-            if let context = question.nodeContext?.trimmingCharacters(in: .whitespacesAndNewlines), !context.isEmpty, !context.hasPrefix("mcp__") {
-                nodeContext(context)
-            }
-        case .report(let report):
-            if report.seemsToAsk {
-                Label(Report.seemsToAskLabel, systemImage: "questionmark.bubble")
-                    .font(.footnote.weight(.semibold))
-                    .foregroundStyle(Palette.dawn)
-            }
-            ForEach(report.artifacts, id: \.self) { url in
-                artifactButton(url)
-            }
-            if let body = report.body, !body.isEmpty {
-                if report.attachments.isEmpty && body.count > 600 {
+        } else if let document = store.document?.subject {
+            let body = document.interaction.body
+            if !body.isEmpty {
+                if document.attachments.isEmpty && document.revisions.isEmpty && body.count > 600 {
                     excerpt(body, cta: String(localized: "Read it all"))
                 } else {
                     blocks(body)
                 }
             }
-            ForEach(report.attachments.filter { $0.storedPath != nil }, id: \.sourcePath) { attachment in
+            ForEach(document.revisions, id: \.revision.id) { source in
+                reviewButton(String(localized: "Read the document"), detail: source.title, symbol: "doc.richtext")
+            }
+            ForEach(document.attachments, id: \.id) { attachment in
                 reviewButton(String(localized: "Read the document"), detail: attachment.name, symbol: "doc.richtext")
             }
-            links(report.links)
-            if let earlier = report.earlier, !earlier.isEmpty {
-                earlierReports(earlier)
-            }
-        case .pullRequest(let pr):
-            ForEach(reports) { report in
+        } else if let prStore = store.scope(state: \.pullRequest, action: \.pullRequest) {
+            ForEach(prStore.information, id: \.id) { report in
                 AttachedReport(report: report)
             }
-            if let prStore = store.scope(state: \.pullRequest, action: \.pullRequest) {
-                ForEach(prStore.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { prStore.visibleQuestionIDs.contains($0.id) }) { child in
-                    ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question))
-                }
+            ForEach(prStore.scope(state: \.questionFeatures, action: \.attachedQuestion).filter { prStore.visibleQuestionIDs.contains($0.id) }) { child in
+                ServiceAttachedQuestion(store: child.scope(state: \.question, action: \.question))
             }
-            Text(pr.summary)
+            Text(prStore.lastKnownCard.summary)
                 .font(.footnote.monospaced())
                 .foregroundStyle(.secondary)
-            PRStatus(pr: pr)
-            if let body = pr.body, !body.isEmpty {
+            PRStatus(card: prStore.lastKnownCard)
+            if let body = prStore.observation?.body, !body.isEmpty {
                 if body.count > 600 {
                     excerpt(body, cta: String(localized: "Read it all"))
                 } else {
                     blocks(body)
                 }
             }
+        } else if let body = item.body, !body.isEmpty {
+            blocks(body)
         }
     }
 
@@ -359,35 +334,6 @@ struct ServiceTriageCard: View {
         .matchedTransitionSource(id: item.id, in: zoom)
     }
 
-    private func artifactButton(_ url: URL) -> some View {
-        Link(destination: url) {
-            HStack(spacing: 12) {
-                Image(systemName: "safari")
-                    .font(.title3)
-                    .foregroundStyle(kind.tint)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(Report.openInBrowserLabel)
-                        .font(.headline)
-                        .foregroundStyle(Palette.ink)
-                    Text(url.absoluteString)
-                        .font(.caption)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(.secondary)
-                }
-                Spacer()
-                Image(systemName: "arrow.up.right")
-                    .font(.footnote.weight(.bold))
-                    .foregroundStyle(.tertiary)
-            }
-            .padding(14)
-            .background(kind.tint.opacity(0.10), in: .rect(cornerRadius: 18, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(kind.tint.opacity(0.25)))
-            .contentShape(.rect(cornerRadius: 18))
-        }
-        .buttonStyle(.plain)
-    }
-
     private func reviewButton(_ title: String, detail: String, symbol: String) -> some View {
         Button(action: onReview) {
             HStack(spacing: 12) {
@@ -419,98 +365,14 @@ struct ServiceTriageCard: View {
     }
 
     @ViewBuilder
-    private func links(_ links: [LinkRef]) -> some View {
-        ForEach(links, id: \.url) { link in
-            if let url = URL(string: link.url) {
-                Link(destination: url) {
-                    Label(link.title ?? link.url, systemImage: "link")
-                        .font(.subheadline.weight(.medium))
-                        .lineLimit(1)
-                }
-                .tint(Palette.sky)
-            }
-        }
-    }
-
-    private func earlierReports(_ earlier: [Report]) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Label(String(localized: "Earlier in this delivery (\(earlier.count))"), systemImage: "tray.full")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            ForEach(earlier) { e in
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(e.title)
-                        .font(.headline)
-                        .foregroundStyle(Palette.ink)
-                    if let body = e.body, !body.isEmpty {
-                        blocks(body)
-                            .font(.callout)
-                            .lineLimit(8)
-                    }
-                }
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
-    }
-
-    private func aboutReport(_ report: Report) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Label(String(localized: "About report #\(report.id)"), systemImage: "doc.text")
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(.secondary)
-            Text(report.title)
-                .font(.headline)
-                .foregroundStyle(Palette.ink)
-            if let body = report.body, !body.isEmpty {
-                blocks(body)
-                    .font(.callout)
-                    .lineLimit(12)
-            }
-        }
-        .padding(14)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
-    }
-
-    private func nodeContext(_ context: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Button {
-                withAnimation(.spring(duration: 0.35)) { _ = store.send(.toggleNodeContext) }
-            } label: {
-                HStack {
-                    Label("What the node said last", systemImage: "text.quote")
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .rotationEffect(.degrees(showNodeContext ? 180 : 0))
-                }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(.secondary)
-                .contentShape(.rect)
-            }
-            .buttonStyle(.plain)
-            if showNodeContext {
-                blocks(context)
-                    .font(.callout)
-                    .padding(14)
-                    .background(Palette.hairline.opacity(0.5), in: .rect(cornerRadius: 14))
-                    .transition(.opacity.combined(with: .move(edge: .top)))
-            }
-        }
-        .padding(.top, 4)
-    }
-
-    @ViewBuilder
     private var actions: some View {
-        switch item {
-        case .question(let question):
+        if let question = store.question?.question {
             VStack(spacing: 8) {
                 ServiceOptionGrid(options: question.options, picked: pickedOption) { option in
                     replyFocused = false
                     store.send(.choose(option))
                 }
-                replyField(placeholder: pickedOption?.displayDescription ?? String(localized: "Answer in your own words…")) {
+                replyField(placeholder: String(localized: "Answer in your own words…")) {
                     replyFocused = false
                     store.send(.send)
                 }
@@ -525,45 +387,51 @@ struct ServiceTriageCard: View {
                 }
                 .buttonStyle(.plain)
             }
-        case .report(let report):
+        } else if let document = store.document {
             VStack(spacing: 10) {
-                replyField(placeholder: String(localized: "Reply to \(item.nodeName ?? String(localized: "this node"))…")) {
+                replyField(placeholder: String(localized: "Reply to \(agent?.name ?? String(localized: "this node"))…")) {
                     replyFocused = false
                     store.send(.send)
                 }
-                if report.primaryAction() == .review {
-                    Button {
-                        replyFocused = false
-                        store.send(.document(.reviewTapped(.comments)))
-                    } label: {
-                        Label("Rescue Comments", systemImage: "text.bubble")
-                            .font(.headline)
-                            .frame(maxWidth: .infinity, minHeight: 50)
-                    }
-                    .buttonStyle(ServiceFilledStyle(tint: actionTint))
-                    .disabled(!store.reviewReady)
-                    HStack(spacing: 24) {
+                if document.subject.isDelivery {
+                    if document.subject.action(.submitFeedback) != nil {
                         Button {
                             replyFocused = false
-                            store.send(.document(.reviewTapped(.approved)))
+                            store.send(.document(.reviewTapped(.comments)))
                         } label: {
-                            Label("Approve", systemImage: "checkmark.seal")
-                                .font(.subheadline.weight(.medium))
-                                .frame(minHeight: 30)
+                            Label("Rescue Comments", systemImage: "text.bubble")
+                                .font(.headline)
+                                .frame(maxWidth: .infinity, minHeight: 50)
                         }
-                        .disabled(!store.reviewReady)
-                        Button {
-                            replyFocused = false
-                            store.send(.markRead)
-                        } label: {
-                            Label("Mark as Read", systemImage: "checkmark")
-                                .font(.subheadline.weight(.medium))
-                                .frame(minHeight: 30)
+                        .buttonStyle(ServiceFilledStyle(tint: actionTint))
+                        .disabled(!document.canSendFeedback)
+                    }
+                    HStack(spacing: 24) {
+                        if document.subject.action(.acceptDelivery) != nil {
+                            Button {
+                                replyFocused = false
+                                store.send(.document(.reviewTapped(.approved)))
+                            } label: {
+                                Label("Approve", systemImage: "checkmark.seal")
+                                    .font(.subheadline.weight(.medium))
+                                    .frame(minHeight: 30)
+                            }
+                            .disabled(!document.canAccept)
+                        }
+                        if store.canMarkRead {
+                            Button {
+                                replyFocused = false
+                                store.send(.markRead)
+                            } label: {
+                                Label("Mark as Read", systemImage: "checkmark")
+                                    .font(.subheadline.weight(.medium))
+                                    .frame(minHeight: 30)
+                            }
                         }
                     }
                     .foregroundStyle(.secondary)
                     .buttonStyle(.plain)
-                } else {
+                } else if store.canMarkRead {
                     Button {
                         replyFocused = false
                         store.send(.markRead)
@@ -575,7 +443,7 @@ struct ServiceTriageCard: View {
                     .buttonStyle(ServiceFilledStyle(tint: actionTint))
                 }
             }
-        case .pullRequest(let pr):
+        } else if let child = store.scope(state: \.pullRequest, action: \.pullRequest) {
             VStack(spacing: 10) {
                 replyField(placeholder: String(localized: "What should change?")) {
                     replyFocused = false
@@ -592,10 +460,8 @@ struct ServiceTriageCard: View {
                 }
                 .buttonStyle(.plain)
                 .disabled(!store.canSend || store.busy)
-                if let child = store.scope(state: \.pullRequest, action: \.pullRequest) {
-                    ServicePRMainAction(store: child.scope(state: \.pr, action: \.pr), placement: .card, willSubmit: { replyFocused = false })
-                }
-                PRFooter(pr: pr) {
+                ServicePRMainAction(store: child.scope(state: \.pr, action: \.pr), placement: .card, willSubmit: { replyFocused = false })
+                PRFooter(card: child.lastKnownCard) {
                     replyFocused = false
                     store.send(.pullRequest(.pr(.setAsideTapped)))
                 }
@@ -653,7 +519,7 @@ struct ServiceTriageCard: View {
     }
 
     private var attachmentStore: StoreOf<AttachmentFeature>? {
-        if let child = store.scope(state: \.question, action: \.question), !child.question.isTerminalMenu { return child.scope(state: \.attachmentPicker, action: \.attachmentPicker) }
+        if let child = store.scope(state: \.question, action: \.question) { return child.scope(state: \.attachmentPicker, action: \.attachmentPicker) }
         if let child = store.scope(state: \.document, action: \.document) { return child.scope(state: \.attachmentPicker, action: \.attachmentPicker) }
         if let child = store.scope(state: \.pullRequest, action: \.pullRequest) { return child.scope(state: \.diff.attachmentPicker, action: \.diff.attachmentPicker) }
         return nil
@@ -704,32 +570,24 @@ enum ServiceOptionTone {
 }
 
 struct ServiceOptionGrid: View {
-    let options: [QuestionOption]
-    let picked: QuestionOption?
-    let onPick: (QuestionOption) -> Void
+    let options: [DomainV2.QuestionOption]
+    let picked: DomainV2.QuestionOption?
+    let onPick: (DomainV2.QuestionOption) -> Void
 
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var compact: Bool {
-        options.count == 2 && options.allSatisfy { $0.displayLabel.count <= 16 && (needsText($0) || $0.description == nil) } && !typeSize.isAccessibilitySize
+        options.count == 2 && options.allSatisfy { $0.displayLabel.count <= 16 } && !typeSize.isAccessibilitySize
     }
 
     var body: some View {
         let layout = compact ? AnyLayout(HStackLayout(spacing: 10)) : AnyLayout(VStackLayout(spacing: 8))
         layout {
-            ForEach(options, id: \.label) { option in
+            ForEach(options, id: \.id) { option in
                 Button { onPick(option) } label: {
-                    VStack(alignment: compact ? .center : .leading, spacing: 2) {
-                        Text(option.displayLabel)
-                            .font(.headline)
-                        if let description = option.displayDescription, !compact, !needsText(option) {
-                            Text(description)
-                                .font(.caption)
-                                .opacity(0.8)
-                                .multilineTextAlignment(.leading)
-                        }
-                    }
-                    .frame(maxWidth: .infinity, minHeight: 46, alignment: compact ? .center : .leading)
+                    Text(option.displayLabel)
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 46, alignment: compact ? .center : .leading)
                     .padding(.horizontal, compact ? 0 : 6)
                 }
                 .buttonStyle(ServiceOptionStyle(tone: ServiceOptionTone(option.label), picked: picked == option))

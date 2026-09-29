@@ -5,11 +5,11 @@ import SwiftUI
 
 /// What the node reported about the PR it sits in, read right there in the PR's detail.
 struct ServiceAttachedReport: View {
-    let report: Report
-    let pullRequestURL: String
+    let report: DomainV2.InboxItem
+    let attachments: [DomainV2.AttachmentRef]
     let downloads: StoreOf<AttachmentDownloadFeature>
 
-    private var style: KindStyle { InboxItem.report(report).style }
+    private var style: KindStyle { report.style }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -24,7 +24,7 @@ struct ServiceAttachedReport: View {
             if let body = report.body, !body.isEmpty {
                 MarkdownText(text: body)
             }
-            ServiceLinksRow(links: report.links.filter { $0.url != pullRequestURL }, attachments: report.attachments, store: downloads)
+            ServiceLinksRow(attachments: attachments, store: downloads)
         }
         .padding(16)
         .frame(maxWidth: .infinity, alignment: .leading)

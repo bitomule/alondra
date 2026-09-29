@@ -1,4 +1,6 @@
 import AlondraAPIClient
+import AlondraContracts
+import AlondraDomain
 import AlondraNotificationActions
 import AlondraNotificationPayload
 import Foundation
@@ -12,8 +14,32 @@ public extension CloudAppServices {
             try await self.api.registerServicePush(token: token, environment: environment, binding: binding.value, preferencesRevision: revision, quietStart: quietStart, quietEnd: quietEnd)
             try await self.checkActive()
         }, submit: { action, item in
-            do { return await self.send(try action.envelope(for: item)) }
-            catch { return .rejected(Self.rejection(error)) }
+            await self.submitNotificationAction(action, item: item)
         })
+    }
+}
+
+extension CloudAppServices {
+    /// A push may be tapped long after it arrived. The item is read as it is now and the
+    /// command gets a new ID; a push from another data epoch never acts on a new item that
+    /// happens to share its ID.
+    func submitNotificationAction(_ action: NotificationAction, item: NotificationPayload.Item,
+                                  commandID: String = UUID().uuidString.lowercased()) async -> NotificationActionResult {
+        guard (try? checkActive()) != nil else { return .sent(.obsolete) }
+        let envelope: DomainV2.CommandEnvelope
+        do {
+            let lookup = try await api.domainInboxItem(item.itemID)
+            if let epoch = item.epoch, epoch != lookup.dataEpoch.rawValue { return .noLongerPending }
+            let interaction = try await api.domainInteraction(action.interactionID).item
+            envelope = try action.envelope(fresh: lookup, interaction: interaction, commandID: commandID)
+        } catch NotificationActionError.noLongerPending {
+            return .noLongerPending
+        } catch let error as DomainV2.DomainError where error.code == DomainV2.ErrorCode.notFound.rawValue {
+            return .noLongerPending
+        } catch {
+            guard (try? checkActive()) != nil else { return .sent(.obsolete) }
+            return .sent(.rejected(Self.rejection(error)))
+        }
+        return .sent(await send(envelope))
     }
 }

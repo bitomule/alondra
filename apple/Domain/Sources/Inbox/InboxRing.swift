@@ -11,6 +11,10 @@ public struct InboxPlace: Comparable, Hashable, Sendable {
     }
 }
 
+extension DomainV2.Task: Identifiable {}
+extension DomainV2.Request: Identifiable {}
+extension DomainV2.PullRequest: Identifiable {}
+
 extension DomainV2.InboxItem: Identifiable {
     public var place: InboxPlace { InboxPlace(order: order, id: id) }
 

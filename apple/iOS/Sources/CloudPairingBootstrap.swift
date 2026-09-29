@@ -12,7 +12,7 @@ func makeCloudPairingOwner(notifications: ServiceNotificationRuntime) -> CloudPa
             .first(where: { $0.activationState == .foregroundActive })?.windows.first(where: \.isKeyWindow)
     })
     return CloudPairingOwner(auth: AuthSession(browser: browser), displayName: "iPhone",
-        storageDirectory: CommandJournalLocation.applicationSupport(bundleID: "com.bitomule.alondra"), prepareCamera: {
+        storageDirectory: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra"), prepareCamera: {
         guard await DataScannerViewController.isSupported else { return false }
         let allowed = await AVCaptureDevice.requestAccess(for: .video)
         let available = await MainActor.run { DataScannerViewController.isAvailable }

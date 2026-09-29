@@ -5,6 +5,7 @@ extension DomainV2 {
         case agent(agentId: AgentId)
         case orchestrator(generation: UInt64)
         case system
+        case unknown(kind: String)
 
         enum CodingKeys: String, CodingKey {
             case kind = "kind"
@@ -18,7 +19,7 @@ extension DomainV2 {
             case "agent": self = .agent(agentId: try container.decode(AgentId.self, forKey: .agentId))
             case "orchestrator": self = .orchestrator(generation: try container.decode(UInt64.self, forKey: .generation))
             case "system": self = .system
-            default: throw DecodingError.dataCorruptedError(forKey: .kind, in: container, debugDescription: "Unknown domain v2 Author kind")
+            case let kind: self = .unknown(kind: kind)
             }
         }
 
@@ -33,6 +34,8 @@ extension DomainV2 {
                 try container.encode(generation, forKey: .generation)
             case .system:
                 try container.encode("system", forKey: .kind)
+            case let .unknown(kind):
+                try container.encode(kind, forKey: .kind)
             }
         }
     }

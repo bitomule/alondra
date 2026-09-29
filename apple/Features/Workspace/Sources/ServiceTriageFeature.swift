@@ -6,6 +6,15 @@ import AlondraTriageFeature
 import ComposableArchitecture
 import SwiftUI
 
+/// Display context around a card: who works on it, which Task, when it arrived and the request.
+public struct CardContext: Equatable, Sendable {
+    public let node: Node?
+    public let agent: DomainV2.Agent?
+    public let task: DomainV2.Task?
+    public let date: Int64?
+    public let mission: String?
+}
+
 /// Scene-owned navigation. Child drafts survive accepted views of the same card.
 @Reducer
 public struct ServiceTriageFeature {
@@ -32,6 +41,12 @@ public struct ServiceTriageFeature {
         public var machinePresented = false
         public func task(for item: DomainV2.InboxItem) -> DomainV2.Task? { workspace?.task(item.taskId) }
         public func agent(for item: DomainV2.InboxItem) -> DomainV2.Agent? { workspace?.agent(item.agentId) }
+        public func context(for item: DomainV2.InboxItem) -> CardContext {
+            let interaction: DomainV2.InteractionId? = if case .interaction(let id) = item.subject { id } else { nil }
+            return CardContext(node: workspace?.runtime?.node(item.agentId), agent: agent(for: item), task: task(for: item),
+                               date: workspace?.runtime?.createdAt(interaction),
+                               mission: workspace?.request(item.requestId)?.body)
+        }
         @Presents public var question: QuestionFeature.State?
         public var documents: IdentifiedArrayOf<DocumentReviewFeature.State> = []
         public var documentID: String?

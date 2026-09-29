@@ -78,7 +78,7 @@ public final class NotificationRoutingCoordinator {
         guard !Task.isCancelled, isValid(authorized), selected == authorized.binding else { throw CancellationError() }
     }
 
-    public func submit(_ authorized: Authorized, actionID: String, text: String?) async -> DomainCommandResult? {
+    public func submit(_ authorized: Authorized, actionID: String, text: String?) async -> NotificationActionResult? {
         guard isValid(authorized), let client = entries[authorized.binding]?.entry.client,
               let action = NotificationAction(item: authorized.item, question: authorized.question,
                                               action: actionID, text: text) else { return nil }

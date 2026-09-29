@@ -50,3 +50,19 @@ extension DomainV2.ErrorCode {
 extension DomainCommandRejection {
     public var localizedMessage: String { errorCode?.localizedMessage ?? message }
 }
+
+extension DomainWorkspace {
+    /// Who the item comes from, when for, and the request behind it: display only.
+    public func agentName(of item: DomainV2.InboxItem) -> String? {
+        runtime?.node(item.agentId)?.displayName ?? agent(item.agentId)?.name
+    }
+
+    public func createdAt(of item: DomainV2.InboxItem) -> Int64? {
+        guard case .interaction(let id) = item.subject else { return nil }
+        return runtime?.createdAt(id)
+    }
+
+    public func mission(of item: DomainV2.InboxItem) -> String? {
+        request(item.requestId)?.headline
+    }
+}

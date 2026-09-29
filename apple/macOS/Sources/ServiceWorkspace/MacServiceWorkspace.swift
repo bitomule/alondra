@@ -39,15 +39,15 @@ struct MacServiceWorkspace<AccountContent: View>: View {
         .navigationTitle("Alondra")
         .navigationSubtitle(store.macSubtitle)
         .toolbar {
-            if store.triage.triage.connection == .online, let overview = store.fleet.overview {
-                ToolbarItem(placement: .status) { StatusGauges(machine: overview.machine, usage: overview.usage) }
+            if store.triage.triage.connection == .online, let machine = store.workspace?.runtime?.machine {
+                ToolbarItem(placement: .status) { StatusGauges(machine: machine, usage: store.workspace?.runtime?.usage) }
                     .sharedBackgroundVisibility(.hidden)
             }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button { presentation.send(.newRequestPresented(true)) } label: { Label("New", systemImage: "square.and.pencil") }
                     .keyboardShortcut("n").help("Ask for new work (⌘N)")
                 Button { store.send(.tasks(.board(.archiveTapped))) } label: { Label("Archive Completed", systemImage: "archivebox") }
-                    .disabled(!store.tasks.board.canArchive || store.tasks.board.isArchiving || store.tasks.board.archiveOutcome?.uncertainID != nil)
+                    .disabled(!store.tasks.board.canArchive || store.tasks.board.isArchiving)
                     .help("Archive completed tasks")
             }
         }
@@ -146,7 +146,9 @@ private struct MacServiceInboxSection: View {
                     Label(presentation.query.isEmpty ? "All caught up" : "Nothing matches", systemImage: presentation.query.isEmpty ? "checkmark.circle" : "magnifyingglass").foregroundStyle(.secondary)
                 }
                 ForEach(items) { item in
-                    InboxRow(item: item, asks: store.withState { $0.asksOnPullRequest(item) }).tag(MacPresentationFeature.Selection.item(item.id))
+                    let context = store.withState { $0.rowContext(item) }
+                    InboxRow(item: item, agent: context.agent, date: context.date, stackedOn: context.stackedOn,
+                             asks: store.withState { $0.asksOnPullRequest(item) }).tag(MacPresentationFeature.Selection.item(item.id))
                 }
             } header: {
                 SidebarCountHeader(title: pullRequests ? String(localized: "Pull Requests") : String(localized: "Waiting for You"), count: store.withState { $0.inboxCount(pullRequests: pullRequests) }, tint: pullRequests ? .purple : .orange)
@@ -156,12 +158,12 @@ private struct MacServiceInboxSection: View {
 }
 
 private struct MacServiceTaskRow: View {
-    let task: WorkTask
+    let task: DomainV2.Task
     let board: TaskBoard
     let subtitle: String
     var body: some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text(board.rowTitle(of: task)).fontWeight(.medium).strikethrough(task.state == .cancelled).lineLimit(2)
+            Text(task.title).fontWeight(.medium).strikethrough(task.state == .cancelled).lineLimit(2)
             Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
         }.padding(.vertical, 2).accessibilityElement(children: .combine).accessibilityValue(task.state.label)
     }
@@ -173,10 +175,10 @@ private struct MacServiceDetail: View {
     var body: some View {
         switch presentation.selection {
         case .item(let id):
-            if let selected = store.pullRequestID, id == "p\(selected)",
+            if let selected = store.pullRequestID, id == ServiceRootFeature.State.itemID(of: selected),
                let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == selected }) {
                 ServicePullRequestView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
-            } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == "q\(child.question.id)" {
+            } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == child.question.item.id {
                 ServiceQuestionView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
             } else if let child = store.scope(state: \.triage.documents, action: \.triage.documents).first(where: { $0.subject.id == id }) {
                 ServiceDocumentView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) }, markRead: { store.send(.triage(.triage(.hide(id)))) })
@@ -184,7 +186,7 @@ private struct MacServiceDetail: View {
         case .node(let id):
             if let child = store.scope(state: \.fleet.nodes, action: \.fleet.nodes).first(where: { $0.sessionID == id }) {
                 ServiceNodeView(store: child, presentation: store.fleet.presentation,
-                    pending: store.triage.triage.queue.filter { $0.sessionId == child.sessionID },
+                    pending: store.triage.triage.queue.filter { $0.agentId?.rawValue == child.sessionID },
                     openInbox: { presentation.send(.select(.item($0))) },
                     openTask: { presentation.send(.select(.task($0))) })
             } else { ContentUnavailableView("This node is gone", systemImage: "questionmark.circle") }

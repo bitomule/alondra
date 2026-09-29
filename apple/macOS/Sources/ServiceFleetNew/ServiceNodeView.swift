@@ -7,10 +7,10 @@ import SwiftUI
 
 struct ServiceNodeView: View {
     let store: StoreOf<NodeDetailFeature>
-    var presentation = ServiceTaskPresentation(overview: nil)
-    var pending: [InboxItem] = []
+    var presentation = ServiceTaskPresentation(workspace: nil)
+    var pending: [DomainV2.InboxItem] = []
     var openInbox: (String) -> Void = { _ in }
-    var openTask: (String) -> Void = { _ in }
+    var openTask: (DomainV2.TaskId) -> Void = { _ in }
     var body: some View {
         if let node = store.node {
             DetailScaffold {
@@ -57,7 +57,7 @@ struct ServiceNodeView: View {
                         ServiceTaskSection(String(localized: "Right now")) {
                             VStack(alignment: .leading, spacing: 2) {
                                 ForEach(store.threads, id: \.self) { activity in
-                                    ServiceThreadRow(activity: activity, task: store.tasks.first { $0.id == activity.task })
+                                    ServiceThreadRow(activity: activity, task: store.tasks.first { $0.id.rawValue == activity.task })
                                 }
                             }.background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 10))
                         }
@@ -111,7 +111,7 @@ struct ServiceNodeView: View {
                 if !node.isOrchestrator {
                     ToolbarItem {
                         Button(role: .destructive) { store.send(.closeRequested) } label: { Label("Close Node…", systemImage: "xmark.bin") }
-                            .disabled(store.isStale || store.isClosing || store.isSendInFlight || store.closeOutcome?.uncertainID != nil || store.sendOutcome?.uncertainID != nil)
+                            .disabled(store.isStale || store.isClosing || store.isSendInFlight)
                             .help("Close this node with claude rm")
                     }
                 }
@@ -224,13 +224,13 @@ private struct ServiceNodeComposer: View {
             focus: $focused, sendTitle: String(localized: "Send"), canSend: store.canSend,
             submit: { store.send(.sendTapped) },
             attachmentsStore: store.scope(state: \.attachmentPicker, action: \.attachmentPicker))
-            .disabled(store.isSendInFlight || store.sendOutcome?.uncertainID != nil)
+            .disabled(store.isSendInFlight)
     }
 }
 
 private struct ServiceThreadRow: View {
     let activity: NodeActivity
-    let task: WorkTask?
+    let task: DomainV2.Task?
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {

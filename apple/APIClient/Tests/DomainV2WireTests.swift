@@ -158,6 +158,14 @@ final class DomainV2WireTests: XCTestCase {
         XCTAssertEqual(fixtures["completed"]?.tasks.first?.state, .done)
     }
 
+    func testUnknownAuthorKindsDoNotFailTheRead() throws {
+        let future = try DomainV2.decode(DomainV2.Author.self, from: Data(#"{"kind":"reviewer","reviewer_id":"r"}"#.utf8))
+        XCTAssertEqual(future, .unknown(kind: "reviewer"))
+        let roundTrip = try JSONDecoder().decode(DomainV2.Author.self, from: JSONEncoder().encode(future))
+        XCTAssertEqual(roundTrip, future)
+        XCTAssertEqual(try DomainV2.decode(DomainV2.Author.self, from: Data(#"{"kind":"agent","agent_id":"a"}"#.utf8)), .agent(agentId: "a"))
+    }
+
     func testDocumentAndPRTargetsPreserveVersionIdentity() throws {
         let json = Data(#"{"kind":"present_result","task_id":"task-1","interaction_id":"final-2","body":"Synthetic delivery","targets":[{"kind":"text","text":"Answer"},{"kind":"document_revision","document_id":"doc-1","revision_id":"revision-2"},{"kind":"pull_request","pr_id":"pr-1","head":"head-b"}],"is_final":true}"#.utf8)
         let command = try DomainV2.decode(DomainV2.Command.self, from: json)

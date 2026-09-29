@@ -28,7 +28,7 @@ struct ServiceNewRequestView: View {
                     }
                     .buttonStyle(.bordered)
                 }
-                if !store.sentMessages.isEmpty { history }
+                if !store.sentRequests.isEmpty { history }
             }.padding(20)
         }
         .scrollDismissesKeyboard(.interactively)
@@ -118,19 +118,22 @@ struct ServiceNewRequestView: View {
                 .textCase(.uppercase)
                 .kerning(0.6)
                 .foregroundStyle(.secondary)
-            ForEach(store.sentMessages.prefix(8)) { message in
+            ForEach(store.sentRequests.prefix(8), id: \.id) { request in
+                let delivered = store.pickedUp.contains(request.id)
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(requestText(message.text))
+                    Text(requestText(request.body))
                         .font(.subheadline)
                         .lineLimit(4)
                     HStack(spacing: 6) {
-                        Image(systemName: message.deliveredAt != nil ? "checkmark.circle.fill" : message.handedAt != nil ? "arrow.right.circle" : "clock")
-                        Text(message.deliveredAt != nil ? String(localized: "Delivered") : message.handedAt != nil ? String(localized: "On its way") : String(localized: "Queued"))
-                        Text(verbatim: "·")
-                        Text(relative(message.createdAt))
+                        Image(systemName: delivered ? "checkmark.circle.fill" : "clock")
+                        Text(delivered ? String(localized: "Delivered") : String(localized: "Queued"))
+                        if let sentAt = store.sentAt[request.id] {
+                            Text(verbatim: "·")
+                            Text(relative(sentAt))
+                        }
                     }
                     .font(.caption.weight(.medium))
-                    .foregroundStyle(message.deliveredAt != nil ? Palette.sage : .secondary)
+                    .foregroundStyle(delivered ? Palette.sage : .secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(14)

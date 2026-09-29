@@ -48,6 +48,19 @@ public struct ServiceTaskPresentation {
 
     public func pullRequest(of task: DomainV2.Task) -> DomainV2.PullRequest? { workspace?.pullRequest(task.prId) }
 
+    /// The inbox card of this PR, while one waits for you.
+    public func inboxItem(for pr: DomainV2.PrId) -> DomainV2.InboxItem? {
+        inbox.first { $0.subject == .pullRequest(prId: pr) }
+    }
+
+    /// The inbox card asking you to review this document of the task, while one waits.
+    public func reviewItem(for document: DomainV2.DocumentId, of task: DomainV2.TaskId) -> DomainV2.InboxItem? {
+        inbox.first { item in
+            if case let .documentReview(taskId, documentId, _) = item.subject { return taskId == task && documentId == document }
+            return false
+        }
+    }
+
     /// What GitHub last said about the PR: checks, conflicts, stack order.
     public func observation(of pr: DomainV2.PullRequest?) -> PullRequest? { runtime?.pullRequest(pr?.id) }
 
@@ -68,11 +81,19 @@ public struct ServiceTaskPresentation {
     }
 
     public func sidebarSubtitle(for request: DomainV2.Request) -> String {
-        let status = request.closed
+        [project(of: request), definingLabel(of: request)].compactMap { $0 }.joined(separator: " · ")
+    }
+
+    /// The state of a request the orchestrator has not split into Tasks.
+    public func definingLabel(of request: DomainV2.Request) -> String {
+        request.closed
             ? String(localized: "finished without tasks")
             : String(localized: "the orchestrator is splitting it")
-        return [project(of: request), status].compactMap { $0 }.joined(separator: " · ")
     }
+
+    public func createdAt(of request: DomainV2.Request) -> Int64? { runtime?.request(request.id)?.createdAt }
+
+    public func stateSince(of task: DomainV2.Task) -> Int64? { runtime?.task(task.id)?.stateSince }
 
     public func project(of task: DomainV2.Task) -> String? {
         (runtime?.task(task.id)?.project).flatMap(Self.named)

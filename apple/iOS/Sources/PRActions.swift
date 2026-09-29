@@ -3,9 +3,14 @@ import SwiftUI
 
 /// What stands between a PR and its merge, on its card and in its full screen.
 struct PRStatus: View {
-    let pr: PullRequest
+    let card: DomainPullRequestCard
 
     var body: some View {
+        if let pr = card.observation { observed(pr) }
+    }
+
+    @ViewBuilder
+    private func observed(_ pr: PullRequest) -> some View {
         if pr.hasConflicts {
             Label("It has conflicts with its base branch", systemImage: "exclamationmark.triangle.fill")
                 .font(.footnote.weight(.medium))
@@ -30,12 +35,12 @@ struct PRStatus: View {
 
 /// Open the PR on GitHub, or set it aside: the quiet line under its main button.
 struct PRFooter: View {
-    let pr: PullRequest
+    let card: DomainPullRequestCard
     let onSetAside: () -> Void
 
     var body: some View {
         HStack {
-            if let url = URL(string: pr.url) {
+            if let url = card.webURL {
                 Link(destination: url) {
                     Label("Open on GitHub", systemImage: "arrow.up.right.square")
                 }

@@ -36,7 +36,7 @@ struct ServiceTasksView: View {
                     }
                     .padding(.horizontal, 16)
                     .padding(.top, 16)
-                    if fleet.overview == nil {
+                    if fleet.workspace == nil {
                         ProgressView()
                             .controlSize(.large)
                             .tint(Palette.dawn)
@@ -69,7 +69,7 @@ struct ServiceTasksView: View {
                     Button("Archive Completed", systemImage: "archivebox") {
                         store.send(.board(.archiveTapped))
                     }
-                    .disabled(!store.board.canArchive || store.board.isArchiving || store.board.archiveOutcome?.uncertainID != nil)
+                    .disabled(!store.board.canArchive || store.board.isArchiving)
                 }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Settings", systemImage: "gearshape") { showSettings() }
@@ -147,9 +147,9 @@ private struct RequestSection: View {
                 }
                 Spacer(minLength: 8)
                 if !single {
-                    StateChip(label: tree.rows.isEmpty ? tree.request.definingLabel() : tree.request.state.label, tint: tree.request.state.tint)
+                    StateChip(label: tree.rows.isEmpty ? fleet.definingLabel(of: tree.request) : tree.request.stateLabel, tint: tree.request.tint)
                 }
-                if tree.request.canWithdraw {
+                if store.state.canWithdraw(tree.request.id) {
                     Menu {
                         Button("Withdraw Request", systemImage: "xmark.circle", role: .destructive) {
                             store.send(.withdrawRequested(tree.request.id))
@@ -168,7 +168,7 @@ private struct RequestSection: View {
             .padding(.bottom, 9)
             VStack(spacing: 0) {
                 if tree.rows.isEmpty {
-                    DefiningRow(request: tree.request)
+                    DefiningRow(request: tree.request, label: fleet.definingLabel(of: tree.request), since: fleet.createdAt(of: tree.request))
                 } else {
                     ForEach(Array(tree.rows.enumerated()), id: \.element.id) { index, row in
                         TaskTreeRowView(row: row, first: index == 0, store: store)
@@ -189,24 +189,26 @@ private struct RequestSection: View {
     }
 
     private var meta: String {
-        let when = relative(tree.request.createdAt)
-        guard tree.rows.count > 1 else { return when }
-        return "\(when) · \(String(localized: "\(tree.rows.count) tasks"))"
+        let when = fleet.createdAt(of: tree.request).map(relative)
+        guard tree.rows.count > 1 else { return when ?? "" }
+        return [when, String(localized: "\(tree.rows.count) tasks")].compactMap { $0 }.joined(separator: " · ")
     }
 }
 
 private struct DefiningRow: View {
-    let request: WorkRequest
+    let request: DomainV2.Request
+    let label: String
+    let since: Int64?
 
     var body: some View {
-        let left = request.isLeftDefining()
+        let left = request.closed
         HStack(alignment: .top, spacing: 12) {
             Glyph(symbol: "diamond", tint: Palette.slate, pulse: !left)
             VStack(alignment: .leading, spacing: 3) {
                 Text(left ? String(localized: "The orchestrator left it without tasks") : String(localized: "The orchestrator is splitting it into tasks"))
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
-                StateLine(label: request.definingLabel(), tint: Palette.slate, since: request.createdAt)
+                StateLine(label: label, tint: Palette.slate, since: since)
             }
             Spacer(minLength: 0)
         }
@@ -235,12 +237,12 @@ private struct TaskTreeRowView: View {
                 HStack(alignment: .top, spacing: 12) {
                     Glyph(task: task)
                     VStack(alignment: .leading, spacing: 3) {
-                        Text(fleet.board.rowTitle(of: task))
+                        Text(task.title)
                             .font(.subheadline.weight(.semibold))
                             .foregroundStyle(task.state == .cancelled ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.ink))
                             .strikethrough(task.state == .cancelled)
                             .multilineTextAlignment(.leading)
-                        StateLine(label: fleet.board.stateLabel(of: task), tint: task.tint, since: task.stateSince)
+                        StateLine(label: task.state.label, tint: task.tint, since: fleet.stateSince(of: task))
                         if let now {
                             NowLine(text: now)
                                 .padding(.top, 1)
@@ -334,13 +336,13 @@ private struct DoneRequestRow: View {
     private var fleet: ServiceTaskPresentation { store.presentation }
 
     var body: some View {
-        let last = tree.tasks.max { $0.stateSince < $1.stateSince }
+        let last = tree.tasks.max { (fleet.stateSince(of: $0) ?? 0) < (fleet.stateSince(of: $1) ?? 0) }
         Group {
             if let last {
-                Button { store.send(.pushTask(last.id)) } label: { content(since: last.stateSince) }
+                Button { store.send(.pushTask(last.id)) } label: { content(since: fleet.stateSince(of: last)) }
                     .buttonStyle(PressStyle())
             } else {
-                content(since: tree.request.createdAt)
+                content(since: fleet.createdAt(of: tree.request))
             }
         }
         .overlay(alignment: .top) {
@@ -352,8 +354,8 @@ private struct DoneRequestRow: View {
         }
     }
 
-    private func content(since: Int64) -> some View {
-        let cancelled = tree.isCancelled
+    private func content(since: Int64?) -> some View {
+        let cancelled = !tree.rows.isEmpty && tree.rows.allSatisfy { $0.task.state == .cancelled }
         return HStack(spacing: 8) {
             HStack(alignment: .top, spacing: 12) {
                 Glyph(symbol: cancelled ? "xmark" : "checkmark", tint: cancelled ? Palette.slate : Palette.sage)
@@ -362,7 +364,7 @@ private struct DoneRequestRow: View {
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Palette.ink)
                         .multilineTextAlignment(.leading)
-                    StateLine(label: cancelled ? WorkTask.State.cancelled.label : tree.request.state.label, tint: cancelled ? Palette.slate : Palette.sage, since: since)
+                    StateLine(label: cancelled ? DomainV2.TaskState.cancelled.label : tree.request.stateLabel, tint: cancelled ? Palette.slate : Palette.sage, since: since)
                     if tree.rows.count != 1 {
                         NowLine(text: tree.rows.isEmpty ? String(localized: "Finished without tasks") : String(localized: "\(tree.rows.count) tasks"))
                             .padding(.top, 1)

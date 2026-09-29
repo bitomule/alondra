@@ -8,9 +8,9 @@ struct ServiceDocumentView: View {
     var markRead: (() -> Void)?
     @Environment(\.dismiss) private var dismiss
     @FocusState private var generalFocused: Bool
-    private var item: InboxItem {
-        switch store.subject { case .question(let q): .question(q); case .report(let r): .report(r) }
-    }
+    private var item: DomainV2.InboxItem { store.subject.item }
+    private var agentName: String? { store.workspace.agent(item.agentId)?.name }
+    private var date: Int64? { store.workspace.runtime?.createdAt(store.subject.interaction.id) }
     private var kind: Kind { Kind(item) }
     private var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: store.sourceText ?? "") }
     private var loaded: Bool { store.sourceText != nil || store.loadError != nil }
@@ -39,7 +39,6 @@ struct ServiceDocumentView: View {
             }
         }
         .alert("Check Alondra", isPresented: Binding(get: { !store.noticeIsSubmissionFailure && (store.notice != nil || store.conflict != nil) }, set: { if !$0 { _ = store.send(.dismissNotice) } })) {
-            if store.feedbackReadRetryAvailable { Button("Retry marking report read") { _ = store.send(.retryFeedbackRead) } }
             Button("OK") { _ = store.send(.dismissNotice) }
         } message: { Text(store.conflict ?? store.notice ?? "") }
         .sensoryFeedback(.selection, trigger: composing?.id)
@@ -56,10 +55,11 @@ struct ServiceDocumentView: View {
                 header
                     .padding(.bottom, 24)
                 content
-                if case .question(let question) = item, question.origin != "plan", !question.options.isEmpty {
+                if let question = store.subject.question, !question.options.isEmpty {
                     ServiceOptionGrid(options: question.options, picked: nil) { option in
-                        store.send(.chooseReviewOption(option, author: store.feedbackAuthor))
+                        store.send(.chooseReviewOption(option.id, author: store.feedbackAuthor))
                     }
+                    .disabled(!store.canAnswer)
                     .padding(.top, 28)
                 }
                 if loaded, loadError == nil {
@@ -80,11 +80,13 @@ struct ServiceDocumentView: View {
                 .foregroundStyle(Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
             HStack(spacing: 6) {
-                if let name = item.nodeName {
-                    Text(name).font(.mono(.footnote, weight: .medium))
+                if let agentName {
+                    Text(agentName).font(.mono(.footnote, weight: .medium))
                 }
-                Text(verbatim: "·")
-                Text(relative(item.date))
+                if let date {
+                    if agentName != nil { Text(verbatim: "·") }
+                    Text(relative(date))
+                }
             }
             .font(.footnote)
             .foregroundStyle(.secondary)
@@ -191,41 +193,42 @@ struct ServiceDocumentView: View {
         GlassEffectContainer(spacing: 12) {
             VStack(spacing: 10) {
                 HStack(spacing: 12) {
-                    switch item {
-                    case .question(let question):
+                    if store.subject.question != nil {
                         Button {
-                            store.send(.submitFeedback(author: store.feedbackAuthor))
+                            store.send(.moreContextTapped(author: store.feedbackAuthor))
                         } label: {
-                            Label(store.changeOption.map(AnswerOption.displayLabel) ?? String(localized: "Reply"), systemImage: "text.bubble")
+                            Label("Ask for Context", systemImage: "questionmark.bubble")
                                 .frame(maxWidth: .infinity)
                         }
                         .modifier(ServiceGlassEmphasis(prominent: hasFeedback))
                         .tint(Palette.dawn)
                         .disabled(!hasFeedback || sending)
-                        if let approve = store.approveOption {
+                    } else if store.subject.isDelivery {
+                        if store.subject.action(.submitFeedback) != nil {
                             Button {
-                                store.send(.approveQuestion)
+                                store.send(.sendFeedbackTapped(author: store.feedbackAuthor))
                             } label: {
-                                Label(AnswerOption.displayLabel(approve), systemImage: "checkmark")
+                                Label("Request Changes", systemImage: "arrow.uturn.backward")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .modifier(ServiceGlassEmphasis(prominent: hasFeedback))
+                            .tint(Palette.dawn)
+                            .disabled(!hasFeedback || !store.canSendFeedback)
+                        }
+                        if store.subject.action(.acceptDelivery) != nil {
+                            Button {
+                                store.send(.reviewTapped(.approved))
+                            } label: {
+                                Label("Approve", systemImage: "checkmark")
                                     .frame(maxWidth: .infinity)
                             }
                             .buttonStyle(.glassProminent)
                             .tint(Palette.sageDeep)
-                            .disabled(sending)
+                            .disabled(!store.canAccept)
                         }
-                    case .pullRequest:
+                    } else {
                         Button {
-                            store.send(.submitFeedback(author: store.feedbackAuthor))
-                        } label: {
-                            Label("Request Changes", systemImage: "arrow.uturn.backward")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .modifier(ServiceGlassEmphasis(prominent: hasFeedback))
-                        .tint(Palette.dawn)
-                        .disabled(!hasFeedback || sending)
-                    case .report:
-                        Button {
-                            store.send(.submitFeedback(author: store.feedbackAuthor))
+                            store.send(.sendFeedbackTapped(author: store.feedbackAuthor))
                         } label: {
                             Label("Send", systemImage: "paperplane")
                                 .frame(maxWidth: .infinity)
@@ -233,15 +236,17 @@ struct ServiceDocumentView: View {
                         .modifier(ServiceGlassEmphasis(prominent: hasFeedback))
                         .tint(Palette.dawn)
                         .disabled(!hasFeedback || sending)
-                        Button {
-                            markRead?()
-                        } label: {
-                            Label("Mark as Read", systemImage: "checkmark")
-                                .frame(maxWidth: .infinity)
+                        if store.subject.action(.markRead) != nil {
+                            Button {
+                                markRead?()
+                            } label: {
+                                Label("Mark as Read", systemImage: "checkmark")
+                                    .frame(maxWidth: .infinity)
+                            }
+                            .modifier(ServiceGlassEmphasis(prominent: true))
+                            .tint(reportTint)
+                            .disabled(sending)
                         }
-                        .modifier(ServiceGlassEmphasis(prominent: true))
-                        .tint(reportTint)
-                        .disabled(sending)
                     }
                 }
             }
