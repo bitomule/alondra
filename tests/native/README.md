@@ -16,9 +16,9 @@ always builds with `-c dbg`, never from a TestFlight artifact.
 
 | Scenario | Production components | Independent observations |
 | --- | --- | --- |
-| `large-overview` | `AuthSession`, `RelaySession`, request/response envelope codec, snapshot assembly | Exact 240 KB Unicode document, all expected fragment offsets, release, encrypted requests opened by the synthetic Mac, one token exchange |
-| `session-revoked` | Same read pipeline and actual `AuthSession.logout()` during the first fragment | Read rejected, no later fragments, issuer revocation, credential removal, cached lease rejection, no extra token exchange |
-| `lost-response` | Encrypted mutation, `RelaySession`, file-backed `RelayOutbox`, receipt verification | Synthetic Mac applies one mutation, drops response, client reads receipt and recovers exact result; a replacement session reopens the journal without submitting again |
+| `large-resource-read` | `AuthSession`, `RelaySession`, request/response envelope codec, resource reads | Exact large Unicode document assembled from verified document revision chunks, only summary/document/content resource paths, encrypted requests opened by the synthetic Mac, one token exchange |
+| `session-revoked` | Same read pipeline and actual `AuthSession.logout()` during the first content chunk | Read rejected, no later chunks, issuer revocation, credential removal, cached lease rejection, no extra token exchange |
+| `lost-response` | Encrypted resource mutation, `RelaySession`, file-backed `RelayOutbox`, receipt verification | Synthetic Mac accepts one request, drops response, client reads receipt and recovers exact result; a replacement session reopens the journal without submitting again |
 
 **Declared doubles:** HTTP peers, OIDC browser (always forbidden), memory credential
 storage, synthetic keys/tokens and fixed service clock. The peers implement

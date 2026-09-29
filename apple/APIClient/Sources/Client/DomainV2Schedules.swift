@@ -3,7 +3,7 @@ import Foundation
 
 extension AlondraAPIClient {
     public func domainSchedules() async throws -> DomainV2.ScheduleList {
-        let endpoint = Endpoint<DomainV2.ScheduleList>(.get, path: ["v2", "domain", "schedules"]) {
+        let endpoint = Endpoint<DomainV2.ScheduleList>(.get, path: ["schedules"]) {
             try DomainV2.decode(DomainV2.ScheduleList.self, from: $0)
         }
         let result = try await send(endpoint)
@@ -13,7 +13,7 @@ extension AlondraAPIClient {
 
     public func domainSchedule(_ id: DomainV2.ScheduleId) async throws -> DomainV2.ScheduleDetail {
         let endpoint = Endpoint<DomainV2.ScheduleDetail>(.get,
-            path: ["v2", "domain", "schedules", id.rawValue]) {
+            path: ["schedules", id.rawValue]) {
                 try DomainV2.decode(DomainV2.ScheduleDetail.self, from: $0)
             }
         let result = try await send(endpoint)
@@ -30,7 +30,7 @@ extension AlondraAPIClient {
             throw Self.invalidScheduleInput("New Schedule revision must be zero")
         }
         let endpoint = Endpoint<DomainV2.ScheduleWriteReceipt>(.post,
-            path: ["v2", "domain", "schedules"], body: try DomainV2.encode(draft),
+            path: ["schedules"], body: try DomainV2.encode(draft),
             contentType: "application/json", requiresJSONObjectResponse: true) {
                 try DomainV2.decode(DomainV2.ScheduleWriteReceipt.self, from: $0)
             }
@@ -47,7 +47,7 @@ extension AlondraAPIClient {
             throw Self.invalidScheduleInput("Invalid Schedule update revision")
         }
         let endpoint = Endpoint<DomainV2.ScheduleWriteReceipt>(.put,
-            path: ["v2", "domain", "schedules", id.rawValue], body: try DomainV2.encode(draft),
+            path: ["schedules", id.rawValue], body: try DomainV2.encode(draft),
             contentType: "application/json", requiresJSONObjectResponse: true) {
                 try DomainV2.decode(DomainV2.ScheduleWriteReceipt.self, from: $0)
             }
@@ -61,7 +61,7 @@ extension AlondraAPIClient {
     public func deleteDomainSchedule(_ id: DomainV2.ScheduleId,
                                      operationID: String) async throws {
         let endpoint = Endpoint<DomainV2.ScheduleDeleteReceipt>(.delete,
-            path: ["v2", "domain", "schedules", id.rawValue],
+            path: ["schedules", id.rawValue],
             requiresJSONObjectResponse: true) {
                 try DomainV2.decode(DomainV2.ScheduleDeleteReceipt.self, from: $0)
             }
@@ -73,7 +73,7 @@ extension AlondraAPIClient {
     public func requestDomainScheduleRun(_ id: DomainV2.ScheduleId,
                                          operationID: String) async throws -> DomainV2.ScheduleRunClaimReceipt {
         let endpoint = Endpoint<DomainV2.ScheduleRunClaimReceipt>(.post,
-            path: ["v2", "domain", "schedules", id.rawValue, "run"],
+            path: ["schedules", id.rawValue, "runs"],
             requiresJSONObjectResponse: true) {
                 try DomainV2.decode(DomainV2.ScheduleRunClaimReceipt.self, from: $0)
             }

@@ -26,24 +26,32 @@ final class DomainV2WireTests: XCTestCase {
                                        inputs: ["explanation": .text(value: "Synthetic reason")]))
     }
 
-    func testCommandKeepsExactTaggedShapeAndDurableIdentityWithoutActor() async throws {
+    func testTransportAdmitsResourceMutationsAndRejectsGenericCommandPath() {
+        XCTAssertTrue(ServiceRequest.validResourceMutationPath(method: .post, path: "/interactions/question-1/answers"))
+        XCTAssertTrue(ServiceRequest.validResourceMutationPath(method: .patch, path: "/tasks/task-1"))
+        XCTAssertFalse(ServiceRequest.validResourceMutationPath(method: .post, path: "/commands"))
+        XCTAssertFalse(ServiceRequest.validResourceMutationPath(method: .get, path: "/interactions/question-1/answers"))
+        XCTAssertFalse(ServiceRequest.validResourceMutationPath(method: .post, path: "/tasks/task-1/unknown"))
+        XCTAssertTrue(ServiceRequest.isDomainMutationRoute(method: .post, path: ["merge-authorizations", "authorization-1", "claim"], hasBody: true))
+    }
+
+    func testCommandUsesSpecificResourceAndKeepsDurableIdentityWithoutGenericCommandRoute() async throws {
         let operations = DomainOperations(.completed(status: 200, body: Data(#"{"revision":8,"changed":true,"effects":[],"created_ids":[]}"#.utf8)))
         let outcome = try await client(operations).executeDomainCommand(envelope)
         XCTAssertEqual(outcome.revision, 8)
         let requests = await operations.recorded()
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].path, "/v2/domain/commands")
+        XCTAssertEqual(requests[0].path, "/interactions/question-1/answers")
         XCTAssertNotEqual(requests[0].operationID, "command-1", "Each transmission is a new transport request")
         let body = try XCTUnwrap(requests[0].body)
-        XCTAssertEqual(try DomainV2.decode(DomainV2.CommandEnvelope.self, from: body), envelope)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         XCTAssertNil(json["actor"])
         XCTAssertEqual(json["data_epoch"] as? String, "epoch-2")
-        let command = try XCTUnwrap(json["command"] as? [String: Any])
-        XCTAssertEqual(command["kind"] as? String, "answer_question")
-        XCTAssertEqual(command["interaction_id"] as? String, "question-1")
-        XCTAssertNil(command["answer"], "P1 answer fields are not nested")
-        let inputs = try XCTUnwrap(command["inputs"] as? [String: [String: Any]])
+        XCTAssertEqual(json["command_id"] as? String, "command-1")
+        XCTAssertEqual(json["expected_revision"] as? Int, 7)
+        XCTAssertNil(json["kind"])
+        XCTAssertNil(json["interaction_id"], "The interaction identity is carried by the URI")
+        let inputs = try XCTUnwrap(json["inputs"] as? [String: [String: Any]])
         XCTAssertEqual(inputs["explanation"]?["kind"] as? String, "text")
         XCTAssertEqual(inputs["explanation"]?["value"] as? String, "Synthetic reason")
     }
@@ -60,7 +68,24 @@ final class DomainV2WireTests: XCTestCase {
         }
         let requests = await operations.recorded()
         XCTAssertEqual(requests.count, 1)
-        XCTAssertEqual(requests[0].path, "/v2/domain/commands")
+        XCTAssertEqual(requests[0].path, "/interactions/question-1/answers")
+    }
+
+    func testClaimMergeAuthorizationUsesItsResourceRoute() async throws {
+        let claim = DomainV2.CommandEnvelope(protocolVersion: 2, dataEpoch: "epoch-2", commandId: "command-claim",
+            expectedRevision: 7, command: .claimMergeAuthorization(authorizationId: "authorization-1",
+                remoteHead: "head-sha", remoteBase: "base-sha", baseVerified: true))
+        let operations = DomainOperations(.completed(status: 200, body: Data(#"{"revision":8,"changed":true,"effects":[],"created_ids":[]}"#.utf8)))
+        _ = try await client(operations).executeDomainCommand(claim)
+        let requests = await operations.recorded()
+        XCTAssertEqual(requests.map(\.path), ["/merge-authorizations/authorization-1/claim"])
+        let body = try XCTUnwrap(requests[0].body)
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        XCTAssertNil(json["authorization_id"], "The authorization identity is carried by the URI")
+        XCTAssertEqual(json["remote_head"] as? String, "head-sha")
+        XCTAssertEqual(json["remote_base"] as? String, "base-sha")
+        XCTAssertEqual(json["base_verified"] as? Bool, true)
+        XCTAssertEqual(json["command_id"] as? String, "command-claim")
     }
 
     func testUnknownOutcomeDoesNotRetryOrTurnIntoSuccess() async throws {
@@ -80,7 +105,7 @@ final class DomainV2WireTests: XCTestCase {
             XCTFail("Expected protocol rejection")
         } catch let error as DomainV2.DomainError { XCTAssertEqual(error.code, "incompatible_protocol") }
         let requests = await operations.recorded()
-        XCTAssertEqual(requests.map(\.path), ["/v2/domain/capabilities"])
+        XCTAssertEqual(requests.map(\.path), ["/capabilities"])
     }
 
     func testDeliveryEvidenceAndCASResolutionUseExactEncryptedWire() async throws {
@@ -90,7 +115,7 @@ final class DomainV2WireTests: XCTestCase {
         XCTAssertEqual(page.attempts.first?.interactionId, "question-a")
         XCTAssertEqual(page.attempts.first?.recipientKind, "agent")
         let readRequests = await reads.recorded()
-        XCTAssertEqual(readRequests.map(\.path), ["/v2/domain/delivery-attempts?after=0"])
+        XCTAssertEqual(readRequests.map(\.path), ["/delivery-attempts?after=0"])
 
         let resultJSON = Data(#"{"attempt_id":1,"message_id":1,"version":3,"state":"retryable"}"#.utf8)
         let writes = DomainOperations(.completed(status: 200, body: resultJSON))
@@ -99,7 +124,7 @@ final class DomainV2WireTests: XCTestCase {
         XCTAssertEqual(result.state, "retryable")
         let writeRequests = await writes.recorded()
         let request = try XCTUnwrap(writeRequests.first)
-        XCTAssertEqual(request.path, "/v2/domain/delivery-attempts/1/resolve")
+        XCTAssertEqual(request.path, "/delivery-attempts/1/resolve")
         XCTAssertEqual(request.operationID, "resolve-1")
         let body = try XCTUnwrap(request.body)
         let expected = try DomainV2.decode(DomainV2.ResolveDeliveryAttempt.self, from: body)
@@ -196,8 +221,8 @@ final class DomainV2WireTests: XCTestCase {
         let text = try await client(operations).domainDocumentContent("rev", expectedDigest: "b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9")
         XCTAssertEqual(text, "hello world")
         let paths = await operations.recorded().map(\.path)
-        XCTAssertEqual(paths, ["/v2/domain/document-revisions/rev/content?offset=0",
-                               "/v2/domain/document-revisions/rev/content?offset=6&version=v1"])
+        XCTAssertEqual(paths, ["/document-revisions/rev/content?offset=0",
+                               "/document-revisions/rev/content?offset=6&version=v1"])
     }
 
     func testDocumentContentRejectsChangedVersionWithoutReturningPartialText() async throws {

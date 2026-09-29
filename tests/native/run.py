@@ -22,9 +22,9 @@ import zipfile
 ROOT = Path(__file__).resolve().parents[2]
 BUNDLE = "com.bitomule.alondra.nativeharness"
 CHECKS = {
-    "large-overview": {"exact_large_unicode_document", "all_fragments_requested", "snapshot_released",
+    "large-resource-read": {"exact_large_unicode_document", "all_resource_chunks_requested", "resource_reads_only",
                        "verified_encrypted_requests", "single_token_exchange"},
-    "session-revoked": {"revoked_read_rejected", "first_fragment_reached", "no_token_renewal_after_revocation",
+    "session-revoked": {"revoked_read_rejected", "first_resource_chunk_reached", "no_token_renewal_after_revocation",
                         "issuer_revocation_executed", "credential_removed", "cached_lease_rejected"},
     "lost-response": {"receipt_recovered", "durable_result_after_restart", "mutation_submitted_once",
                       "status_read_after_loss", "verified_encrypted_request"},

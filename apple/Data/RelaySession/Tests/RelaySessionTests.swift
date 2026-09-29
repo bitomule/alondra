@@ -8,8 +8,8 @@ import XCTest
 
 private let ok = Data(#"{"ok":true}"#.utf8)
 private let changesBody = #"{"protocol_version":2,"data_epoch":"epoch","revision":42,"changed":true}"#
-private let command = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":7,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
-private let changedCommand = Data(#"{"protocol_version":2,"data_epoch":"epoch","command_id":"command-1","expected_revision":8,"command":{"kind":"mark_read","interaction_id":"interaction-1"}}"#.utf8)
+private let command = Data(#"{"data_epoch":"epoch","command_id":"command-1","expected_revision":7}"#.utf8)
+private let changedCommand = Data(#"{"data_epoch":"epoch","command_id":"command-1","expected_revision":8}"#.utf8)
 
 final class RelaySessionTests: XCTestCase {
     private func api(_ fixture: Fixture, _ session: RelaySession) -> AlondraAPIClient {
@@ -17,7 +17,7 @@ final class RelaySessionTests: XCTestCase {
     }
 
     private func summary(_ fixture: Fixture, _ session: RelaySession) async throws -> Data {
-        try await api(fixture, session).send(Endpoint<Data>.data(.get, path: ["v2", "domain", "summary"]))
+        try await api(fixture, session).send(Endpoint<Data>.data(.get, path: ["summary"]))
     }
 
     private func changes(_ fixture: Fixture, _ session: RelaySession, after revision: UInt64) async throws -> DomainV2.Changes {
@@ -35,7 +35,7 @@ final class RelaySessionTests: XCTestCase {
         let fixture = try Fixture()
         let session = fixture.session(now: { UInt64.max })
         do {
-            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
             XCTFail("Invalid envelope time must remain a definite rejection")
         } catch RelaySessionError.invalidRequest { }
         let posts = await fixture.http.mutations
@@ -50,7 +50,7 @@ final class RelaySessionTests: XCTestCase {
             let session = fixture.session()
             let absent = try await session.recoveryStatus(requestID: "operation-1")
             XCTAssertEqual(absent, .notDispatched)
-            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+            _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
             let restored = try await session.recoveryStatus(requestID: "operation-1")
             switch mode {
             case .success: XCTAssertEqual(restored, .completed(status: 200, body: ok))
@@ -65,15 +65,15 @@ final class RelaySessionTests: XCTestCase {
     func testReadCannotReuseMutationIdentityInEitherDirection() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
-        _ = try await session.execute(requestID: "operation-1", method: "GET", path: "/v2/domain/summary")
+        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
+        _ = try await session.execute(requestID: "operation-1", method: "GET", path: "/summary")
         let requests = await fixture.http.mutations
         XCTAssertEqual(requests.count, 2)
         let read = try JSONDecoder().decode(EnvelopeV1.self, from: requests[1])
         XCTAssertNotEqual(read.requestID, "operation-1")
         XCTAssertTrue(read.requestID.hasPrefix("read-"))
         do {
-            _ = try await session.execute(requestID: read.requestID, method: "POST", path: "/v2/domain/commands", body: command)
+            _ = try await session.execute(requestID: read.requestID, method: "POST", path: "/interactions/interaction-1/read-state", body: command)
             XCTFail("Mutation must not reuse an internal read identity")
         } catch RelaySessionError.invalidRequest { }
         let after = await fixture.http.mutations
@@ -89,25 +89,25 @@ final class RelaySessionTests: XCTestCase {
         } catch RelaySessionError.invalidRequest { }
         let none = await fixture.http.mutations
         XCTAssertTrue(none.isEmpty, "A refused read never reaches the relay")
-        for path in ["/v2/domain/summary", "/v2/domain/inbox/interaction%3Aq"] {
+        for path in ["/summary", "/inbox/interaction%3Aq"] {
             let result = try await session.execute(requestID: "caller-read", method: "GET", path: path)
             XCTAssertEqual(result, .completed(status: 200, body: ok))
         }
         let posts = await fixture.http.mutations
         XCTAssertEqual(try posts.map { try opened(fixture, $0)["path"] as? String },
-                       ["/v2/domain/summary", "/v2/domain/inbox/interaction%3Aq"])
+                       ["/summary", "/inbox/interaction%3Aq"])
     }
 
     func testMutationIdentityRejectsChangedRequestBeforeAndAfterRetirement() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+        _ = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
         for retired in [false, true] {
             if retired { try await session.retireAppliedResponse(requestID: "operation-1") }
             for (method, path, body) in [
-                ("POST", "/v2/domain/commands", changedCommand),
-                ("POST", "/v2/domain/schedules", command),
-                ("PUT", "/v2/domain/schedules/schedule-1", command)
+                ("POST", "/interactions/interaction-1/read-state", changedCommand),
+                ("POST", "/schedules", command),
+                ("PUT", "/schedules/schedule-1", command)
             ] {
                 do {
                     _ = try await session.execute(requestID: "operation-1", method: method, path: path, body: body)
@@ -125,7 +125,7 @@ final class RelaySessionTests: XCTestCase {
         @Sendable func attempt(_ body: Data) async throws -> Bool {
             do {
                 let outcome = try await session.execute(requestID: "operation-1", method: "POST",
-                    path: "/v2/domain/commands", body: body)
+                    path: "/interactions/interaction-1/read-state", body: body)
                 XCTAssertEqual(outcome, .completed(status: 200, body: ok))
                 return true
             } catch RelaySessionError.operationIdentityConflict { return false }
@@ -141,7 +141,7 @@ final class RelaySessionTests: XCTestCase {
     func testReadRecoversLostResponseWithoutReservingAnIdentity() async throws {
         let fixture = try Fixture(mode: .overview)
         let session = fixture.session()
-        let response = try await api(fixture, session).send(Endpoint<Data>.data(.get, path: ["v2", "domain", "summary"]),
+        let response = try await api(fixture, session).send(Endpoint<Data>.data(.get, path: ["summary"]),
                                                             operationID: "operation-1")
         XCTAssertEqual(try DomainV2.decode(DomainV2.Changes.self, from: response),
                        try DomainV2.decode(DomainV2.Changes.self, from: Data(changesBody.utf8)))
@@ -154,7 +154,7 @@ final class RelaySessionTests: XCTestCase {
     func testUnifiedAPIRecoversLostMutationAcrossClientRecreation() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        let endpoint = Endpoint<Data>.data(.post, path: ["v2", "domain", "commands"], body: command)
+        let endpoint = Endpoint<Data>.data(.post, path: ["interactions", "interaction-1", "read-state"], body: command)
         let result = try await api(fixture, session).send(endpoint, operationID: "command-1")
         XCTAssertEqual(result, ok)
         let recovered = try await api(fixture, session).send(endpoint, operationID: "command-1")
@@ -166,16 +166,16 @@ final class RelaySessionTests: XCTestCase {
     func testLostPOSTResponseResolvesEncryptedResultWithoutReplayingMutation() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        let initial = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands",
+        let initial = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state",
                                                 body: command, statusPolls: 0)
         XCTAssertEqual(initial, .unknown)
-        let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands",
+        let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state",
                                                body: command)
         XCTAssertEqual(result, .completed(status: 200, body: ok))
         let requests = await fixture.http.mutations
         XCTAssertEqual(requests.count, 1, "A retried operation must never duplicate the command")
         let local = try opened(fixture, requests.first)
-        XCTAssertEqual(local["path"] as? String, "/v2/domain/commands")
+        XCTAssertEqual(local["path"] as? String, "/interactions/interaction-1/read-state")
         XCTAssertEqual((local["body"] as? [String: Any])?["command_id"] as? String, "command-1")
     }
 
@@ -183,33 +183,33 @@ final class RelaySessionTests: XCTestCase {
         let fixture = try Fixture()
         let session = fixture.session()
         let first = try await session.execute(requestID: "command-1", method: "POST",
-            path: "/v2/domain/commands", body: command, statusPolls: 0)
+            path: "/interactions/interaction-1/read-state", body: command, statusPolls: 0)
         XCTAssertEqual(first, .unknown)
         let recovered = try await session.execute(requestID: "command-1", method: "POST",
-            path: "/v2/domain/commands", body: command)
+            path: "/interactions/interaction-1/read-state", body: command)
         XCTAssertEqual(recovered, .completed(status: 200, body: ok))
         do {
             _ = try await session.execute(requestID: "command-1", method: "POST",
-                path: "/v2/domain/commands", body: changedCommand)
+                path: "/interactions/interaction-1/read-state", body: changedCommand)
             XCTFail("A changed v2 envelope reused an existing command identity")
         } catch RelaySessionError.operationIdentityConflict { }
         let posts = await fixture.http.mutations
         XCTAssertEqual(posts.count, 1)
         let request = try opened(fixture, posts.first)
-        XCTAssertEqual(request["path"] as? String, "/v2/domain/commands")
+        XCTAssertEqual(request["path"] as? String, "/interactions/interaction-1/read-state")
         let body = try XCTUnwrap(request["body"] as? [String: Any])
         XCTAssertEqual(body["command_id"] as? String, "command-1")
     }
 
     func testV2DeliveryPathsAreExactAndScoped() {
-        XCTAssertTrue(RelaySession.validDomainDeliveryPath(method: "GET", path: "/v2/domain/delivery-attempts?after=0"))
-        XCTAssertTrue(RelaySession.validDomainDeliveryPath(method: "POST", path: "/v2/domain/delivery-attempts/42/resolve"))
+        XCTAssertTrue(RelaySession.validDomainDeliveryPath(method: "GET", path: "/delivery-attempts?after=0"))
+        XCTAssertTrue(RelaySession.validDomainDeliveryPath(method: "POST", path: "/delivery-attempts/42/resolve"))
         for (method, path) in [
-            ("GET", "/v2/domain/delivery-attempts?after=0&extra=1"),
-            ("GET", "/v2/domain/delivery-attempts?after=-1"),
-            ("POST", "/v2/domain/delivery-attempts/0/resolve"),
-            ("POST", "/v2/domain/delivery-attempts/42/resolve/extra"),
-            ("DELETE", "/v2/domain/delivery-attempts/42/resolve")
+            ("GET", "/delivery-attempts?after=0&extra=1"),
+            ("GET", "/delivery-attempts?after=-1"),
+            ("POST", "/delivery-attempts/0/resolve"),
+            ("POST", "/delivery-attempts/42/resolve/extra"),
+            ("DELETE", "/delivery-attempts/42/resolve")
         ] {
             XCTAssertFalse(RelaySession.validDomainDeliveryPath(method: method, path: path))
         }
@@ -217,23 +217,23 @@ final class RelaySessionTests: XCTestCase {
 
     func testV2ScheduleRoutesMatchMacBodyAndIdentifierRules() {
         for (method, path, body) in [
-            ("GET", "/v2/domain/schedules", false),
-            ("GET", "/v2/domain/schedules/schedule-1", false),
-            ("POST", "/v2/domain/schedules", true),
-            ("PUT", "/v2/domain/schedules/schedule-1", true),
-            ("DELETE", "/v2/domain/schedules/schedule-1", false),
-            ("POST", "/v2/domain/schedules/schedule-1/run", false),
+            ("GET", "/schedules", false),
+            ("GET", "/schedules/schedule-1", false),
+            ("POST", "/schedules", true),
+            ("PUT", "/schedules/schedule-1", true),
+            ("DELETE", "/schedules/schedule-1", false),
+            ("POST", "/schedules/schedule-1/runs", false),
         ] {
             XCTAssertTrue(RelaySession.validDomainSchedulePath(method: method, path: path, hasBody: body), path)
         }
         for (method, path, body) in [
-            ("GET", "/v2/domain/schedules/schedule-1/run", false),
-            ("POST", "/v2/domain/schedules/schedule-1/run", true),
-            ("POST", "/v2/domain/schedules", false),
-            ("DELETE", "/v2/domain/schedules/schedule-1", true),
-            ("GET", "/v2/domain/schedules/bad%2Fid", false),
-            ("GET", "/v2/domain/schedules/id/extra", false),
-            ("GET", "/v2/domain/schedules/", false),
+            ("GET", "/schedules/schedule-1/runs", false),
+            ("POST", "/schedules/schedule-1/runs", true),
+            ("POST", "/schedules", false),
+            ("DELETE", "/schedules/schedule-1", true),
+            ("GET", "/schedules/bad%2Fid", false),
+            ("GET", "/schedules/id/extra", false),
+            ("GET", "/schedules/", false),
         ] {
             XCTAssertFalse(RelaySession.validDomainSchedulePath(method: method, path: path, hasBody: body), path)
         }
@@ -242,29 +242,29 @@ final class RelaySessionTests: XCTestCase {
     func testV2ScheduleReadIsEphemeralAndCreateRetryReusesSealedOperation() async throws {
         let fixture = try Fixture()
         let session = fixture.session()
-        let read = try await session.execute(requestID: "caller-read", method: "GET", path: "/v2/domain/schedules")
+        let read = try await session.execute(requestID: "caller-read", method: "GET", path: "/schedules")
         XCTAssertEqual(read, .completed(status: 200, body: ok))
         let readRecord = try await session.recoveryStatus(requestID: "caller-read")
         XCTAssertEqual(readRecord, .notDispatched)
 
         let body = Data(#"{"title":"Review","text":"Review project","frequency":"daily","hour":9,"minute":0,"revision":0}"#.utf8)
         let first = try await session.execute(requestID: "schedule-create-1", method: "POST",
-            path: "/v2/domain/schedules", body: body, statusPolls: 0)
+            path: "/schedules", body: body, statusPolls: 0)
         XCTAssertEqual(first, .unknown)
         let recovered = try await session.execute(requestID: "schedule-create-1", method: "POST",
-            path: "/v2/domain/schedules", body: body)
+            path: "/schedules", body: body)
         XCTAssertEqual(recovered, .completed(status: 200, body: ok))
         let sealed = await fixture.http.mutations
         XCTAssertEqual(sealed.count, 2, "one ephemeral read and one create; no replay POST")
         let request = try opened(fixture, sealed.last)
-        XCTAssertEqual(request["path"] as? String, "/v2/domain/schedules")
+        XCTAssertEqual(request["path"] as? String, "/schedules")
         XCTAssertEqual(request["method"] as? String, "POST")
         XCTAssertEqual((request["body"] as? [String: Any])?["revision"] as? Int, 0)
     }
 
     func testRestartRefreshesChallengeForStatusWithoutRepostingMutation() async throws {
         let fixture = try Fixture(mode: .restart)
-        let result = try await fixture.session().execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+        let result = try await fixture.session().execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
         XCTAssertEqual(result, .completed(status: 200, body: ok))
         let mutations = await fixture.http.mutations
         let headers = await fixture.http.statusEpochs
@@ -281,7 +281,7 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual(posts.count, 1)
         let request = try opened(fixture, posts.first)
         XCTAssertEqual(request["method"] as? String, "GET")
-        XCTAssertEqual(request["path"] as? String, "/v2/domain/changes?data_epoch=epoch&after=41&wait=50")
+        XCTAssertEqual(request["path"] as? String, "/changes?data_epoch=epoch&after=41&wait=50")
         XCTAssertNil(request["body"])
         let envelope = try JSONDecoder().decode(EnvelopeV1.self, from: XCTUnwrap(posts.first))
         let recorded = try await session.recoveryStatus(requestID: envelope.requestID)
@@ -406,7 +406,7 @@ final class RelaySessionTests: XCTestCase {
         for mode in [FakeHTTP.Mode.oversized, .wrongSender, .wrongRequest, .expired] {
             let fixture = try Fixture(mode: mode)
             let session = fixture.session()
-            let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/v2/domain/commands", body: command)
+            let result = try await session.execute(requestID: "operation-1", method: "POST", path: "/interactions/interaction-1/read-state", body: command)
             XCTAssertEqual(result, .unknown)
             let mutations = await fixture.http.mutations
             XCTAssertEqual(mutations.count, 1)

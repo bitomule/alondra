@@ -73,7 +73,7 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     /// Product callers use AlondraAPIClient. This capability preserves the caller's durable
     /// operation identity through encrypted dispatch and status-only reconciliation.
     public func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
-        if request.method == "GET", request.path.hasPrefix("/v2/domain/changes?"), request.body == nil {
+        if request.method == "GET", request.path.hasPrefix("/changes?"), request.body == nil {
             guard let components = URLComponents(string: request.path),
                   let items = components.queryItems,
                   Set(items.map(\.name)) == ["data_epoch", "after", "wait"], items.count == 3,
@@ -100,15 +100,15 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
                         statusPolls: Int = 10) async throws -> RelayOperationResult {
         guard active else { throw CancellationError() }
         guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
-              ((method == "GET" && path == "/v2/domain/capabilities")
-               || (method == "POST" && path == "/v2/domain/commands")
+              ((method == "GET" && path == "/capabilities")
+               || (method == "GET" && body == nil && DomainReadPath.isValid(path))
+               || (method == "GET" && (path.hasPrefix("/pull-requests/") && path.hasSuffix("/diff")
+                   || path.hasPrefix("/document-revisions/") && path.contains("/content?offset=")
+                   || path.hasPrefix("/tasks/") && path.hasSuffix("/actions")))
+               || (HTTPMethod(rawValue: method).map { ServiceRequest.validResourceMutationPath(method: $0, path: path) } ?? false)
                || Self.validDomainDeliveryPath(method: method, path: path)
                || Self.validDomainSchedulePath(method: method, path: path, hasBody: body != nil)
-               || Self.validClientContractPath(method: method, path: path)
-               || (method == "GET" && body == nil && DomainReadPath.isValid(path))
-               || (method == "GET" && (path.hasPrefix("/v2/domain/pull-requests/") && path.hasSuffix("/diff")
-                   || path.hasPrefix("/v2/domain/document-revisions/") && path.contains("/content?offset=")
-                   || path.hasPrefix("/v2/domain/tasks/") && path.hasSuffix("/actions")))),
+               || Self.validClientContractPath(method: method, path: path)),
               !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
             throw RelaySessionError.invalidRequest
         }
@@ -143,15 +143,14 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     /// allowlist as strict as ServiceRequest so internal callers cannot send a
     /// similarly prefixed path with an arbitrary method or target.
     static func validDomainDeliveryPath(method: String, path: String) -> Bool {
-        if method == "GET", path.hasPrefix("/v2/domain/delivery-attempts?after=") {
-            let suffix = path.dropFirst("/v2/domain/delivery-attempts?after=".count)
+        if method == "GET", path.hasPrefix("/delivery-attempts?after=") {
+            let suffix = path.dropFirst("/delivery-attempts?after=".count)
             return !suffix.isEmpty && suffix.allSatisfy(\.isNumber) && Int64(suffix) != nil
         }
         guard method == "POST" else { return false }
         let components = path.split(separator: "/")
-        return components.count == 5 && components[0] == "v2" && components[1] == "domain"
-            && components[2] == "delivery-attempts" && components[4] == "resolve"
-            && Int64(components[3]).map { $0 > 0 } == true
+        return components.count == 3 && components[0] == "delivery-attempts" && components[2] == "resolve"
+            && Int64(components[1]).map { $0 > 0 } == true
     }
 
     static func validClientContractPath(method: String, path: String) -> Bool {
@@ -163,14 +162,14 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
 
     /// Mirror the Mac's exact Schedule v2 operation shapes before sealing.
     static func validDomainSchedulePath(method: String, path: String, hasBody: Bool) -> Bool {
-        if path == "/v2/domain/schedules" {
+        if path == "/schedules" {
             return (method == "GET" && !hasBody) || (method == "POST" && hasBody)
         }
-        let prefix = "/v2/domain/schedules/"
+        let prefix = "/schedules/"
         guard path.hasPrefix(prefix) else { return false }
         let suffix = String(path.dropFirst(prefix.count))
-        let isRun = suffix.hasSuffix("/run")
-        let id = isRun ? String(suffix.dropLast(4)) : String(suffix)
+        let isRun = suffix.hasSuffix("/runs")
+        let id = isRun ? String(suffix.dropLast(5)) : String(suffix)
         guard (1...256).contains(id.utf8.count), id.utf8.allSatisfy({ byte in
             (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
                 || (byte >= 48 && byte <= 57) || byte == 45 || byte == 95

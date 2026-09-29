@@ -55,10 +55,10 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
         transfers.insert(try XCTUnwrap(object["transfer_id"] as? String))
         let response: [String: Any]
         switch request.path {
-        case "/v2/domain/uploads/start":
+        case "/uploads/start":
             name = try XCTUnwrap(object["name"] as? String)
             response = ["offset": bytes.count, "chunk_bytes": 65_536, "completed": false]
-        case "/v2/domain/uploads/chunk":
+        case "/uploads/chunk":
             let encoded = try XCTUnwrap(object["data"] as? String)
             XCTAssertFalse(encoded.contains("="))
             let base = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
@@ -67,7 +67,7 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
             maxChunk = max(maxChunk, chunk.count)
             bytes.append(chunk)
             response = ["offset": bytes.count]
-        case "/v2/domain/uploads/finish":
+        case "/uploads/finish":
             finishCount += 1
             let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
             let stored: [String: Any] = ["id": "stored-evidence", "name": name ?? "", "content_digest": digest,

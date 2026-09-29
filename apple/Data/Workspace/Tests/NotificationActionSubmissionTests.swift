@@ -30,7 +30,7 @@ final class NotificationActionSubmissionTests: XCTestCase {
 
         XCTAssertEqual(first, .sent(.recorded(recorded)))
         XCTAssertEqual(second, .sent(.recorded(recorded)))
-        let commands = try daemon.requests.filter { $0.target == "/v2/domain/commands" }.map {
+        let commands = try daemon.requests.filter { $0.target == "/interactions/q-1/answers" }.map {
             try XCTUnwrap(JSONSerialization.jsonObject(with: $0.body) as? [String: Any])
         }
         XCTAssertEqual(commands.count, 2)
@@ -39,12 +39,12 @@ final class NotificationActionSubmissionTests: XCTestCase {
         let ids = commands.compactMap { $0["command_id"] as? String }
         XCTAssertEqual(Set(ids).count, 2, "Each tap is a new command")
         XCTAssertFalse(ids.contains { $0.hasPrefix("notification-") })
-        let command = try XCTUnwrap(commands.first?["command"] as? [String: Any])
-        XCTAssertEqual(command["kind"] as? String, "answer_question")
-        XCTAssertEqual(command["option_id"] as? String, "approve")
-        let reads = daemon.requests.map(\.target).filter { $0.hasPrefix("/v2/domain/inbox") || $0.hasPrefix("/v2/domain/interactions") }
-        XCTAssertEqual(reads, ["/v2/domain/inbox/interaction%3Aq-1", "/v2/domain/interactions/q-1",
-                               "/v2/domain/inbox/interaction%3Aq-1", "/v2/domain/interactions/q-1"])
+        XCTAssertEqual(commands.first?["option_id"] as? String, "approve")
+        XCTAssertNil(commands.first?["kind"])
+        XCTAssertNil(commands.first?["interaction_id"])
+        let reads = daemon.requests.map(\.target).filter { $0.hasPrefix("/inbox") || $0.hasPrefix("/interactions") }
+        XCTAssertEqual(reads, ["/inbox/interaction%3Aq-1", "/interactions/q-1",
+                               "/inbox/interaction%3Aq-1", "/interactions/q-1"])
     }
 
     func testAnAlreadyAnsweredItemIsNoLongerPendingAndNothingIsSent() async throws {
@@ -55,7 +55,7 @@ final class NotificationActionSubmissionTests: XCTestCase {
         let result = await client.submit(action, item)
 
         XCTAssertEqual(result, .noLongerPending)
-        XCTAssertFalse(daemon.requests.contains { $0.target == "/v2/domain/commands" })
+        XCTAssertFalse(daemon.requests.contains { $0.target == "/interactions/q-1/answers" })
     }
 
     func testAnItemTheMacNoLongerHasIsNoLongerPending() async throws {
@@ -66,7 +66,7 @@ final class NotificationActionSubmissionTests: XCTestCase {
         let result = await client.submit(action, item)
 
         XCTAssertEqual(result, .noLongerPending)
-        XCTAssertFalse(daemon.requests.contains { $0.target == "/v2/domain/commands" })
+        XCTAssertFalse(daemon.requests.contains { $0.target == "/interactions/q-1/answers" })
     }
 
     func testAPushFromAnotherDataEpochNeverActsOnANewItemWithTheSameID() async throws {
@@ -77,7 +77,7 @@ final class NotificationActionSubmissionTests: XCTestCase {
         let result = await client.submit(action, item)
 
         XCTAssertEqual(result, .noLongerPending)
-        XCTAssertFalse(daemon.requests.contains { $0.target == "/v2/domain/commands" })
+        XCTAssertFalse(daemon.requests.contains { $0.target == "/interactions/q-1/answers" })
     }
 
     // MARK: - Fixture
@@ -99,9 +99,9 @@ final class NotificationActionSubmissionTests: XCTestCase {
             switch request.target {
             case "/v2/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
             case "/v2/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
-            case "/v2/domain/inbox/interaction%3Aq-1": .status(lookup.0, lookup.1)
-            case "/v2/domain/interactions/q-1": .status(200, interaction)
-            case "/v2/domain/commands": .status(200, Data(#"{"revision":13,"changed":true,"effects":[],"created_ids":[]}"#.utf8))
+            case "/inbox/interaction%3Aq-1": .status(lookup.0, lookup.1)
+            case "/interactions/q-1": .status(200, interaction)
+            case "/interactions/q-1/answers": .status(200, Data(#"{"revision":13,"changed":true,"effects":[],"created_ids":[]}"#.utf8))
             default: .status(404, Data(#"{"code":"not_found","message":"unexpected"}"#.utf8))
             }
         }

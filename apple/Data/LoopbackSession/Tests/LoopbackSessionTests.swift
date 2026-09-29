@@ -16,7 +16,7 @@ final class LoopbackSessionTests: XCTestCase {
         try? FileManager.default.removeItem(at: directory)
     }
 
-    private static let summary: [String] = ["v2", "domain", "summary"]
+    private static let summary: [String] = ["summary"]
 
     private func read(_ api: AlondraAPIClient) async throws {
         _ = try await api.send(Endpoint<Data>.data(.get, path: Self.summary))
@@ -42,7 +42,7 @@ final class LoopbackSessionTests: XCTestCase {
         try await read(api)
 
         let requests = daemon.requests
-        XCTAssertEqual(requests.map(\.target), ["/v2/pairing", "/v2/pair", "/v2/domain/summary", "/v2/domain/summary"])
+        XCTAssertEqual(requests.map(\.target), ["/v2/pairing", "/v2/pair", "/summary", "/summary"])
         let pair = try JSONSerialization.jsonObject(with: requests[1].body) as? [String: String]
         XCTAssertEqual(pair?["code"], "482913")
         XCTAssertEqual(pair?["public_key"], key.publicKey.x963Representation.base64EncodedString())
@@ -52,7 +52,7 @@ final class LoopbackSessionTests: XCTestCase {
             let signature = try P256.Signing.ECDSASignature(
                 derRepresentation: XCTUnwrap(Data(base64Encoded: XCTUnwrap(request.headers["X-Alondra-Signature"]))))
             let digest = SHA256.hash(data: Data()).map { String(format: "%02x", $0) }.joined()
-            XCTAssertTrue(key.publicKey.isValidSignature(signature, for: Data("GET\n/v2/domain/summary\n\(timestamp)\n\(digest)".utf8)))
+            XCTAssertTrue(key.publicKey.isValidSignature(signature, for: Data("GET\n/summary\n\(timestamp)\n\(digest)".utf8)))
         }
     }
 
@@ -73,8 +73,8 @@ final class LoopbackSessionTests: XCTestCase {
 
         try await read(api)
 
-        XCTAssertEqual(daemon.requests.map(\.target), ["/v2/pairing", "/v2/pair", "/v2/domain/summary",
-                                                      "/v2/pairing", "/v2/pair", "/v2/domain/summary"])
+        XCTAssertEqual(daemon.requests.map(\.target), ["/v2/pairing", "/v2/pair", "/summary",
+                                                      "/v2/pairing", "/v2/pair", "/summary"])
         let saved = await identity.deviceID()
         XCTAssertEqual(saved, "device-2")
     }
@@ -109,7 +109,7 @@ final class LoopbackSessionTests: XCTestCase {
             XCTAssertEqual(error, .outcomeUnknown)
         }
 
-        XCTAssertEqual(daemon.requests.filter { $0.target == "/v2/domain/commands" }.count, 1)
+        XCTAssertEqual(daemon.requests.filter { $0.target == "/interactions/info-1/read-state" }.count, 1)
         let outcome = await session.outcome(requestID: "operation-1")
         XCTAssertEqual(outcome, .unknown)
     }
@@ -146,7 +146,7 @@ final class LoopbackSessionTests: XCTestCase {
         let changes = try await client(daemon).domainChanges(epoch: "epoch", after: 8, wait: 10)
 
         XCTAssertEqual(changes.revision, 9)
-        XCTAssertEqual(daemon.requests.last?.target, "/v2/domain/changes?data_epoch=epoch&after=8&wait=10")
+        XCTAssertEqual(daemon.requests.last?.target, "/changes?data_epoch=epoch&after=8&wait=10")
     }
 
     func testChunkedUploadIsStoredWithOneRawLocalUpload() async throws {
@@ -169,7 +169,7 @@ final class LoopbackSessionTests: XCTestCase {
         XCTAssertEqual(uploads.first?.body, payload)
         XCTAssertEqual(uploads.first?.headers["Content-Type"], "application/octet-stream")
         XCTAssertNotNil(uploads.first?.headers["X-Alondra-Signature"])
-        XCTAssertFalse(daemon.requests.contains { $0.target.hasPrefix("/v2/domain/uploads") }, "the chunks stay in this process")
+        XCTAssertFalse(daemon.requests.contains { $0.target.hasPrefix("/uploads") }, "the chunks stay in this process")
         XCTAssertEqual(lock.withLock { progress.last }, 1)
     }
 

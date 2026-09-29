@@ -668,22 +668,6 @@ mod persistent_session_tests {
     }
 
     #[test]
-    fn snapshot_token_requires_current_unexpired_session_without_refresh() {
-        let active=session();
-        let token=AccountToken {sub:active.sub.clone(),access_token:"fixture-access".into(),valid_for:Duration::from_secs(1)};
-        let mut cache=(serde_json::to_vec(&active).unwrap(),token,Instant::now());
-        assert_eq!(cached_service_token(Some(&cache),&active).unwrap().access_token,"fixture-access");
-        assert!(cached_service_token(None,&active).is_err());
-        cache.2=Instant::now()-Duration::from_secs(2);
-        assert!(cached_service_token(Some(&cache),&active).is_err());
-        cache.2=Instant::now();
-        let mut changed=active.clone();changed.refresh_token="rotated-elsewhere".into();
-        assert!(cached_service_token(Some(&cache),&changed).is_err());
-        changed=active;changed.state=SessionState::PendingRevocation;
-        assert!(cached_service_token(Some(&cache),&changed).is_err());
-    }
-
-    #[test]
     fn failed_local_logout_write_never_revokes_or_reports_completion() {
         let saved=session();
         let result=logout_transition(saved.clone(), |_| bail!("Keychain write denied"),
@@ -996,23 +980,6 @@ pub fn token_for_service() -> Result<AccountToken> {
         Instant::now(),
     ));
     Ok(token)
-}
-
-/// Continue one read without starting another OIDC flow. The persisted generation
-/// still invalidates the cache on logout/account changes; expiry fails this read.
-/// Keychain access is OS IPC, but this path never performs network authentication.
-pub(crate) fn token_for_service_cached_only() -> Result<AccountToken> {
-    let cache = SERVICE_TOKEN_CACHE.try_lock().map_err(|error| match error {
-        std::sync::TryLockError::WouldBlock => anyhow::Error::new(AccountBusy),
-        std::sync::TryLockError::Poisoned(_) => anyhow!("account token cache lock poisoned"),
-    })?;
-    let _lock = AccountLock::for_service()?;
-    let session = stored().context("sign in with alondra login before connecting to a remote Mac")?;
-    cached_service_token(cache.as_ref(), &session)
-}
-fn cached_service_token(cache: Option<&CachedAccount>, session: &Session) -> Result<AccountToken> {
-    cached_for_session(cache, session)?
-        .context("account token changed or expired during overview read; retry the read")
 }
 
 #[cfg(test)]

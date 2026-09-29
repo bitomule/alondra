@@ -3,18 +3,18 @@ import CryptoKit
 import Foundation
 
 /// A declared fake relay + Mac peer. Production request signing, envelope crypto,
-/// response verification, snapshot assembly and durable outbox all still execute.
+/// resource reads and durable outbox all still execute.
 actor SyntheticRelayHTTP: ServiceHTTPTransport {
     struct Observation: Sendable {
         var offsets: [Int] = []
-        var deletes = 0
+        var resourcePaths: [String] = []
         var opened = 0
         var mutations = 0
         var statusReads = 0
         var losses = 0
     }
-    private static let root = "/v1/service/overview-snapshot"
-    private static let snapshotID = String(repeating: "a", count: 32)
+    static let chunkBytes = 49_152
+    static let revisionID = "revision-1"
     private let document: Data
     private let loseResponse: Bool
     private let phoneSign: P256.Signing.PublicKey
@@ -61,35 +61,34 @@ actor SyntheticRelayHTTP: ServiceHTTPTransport {
         observed.opened += 1
         let payload: [String: Any]
         switch (operation.method, operation.path) {
-        case ("GET", "/v1/overview"):
-            payload = ["status": 502, "error": "response_too_large"]
-        case ("POST", "/v1/tasks"):
-            observed.mutations += 1
-            payload = ["status": 201, "body": ["id": "synthetic-task", "accepted": true]]
-        case ("DELETE", Self.root + "/" + Self.snapshotID):
-            observed.deletes += 1
-            payload = ["status": 200, "body": ["released": true]]
-        default:
-            guard operation.method == "GET" else { throw RelayWireError.invalidField }
-            let offset: Int
-            if operation.path == Self.root {
-                offset = 0
-            } else {
-                let prefix = Self.root + "/" + Self.snapshotID + "?offset="
-                guard operation.path.hasPrefix(prefix), let value = Int(operation.path.dropFirst(prefix.count)),
-                      value > 0, value < document.count, value % 65_536 == 0 else { throw RelayWireError.invalidField }
-                offset = value
-            }
+        case ("GET", "/summary"):
+            observed.resourcePaths.append(operation.path)
+            payload = ["status": 200, "body": ["protocol_version": 2, "data_epoch": "synthetic", "revision": 1]]
+        case ("GET", "/documents/document-1"):
+            observed.resourcePaths.append(operation.path)
+            payload = ["status": 200, "body": ["id": "document-1"]]
+        case ("GET", let path) where path.hasPrefix("/document-revisions/\(Self.revisionID)/content?offset="):
+            let components = URLComponents(string: "https://fixture.invalid" + path)
+            guard let offset = components?.queryItems?.first(where: { $0.name == "offset" })?.value.flatMap(Int.init),
+                  offset >= 0, offset < document.count, offset % Self.chunkBytes == 0 else { throw RelayWireError.invalidField }
+            observed.resourcePaths.append(operation.path)
             observed.offsets.append(offset)
-            let chunk = document.subdata(in: offset..<min(offset + 65_536, document.count))
-            payload = ["status": 200, "body": ["schema": 1, "snapshot_id": Self.snapshotID,
-                "total_bytes": document.count, "sha256": SHA256.hash(data: document).map { String(format: "%02x", $0) }.joined(),
-                "chunk_bytes": 65_536, "offset": offset, "data": chunk.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            let next = min(offset + Self.chunkBytes, document.count)
+            let bytes = document.subdata(in: offset..<next)
+            payload = ["status": 200, "body": ["revision_id": Self.revisionID,
+                "content_digest": SHA256.hash(data: document).map { String(format: "%02x", $0) }.joined(),
+                "version": "version-1", "offset": offset, "total": document.count, "next_offset": next,
+                "eof": next == document.count, "data": bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-")
                     .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")]]
             if offset == 0, let callback = firstChunk {
                 firstChunk = nil
                 try await callback()
             }
+        case ("POST", "/requests"):
+            observed.mutations += 1
+            payload = ["status": 201, "body": ["id": "synthetic-task", "accepted": true]]
+        default:
+            throw RelayWireError.invalidField
         }
         let response = try EnvelopeV1.seal(route: "mac-test", sender: "mac-test", recipient: "phone-test",
             requestID: envelope.requestID, kind: "response", expiresAtMilliseconds: 5000,
@@ -98,7 +97,7 @@ actor SyntheticRelayHTTP: ServiceHTTPTransport {
             "status": "completed", "revision": observed.opened,
             "response": JSONSerialization.jsonObject(with: JSONEncoder().encode(response))])
         receipts[envelope.requestID] = receipt
-        if loseResponse, operation.method == "POST", operation.path == "/v1/tasks" {
+        if loseResponse, operation.method == "POST", operation.path == "/requests" {
             observed.losses += 1
             throw URLError(.networkConnectionLost)
         }

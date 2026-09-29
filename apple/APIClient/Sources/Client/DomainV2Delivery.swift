@@ -7,7 +7,7 @@ extension AlondraAPIClient {
             throw DomainV2.DomainError(code: "invalid_input", message: "Invalid delivery cursor", currentRevision: nil, subject: nil)
         }
         let endpoint = Endpoint<DomainV2.DeliveryAttemptPage>(
-            .get, path: ["v2", "domain", "delivery-attempts"], query: [("after", String(cursor))]
+            .get, path: ["delivery-attempts"], query: [("after", String(cursor))]
         ) { try DomainV2.decode(DomainV2.DeliveryAttemptPage.self, from: $0) }
         let page = try await send(endpoint)
         guard page.protocolVersion == DomainV2.protocolVersion,
@@ -36,7 +36,7 @@ extension AlondraAPIClient {
         let request = DomainV2.ResolveDeliveryAttempt(dataEpoch: epoch,
             expectedVersion: expectedVersion, decision: decision)
         let endpoint = Endpoint<DomainV2.DeliveryResolution>(
-            .post, path: ["v2", "domain", "delivery-attempts", String(attemptId), "resolve"],
+            .post, path: ["delivery-attempts", String(attemptId), "resolve"],
             body: try DomainV2.encode(request), contentType: "application/json", requiresJSONObjectResponse: true
         ) { try DomainV2.decode(DomainV2.DeliveryResolution.self, from: $0) }
         let resolution = try await send(endpoint, operationID: operationID)

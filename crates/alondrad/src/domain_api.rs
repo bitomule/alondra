@@ -605,34 +605,6 @@ fn capabilities_inner(domain: &DomainRuntime) -> Response {
         Err(_) => storage_error(),
     }
 }
-async fn projection<H: DomainHost>(State(host): State<Arc<H>>, signed: Option<Extension<Signed>>) -> Response {
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    let response = projection_inner(host.domain());
-    if !signed_read(&*host, &signed) {
-        return unsigned_read();
-    }
-    response
-}
-
-fn projection_inner(domain: &DomainRuntime) -> Response {
-    match domain.snapshot(crate::service_overview::MAX_BYTES) {
-        Ok(bytes) => (
-            [(axum::http::header::CONTENT_TYPE, "application/json")],
-            bytes,
-        )
-            .into_response(),
-        Err(error) if error.is::<crate::http::OverviewTooLarge>() => {
-            domain_error(DomainError::new(
-                "payload_too_large",
-                "domain projection exceeds snapshot limits",
-            ))
-        }
-        Err(_) => storage_error(),
-    }
-}
-
 /// Encrypted reads enter through a verified, still-approved device proof. They
 /// never round-trip over the unsigned loopback HTTP listener.
 pub(crate) async fn encrypted_read(

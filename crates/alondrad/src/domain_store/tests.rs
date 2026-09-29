@@ -1218,7 +1218,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     };
     let committed = store.execute_filling_revision(&agent(), &represent).unwrap();
     assert_eq!(committed.outcome.superseded_acceptances, vec![superseded.clone()]);
-    assert_eq!(store.project().unwrap().superseded_acceptances, vec![superseded]);
+    assert_eq!(store.load().unwrap().projection().superseded_acceptances, vec![superseded]);
     let audited: String = store
         .conn
         .query_row(
@@ -1241,7 +1241,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
         },
     );
     store.execute_authenticated(&user(), &accept_again, None).unwrap();
-    assert!(store.project().unwrap().superseded_acceptances.is_empty());
+    assert!(store.load().unwrap().projection().superseded_acceptances.is_empty());
     let feedback = envelope(
         &mut store,
         "user-withdraws",
@@ -1256,7 +1256,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     );
     let withdrawn = store.execute_authenticated(&user(), &feedback, None).unwrap();
     assert!(withdrawn.outcome.superseded_acceptances.is_empty());
-    assert!(store.project().unwrap().superseded_acceptances.is_empty());
+    assert!(store.load().unwrap().projection().superseded_acceptances.is_empty());
 }
 
 #[test]

@@ -269,9 +269,10 @@ def run(version):
             daemon_log = (logs / f'daemon-{cycle}.log').open('xb')
             process = subprocess.Popen([str(daemon)], env=env, stdin=subprocess.DEVNULL, stdout=daemon_log, stderr=subprocess.STDOUT, preexec_fn=bound_daemon_files)
             readiness(process, port, version, state)
-            overview = request(port, '/v1/overview')
-            require(isinstance(overview.get('tick'), int) and isinstance(overview.get('seq'), int) and overview.get('nodes') == [], 'expected empty local overview')
-            sequences.append(overview['seq'])
+            summary = request(port, '/summary')
+            require(isinstance(summary.get('revision'), int) and summary.get('open_tasks') == 0
+                    and summary.get('connected_agents') == 0, 'expected empty local resource summary')
+            sequences.append(summary['revision'])
             command([str(binary), 'status'], env, logs / f'status-{cycle}.log')
             require(command([str(binary), 'config', '--get', 'home'], env, logs / f'home-{cycle}.log').strip() == str(state), 'CLI home mismatch')
             require(command([str(binary), 'config', '--get', 'port'], env, logs / f'port-{cycle}.log').strip() == str(port), 'CLI port mismatch')
@@ -284,7 +285,7 @@ def run(version):
             require(not (state / 'service.toml').exists(), 'unexpected service enrollment')
         require(sequences[0] == sequences[1], 'empty journal changed across restart')
         result['persisted_sequence'] = sequences[-1]
-        result['checks'].extend(['isolated_daemon_health_overview_config', 'restart_state_audit', 'local_tui_q_exit'])
+        result['checks'].extend(['isolated_daemon_health_resource_summary_config', 'restart_state_audit', 'local_tui_q_exit'])
         require(all(p.stat().st_size <= MAX_LOG for p in logs.iterdir()), 'oversized log')
         result['status'] = 'passed'
     except Exception as error:

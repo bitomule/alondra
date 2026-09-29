@@ -282,7 +282,7 @@ def run():
         cli.check_guest_network_disabled(command(['/sbin/ifconfig', 'en0'], 'network-status'))
         pid = start('0.1.8', '018')
         seeded = create_schedule('Pre-upgrade schedule')
-        before_seq = cli.request(port, '/v1/overview')['seq']
+        before_seq = cli.request(port, '/summary')['revision']
         before_rows = schedules(); stop()
         before_audit = audit('018-audit')
         backup = project / 'pre-upgrade-state'; hashes = snapshot(state, backup)
@@ -297,7 +297,7 @@ def run():
         cli.require((state / 'lifecycle-marker.json').read_bytes() == (backup / 'lifecycle-marker.json').read_bytes(), 'upgrade changed marker')
         cli.require((state / 'config.toml').read_bytes() == (backup / 'config.toml').read_bytes(), 'upgrade changed configuration')
         later = create_schedule('Post-upgrade schedule; preserved outside rollback')
-        upgraded_seq = cli.request(port, '/v1/overview')['seq']
+        upgraded_seq = cli.request(port, '/summary')['revision']
         cli.require(upgraded_seq > before_seq, '019 did not record its new bootstrap event')
         upgraded_rows = schedules(); result['tui'] = cli.tui(prefix / 'bin/alondra', env); stop()
         upgraded_audit = audit('019-audit')

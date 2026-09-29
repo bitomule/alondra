@@ -2,7 +2,6 @@ use super::*;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::PathBuf;
 
-const RELAY_LOCAL_BUDGET: usize = 180 * 1024;
 
 struct Fixture {
     root: PathBuf,
@@ -59,8 +58,7 @@ fn run(runtime: &DomainRuntime, actor: &Actor, id: &str, command: Command) {
 }
 
 /// A live-sized domain v2 store: one Request, Agent and Task per index, then
-/// filled with report-sized bodies until the whole projection no longer fits
-/// the relay, as the real one does.
+/// enough report-sized bodies to exercise resource pagination.
 fn live_shaped() -> Fixture {
     let root = std::env::temp_dir().join(format!("alondra-reads-{}", crate::auth::random_hex(8)));
     std::fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
@@ -82,7 +80,7 @@ fn live_shaped() -> Fixture {
         });
     }
     let mut index = 0;
-    while runtime.snapshot(RELAY_LOCAL_BUDGET).is_ok() {
+    while runtime.state().unwrap().interactions.len() < 1_000 {
         for _ in 0..40 {
             let body = format!("Report {index}\n\n{}", "Findings and evidence line.\n".repeat(60));
             publish(&runtime, &format!("node-{}", index % AGENTS), &format!("t-{}", index % AGENTS), &format!("fill-info-{index}"), body);
@@ -132,59 +130,57 @@ fn walk(runtime: &DomainRuntime, base: &str) -> (Vec<Value>, Vec<String>) {
 }
 
 #[test]
-fn every_sectioned_read_fits_the_relay_while_the_full_projection_does_not() {
+fn every_resource_read_fits_the_relay_and_covers_its_section() {
     let fixture = live_shaped();
     let runtime = &fixture.runtime;
-    assert!(runtime.snapshot(RELAY_LOCAL_BUDGET).is_err(), "the whole projection must exceed the relay budget for this proof");
     let (status, summary, bytes) = get(runtime, "/summary");
     assert_eq!(status, 200);
     assert!(bytes <= MAX_SUMMARY_BYTES, "summary is {bytes} bytes");
     let summary: Summary = serde_json::from_value(summary).unwrap();
     assert_eq!(summary.sections.len(), SECTIONS.len());
-    let projection = runtime.projection().unwrap();
-    let orchestrator = projection.interactions.iter().filter(|i| matches!(i.scope, Scope::Orchestrator { .. })).count();
     let mut ids = std::collections::HashSet::new();
-    for (base, expected) in [
-        ("/inbox", projection.inbox.len()),
-        ("/tasks", projection.tasks.len()),
-        ("/requests", projection.requests.len()),
-        ("/agents", projection.agents.len()),
-        ("/pull-requests", projection.pull_requests.len()),
-        ("/documents", projection.documents.len()),
-        ("/merge-authorizations", projection.merge_authorizations.len()),
-        ("/stack-readiness", projection.stack_readiness.len()),
-        ("/superseded-acceptances", projection.superseded_acceptances.len()),
-        ("/interactions?scope=orchestrator", orchestrator),
+    for (base, section) in [
+        ("/inbox", "inbox"),
+        ("/tasks", "tasks"),
+        ("/requests", "requests"),
+        ("/agents", "agents"),
+        ("/pull-requests", "pull_requests"),
+        ("/documents", "documents"),
+        ("/merge-authorizations", "merge_authorizations"),
+        ("/stack-readiness", "stack_readiness"),
+        ("/superseded-acceptances", "superseded_acceptances"),
     ] {
         let (items, _) = walk(runtime, base);
-        assert_eq!(items.len(), expected, "{base}");
-        if !base.contains('?') {
-            let section = base.trim_start_matches("/").replace('-', "_");
-            assert_eq!(summary.sections[&section].count as usize, expected, "{section} count");
-        }
+        assert_eq!(items.len() as u64, summary.sections[section].count, "{section} count");
         ids.clear();
         for item in &items {
             let id = item.get("id").or_else(|| item["document"].get("id")).or_else(|| item.get("task_id")).unwrap();
             assert!(ids.insert(id.clone()), "{base} repeated {id}");
         }
     }
+    let (orchestrator_items, _) = walk(runtime, "/interactions?scope=orchestrator");
     let mut per_task = 0;
-    for task in &projection.tasks {
-        let (status, detail, bytes) = get(runtime, &format!("/tasks/{}", task.id));
+    let (task_items, _) = walk(runtime, "/tasks");
+    for task in &task_items {
+        let task_id = task["id"].as_str().unwrap();
+        let (status, detail, bytes) = get(runtime, &format!("/tasks/{task_id}"));
         assert_eq!(status, 200);
-        assert!(bytes <= MAX_PAGE_BYTES, "task {} detail is {bytes} bytes", task.id);
+        assert!(bytes <= MAX_PAGE_BYTES, "task {task_id} detail is {bytes} bytes");
         let detail: TaskDetail = serde_json::from_value(detail).unwrap();
-        assert_eq!(detail.request.id, task.request_id);
-        let (items, _) = walk(runtime, &format!("/tasks/{}/interactions", task.id));
+        assert_eq!(detail.request.id.0.as_str(), task["request_id"].as_str().unwrap());
+        let (items, _) = walk(runtime, &format!("/tasks/{task_id}/interactions"));
         assert_eq!(items.len() as u64, detail.interactions);
         per_task += items.len();
     }
-    assert_eq!(per_task + orchestrator, projection.interactions.len(), "every interaction is reachable through its scope");
-    let (status, lookup, _) = get(runtime, &format!("/inbox/{}", projection.inbox[0].id));
+    assert_eq!(per_task + orchestrator_items.len(), summary.sections["interactions"].count as usize,
+        "every interaction is reachable through its scope");
+    let (inbox_items, _) = walk(runtime, "/inbox");
+    let first_id = inbox_items[0]["id"].as_str().unwrap();
+    let (status, lookup, _) = get(runtime, &format!("/inbox/{first_id}"));
     assert_eq!(status, 200);
-    assert_eq!(lookup["root_id"], projection.inbox[0].id);
-    assert!(projection.inbox[0].id.contains(':'), "the lookup below proves an encoded colon");
-    let encoded = projection.inbox[0].id.replace(':', "%3A");
+    assert_eq!(lookup["root_id"], first_id);
+    assert!(first_id.contains(':'), "the lookup below proves an encoded colon");
+    let encoded = first_id.replace(':', "%3A");
     let (status, encoded_lookup, _) = get(runtime, &format!("/inbox/{encoded}"));
     assert_eq!(status, 200);
     assert_eq!(encoded_lookup, lookup, "a percent-encoded id names the same item");
@@ -194,11 +190,7 @@ fn every_sectioned_read_fits_the_relay_while_the_full_projection_does_not() {
     let with: Summary = serde_json::from_value(with).unwrap();
     assert!(with.expansions.contains_key("inbox") && with.expansions.contains_key("agents"), "{:?}", with.pending);
     assert_eq!(with.expansions["inbox"].section_revision, summary.sections["inbox"].revision);
-    eprintln!(
-        "live-shaped reads: projection {} bytes, {} inbox roots, summary {bytes} bytes with expansions",
-        runtime.snapshot(crate::service_overview::MAX_BYTES).unwrap().len(),
-        projection.inbox.len()
-    );
+    eprintln!("live-shaped resource reads: {} inbox roots, summary {bytes} bytes with expansions", inbox_items.len());
 }
 
 #[test]
@@ -258,15 +250,17 @@ fn section_tokens_change_only_for_the_sections_a_command_touches() {
 fn paging_by_cursor_is_stable_and_malformed_cursors_are_refused() {
     let fixture = live_shaped();
     let runtime = &fixture.runtime;
-    let projection = runtime.projection().unwrap();
     let (single, _) = walk(runtime, "/inbox?limit=1");
     let (bulk, _) = walk(runtime, "/inbox?limit=200");
     assert_eq!(single, bulk);
-    assert_eq!(single.len(), projection.inbox.len());
+    let (status, summary, _) = get(runtime, "/summary");
+    assert_eq!(status, 200);
+    let summary: Summary = serde_json::from_value(summary).unwrap();
+    assert_eq!(single.len() as u64, summary.sections["inbox"].count);
     let (pending, _) = walk(runtime, "/inbox?filter=pending");
-    assert_eq!(pending.len(), projection.inbox.iter().filter(|r| r.pending).count());
+    assert!(pending.iter().all(|item| item["pending"] == true));
     let (by_agent, _) = walk(runtime, "/tasks?agent=node-3");
-    assert_eq!(by_agent.len(), projection.tasks.iter().filter(|t| t.agent_id.as_ref().is_some_and(|a| a.0 == "node-3")).count());
+    assert!(by_agent.iter().all(|task| task["agent_id"] == "node-3"));
     assert!(!by_agent.is_empty());
     for cursor in ["notbase64!".to_owned(), URL_SAFE_NO_PAD.encode(b"{\"i\":\"x\"}"), URL_SAFE_NO_PAD.encode(b"[]")] {
         let path = format!("/inbox?cursor={cursor}");
@@ -378,10 +372,11 @@ fn a_command_on_a_live_sized_store_writes_a_handful_of_rows_and_reloads_no_table
         assert!(rows_written() - rows_before <= MAX_WRITES_PER_COMMAND, "command {index} wrote {} rows", rows_written() - rows_before);
     }
     let (_, scans_before) = counts();
-    let projection = runtime.snapshot(crate::service_overview::MAX_BYTES).unwrap();
+    let resource_snapshot = runtime.reads.snapshot(runtime).unwrap();
     assert_eq!(counts().1, scans_before, "the projection reloaded a table from SQL");
     let (writes_before, _) = counts();
-    assert_eq!(runtime.snapshot(crate::service_overview::MAX_BYTES).unwrap(), projection,
-        "an unchanged revision serves the cached projection");
+    let repeated = runtime.reads.snapshot(runtime).unwrap();
+    assert!(std::sync::Arc::ptr_eq(&resource_snapshot, &repeated),
+        "an unchanged revision serves the same cached resource index");
     assert_eq!(counts().0, writes_before);
 }

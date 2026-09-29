@@ -2,7 +2,7 @@ import AlondraContracts
 import CryptoKit
 import Foundation
 
-/// The v2 daemon's routes beyond the domain (docs/domain-v2-apple-client-contracts.md). The
+/// The daemon's routes outside domain resources (docs/domain-v2-apple-client-contracts.md). The
 /// TUI and CLI send the same bodies; fixtures/client-v2/requests.json holds each one.
 extension AlondraAPIClient {
     public func domainRuntime() async throws -> DomainV2.Runtime {
@@ -158,7 +158,7 @@ extension AlondraAPIClient {
     private func uploadEndpoint<Body: Encodable>(_ operation: String, _ body: Body) throws -> Endpoint<Data> {
         let encoder = JSONEncoder()
         encoder.keyEncodingStrategy = .convertToSnakeCase
-        return .data(.post, path: ["v2", "domain", "uploads", operation],
+        return .data(.post, path: ["uploads", operation],
                      body: try encoder.encode(body), contentType: "application/json", requiresJSONObjectResponse: true)
     }
 

@@ -24,21 +24,22 @@ final class DomainV2ReadTests: XCTestCase {
 
     func testReadGrammarMatchesTheDaemon() {
         let valid = [
-            "/v2/domain/summary", "/v2/domain/summary?include=inbox,tasks",
-            "/v2/domain/inbox?filter=pending&cursor=eyJvIjo1fQ&limit=50", "/v2/domain/inbox/interaction:q-1",
-            "/v2/domain/tasks?request=r1&agent=a_1", "/v2/domain/tasks/t1", "/v2/domain/tasks/t1/interactions?cursor=abc",
-            "/v2/domain/interactions?scope=orchestrator", "/v2/domain/interactions/q1", "/v2/domain/interactions/q1/body?offset=0",
-            "/v2/domain/requests/r1/body?offset=49152", "/v2/domain/pull-requests/p1", "/v2/domain/documents/d1",
-            "/v2/domain/merge-authorizations", "/v2/domain/stack-readiness?limit=200", "/v2/domain/superseded-acceptances",
-            "/v2/domain/inbox/interaction%3Aq", "/v2/domain/inbox/interaction%3aq",
+            "/summary", "/summary?include=inbox,tasks",
+            "/inbox?filter=pending&cursor=eyJvIjo1fQ&limit=50", "/inbox/interaction:q-1",
+            "/tasks?request=r1&agent=a_1", "/tasks/t1", "/tasks/t1/interactions?cursor=abc",
+            "/interactions?scope=orchestrator", "/interactions/q1", "/interactions/q1/body?offset=0",
+            "/requests/r1/body?offset=49152", "/pull-requests/p1", "/documents/d1",
+            "/document-revisions/rev-1/content?offset=0",
+            "/merge-authorizations", "/stack-readiness?limit=200", "/superseded-acceptances",
+            "/inbox/interaction%3Aq", "/inbox/interaction%3aq",
         ]
         let invalid = [
-            "/v2/domain", "/v2/domain/snapshot", "/v2/domain/summary?include=schedules", "/v2/domain/summary?include=inbox,inbox",
-            "/v2/domain/inbox?filter=all", "/v2/domain/inbox?limit=0", "/v2/domain/inbox?limit=201", "/v2/domain/inbox?cursor=",
-            "/v2/domain/inbox?cursor=a&cursor=b", "/v2/domain/tasks/t1?x=1", "/v2/domain/tasks/t%2F1", "/v2/domain/interactions",
-            "/v2/domain/interactions/q1/body", "/v2/domain/agents/a1", "/v2/domain/tasks/t1/interactions/extra",
-            "/v2/domain/inbox/a%2Fb", "/v2/domain/inbox/a%25", "/v2/domain/inbox/a%3", "/v2/domain/inbox/%2e%2e",
-            "/v2/domain/interactions/q%3A1",
+            "/v2/domain", "/domain", "/snapshot", "/summary?include=schedules", "/summary?include=inbox,inbox",
+            "/inbox?filter=all", "/inbox?limit=0", "/inbox?limit=201", "/inbox?cursor=",
+            "/inbox?cursor=a&cursor=b", "/tasks/t1?x=1", "/tasks/t%2F1", "/interactions",
+            "/interactions/q1/body", "/agents/a1", "/tasks/t1/interactions/extra",
+            "/inbox/a%2Fb", "/inbox/a%25", "/inbox/a%3", "/inbox/%2e%2e",
+            "/interactions/q%3A1",
         ]
         for path in valid { XCTAssertTrue(DomainReadPath.isValid(path), path) }
         for path in invalid { XCTAssertFalse(DomainReadPath.isValid(path), path) }
@@ -53,7 +54,7 @@ final class DomainV2ReadTests: XCTestCase {
         let lookup = try await client(server).domainInboxItem("interaction:q")
         XCTAssertEqual(lookup.item.id, "interaction:q")
         let paths = await server.paths()
-        XCTAssertEqual(paths, ["/v2/domain/inbox/interaction%3Aq"])
+        XCTAssertEqual(paths, ["/inbox/interaction%3Aq"])
     }
 
     func testTheWholeProjectionIsNoLongerRead() async {
@@ -78,7 +79,7 @@ final class DomainV2ReadTests: XCTestCase {
         XCTAssertEqual(page.items.map(\.id.rawValue), ["t1"])
         XCTAssertEqual(page.nextCursor, "eyJpIjoidDEifQ")
         let paths = await server.paths()
-        XCTAssertEqual(paths, ["/v2/domain/tasks?cursor=eyJpIjoidDAifQ"])
+        XCTAssertEqual(paths, ["/tasks?cursor=eyJpIjoidDAifQ"])
     }
 
     func testAPageFromAnotherSectionIsRejected() async {
@@ -95,7 +96,7 @@ final class DomainV2ReadTests: XCTestCase {
         let whole = String(repeating: "é", count: 30_000) + "fin"
         let bytes = Array(whole.utf8)
         let server = ReadServer { request in
-            if request.path == "/v2/domain/interactions/q1" {
+            if request.path == "/interactions/q1" {
                 return (200, envelope.merging(["truncated": true, "item": [
                     "attachments": [], "id": "q1", "scope": ["kind": "task", "task_id": "t"], "author": ["kind": "agent", "agent_id": "a"],
                     "recipient": ["kind": "user"], "body": "éé", "blocking": true, "payload": ["kind": "question", "options": []],
@@ -109,13 +110,13 @@ final class DomainV2ReadTests: XCTestCase {
         let item = try await client(server).domainInteraction(.init(rawValue: "q1"))
         XCTAssertEqual(item.item.body, whole)
         let paths = await server.paths()
-        XCTAssertEqual(paths, ["/v2/domain/interactions/q1", "/v2/domain/interactions/q1/body?offset=0",
-                               "/v2/domain/interactions/q1/body?offset=49152"])
+        XCTAssertEqual(paths, ["/interactions/q1", "/interactions/q1/body?offset=0",
+                               "/interactions/q1/body?offset=49152"])
     }
 
     func testABodyThatChangesSizeWhileReadIsRejected() async {
         let server = ReadServer { request in
-            if request.path == "/v2/domain/requests/r1" {
+            if request.path == "/requests/r1" {
                 return (200, envelope.merging(["truncated": true, "item": ["id": "r1", "body": "ab", "closed": false]]) { $1 })
             }
             let first = request.path.hasSuffix("offset=0")

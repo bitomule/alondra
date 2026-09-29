@@ -20,8 +20,9 @@ All Mac 5xx responses and explicit `error: uncertain` remain unknown; in particu
 returned to the use case for domain interpretation. Only verified Mac envelopes carry
 local results. Relay acknowledgement/status alone never proves business success.
 
-`fetchOverview()` obtains a pinned, verified snapshot through APIClient's codec. Refresh
-uses the encrypted daemon `/v1/changes?after=…&wait=…` endpoint with a wait capped at
+APIClient reads the summary and each domain resource separately. Large immutable document
+revisions are verified through offset reads; no global overview snapshot is needed. Refresh
+uses the encrypted daemon `/changes?after=…&wait=…` endpoint with a wait capped at
 50 seconds. Its successful completion requires a verified Mac envelope with a 2xx status.
 While that read is pending, relay `/v1/changes` waits up to 25 seconds per GET using the
 submission receipt's revision and bootstrap epoch. A completed event for this request

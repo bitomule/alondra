@@ -50,22 +50,6 @@ impl DomainRuntime {
             held: Default::default(),
         })
     }
-    pub fn projection(&self) -> Result<DomainProjection> {
-        self.store.lock().expect("domain store poisoned").project()
-    }
-    pub fn snapshot(&self, limit: usize) -> Result<Vec<u8>> {
-        self.store
-            .lock()
-            .expect("domain store poisoned")
-            .project_bounded(limit)
-            .map_err(|error| {
-                if error.is::<crate::domain_store::ProjectionTooLarge>() {
-                    crate::http::OverviewTooLarge.into()
-                } else {
-                    error
-                }
-            })
-    }
     pub(crate) fn home(&self) -> &Path {
         &self.home
     }

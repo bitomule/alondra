@@ -5,7 +5,7 @@ import Foundation
 extension AlondraAPIClient {
     public func domainPullRequestDiff(_ id: DomainV2.PrId, expectedHead: String) async throws -> DomainV2.PullRequestDiff {
         let endpoint = Endpoint<DomainV2.PullRequestDiff>(.get,
-            path: ["v2", "domain", "pull-requests", id.rawValue, "diff"]) {
+            path: ["pull-requests", id.rawValue, "diff"]) {
                 try DomainV2.decode(DomainV2.PullRequestDiff.self, from: $0)
             }
         let response = try await send(endpoint)
@@ -17,7 +17,7 @@ extension AlondraAPIClient {
 
     public func domainTaskActions(_ id: DomainV2.TaskId, epoch: DomainV2.DataEpoch) async throws -> DomainV2.TaskActions {
         let endpoint = Endpoint<DomainV2.TaskActions>(.get,
-            path: ["v2", "domain", "tasks", id.rawValue, "actions"]) {
+            path: ["tasks", id.rawValue, "actions"]) {
                 try DomainV2.decode(DomainV2.TaskActions.self, from: $0)
             }
         let response = try await send(endpoint)
@@ -38,7 +38,7 @@ extension AlondraAPIClient {
         repeat {
             let next = collected.count
             let endpoint = Endpoint<DomainV2.DocumentContentChunk>(.get,
-                path: ["v2", "domain", "document-revisions", id.rawValue, "content"],
+                path: ["document-revisions", id.rawValue, "content"],
                 query: [("offset", String(next))] + (version.map { [("version", $0)] } ?? [])) {
                     try DomainV2.decode(DomainV2.DocumentContentChunk.self, from: $0)
                 }

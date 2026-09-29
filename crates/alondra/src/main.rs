@@ -9,7 +9,6 @@ mod doctor;
 mod delivery;
 mod mcp;
 mod ops;
-mod overview_snapshot;
 mod service_setup;
 mod service_pair;
 mod service_client;

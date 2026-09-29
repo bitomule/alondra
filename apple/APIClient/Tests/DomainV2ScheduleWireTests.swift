@@ -46,7 +46,7 @@ final class DomainV2ScheduleWireTests: XCTestCase {
         XCTAssertEqual(item.schedule.id, "schedule-1")
         XCTAssertEqual(item.revision, 7)
         let requests = await operations.recorded()
-        XCTAssertEqual(requests.map(\.path), ["/v2/domain/schedules", "/v2/domain/schedules/schedule-1"])
+        XCTAssertEqual(requests.map(\.path), ["/schedules", "/schedules/schedule-1"])
         XCTAssertTrue(requests.allSatisfy { $0.method == "GET" && $0.body == nil })
     }
 
@@ -69,8 +69,8 @@ final class DomainV2ScheduleWireTests: XCTestCase {
         try await api.deleteDomainSchedule("schedule-1", operationID: "delete-1")
         let requests = await operations.recorded()
         XCTAssertEqual(requests.map(\.method), ["POST", "PUT", "DELETE"])
-        XCTAssertEqual(requests.map(\.path), ["/v2/domain/schedules", "/v2/domain/schedules/schedule-1",
-                                             "/v2/domain/schedules/schedule-1"])
+        XCTAssertEqual(requests.map(\.path), ["/schedules", "/schedules/schedule-1",
+                                             "/schedules/schedule-1"])
         XCTAssertEqual(requests.map(\.operationID), ["create-1", "update-1", "delete-1"])
         XCTAssertNil(requests[2].body)
         for request in requests.prefix(2) {
@@ -100,8 +100,8 @@ final class DomainV2ScheduleWireTests: XCTestCase {
         XCTAssertEqual(replay.runId, first.runId)
         let requests = await operations.recorded()
         XCTAssertEqual(requests.map(\.method), ["POST", "POST"])
-        XCTAssertEqual(requests.map(\.path), ["/v2/domain/schedules/schedule-1/run",
-                                             "/v2/domain/schedules/schedule-1/run"])
+        XCTAssertEqual(requests.map(\.path), ["/schedules/schedule-1/runs",
+                                             "/schedules/schedule-1/runs"])
         XCTAssertEqual(requests.map(\.operationID), ["run-1", "run-1"])
         XCTAssertTrue(requests.allSatisfy { $0.body == nil })
     }
@@ -131,7 +131,7 @@ final class DomainV2ScheduleWireTests: XCTestCase {
         let recorded = await operations.recorded()
         let request = try XCTUnwrap(recorded.first)
         XCTAssertEqual(request.method, "POST")
-        XCTAssertEqual(request.path, "/v2/domain/schedules/schedule-1/run")
+        XCTAssertEqual(request.path, "/schedules/schedule-1/runs")
         XCTAssertEqual(request.operationID, "run-1")
         XCTAssertNil(request.body)
     }
@@ -140,12 +140,12 @@ final class DomainV2ScheduleWireTests: XCTestCase {
         let operations = ScheduleOperations([.completed(status: 200, body: Data("{}".utf8))])
         let api = client(operations)
         for endpoint in [
-            Endpoint<Data>.data(.get, path: ["v2", "domain", "schedules", "id", "run"]),
-            Endpoint<Data>.data(.post, path: ["v2", "domain", "schedules", "id", "run"], body: Data("{}".utf8)),
-            Endpoint<Data>.data(.delete, path: ["v2", "domain", "schedules", "id"], body: Data("{}".utf8)),
-            Endpoint<Data>.data(.get, path: ["v2", "domain", "schedules", "id", "extra"]),
-            Endpoint<Data>.data(.get, path: ["v2", "domain", "schedules", "bad%2Fid"]),
-            Endpoint<Data>.data(.get, path: ["v2", "domain", "schedules"], query: [("extra", "1")]),
+            Endpoint<Data>.data(.get, path: ["schedules", "id", "runs"]),
+            Endpoint<Data>.data(.post, path: ["schedules", "id", "runs"], body: Data("{}".utf8)),
+            Endpoint<Data>.data(.delete, path: ["schedules", "id"], body: Data("{}".utf8)),
+            Endpoint<Data>.data(.get, path: ["schedules", "id", "extra"]),
+            Endpoint<Data>.data(.get, path: ["schedules", "bad%2Fid"]),
+            Endpoint<Data>.data(.get, path: ["schedules"], query: [("extra", "1")]),
         ] {
             do {
                 _ = try await api.send(endpoint, operationID: "rejected-route")

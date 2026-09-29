@@ -40,7 +40,6 @@ pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
         .route("/v1/service/bootstrap", get(service_bootstrap))
         .route("/v1/devices", get(devices))
         .route("/v1/devices/{id}", axum::routing::delete(revoke_device))
-        .route("/v1/overview", get(overview))
         .route("/v1/changes", get(changes))
         .route("/v1/delivery-attempts",get(delivery_attempts))
         .route("/v1/delivery-attempts/{id}/retry",post(retry_delivery))
@@ -2044,89 +2043,6 @@ async fn health(State(hub): State<AppState>) -> Json<Value> {
 /// Oldest node first, state does not drive the order: a state change must not move a node's
 /// place in the list. The session id breaks ties deterministically. The orchestrator always
 /// sorts first (clients keep it out of the stable-ordered list entirely).
-fn fleet_order_key(n: &alondra_core::Node) -> (bool, alondra_core::Millis, String) {
-    (!n.is_orchestrator, n.created_at, n.session_id.clone())
-}
-
-#[path = "http_overview.rs"]
-mod overview_stream;
-pub(crate) use overview_stream::OverviewTooLarge;
-pub(crate) fn overview_snapshot(hub: &Hub, limit: usize) -> anyhow::Result<Vec<u8>> { overview_stream::capture(hub, limit) }
-
-async fn overview(State(hub): State<AppState>) -> Json<Value> {
-    let now = now_millis();
-    let machine = hub.machine();
-    let usage = crate::usage::current(&crate::watcher::claude_home());
-    Json(hub.read(|v| overview_value(&hub, v, now, &machine, &usage)))
-}
-
-fn overview_value(hub: &Hub, v: &View, now: i64, machine: &impl serde::Serialize, usage: &impl serde::Serialize) -> Value {
-        let mut nodes: Vec<&alondra_core::Node> = v.nodes.values().collect();
-        nodes.sort_by_key(|n| fleet_order_key(n));
-        let open: Vec<Value> = v
-            .questions
-            .values()
-            .filter(|q| q.status.is_open() && !q.to_orchestrator)
-            .map(|q| {
-                let mut value = client_question(v, q);
-                if let Some(pr) = v.question_pr(q) {
-                    value["pr_id"] = json!(pr);
-                }
-                let reports: Vec<Value> = v.question_reports(q).iter().filter_map(|id| v.reports.get(id)).map(|r| client_report(v, r)).collect();
-                if let Some(newest) = reports.last() {
-                    value["report"] = newest.clone();
-                    value["reports"] = json!(reports);
-                }
-                value
-            })
-            .collect();
-        let recent_answered: Vec<Value> =
-            v.questions.values().rev().filter(|q| !q.status.is_open() && !v.left_out.contains(&q.session_id)).take(20).map(|q| client_question(v, q)).collect();
-        let reports: Vec<Value> = v.reports.values().rev().filter(|r| !v.left_out.contains(&r.session_id)).take(50).map(|r| client_report(v, r)).collect();
-        let news: Vec<Value> = v
-            .inbox_reports()
-            .map(|r| {
-                let mut value = client_report(v, r);
-                if let Some(pr) = v.report_pr(r) {
-                    value["pr_id"] = json!(pr);
-                }
-                let earlier: Vec<Value> = v.report_stack(r).iter().filter_map(|id| v.reports.get(id)).map(|r| client_report(v, r)).collect();
-                if !earlier.is_empty() {
-                    value["earlier"] = json!(earlier);
-                }
-                value
-            })
-            .collect();
-        let orchestrator_messages: Vec<Value> = v
-            .nodes
-            .values()
-            .find(|n| n.is_orchestrator)
-            .map(|o| v.messages.values().rev().filter(|m| m.session_id == o.session_id).take(20).map(|m|crate::delivery::message_value(v,m)).collect())
-            .unwrap_or_default();
-        let nodes: Vec<Value> = nodes
-            .into_iter()
-            .map(|n| {
-                let mut value = client_node(v, n);
-                value["project"] = Value::String(n.project());
-                value["messages_held_for_turn_end"] = json!(v.held_for_turn_end(&n.session_id));
-                value["background"] = json!(states::background(n, now));
-                value
-            })
-            .collect();
-        json!({
-            "tick": hub.tick(), "seq": v.seq, "nodes": nodes, "open_questions": open, "news": news,
-            "orchestrator_messages": orchestrator_messages, "orchestrator": public_orchestrator(v),
-            "delivery_attempts":v.delivery_attempts.values().collect::<Vec<_>>(),
-            "recent_questions": recent_answered, "reports": reports, "machine": machine, "usage": usage,
-            "prs": v.in_train_order(crate::prs::in_inbox(v)).into_iter().map(|p| pr_card(v, p)).collect::<Vec<Value>>(),
-            "requests": v.board.requests.values().map(|r| client_request(v, r)).collect::<Vec<Value>>(),
-            "tasks": v.board.tasks.values().map(|t| client_task(v, t, now)).collect::<Vec<Value>>(),
-            "user": hub.config.name,
-            "update": crate::updates::status(&hub.home),
-        })
-}
-
-
 /// What the overview shows that a client acts on, leaving out what moves with every hook: the
 /// tool in flight, the last message and prompt, when a node was last seen, its activity. Clients
 /// refetch the overview when this changes (the hub bumps their tick then), not on every event.
@@ -2175,11 +2091,9 @@ pub(crate) fn overview_digest(v: &View, now: alondra_core::Millis) -> u64 {
     h.finish()
 }
 
-/// A question as clients get it, with the task it belongs to.
-fn client_question(v: &View, q: &Question) -> Value {
-    let mut value = serde_json::to_value(q).unwrap_or(Value::Null);
-    value["task"] = json!(v.question_task(q).map(|t| t.id.as_str()));
-    value
+#[cfg(test)]
+fn fleet_order_key(n: &alondra_core::Node) -> (bool, alondra_core::Millis, String) {
+    (!n.is_orchestrator, n.created_at, n.session_id.clone())
 }
 
 /// A report as clients get it, with the task it belongs to.
@@ -4399,84 +4313,10 @@ mod tests {
     }
 
 
-    #[tokio::test]
-    async fn a_report_about_a_pr_goes_inside_its_card_and_the_node_is_told() {
-        let cases: [(&str, Vec<Link>, Option<u64>); 3] = [
-            ("links the PR", vec![Link { url: "https://github.com/a/b/pull/24".into(), title: None }], Some(1)),
-            ("links a page of the PR", vec![Link { url: "https://github.com/a/b/pull/24/checks".into(), title: None }], Some(1)),
-            ("links nothing", vec![], None),
-        ];
-        for (what, links, card) in cases {
-            let hub = temp_hub("report-pr");
-            hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
-            let body = ReportBody {
-                caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false },
-                title: "Listo".into(),
-                body: Some("Hecho y probado".into()),
-                kind: Some(ReportKind::Final),
-                links,
-                attachments: vec![],
-                related: None,
-                to_orchestrator: false,
-                task: None,
-            };
-            let (status, said) = status_and_body(report(State(hub.clone()), Json(body)).await).await;
-            assert_eq!(status, StatusCode::OK, "{what}: {said}");
-            assert_eq!(said["shown_in_pr"].as_u64(), card, "{what}: {said}");
-            assert_eq!(said["note"].as_str().is_some_and(|n| n.contains("PR #24")), card.is_some(), "{what}: {said}");
-            let Json(o) = overview(State(hub.clone())).await;
-            assert_eq!(o["news"][0]["pr_id"].as_u64(), card, "{what}: {}", o["news"]);
-        }
-    }
 
     /// #218 (blurcamera/redaccion-fase2-puerta): a handoff for the orchestrator landed in the
     /// user's own inbox as a question, indistinguishable from a real one. `open_questions` (an
     /// `ask`) and `news` (a `report`) must never carry a `to_orchestrator` item.
-    #[tokio::test]
-    async fn a_to_orchestrator_ask_or_report_never_reaches_the_users_inbox() {
-        let hub = temp_hub("to-orchestrator");
-        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
-
-        let ask_body = AskBody {
-            caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false },
-            title: "Sigo con la fase 3?".into(),
-            detail: Some("Fase 2 medida; esto es lo que debería venir después".into()),
-            options: vec![],
-            links: vec![],
-            attachments: vec![],
-            blocking: true,
-            to_orchestrator: true,
-            steps: vec![],
-            related: None,
-            replaces: None, about_pr: None,
-            task: None,
-        };
-        let (status, asked) = status_and_body(ask(State(hub.clone()), Json(ask_body)).await).await;
-        assert_eq!(status, StatusCode::OK, "{asked}");
-        assert_eq!(asked["to_orchestrator"], true, "{asked}");
-
-        let report_body = ReportBody {
-            caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false },
-            title: "Fase 2 medida".into(),
-            body: Some("Nada pendiente de mi parte; el orquestador debería seguir con la fase 3".into()),
-            kind: Some(ReportKind::Final),
-            links: vec![],
-            attachments: vec![],
-            related: None,
-            to_orchestrator: true,
-            task: None,
-        };
-        let (status, reported) = status_and_body(report(State(hub.clone()), Json(report_body)).await).await;
-        assert_eq!(status, StatusCode::OK, "{reported}");
-        assert_eq!(reported["to_orchestrator"], true, "{reported}");
-
-        let Json(o) = overview(State(hub.clone())).await;
-        assert!(o["open_questions"].as_array().unwrap().is_empty(), "a to_orchestrator question must not reach the user's inbox: {}", o["open_questions"]);
-        assert!(o["news"].as_array().unwrap().is_empty(), "a to_orchestrator report must not reach the user's inbox: {}", o["news"]);
-
-        assert!(hub.read(|v| v.questions[&1].to_orchestrator));
-        assert!(hub.read(|v| v.reports[&1].to_orchestrator));
-    }
 
     /// PR #54, 24 Sep: fase-1 moved while its card still offered merging, and the merge came back
     /// as gh's raw "merge commit cannot be cleanly created".
@@ -4609,88 +4449,8 @@ mod tests {
         assert_eq!(hub.read(|v| v.prs_awaiting_user().map(|p| p.id).collect::<Vec<_>>()), vec![1, 2], "both cards stay in the inbox");
     }
 
-    #[tokio::test]
-    async fn the_overview_and_the_node_detail_list_what_runs_and_flag_the_possibly_hung() {
-        use alondra_core::{BackgroundItem, BackgroundKind, DaemonObservation};
-        let hub = temp_hub("background");
-        let now = now_millis();
-        let item = |kind, label: &str, started_at| BackgroundItem { kind, label: label.into(), started_at, suspect: false };
-        hub.append(Event::DaemonSeen(DaemonObservation {
-            session_id: "job".into(), short_id: "job".into(), pid: Some(std::process::id() as i32), tempo: Some("idle".into()), tasks: Some(2),
-            background: vec![item(BackgroundKind::Shell, "until pgrep", now - 2 * 3600 * 1000), item(BackgroundKind::Agent, "Review", now - 60_000)],
-            ..Default::default()
-        })).unwrap();
-        let Json(o) = overview(State(hub.clone())).await;
-        let listed = &o["nodes"][0]["background"];
-        assert_eq!(listed[0]["kind"], "shell");
-        assert_eq!(listed[0]["suspect"], true);
-        assert_eq!(listed[1]["kind"], "agent");
-        assert!(listed[1].get("suspect").is_none(), "{listed}");
-        let (status, detail) = status_and_body(node_detail(State(hub.clone()), Path("job".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
-        assert_eq!(status, StatusCode::OK);
-        assert_eq!(detail["node"]["background"][0]["suspect"], true);
-        assert!(o["nodes"][0].get("alive").is_none() && detail["node"].get("alive").is_none(), "clients never see alive");
-        assert!(hub.read(|v| serde_json::to_value(v).unwrap())["nodes"]["job"]["alive"] == true, "the stored snapshot keeps it");
-    }
 
-    #[tokio::test]
-    async fn the_overview_lists_each_request_with_its_tasks_next_to_the_nodes() {
-        let hub = temp_hub("tasks");
-        hub.append(Event::Hook(HookEvent { session_id: "s".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
-        hub.append(Event::PrOpened { url: "https://github.com/a/b/pull/54".into(), session_id: "s".into(), task: None }).unwrap();
-        let Json(o) = overview(State(hub.clone())).await;
-        assert_eq!(o["nodes"][0]["session_id"], "s", "the nodes are still there");
-        assert_eq!(o["requests"][0]["id"], "r-s");
-        assert_eq!(o["requests"][0]["state"], "in_progress");
-        assert_eq!(o["requests"][0]["tasks"], json!(["t-s"]));
-        let task = &o["tasks"][0];
-        assert_eq!((&task["id"], &task["state"], &task["prs"]), (&json!("t-s"), &json!("in_review"), &json!([1])));
-        assert!(task.get("history").is_none(), "{task}");
-    }
 
-    #[tokio::test]
-    async fn each_node_lists_what_its_main_thread_and_each_subagent_do_and_for_which_task() {
-        let hub = started("activity", &["s"]);
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        let payloads = [
-            json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}),
-            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Check the tests", "prompt": "Check the tests"}}),
-            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
-            json!({"session_id": "s", "hook_event_name": "PostToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "mcp__plugin_alondra_alondra__claim_task", "tool_use_id": "u2", "tool_input": {"token": "s:m1"}}),
-            json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
-        ];
-        for p in payloads {
-            hook(State(hub.clone()), launched(), Json(p)).await;
-        }
-        let stored = hub.read(|v| v.nodes["s"].ledger.clone());
-        assert_eq!(stored.bound, vec![(Some("a1".to_string()), "t-s".to_string())], "the subagent claimed its parent's task");
-        let Json(o) = overview(State(hub.clone())).await;
-        let node = &o["nodes"][0];
-        assert!(node.get("ledger").is_none(), "clients get it as activity: {node}");
-        assert!(node.get("activity").is_none(), "the overview carries states only; activity is the node's detail: {node}");
-        assert_eq!(node["tool"]["name"], "Agent", "today's tool field is untouched");
-        assert_eq!((&node["status"], &node["state"]), (&json!("busy"), &json!("working")));
-        let (_, detail) = status_and_body(node_detail(State(hub.clone()), Path("s".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
-        let node = &detail["node"];
-        let activity = node["activity"].as_array().expect("activity on the node's detail");
-        let keys: Vec<std::collections::BTreeSet<&str>> = activity.iter().map(|a| a.as_object().unwrap().keys().map(String::as_str).collect()).collect();
-        let shape = std::collections::BTreeSet::from(["agent_id", "agent_type", "since", "summary", "task", "tool"]);
-        assert_eq!(keys, vec![shape; 2], "the shape the apps code against, nulls included");
-        let main = json!({"agent_id": null, "agent_type": null, "task": "t-s", "tool": "Agent", "summary": "Check the tests"});
-        let sub = json!({"agent_id": "a1", "agent_type": "Explore", "task": "t-s", "tool": "Bash", "summary": "cargo test"});
-        for (got, want) in activity.iter().zip([main, sub]) {
-            for (k, v) in want.as_object().unwrap() {
-                assert_eq!(&got[k], v, "{k} in {got}");
-            }
-            assert!(got["since"].as_i64().is_some_and(|s| s > 0), "{got}");
-        }
-        assert_eq!(node["tool"]["name"], "Agent", "today's tool field is untouched");
-        assert_eq!((&node["status"], &node["state"]), (&json!("busy"), &json!("working")));
-        let (_, detail) = status_and_body(node_detail(State(hub.clone()), Path("s".into()), Query(TimelineQuery { limit: None, before: None })).await).await;
-        assert_eq!(detail["node"]["status"], "busy");
-        assert_eq!(detail["node"]["activity"].as_array().map(Vec::len), Some(2));
-    }
 
     /// The MCP call does not say which subagent makes it; its `PreToolUse`, which reaches Alondra
     /// first, does.
@@ -5351,22 +5111,6 @@ mod tests {
     }
 
     /// Report #136 (the day-one audit) and a question about it, 24 Sep: two cards for one decision.
-    #[tokio::test]
-    async fn a_question_and_the_reports_of_its_task_are_one_card_and_answering_reads_them() {
-        let hub = started("absorb", &["audit"]);
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("audit", ReportKind::Notice, &[]))).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        let (status, said) = status_and_body(ask(State(hub.clone()), Json(ask_body("audit", "¿Lanzo un nodo que lo arregle?"))).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        let Json(o) = overview(State(hub.clone())).await;
-        assert_eq!(o["news"].as_array().unwrap().len(), 0, "the report is not a card of its own: {}", o["news"]);
-        assert_eq!(o["open_questions"][0]["report"]["title"], "Hecho");
-
-        let body = AnswerBody { text: "Sí, lánzalo".into(), option: None, by: None, attachments: vec![] };
-        let (status, said) = status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        assert!(hub.read(|v| v.reports[&1].read), "answering the card settles the report inside it");
-    }
 
     /// R#232, a document linking an artifact, went under question #237 (24 Sep); answering the
     /// question read it, and the review card was gone before David saw it.
@@ -5644,63 +5388,9 @@ mod tests {
     /// 24 Sep, 21:xx: 1,194 events in an hour, 991 of them hooks, and each one, and each machine
     /// sample every 10 s, moved the tick every client waits on: each refetched the whole overview
     /// ~1,500 times an hour.
-    #[tokio::test]
-    async fn clients_hear_of_a_change_only_when_what_they_show_changes() {
-        let hub = started("tick", &["s"]);
-        let tool = |event: &str| json!({"session_id": "s", "hook_event_name": event, "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}});
-        let before = hub.tick();
-        for event in ["PreToolUse", "PostToolUse", "PreToolUse"] {
-            hook(State(hub.clone()), launched(), Json(tool(event))).await;
-        }
-        assert_eq!(hub.tick(), before, "a tool starting and ending changes no state");
-        assert!(hub.changes() > 3, "Alondra's own loops still hear every event");
-
-        let (status, _) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Despliego?"))).await).await;
-        assert_eq!(status, StatusCode::OK);
-        let asked = hub.tick();
-        assert!(asked > before, "a question is news");
-        let body = AnswerBody { text: "Sí".into(), option: None, by: None, attachments: vec![] };
-        assert_eq!(status_and_body(answer(State(hub.clone()), None, Path(1), Json(body)).await).await.0, StatusCode::OK);
-        let answered = hub.tick();
-        assert!(answered > asked, "so is its answer, and the task it moves");
-
-        let machine = |available: u64| alondra_core::Machine { memory_total: 1000, memory_available: available, cpus: 8, disk_total: 1000, disk_available: 500, ..Default::default() };
-        hub.set_machine(machine(500), None);
-        let sampled = hub.tick();
-        hub.set_machine(machine(510), None);
-        assert_eq!(hub.tick(), sampled, "a sample that moves a gauge 1 % stays within its 5 % step");
-        hub.set_machine(machine(700), None);
-        assert!(hub.tick() > sampled, "one that crosses a step is news");
-
-        let Json(o) = overview(State(hub.clone())).await;
-        assert_eq!(o["tick"].as_u64(), Some(hub.tick()), "the overview says which tick it shows");
-        let replayed = hub_at_home_of(&hub);
-        assert_eq!(replayed.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), hub.read(|v| (v.board.clone(), v.nodes.len(), v.questions.len())), "a replay gives the same view");
-    }
 
     /// Round 2: the digest hashed a background item by kind and label only, so the possibly-hung
     /// badge, which time alone raises, reached the apps only when something else moved the tick.
-    #[tokio::test]
-    async fn a_background_item_turning_possibly_hung_moves_the_tick_at_the_next_machine_sample() {
-        use alondra_core::{BackgroundItem, BackgroundKind, DaemonObservation};
-        let hub = temp_hub("suspect-tick");
-        let started_at = now_millis() - states::BACKGROUND_SUSPECT_MS + 300;
-        hub.append(Event::DaemonSeen(DaemonObservation {
-            session_id: "job".into(), short_id: "job".into(), pid: Some(std::process::id() as i32), tempo: Some("idle".into()), tasks: Some(1),
-            background: vec![BackgroundItem { kind: BackgroundKind::Shell, label: "until pgrep".into(), started_at, suspect: false }],
-            ..Default::default()
-        })).unwrap();
-        let machine = alondra_core::Machine { memory_total: 1000, memory_available: 500, cpus: 8, disk_total: 1000, disk_available: 500, ..Default::default() };
-        hub.set_machine(machine.clone(), None);
-        let Json(before) = overview(State(hub.clone())).await;
-        assert_eq!(before["nodes"][0]["background"][0].get("suspect"), None, "not yet: {}", before["nodes"][0]["background"]);
-        let shown = hub.tick();
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        hub.set_machine(machine, None);
-        let Json(after) = overview(State(hub.clone())).await;
-        assert_eq!(after["nodes"][0]["background"][0]["suspect"], true);
-        assert!(hub.tick() > shown, "the badge the apps paint changed, so they hear of it");
-    }
 
     fn hub_at_home_of(hub: &Hub) -> Arc<Hub> {
         let config = alondra_core::config::Config::resolve(hub.home.clone(), &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
@@ -5709,41 +5399,8 @@ mod tests {
 
     /// The overview left out when a task last changed, so a client showing its history could not
     /// tell it had moved.
-    #[tokio::test]
-    async fn every_task_in_the_overview_says_when_it_last_changed() {
-        let hub = started("last-change", &["s"]);
-        let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
-        assert_eq!(status, StatusCode::OK);
-        let last_change = |o: &Value| o["tasks"][0]["last_change"].as_i64();
-        let Json(first) = overview(State(hub.clone())).await;
-        assert!(last_change(&first).is_some(), "{}", first["tasks"][0]);
-        tokio::time::sleep(Duration::from_millis(5)).await;
-        let (status, _) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Despliego?"))).await).await;
-        assert_eq!(status, StatusCode::OK);
-        let Json(after) = overview(State(hub.clone())).await;
-        assert!(last_change(&after) > last_change(&first), "{} then {}", first["tasks"][0], after["tasks"][0]);
-    }
 
     /// The overview carries the fleet's newest 50 reports: a task's older ones were nowhere.
-    #[tokio::test]
-    async fn a_task_s_detail_carries_every_report_of_it() {
-        let hub = started("task-reports", &["s", "t"]);
-        for id in 1..=60u64 {
-            let sid = if id % 10 == 0 { "t" } else { "s" };
-            hub.append(Event::ReportPosted(Report {
-                id, session_id: sid.into(), node_name: None, title: format!("R{id}"), body: None, links: vec![], attachments: vec![],
-                kind: ReportKind::Notice, created_at: id as i64, read: true, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
-            }))
-            .unwrap();
-        }
-        let Json(o) = overview(State(hub.clone())).await;
-        assert_eq!(o["reports"].as_array().map(Vec::len), Some(50));
-        let (status, said) = status_and_body(task_detail(State(hub.clone()), Path("t-s".into())).await).await;
-        assert_eq!(status, StatusCode::OK);
-        let ids: Vec<u64> = said["reports"].as_array().unwrap().iter().map(|r| r["id"].as_u64().unwrap()).collect();
-        assert_eq!(ids, (1..=60).filter(|i| i % 10 != 0).collect::<Vec<u64>>(), "all 54 of its reports, oldest first, none of another node's");
-        assert!(said["reports"].as_array().unwrap().iter().all(|r| r["task"] == "t-s"));
-    }
 
     fn request_sent(hub: &Hub, id: &str, text: &str) {
         let options = alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("app"), None);
@@ -5752,35 +5409,6 @@ mod tests {
 
     /// r-1790277835004, 24 Sep: a status check the orchestrator answered stayed defining for good,
     /// since a request only left defining through tasks.
-    #[tokio::test]
-    async fn the_orchestrator_closes_a_request_that_needs_no_work() {
-        let hub = started("close-request", &[]);
-        request_sent(&hub, "r-1", "En qué punto tenemos a BlurCamera?");
-        let close = |id: &str, b: Value| {
-            let b: CloseRequestBody = serde_json::from_value(b).unwrap();
-            close_request(State(hub.clone()), Path(id.to_string()), Some(Json(b)))
-        };
-        let (status, said) = status_and_body(close("r-1", json!({})).await).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
-        assert_eq!(status_and_body(close("r-9", json!({"answer": "x"})).await).await.0, StatusCode::NOT_FOUND);
-        let (status, said) = status_and_body(close("r-1", json!({"answer": "BlurCamera está en revisión: PR #150", "title": "Estado de BlurCamera"})).await).await;
-        assert_eq!((status, said["state"].as_str()), (StatusCode::OK, Some("done")), "{said}");
-        let Json(o) = overview(State(hub.clone())).await;
-        let r = &o["requests"][0];
-        assert_eq!((r["state"].as_str(), r["title"].as_str(), r["closed"]["answer"].as_str()), (Some("done"), Some("Estado de BlurCamera"), Some("BlurCamera está en revisión: PR #150")), "{r}");
-        assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::CONFLICT, "once");
-
-        request_sent(&hub, "r-2", "Arregla el menú");
-        hub.append(Event::TaskCreated(alondra_core::tasks::NewTask {
-            id: "t-2".into(), request: "r-2".into(), title: "Menú".into(), brief: None, depends_on: vec![], options: Default::default(), session_id: None,
-            launched: false, launched_as: None, start: None,
-        }))
-        .unwrap();
-        let (status, said) = status_and_body(close("r-2", json!({"withdrawn": true})).await).await;
-        assert_eq!((status, said["kind"].as_str()), (StatusCode::CONFLICT, Some("request_has_tasks")), "{said}");
-        let replayed = hub_at_home_of(&hub);
-        assert_eq!(replayed.read(|v| v.board.requests["r-1"].clone()), hub.read(|v| v.board.requests["r-1"].clone()), "a replay keeps the closure and the title");
-    }
 
     /// Round 3: David withdrew a request from the apps and the orchestrator never heard of it; a
     /// later define was refused with words that invited making it again.
@@ -5810,24 +5438,6 @@ mod tests {
 
     /// The apps showed a request's prompt, and a task a launch made its node's name, where the
     /// orchestrator had given each a title.
-    #[tokio::test]
-    async fn a_request_and_its_tasks_go_by_the_titles_the_orchestrator_gave_them() {
-        let hub = started("titles", &[]);
-        request_sent(&hub, "r-1", "Quiero que el menú de la app se organice por secciones y que cada sección se pueda plegar");
-        request_sent(&hub, "r-2", "Arregla el crash del login");
-        let cwd = hub.home.display().to_string();
-        let define = |v: Value| crate::orchestrate::define(&hub, serde_json::from_value(v).unwrap()).map_err(|r| r.problems);
-        define(json!({"request": "r-1", "title": "Menú por secciones", "tasks": [
-            {"title": "Modelo", "brief": "Separa el modelo.", "assignee": "new", "cwd": cwd},
-            {"title": "Vista", "brief": "Pinta las secciones.", "assignee": "new", "cwd": cwd, "depends_on": [0]},
-        ]}))
-        .unwrap();
-        define(json!({"request": "r-2", "tasks": [{"title": "Crash del login", "brief": "Arréglalo.", "assignee": "new", "cwd": cwd}]})).unwrap();
-        let Json(o) = overview(State(hub.clone())).await;
-        let title = |id: &str| o["requests"].as_array().unwrap().iter().find(|r| r["id"] == id).and_then(|r| r["title"].as_str().map(str::to_string));
-        assert_eq!(title("r-1").as_deref(), Some("Menú por secciones"), "the orchestrator's title");
-        assert_eq!(title("r-2").as_deref(), Some("Crash del login"), "without one, its only task's");
-    }
 
     /// `claude rm` and `claude agents` as a test sees them: every close goes through.
     #[derive(Default)]
@@ -6087,42 +5697,9 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
-    #[tokio::test]
-    async fn every_card_names_its_task_and_every_task_says_whether_alondra_merges_for_it() {
-        let hub = started("contract", &["s"]);
-        let (status, _) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
-        assert_eq!(status, StatusCode::OK);
-        let (status, _) = status_and_body(ask(State(hub.clone()), Json(AskBody { blocking: false, ..ask_body("s", "¿Te vale?") })).await).await;
-        assert_eq!(status, StatusCode::OK);
-        let (status, _) = status_and_body(request_action(State(hub.clone()), Json(AskBody { steps: vec!["Prueba en el iPhone".into()], ..ask_body("s", "Prueba") })).await).await;
-        assert_eq!(status, StatusCode::OK);
-        hub.append(Event::PrOpened { url: FIXTURE.into(), session_id: "s".into(), task: None }).unwrap();
-        hub.append(Event::ReportPosted(Report {
-            id: 9, session_id: "s".into(), node_name: None, title: "Otro".into(), body: None, links: vec![], attachments: vec![],
-            kind: ReportKind::Notice, created_at: 0, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None,
-        })).unwrap();
-        let Json(o) = overview(State(hub.clone())).await;
-        let questions = o["open_questions"].as_array().unwrap();
-        assert_eq!(questions.len(), 2);
-        assert!(questions.iter().all(|q| q["task"] == "t-s"), "{questions:?}");
-        assert!(o["news"].as_array().unwrap().iter().all(|r| r["task"] == "t-s"), "{}", o["news"]);
-        assert_eq!(o["prs"][0]["task"], "t-s");
-        assert_eq!(o["tasks"][0]["auto_merge_pending"], false);
-    }
 
     /// BlurCamera #150 (23 Sep): David asked about the PR with «request changes», and the card
     /// left his inbox until a push.
-    #[tokio::test]
-    async fn asking_on_a_pr_card_sends_its_task_back_to_work_and_keeps_the_card() {
-        let hub = started("pr-ask", &["s"]);
-        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "s".into(), short_id: "s".into(), pid: Some(1), ..Default::default() })).unwrap();
-        hub.append(Event::PrOpened { url: FIXTURE.into(), session_id: "s".into(), task: None }).unwrap();
-        let (status, said) = status_and_body(ask_about_pr(State(hub.clone()), Path(1), Json(AskPrBody { text: "¿Por qué este cambio?".into(), attachments: vec![], expected_head_sha: None })).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        assert_eq!(hub.read(|v| v.board.tasks["t-s"].state), alondra_core::tasks::TaskState::Running);
-        let Json(o) = overview(State(hub.clone())).await;
-        assert_eq!(o["prs"].as_array().unwrap().len(), 1, "the card stays in the inbox");
-    }
 
     /// 23-24 Sep: 11 of 12 merge notices that reached a node idle after its final report sent it
     /// back to work.
@@ -7476,27 +7053,6 @@ mod archive_tests {
         hub.read(|v| v.board.tasks.values().filter(|t| t.archived_at.is_some()).map(|t| t.id.clone()).collect())
     }
 
-    #[tokio::test]
-    async fn archiving_takes_finished_tasks_only_and_the_overview_flags_them() {
-        let hub = with_tasks("archive");
-        let seq = hub.read(|v| v.seq);
-        let (status, said) = status_and_body(archive_tasks(State(hub.clone()), named(&["t-run"])).await).await;
-        assert_eq!((status, said), (StatusCode::OK, json!({"tasks": [], "requests": []})), "a running task is never archived");
-        assert_eq!(hub.read(|v| v.seq), seq, "nothing to archive records nothing");
-
-        let (status, said) = status_and_body(archive_tasks(State(hub.clone()), None).await).await;
-        assert_eq!((status, &said["tasks"]), (StatusCode::OK, &json!(["t-done", "t-gone"])), "{said}");
-        let Json(o) = overview(State(hub.clone())).await;
-        let find = |list: &str, id: &str| o[list].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
-        assert!(find("tasks", "t-done")["archived_at"].is_i64() && find("tasks", "t-gone")["archived_at"].is_i64());
-        assert!(find("tasks", "t-run").get("archived_at").is_none(), "an unarchived task has no archived_at");
-        assert_eq!(find("requests", "r-1")["archived_at"], find("tasks", "t-done")["archived_at"], "every task of r-1 is archived");
-        assert_eq!(find("requests", "r-2")["archived_at"], Value::Null);
-
-        let (_, said) = status_and_body(archive_tasks(State(hub.clone()), None).await).await;
-        assert_eq!(said["tasks"], json!([]), "nothing left to archive");
-        assert_eq!(archived(&hub), ["t-done", "t-gone"]);
-    }
 
     #[tokio::test]
     async fn finished_and_archived_tasks_outlive_compaction_and_a_restart() {
@@ -7731,10 +7287,13 @@ mod owned_session_tests {
             }
         }
         let hub = hub_at(&home);
-        let overview = super::overview(State(hub.clone())).await.0;
-        let nodes: Vec<&str> = overview["nodes"].as_array().unwrap().iter().map(|n| n["session_id"].as_str().unwrap()).collect();
+        let nodes = hub.read(|view| {
+            let mut nodes: Vec<_> = view.nodes.values().collect();
+            nodes.sort_by_key(|node| fleet_order_key(node));
+            nodes.into_iter().map(|node| node.session_id.clone()).collect::<Vec<_>>()
+        });
         assert_eq!(nodes, [ORCHESTRATOR, OWN], "the cron leaves Fleet");
-        let requests: Vec<&str> = overview["requests"].as_array().unwrap().iter().map(|r| r["id"].as_str().unwrap()).collect();
+        let requests = hub.read(|view| view.board.requests.keys().cloned().collect::<Vec<_>>());
         assert_eq!(requests, ["r-1790263152254"], "the cron's single-node request leaves Tasks");
 
         for sid in [OWN, ORCHESTRATOR, EXTERNAL] {
@@ -7765,22 +7324,7 @@ mod managed_orchestrator_tests {
         hub.append(Event::Orchestrator(Transition::Started { run_id: "run-1".into(), kind: RunKind::Work, message_ids: ids })).unwrap();
         hub.append(Event::Orchestrator(Transition::SessionBound { run_id: "run-1".into(), session_id: "claude-1".into() })).unwrap();
     }
-    #[tokio::test]
-    async fn idle_orchestrator_projection_has_no_terminal_or_private_session() {
-        let hub = enabled("managed-overview");
-        let Json(body) = overview(State(hub.clone())).await;
-        assert_eq!(body["orchestrator"]["phase"], "idle");
-        assert_eq!(body["nodes"][0]["orchestrator_runtime"]["phase"], "idle");
-        assert_eq!(body["nodes"][0]["messages_held_for_turn_end"], 0);
-        assert!(body["orchestrator"].get("session_id").is_none());
-        assert_eq!(forget_node(State(hub.clone()), Path(NODE_ID.into())).await.status(), StatusCode::CONFLICT);
-        assert_eq!(close(&hub, NODE_ID, true).await.status(), StatusCode::CONFLICT);
-        let (status, queued) = status_and_body(send_message(State(hub.clone()), Path(NODE_ID.into()), Json(MessageBody { text: "Hello".into(), from: None, attachments: vec![], task: None })).await).await;
-        assert_eq!(status, StatusCode::OK, "{queued}");
-        assert!(queued.get("interactive").is_none());
-        assert_eq!(hub.read(|v| v.pending_messages(NODE_ID).count()), 1);
-    }
-    #[tokio::test]
+        #[tokio::test]
     async fn managed_hooks_bind_actual_session_to_logical_identity_and_fence_old_runs() {
         let hub = enabled("managed-hooks"); start(&hub);
         let payload = |run: &str, session: &str, event: &str| json!({"session_id":session, "_alondra_run":run, "hook_event_name":event, "cwd":"/private/internal/path"});

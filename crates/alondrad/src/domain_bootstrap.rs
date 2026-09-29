@@ -657,7 +657,7 @@ mod tests {
         std::fs::create_dir(&home).unwrap();
         std::fs::write(alondra_core::options::path_in(&home),
             format!("projects_root = {:?}\n", home.to_str().unwrap())).unwrap();
-        let epoch = DomainRuntime::open(&home).unwrap().state().unwrap().data_epoch.0;
+        let _domain_epoch = DomainRuntime::open(&home).unwrap().state().unwrap().data_epoch.0;
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[21u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal",

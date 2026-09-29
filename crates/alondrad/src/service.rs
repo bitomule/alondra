@@ -128,7 +128,6 @@ pub struct Service {
     local_port: u16,
     home: PathBuf,
     transfers: Arc<crate::service_files::Transfers>,
-    snapshots: Arc<crate::service_overview::Snapshots>,
     inflight: InFlight,
     hub: Option<Arc<crate::hub::Hub>>,
     domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
@@ -166,9 +165,9 @@ struct LocalRequest {
     body: Option<Value>,
 }
 
-fn snapshot_receipt_digest(envelope: &[u8], binding: &str) -> [u8;32] {
+fn approval_bound_read_digest(envelope: &[u8], binding: &str) -> [u8;32] {
     let mut hash=Sha256::new();
-    hash.update(b"alondra:overview-snapshot:receipt:v1\0");
+    hash.update(b"alondra:approved-read:receipt:v1\0");
     hash.update(envelope);hash.update([0]);hash.update(binding.as_bytes());
     hash.finalize().into()
 }
@@ -280,16 +279,13 @@ impl Service {
         self
     }
 
-    fn snapshot_route_binding(&self, sender: &str, device: &Device, path: &str) -> Result<String> {
-        let binding = self.snapshot_binding(sender, device)?;
-        if path == "/v2/domain" || path.starts_with("/v2/domain/") {
-            let epoch = if let Some(domain) = &self.domain {
-                domain.state()?.data_epoch
-            } else {
-                self.hub.as_ref().context("domain snapshot requires hub")?.domain.state()?.data_epoch
-            };
-            Ok(format!("{binding}:domain-v2:{epoch}"))
-        } else { Ok(binding) }
+    fn read_receipt_binding(&self, sender: &str, device: &Device) -> Result<String> {
+        let binding = self.approval_binding(sender, device)?;
+        let domain = self.domain.as_deref().or_else(|| self.hub.as_deref().map(|hub| &hub.domain));
+        match domain {
+            Some(domain) => Ok(format!("{binding}:domain-v2:{}", domain.state()?.data_epoch)),
+            None => Ok(binding),
+        }
     }
 
     fn atomic_local(&self, request: &LocalRequest) -> bool {
@@ -452,7 +448,7 @@ impl Service {
             journal,
             local_port,
             home: home.to_path_buf(),
-            transfers: Arc::default(), snapshots: Arc::default(),
+            transfers: Arc::default(),
             inflight: Arc::default(), hub: None, domain: None, routes: None,
         }))
     }
@@ -694,16 +690,15 @@ impl Service {
             anyhow::ensure!(request.path != PUSH_BINDING_V2, "a v2 route is not served by the legacy daemon");
         }
         let body = serde_json::to_vec(e)?;
-        let approval_bound_read = request.body.is_none() && (crate::service_overview::route(&request.method,&request.path)
-            || v2_read_route(&request));
+        let approval_bound_read = request.body.is_none() && v2_read_route(&request);
         let digest: [u8; 32] = if approval_bound_read {
             // Completed encrypted receipts must not bypass a newer approval generation.
             // Legacy routes retain their original digest contract.
-            let binding = match self.snapshot_route_binding(&e.sender,device,&request.path) {
+            let binding = match self.read_receipt_binding(&e.sender,device) {
                 Ok(binding) => binding,
-                Err(error) => { self.snapshots.revoke(&e.sender); return Err(error); }
+                Err(error) => return Err(error),
             };
-            snapshot_receipt_digest(&body,&binding)
+            approval_bound_read_digest(&body,&binding)
         } else { Sha256::digest(&body).into() };
         let is_changes = matches!(request.path.split('?').next(), Some("/v1/changes" | "/changes"))
             && approved_method(&request).is_ok();
@@ -745,11 +740,10 @@ impl Service {
                 .await?,
         )
         .await?;
-        if request.body.is_none() && (crate::service_overview::route(&request.method,&request.path)
-            || v2_read_route(&request)) {
-            let binding = self.snapshot_route_binding(&e.sender,device,&request.path)?;
-            let current = snapshot_receipt_digest(&serde_json::to_vec(e)?,&binding);
-            anyhow::ensure!(current == digest,"snapshot approval generation changed while acknowledging work");
+        if request.body.is_none() && v2_read_route(&request) {
+            let binding = self.read_receipt_binding(&e.sender,device)?;
+            let current = approval_bound_read_digest(&serde_json::to_vec(e)?,&binding);
+            anyhow::ensure!(current == digest,"resource read approval generation changed while acknowledging work");
         }
         self.require_device_approval(&e.sender, device)?;
         let response = match disposition {
@@ -850,28 +844,6 @@ impl Service {
         approved_method(request)?;
         let device = self.devices.get(sender).context("unapproved device")?;
         let approved = self.approved_device(sender, device)?;
-        if crate::service_overview::route(&request.method, &request.path) && request.body.is_none() {
-            let binding = self.snapshot_route_binding(sender, device, &request.path)?;
-            if request.path == "/snapshot" {
-                let snapshots = self.snapshots.clone();
-                let domain = domain.clone();
-                let owner = sender.to_owned();
-                let binding_copy = binding.clone();
-                let result = tokio::task::spawn_blocking(move || snapshots.begin(&owner, &binding_copy,
-                    |limit| domain.snapshot(limit), || Ok(()))).await?;
-                approved.recheck()?;
-                return Ok(result);
-            }
-            let suffix = request.path.strip_prefix("/snapshot/").context("invalid snapshot route")?;
-            let result = if request.method == "DELETE" {
-                self.snapshots.release(sender, &binding, suffix)
-            } else {
-                let (id, offset) = suffix.split_once("?offset=").context("invalid snapshot offset")?;
-                self.snapshots.get(sender, &binding, id, offset.parse()?)
-            };
-            approved.recheck()?;
-            return Ok(result);
-        }
         if request.method == "POST" || request.method == "PUT" {
             if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
                 let body = request.body.as_ref().context("resource body required")?;
@@ -934,59 +906,6 @@ impl Service {
                 "message":"Schedule v2 requires v2-only domain authority",
                 "current_revision":null,"subject":null
             }}));
-        }
-        if crate::service_overview::route(&request.method, &request.path) && request.body.is_none() {
-            let device = self.devices.get(sender).context("unapproved device")?;
-            if self.require_device_approval(sender, device).is_err() {
-                self.snapshots.revoke(sender);
-                return Ok(json!({"status":403,"error":"snapshot_access_denied"}));
-            }
-            let binding = self.snapshot_route_binding(sender,device,&request.path)?;
-            if matches!(request.path.as_str(), "/v1/service/overview-snapshot" | "/snapshot") {
-                let domain = request.path == "/snapshot";
-                let hub = self.hub.clone().context("overview snapshot requires local hub")?;
-                let snapshots = self.snapshots.clone();
-                let owner = sender.to_owned();
-                let expected_binding = binding.clone();
-                // Blocking serialization holds a consistent View read lease; never block Tokio workers.
-                let result = tokio::task::spawn_blocking(move || snapshots.begin(&owner, &binding,
-                    |limit| if domain { hub.domain.snapshot(limit) } else { crate::http::overview_snapshot(&hub,limit) }, || Ok(()))).await?;
-                if self.snapshot_route_binding(sender,device,&request.path).ok().as_ref() != Some(&expected_binding) {
-                    self.snapshots.revoke(sender);
-                    return Ok(json!({"status":403,"error":"snapshot_access_denied"}));
-                }
-                return Ok(result);
-            }
-            let suffix = request.path.strip_prefix("/v1/service/overview-snapshot/").or_else(|| request.path.strip_prefix("/snapshot/")).unwrap();
-            let response = if request.method == "DELETE" {
-                self.snapshots.release(sender,&binding,suffix)
-            } else {
-                let (id,offset) = suffix.split_once("?offset=").unwrap();
-                self.snapshots.get(sender,&binding,id,offset.parse().unwrap())
-            };
-            if self.snapshot_route_binding(sender,device,&request.path).ok().as_ref() != Some(&binding) {
-                self.snapshots.revoke(sender);
-                return Ok(json!({"status":403,"error":"snapshot_access_denied"}));
-            }
-            return Ok(response);
-        }
-        // The compatibility read must also be bounded: otherwise a new client's
-        // legacy-first probe builds the unbounded legacy HTTP Value before fallback.
-        if request.method == "GET" && matches!(request.path.as_str(), "/v1/overview" | "/domain") && request.body.is_none() {
-            if let Some(hub) = self.hub.clone() {
-                let device = self.devices.get(sender).context("unapproved device")?;
-                self.require_device_approval(sender,device)?;
-                let domain = request.path == "/domain";
-                let captured = tokio::task::spawn_blocking(move || if domain { hub.domain.snapshot(MAX_LOCAL_RESPONSE) } else { crate::http::overview_snapshot(&hub,MAX_LOCAL_RESPONSE) }).await?;
-                self.require_device_approval(sender,device)?;
-                let bytes = match captured {
-                    Ok(bytes) => bytes,
-                    Err(error) if error.is::<crate::http::OverviewTooLarge>() => return Err(ResponseTooLarge.into()),
-                    Err(error) => return Err(error),
-                };
-                let body: Value = serde_json::from_slice(&bytes)?;
-                return Ok(json!({"status":200,"body":body}));
-            }
         }
         if matches!(request.path.split('?').next(), Some("/v1/changes" | "/changes")) && approved_method(request).is_err() {
             return Ok(json!({"status":400,"error":"invalid_changes_query"}));
@@ -1111,7 +1030,7 @@ impl Service {
         self.send_device_push(id, device, &binding, &payload, true, &mut None).await
     }
 
-    fn snapshot_binding(&self, id: &str, device: &Device) -> Result<String> {
+    fn approval_binding(&self, id: &str, device: &Device) -> Result<String> {
         self.require_device_approval(id,device)?;
         let persisted = Auth::open(&self.home)?;
         let approval = persisted.list().into_iter().find(|d| d.id == id).context("device approval missing")?;
@@ -1292,9 +1211,6 @@ fn v2_read_id(id: &str) -> bool {
 /// The relay carries opaque JSON. Only these app operations may be replayed on loopback.
 /// There is deliberately no general URL proxy, no pairing/device management, and no upload.
 fn approved_method(request: &LocalRequest) -> Result<Method> {
-    if request.body.is_none() && crate::service_overview::route(&request.method, &request.path) {
-        return Ok(Method::from_bytes(request.method.as_bytes())?);
-    }
     if request.method == "GET" && request.body.is_none()
         && crate::domain_api::approved_resource_read_path(&request.path) {
         return Ok(Method::GET);
@@ -1351,7 +1267,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     }
     let allowed = match request.method.as_str() {
         "GET" if request.body.is_none() => {
-            matches!(path, "/v1/changes" | "/v1/overview" | "/v1/delivery-attempts" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
+            matches!(path, "/v1/changes" | "/v1/delivery-attempts" | "/v1/schedules" | "/v1/options" | "/v1/issues" | "/v1/projects" | "/v1/search" | "/v1/file")
                 || one_id_path(path, "/v1/tasks/").is_some()
                 || one_id_path(path, "/v1/nodes/").is_some()
                 || id_action(path, "/v1/nodes/", "/activity", false)
@@ -2077,67 +1993,42 @@ agreement_key = "{}"
     }
 
     #[tokio::test]
-    async fn encrypted_overview_snapshot_preserves_large_coherent_document_and_rejects_revocation() {
-        let (mut service,phone)=push_fixture(); activate_push(&service);
-        let home=service.home.clone();
-        let config=alondra_core::config::Config::resolve(home.clone(),&Default::default(), |_|None, ||Some("Synthetic".into()));
-        let hub=Arc::new(crate::hub::Hub::open(config,false).unwrap());
-        service=service.with_hub(hub.clone());
-        let expected_small:Value=serde_json::from_slice(&crate::http::overview_snapshot(&hub,MAX_LOCAL_RESPONSE).unwrap()).unwrap();
-        let small=service.dispatch("phone-1",&LocalRequest{method:"GET".into(),path:"/v1/overview".into(),body:None}).await.unwrap();
-        assert_eq!(small,json!({"status":200,"body":expected_small}));
-        hub.append(alondra_core::Event::Hook(alondra_core::HookEvent { session_id:"snapshot-session".into(),event:"UserPromptSubmit".into(),..Default::default() })).unwrap();
-        let report=|id,body| alondra_core::Event::ReportPosted(alondra_core::Report {
-            id,session_id:"snapshot-session".into(),node_name:None,title:"Synthetic report".into(),body:Some(body),links:vec![],attachments:vec![],kind:alondra_core::ReportKind::Notice,created_at:1,read:false,to_orchestrator:false,mission:None,looks_like_question:false,task:None,
-        });
-        hub.append(report(7,"large-synthetic-content".repeat(10000))).unwrap();
-        service=service.with_hub(hub.clone());
-        let responses=Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));let sent=responses.clone();
-        let relay=Router::new().route("/v1/work/{id}/receipt",post(||async{StatusCode::ACCEPTED}))
-            .route("/v1/work/{id}/response",post(move |bytes:Bytes| {let sent=sent.clone();async move{
-                assert!(bytes.len()<=MAX_RELAY_RESPONSE);sent.lock().unwrap().push(bytes.to_vec());StatusCode::ACCEPTED
+    async fn encrypted_resource_read_receipts_are_approval_generation_bound() {
+        let (mut service, phone) = push_fixture();
+        activate_push(&service);
+        let home = service.home.clone();
+        let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Synthetic".into()));
+        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        service = service.with_hub(hub);
+        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
+        let sent = responses.clone();
+        let relay = Router::new().route("/v1/work/{id}/receipt", post(|| async { StatusCode::ACCEPTED }))
+            .route("/v1/work/{id}/response", post(move |bytes: Bytes| { let sent = sent.clone(); async move {
+                assert!(bytes.len() <= MAX_RELAY_RESPONSE);
+                sent.lock().unwrap().push(bytes.to_vec());
+                StatusCode::ACCEPTED
             }}));
-        let listener=tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay=Url::parse(&format!("http://{}/",listener.local_addr().unwrap())).unwrap();
-        let relay_task=tokio::spawn(axum::serve(listener,relay).into_future());let epoch=[7;16];
-        service.handle(changes_work(&service,"bounded-legacy-overview",json!({"method":"GET","path":"/v1/overview"})),&epoch).await.unwrap();
-        let too_large=opened_results(&service,&phone,&responses).pop().unwrap();
-        assert_eq!(too_large["status"],502);assert_eq!(too_large["error"],"response_too_large");
-        let begin_work=changes_work(&service,"snapshot-begin",json!({"method":"GET","path":"/v1/service/overview-snapshot"}));
-        let old_generation_replay=repeat_work(&begin_work);
-        service.handle(begin_work,&epoch).await.unwrap();
-        let first=opened_results(&service,&phone,&responses).pop().unwrap();assert_eq!(first["status"],200);
-        let total=first["body"]["total_bytes"].as_u64().unwrap() as usize;assert!(total>MAX_LOCAL_RESPONSE);
-        let id=first["body"]["snapshot_id"].as_str().unwrap();
-        let mut bytes=URL_SAFE_NO_PAD.decode(first["body"]["data"].as_str().unwrap()).unwrap();
-        hub.append(report(8,"new data after capture".into())).unwrap();
-        for offset in (crate::service_overview::CHUNK_BYTES..total).step_by(crate::service_overview::CHUNK_BYTES) {
-            let request=json!({"method":"GET","path":format!("/v1/service/overview-snapshot/{id}?offset={offset}")});
-            let work=changes_work(&service,&format!("chunk-{offset}"),request);let repeated=repeat_work(&work);
-            service.handle(work,&epoch).await.unwrap();service.handle(repeated,&epoch).await.unwrap();
-            let results=opened_results(&service,&phone,&responses);let last=results.last().unwrap();
-            assert_eq!(last,&results[results.len()-2]);assert_eq!(last["body"]["sha256"],first["body"]["sha256"]);
-            bytes.extend(URL_SAFE_NO_PAD.decode(last["body"]["data"].as_str().unwrap()).unwrap());
-        }
-        assert_eq!(bytes.len(),total);assert_eq!(Sha256::digest(&bytes).iter().map(|b|format!("{b:02x}")).collect::<String>(),first["body"]["sha256"]);
-        let document:Value=serde_json::from_slice(&bytes).unwrap();
-        assert!(document["reports"].as_array().unwrap().iter().any(|v|v["id"]==7));
-        assert!(!document["reports"].as_array().unwrap().iter().any(|v|v["id"]==8),"snapshot must not mix revisions");
-        // Reapproving the same key under a new generation must not replay an old cached receipt.
-        let approvals=home.join("devices.json");
-        let mut approved:Value=serde_json::from_slice(&std::fs::read(&approvals).unwrap()).unwrap();
-        approved[0]["created_at"]=json!(1);
-        std::fs::write(&approvals,serde_json::to_vec(&approved).unwrap()).unwrap();
-        let sent_before=responses.lock().unwrap().len();
-        assert!(service.handle(old_generation_replay,&epoch).await.is_err());
-        assert_eq!(responses.lock().unwrap().len(),sent_before);
-        assert_eq!(service.dispatch("phone-1",&LocalRequest{method:"GET".into(),path:format!("/v1/service/overview-snapshot/{id}?offset=0"),body:None}).await.unwrap()["status"],404);
-        // Persisted revocation is checked even if this Service's in-memory Auth is stale.
-        Auth::open(&home).unwrap().revoke("phone-1").unwrap();
-        let denied=service.dispatch("phone-1",&LocalRequest{method:"GET".into(),path:format!("/v1/service/overview-snapshot/{id}?offset=0"),body:None}).await.unwrap();
-        assert_eq!(denied["status"],403);
-        assert_eq!(service.snapshots.get("phone-1","irrelevant",id,0)["status"],404);
-        relay_task.abort();drop(service);drop(hub);std::fs::remove_dir_all(home).unwrap();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let relay_task = tokio::spawn(axum::serve(listener, relay).into_future());
+        let epoch = [7; 16];
+        let work = changes_work(&service, "resource-read", json!({"method":"GET","path":"/summary"}));
+        let replay = repeat_work(&work);
+        service.handle(work, &epoch).await.unwrap();
+        let result = opened_results(&service, &phone, &responses).pop().unwrap();
+        assert_eq!(result["status"], 200);
+
+        // Reapproving the same key under a new generation cannot reuse the old receipt.
+        let approvals = home.join("devices.json");
+        let mut approved: Value = serde_json::from_slice(&std::fs::read(&approvals).unwrap()).unwrap();
+        approved[0]["created_at"] = json!(1);
+        std::fs::write(&approvals, serde_json::to_vec(&approved).unwrap()).unwrap();
+        let sent_before = responses.lock().unwrap().len();
+        assert!(service.handle(replay, &epoch).await.is_err());
+        assert_eq!(responses.lock().unwrap().len(), sent_before);
+        relay_task.abort();
+        drop(service);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
@@ -2969,24 +2860,18 @@ agreement_key = "{}"
     // authorization cannot be trusted as the Mac's content authorization.
     #[tokio::test]
     async fn malicious_relay_key_substitution_and_false_revocation_ack_cannot_dispatch() {
-        let (mut service, _) = push_fixture();
+        let (mut service, phone) = push_fixture();
         activate_push(&service);
-        let calls = Arc::new(AtomicUsize::new(0));
-        let local = Router::new().route("/v1/overview", get({
-            let calls = calls.clone(); move || { let calls = calls.clone(); async move {
-                calls.fetch_add(1, Ordering::SeqCst); axum::Json(json!({"private":"content"}))
-            }}
-        }));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let port = listener.local_addr().unwrap().port();
-        service.local_port = port;
-        let local_server = tokio::spawn(axum::serve(listener, local).into_future());
+        let home = service.home.clone();
+        let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("Synthetic".into()));
+        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        service = service.with_hub(hub);
         let attacker = SigningKey::from_slice(&[71;32]).unwrap();
         let trusted = SigningKey::from_slice(&[33;32]).unwrap();
         let seal = |key: &SigningKey, id: &str| EnvelopeV1::seal_random(EnvelopeContext {
             route:"mac-1", sender:"phone-1", recipient:"mac-1", request_id:id,
             kind:"request", expires_at_ms:now_ms()+60_000,
-        }, br#"{"method":"GET","path":"/v1/overview"}"#, key, &service.agreement.public_key()).unwrap();
+        }, br#"{"method":"GET","path":"/summary"}"#, key, &service.agreement.public_key()).unwrap();
         let substituted = seal(&attacker, "substituted-key");
         let previously_trusted = seal(&trusted, "after-revocation");
         let delivered = Arc::new(Mutex::new(json!({
@@ -2995,8 +2880,14 @@ agreement_key = "{}"
         let work_reads = Arc::new(AtomicUsize::new(0));
         let deletes = Arc::new(AtomicUsize::new(0));
         let receipts = Arc::new(AtomicUsize::new(0));
+        let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let relay = Router::new()
-            .route("/v1/work/{id}/response", post(|| async { StatusCode::ACCEPTED }))
+            .route("/v1/work/{id}/response", post({ let responses = responses.clone(); move |body: Bytes| {
+                let responses = responses.clone(); async move {
+                    responses.lock().unwrap().push(body.to_vec());
+                    StatusCode::ACCEPTED
+                }
+            }}))
             .route("/v1/bootstrap", get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([7;16])})) }))
             .route("/v1/work", get({ let data=delivered.clone(); let reads=work_reads.clone(); move || {
                 let data=data.clone(); let reads=reads.clone(); async move {
@@ -3018,29 +2909,32 @@ agreement_key = "{}"
         let service=Arc::new(service);
         let mut tasks=tokio::task::JoinSet::new();
         service.poll_work(&mut None,&mut HashSet::new(),&mut tasks).await.unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst),1,"same relay and local endpoint accept an approved signed request");
+        let results = opened_results(&service, &phone, &responses);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0]["status"], 200, "the resource endpoint accepts an approved signed request");
+        assert!(results[0]["body"]["sections"].is_object());
         assert_eq!(receipts.load(Ordering::SeqCst),1);
         *delivered.lock().unwrap()=json!({"request_id":"substituted-key","envelope":substituted});
         let error=service.poll_work(&mut None,&mut HashSet::new(),&mut tasks).await.unwrap_err();
         assert!(error.to_string().contains("invalid encrypted work"));
         assert_eq!(work_reads.load(Ordering::SeqCst),2);
-        assert_eq!(calls.load(Ordering::SeqCst),1);
+        assert_eq!(responses.lock().unwrap().len(),1, "invalid relay key never gets a response receipt");
         assert_eq!(receipts.load(Ordering::SeqCst),1);
         // Persist revocation, then construct a fresh daemon from disk. The
         // service TOML still contains the old device, just as a stale registry can.
         Auth::open(&home).unwrap().revoke("phone-1").unwrap();
         drop(service);
         *delivered.lock().unwrap()=json!({"request_id":"after-revocation","envelope":previously_trusted});
-        let mut restarted=Service::open(&home,port,Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
+        let mut restarted=Service::open(&home,0,Arc::new(Auth::open(&home).unwrap())).unwrap().unwrap();
         restarted.relay=Url::parse(&origin).unwrap();
         let restarted=Arc::new(restarted);
         assert!(restarted.poll_work(&mut None,&mut HashSet::new(),&mut tasks).await.is_err());
         assert_eq!(deletes.load(Ordering::SeqCst),1,"dishonest relay acknowledged deletion");
         assert_eq!(work_reads.load(Ordering::SeqCst),3,"revoked work actually redelivered after restart");
-        assert_eq!(calls.load(Ordering::SeqCst),1);
+        assert_eq!(responses.lock().unwrap().len(),1, "revoked device never gets a response receipt");
         assert_eq!(receipts.load(Ordering::SeqCst),1);
         assert!(restarted.journal.enrollment_revoked("phone-1").unwrap());
-        local_server.abort(); relay_server.abort();
+        relay_server.abort();
         drop(restarted); std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -3087,7 +2981,7 @@ agreement_key = "{}"
             method: method.into(), path: path.into(), body
         }).is_ok();
         for path in [
-            "/v1/overview", "/v1/tasks/task-1", "/v1/nodes/session_1/activity",
+            "/v1/tasks/task-1", "/v1/nodes/session_1/activity",
             "/v1/prs/7/diff", "/v1/prs/7/diff-snapshot", "/v1/search?q=hello%20world",
             "/v1/file?path=%2FUsers%2Fme%2Ffile.txt", "/v1/options?project=foo",
         ] {
@@ -3123,6 +3017,7 @@ agreement_key = "{}"
             ("POST", "/v1/questions/1/answer?x=1", Some(json!({}))),
             ("POST", "/v1/questions/-1/answer", Some(json!({}))),
             ("GET", "/v1/overview?next=/v1/pairing", None),
+            ("GET", "/v1/overview", None),
             ("GET", "//evil.example/v1/overview", None),
             ("GET", "/v1/search?q=hello&path=secret", None),
             ("GET", "/v1/nodes/s?limit=2000", None),
@@ -3163,7 +3058,7 @@ agreement_key = "{}"
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
         };
@@ -3204,7 +3099,7 @@ agreement_key = "{}"
             mac_id: "mac-test".into(), owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(), devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("receipts.sqlite")).unwrap(), local_port,
         };
@@ -3457,7 +3352,7 @@ agreement_key = "{}"
                     signing_wire: URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(home.join("service-receipts.sqlite")).unwrap(),
             local_port: 0,
@@ -3478,7 +3373,7 @@ agreement_key = "{}"
                 kind: "request",
                 expires_at_ms: now_ms() + 60_000,
             },
-            br#"{"method":"GET","path":"/v1/overview"}"#,
+            br#"{"method":"GET","path":"/summary"}"#,
             &phone,
             &service.agreement.public_key(),
         )
@@ -3612,7 +3507,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: auth.clone(),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -3641,7 +3536,7 @@ agreement_key = "{}"
                         .encode(phone_signing.verifying_key().to_sec1_bytes()),
                 },
             )]),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path.clone()).unwrap(),
             local_port,
@@ -3797,7 +3692,7 @@ agreement_key = "{}"
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new(),
-            home: home.clone(), transfers: Arc::default(), snapshots: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
+            home: home.clone(), transfers: Arc::default(), inflight: Arc::default(), hub: None, domain: None, routes: None,
             auth: Arc::new(Auth::open(&home).unwrap()),
             journal: Journal::open(journal_path).unwrap(),
             local_port,

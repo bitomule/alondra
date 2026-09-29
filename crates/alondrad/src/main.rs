@@ -51,7 +51,6 @@ mod schedules;
 mod sentinel;
 mod service;
 mod service_files;
-mod service_overview;
 mod start_guard;
 mod store;
 mod updates;

@@ -1,6 +1,5 @@
 //! Relational authority for domain v2. The legacy event store remains technical
 //! evidence only; these rows are never reconstructed by legacy event replay.
-mod bounded;
 mod canonical;
 mod connection;
 mod repository;
@@ -16,7 +15,6 @@ pub(crate) const SCHEMA_VERSION: i64 = 1;
 pub(crate) const ORCHESTRATOR_MESSAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
-pub(crate) use bounded::ProjectionTooLarge;
 #[cfg(test)]
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
@@ -43,7 +41,6 @@ struct Cached {
 pub(crate) struct DomainStore {
     conn: Connection,
     cached: Option<Cached>,
-    projection: Option<(DataEpoch, Revision, usize, Vec<u8>)>,
     #[cfg(test)]
     after_commit: Option<Box<dyn FnMut() + Send>>,
 }
@@ -178,7 +175,6 @@ impl DomainStore {
         Self {
             conn,
             cached: None,
-            projection: None,
             #[cfg(test)]
             after_commit: None,
         }
@@ -234,9 +230,6 @@ impl DomainStore {
             self.remember(state.clone(), version);
         }
         Ok(state)
-    }
-    pub(crate) fn project(&mut self) -> Result<DomainProjection> {
-        Ok(self.load()?.projection())
     }
     pub(crate) fn schedule_request_tools(&mut self, request_id: &RequestId) -> Result<Option<Vec<String>>> {
         let tx = self.conn.transaction()?;

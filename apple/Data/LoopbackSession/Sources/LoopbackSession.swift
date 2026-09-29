@@ -67,8 +67,8 @@ public actor LoopbackSession: ServiceOperationTransport {
         let route = request.path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? request.path
         let result: LoopbackOutcome
         switch (request.method, route) {
-        case ("POST", let path) where path.hasPrefix("/v2/domain/uploads/"):
-            result = try await upload(String(path.dropFirst("/v2/domain/uploads/".count)), request: request)
+        case ("POST", let path) where path.hasPrefix("/uploads/"):
+            result = try await upload(String(path.dropFirst("/uploads/".count)), request: request)
         case ("GET", "/v2/files/chunk"):
             result = try await fileChunk(request.path)
         default:
