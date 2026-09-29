@@ -123,8 +123,12 @@ impl crate::orchestrate::Launcher for CapturingLauncher {
     fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
 }
 
-fn envelope(epoch: &str, id: &str, command: Value) -> Value {
-    json!({"protocol_version": 2, "data_epoch": epoch, "command_id": id, "expected_revision": 0, "command": command})
+fn tool_args(epoch: &str, id: &str, expected_revision: u64, command: Value) -> Value {
+    let mut command = command.as_object().unwrap().clone();
+    command.remove("kind");
+    let mut args = json!({"data_epoch":epoch,"command_id":id,"expected_revision":expected_revision}).as_object().unwrap().clone();
+    args.extend(command);
+    Value::Object(args)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -162,12 +166,12 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     // The session reports through the MCP and asks the user a question.
     let scope = json!({"kind": "task", "task_id": task.id.0});
     let replies = mcp(&home, daemon.port, from_settings, vec![
-        ("domain_command", envelope(&epoch, "info-1", json!({"kind": "publish_information",
+        ("publish_information", tool_args(&epoch, "info-1", 0, json!({"kind": "publish_information",
             "interaction_id": "info-1", "scope": scope, "recipient": {"kind": "user"}, "body": "Started the review"}))),
-        ("ask", envelope(&epoch, "question-1", json!({"kind": "ask_question", "interaction_id": "question-1",
+        ("ask", tool_args(&epoch, "question-1", 0, json!({"kind": "ask_question", "interaction_id": "question-1",
             "scope": scope, "recipient": {"kind": "user"}, "body": "Merge the fix?", "blocking": true,
             "options": [{"id": "yes", "label": "Yes", "inputs": []}, {"id": "no", "label": "No", "inputs": []}]}))),
-        ("domain_command", envelope(&epoch, "complete-early", json!({"kind": "complete_task",
+        ("complete_task", tool_args(&epoch, "complete-early", 0, json!({"kind": "complete_task",
             "task_id": task.id.0, "presentation_id": "info-1"}))),
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
@@ -195,7 +199,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     daemon.stop().await;
     let daemon = Daemon::start(&home).await;
     let replies = mcp(&home, daemon.port, from_settings, vec![
-        ("domain_command", envelope(&epoch, "info-2", json!({"kind": "publish_information",
+        ("publish_information", tool_args(&epoch, "info-2", 0, json!({"kind": "publish_information",
             "interaction_id": "info-2", "scope": scope, "recipient": {"kind": "user"}, "body": "Acting on the answer"}))),
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
@@ -207,7 +211,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     // The session ends: its bearer stops working.
     assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "SessionEnd"})), json!({}));
     let replies = mcp(&home, daemon.port, ("ALONDRA_DOMAIN_CAPABILITY", &capability), vec![
-        ("domain_command", envelope(&epoch, "info-3", json!({"kind": "publish_information",
+        ("publish_information", tool_args(&epoch, "info-3", 0, json!({"kind": "publish_information",
             "interaction_id": "info-3", "scope": scope, "recipient": {"kind": "user"}, "body": "Too late"}))),
     ]);
     let (refused, text) = tool_text(&replies[0]);

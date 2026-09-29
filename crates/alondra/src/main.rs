@@ -213,8 +213,8 @@ fn main() -> Result<()> {
         }
         Some(Cmd::Setup(args)) => setup::run(*args),
         Some(Cmd::Config { get }) => show_config(get.as_deref()),
-        Some(Cmd::McpNode) => mcp::serve(mcp::Role::Node),
-        Some(Cmd::McpOrchestrator) => mcp::serve(mcp::Role::Orchestrator),
+        Some(Cmd::McpNode) => mcp::serve_node(),
+        Some(Cmd::McpOrchestrator) => mcp::serve_orchestrator(),
         Some(Cmd::Hook) => hook(),
         Some(Cmd::Statusline) => statusline::run(),
         Some(Cmd::Inbox) => Ok(()),

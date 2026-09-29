@@ -515,7 +515,7 @@ mod tests {
         assert!(!domain.state().unwrap().agents[&"session-a".into()].connected);
         assert!(domain.resolve_bearer(&bearer).is_err(), "a finished session's bearer is revoked");
         let (reply, _) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
-            "tool_name": "mcp__plugin_alondra_alondra__domain_command"}), Some(6)).await;
+            "tool_name": "mcp__plugin_alondra_alondra__publish_information"}), Some(6)).await;
         assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "allow");
     }
 

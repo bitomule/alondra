@@ -439,7 +439,7 @@ shift
 done
 cat > received-prompt
 printf 'start\n' >> starts
-printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","permissionMode":"auto","model":"opus","mcp_servers":[{{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__domain_command","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}}'
+printf '%s\n' '{{"type":"system","subtype":"init","session_id":"'"$session"'","permissionMode":"auto","model":"opus","mcp_servers":[{{"name":"plugin:alondra-orchestrator:alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","mcp__plugin_alondra-orchestrator_alondra-orchestrator__ask"]}}'
 {body}
 "#)).unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o700)).unwrap();

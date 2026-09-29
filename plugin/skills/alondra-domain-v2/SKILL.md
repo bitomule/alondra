@@ -8,11 +8,11 @@ description: Use Alondra domain protocol 2 to work on an assigned Task, ask the 
 The Alondra MCP server is the channel to the user. The daemon owns the durable domain state;
 this Claude conversation is working context. Use the cursor supplied with the durable inbox
 batch before a domain mutation.
-Each `domain_command` needs `protocol_version: 2`, the current `data_epoch` and
-`expected_revision`, and a unique `command_id`. Retry an uncertain call with exactly the same
-payload and ID. Obtain a fresh cursor after a conflict. A missing producer capability means this
-session uses an old plugin: stop domain writes and ask the orchestrator to resume or relaunch it.
-A session ID, PID, tool name or process ancestry never authorizes a command.
+Each typed mutation tool needs the current `data_epoch` and `expected_revision`, and a unique
+`command_id`. Retry an uncertain call with exactly the same arguments and ID. Obtain a fresh
+cursor after a conflict. A missing producer capability means this session uses an old plugin:
+stop task writes and ask the orchestrator to resume or relaunch it. A session ID, PID, tool name
+or process ancestry never authorizes a change.
 
 ## Task and outputs
 
@@ -21,10 +21,10 @@ on multiple Tasks, use a separate worktree and subagent for each, with Alondra's
 One implementation Task should fit one PR. Reports, documents and answers need no PR merely to
 satisfy that rule. Outputs remain linked to their Request and Task in the domain.
 
-Use `domain_command` with the typed `command.kind`:
+Use the operation-specific tools:
 
 - `publish_information` to tell the user or orchestrator a finding. This does not complete work.
-- `ask_question` or `request_action` for a decision or outside action. Include the whole context,
+- `ask` or `request_action` for a decision or outside action. Include the whole context,
   recipient, options (each may carry a `description` of what choosing it means), blocking flag,
   and task scope. Wait for the recorded answer; do not infer
   acceptance from a read or a chat message.
@@ -42,16 +42,23 @@ merging when the PR presentation already gives the user that decision.
 
 ## Authorized merge
 
-A User authorization names one PR, one exact head, one method and a domain revision. Until the
-v2 runner provides an exact authorization read adapter, do not execute a merge. Once available,
-the assigned Agent claims it through
-`domain_command` with `kind: claim_merge_authorization`; the daemon
-checks that authorization is still valid, the Task is active, the head matches, and its stack
-base is ready. After a successful claim, execute `gh pr merge --match-head-commit <approved SHA>`
-with the authorized method. Preserve dependency guards and retarget a stacked PR only after its
-upstream merge is confirmed. If the command times out or returns an ambiguous result, inspect
-GitHub before any retry and record the observed result. Cancellation after an external merge
-starts cannot undo it.
+A User authorization names one PR, one exact head, one method and a domain revision. The
+delivery batch carries its exact `merge_authorization` (`authorization_id`, `pr_id`, `head`,
+`method`). Use only that object; do not infer permission from conversation text or a PR's state.
+Inspect the named PR and verify its current head and base. Then call `claim_merge_authorization`
+with the authorization ID, the observed head and base, and `base_verified: true`. The daemon
+independently checks GitHub's head and base, task assignment, dependencies and authorization
+state before it accepts the claim. Stop on any mismatch or error. After a successful claim,
+execute only the approved method against the registered PR associated with that authorization
+and its approved head, for example:
+
+```sh
+gh pr merge <registered-pr-number-or-url> --match-head-commit <approved-head> --squash
+```
+
+Use `--merge` or `--rebase` instead of `--squash` only when that exact method is in the
+authorization. Preserve dependency guards and retarget a stacked PR only after its upstream
+merge is confirmed.
 
 Technical permission prompts still work through their separate channel. Do not turn a permission
 prompt, hook text, or end of a Claude invocation into a domain Question or completed Task.

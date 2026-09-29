@@ -93,7 +93,7 @@ fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, 
 }
 
 #[test]
-fn distinct_v2_servers_forward_typed_commands_with_the_existing_capability() {
+fn distinct_mcp_servers_forward_named_commands_with_the_existing_capability() {
     let (node, node_command) = mcp_exchange(
         "mcp-node",
         "register_pr",
@@ -118,10 +118,10 @@ fn distinct_v2_servers_forward_typed_commands_with_the_existing_capability() {
 
     let (orchestrator, manager_command) = mcp_exchange(
         "mcp-orchestrator",
-        "domain_command",
+        "create_request",
         json!({
-            "protocol_version":2, "data_epoch":"epoch", "command_id":"request-one",
-            "expected_revision":1, "command":{"kind":"create_request","request_id":"request-one","body":"Investigate"}
+            "data_epoch":"epoch", "command_id":"request-one", "expected_revision":1,
+            "request_id":"request-one", "body":"Investigate"
         }),
     );
     assert_eq!(
@@ -140,30 +140,49 @@ fn distinct_v2_servers_forward_typed_commands_with_the_existing_capability() {
 }
 
 #[test]
-fn v2_node_forwards_document_question_and_answer_delivery_as_typed_commands() {
+fn named_tools_construct_commands_and_publish_separate_catalogs() {
     let task = json!({
         "protocol_version":2, "data_epoch":"epoch", "command_id":"task-one",
-        "expected_revision":2, "command":{
-            "kind":"create_task", "task_id":"task-one", "request_id":"request-one",
-            "title":"Prepare result", "agent_id":"agent-one", "review_prs":false,
-            "dependencies":[], "stack":null
-        }
+        "expected_revision":2, "command":{"kind":"create_task", "task_id":"task-one",
+            "request_id":"request-one", "title":"Prepare result", "agent_id":"agent-one",
+            "review_prs":false, "dependencies":[], "stack":null}
     });
-    let (_, forwarded) = mcp_exchange("mcp-orchestrator", "domain_command", task.clone());
+    let (_, forwarded) = mcp_exchange(
+        "mcp-orchestrator",
+        "create_task",
+        json!({
+            "data_epoch":"epoch", "command_id":"task-one", "expected_revision":2,
+            "task_id":"task-one", "request_id":"request-one", "title":"Prepare result",
+            "agent_id":"agent-one", "review_prs":false, "dependencies":[], "stack":null
+        }),
+    );
     assert_eq!(forwarded, task);
 
     let document = json!({
         "protocol_version":2, "data_epoch":"epoch", "command_id":"document-one",
-        "expected_revision":4, "command":{
-            "kind":"create_document", "task_id":"task-one", "document_id":"document-one",
-            "title":"Design", "revision_id":"revision-one", "content_digest":"a".repeat(64),
-            "content_reference":"files/source", "role":"result"
-        }
+        "expected_revision":4, "command":{"kind":"create_document", "task_id":"task-one",
+            "document_id":"document-one", "title":"Design", "revision_id":"revision-one",
+            "content_digest":"a".repeat(64), "content_reference":"files/source", "role":"result"}
     });
-    let (node, forwarded) = mcp_exchange("mcp-node", "domain_command", document.clone());
+    let (node, forwarded) = mcp_exchange(
+        "mcp-node",
+        "create_document",
+        json!({
+            "data_epoch":"epoch", "command_id":"document-one", "expected_revision":4,
+            "task_id":"task-one", "document_id":"document-one", "title":"Design",
+            "revision_id":"revision-one", "content_digest":"a".repeat(64),
+            "content_reference":"files/source", "role":"result"
+        }),
+    );
     assert_eq!(forwarded, document);
-    assert!(node[1]["result"]["tools"].as_array().unwrap().iter().all(|tool|
-        tool["name"] != "report" && tool["name"] != "request_action"));
+    let names: Vec<_> = node[1]["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|tool| tool["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"present_result") && names.contains(&"complete_task"));
+    assert!(!names.contains(&"domain_command") && !names.contains(&"create_task"));
 
     let question = json!({
         "protocol_version":2, "data_epoch":"epoch", "command_id":"question-one",
@@ -174,7 +193,16 @@ fn v2_node_forwards_document_question_and_answer_delivery_as_typed_commands() {
             "options":[{"id":"yes", "label":"Yes", "inputs":[]}]
         }
     });
-    let (_, forwarded) = mcp_exchange("mcp-node", "ask", question.clone());
+    let (_, forwarded) = mcp_exchange(
+        "mcp-node",
+        "ask",
+        json!({
+            "data_epoch":"epoch", "command_id":"question-one", "expected_revision":5,
+            "interaction_id":"question-one", "scope":{"kind":"task", "task_id":"task-one"},
+            "recipient":{"kind":"user"}, "body":"Which answer?", "blocking":true,
+            "options":[{"id":"yes", "label":"Yes", "inputs":[]}]
+        }),
+    );
     assert_eq!(forwarded, question);
 
     let answer = json!({
@@ -185,7 +213,15 @@ fn v2_node_forwards_document_question_and_answer_delivery_as_typed_commands() {
             "targets":[{"kind":"text", "text":"The requested answer"}], "is_final":true
         }
     });
-    let (_, forwarded) = mcp_exchange("mcp-node", "domain_command", answer.clone());
+    let (_, forwarded) = mcp_exchange(
+        "mcp-node",
+        "present_result",
+        json!({
+            "data_epoch":"epoch", "command_id":"answer-one", "expected_revision":7,
+            "task_id":"task-one", "interaction_id":"answer-delivery", "body":"The requested answer",
+            "targets":[{"kind":"text", "text":"The requested answer"}], "is_final":true
+        }),
+    );
     assert_eq!(forwarded, answer);
 }
 

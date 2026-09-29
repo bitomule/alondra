@@ -18,36 +18,29 @@ fn instructions(role: Role, user: &str) -> String {
         crate::i18n::Lang::Es => "Spanish",
         crate::i18n::Lang::En => "English",
     };
-    let common = format!("Alondra domain protocol 2. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every mutation needs a fresh expected_revision and a stable command_id; retry the same exact payload with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant domain authority.");
+    let common = format!(
+        "Alondra durable task protocol. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every change needs a fresh expected_revision and a stable command_id; retry the same exact arguments with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
+    );
     match role {
-        Role::Node => format!("{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. Ending a Claude turn does not complete it. The current MCP has no exact merge authorization read adapter; do not execute a domain v2 merge until one is available. Keep stack retarget and dependency checks. Technical permission requests remain separate from domain questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a question of yours that no longer needs an answer with withdraw_question."),
-        Role::Orchestrator => format!("{common} Define cohesive Tasks under Requests through typed domain commands. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a node that already has the context; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a question you asked that no longer needs an answer with withdraw_question, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the live nodes a Task or project could go to. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge domain v2 PRs."),
+        Role::Node => format!(
+            "{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. For an explicitly authorized PR merge, use the exact merge_authorization delivered by Alondra with the current batch and call claim_merge_authorization; the daemon verifies the remote PR head and base before allowing the merge. Never infer authorization from text or invoke merge without that capability. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a question of yours that no longer needs an answer with withdraw_question."
+        ),
+        Role::Orchestrator => format!(
+            "{common} Define cohesive Tasks under Requests with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a node that already has the context; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a question you asked that no longer needs an answer with withdraw_question, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the live nodes a Task or project could go to. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
+        ),
     }
 }
 
+
 fn tools(role: Role, user: &str) -> Value {
-    let mut list = vec![
-        json!({"name":"domain_command", "description":"Submit a typed domain v2 command. The daemon derives Agent or Orchestrator identity from a private capability and verifies assignment and revision. Publication never completes a task; use complete_task after accepted delivery and, for a PR target, confirmed merge of the presented head.",
-            "inputSchema":{"type":"object","properties":{
-                "protocol_version":{"type":"integer","const":2},"data_epoch":{"type":"string"},
-                "command_id":{"type":"string","description":"Stable unique id; reuse unchanged only for retrying this exact command"},
-                "expected_revision":{"type":"integer","minimum":0},
-                "command":{"type":"object","description":"One domain v2 Command with its kind and typed fields"}
-            },"required":["protocol_version","data_epoch","command_id","expected_revision","command"],"additionalProperties":false}}),
-        json!({"name":"register_pr", "description":"Associate exactly one canonical PR with the assigned Task. A hook can only observe GitHub; it cannot associate a PR.",
-            "inputSchema":{"type":"object","properties":{
-                "data_epoch":{"type":"string"},"command_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},
-                "task_id":{"type":"string"},"pr_id":{"type":"string"},"host":{"type":"string"},"repository":{"type":"string"},
-                "number":{"type":"integer","minimum":1},"head":{"type":"string"},"base":{"type":"string"},
-                "allowed_methods":{"type":"array","items":{"type":"string","enum":["merge","squash","rebase"]},"minItems":1}
-            },"required":["data_epoch","command_id","expected_revision","task_id","pr_id","host","repository","number","head","base","allowed_methods"],"additionalProperties":false}}),
-            json!({"name":"ask", "description":format!("Ask {user} or the logical orchestrator using a typed domain v2 ask_question command. The question retains its Request or Task scope; the answer is durable."),
-                "inputSchema":{"type":"object","properties":{
-                    "protocol_version":{"type":"integer","const":2},"data_epoch":{"type":"string"},
-                    "command_id":{"type":"string"},"expected_revision":{"type":"integer","minimum":0},
-                    "command":{"type":"object","properties":{"kind":{"const":"ask_question"}},"required":["kind"],"description":"Typed ask_question with interaction_id, scope, recipient, body, blocking and options ({id, label, description?, inputs}); a description says what choosing that option means"}
-                },"required":["protocol_version","data_epoch","command_id","expected_revision","command"],"additionalProperties":false}}),
-        json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}),
+    let mut list = match role {
+        Role::Node => node_domain_tools(user),
+        Role::Orchestrator => orchestrator_domain_tools(user),
+    };
+    if role == Role::Node {
+        list.push(json!({"name": "wait_for_machine", "description": "Declare that you are stopped waiting for machine resources (RAM, build queue, usage limit).", "inputSchema": {"type": "object", "properties": {"reason": {"type": "string"}}, "required": ["reason"]}}));
+    } else {
+        list.push(
         json!({"name": "schedule_create", "description": format!("Create a durable scheduled Alondra task for {user}. Use this instead of CronCreate for work that should continue beyond this Claude session. Times use the Mac's local timezone. Ask only if the mission, project or time cannot be inferred from the conversation."), "inputSchema": {"type": "object", "properties": {
             "title": {"type": "string"}, "text": {"type": "string", "description": "Self-contained mission for a fresh node"},
             "project": {"type": ["string", "null"], "description": "Folder name directly under ~/Projects, or null for the Projects folder"},
@@ -58,8 +51,8 @@ fn tools(role: Role, user: &str) -> Value {
             "start_at": {"type": ["integer", "null"], "description": "Unix milliseconds for once or interval anchor"},
             "options": {"type": "object", "description": "Alondra launch choices, e.g. pr: review or auto_merge, effort: normal"},
             "disallowed_tools": {"type": "array", "items": {"type": "string"}, "description": "Optional Claude tool deny patterns"}
-        }, "required": ["title", "text", "project", "frequency", "hour", "minute"]}}),
-    ];
+        }, "required": ["title", "text", "project", "frequency", "hour", "minute"]}}));
+    }
     if role == Role::Orchestrator {
         list.extend([
             json!({"name": "fleet", "description": format!("Fleet summary: unfinished nodes that are running, dormant or owe {user} something, with what they run in the background (subagents and shells; `suspect` when possibly hung); open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
@@ -71,25 +64,356 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "candidates", "description": "The live nodes a task, or work in a repo or project, could go to: the ones in that project or repo, or working on tasks it depends on, that depend on it, or of the same request. Each comes with why, its open tasks and whether it is free or busy.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string", "description": "A task id (t-…)"}, "repo": {"type": "string", "description": "A project name or owner/repo, when there is no task yet"}}}}),
         ]);
     }
-    // A v2 producer must not see the old business mutators, whose final-report
-    // and automatic-merge semantics contradict the durable domain contract.
-    list.retain(|tool| v2_tool_allowed(role, tool["name"].as_str().unwrap_or_default()));
     for tool in &mut list {
         if tool["name"] == "launch" {
-            tool["description"] = json!(format!("Launch a new node with the Alondra plugin for a Task no connected node works on: it gets the Task's mission (its title and its Request) unless you pass a prompt, the options {user} chose for the Request, its domain capability, and the Task. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."));
-            let properties = tool["inputSchema"]["properties"].as_object_mut().expect("launch properties");
+            tool["description"] = json!(format!(
+                "Launch a new node with the Alondra plugin for a Task no connected node works on: it gets the Task's mission (its title and its Request) unless you pass a prompt, the options {user} chose for the Request, its domain capability, and the Task. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."
+            ));
+            let properties = tool["inputSchema"]["properties"]
+                .as_object_mut()
+                .expect("launch properties");
             properties.remove("request_id");
             tool["inputSchema"]["required"] = json!(["name", "cwd", "task"]);
         }
-        }
+    }
     Value::Array(list)
 }
 
-fn v2_tool_allowed(role: Role, name: &str) -> bool {
-    matches!(name, "domain_command" | "ask")
-        || (role == Role::Node && name == "register_pr")
-        || (role == Role::Orchestrator && matches!(name, "launch" | "send" | "interrupt" | "machine" | "schedule_create" | "fleet" | "node" | "candidates"))
-        || (role == Role::Node && name == "wait_for_machine")
+fn domain_tool(name: &str, description: &str, fields: Value, required: &[&str]) -> Value {
+    let mut properties = json!({
+        "data_epoch":{"type":"string"},
+        "command_id":{"type":"string","description":"Stable unique id; reuse unchanged only to retry this exact command"},
+        "expected_revision":{"type":"integer","minimum":0}
+    }).as_object().unwrap().clone();
+    properties.extend(fields.as_object().expect("properties object").clone());
+    let mut required_fields = vec!["data_epoch", "command_id", "expected_revision"];
+    required_fields.extend_from_slice(required);
+    json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required_fields,"additionalProperties":false}})
+}
+
+fn interaction_fields() -> Value {
+    json!({
+        "interaction_id":{"type":"string"},
+        "scope":{"oneOf":[
+            {"type":"object","properties":{"kind":{"const":"task"},"task_id":{"type":"string"}},"required":["kind","task_id"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"orchestrator"},"request_id":{"type":["string","null"]}},"required":["kind","request_id"],"additionalProperties":false}
+        ]},
+        "recipient":{"oneOf":[
+            {"type":"object","properties":{"kind":{"const":"user"}},"required":["kind"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"orchestrator"}},"required":["kind"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"agent"},"agent_id":{"type":"string"}},"required":["kind","agent_id"],"additionalProperties":false}
+        ]},
+        "body":{"type":"string"},"blocking":{"type":"boolean"},
+        "options":{"type":"array","items":{"type":"object","properties":{
+            "id":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"},
+            "inputs":{"type":"array","items":{"type":"object","properties":{
+                "id":{"type":"string"},"kind":{"enum":["text","boolean","integer"]},"required":{"type":"boolean"}
+            },"required":["id","kind","required"],"additionalProperties":false}}
+        },"required":["id","label","inputs"],"additionalProperties":false}},
+        "attachments":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"bytes":{"type":"integer","minimum":0}},"required":["id","name","content_digest","content_reference","bytes"],"additionalProperties":false}}
+    })
+}
+
+fn input_value_schema() -> Value {
+    json!({"type":"object","additionalProperties":{"oneOf":[
+        {"type":"object","properties":{"kind":{"const":"text"},"value":{"type":"string"}},"required":["kind","value"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"boolean"},"value":{"type":"boolean"}},"required":["kind","value"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"integer"},"value":{"type":"integer"}},"required":["kind","value"],"additionalProperties":false}
+    ]}})
+}
+
+fn node_domain_tools(user: &str) -> Vec<Value> {
+    let mut interaction = interaction_fields();
+    interaction["scope"] = json!({"type":"object","properties":{"kind":{"const":"task"},"task_id":{"type":"string"}},"required":["kind","task_id"],"additionalProperties":false});
+    let mut tools = vec![];
+    for (name, kind, description, fields, required) in [
+        (
+            "ask",
+            "ask_question",
+            format!(
+                "Ask {user} or the orchestrator a durable question. Explain what each choice means."
+            ),
+            json!({"interaction_id":interaction["interaction_id"],"scope":interaction["scope"],"recipient":interaction["recipient"],"body":interaction["body"],"blocking":interaction["blocking"],"options":interaction["options"],"attachments":interaction["attachments"]}),
+            vec![
+                "interaction_id",
+                "scope",
+                "recipient",
+                "body",
+                "blocking",
+                "options",
+            ],
+        ),
+        (
+            "request_action",
+            "request_action",
+            "Request a durable action choice from the recipient.".into(),
+            json!({"interaction_id":interaction["interaction_id"],"scope":interaction["scope"],"recipient":interaction["recipient"],"body":interaction["body"],"blocking":interaction["blocking"],"options":interaction["options"],"attachments":interaction["attachments"]}),
+            vec![
+                "interaction_id",
+                "scope",
+                "recipient",
+                "body",
+                "blocking",
+                "options",
+            ],
+        ),
+    ] {
+        let _ = kind;
+        tools.push(domain_tool(name, &description, fields, &required));
+    }
+    let attachment = json!({"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"bytes":{"type":"integer","minimum":0}},"required":["id","name","content_digest","content_reference","bytes"],"additionalProperties":false});
+    let target = json!({"type":"array","items":{"oneOf":[
+        {"type":"object","properties":{"kind":{"const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"document_revision"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["kind","pr_id","head"],"additionalProperties":false}
+    ]}});
+    let simple = [
+        (
+            "start_task",
+            "start_task",
+            "Start your assigned Task after checking dependencies.",
+            json!({"task_id":{"type":"string"}}),
+            vec!["task_id"],
+        ),
+        (
+            "publish_information",
+            "publish_information",
+            "Send a durable update to the user or orchestrator.",
+            json!({"interaction_id":interaction["interaction_id"],"scope":interaction["scope"],"recipient":interaction["recipient"],"body":interaction["body"],"attachments":{"type":"array","items":attachment}}),
+            vec!["interaction_id", "scope", "recipient", "body"],
+        ),
+        (
+            "withdraw_question",
+            "withdraw_question",
+            "Withdraw a question or action request you authored that no longer needs an answer.",
+            json!({"interaction_id":{"type":"string"}}),
+            vec!["interaction_id"],
+        ),
+        (
+            "answer_question",
+            "answer_question",
+            "Answer a question addressed to this node.",
+            json!({"interaction_id":{"type":"string"},"option_id":{"type":"string"},"inputs":input_value_schema(),"attachments":{"type":"array","items":attachment}}),
+            vec!["interaction_id", "option_id", "inputs"],
+        ),
+        (
+            "create_document",
+            "create_document",
+            "Create an immutable document revision attached to your Task.",
+            json!({"task_id":{"type":"string"},"document_id":{"type":"string"},"title":{"type":"string"},"revision_id":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"role":{"type":"string"}}),
+            vec![
+                "task_id",
+                "document_id",
+                "title",
+                "revision_id",
+                "content_digest",
+                "content_reference",
+                "role",
+            ],
+        ),
+        (
+            "revise_document",
+            "revise_document",
+            "Publish a new immutable revision of a linked document.",
+            json!({"task_id":{"type":"string"},"document_id":{"type":"string"},"revision_id":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"}}),
+            vec![
+                "task_id",
+                "document_id",
+                "revision_id",
+                "content_digest",
+                "content_reference",
+            ],
+        ),
+        (
+            "register_pr",
+            "register_pr",
+            "Associate exactly one canonical PR with your Task; a hook can only observe GitHub.",
+            json!({"task_id":{"type":"string"},"pr_id":{"type":"string"},"host":{"type":"string"},"repository":{"type":"string"},"number":{"type":"integer","minimum":1},"head":{"type":"string"},"base":{"type":"string"},"allowed_methods":{"type":"array","items":{"type":"string","enum":["merge","squash","rebase"]},"minItems":1}}),
+            vec![
+                "task_id",
+                "pr_id",
+                "host",
+                "repository",
+                "number",
+                "head",
+                "base",
+                "allowed_methods",
+            ],
+        ),
+        (
+            "link_interaction_subject",
+            "link_interaction_subject",
+            "Link your Task question to its PR or document review subject.",
+            json!({"interaction_id":{"type":"string"},"subject":{"oneOf":[{"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"}},"required":["kind","pr_id"],"additionalProperties":false},{"type":"object","properties":{"kind":{"const":"document_review"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false}]}}),
+            vec!["interaction_id", "subject"],
+        ),
+        (
+            "present_result",
+            "present_result",
+            "Present a result to the user. Final results still need explicit user acceptance.",
+            json!({"task_id":{"type":"string"},"interaction_id":{"type":"string"},"body":{"type":"string"},"targets":target,"is_final":{"type":"boolean"},"attachments":{"type":"array","items":attachment}}),
+            vec!["task_id", "interaction_id", "body", "targets", "is_final"],
+        ),
+        (
+            "publish_stack_readiness",
+            "publish_stack_readiness",
+            "Report whether your presented PR is ready for its dependent stack.",
+            json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"},"ready":{"type":"boolean"}}),
+            vec!["task_id", "presentation_id", "pr_id", "head", "ready"],
+        ),
+        (
+            "complete_task",
+            "complete_task",
+            "Complete your Task after delivery acceptance and required PR merge are confirmed.",
+            json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"}}),
+            vec!["task_id", "presentation_id"],
+        ),
+        (
+            "claim_merge_authorization",
+            "claim_merge_authorization",
+            "Claim the exact user-authorized merge delivered in your current batch. The daemon independently verifies GitHub head and base; do not call this without a matching merge_authorization object.",
+            json!({"authorization_id":{"type":"string"},"remote_head":{"type":"string"},"remote_base":{"type":"string"},"base_verified":{"type":"boolean","const":true}}),
+            vec!["authorization_id", "remote_head", "remote_base", "base_verified"],
+        ),
+    ];
+    tools.extend(
+        simple
+            .into_iter()
+            .map(|(name, _, description, fields, required)| {
+                domain_tool(name, description, fields, &required)
+            }),
+    );
+    tools
+}
+
+fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
+    let interaction = interaction_fields();
+    let options = interaction["options"].clone();
+    let recipient = interaction["recipient"].clone();
+    let scope = interaction["scope"].clone();
+    let mut tools = vec![];
+    let simple = [
+        (
+            "create_request",
+            "Create a durable Request from the user's new work.",
+            json!({"request_id":{"type":"string"},"body":{"type":"string"},"auto_merge":{"type":"boolean","description":"True only if the user explicitly chose automatic PR merge"}}),
+            vec!["request_id", "body"],
+        ),
+        (
+            "close_request",
+            "Close a Request that needs no Task. State the answer or mark it withdrawn.",
+            json!({"request_id":{"type":"string"},"answer":{"type":"string"},"withdrawn":{"type":"boolean"},"title":{"type":"string"}}),
+            vec!["request_id"],
+        ),
+        (
+            "create_task",
+            "Create a cohesive Task under an open Request and optionally assign a node.",
+            json!({"task_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"agent_id":{"type":["string","null"]},"review_prs":{"type":"boolean"},"dependencies":{"type":"array","items":{"type":"string"}},"stack":{"type":["object","null"],"properties":{"upstream_task":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["upstream_task","presentation_id","pr_id","head"],"additionalProperties":false}}),
+            vec![
+                "task_id",
+                "request_id",
+                "title",
+                "review_prs",
+                "dependencies",
+                "stack",
+            ],
+        ),
+        (
+            "assign_task",
+            "Assign an active Task to a registered node.",
+            json!({"task_id":{"type":"string"},"agent_id":{"type":"string"}}),
+            vec!["task_id", "agent_id"],
+        ),
+        (
+            "retitle_task",
+            "Give a Task a short user-facing title.",
+            json!({"task_id":{"type":"string"},"title":{"type":"string"}}),
+            vec!["task_id", "title"],
+        ),
+        (
+            "set_dependencies",
+            "Set a Task's dependencies and optional stack relationship.",
+            json!({"task_id":{"type":"string"},"dependencies":{"type":"array","items":{"type":"string"}},"stack":{"type":["object","null"],"properties":{"upstream_task":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["upstream_task","presentation_id","pr_id","head"],"additionalProperties":false}}),
+            vec!["task_id", "dependencies", "stack"],
+        ),
+        (
+            "start_task",
+            "Mark a Task started once its dependencies are ready.",
+            json!({"task_id":{"type":"string"}}),
+            vec!["task_id"],
+        ),
+        (
+            "publish_information",
+            "Send the user or a node a durable update.",
+            json!({"interaction_id":interaction["interaction_id"],"scope":scope,"recipient":recipient,"body":interaction["body"],"attachments":interaction["attachments"]}),
+            vec!["interaction_id", "scope", "recipient", "body"],
+        ),
+        (
+            "ask",
+            "Ask the user or a node a durable question; explain each choice.",
+            json!({"interaction_id":interaction["interaction_id"],"scope":scope,"recipient":recipient,"body":interaction["body"],"blocking":interaction["blocking"],"options":options,"attachments":interaction["attachments"]}),
+            vec![
+                "interaction_id",
+                "scope",
+                "recipient",
+                "body",
+                "blocking",
+                "options",
+            ],
+        ),
+        (
+            "request_action",
+            "Request a durable action choice from the user or a node.",
+            json!({"interaction_id":interaction["interaction_id"],"scope":scope,"recipient":recipient,"body":interaction["body"],"blocking":interaction["blocking"],"options":options,"attachments":interaction["attachments"]}),
+            vec![
+                "interaction_id",
+                "scope",
+                "recipient",
+                "body",
+                "blocking",
+                "options",
+            ],
+        ),
+        (
+            "withdraw_question",
+            "Withdraw a question or action request you authored that no longer needs an answer.",
+            json!({"interaction_id":{"type":"string"}}),
+            vec!["interaction_id"],
+        ),
+        (
+            "answer_question",
+            "Answer a question addressed to the orchestrator.",
+            json!({"interaction_id":{"type":"string"},"option_id":{"type":"string"},"inputs":input_value_schema(),"attachments":interaction["attachments"]}),
+            vec!["interaction_id", "option_id", "inputs"],
+        ),
+        (
+            "link_task_document",
+            "Link a document to a Task with a named role.",
+            json!({"task_id":{"type":"string"},"document_id":{"type":"string"},"role":{"type":"string"}}),
+            vec!["task_id", "document_id", "role"],
+        ),
+        (
+            "cancel_task",
+            "Cancel an active Task when its Request no longer needs it.",
+            json!({"task_id":{"type":"string"}}),
+            vec!["task_id"],
+        ),
+        (
+            "reopen_task",
+            "Reopen a terminal Task while its Request remains open.",
+            json!({"task_id":{"type":"string"}}),
+            vec!["task_id"],
+        ),
+    ];
+    tools.extend(
+        simple
+            .into_iter()
+            .map(|(name, description, fields, required)| {
+                domain_tool(name, description, fields, &required)
+            }),
+    );
+    let _ = user;
+    tools
 }
 
 /// Every call waits this long for alondrad.
@@ -105,10 +429,59 @@ fn call_timeout(tool: &str) -> Duration {
     }
 }
 
-fn call(client: &Client, role: Role, name: &str, args: &Value) -> Result<String> {
-    if !v2_tool_allowed(role, name) {
-        anyhow::bail!("incompatible_protocol: this tool is unavailable to a v2 producer");
+fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
+    match name {
+        "start_task"
+        | "publish_information"
+        | "ask"
+        | "request_action"
+        | "withdraw_question"
+        | "answer_question"
+        | "create_document"
+        | "revise_document"
+        | "register_pr"
+        | "link_interaction_subject"
+        | "present_result"
+        | "publish_stack_readiness"
+        | "complete_task"
+        | "claim_merge_authorization"
+        | "wait_for_machine" => execute_tool(client, name, args),
+        _ => anyhow::bail!("incompatible_protocol: this tool is unavailable to the node MCP"),
     }
+}
+
+fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
+    match name {
+        "create_request"
+        | "close_request"
+        | "create_task"
+        | "assign_task"
+        | "retitle_task"
+        | "set_dependencies"
+        | "start_task"
+        | "publish_information"
+        | "ask"
+        | "request_action"
+        | "withdraw_question"
+        | "answer_question"
+        | "link_task_document"
+        | "cancel_task"
+        | "reopen_task"
+        | "launch"
+        | "send"
+        | "interrupt"
+        | "machine"
+        | "schedule_create"
+        | "fleet"
+        | "node"
+        | "candidates" => execute_tool(client, name, args),
+        _ => {
+            anyhow::bail!("incompatible_protocol: this tool is unavailable to the orchestrator MCP")
+        }
+    }
+}
+
+fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
     let waiting;
     let client = match call_timeout(name) {
         CALL_TIMEOUT => client,
@@ -118,66 +491,152 @@ fn call(client: &Client, role: Role, name: &str, args: &Value) -> Result<String>
         }
     };
     Ok(match name {
-        "ask" => {
+        "ask"
+        | "request_action"
+        | "publish_information"
+        | "withdraw_question"
+        | "answer_question"
+        | "create_request"
+        | "close_request"
+        | "create_task"
+        | "assign_task"
+        | "retitle_task"
+        | "set_dependencies"
+        | "start_task"
+        | "create_document"
+        | "revise_document"
+        | "link_task_document"
+        | "register_pr"
+        | "link_interaction_subject"
+        | "present_result"
+        | "publish_stack_readiness"
+        | "complete_task"
+        | "claim_merge_authorization"
+        | "cancel_task"
+        | "reopen_task" => {
             let bearer = domain_bearer()?;
-            let envelope = domain_envelope("domain_command", args)?;
-            if envelope["command"]["kind"] != "ask_question" {
-                anyhow::bail!("ask requires a typed ask_question domain command");
-            }
-            serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
+            let envelope = domain_envelope(name, args)?;
+            serde_json::to_string_pretty(&client.domain_post(
+                "/v2/domain/commands",
+                &bearer,
+                &envelope,
+            )?)?
         }
         "launch" | "send" | "interrupt" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&client.domain_post(&format!("/v2/orchestrator/{name}"), &bearer, args)?)?
+            serde_json::to_string_pretty(&client.domain_post(
+                &format!("/v2/orchestrator/{name}"),
+                &bearer,
+                args,
+            )?)?
         }
         "schedule_create" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&client.domain_post("/v2/orchestrator/schedules", &bearer, args)?)?
+            serde_json::to_string_pretty(&client.domain_post(
+                "/v2/orchestrator/schedules",
+                &bearer,
+                args,
+            )?)?
         }
         "fleet" => {
             let bearer = domain_bearer()?;
-            serde_json::to_string_pretty(&fleet_summary(&client.domain_get("/v2/orchestrator/fleet", &bearer)?, flag(args, "all")))?
+            serde_json::to_string_pretty(&fleet_summary(
+                &client.domain_get("/v2/orchestrator/fleet", &bearer)?,
+                flag(args, "all"),
+            ))?
         }
         "node" => {
             let bearer = domain_bearer()?;
             let key = args.get("node").and_then(Value::as_str).unwrap_or("");
-            let page = if flag(args, "history") { Page::History { before: None } } else { Page::Recent };
-            serde_json::to_string_pretty(&node_view(&client.domain_get(&format!("/v2/orchestrator/node?node={}", urlencode(key)), &bearer)?, page))?
+            let page = if flag(args, "history") {
+                Page::History { before: None }
+            } else {
+                Page::Recent
+            };
+            serde_json::to_string_pretty(&node_view(
+                &client.domain_get(
+                    &format!("/v2/orchestrator/node?node={}", urlencode(key)),
+                    &bearer,
+                )?,
+                page,
+            ))?
         }
         "candidates" => {
             let bearer = domain_bearer()?;
-            let query: Vec<String> = ["task", "repo"].iter()
-                .filter_map(|k| args.get(*k).and_then(Value::as_str).filter(|v| !v.trim().is_empty()).map(|v| format!("{k}={}", urlencode(v))))
+            let query: Vec<String> = ["task", "repo"]
+                .iter()
+                .filter_map(|k| {
+                    args.get(*k)
+                        .and_then(Value::as_str)
+                        .filter(|v| !v.trim().is_empty())
+                        .map(|v| format!("{k}={}", urlencode(v)))
+                })
                 .collect();
-            serde_json::to_string_pretty(&client.domain_get(&format!("/v2/orchestrator/candidates?{}", query.join("&")), &bearer)?)?
+            serde_json::to_string_pretty(&client.domain_get(
+                &format!("/v2/orchestrator/candidates?{}", query.join("&")),
+                &bearer,
+            )?)?
         }
         "wait_for_machine" => {
             let bearer = domain_bearer()?;
             let reason = args.get("reason").and_then(Value::as_str).unwrap_or("");
-            client.domain_post("/v2/agents/waiting-machine", &bearer, &json!({"reason": reason}))?;
+            client.domain_post(
+                "/v2/agents/waiting-machine",
+                &bearer,
+                &json!({"reason": reason}),
+            )?;
             "Noted: you are waiting for the machine.".to_string()
         }
         "machine" => {
             let bearer = domain_bearer()?;
             serde_json::to_string_pretty(&client.domain_get("/v2/orchestrator/machine", &bearer)?)?
         }
-        "domain_command" | "register_pr" => {
-            let bearer = domain_bearer()?;
-            let envelope = domain_envelope(name, args)?;
-            serde_json::to_string_pretty(&client.domain_post("/v2/domain/commands", &bearer, &envelope)?)?
-        }
         other => anyhow::bail!("unknown tool: {other}"),
     })
 }
 
 fn domain_envelope(name: &str, args: &Value) -> Result<Value> {
-    let envelope = if name == "register_pr" {
-        json!({"protocol_version":2,"data_epoch":args.get("data_epoch"),
-            "command_id":args.get("command_id"),"expected_revision":args.get("expected_revision"),
-            "command":{"kind":"register_pr","task_id":args.get("task_id"),"pr_id":args.get("pr_id"),
-                "host":args.get("host"),"repository":args.get("repository"),"number":args.get("number"),
-                "head":args.get("head"),"base":args.get("base"),"allowed_methods":args.get("allowed_methods")}})
-    } else { args.clone() };
+    let kind = match name {
+        "ask" => "ask_question",
+        "request_action" => "request_action",
+        "publish_information" => "publish_information",
+        "withdraw_question" => "withdraw_question",
+        "answer_question" => "answer_question",
+        "create_request" => "create_request",
+        "close_request" => "close_request",
+        "create_task" => "create_task",
+        "assign_task" => "assign_task",
+        "retitle_task" => "retitle_task",
+        "set_dependencies" => "set_dependencies",
+        "start_task" => "start_task",
+        "create_document" => "create_document",
+        "revise_document" => "revise_document",
+        "link_task_document" => "link_task_document",
+        "register_pr" => "register_pr",
+        "link_interaction_subject" => "link_interaction_subject",
+        "present_result" => "present_result",
+        "publish_stack_readiness" => "publish_stack_readiness",
+        "complete_task" => "complete_task",
+        "claim_merge_authorization" => "claim_merge_authorization",
+        "cancel_task" => "cancel_task",
+        "reopen_task" => "reopen_task",
+        _ => anyhow::bail!("unknown domain tool: {name}"),
+    };
+    let mut command = args
+        .as_object()
+        .cloned()
+        .ok_or_else(|| anyhow::anyhow!("tool arguments must be an object"))?;
+    for key in [
+        "protocol_version",
+        "data_epoch",
+        "command_id",
+        "expected_revision",
+    ] {
+        command.remove(key);
+    }
+    command.insert("kind".into(), Value::String(kind.into()));
+    let envelope = json!({"protocol_version":2,"data_epoch":args.get("data_epoch"),
+        "command_id":args.get("command_id"),"expected_revision":args.get("expected_revision"),"command":command});
     let _: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope.clone())?;
     Ok(envelope)
 }
@@ -496,8 +955,32 @@ pub fn urlencode(s: &str) -> String {
         .collect()
 }
 
-pub fn serve(role: Role) -> Result<()> {
+pub fn serve_node() -> Result<()> {
     let user = crate::client::config().name.clone();
+    serve_server(
+        "alondra-node",
+        instructions(Role::Node, &user),
+        tools(Role::Node, &user),
+        call_node,
+    )
+}
+
+pub fn serve_orchestrator() -> Result<()> {
+    let user = crate::client::config().name.clone();
+    serve_server(
+        "alondra-orchestrator",
+        instructions(Role::Orchestrator, &user),
+        tools(Role::Orchestrator, &user),
+        call_orchestrator,
+    )
+}
+
+fn serve_server(
+    server_name: &str,
+    instructions: String,
+    tools: Value,
+    dispatch: fn(&Client, &str, &Value) -> Result<String>,
+) -> Result<()> {
     let client = Client::new(CALL_TIMEOUT);
     let stdin = std::io::stdin();
     let mut stdout = std::io::stdout().lock();
@@ -514,15 +997,15 @@ pub fn serve(role: Role) -> Result<()> {
             "initialize" => Ok(json!({
                 "protocolVersion": params.get("protocolVersion").cloned().unwrap_or(json!("2025-06-18")),
                 "capabilities": {"tools": {}},
-                "serverInfo": {"name": match role { Role::Node => "alondra-node", Role::Orchestrator => "alondra-orchestrator" }, "version": env!("CARGO_PKG_VERSION")},
-                "instructions": instructions(role, &user),
+                "serverInfo": {"name": server_name, "version": env!("CARGO_PKG_VERSION")},
+                "instructions": instructions,
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({"tools": tools(role, &user)})),
+            "tools/list" => Ok(json!({"tools": tools})),
             "tools/call" => {
                 let name = params.get("name").and_then(Value::as_str).unwrap_or("");
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
-                Ok(match call(&client, role, name, &args) {
+                Ok(match dispatch(&client, name, &args) {
                     Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
                     Err(e) => json!({"content": [{"type": "text", "text": format!("Alondra error: {e}")}], "isError": true}),
                 })
@@ -544,7 +1027,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn register_pr_tool_constructs_a_typed_v2_command() {
+    fn register_pr_tool_constructs_a_typed_command() {
         let args = json!({"data_epoch":"epoch","command_id":"register-one","expected_revision":4,
             "task_id":"task-a","pr_id":"pr-a","host":"github.com","repository":"org/repo",
             "number":12,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
@@ -553,14 +1036,11 @@ mod tests {
         assert_eq!(envelope["command"]["task_id"], "task-a");
         assert_eq!(envelope["protocol_version"], 2);
         assert!(domain_envelope("register_pr", &json!({"task_id":"task-a"})).is_err());
-        assert!(tools(Role::Node, "User").as_array().unwrap().iter()
-            .any(|tool| tool["name"] == "register_pr"));
-        let instructions = instructions(Role::Node, "User");
-        assert!(instructions.contains("confirmed merge of its presented head"));
         let catalog = tools(Role::Node, "User");
-        let command = catalog.as_array().unwrap().iter()
-            .find(|tool| tool["name"] == "domain_command").unwrap();
-        assert!(command["description"].as_str().unwrap().contains("confirmed merge of the presented head"));
+        assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "register_pr"));
+        assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "domain_command"));
+        assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "complete_task"));
+        assert!(instructions(Role::Node, "User").contains("confirmed merge of its presented head"));
     }
 
     #[test]
@@ -572,31 +1052,29 @@ mod tests {
     }
 
     #[test]
-    fn v2_catalog_excludes_legacy_business_mutations_and_separates_roles() {
-        for role in [Role::Node, Role::Orchestrator] {
-            assert!(v2_tool_allowed(role, "domain_command"));
-            assert!(v2_tool_allowed(role, "ask"));
-            for legacy in ["report", "define", "new_task", "claim_task"] {
-                assert!(!v2_tool_allowed(role, legacy), "{legacy}");
-            }
-        }
-        assert!(v2_tool_allowed(Role::Node, "register_pr"));
-        assert!(!v2_tool_allowed(Role::Node, "domain_cursor"));
-        assert!(!v2_tool_allowed(Role::Orchestrator, "domain_cursor"));
-        assert!(!v2_tool_allowed(Role::Orchestrator, "register_pr"));
-        for runtime in ["launch", "send", "interrupt", "machine", "schedule_create", "fleet", "node", "candidates"] {
-            assert!(v2_tool_allowed(Role::Orchestrator, runtime), "{runtime}");
-            assert!(!v2_tool_allowed(Role::Node, runtime), "{runtime}");
-        }
-        assert!(v2_tool_allowed(Role::Node, "wait_for_machine"));
-        assert!(!v2_tool_allowed(Role::Orchestrator, "wait_for_machine"));
-        let catalog = tools(Role::Orchestrator, "Ana");
-        let launch = catalog.as_array().unwrap().iter().find(|tool| tool["name"] == "launch").unwrap();
-        assert_eq!(launch["inputSchema"]["required"], json!(["name", "cwd", "task"]));
-        assert!(launch["inputSchema"]["properties"].get("request_id").is_none());
-        assert!(!v2_tool_allowed(Role::Node, "merge_authorization"));
-        assert!(!v2_tool_allowed(Role::Orchestrator, "merge_authorization"));
-        assert!(!v2_tool_allowed(Role::Node, "launch"));
+    fn catalogs_expose_typed_commands_by_actor_without_internal_or_user_operations() {
+        fn names(role: Role) -> HashSet<String> { tools(role,"User").as_array().unwrap().iter().map(|t|t["name"].as_str().unwrap().to_owned()).collect() }
+        let node=names(Role::Node); let orchestrator=names(Role::Orchestrator);
+        for c in [&node,&orchestrator] { for hidden in ["domain_command","register_agent","observe_agent","authorize_merge","mark_read","submit_feedback","accept_delivery","observe_pr_state","create_schedule"] { assert!(!c.contains(hidden),"{hidden}"); } }
+        for n in ["register_pr","present_result","complete_task","create_document","claim_merge_authorization"] { assert!(node.contains(n),"{n}"); }
+        for n in ["create_request","close_request","create_task","assign_task","set_dependencies","link_task_document"] { assert!(orchestrator.contains(n),"{n}"); }
+        for n in ["create_task","close_request","link_task_document"] { assert!(!node.contains(n),"{n}"); }
+        for n in ["present_result","complete_task","register_pr","claim_merge_authorization"] { assert!(!orchestrator.contains(n),"{n}"); }
+        for n in ["launch","send","interrupt","machine","schedule_create","fleet","node","candidates"] { assert!(orchestrator.contains(n)); assert!(!node.contains(n)); }
+        assert!(node.contains("wait_for_machine")); assert!(!orchestrator.contains("wait_for_machine"));
+        let orchestrator_catalog=tools(Role::Orchestrator,"Ana");
+        let launch=orchestrator_catalog.as_array().unwrap().iter().find(|t|t["name"]=="launch").unwrap();
+        assert_eq!(launch["inputSchema"]["required"],json!(["name","cwd","task"])); assert!(launch["inputSchema"]["properties"].get("request_id").is_none());
+        let node_catalog=tools(Role::Node,"Ana");
+        let pr=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="register_pr").unwrap();
+        assert_eq!(pr["inputSchema"]["properties"]["number"]["type"],"integer"); assert!(pr["inputSchema"]["properties"].get("command").is_none());
+        let ask=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="ask").unwrap();
+        assert_eq!(ask["inputSchema"]["properties"]["scope"]["properties"]["kind"]["const"],"task");
+        assert_eq!(ask["inputSchema"]["properties"]["attachments"]["type"],"array");
+        let answer=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="answer_question").unwrap();
+        assert_eq!(answer["inputSchema"]["properties"]["inputs"]["additionalProperties"]["oneOf"][0]["properties"]["kind"]["const"],"text");
+        let claim=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="claim_merge_authorization").unwrap();
+        assert_eq!(claim["inputSchema"]["properties"]["base_verified"]["const"],true);
     }
 
     #[test]
@@ -628,14 +1106,14 @@ mod tests {
     }
 
     #[test]
-    fn v2_catalog_and_instructions_do_not_offer_unplanned_reads() {
+    fn catalogs_and_instructions_offer_only_the_merge_claim_path_to_nodes() {
         for role in [Role::Node, Role::Orchestrator] {
             let catalog = tools(role, "User");
             assert!(catalog.as_array().unwrap().iter().all(|tool|
                 tool["name"] != "domain_cursor" && tool["name"] != "merge_authorization"));
             let instructions = instructions(role, "User");
             assert!(!instructions.contains("domain_cursor"));
-            assert!(!instructions.contains("merge_authorization"));
+            assert_eq!(instructions.contains("claim_merge_authorization"), role == Role::Node);
         }
     }
 
@@ -644,8 +1122,39 @@ mod tests {
         let catalog = tools(Role::Orchestrator, "User");
         let tools = catalog.as_array().unwrap();
         let ask = tools.iter().find(|tool| tool["name"] == "ask").unwrap();
-        assert_eq!(ask["inputSchema"]["properties"]["command"]["properties"]["kind"]["const"], "ask_question");
+        assert!(ask["inputSchema"]["properties"].get("interaction_id").is_some());
+        assert!(ask["inputSchema"]["properties"].get("command").is_none());
         assert!(tools.iter().all(|tool| tool["name"] != "report" && tool["name"] != "define"));
+    }
+
+    #[test]
+    fn each_server_dispatch_rejects_the_other_servers_mutations() {
+        let client = Client::new(CALL_TIMEOUT);
+        assert!(call_node(&client, "create_task", &json!({})).is_err());
+        assert!(call_orchestrator(&client, "present_result", &json!({})).is_err());
+        assert!(call_node(&client, "domain_command", &json!({})).is_err());
+        assert!(call_orchestrator(&client, "authorize_merge", &json!({})).is_err());
+    }
+
+    #[test]
+    fn named_dispatch_builds_a_strict_typed_envelope() {
+        let valid = json!({"data_epoch":"epoch","command_id":"one","expected_revision":7,
+            "task_id":"task-a","interaction_id":"delivery-a","body":"Done",
+            "targets":[{"kind":"text","text":"Done"}],"is_final":true});
+        let envelope = domain_envelope("present_result", &valid).unwrap();
+        assert_eq!(envelope["protocol_version"], 2);
+        assert_eq!(envelope["command"]["kind"], "present_result");
+        assert_eq!(envelope["command"]["task_id"], "task-a");
+        assert!(
+            domain_envelope(
+                "present_result",
+                &json!({"data_epoch":"epoch","command_id":"x",
+            "expected_revision":0,"task_id":"t","interaction_id":"i","body":"x",
+            "targets":[],"is_final":true,"surprise":true})
+            )
+            .is_err()
+        );
+        assert!(domain_envelope("domain_command", &valid).is_err());
     }
 
     #[test]
@@ -672,6 +1181,7 @@ mod tests {
             assert!(call_timeout(tool) > alondra_core::LAUNCH_TIMEOUT * 2, "{tool}: {:?}", call_timeout(tool));
         }
         assert_eq!(call_timeout("ask"), CALL_TIMEOUT);
+        assert_eq!(call_timeout("create_task"), CALL_TIMEOUT);
     }
 
     #[test]
