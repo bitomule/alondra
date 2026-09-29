@@ -61,6 +61,11 @@ extension DomainV2 {
     public struct PullRequestObservation: Decodable, Equatable, Sendable {
         public let prId: PrId
         public let observation: RemotePullRequest
+
+        public init(prId: PrId, observation: RemotePullRequest) {
+            self.prId = prId
+            self.observation = observation
+        }
     }
 
     public struct TaskObservation: Decodable, Equatable, Sendable {
@@ -80,6 +85,15 @@ extension DomainV2 {
         public let project: String?
         public let effort: String?
         public let issue: String?
+
+        public init(requestId: RequestId, title: String?, createdAt: Int64?, project: String?, effort: String?, issue: String?) {
+            self.requestId = requestId
+            self.title = title
+            self.createdAt = createdAt
+            self.project = project
+            self.effort = effort
+            self.issue = issue
+        }
     }
 
     public struct InteractionObservation: Decodable, Equatable, Sendable {

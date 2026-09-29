@@ -13,6 +13,10 @@ public struct InboxPlace: Comparable, Hashable, Sendable {
 
 extension DomainV2.InboxItem: Identifiable {
     public var place: InboxPlace { InboxPlace(order: order, id: id) }
+
+    public var isPullRequest: Bool {
+        if case .pullRequest = subject { true } else { false }
+    }
 }
 
 /// The inbox as a ring in the server's order with a cursor on the card in front.

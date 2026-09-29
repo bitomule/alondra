@@ -24,7 +24,7 @@ public final class CloudPairingOwner {
     private let didReconcile: @MainActor (ApprovedSessionRegistry<CloudAppServices>.Snapshot) async throws -> (@MainActor () throws -> Void)
     private let willDeactivate: @MainActor () async throws -> Void
     @ObservationIgnored private lazy var registry = ApprovedSessionRegistry<CloudAppServices>(
-        make: { [auth, storageDirectory] in try CloudAppServices(approved: $0, auth: auth, storageDirectory: storageDirectory) },
+        make: { [auth, storageDirectory] in try CloudAppServices(approved: $0, auth: auth) },
         stop: { await $0.deactivate() }, publish: { [weak self] snapshot in
             guard let self else { throw CancellationError() }
             return try await self.didReconcile(snapshot)
@@ -238,10 +238,6 @@ public final class CloudPairingOwner {
         guard current == generation, !Task.isCancelled else { throw CancellationError() }
         try await registry.reconcile(authorized, verifiedSubject: subject, preferred: preferred)
         guard current == generation, !Task.isCancelled else { throw CancellationError() }
-        for entry in registry.snapshot.entries {
-            await entry.session.startRecovery()
-            guard current == generation, !Task.isCancelled else { throw CancellationError() }
-        }
         publishChoices()
     }
 

@@ -1,31 +1,34 @@
+import AlondraContracts
+import AlondraDomain
 import AlondraShared
 import Foundation
 
-/// Read-only presentation lookup over an accepted snapshot; no networking or view state.
+/// Read-only presentation lookup over one server view; no networking or view state. Every
+/// relation follows an explicit ID; project, dates and PR checks come from the runtime read.
 public struct ServiceTaskPresentation {
-    public let overview: Overview?
+    public let workspace: DomainWorkspace?
     public let board: TaskBoard
-    public let inbox: [InboxItem]
-    public init(overview: Overview?, hiddenIDs: Set<String> = []) {
-        self.overview = overview
-        board = TaskBoard(requests: overview?.requests ?? [], tasks: overview?.tasks ?? [])
-        let grouping = InboxGrouping(questions: (overview?.openQuestions ?? []).filter { $0.toOrchestrator != true }, reports: (overview?.news ?? []).filter { $0.toOrchestrator != true }, pullRequests: overview?.prs ?? [])
-        inbox = Self.orderedInbox(grouping: grouping, pullRequests: overview?.prs ?? []).filter { !hiddenIDs.contains($0.id) }
-    }
-    /// Detail lists use the original inbox order, not the triage ring's arrival order.
-    static func orderedInbox(grouping: InboxGrouping, pullRequests: [PullRequest]) -> [InboxItem] {
-        let questions = grouping.loose.map(InboxItem.question).sorted { $0.date > $1.date }
-        let prs = pullRequests.sorted(by: PullRequest.newestTrainsFirst).map(InboxItem.pullRequest)
-        let reports = grouping.looseReports.map(InboxItem.report).sorted { $0.date > $1.date }
-        return questions + prs + reports
+    public let inbox: [DomainV2.InboxItem]
+
+    public init(workspace: DomainWorkspace?, hiddenIDs: Set<String> = []) {
+        self.workspace = workspace
+        board = workspace.map(TaskBoard.init) ?? .empty
+        inbox = (workspace?.roots ?? []).filter { !hiddenIDs.contains($0.id) }
     }
 
-    public var news: [Report] { overview?.news ?? [] }
-    public var questions: [Question] { overview?.openQuestions ?? [] }
-    public func node(_ id: String) -> Node? { overview?.nodes.first { $0.sessionId == id } }
-    public func pending(for id: String) -> [InboxItem] { inbox.filter { $0.sessionId == id } }
+    public var runtime: DomainV2.Runtime? { workspace?.runtime }
+
+    public func agent(_ id: DomainV2.AgentId?) -> DomainV2.Agent? { workspace?.agent(id) }
+
+    public func node(_ id: DomainV2.AgentId?) -> Node? { runtime?.node(id) }
+
+    /// The inbox cards that wait on this agent.
+    public func pending(for agent: DomainV2.AgentId) -> [DomainV2.InboxItem] {
+        inbox.filter { $0.agentId == agent }
+    }
+
     public var summary: String {
-        let tasks = board.tasks.values.filter { !board.isHidden($0) }
+        let tasks = board.tasks.values.filter { !$0.archived }
         var parts = [String(localized: "\(board.activeTrees.count) requests")]
         let needsYou = tasks.count { $0.state == .needsYou }
         let inReview = tasks.count { $0.state == .inReview }
@@ -36,107 +39,89 @@ public struct ServiceTaskPresentation {
         return parts.joined(separator: " · ")
     }
 
-    public func task(for item: InboxItem) -> WorkTask? {
-        board.task(for: item)
-    }
+    public func task(for item: DomainV2.InboxItem) -> DomainV2.Task? { item.taskId.flatMap(board.task) }
 
     /// The cards of the task that wait in the inbox.
-    public func items(forTask task: WorkTask) -> [InboxItem] {
-        inbox.filter { board.task(for: $0)?.id == task.id }
+    public func items(forTask task: DomainV2.Task) -> [DomainV2.InboxItem] {
+        inbox.filter { $0.taskId == task.id }
     }
 
-    public func report(_ id: UInt64) -> Report? {
-        news.first { $0.id == id } ?? overview?.reports?.first { $0.id == id }
+    public func pullRequest(of task: DomainV2.Task) -> DomainV2.PullRequest? { workspace?.pullRequest(task.prId) }
+
+    /// What GitHub last said about the PR: checks, conflicts, stack order.
+    public func observation(of pr: DomainV2.PullRequest?) -> PullRequest? { runtime?.pullRequest(pr?.id) }
+
+    /// The task's PR, then the PRs of the tasks it stacks on, bottom last.
+    public func pullRequests(of task: DomainV2.Task) -> [DomainV2.PullRequest] {
+        var seen: Set<DomainV2.TaskId> = []
+        var current: DomainV2.Task? = task
+        var result: [DomainV2.PullRequest] = []
+        while let next = current, seen.insert(next.id).inserted {
+            if let pr = pullRequest(of: next), pr.state == .open { result.append(pr) }
+            current = next.stack.flatMap { board.task($0.upstreamTask) }
+        }
+        return result
     }
 
-    public func isUnread(_ report: Report) -> Bool {
-        news.contains { $0.id == report.id }
+    public func sidebarSubtitle(for task: DomainV2.Task) -> String {
+        [project(of: task), now(for: task) ?? task.state.label].compactMap { $0 }.joined(separator: " · ")
     }
 
-    /// The dependency's PR a started task waits to see merged.
-    public func awaitedPullRequest(of task: WorkTask) -> PullRequest? {
-        task.awaiting.flatMap { id in overview?.prs?.first { $0.id == id } }
-    }
-
-    /// The task's PRs that are still open, bottom of their train first.
-    public func pullRequests(of task: WorkTask) -> [PullRequest] {
-        (overview?.prs ?? []).filter { task.prs.contains($0.id) || $0.task == task.id }.sorted(by: PullRequest.newestTrainsFirst)
-    }
-
-    public func node(of task: WorkTask) -> Node? {
-        task.assignee.flatMap { node($0.sessionId) }
-    }
-
-    public func sidebarSubtitle(for task: WorkTask) -> String {
-        [project(of: task), now(for: task) ?? board.stateLabel(of: task)].compactMap { $0 }.joined(separator: " · ")
-    }
-
-    public func sidebarSubtitle(for request: WorkRequest) -> String {
-        let status = request.state == .done
+    public func sidebarSubtitle(for request: DomainV2.Request) -> String {
+        let status = request.closed
             ? String(localized: "finished without tasks")
-            : request.isLeftDefining()
-                ? String(localized: "the orchestrator left it without tasks")
-                : String(localized: "the orchestrator is splitting it")
+            : String(localized: "the orchestrator is splitting it")
         return [project(of: request), status].compactMap { $0 }.joined(separator: " · ")
     }
 
-    public func project(of task: WorkTask) -> String? {
-        task.options?.project.flatMap(Self.named) ?? node(of: task)?.projectName ?? board.request(task.request)?.options?.project.flatMap(Self.named)
+    public func project(of task: DomainV2.Task) -> String? {
+        (runtime?.task(task.id)?.project).flatMap(Self.named)
+            ?? node(task.agentId)?.projectName
+            ?? board.request(task.requestId).flatMap(project(of:))
     }
 
-    public func project(of request: WorkRequest) -> String? {
-        request.options?.project.flatMap(Self.named) ?? board.tree(for: request.id)?.tasks.lazy.compactMap(project(of:)).first
+    public func project(of request: DomainV2.Request) -> String? {
+        (runtime?.request(request.id)?.project).flatMap(Self.named)
     }
 
     /// The title the orchestrator gave it, else its only task's, else the first line of what the
-    /// user asked (all a request being defined has), else its first task's.
-    public func title(of request: WorkRequest) -> String {
-        Self.title(of: request, in: board)
+    /// user asked, else its first task's.
+    public func title(of request: DomainV2.Request) -> String {
+        Self.title(of: request, in: board, runtime: runtime)
     }
 
-    public static func title(of request: WorkRequest, in board: TaskBoard) -> String {
+    public static func title(of request: DomainV2.Request, in board: TaskBoard, runtime: DomainV2.Runtime? = nil) -> String {
         let tasks = board.tree(for: request.id)?.tasks ?? []
-        if let title = request.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
+        if let title = runtime?.request(request.id)?.title?.trimmingCharacters(in: .whitespacesAndNewlines), !title.isEmpty { return title }
         if tasks.count == 1 { return tasks[0].title }
         return request.headline ?? tasks.first?.title ?? String(localized: "Request")
     }
 
-    /// The task's documents: as its own route gave them, else those among the overview's newest
-    /// reports.
-    public func documents(of task: WorkTask, in details: TaskInFull?) -> [Report] {
-        task.documents.compactMap { id in details?.documents?.first { $0.id == id } ?? report(id) }
-    }
+    public func documents(of task: DomainV2.Task) -> [TaskDocument] { workspace?.documents(of: task) ?? [] }
 
-    public func taskLine(_ task: WorkTask) -> String {
+    public func taskLine(_ task: DomainV2.Task) -> String {
         guard let request = request(of: task) else { return task.state.label }
         return "\(task.state.label) · \(String(localized: "from “\(title(of: request))”"))"
     }
 
-    public func request(of task: WorkTask) -> WorkRequest? {
-        board.request(task.request)
-    }
+    public func request(of task: DomainV2.Task) -> DomainV2.Request? { board.request(task.requestId) }
 
     /// One line on what is happening to the task right now, or nil when there is nothing to add
     /// to its state.
-    public func now(for task: WorkTask) -> String? {
+    public func now(for task: DomainV2.Task) -> String? {
         switch task.state {
         case .needsYou:
-            guard let blocker = task.blocker, let title = questions.first(where: { $0.id == blocker.question })?.title else { return nil }
-            switch blocker.kind {
-            case "permission": return String(localized: "permission: \(title)")
-            case "action": return String(localized: "your turn: \(title)")
-            default: return String(localized: "question: \(title)")
-            }
+            guard let item = items(forTask: task).first(where: \.pending) else { return nil }
+            return String(localized: "question: \(item.title)")
         case .inReview:
-            if let pr = pullRequests(of: task).first { return pr.progress(mergesAlone: task.mergesAlone) }
-            guard let document = task.documents.reversed().lazy.compactMap(report).first else { return nil }
-            return String(localized: "document: \(document.title)")
-        case .waitingDependency:
-            if let awaited = awaitedPullRequest(of: task) {
-                return String(localized: "waits for PR #\(String(awaited.number)) to be merged")
+            if let pr = pullRequest(of: task), let observation = observation(of: pr) {
+                return observation.progress(mergesAlone: !task.reviewPrs)
             }
-            if let pr = pullRequests(of: task).first, let below = pr.belowNumber {
-                return String(localized: "PR #\(String(pr.number)) on top of #\(String(below))")
+            guard let document = documents(of: task).last else { return nil }
+            return String(localized: "document: \(document.document.title)")
+        case .waitingDependency:
+            if let parent = task.stack.flatMap({ board.task($0.upstreamTask) }), let pr = pullRequest(of: parent) {
+                return String(localized: "waits for PR #\(String(pr.number)) to be merged")
             }
             return nil
         case .closing:
@@ -147,11 +132,10 @@ public struct ServiceTaskPresentation {
     }
 
     /// Why a task waits, in a sentence, for its detail.
-    public func waitingReason(for task: WorkTask) -> String? {
+    public func waitingReason(for task: DomainV2.Task) -> String? {
         guard task.state == .waitingDependency else { return nil }
-        if let awaited = awaitedPullRequest(of: task) {
-            let title = awaited.task.flatMap { board.task($0)?.title } ?? awaited.title
-            return String(localized: "It started, and what is left of it waits for PR #\(String(awaited.number)) of “\(title)” to be merged: it goes on once that PR is merged.")
+        if let parent = task.stack.flatMap({ board.task($0.upstreamTask) }), let pr = pullRequest(of: parent) {
+            return String(localized: "It started, and what is left of it waits for PR #\(String(pr.number)) of “\(parent.title)” to be merged: it goes on once that PR is merged.")
         }
         let pending = board.dependencies(of: task).filter { !$0.state.isFinished && $0.state != .inReview && $0.state != .closing }
         guard let first = pending.first else { return nil }

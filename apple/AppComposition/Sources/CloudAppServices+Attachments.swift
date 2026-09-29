@@ -11,8 +11,8 @@ extension CloudAppServices {
 
     public func attachmentDownloadClient() -> AttachmentDownloadClient {
         return AttachmentDownloadClient(
-            download: { [self] path, name, id in
-                try await downloadAttachment(path: path, name: name, downloadID: id)
+            download: { [self] attachment, id in
+                try await downloadAttachment(attachment, downloadID: id)
             },
             release: { await self.releaseAttachment($0) }
         )

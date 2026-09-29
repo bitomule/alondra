@@ -14,9 +14,6 @@ private actor ScheduleOperations: ServiceOperationTransport {
         return responses[min(requests.count - 1, responses.count - 1)]
     }
 
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
-        XCTFail("Schedule operations must not poll")
-    }
 
     func recorded() -> [ServiceRequest] { requests }
 }

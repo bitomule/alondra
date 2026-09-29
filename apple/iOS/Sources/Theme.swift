@@ -1,3 +1,4 @@
+import AlondraContracts
 import AlondraShared
 import SwiftUI
 import UIKit
@@ -66,25 +67,15 @@ struct Kind {
     let symbol: String
     let tint: Color
 
-    init(_ item: InboxItem) {
-        switch item {
-        case .question(let q) where q.isAction:
-            self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
-        case .question(let q):
-            switch q.origin {
-            case "plan": self.init(String(localized: "Plan"), "list.bullet.clipboard", Palette.ember)
-            case "permission": self.init(String(localized: "Permission"), "lock.shield", Palette.rose)
-            default: self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
-            }
-        case .pullRequest:
-            self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
-        case .report(let r):
-            switch r.kind {
-            case "document": self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
-            case "final": self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
-            case "notice": self.init(String(localized: "Notice"), "bell", Palette.slate)
-            default: self.init(String(localized: "Progress"), "chart.line.uptrend.xyaxis", Palette.slate)
-            }
+    /// The server's inbox kind picks the badge; the card never guesses it from text.
+    init(_ item: DomainV2.InboxItem) {
+        switch item.kind {
+        case "action_request": self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
+        case "question": self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
+        case "pull_request": self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
+        case "document_review": self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
+        case "delivery": self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
+        default: self.init(String(localized: "Notice"), "bell", Palette.slate)
         }
     }
 
@@ -124,7 +115,7 @@ extension NodeState {
     }
 }
 
-extension WorkTask.State {
+extension DomainV2.TaskState {
     var tint: Color {
         switch self {
         case .notStarted, .waitingDependency, .cancelled: Palette.slate
@@ -148,20 +139,13 @@ extension WorkTask.State {
     }
 }
 
-extension WorkTask {
-    /// An action the user has to carry out reads as "your turn", like its card.
-    var tint: Color { state == .needsYou && blocker?.isAction == true ? Palette.ember : state.tint }
-    var symbol: String { state == .needsYou && blocker?.isAction == true ? "hand.point.right.fill" : state.symbol }
+extension DomainV2.Task {
+    var tint: Color { state.tint }
+    var symbol: String { state.symbol }
 }
 
-extension WorkRequest.State {
-    var tint: Color {
-        switch self {
-        case .defining: Palette.slate
-        case .inProgress: Palette.sky
-        case .done: Palette.sage
-        }
-    }
+extension DomainV2.Request {
+    var tint: Color { closed ? Palette.sage : Palette.sky }
 }
 
 extension NodeOccupancy {
@@ -228,7 +212,7 @@ struct Glyph: View {
 }
 
 extension Glyph {
-    init(task: WorkTask, size: Size = .regular) {
+    init(task: DomainV2.Task, size: Size = .regular) {
         self.init(symbol: task.symbol, tint: task.tint, size: size, pulse: task.state == .running && size == .regular)
     }
 }

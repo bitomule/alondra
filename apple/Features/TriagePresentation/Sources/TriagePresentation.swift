@@ -1,3 +1,5 @@
+import AlondraContracts
+import AlondraDomain
 import AlondraShared
 import AlondraTriageFeature
 import ComposableArchitecture
@@ -8,14 +10,14 @@ import SwiftUI
 #if os(iOS)
 public struct TriageDeck<Card: View>: View {
     let store: StoreOf<TriageFeature>
-    let card: (InboxItem, Bool, Namespace.ID, @escaping () -> Void, @escaping () -> Void, @escaping () -> Void) -> Card
+    let card: (DomainV2.InboxItem, Bool, Namespace.ID, @escaping () -> Void, @escaping () -> Void, @escaping () -> Void) -> Card
     @Namespace private var zoom
     @State private var drag: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(
         store: StoreOf<TriageFeature>,
-        @ViewBuilder card: @escaping (InboxItem, Bool, Namespace.ID, @escaping () -> Void, @escaping () -> Void, @escaping () -> Void) -> Card
+        @ViewBuilder card: @escaping (DomainV2.InboxItem, Bool, Namespace.ID, @escaping () -> Void, @escaping () -> Void, @escaping () -> Void) -> Card
     ) {
         self.store = store
         self.card = card
@@ -47,7 +49,7 @@ public struct TriageDeck<Card: View>: View {
         .animation(reduceMotion ? nil : .spring(duration: 0.5, bounce: 0.22), value: visible.map(\.id))
     }
 
-    private func swipe(front: InboxItem?, count: Int) -> some Gesture {
+    private func swipe(front: DomainV2.InboxItem?, count: Int) -> some Gesture {
         DragGesture(minimumDistance: 24)
             .onChanged { value in
                 guard front != nil, count > 1,
@@ -71,9 +73,9 @@ public struct TriageDeck<Card: View>: View {
 #if os(macOS)
 public struct TriageSidebarRows<Row: View>: View {
     let store: StoreOf<TriageFeature>
-    let row: (InboxItem) -> Row
+    let row: (DomainV2.InboxItem) -> Row
 
-    public init(store: StoreOf<TriageFeature>, @ViewBuilder row: @escaping (InboxItem) -> Row) {
+    public init(store: StoreOf<TriageFeature>, @ViewBuilder row: @escaping (DomainV2.InboxItem) -> Row) {
         self.store = store
         self.row = row
     }

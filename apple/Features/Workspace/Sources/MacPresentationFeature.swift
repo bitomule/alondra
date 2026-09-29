@@ -1,3 +1,5 @@
+import AlondraContracts
+import AlondraDomain
 import AlondraFleetFeature
 import AlondraShared
 import Foundation
@@ -9,7 +11,7 @@ import ComposableArchitecture
 public struct MacPresentationFeature {
     public init() {}
     public enum Selection: Hashable {
-        case item(String), node(String), task(String), request(String), schedules
+        case item(String), node(String), task(DomainV2.TaskId), request(DomainV2.RequestId), schedules
     }
     @ObservableState
     public struct State: Equatable {
@@ -49,21 +51,21 @@ public struct MacPresentationFeature {
         }
         public func groups(in board: TaskBoard) -> [TaskStateGroup] {
             board.groups.compactMap { group in
-                let filtered = TaskStateGroup(kind: group.kind,
-                    tasks: group.tasks.filter { matches($0.title) },
-                    requests: group.requests.filter { matches(ServiceTaskPresentation.title(of: $0, in: board)) })
+                let filtered = TaskStateGroup(kind: group.kind, tasks: group.tasks.filter { task in
+                    matches(task.title) || board.request(task.requestId).map { matches(ServiceTaskPresentation.title(of: $0, in: board)) } == true
+                })
                 return filtered.count == 0 ? nil : filtered
             }
         }
-        public func inbox(_ items: [InboxItem], pullRequests: Bool) -> [InboxItem] {
-            items.filter { $0.isPullRequest == pullRequests && matches("\($0.title) \($0.nodeName ?? "")") }
+        public func inbox(_ items: [DomainV2.InboxItem], pullRequests: Bool) -> [DomainV2.InboxItem] {
+            items.filter { $0.isPullRequest == pullRequests && matches("\($0.title) \($0.body ?? "")") }
         }
     }
     public enum Action {
         case select(Selection?)
         case inboxChanged([String])
         case queryChanged(String)
-        case searchRequested(inbox: [InboxItem], board: TaskBoard, fleet: FleetSnapshot?)
+        case searchRequested(inbox: [DomainV2.InboxItem], board: TaskBoard, fleet: FleetSnapshot?)
         case searchStarted(UInt64)
         case searchFinished(UInt64, SearchResult?)
         case disappeared

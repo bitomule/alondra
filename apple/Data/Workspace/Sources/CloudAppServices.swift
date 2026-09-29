@@ -35,7 +35,7 @@ public actor CloudAppServices {
         let relay = try RelaySession(
             scope: RelayOutboxScope(relay: approved.relayURL, macID: approved.macID,
                                    deviceID: approved.deviceID, credentialRevision: revision),
-            bearer: { try await auth.bearerToken() }, cachedBearer: { try await auth.cachedBearerLease() }, signing: signing, agreement: agreement,
+            bearer: { try await auth.bearerToken() }, signing: signing, agreement: agreement,
             macSigning: approved.macSigningPublicKey(),
             macAgreement: approved.macAgreementPublicKey())
         self.init(operations: relay, server: approved.relayURL, deviceID: approved.deviceID, macID: approved.macID,

@@ -7,7 +7,7 @@ import Foundation
 /// feature says so instead of disappearing (docs/domain-v2-apple-client-contracts.md).
 extension AlondraAPIClient {
     public func domainRuntime(epoch: DomainV2.DataEpoch) async throws -> DomainV2.Runtime {
-        let runtime = try await send(Endpoint<DomainV2.Runtime>.json(.get, path: ["v2", "domain", "runtime"]))
+        let runtime = try await send(Endpoint<DomainV2.Runtime>.json(.get, path: ["v2", "daemon", "runtime"]))
         guard runtime.protocolVersion == DomainV2.protocolVersion, runtime.dataEpoch == epoch else {
             throw DomainV2.DomainError(code: "stale_epoch", message: "Runtime is from another workspace", currentRevision: nil, subject: nil)
         }
@@ -15,7 +15,7 @@ extension AlondraAPIClient {
     }
 
     public func domainAgentActivity(_ agent: DomainV2.AgentId) async throws -> [NodeActivity] {
-        try await send(Endpoint<NodeThreads>.json(.get, path: ["v2", "domain", "agents", agent.rawValue, "activity"])).activity ?? []
+        try await send(Endpoint<NodeThreads>.json(.get, path: ["v2", "daemon", "agents", agent.rawValue, "activity"])).activity ?? []
     }
 
     public func domainProjects() async throws -> [String] {

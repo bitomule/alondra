@@ -254,7 +254,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "completed": {
     "protocol_version": 2,
@@ -511,7 +512,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "information": {
     "protocol_version": 2,
@@ -622,7 +624,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "pr_question": {
     "protocol_version": 2,
@@ -848,7 +851,8 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   },
   "question": {
     "protocol_version": 2,
@@ -1023,6 +1027,7 @@
     "document_revisions": [],
     "document_reviews": [],
     "merge_authorizations": [],
-    "stack_readiness": []
+    "stack_readiness": [],
+    "superseded_acceptances": []
   }
 }

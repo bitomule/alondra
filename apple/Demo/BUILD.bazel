@@ -6,6 +6,9 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = [
         "//apple:AlondraShared",
+        "//apple/Contracts:AlondraContracts",
+        "//apple/Domain:AlondraDomain",
+        "//apple/Features/DomainDependency:AlondraDomainDependency",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple/Data/Attachments:AlondraAttachmentsData",
         "//apple/Features/Triage:AlondraTriageFeature",

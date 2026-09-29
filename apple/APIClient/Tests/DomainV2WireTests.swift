@@ -12,9 +12,6 @@ private actor DomainOperations: ServiceOperationTransport {
         requests.append(request)
         return responses[min(requests.count - 1, responses.count - 1)]
     }
-    func waitForChange(afterSnapshotTick: UInt64, seconds: Int) async throws {
-        XCTFail("Domain mutation must not poll")
-    }
     func recorded() -> [ServiceRequest] { requests }
 }
 
@@ -36,7 +33,7 @@ final class DomainV2WireTests: XCTestCase {
         let requests = await operations.recorded()
         XCTAssertEqual(requests.count, 1)
         XCTAssertEqual(requests[0].path, "/v2/domain/commands")
-        XCTAssertEqual(requests[0].operationID, "command-1")
+        XCTAssertNotEqual(requests[0].operationID, "command-1", "Each transmission is a new transport request")
         let body = try XCTUnwrap(requests[0].body)
         XCTAssertEqual(try DomainV2.decode(DomainV2.CommandEnvelope.self, from: body), envelope)
         let json = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])

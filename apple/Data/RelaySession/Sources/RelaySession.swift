@@ -22,7 +22,6 @@ public enum RelaySessionError: Error { case invalidRequest, invalidResponse, ope
 /// One immutable approved pairing. Replace the entire service when identity or keys change.
 public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     private let client: any ServiceTransport
-    private let makeSnapshotClient: @Sendable () async throws -> (any ServiceTransport, @Sendable () async throws -> String)
     private let outbox: RelayOutbox
     private let scope: RelayOutboxScope
     private let codec: ServiceEnvelopeCodec
@@ -32,20 +31,18 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
 
     public init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
-                cachedBearer: @escaping @Sendable () async throws -> @Sendable () async throws -> String = { throw RelaySessionError.outcomeUnknown },
                 transport: (any ServiceHTTPTransport)? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
                 now: @escaping @Sendable () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) },
                 sleep: @escaping @Sendable () async throws -> Void = { try await Task.sleep(for: .seconds(1)) }) throws {
-        try self.init(scope: scope, bearer: bearer, cachedBearer: cachedBearer, transport: transport,
+        try self.init(scope: scope, bearer: bearer, transport: transport,
             signing: signing, agreement: agreement, macSigning: macSigning, macAgreement: macAgreement,
             now: now, sleep: sleep, waitForReadDeadline: { try await ContinuousClock().sleep(until: $0) })
     }
 
     init(scope: RelayOutboxScope,
                 bearer: @escaping @Sendable () async throws -> String,
-                cachedBearer: @escaping @Sendable () async throws -> @Sendable () async throws -> String = { throw RelaySessionError.outcomeUnknown },
                 transport: (any ServiceHTTPTransport)? = nil,
                 signing: P256.Signing.PrivateKey, agreement: P256.KeyAgreement.PrivateKey,
                 macSigning: P256.Signing.PublicKey, macAgreement: P256.KeyAgreement.PublicKey,
@@ -55,11 +52,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
         let client = try AlondraAPIClient.makeServiceTransport(base: scope.relay, deviceID: scope.deviceID,
             signing: signing, bearer: bearer, transport: transport)
         self.client = client; self.scope = scope
-        makeSnapshotClient = {
-            let lease = try await cachedBearer()
-            return (try AlondraAPIClient.makeServiceTransport(base: scope.relay, deviceID: scope.deviceID,
-                signing: signing, bearer: lease, transport: transport), lease)
-        }
         outbox = RelayOutbox(scope: scope, transport: client)
         codec = ServiceEnvelopeCodec(macID: scope.macID, deviceID: scope.deviceID, signing: signing,
             agreement: agreement, macSigning: macSigning, macAgreement: macAgreement, now: now)
@@ -81,9 +73,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     /// Product callers use AlondraAPIClient. This capability preserves the caller's durable
     /// operation identity through encrypted dispatch and status-only reconciliation.
     public func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
-        if request.method == "GET", request.path == "/v2/domain", request.body == nil {
-            return .completed(status: 200, body: try await fetchDomainProjection())
-        }
         if request.method == "GET", request.path.hasPrefix("/v2/domain/changes?"), request.body == nil {
             guard let components = URLComponents(string: request.path),
                   let items = components.queryItems,
@@ -116,6 +105,7 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
                || Self.validDomainDeliveryPath(method: method, path: path)
                || Self.validDomainSchedulePath(method: method, path: path, hasBody: body != nil)
                || Self.validClientContractPath(method: method, path: path)
+               || (method == "GET" && body == nil && DomainReadPath.isValid(path))
                || (method == "GET" && (path.hasPrefix("/v2/domain/pull-requests/") && path.hasSuffix("/diff")
                    || path.hasPrefix("/v2/domain/document-revisions/") && path.contains("/content?offset=")
                    || path.hasPrefix("/v2/domain/tasks/") && path.hasSuffix("/actions")))),
@@ -197,14 +187,14 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
 
     /// Reads have no durable side effect to deduplicate. Keep their request lifecycle in this
     /// call only, so periodic synchronization cannot accumulate permanent journal records.
-    private func read(requestID: String, path: String, body: Data?, statusPolls: Int, allowOverviewTooLarge: Bool = false) async throws -> RelayOperationResult {
+    private func read(requestID: String, path: String, body: Data?, statusPolls: Int) async throws -> RelayOperationResult {
         _ = try await client.bootstrap()
         guard active else { throw CancellationError() }
         let envelope = try sealRequest(requestID: requestID, method: "GET", path: path, body: body)
         try Task.checkCancellation()
         do {
             let receipt = try await client.submitRequest(envelope)
-            if let result = try verified(receipt, requestID: requestID, allowOverviewTooLarge: allowOverviewTooLarge) { return result }
+            if let result = try verified(receipt, requestID: requestID) { return result }
         } catch is CancellationError { throw CancellationError() }
         catch {
             // A lost read response is reconciled without another POST in this invocation.
@@ -221,7 +211,7 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
                     guard active else { throw CancellationError() }
                     receipt = try await client.requestStatus(requestID: requestID)
                 }
-                if let result = try verified(receipt, requestID: requestID, allowOverviewTooLarge: allowOverviewTooLarge) { return result }
+                if let result = try verified(receipt, requestID: requestID) { return result }
             } catch is CancellationError { throw CancellationError() }
             catch { return .unknown }
         }
@@ -270,9 +260,9 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
         }
     }
 
-    private func verified(_ receipt: RelayReceipt, requestID: String, allowOverviewTooLarge: Bool = false) throws -> RelayOperationResult? {
+    private func verified(_ receipt: RelayReceipt, requestID: String) throws -> RelayOperationResult? {
         guard active else { return .unknown }
-        guard let result = try codec.verified(receipt, requestID: requestID, allowOverviewTooLarge: allowOverviewTooLarge) else { return nil }
+        guard let result = try codec.verified(receipt, requestID: requestID) else { return nil }
         switch result {
         case .unknown: return .unknown
         case let .completed(status, body): return .completed(status: status, body: body)
@@ -288,23 +278,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
                   revision: revision, response: response), requestID: requestID)
         else { throw RelaySessionError.outcomeUnknown }
         try await outbox.retireAppliedResponse(requestID: requestID, revision: revision, verifiedResponse: response)
-    }
-
-    private func fetchDomainProjection() async throws -> Data {
-        let result = try await read(requestID: "read-" + UUID().uuidString, path: "/v2/domain", body: nil,
-                                    statusPolls: 10, allowOverviewTooLarge: true)
-        guard case let .completed(status, body) = result else { throw RelaySessionError.outcomeUnknown }
-        let validate: @Sendable (Data) throws -> Void = { bytes in
-            let projection = try DomainV2.decode(DomainV2.DomainProjection.self, from: bytes)
-            guard projection.protocolVersion == DomainV2.protocolVersion,
-                  projection.revision <= DomainV2.maximumRevision else { throw RelaySessionError.invalidResponse }
-        }
-        if status == 502 { return try await fetchSnapshot(root: "/v2/domain/snapshot", validate: validate) }
-        guard status == 200 else { throw RelaySessionError.localStatus(status) }
-        try Task.checkCancellation()
-        guard active else { throw CancellationError() }
-        try validate(body)
-        return body
     }
 
     /// Relay changes wake this read's status query; they never invalidate daemon content
@@ -325,100 +298,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
             try Task.checkCancellation()
             guard ContinuousClock().now < deadline else { return .unknown }
             return result
-        }
-    }
-
-    /// Each operation has a structured deadline and uses only a cached credential.
-    /// The initial ordinary overview read already performed normal authentication.
-    private func fetchSnapshot(root: String, validate: @Sendable (Data) throws -> Void) async throws -> Data {
-        let deadline = ContinuousClock.now.advanced(by: .seconds(90))
-        let (snapshotClient, lease) = try await makeSnapshotClient()
-        try checkReadDeadline(deadline)
-        var cleanupPath: String?
-        do {
-            let first = try await snapshotOperation(client: snapshotClient, method: "GET", path: root, deadline: deadline)
-            // Retain a syntactically safe handle even if the remaining metadata is invalid.
-            if let header = try? JSONDecoder().decode(OverviewSnapshotAssembly.Chunk.self, from: first),
-               OverviewSnapshotAssembly.hex(header.snapshot_id, count: 32) {
-                cleanupPath = root + "/" + header.snapshot_id
-            }
-            var assembly = try OverviewSnapshotAssembly(first, root: root)
-            while !assembly.complete {
-                let chunk = try await snapshotOperation(client: snapshotClient, method: "GET", path: assembly.path + "?offset=\(assembly.bytes.count)", deadline: deadline)
-                try assembly.append(chunk)
-            }
-            let result = try assembly.finish()
-            try validate(result)
-            try checkReadDeadline(deadline)
-            let releasePath = cleanupPath
-            cleanupPath = nil
-            if let releasePath { await cleanupSnapshot(releasePath, client: snapshotClient, deadline: deadline) }
-            // Cleanup failure/timeout cannot invalidate a document completed in budget.
-            _ = try await lease()
-            try Task.checkCancellation()
-            guard active else { throw CancellationError() }
-            return result
-        } catch {
-            if let cleanupPath { await cleanupSnapshot(cleanupPath, client: snapshotClient, deadline: deadline) }
-            throw error
-        }
-    }
-
-    private func cleanupSnapshot(_ path: String, client snapshotClient: any ServiceTransport, deadline: ContinuousClock.Instant) async {
-        // Cancellation/logout may prevent cleanup; the Mac's TTL is the backstop.
-        guard active, !Task.isCancelled, ContinuousClock.now < deadline else { return }
-        let cleanupDeadline = min(deadline, ContinuousClock.now.advanced(by: .seconds(2)))
-        _ = try? await snapshotOperation(client: snapshotClient, method: "DELETE", path: path, deadline: cleanupDeadline)
-    }
-
-    private func snapshotOperation(client snapshotClient: any ServiceTransport, method: String, path: String, deadline: ContinuousClock.Instant) async throws -> Data {
-        let value = try await withThrowingTaskGroup(of: Data.self) { group in
-            group.addTask { [waitForReadDeadline] in
-                try await waitForReadDeadline(deadline)
-                throw RelaySessionError.outcomeUnknown
-            }
-            group.addTask { try await self.snapshotExchange(client: snapshotClient, method: method, path: path, deadline: deadline) }
-            defer { group.cancelAll() }
-            guard let value = try await group.next() else { throw RelaySessionError.outcomeUnknown }
-            return value
-        }
-        try checkReadDeadline(deadline)
-        return value
-    }
-
-    private func snapshotExchange(client snapshotClient: any ServiceTransport, method: String, path: String, deadline: ContinuousClock.Instant) async throws -> Data {
-        try checkReadDeadline(deadline)
-        let bootstrap = try await snapshotClient.bootstrap()
-        try checkReadDeadline(deadline)
-        let requestID = "read-" + UUID().uuidString
-        let envelope = try sealRequest(requestID: requestID, method: method, path: path, body: nil)
-        var receipt: RelayReceipt
-        do { receipt = try await snapshotClient.submitRequest(envelope) }
-        catch is CancellationError { throw CancellationError() }
-        catch {
-            // Reconcile a lost POST, never resubmit it, including cleanup DELETE.
-            try checkReadDeadline(deadline)
-            receipt = try await snapshotClient.requestStatus(requestID: requestID)
-        }
-        var revision = receipt.revision
-        while true {
-            try checkReadDeadline(deadline)
-            if let response = try verified(receipt, requestID: requestID) {
-                guard case let .completed(status, body) = response else { throw RelaySessionError.outcomeUnknown }
-                guard status == 200 else { throw RelaySessionError.localStatus(status) }
-                return body
-            }
-            let remaining = ContinuousClock.now.duration(to: deadline).components.seconds
-            guard remaining > 0 else { throw RelaySessionError.outcomeUnknown }
-            let changes = try await snapshotClient.changes(since: revision, epoch: bootstrap.epoch,
-                waitSeconds: UInt64(min(25, remaining)))
-            try checkReadDeadline(deadline)
-            guard changes.epoch == bootstrap.epoch, changes.revision >= revision else {
-                throw RelaySessionError.invalidResponse
-            }
-            revision = changes.revision
-            receipt = try await snapshotClient.requestStatus(requestID: requestID)
-            revision = max(revision, receipt.revision)
         }
     }
 

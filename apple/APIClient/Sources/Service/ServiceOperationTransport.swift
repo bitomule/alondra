@@ -23,8 +23,7 @@ public struct ServiceRequest: Sendable, Equatable {
     public let body: Data?
 
     init<Response>(endpoint: Endpoint<Response>, operationID: String) throws {
-        let domainV2 = endpoint.path == ["v2", "domain"] && endpoint.method == .get
-            || endpoint.path == ["v2", "domain", "capabilities"] && endpoint.method == .get
+        let domainV2 = endpoint.path == ["v2", "domain", "capabilities"] && endpoint.method == .get
             || endpoint.path == ["v2", "domain", "changes"] && endpoint.method == .get
             || endpoint.path == ["v2", "domain", "commands"] && endpoint.method == .post
         let domainDetail = endpoint.method == .get && endpoint.path.count == 5
@@ -39,10 +38,6 @@ public struct ServiceRequest: Sendable, Equatable {
         let domainSchedule = endpoint.query.isEmpty && Self.validDomainScheduleRoute(method: endpoint.method,
             path: endpoint.path, hasBody: endpoint.body != nil)
         let clientContract = Self.validClientContractRoute(method: endpoint.method, path: endpoint.path)
-        guard !operationID.isEmpty, (domainV2 || domainDetail || domainDelivery || domainSchedule || clientContract),
-              endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
-            throw ServiceAPIError.invalidEndpoint
-        }
         // A logical executor path, never a QR-provided URL or bearer destination.
         let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         let segments = endpoint.path.map { $0.addingPercentEncoding(withAllowedCharacters: unreserved)! }
@@ -50,9 +45,15 @@ public struct ServiceRequest: Sendable, Equatable {
             $0.0.addingPercentEncoding(withAllowedCharacters: unreserved)! + "=" +
             $0.1.addingPercentEncoding(withAllowedCharacters: unreserved)!
         }.joined(separator: "&")
+        let path = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
+        let domainRead = endpoint.method == .get && endpoint.body == nil && DomainReadPath.isValid(path)
+        guard !operationID.isEmpty, (domainV2 || domainRead || domainDetail || domainDelivery || domainSchedule || clientContract),
+              endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
+            throw ServiceAPIError.invalidEndpoint
+        }
         self.operationID = operationID
         self.method = endpoint.method.rawValue
-        self.path = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
+        self.path = path
         self.body = endpoint.body
     }
 
@@ -60,11 +61,11 @@ public struct ServiceRequest: Sendable, Equatable {
     public static func validClientContractRoute(method: HTTPMethod, path: [String]) -> Bool {
         guard path.starts(with: ["v2"]), path.count >= 3 else { return false }
         switch (method, Array(path.dropFirst())) {
-        case (.get, ["domain", "runtime"]), (.get, ["domain", "search"]),
+        case (.get, ["daemon", "runtime"]), (.get, ["domain", "search"]),
              (.get, ["domain", "catalog", "projects"]), (.get, ["domain", "catalog", "options"]),
              (.get, ["domain", "catalog", "issues"]), (.post, ["device", "push-binding"]):
             return true
-        case (.get, let rest) where rest.count == 4 && rest[0] == "domain" && rest[3] == "activity" && rest[1] == "agents":
+        case (.get, let rest) where rest.count == 4 && rest[0] == "daemon" && rest[3] == "activity" && rest[1] == "agents":
             return true
         case (.get, let rest) where rest.count == 4 && rest[0] == "domain" && rest[1] == "attachments" && rest[3] == "content":
             return true
