@@ -8,7 +8,8 @@ use crate::service::Service;
 use alondra_core::Event;
 use alondra_core::delivery::State;
 use anyhow::Result;
-use serde_json::json;
+use alondra_core::domain_v2::{DomainState, InteractionId, InteractionPayload};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Arc;
@@ -218,13 +219,7 @@ async fn deliver_user_runtime(
     let state = domain
         .state()
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
-    let item_id = message
-        .interaction_id
-        .as_ref()
-        .map(|id| format!("interaction:{id}"));
-    let payload = json!({"aps":{"alert":{"title":"Alondra","body":"New activity in Alondra"},
-        "sound":"default"},"alondra":{"protocol_version":2,"data_epoch":state.data_epoch,
-        "item_id":item_id}});
+    let payload = user_push_payload(&state, message.interaction_id.as_deref());
     if let Some(service) = service {
         let (attempted, accepted) = service
             .broadcast_push_report(&payload, true)
@@ -242,6 +237,24 @@ async fn deliver_user_runtime(
         }
     }
     Ok(())
+}
+
+fn user_push_payload(state: &DomainState, interaction_id: Option<&str>) -> Value {
+    let mut alondra = json!({"protocol_version": 2, "data_epoch": state.data_epoch});
+    if let Some(id) = interaction_id {
+        alondra["item_id"] = json!(format!("interaction:{id}"));
+        alondra["interaction_id"] = json!(id);
+        if let Some(interaction) = state.interactions.get(&InteractionId::from(id)) {
+            alondra["kind"] = json!(match interaction.payload {
+                InteractionPayload::Information { .. } => "information",
+                InteractionPayload::Question { .. } => "question",
+                InteractionPayload::ActionRequest { .. } => "action_request",
+                InteractionPayload::Delivery { .. } => "delivery",
+            });
+        }
+    }
+    json!({"aps": {"alert": {"title": "Alondra", "body": "New activity in Alondra"},
+        "sound": "default"}, "alondra": alondra})
 }
 
 #[cfg(test)]
@@ -761,5 +774,90 @@ mod tests {
         );
         drop(hub);
         std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn user_push_payload_matches_the_apple_client_fixture() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/client-v2/push-payloads.json"))
+                .unwrap();
+        let mut state = DomainState::new(fixture["data_epoch"].as_str().unwrap());
+        let options = vec![QuestionOption {
+            id: "yes".into(),
+            label: "Yes".into(),
+            description: None,
+            inputs: vec![],
+        }];
+        let delivery = |target| InteractionPayload::Delivery {
+            targets: vec![target],
+            is_final: true,
+            acceptance: None,
+            feedback: vec![],
+        };
+        let payloads = [
+            (
+                "question",
+                InteractionPayload::Question {
+                    options: options.clone(),
+                    answer: None,
+                },
+            ),
+            (
+                "action_request",
+                InteractionPayload::ActionRequest {
+                    options,
+                    answer: None,
+                },
+            ),
+            (
+                "information",
+                InteractionPayload::Information {
+                    read_by: BTreeSet::new(),
+                },
+            ),
+            (
+                "delivery_text",
+                delivery(DeliveryTarget::Text { text: "Done".into() }),
+            ),
+            (
+                "delivery_pull_request",
+                delivery(DeliveryTarget::PullRequest {
+                    pr_id: "pr-1".into(),
+                    head: "abc".into(),
+                }),
+            ),
+        ];
+        for (name, payload) in payloads {
+            let id = InteractionId::from(format!("i-{name}").as_str());
+            state.interactions.insert(
+                id.clone(),
+                Interaction {
+                    attachments: vec![],
+                    id,
+                    scope: Scope::Task {
+                        task_id: "task-a".into(),
+                    },
+                    author: Author::System,
+                    recipient: Recipient::User,
+                    body: "Body".into(),
+                    blocking: false,
+                    subject: None,
+                    payload,
+                    revision: 1,
+                    order: 1,
+                    withdrawn: false,
+                },
+            );
+        }
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 5);
+        for case in cases {
+            let name = case["interaction"].as_str().unwrap();
+            assert_eq!(
+                user_push_payload(&state, Some(&format!("i-{name}"))),
+                case["payload"],
+                "{name}"
+            );
+        }
     }
 }
