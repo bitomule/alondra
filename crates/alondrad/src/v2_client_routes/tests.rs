@@ -706,6 +706,27 @@ fn reads_of_new_work_are_named_exactly() {
 }
 
 #[tokio::test]
+async fn a_message_to_the_orchestrator_is_a_new_request_with_the_default_options() {
+    let fixture = Fixture::start().await;
+    let file = json!({"id": "att-1", "name": "shot.png", "content_digest": "d".repeat(64), "content_reference": "files/domain-v2/x", "bytes": 3});
+    let (status, outcome) = fixture.send("POST", "/v2/orchestrator/messages", &json!({"text": "Plan the week", "attachments": [file]})).await;
+    assert_eq!(status, StatusCode::OK, "{outcome}");
+    let id = outcome["created_ids"][0].as_str().unwrap().to_owned();
+    assert_eq!(fixture.domain.state().unwrap().requests[&id.as_str().into()].body, "Plan the week");
+    let launch = fixture.domain.request_launch(&id.as_str().into()).unwrap().unwrap();
+    assert_eq!((launch.options.effort.as_str(), launch.attachments.len(), launch.project), ("auto", 1, None));
+    let (status, _) = fixture.send("POST", "/v2/orchestrator/messages", &json!({"text": "Again"})).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(fixture.domain.state().unwrap().requests.len(), 2, "each message is its own request");
+    for body in [json!({"text": "  "}), json!({"text": "x", "kind": "reply"}), json!({})] {
+        assert_eq!(fixture.send("POST", "/v2/orchestrator/messages", &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
+    }
+    assert_eq!(fixture.domain.state().unwrap().requests.len(), 2);
+    assert_eq!(parse_write("/v2/orchestrator/messages"), Some(Write::OrchestratorMessage));
+    assert!(atomic_write_path("/v2/orchestrator/messages"));
+}
+
+#[tokio::test]
 async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_it() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
