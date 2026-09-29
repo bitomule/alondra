@@ -5,7 +5,7 @@ import AlondraShared
 import Foundation
 
 /// Fleet and New use the v2 client contracts: `message_agent`, `close_agent`, the orchestrator
-/// run commands, `create_request` with its context, and the catalog and activity reads.
+/// decision routes, `create_request` with its context, and the catalog and activity reads.
 extension CloudAppServices {
     public func searchConversations(_ query: String) async throws -> SearchResult {
         try checkActive()
@@ -32,11 +32,11 @@ extension CloudAppServices {
             try await self.checkActive()
             return threads
         }, retryOrchestrator: { run, commandID in
-            await self.nodeCommand(.retryOrchestratorRun(run), commandID)
+            await self.orchestratorDecision(.retry, run: run, operationID: commandID)
         }, cancelOrchestrator: { run, commandID in
-            await self.nodeCommand(.cancelOrchestratorRun(run), commandID)
+            await self.orchestratorDecision(.cancel, run: run, operationID: commandID)
         }, acknowledgeOrchestrator: { run, commandID in
-            await self.nodeCommand(.acknowledgeOrchestratorRun(run), commandID)
+            await self.orchestratorDecision(.acknowledge, run: run, operationID: commandID)
         })
     }
 
@@ -68,6 +68,19 @@ extension CloudAppServices {
                 }
             })
         })
+    }
+
+    /// The daemon applies the decision to the execution named by `run`; a conflict means no such
+    /// execution waits any more.
+    private func orchestratorDecision(_ decision: OrchestratorDecision, run: String, operationID: String) async -> NodeMutationOutcome {
+        guard (try? checkActive()) != nil else { return .obsolete }
+        do {
+            try await api.decideOrchestratorRun(decision, runID: run, operationID: operationID)
+            return (try? checkActive()) != nil ? .confirmed : .obsolete
+        } catch {
+            guard (try? checkActive()) != nil else { return .obsolete }
+            return neverApplied(error) ? .rejected(Self.rejection(error).localizedMessage) : .unknown
+        }
     }
 
     private func nodeCommand(_ intent: DomainIntent, _ commandID: String) async -> NodeMutationOutcome {

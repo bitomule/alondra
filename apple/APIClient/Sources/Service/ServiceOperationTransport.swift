@@ -67,10 +67,12 @@ public struct ServiceRequest: Sendable, Equatable {
             return true
         case (.get, let rest) where rest.count == 4 && rest[0] == "daemon" && rest[3] == "activity" && rest[1] == "agents":
             return true
-        case (.get, let rest) where rest.count == 4 && rest[0] == "domain" && rest[1] == "attachments" && rest[3] == "content":
+        case (.get, ["files", "chunk"]):
             return true
         case (.post, let rest) where rest.count == 3 && rest[0] == "domain" && rest[1] == "uploads":
             return ["start", "chunk", "finish", "cancel"].contains(rest[2])
+        case (.post, let rest) where rest.count == 2 && rest[0] == "orchestrator":
+            return OrchestratorDecision(rawValue: rest[1]) != nil
         default:
             return false
         }

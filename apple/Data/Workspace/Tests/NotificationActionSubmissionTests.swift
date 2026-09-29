@@ -97,8 +97,8 @@ final class NotificationActionSubmissionTests: XCTestCase {
     private func mac(lookup: (Int, Data)) -> StubDaemon {
         StubDaemon { [interaction] request in
             switch request.target {
-            case "/v2/daemon/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
-            case "/v2/daemon/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
+            case "/v2/pairing": .status(200, Data(#"{"code":"1"}"#.utf8))
+            case "/v2/pair": .status(200, Data(#"{"device_id":"device"}"#.utf8))
             case "/v2/domain/inbox/interaction%3Aq-1": .status(lookup.0, lookup.1)
             case "/v2/domain/interactions/q-1": .status(200, interaction)
             case "/v2/domain/commands": .status(200, Data(#"{"revision":13,"changed":true,"effects":[],"created_ids":[]}"#.utf8))

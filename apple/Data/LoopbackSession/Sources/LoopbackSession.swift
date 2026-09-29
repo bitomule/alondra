@@ -23,6 +23,8 @@ public actor LoopbackSession: ServiceOperationTransport {
     private let now: @Sendable () -> Date
     private var pairing: Task<String, Error>?
     private var outcomes: [String: LoopbackOutcome] = [:]
+    var uploads: [String: LoopbackUpload] = [:]
+    var downloads: [String: LoopbackDownload] = [:]
     private var active = true
 
     public init(base: URL = LoopbackSession.defaultBase, identity: LoopbackIdentityStore, deviceName: String,
@@ -62,8 +64,17 @@ public actor LoopbackSession: ServiceOperationTransport {
 
     public func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
         guard active else { throw CancellationError() }
-        let result = try await exchange(method: request.method, target: request.path, body: request.body,
+        let route = request.path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? request.path
+        let result: LoopbackOutcome
+        switch (request.method, route) {
+        case ("POST", let path) where path.hasPrefix("/v2/domain/uploads/"):
+            result = try await upload(String(path.dropFirst("/v2/domain/uploads/".count)), request: request)
+        case ("GET", "/v2/files/chunk"):
+            result = try await fileChunk(request.path)
+        default:
+            result = try await exchange(method: request.method, target: request.path, body: request.body,
                                         operationID: request.operationID)
+        }
         switch result {
         case let .completed(status, body): return .completed(status: status, body: body)
         case .unknown: return .unknown
@@ -150,17 +161,17 @@ public actor LoopbackSession: ServiceOperationTransport {
     }
 
     /// The pairing routes answer only loopback callers, so the Mac pairs itself without asking
-    /// anyone. `/v2/daemon/pairing` and `/v2/daemon/pair` are client contracts with the v1 bodies.
+    /// anyone.
     private func pair() async throws -> String {
         struct Invitation: Decodable { let code: String }
         struct Paired: Decodable { let device_id: String }
-        var invite = URLRequest(url: base.appending(path: "v2/daemon/pairing"), timeoutInterval: 10)
+        var invite = URLRequest(url: base.appending(path: "v2/pairing"), timeoutInterval: 10)
         invite.httpMethod = "POST"
         let (inviteStatus, inviteBody) = try await send(invite)
         guard inviteStatus == 200 else { throw LoopbackSessionError.pairingRefused(inviteStatus) }
         let code = try JSONDecoder().decode(Invitation.self, from: inviteBody).code
         let publicKey = try await identity.signingKey().publicKey.x963Representation.base64EncodedString()
-        var pair = URLRequest(url: base.appending(path: "v2/daemon/pair"), timeoutInterval: 10)
+        var pair = URLRequest(url: base.appending(path: "v2/pair"), timeoutInterval: 10)
         pair.httpMethod = "POST"
         pair.setValue("application/json", forHTTPHeaderField: "Content-Type")
         pair.httpBody = try JSONSerialization.data(withJSONObject: [

@@ -45,13 +45,12 @@ extension AlondraAPIClient {
         var total: UInt64?
         repeat {
             let next = collected.count
-            let endpoint = Endpoint<DomainV2.AttachmentContentChunk>(.get,
-                path: ["v2", "domain", "attachments", attachment.id, "content"],
-                query: [("offset", String(next))] + (version.map { [("version", $0)] } ?? [])) {
+            let endpoint = Endpoint<DomainV2.AttachmentContentChunk>(.get, path: ["v2", "files", "chunk"],
+                query: [("path", attachment.contentReference), ("offset", String(next))] + (version.map { [("version", $0)] } ?? [])) {
                     try DomainV2.decode(DomainV2.AttachmentContentChunk.self, from: $0)
                 }
             let chunk = try await send(endpoint)
-            guard chunk.attachmentId == attachment.id, chunk.contentDigest == attachment.contentDigest,
+            guard chunk.contentDigest == attachment.contentDigest,
                   !chunk.version.isEmpty, version == nil || chunk.version == version,
                   total == nil || chunk.total == total, chunk.total <= UInt64(maximum),
                   chunk.offset == UInt64(next), chunk.nextOffset <= chunk.total,
@@ -104,8 +103,9 @@ extension AlondraAPIClient {
             progress(Double(offset) / Double(data.count))
         }
         try Task.checkCancellation()
-        let stored = try DomainV2.decode(DomainV2.AttachmentRef.self, from: try await send(
-            uploadEndpoint("finish", Finish(transferId: id)), operationID: id + "-finish"))
+        struct Finished: Decodable { let attachment: DomainV2.AttachmentRef }
+        let stored = try DomainV2.decode(Finished.self, from: try await send(
+            uploadEndpoint("finish", Finish(transferId: id)), operationID: id + "-finish")).attachment
         guard !stored.id.isEmpty, stored.bytes == UInt64(data.count), stored.contentDigest == hash, stored.name == name
         else { throw AttachmentTransferError.invalidResponse }
         return stored
@@ -115,6 +115,15 @@ extension AlondraAPIClient {
         struct Cancel: Encodable { let transferId: String }
         let id = transferID.uuidString.lowercased()
         _ = try await send(uploadEndpoint("cancel", Cancel(transferId: id)), operationID: id + "-cancel")
+    }
+
+    /// The user's decision on an interrupted orchestrator execution. The operation ID is the
+    /// idempotency key: after an unknown outcome the same decision reuses it.
+    public func decideOrchestratorRun(_ decision: OrchestratorDecision, runID: String, operationID: String) async throws {
+        let body = try JSONSerialization.data(withJSONObject: ["run_id": runID])
+        _ = try await send(Endpoint<Data>.data(.post, path: ["v2", "orchestrator", decision.rawValue], body: body,
+                                               contentType: "application/json", requiresJSONObjectResponse: true),
+                           operationID: operationID)
     }
 
     private func uploadEndpoint<Body: Encodable>(_ operation: String, _ body: Body) throws -> Endpoint<Data> {
@@ -136,4 +145,9 @@ extension AlondraAPIClient {
     private static func unavailable(_ id: String) -> DomainV2.DomainError {
         .init(code: "content_unavailable", message: "Attachment content changed or could not be verified", currentRevision: nil, subject: id)
     }
+}
+
+/// `POST /v2/orchestrator/{cancel,acknowledge,retry}` with the execution's `run_id`.
+public enum OrchestratorDecision: String, Sendable {
+    case cancel, acknowledge, retry
 }

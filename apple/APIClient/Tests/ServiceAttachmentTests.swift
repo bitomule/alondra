@@ -37,8 +37,8 @@ final class ServiceAttachmentTests: XCTestCase {
             XCTFail("A changed version must not produce a mixed file")
         } catch { XCTAssertEqual((error as? DomainV2.DomainError)?.code, "content_unavailable") }
         let paths = await transport.recorded().map(\.path)
-        XCTAssertEqual(paths, ["/v2/domain/attachments/file/content?offset=0",
-                               "/v2/domain/attachments/file/content?offset=65536&version=version-one"])
+        XCTAssertEqual(paths, ["/v2/files/chunk?path=files%2Ffile&offset=0",
+                               "/v2/files/chunk?path=files%2Ffile&offset=65536&version=version-one"])
     }
 }
 
@@ -72,7 +72,7 @@ private actor AttachmentServiceFixture: ServiceOperationTransport {
             let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
             let stored: [String: Any] = ["id": "stored-evidence", "name": name ?? "", "content_digest": digest,
                                          "content_reference": "files/stored-evidence", "bytes": bytes.count]
-            cache[request.operationID] = .completed(status: 200, body: try JSONSerialization.data(withJSONObject: stored))
+            cache[request.operationID] = .completed(status: 200, body: try JSONSerialization.data(withJSONObject: ["attachment": stored]))
             return .unknown
         default: XCTFail("Unexpected path"); return .unknown
         }
@@ -91,7 +91,7 @@ private actor DownloadFixture: ServiceOperationTransport {
         let bytes = Data(repeating: 1, count: 65_536)
         let data = bytes.base64EncodedString().replacingOccurrences(of: "=", with: "")
             .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_")
-        let body: [String: Any] = ["attachment_id": "file", "content_digest": SHA256.hash(data: Data(repeating: 1, count: 131_072)).map { String(format: "%02x", $0) }.joined(),
+        let body: [String: Any] = ["content_digest": SHA256.hash(data: Data(repeating: 1, count: 131_072)).map { String(format: "%02x", $0) }.joined(),
                                    "version": requests.count == 1 ? "version-one" : "version-two", "data": data,
                                    "offset": offset, "total": 131_072, "next_offset": offset + bytes.count, "eof": requests.count == 2]
         return .completed(status: 200, body: try JSONSerialization.data(withJSONObject: body))
