@@ -82,6 +82,7 @@ pub(crate) enum Route {
     Runtime,
     Activity(String),
     Search(String),
+    FileChunk { reference: String, offset: u64, version: Option<String> },
 }
 
 fn plain_id(id: &str) -> bool {
@@ -94,6 +95,27 @@ fn search_query(query: &str) -> Option<String> {
     (key == "q" && !value.is_empty() && value.len() <= 2048 && pairs.next().is_none()).then(|| value.into_owned())
 }
 
+fn file_chunk_query(query: &str) -> Option<Route> {
+    let (mut reference, mut offset, mut version) = (None, None, None);
+    for (key, value) in url::form_urlencoded::parse(query.as_bytes()) {
+        match key.as_ref() {
+            "path" if reference.is_none() && !value.is_empty() && value.len() <= 2048 && !value.contains('\0') => {
+                reference = Some(value.into_owned());
+            }
+            "offset" if offset.is_none() && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) => {
+                offset = value.parse::<u64>().ok();
+            }
+            "version" if version.is_none() && !value.is_empty() && value.len() <= 256
+                && value.bytes().all(|b| b.is_ascii_digit() || b == b'-') => {
+                version = Some(value.into_owned());
+            }
+            _ => return None,
+        }
+    }
+    let offset = offset?;
+    (offset == 0 || version.is_some()).then_some(Route::FileChunk { reference: reference?, offset, version })
+}
+
 /// The reads of this module by path and query, the way both the local listener and the
 /// relay name them.
 pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
@@ -101,6 +123,7 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
     match (path, query) {
         ("/v2/runtime", None) => Some(Route::Runtime),
         ("/v2/agents/search", Some(query)) => search_query(query).map(Route::Search),
+        ("/v2/files/chunk", Some(query)) => file_chunk_query(query),
         (path, None) => path.strip_prefix("/v2/agents/")?.strip_suffix("/activity")
             .filter(|id| plain_id(id)).map(|id| Route::Activity(id.to_owned())),
         _ => None,
@@ -109,6 +132,12 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
 
 pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
     parse_read(path_and_query).is_some()
+}
+
+/// The steps of a chunked upload, which only the encrypted relay carries: on this Mac a
+/// file is uploaded in one request.
+pub(crate) fn upload_step(path: &str) -> Option<&str> {
+    path.strip_prefix("/v2/domain/uploads/").filter(|step| matches!(*step, "start" | "chunk" | "finish" | "cancel"))
 }
 
 impl Client {
@@ -156,12 +185,23 @@ impl Client {
         }
     }
 
-    pub(crate) fn read(&self, path_and_query: &str) -> Option<Response> {
+    pub(crate) async fn read(&self, path_and_query: &str) -> Option<Response> {
         Some(match parse_read(path_and_query)? {
             Route::Runtime => self.runtime(),
             Route::Activity(id) => self.activity(&id),
             Route::Search(query) => self.search(&query),
+            Route::FileChunk { reference, offset, version } => self.file_chunk(reference, offset, version).await,
         })
+    }
+
+    /// A stored copy in verified chunks, for the relay.
+    async fn file_chunk(&self, reference: String, offset: u64, version: Option<String>) -> Response {
+        let home = self.home.clone();
+        let chunk = tokio::task::spawn_blocking(move || crate::service_files::read_stored_chunk(&home, &reference, offset, version)).await;
+        match chunk {
+            Ok(Ok(chunk)) => Json(chunk).into_response(),
+            _ => crate::domain_api::domain_error(DomainError::new("content_unavailable", "stored file content is unavailable")),
+        }
     }
 
     fn runtime(&self) -> Response {
@@ -290,7 +330,7 @@ async fn read(State(client): State<Arc<Client>>, signed: Option<Extension<Signed
         return forbidden();
     }
     let path_and_query = uri.path_and_query().map_or("/", |value| value.as_str());
-    client.read(path_and_query).unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
+    client.read(path_and_query).await.unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
 }
 
 async fn write(

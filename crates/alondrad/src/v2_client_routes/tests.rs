@@ -439,3 +439,30 @@ fn writes_are_named_exactly() {
         assert_eq!(parse_write(path), None, "{path}");
     }
 }
+
+#[tokio::test]
+async fn chunked_uploads_and_file_chunks_are_for_the_relay_and_not_on_this_mac() {
+    let fixture = Fixture::start().await;
+    let expected = fixture_json("requests.json");
+    for step in ["start", "chunk", "finish", "cancel"] {
+        let request = &expected[format!("upload_{step}")];
+        let (status, _) = fixture.send("POST", request["path"].as_str().unwrap(), &json!({"transfer_id": "x"})).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{step}");
+    }
+    assert_eq!(fixture.get("/v2/files/chunk?path=files%2Fatt-1&offset=0").await, (StatusCode::NOT_FOUND, vec![]));
+    for path in ["/v2/files/chunk?path=files%2Fatt-1&offset=0", "/v2/files/chunk?path=a&offset=5&version=1-2-3",
+        "/v2/files/chunk?offset=0&path=a%2Fb"] {
+        assert!(approved_read_path(path), "{path}");
+    }
+    for path in ["/v2/files/chunk", "/v2/files/chunk?path=a", "/v2/files/chunk?path=a&offset=5", "/v2/files/chunk?path=&offset=0",
+        "/v2/files/chunk?path=a&offset=-1", "/v2/files/chunk?path=a&offset=0&offset=1", "/v2/files/chunk?path=a&offset=0&x=1",
+        "/v2/files/chunk?path=a&offset=0&version=v1", "/v2/files/chunk?path=a%00b&offset=0"] {
+        assert!(!approved_read_path(path), "{path}");
+    }
+    for step in ["start", "chunk", "finish", "cancel"] {
+        assert_eq!(upload_step(&format!("/v2/domain/uploads/{step}")), Some(step));
+    }
+    for path in ["/v2/domain/uploads", "/v2/domain/uploads/other", "/v2/domain/uploads/start/", "/v2/uploads"] {
+        assert_eq!(upload_step(path), None, "{path}");
+    }
+}
