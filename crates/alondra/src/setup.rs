@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 use std::net::IpAddr;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 use std::time::Duration;
 
 use alondra_core::config::{self, Config, FileConfig};
@@ -466,6 +466,149 @@ fn command_ok(program: &str, args: &[&str]) -> Option<String> {
     out.status.success().then(|| String::from_utf8_lossy(&out.stdout).to_string())
 }
 
+fn launchctl(args: &[&str]) -> Result<Output> {
+    Command::new("launchctl")
+        .args(args)
+        .output()
+        .context("launchctl")
+}
+
+/// `launchctl print` uses this diagnostic when a label is no longer loaded.
+/// Other nonzero results are ambiguous and must not be treated as proof of exit.
+fn known_missing_job(output: &Output) -> bool {
+    !output.status.success()
+        && String::from_utf8_lossy(&output.stderr).contains("Could not find service")
+}
+
+fn launchctl_job_state(
+    target: &str,
+    mut invoke: impl FnMut(&[&str]) -> Result<Output>,
+) -> Result<Option<(String, Option<i32>)>> {
+    let output = invoke(&["print", target])?;
+    if output.status.success() {
+        let text = String::from_utf8(output.stdout)?;
+        return Ok(Some((text.clone(), launchd_pid(&text)?)));
+    }
+    anyhow::ensure!(
+        known_missing_job(&output),
+        "could not determine whether the launchd job is unloaded"
+    );
+    Ok(None)
+}
+
+fn launchd_pid(text: &str) -> Result<Option<i32>> {
+    let values: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("pid = "))
+        .collect();
+    anyhow::ensure!(values.len() <= 1, "ambiguous launchd process identity");
+    let Some(value) = values.first() else {
+        return Ok(None);
+    };
+    let pid = value
+        .parse::<i32>()
+        .context("invalid launchd process identifier")?;
+    anyhow::ensure!(pid > 0, "invalid launchd process identifier");
+    Ok(Some(pid))
+}
+
+fn process_is_alive(pid: i32) -> Result<bool> {
+    let status = unsafe { libc::kill(pid, 0) };
+    if status == 0 {
+        return Ok(true);
+    }
+    let error = std::io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error.into()),
+    }
+}
+
+fn running_alondrad_pids() -> Result<Vec<i32>> {
+    let output = Command::new("/usr/bin/pgrep")
+        .args(["-x", "alondrad"])
+        .output()
+        .context("could not inspect running daemon processes")?;
+    if output.status.success() {
+        return String::from_utf8(output.stdout)?
+            .lines()
+            .map(|line| line.parse::<i32>().context("invalid daemon process identifier"))
+            .collect();
+    }
+    if output.status.code() == Some(1) && output.stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+    anyhow::bail!("could not determine whether another daemon is running")
+}
+
+fn ensure_no_running_daemons(mut pids: impl FnMut() -> Result<Vec<i32>>) -> Result<()> {
+    let running = pids()?;
+    anyhow::ensure!(
+        running.is_empty(),
+        "another alondrad is still running; stop any manually started daemon or daemon for another HOME before retrying setup"
+    );
+    Ok(())
+}
+
+fn stop_owned_job_and_wait(
+    target: &str,
+    home: &Path,
+    daemon: &Path,
+    mut invoke: impl FnMut(&[&str]) -> Result<Output>,
+    mut is_alive: impl FnMut(i32) -> Result<bool>,
+    poll_count: usize,
+    poll_interval: Duration,
+) -> Result<()> {
+    let state = launchctl_job_state(target, &mut invoke)?;
+    let Some((state, pid)) = state else {
+        return Ok(());
+    };
+    anyhow::ensure!(
+        recovery_job_matches(&state, home, daemon),
+        "cannot prove launchd job belongs to this HOME and daemon executable"
+    );
+    let stopped = invoke(&["bootout", target])?;
+    anyhow::ensure!(
+        stopped.status.success(),
+        "could not unload this HOME's daemon; upgrade stopped"
+    );
+    for _ in 0..poll_count {
+        let unloaded = launchctl_job_state(target, &mut invoke)?.is_none();
+        let process_exited = match pid {
+            Some(pid) => !is_alive(pid)?,
+            None => true,
+        };
+        if unloaded && process_exited {
+            return Ok(());
+        }
+        std::thread::sleep(poll_interval);
+    }
+    anyhow::bail!("daemon did not exit after launchctl bootout; upgrade stopped")
+}
+
+fn release_home_lock_then(
+    home_lock: &mut Option<alondra_core::home_lock::HomeLock>,
+    launch: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    drop(home_lock.take());
+    launch()
+}
+
+fn bootstrap_then_record(
+    home_lock: &mut Option<alondra_core::home_lock::HomeLock>,
+    bootstrap: impl FnOnce() -> Result<()>,
+    record: impl FnOnce() -> Result<()>,
+) -> Result<()> {
+    release_home_lock_then(home_lock, bootstrap)?;
+    record()
+}
+
+fn is_launchd_lifecycle_step(step: &Step) -> bool {
+    matches!(step, Step::Run { program, args } if program == "launchctl"
+        && matches!(args.first().map(String::as_str), Some("bootout" | "bootstrap" | "kickstart")))
+}
+
 pub fn service_loaded(uid: u32, label: &str) -> bool {
     command_ok("launchctl", &["print", &format!("gui/{uid}/{label}")]).is_some()
 }
@@ -579,7 +722,7 @@ pub fn run(args: Args) -> Result<()> {
     }
     // Shared ownership excludes a recovery writer; check pending after locking,
     // before setup can load or change any service trust or launch the daemon.
-    let _home_lock = if args.dry_run { None } else {
+    let mut home_lock = if args.dry_run { None } else {
         let lock = alondra_core::home_lock::HomeLock::shared(&paths.alondra_home)?;
         alondra_core::home_lock::ensure_ready(&paths.alondra_home)?;
         Some(lock)
@@ -605,6 +748,14 @@ pub fn run(args: Args) -> Result<()> {
     if !args.dry_run && !args.skip_service && !seen.binaries {
         bail!("alondrad is missing from the configured installation; install the Homebrew formula or pass --bin, then rerun `alondra setup`");
     }
+    let brew_stamp = paths.alondra_home.join("brew-keg-path");
+    let current_brew_path = brew_executable
+        .as_ref()
+        .map(|executable| executable.to_string_lossy().into_owned());
+    let brew_keg_changed = current_brew_path.as_ref().is_some_and(|current| {
+        std::fs::read_to_string(&brew_stamp).ok().as_deref() != Some(current.as_str())
+    });
+    let defer_brew_service_start = brew_keg_changed && !args.dry_run && !args.skip_service;
     let projects = crate::setup_projects::select(
         paths.alondra_home.join(alondra_core::options::FILE_NAME), &paths.home,
         &std::env::current_dir()?, args.projects_root.as_deref(), args.no_input,
@@ -626,6 +777,10 @@ pub fn run(args: Args) -> Result<()> {
         false
     };
     for step in &plan.steps {
+        if !args.dry_run && defer_brew_service_start && is_launchd_lifecycle_step(step) {
+            println!("deferred launchd restart until the old daemon is stopped and setup releases HOME");
+            continue;
+        }
         print_step(step, args.dry_run);
         if !args.dry_run {
             execute(step, &context)?;
@@ -635,7 +790,8 @@ pub fn run(args: Args) -> Result<()> {
         matches!(step, Step::Run { program, args } if program == "launchctl"
             && matches!(args.first().map(String::as_str), Some("bootstrap" | "kickstart")))
     });
-    let restarted_for_enrollment = service_created && seen.binaries && seen.service_loaded && !launched_by_plan;
+    let restarted_for_enrollment = service_created && seen.binaries && seen.service_loaded
+        && !launched_by_plan && !defer_brew_service_start;
     if restarted_for_enrollment {
         let target = format!("gui/{}/{}", paths.uid, label);
         execute(&Step::Run {
@@ -643,22 +799,35 @@ pub fn run(args: Args) -> Result<()> {
             args: vec!["kickstart".into(), "-k".into(), target],
         }, &context)?;
     }
-    if !args.dry_run && !args.skip_service && seen.binaries
-        && let Some(executable) = brew_executable
-    {
-        let stamp = paths.alondra_home.join("brew-keg-path");
-        let current = executable.to_string_lossy().into_owned();
-        let changed = std::fs::read_to_string(&stamp).ok().as_deref() != Some(current.as_str());
-        if changed && seen.service_loaded && !launched_by_plan && !restarted_for_enrollment {
-            let target = format!("gui/{}/{}", paths.uid, label);
-            execute(&Step::Run {
-                program: "launchctl".into(),
-                args: vec!["kickstart".into(), "-k".into(), target],
-            }, &context)?;
-        }
-        if changed {
-            execute(&Step::Write { path: stamp, contents: current, private: true }, &context)?;
-        }
+    if defer_brew_service_start {
+        let target = format!("gui/{}/{label}", paths.uid);
+        stop_owned_job_and_wait(
+            &target,
+            &paths.alondra_home,
+            &paths.bin.join("alondrad"),
+            launchctl,
+            process_is_alive,
+            50,
+            Duration::from_millis(100),
+        )?;
+        ensure_no_running_daemons(running_alondrad_pids)?;
+        let current = current_brew_path.context("deferred brew start requires a package path")?;
+        let plist = paths.plist(&label);
+        let domain = format!("gui/{}", paths.uid);
+        bootstrap_then_record(&mut home_lock, || {
+            ensure_no_running_daemons(running_alondrad_pids)?;
+            execute(
+                &Step::Run {
+                    program: "launchctl".into(),
+                    args: vec!["bootstrap".into(), domain, plist.display().to_string()],
+                },
+                &context,
+            )
+        }, || execute(&Step::Write {
+            path: brew_stamp,
+            contents: current,
+            private: true,
+        }, &context))?;
     }
     if args.dry_run {
         println!("{}", tr!("(dry run: nothing was written or run)", "(ensayo: no se ha escrito ni ejecutado nada)"));
@@ -1148,6 +1317,199 @@ fn stop_for_recovery(paths: &Paths, label: &str) -> Result<()> {
         assert!(!recovery_job_matches(text,Path::new("/other/home"),Path::new("/example/bin/alondrad")));
         assert!(!recovery_job_matches(text,Path::new("/example/home"),Path::new("/other/bin/alondrad")));
         assert!(!recovery_job_matches(&(text.to_owned()+"\n ALONDRA_HOME => /other/home"),Path::new("/example/home"),Path::new("/example/bin/alondrad")));
+    }
+}
+
+#[cfg(test)]
+mod brew_upgrade_tests {
+    use super::*;
+    use std::os::unix::process::ExitStatusExt;
+
+    fn output(status: i32, stdout: &str, stderr: &str) -> Output {
+        Output {
+            status: std::process::ExitStatus::from_raw(status << 8),
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: stderr.as_bytes().to_vec(),
+        }
+    }
+
+    fn owned_job() -> String {
+        "program = /opt/homebrew/opt/alondra/bin/alondrad\n pid = 123\n environment = {\n ALONDRA_HOME => /tmp/alondra-owned\n }".into()
+    }
+
+    fn fixture_home() -> PathBuf {
+        let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let home = std::env::temp_dir().join(format!("alondra-upgrade-stop-{nonce}"));
+        std::fs::create_dir(&home).unwrap();
+        home
+    }
+
+    #[test]
+    fn upgrade_unloads_only_owned_job_and_waits_for_absence() {
+        let mut answers = vec![
+            output(0, &owned_job(), ""),
+            output(0, "", ""),
+            output(113, "", "Could not find service \"gui/501/dev.alondra.alondrad\""),
+        ].into_iter();
+        let mut calls = Vec::new();
+        stop_owned_job_and_wait(
+            "gui/501/dev.alondra.alondrad",
+            Path::new("/tmp/alondra-owned"),
+            Path::new("/opt/homebrew/opt/alondra/bin/alondrad"),
+            |args| {
+                calls.push(args.iter().map(|value| (*value).to_owned()).collect::<Vec<_>>());
+                Ok(answers.next().unwrap())
+            },
+            |_| Ok(false),
+            3,
+            Duration::ZERO,
+        ).unwrap();
+        assert_eq!(calls, vec![
+            vec!["print", "gui/501/dev.alondra.alondrad"],
+            vec!["bootout", "gui/501/dev.alondra.alondrad"],
+            vec!["print", "gui/501/dev.alondra.alondrad"],
+        ]);
+    }
+
+    #[test]
+    fn upgrade_refuses_foreign_or_ambiguous_jobs_without_bootout() {
+        let mut cases = vec![
+            output(0, &owned_job().replace("/tmp/alondra-owned", "/tmp/other"), ""),
+            output(1, "", "launchctl could not inspect service"),
+        ];
+        for state in cases.drain(..) {
+            let mut calls = Vec::new();
+            assert!(stop_owned_job_and_wait(
+                "gui/501/dev.alondra.alondrad",
+                Path::new("/tmp/alondra-owned"),
+                Path::new("/opt/homebrew/opt/alondra/bin/alondrad"),
+                |args| {
+                    calls.push(args[0].to_owned());
+                    Ok(state.clone())
+                },
+                |_| Ok(false),
+                2,
+                Duration::ZERO,
+            ).is_err());
+            assert_eq!(calls, vec!["print"]);
+        }
+    }
+
+    #[test]
+    fn upgrade_fails_closed_if_job_never_disappears() {
+        let mut calls = Vec::new();
+        let result = stop_owned_job_and_wait(
+            "gui/501/dev.alondra.alondrad",
+            Path::new("/tmp/alondra-owned"),
+            Path::new("/opt/homebrew/opt/alondra/bin/alondrad"),
+            |args| {
+                calls.push(args[0].to_owned());
+                Ok(if args[0] == "bootout" {
+                    output(0, "", "")
+                } else {
+                    output(0, &owned_job(), "")
+                })
+            },
+            |_| Ok(false),
+            3,
+            Duration::ZERO,
+        );
+        assert!(result.is_err());
+        assert_eq!(calls, vec!["print", "bootout", "print", "print", "print"]);
+    }
+
+    #[test]
+    fn upgrade_waits_for_original_process_after_job_is_unloaded() {
+        let mut calls = Vec::new();
+        let mut alive = [true, false].into_iter();
+        stop_owned_job_and_wait(
+            "gui/501/dev.alondra.alondrad",
+            Path::new("/tmp/alondra-owned"),
+            Path::new("/opt/homebrew/opt/alondra/bin/alondrad"),
+            |args| {
+                calls.push(args[0].to_owned());
+                Ok(if args[0] == "print" && calls.len() == 1 {
+                    output(0, &owned_job(), "")
+                } else if args[0] == "bootout" {
+                    output(0, "", "")
+                } else {
+                    output(113, "", "Could not find service")
+                })
+            },
+            |_| Ok(alive.next().unwrap()),
+            3,
+            Duration::ZERO,
+        )
+        .unwrap();
+        assert_eq!(calls, vec!["print", "bootout", "print", "print"]);
+    }
+
+    #[test]
+    fn deferred_lifecycle_steps_are_only_launchd_service_changes() {
+        for verb in ["bootout", "bootstrap", "kickstart"] {
+            assert!(is_launchd_lifecycle_step(&Step::Run {
+                program: "launchctl".into(),
+                args: vec![verb.into()],
+            }));
+        }
+        assert!(!is_launchd_lifecycle_step(&Step::Run {
+            program: "claude".into(),
+            args: vec!["plugin".into()],
+        }));
+    }
+
+    #[test]
+    fn setup_releases_shared_home_lock_before_bootstrap() {
+        let home = fixture_home();
+        let mut lock = Some(alondra_core::home_lock::HomeLock::shared(&home).unwrap());
+        release_home_lock_then(&mut lock, || {
+            let exclusive = alondra_core::home_lock::HomeLock::recovery(&home)?;
+            drop(exclusive);
+            Ok(())
+        }).unwrap();
+        assert!(lock.is_none());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn global_running_daemon_blocks_bootstrap_and_setup_retry() {
+        let called = std::cell::Cell::new(false);
+        let result = bootstrap_then_record(&mut None, || {
+            ensure_no_running_daemons(|| Ok(vec![42]))?;
+            called.set(true);
+            Ok(())
+        }, || Ok(()));
+        assert!(result.is_err());
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn daemon_probe_error_fails_closed_without_bootstrap() {
+        let called = std::cell::Cell::new(false);
+        let result = bootstrap_then_record(&mut None, || {
+            ensure_no_running_daemons(|| anyhow::bail!("pgrep unavailable"))?;
+            called.set(true);
+            Ok(())
+        }, || Ok(()));
+        assert!(result.is_err());
+        assert!(!called.get());
+    }
+
+    #[test]
+    fn failed_bootstrap_preserves_old_stamp_for_safe_retry() {
+        let stamp = std::cell::RefCell::new("old-keg");
+        let failed = bootstrap_then_record(&mut None, || anyhow::bail!("bootstrap failed"), || {
+            *stamp.borrow_mut() = "new-keg";
+            Ok(())
+        });
+        assert!(failed.is_err());
+        assert_eq!(*stamp.borrow(), "old-keg");
+
+        bootstrap_then_record(&mut None, || Ok(()), || {
+            *stamp.borrow_mut() = "new-keg";
+            Ok(())
+        }).unwrap();
+        assert_eq!(*stamp.borrow(), "new-keg");
     }
 }
 
