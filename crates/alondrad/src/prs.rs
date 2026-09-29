@@ -501,7 +501,7 @@ pub fn refreshed(pr: &PullRequest, view: &Value, repo: Option<&Value>) -> PullRe
     }
 }
 
-pub(crate) fn check(c: &Value) -> Option<Check> {
+fn check(c: &Value) -> Option<Check> {
     let s = |k: &str| c.get(k).and_then(Value::as_str);
     let name = s("name").or_else(|| s("context"))?.to_string();
     let state = match (s("status"), s("conclusion"), s("state")) {

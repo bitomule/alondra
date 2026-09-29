@@ -179,6 +179,7 @@ impl Client {
             }
             None => None,
         };
+        let auto_merge = resolved.auto_merge;
         let launch = RequestLaunch {
             project: project.map(str::to_owned),
             issue: resolved.issue.clone(),
@@ -192,7 +193,7 @@ impl Client {
             data_epoch: state.data_epoch,
             command_id: format!("request-{}", body.request_id).into(),
             expected_revision: 0,
-            command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text },
+            command: Command::CreateRequest { request_id: body.request_id.into(), body: body.text, auto_merge },
         };
         let outcome = self.domain.execute_with(&Actor::User { user_id: user_id.to_owned() }, &envelope, transport, Some(&launch), || {
             authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())

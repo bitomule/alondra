@@ -68,6 +68,8 @@ pub enum Command {
     CreateRequest {
         request_id: RequestId,
         body: String,
+        #[serde(default)]
+        auto_merge: bool,
     },
     CloseRequest {
         request_id: RequestId,

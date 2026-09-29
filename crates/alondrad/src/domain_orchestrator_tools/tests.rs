@@ -35,7 +35,7 @@ fn world() -> Fixture {
     std::fs::create_dir_all(&project).unwrap();
     let domain = DomainRuntime::open(&home).unwrap();
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into() });
-    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into() });
+    command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false });
     command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
     Fixture { root, home, project, domain }
@@ -226,7 +226,7 @@ fn the_choices_are_the_ones_recorded_with_the_request() {
     let f = world();
     let state = f.domain.state().unwrap();
     let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "asked".into(),
-        expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into() } };
+        expected_revision: state.revision, command: Command::CreateRequest { request_id: "r2".into(), body: "Fix the crash".into(), auto_merge: false } };
     f.domain.execute_with(&user(), &envelope, None, Some(&hard_choices()), || Ok(())).unwrap();
     assert_eq!(request_choices(&f.domain, &"r2".into()).unwrap(), Some(hard_choices()));
     assert_eq!(request_choices(&f.domain, &"r".into()).unwrap(), None);

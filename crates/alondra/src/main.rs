@@ -579,7 +579,7 @@ mod status_tests {
             s.execute(&actor, &envelope).unwrap();
         };
         let user = || Actor::User { user_id: "u".into() };
-        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into() });
+        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
         run(Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Instance A".into() });
         run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("a".into()), review_prs: false, dependencies: Default::default(), stack: None });
         run(Actor::Agent { agent_id: "a".into() }, Command::PublishInformation { attachments: vec![], interaction_id: "i".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Halfway there".into() });

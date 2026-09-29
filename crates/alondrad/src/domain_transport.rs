@@ -366,7 +366,7 @@ mod tests {
             agent_id: agent.into(), name: agent.into(),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("request-{agent}"),
-            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into() });
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false });
         command(domain, Actor::User { user_id: "u".into() }, &format!("task-{agent}"), Command::CreateTask {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false,

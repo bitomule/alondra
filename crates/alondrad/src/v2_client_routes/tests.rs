@@ -150,7 +150,7 @@ fn seed_work(fixture: &Fixture) {
         fixture.command(Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: name.into() });
     }
     for request in ["request-1", "request-2"] {
-        fixture.user(request, Command::CreateRequest { request_id: request.into(), body: "Work".into() });
+        fixture.user(request, Command::CreateRequest { request_id: request.into(), body: "Work".into(), auto_merge: false });
     }
     fixture.user("task-1", Command::CreateTask {
         task_id: "task-1".into(), request_id: "request-1".into(), title: "Readable editor colours".into(),
@@ -162,7 +162,7 @@ fn seed_work(fixture: &Fixture) {
         body: "Nothing to change: it already works".into(),
     });
     fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
-    fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into() });
+    fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false });
     fixture.user("close-3", Command::CloseRequest { request_id: "request-3".into(), answer: None, withdrawn: true, title: Some("Dropped idea".into()) });
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
@@ -627,6 +627,16 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
         review_prs: true, dependencies: BTreeSet::new(), stack: None });
     let runtime = fixture.get_json("/v2/runtime").await;
     assert_eq!((runtime["tasks"]["task-9"]["project"].as_str(), runtime["tasks"]["task-9"]["effort"].as_str()), (Some("App"), Some("hard")), "its tasks carry what it asked for");
+}
+
+#[tokio::test]
+async fn a_request_that_chose_auto_merge_is_recorded_as_one() {
+    let fixture = Fixture::start().await;
+    for (id, options, auto_merge) in [("auto", json!({"pr": "auto_merge"}), true), ("manual", json!({"pr": "review"}), false)] {
+        let (status, outcome) = fixture.send("POST", "/v2/requests", &json!({"request_id": id, "text": "Ship it", "options": options, "attachments": []})).await;
+        assert_eq!(status, StatusCode::OK, "{outcome}");
+        assert_eq!(fixture.domain.state().unwrap().requests[&id.into()].auto_merge, auto_merge, "{id}");
+    }
 }
 
 #[tokio::test]

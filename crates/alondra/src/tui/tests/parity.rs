@@ -434,7 +434,7 @@ fn a_stacked_task_lists_its_prs_in_merge_order_and_its_row_says_what_it_goes_on(
 #[test]
 fn tasks_group_by_project_and_a_taskless_request_says_how_it_closed() {
     let mut world = World::base(false);
-    world.run("user-a", Command::CreateRequest { request_id: "request-2".into(), body: "Is it broken?".into() });
+    world.run("user-a", Command::CreateRequest { request_id: "request-2".into(), body: "Is it broken?".into(), auto_merge: false });
     world.run("user-a", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
     world.run("user-a", Command::CancelTask { task_id: "task-1".into() });
     let mut app = app_on(&world);

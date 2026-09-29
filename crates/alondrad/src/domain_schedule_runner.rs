@@ -102,7 +102,7 @@ pub(crate) fn producer_prompt(text: &str, resolved: &Resolved, producer: &Produc
         format!("The user chose these for this work (request {}):", producer.request_id),
     ];
     if resolved.auto_merge {
-        lines.push("- PR handling: auto-merge. Register the PR and present it as your result, then end your turn: Alondra merges it once its checks pass and GitHub can merge it, then types the merge notice into this session, or what only you can fix (failed checks, conflicts). Do not merge it yourself or wait on its checks; when the notice arrives, do what the merge unblocks and complete the Task.".into());
+        lines.push("- PR handling: auto-merge. Register the PR and present it as your result. When its checks pass and it is mergeable (for a stacked PR, once the PR it is stacked on is merged), merge it yourself with `gh pr merge --<method> --match-head-commit <head>`, then report and complete the Task once the merge is observed.".into());
     }
     for picked in resolved.picked.iter().filter(|p| p.id != alondra_core::options::PR && p.id != alondra_core::options::EFFORT) {
         lines.push(match &picked.mission {
@@ -241,7 +241,8 @@ fn finish_claim(domain: &DomainRuntime, home: &Path, run_id: &ScheduleRunId) -> 
             return Ok(());
         }
     };
-    let (request, task) = request_task(snapshot);
+    let (mut request, task) = request_task(snapshot);
+    request.auto_merge = serde_json::from_str::<Resolved>(&launch.options_json).is_ok_and(|resolved| resolved.auto_merge);
     let sent = execute_system(domain, Command::RecordScheduleRunSent {
         run_id: run_id.clone(), request, task, launch, finished_at: alondra_core::now_millis(),
     });
@@ -406,13 +407,14 @@ mod tests {
     }
 
     #[test]
-    fn an_auto_merge_request_tells_the_agent_that_alondra_merges_its_pr() {
+    fn an_auto_merge_request_tells_the_agent_to_merge_its_own_pr() {
         let state = DomainState::new("epoch");
         let producer = ProducerLaunch { task_id: &"task-1".into(), request_id: &"request-1".into(), state: &state };
         let file = OptionsFile::default();
         let chosen = |pr: &str| file.resolve(None, &BTreeMap::from([(alondra_core::options::PR.to_owned(), alondra_core::options::Choice::Value(pr.into()))])).unwrap();
         let auto = producer_prompt("Fix it", &chosen("auto_merge"), &producer);
-        assert!(auto.contains("PR handling: auto-merge. Register the PR and present it as your result, then end your turn"), "{auto}");
+        assert!(auto.contains("PR handling: auto-merge. Register the PR and present it as your result. When its checks pass and it is mergeable"), "{auto}");
+        assert!(auto.contains("merge it yourself with `gh pr merge --<method> --match-head-commit <head>`"), "{auto}");
         let review = producer_prompt("Fix it", &chosen("review"), &producer);
         assert!(!review.contains("auto-merge"), "{review}");
     }

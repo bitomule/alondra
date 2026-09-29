@@ -12,7 +12,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::Path;
 
-pub(crate) const SCHEMA_VERSION: i64 = 7;
+pub(crate) const SCHEMA_VERSION: i64 = 8;
+const FIRST_MIGRATABLE: i64 = 7;
+/// Steps that bring a store made at the given schema version up by one.
+const MIGRATIONS: [(i64, &str); 1] = [
+    (7, "ALTER TABLE requests ADD COLUMN auto_merge INTEGER NOT NULL DEFAULT 0 CHECK(auto_merge IN(0,1));"),
+];
 const APPLICATION_ID: i64 = 0x414c4432;
 const SCHEMA: &str = include_str!("domain_store/schema.sql");
 pub(crate) use bounded::ProjectionTooLarge;
@@ -130,8 +135,13 @@ impl DomainStore {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
         let version: i64 = tx.pragma_query_value(None, "user_version", |r| r.get(0))?;
         let application: i64 = tx.pragma_query_value(None, "application_id", |r| r.get(0))?;
-        ensure!(version == 0 || version == SCHEMA_VERSION,
+        ensure!(version == 0 || (FIRST_MIGRATABLE..=SCHEMA_VERSION).contains(&version),
             "domain database has an incompatible schema; prepare a fresh cutover store");
+        if version != 0 {
+            for (from, step) in MIGRATIONS.iter().filter(|(from, _)| *from >= version) {
+                tx.execute_batch(step)?;
+            }
+        }
         if version == 0 {
             let existing: i64 = tx.query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",

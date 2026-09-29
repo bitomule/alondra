@@ -764,6 +764,24 @@ pub(crate) fn encrypted_resolve_delivery_runtime(
 pub(crate) fn legacy_write_blocked() -> DomainError {
     DomainError::new("incompatible_protocol", "domain v2 writes require the committed cutover")
 }
+/// What the Agent of an auto-merge Task is reminded of when it registers its PR.
+pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Option<String> {
+    let Command::RegisterPr { task_id, host, repository, number, head, allowed_methods, .. } = command else { return None };
+    let state = domain.state().ok()?;
+    let task = state.tasks.get(task_id)?;
+    if !state.requests.get(&task.request_id)?.auto_merge {
+        return None;
+    }
+    let method = match allowed_methods.first().copied().unwrap_or(MergeMethod::Merge) {
+        MergeMethod::Merge => "merge",
+        MergeMethod::Squash => "squash",
+        MergeMethod::Rebase => "rebase",
+    };
+    Some(format!(
+        "This Task auto-merges: once the checks of https://{host}/{repository}/pull/{number} pass and it is mergeable (for a stacked PR, once the PR it is stacked on is merged), merge it yourself with `gh pr merge --{method} --match-head-commit {head}`, then report."
+    ))
+}
+
 async fn command<H: DomainHost>(
     State(host): State<Arc<H>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -797,7 +815,13 @@ async fn command<H: DomainHost>(
             return store_error(error);
         }
         return match host.domain().execute_bearer(token, &envelope) {
-            Ok(outcome) => Json(outcome).into_response(),
+            Ok(outcome) => {
+                let mut answer = json!(outcome);
+                if let Some(notice) = auto_merge_notice(host.domain(), &envelope.command) {
+                    answer["notice"] = json!(notice);
+                }
+                Json(answer).into_response()
+            }
             Err(error) => store_error(error),
         };
     }
@@ -1064,7 +1088,7 @@ mod tests {
                 "request",
                 Command::CreateRequest {
                     request_id: "request-a".into(),
-                    body: "Synthetic request".into(),
+                    body: "Synthetic request".into(), auto_merge: false,
                 },
             ),
             (
@@ -1602,7 +1626,7 @@ mod v2_only_encrypted_tests {
             expected_revision: 0,
             command: Command::CreateRequest {
                 request_id: "request-from-phone".into(),
-                body: "Synthetic encrypted request".into(),
+                body: "Synthetic encrypted request".into(), auto_merge: false,
             },
         };
         let body = serde_json::to_value(&envelope).unwrap();
@@ -1627,7 +1651,7 @@ mod v2_only_encrypted_tests {
             expected_revision: 1,
             command: Command::CreateRequest {
                 request_id: "request-after-revocation".into(),
-                body: "Must not commit".into(),
+                body: "Must not commit".into(), auto_merge: false,
             },
             ..envelope
         };

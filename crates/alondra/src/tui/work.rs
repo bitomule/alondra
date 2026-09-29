@@ -322,7 +322,7 @@ fn description(s: &Spec, value: &str) -> Option<String> {
     }
     let text = match value {
         "review" => tr!("Each PR is a card for you; the node waits for your merge", "Cada PR es una tarjeta para ti; el nodo espera a que hagas merge"),
-        "auto_merge" => tr!("Alondra merges the node's PR once its checks pass", "Alondra hace merge del PR del nodo cuando pasan los checks"),
+        "auto_merge" => tr!("The node merges its own PR once its checks pass", "El nodo hace merge de su propio PR cuando pasan los checks"),
         AUTO => tr!("The orchestrator picks the model and effort from the task", "El orquestador elige modelo y esfuerzo según la tarea"),
         "light" => tr!("A quick, cheaper model for small, clear work", "Un modelo rápido y barato para trabajo pequeño y claro"),
         "normal" => tr!("Claude's default model and effort", "El modelo y el esfuerzo por defecto de Claude"),

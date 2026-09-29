@@ -568,7 +568,7 @@ fn schedule_mutations_are_judged_by_their_schedule_not_by_unrelated_writes() {
         "unrelated",
         Command::CreateRequest {
             request_id: "unrelated-request".into(),
-            body: "Unrelated work".into(),
+            body: "Unrelated work".into(), auto_merge: false,
         },
     );
     store

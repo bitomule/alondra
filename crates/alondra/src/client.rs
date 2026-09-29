@@ -586,7 +586,7 @@ mod section_tests {
         };
         let user = Actor::User { user_id: "user-a".into() };
         let agent = Actor::Agent { agent_id: "agent-a".into() };
-        apply(&mut state, user.clone(), Command::CreateRequest { request_id: "request-1".into(), body: "Synthetic request".into() });
+        apply(&mut state, user.clone(), Command::CreateRequest { request_id: "request-1".into(), body: "Synthetic request".into(), auto_merge: false });
         apply(&mut state, Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
         apply(&mut state, user, Command::CreateTask { task_id: "task-1".into(), request_id: "request-1".into(), title: "Synthetic task".into(), agent_id: Some("agent-a".into()), review_prs: true, dependencies: BTreeSet::new(), stack: None });
         apply(&mut state, agent.clone(), Command::StartTask { task_id: "task-1".into() });

@@ -71,10 +71,13 @@ pub struct Request {
     /// Closed because the user withdrew it.
     #[serde(default)]
     pub withdrawn: bool,
+    /// The user chose that the Agent merges its own PR once it can, without waiting for them.
+    #[serde(default)]
+    pub auto_merge: bool,
 }
 impl Request {
     pub fn new(id: RequestId, body: String) -> Self {
-        Request { id, body, closed: false, title: None, answer: None, withdrawn: false }
+        Request { id, body, closed: false, title: None, answer: None, withdrawn: false, auto_merge: false }
     }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

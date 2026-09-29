@@ -47,8 +47,6 @@ fn user(actor: &Actor) -> Result<String> {
         _ => fail("forbidden", "User decision required"),
     }
 }
-/// Who authorized a merge the daemon makes because the user asked for auto-merge.
-pub const AUTO_MERGE_USER: &str = "alondra:auto-merge";
 fn system(actor: &Actor) -> Result<()> {
     if matches!(actor, Actor::System) {
         Ok(())
@@ -932,7 +930,7 @@ impl DomainState {
                 system(actor)?;
                 self.schedule.interrupt_on_restart();
             }
-            Command::CreateRequest { request_id, body } => {
+            Command::CreateRequest { request_id, body, auto_merge } => {
                 self.manager(actor)?;
                 id(&request_id.0)?;
                 nonempty(body)?;
@@ -941,7 +939,7 @@ impl DomainState {
                 };
                 self.requests.insert(
                     request_id.clone(),
-                    Request::new(request_id.clone(), body.clone()),
+                    Request { auto_merge: *auto_merge, ..Request::new(request_id.clone(), body.clone()) },
                 );
                 created.push(request_id.0.clone());
                 // 8ccd131 handed every new request of the user to the orchestrator.
@@ -1655,12 +1653,7 @@ impl DomainState {
                 expected_head,
                 method,
             } => {
-                // The daemon authorizes the merge itself only for a Request the user asked
-                // to auto-merge; the choice was the user's.
-                let u = match actor {
-                    Actor::System => AUTO_MERGE_USER.to_owned(),
-                    _ => user(actor)?,
-                };
+                let u = user(actor)?;
                 id(&authorization_id.0)?;
                 let (_, t, targets) = self.presentation(presentation_id)?;
                 if !targets.contains(&DeliveryTarget::PullRequest {
@@ -1748,14 +1741,7 @@ impl DomainState {
                     .get(authorization_id)
                     .ok_or_else(|| DomainError::new("not_found", "Authorization missing"))?
                     .clone();
-                match actor {
-                    Actor::System if a.user_id == AUTO_MERGE_USER => {
-                        self.active(&a.task_id)?;
-                    }
-                    _ => {
-                        self.assigned(actor, &a.task_id)?;
-                    }
-                }
+                self.assigned(actor, &a.task_id)?;
                 self.presentation(&a.presentation_id)?;
                 if !a.valid {
                     return fail("acceptance_stale", "Authorization was invalidated");
@@ -1906,7 +1892,10 @@ impl DomainState {
                 if &t.id != task_id {
                     return fail("forbidden", "Presentation belongs to another Task");
                 };
-                if !self.accepted(p) {
+                let merged_by_agent = self.requests.get(&t.request_id).is_some_and(|r| r.auto_merge)
+                    && matches!(&p.payload, InteractionPayload::Delivery { acceptance: None, feedback, .. } if feedback.is_empty())
+                    && targets.iter().any(|x| matches!(x, DeliveryTarget::PullRequest { .. }));
+                if !self.accepted(p) && !merged_by_agent {
                     return fail(
                         if matches!(&p.payload, InteractionPayload::Delivery { acceptance: Some(a), feedback, .. }
                             if !a.valid && feedback.last().is_some_and(|f| f.at_revision > a.at_revision))

@@ -481,7 +481,7 @@ mod tests {
     fn ask_orchestrator(domain: &DomainRuntime, n: u32) {
         if n == 1 {
             command(domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
-            command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into() });
+            command(domain, Actor::Orchestrator { generation: 0 }, "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge: false });
             command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
                 task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
                 review_prs: false, dependencies: BTreeSet::new(), stack: None,
