@@ -325,6 +325,19 @@ final class RelaySessionTests: XCTestCase {
         XCTAssertEqual(elapsed, 50, "Two server-held intervals; the first response contains immediate unrelated/received events")
     }
 
+    func testOrdinaryReadWaitsForRelayWakeupInsteadOfPollingStatusOnATimer() async throws {
+        let fixture = try Fixture(mode: .longChange)
+        let sleeps = SleepCounter()
+        let session = fixture.session(sleep: { await sleeps.record() })
+        let body = try await summary(fixture, session)
+        XCTAssertEqual(try DomainV2.decode(DomainV2.Changes.self, from: body),
+                       try DomainV2.decode(DomainV2.Changes.self, from: Data(changesBody.utf8)))
+        let timerWaits = await sleeps.count
+        let wakeups = await fixture.http.changeQueries
+        XCTAssertEqual(timerWaits, 0, "A pending read is woken by the relay, not re-asked every second")
+        XCTAssertFalse(wakeups.isEmpty)
+    }
+
     func testReadWakeupRejectsEpochErrorsAndForgedCompletionWithoutReposting() async throws {
         for mode in [FakeHTTP.Mode.changeUnauthorized, .changeConflict, .changeEpoch, .changeForged] {
             let fixture = try Fixture(mode: mode)
@@ -521,6 +534,11 @@ private actor FakeHTTP: ServiceHTTPTransport {
         json["response"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(envelope))
         return ServiceHTTPResponse(status: 200, body: try JSONSerialization.data(withJSONObject: json))
     }
+}
+
+private actor SleepCounter {
+    private(set) var count = 0
+    func record() { count += 1 }
 }
 
 private actor TimerGate {

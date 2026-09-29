@@ -114,7 +114,8 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
         }
         if method == "GET" {
             // Read identities are private and never share the durable mutation namespace.
-            return try await read(requestID: "read-" + UUID().uuidString, path: path, body: body, statusPolls: statusPolls)
+            guard body == nil else { throw RelaySessionError.invalidRequest }
+            return try await waitForReadCompletion(requestID: "read-" + UUID().uuidString, path: path, seconds: statusPolls)
         }
         guard !requestID.hasPrefix("read-") else { throw RelaySessionError.invalidRequest }
         let tag = try codec.semanticTag(method: method, path: path, body: body)
@@ -182,39 +183,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     private func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> EnvelopeV1 {
         do { return try codec.sealRequest(requestID: requestID, method: method, path: path, body: body) }
         catch ServiceEnvelopeError.invalidRequest { throw RelaySessionError.invalidRequest }
-    }
-
-    /// Reads have no durable side effect to deduplicate. Keep their request lifecycle in this
-    /// call only, so periodic synchronization cannot accumulate permanent journal records.
-    private func read(requestID: String, path: String, body: Data?, statusPolls: Int) async throws -> RelayOperationResult {
-        _ = try await client.bootstrap()
-        guard active else { throw CancellationError() }
-        let envelope = try sealRequest(requestID: requestID, method: "GET", path: path, body: body)
-        try Task.checkCancellation()
-        do {
-            let receipt = try await client.submitRequest(envelope)
-            if let result = try verified(receipt, requestID: requestID) { return result }
-        } catch is CancellationError { throw CancellationError() }
-        catch {
-            // A lost read response is reconciled without another POST in this invocation.
-        }
-        for attempt in 0..<statusPolls {
-            try Task.checkCancellation()
-            if attempt > 0 { try await sleep() }
-            guard active else { throw CancellationError() }
-            do {
-                let receipt: RelayReceipt
-                do { receipt = try await client.requestStatus(requestID: requestID) }
-                catch RelayWireError.unauthorized {
-                    _ = try await client.bootstrap()
-                    guard active else { throw CancellationError() }
-                    receipt = try await client.requestStatus(requestID: requestID)
-                }
-                if let result = try verified(receipt, requestID: requestID) { return result }
-            } catch is CancellationError { throw CancellationError() }
-            catch { return .unknown }
-        }
-        return .unknown
     }
 
     /// Absence is authoritative only because outbox entries/tombstones are never deleted.
