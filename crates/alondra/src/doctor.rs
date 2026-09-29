@@ -263,7 +263,7 @@ pub fn apns_file_check(text: Option<&str>, key_exists: impl Fn(&Path) -> bool) -
     }
 }
 
-fn notification_checks(home: &Path, up: bool, legacy_probe: impl FnOnce() -> Result<Value, String>) -> Vec<Check> {
+fn notification_checks(home: &Path) -> Vec<Check> {
     // A present but invalid service configuration must never select legacy APNs.
     if home.join("service.toml").symlink_metadata().is_ok() {
         return vec![check("service push", Status::Warn,
@@ -273,30 +273,7 @@ fn notification_checks(home: &Path, up: bool, legacy_probe: impl FnOnce() -> Res
     }
     let text = std::fs::read_to_string(home.join("apns.json")).ok();
     let apns = apns_file_check(text.as_deref(), |p| p.is_file());
-    let ready = apns.status == Status::Pass;
-    let mut checks = vec![apns];
-    if ready && up { checks.push(push_round_trip(legacy_probe())); }
-    checks
-}
-
-/// `/v1/push/check` sends to a made-up token: Apple answering BadDeviceToken proves the key,
-/// team and topic are accepted; 403 means the key or team is wrong.
-pub fn push_round_trip(result: Result<Value, String>) -> Check {
-    let restart = tr!("check key_id, team_id and topic in apns.json, then restart alondrad", "revisa key_id, team_id y topic en apns.json y reinicia alondrad");
-    match result {
-        Err(e) => check("apns push", Status::Fail, e, restart),
-        Ok(v) => {
-            let status = v.get("status").and_then(Value::as_u64).unwrap_or(0);
-            let body = v.get("body").and_then(Value::as_str).unwrap_or("").to_string();
-            match status {
-                400 if body.contains("BadDeviceToken") => {
-                    check("apns push", Status::Pass, tr!("Apple accepts the key (test token rejected as expected)", "Apple acepta la llave (rechaza el token de prueba, como debe)"), "")
-                }
-                403 => check("apns push", Status::Fail, trf!("Apple rejects the key: {body}", "Apple rechaza la llave: {body}"), restart),
-                _ => check("apns push", Status::Warn, trf!("unexpected answer from Apple: {status} {body}", "respuesta inesperada de Apple: {status} {body}"), restart),
-            }
-        }
-    }
+    vec![apns]
 }
 
 pub fn claude_version_check(out: Option<&str>) -> Check {
@@ -362,11 +339,11 @@ pub fn run(json_out: bool) -> Result<()> {
     let local = Config::load().unwrap_or_else(|_| Config::defaults());
 
     let client = Client::new(Duration::from_secs(5));
-    let health = client.get::<Value>("/v1/health").map_err(|e| e.to_string());
+    let health = client.get::<Value>("/v2/daemon").map_err(|e| e.to_string());
     let up = health.is_ok();
-    if let Ok(value) = &health {
+    if let Some(value) = health.as_ref().ok().filter(|v| v.get("integrity_issues").is_some()) {
         checks.push(state_integrity_check(value));
-    } else if home.join("alondra.db").exists() {
+    } else if health.is_err() && home.join("alondra.db").exists() {
         checks.push(match state::audit(&home) {
             Ok((seq, tasks)) => check("state", Status::Pass, trf!("offline replay valid through event {seq}; {tasks} tasks", "reproducción sin servidor válida hasta el evento {seq}; {tasks} tareas"), ""),
             Err(e) => check("state", Status::Fail, format!("{e:#}"), "alondra state repair (only with a complete event log and the daemon stopped)"),
@@ -410,11 +387,12 @@ pub fn run(json_out: bool) -> Result<()> {
     let tuicr = output("tuicr", &["--version"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tuicr_check(tuicr.as_deref()));
 
-    checks.extend(notification_checks(&home, up, || {
-        client.post("/v1/push/check", &json!({})).map_err(|e| e.to_string())
-    }));
+    checks.extend(notification_checks(&home));
     if up {
-        let devices = client.get::<Value>("/v1/devices").ok().and_then(|v| v.get("devices").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
+        checks.push(check("apns push", Status::Pass, tr!("delivery round trip not available on v2", "prueba de entrega no disponible en v2"), ""));
+    }
+    if up {
+        let devices = client.get::<Value>("/v2/devices").ok().and_then(|v| v.get("devices").and_then(Value::as_array).map(Vec::len)).unwrap_or(0);
         checks.push(if devices > 0 {
             check("pairing", Status::Pass, trf!("{devices} paired device(s)", "{devices} dispositivo(s) vinculado(s)"), "")
         } else {
@@ -453,7 +431,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn service_notifications_never_probe_legacy_even_with_invalid_config() {
+    fn a_present_service_configuration_replaces_the_apns_file_check() {
         let home = std::env::temp_dir().join(format!("alondra-doctor-service-{}-{}", std::process::id(), alondra_core::now_millis()));
         std::fs::create_dir_all(&home).unwrap();
         std::fs::write(home.join("service.toml"), "invalid configuration").unwrap();
@@ -462,20 +440,15 @@ mod tests {
         std::fs::write(home.join("apns.json"), serde_json::to_vec(&json!({
             "key_path": key, "key_id": "test", "team_id": "test", "topic": "test"
         })).unwrap()).unwrap();
-        let checks = notification_checks(&home, true, || panic!("service mode must never send a legacy APNs probe"));
+        let checks = notification_checks(&home);
         assert_eq!(checks.len(), 1);
         assert_eq!(checks[0].name, "service push");
         assert_eq!(checks[0].status, Status::Warn, "configuration presence cannot prove delivery");
         std::fs::remove_file(home.join("service.toml")).unwrap();
-        let mut called = false;
-        let checks = notification_checks(&home, true, || {
-            called = true;
-            Ok(json!({"status":400,"body":"BadDeviceToken"}))
-        });
-        assert!(called, "legacy-only mode retains its explicit diagnostic");
+        let checks = notification_checks(&home);
         assert_eq!(checks[0].name, "apns");
         assert_eq!(checks[0].status, Status::Pass);
-        assert_eq!(checks.len(), 2);
+        assert_eq!(checks.len(), 1);
         std::fs::remove_dir_all(home).unwrap();
     }
 
@@ -501,14 +474,6 @@ mod tests {
 
     fn local() -> Config {
         Config::resolve("/h".into(), &FileConfig { name: Some("Ana".into()), wake: Some(true), ..Default::default() }, |_| None, || None)
-    }
-
-    #[test]
-    fn push_check_reads_apples_answer() {
-        assert_eq!(push_round_trip(Ok(json!({"status": 400, "body": "{\"reason\":\"BadDeviceToken\"}"}))).status, Status::Pass);
-        assert_eq!(push_round_trip(Ok(json!({"status": 403, "body": "{\"reason\":\"InvalidProviderToken\"}"}))).status, Status::Fail);
-        assert_eq!(push_round_trip(Ok(json!({"status": 500, "body": ""}))).status, Status::Warn);
-        assert_eq!(push_round_trip(Err("APNs no configurado".into())).status, Status::Fail);
     }
 
     #[test]

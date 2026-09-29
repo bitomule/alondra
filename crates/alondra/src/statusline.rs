@@ -1,25 +1,17 @@
-//! The status line of the sessions Alondra launches. Claude Code gives it the session's context
-//! use (`context_window`, code.claude.com/docs/en/statusline), which no hook carries: it passes
-//! that on to alondrad, then runs the status line the user set up, so the session shows the same
-//! line it would without Alondra.
+//! The status line of the sessions Alondra launches: it runs the status line the user set up, so
+//! the session shows the same line it would without Alondra.
 
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::Duration;
 
 use anyhow::Result;
-use serde_json::{Value, json};
-
-use crate::client::Client;
+use serde_json::Value;
 
 pub fn run() -> Result<()> {
     let mut input = String::new();
     std::io::stdin().read_to_string(&mut input)?;
     let parsed: Value = serde_json::from_str(&input).unwrap_or(Value::Null);
-    if let Some(measure) = measure(&parsed) {
-        let _ = Client::new(Duration::from_millis(500)).post("/v1/context", &measure);
-    }
     let Some(command) = user_command(&parsed, &claude_home()) else { return Ok(()) };
     let Ok(mut child) = Command::new("/bin/sh").arg("-c").arg(&command).stdin(Stdio::piped()).stdout(Stdio::inherit()).spawn() else {
         return Ok(());
@@ -29,15 +21,6 @@ pub fn run() -> Result<()> {
     }
     let _ = child.wait();
     Ok(())
-}
-
-/// What alondrad records: `used_percentage` is null until the session's first model call and
-/// again right after a `/compact`, and then there is nothing to report.
-fn measure(input: &Value) -> Option<Value> {
-    let session_id = input.get("session_id")?.as_str()?;
-    let window = input.pointer("/context_window/context_window_size")?.as_u64()?;
-    let percent = input.pointer("/context_window/used_percentage")?.as_f64()?;
-    Some(json!({"session_id": session_id, "percent": percent, "window": window}))
 }
 
 fn claude_home() -> PathBuf {
@@ -64,14 +47,7 @@ fn user_command(input: &Value, home: &Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_context_is_passed_on_once_the_session_has_measured_it() {
-        let measured = json!({"session_id": "s", "context_window": {"context_window_size": 1_000_000, "used_percentage": 31.5}});
-        assert_eq!(measure(&measured), Some(json!({"session_id": "s", "percent": 31.5, "window": 1_000_000})));
-        let fresh = json!({"session_id": "s", "context_window": {"context_window_size": 200_000, "used_percentage": null}});
-        assert_eq!(measure(&fresh), None, "before the first call and right after /compact there is no measure");
-    }
+    use serde_json::json;
 
     #[test]
     fn the_status_line_shown_is_the_projects_else_the_users_and_never_alondras_own() {
