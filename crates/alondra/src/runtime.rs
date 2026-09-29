@@ -140,8 +140,6 @@ pub struct PrRuntime {
     pub conflicts: bool,
     #[serde(default)]
     pub mergeability_unknown: bool,
-    #[serde(default)]
-    pub set_aside: bool,
 }
 
 /// Every field is optional and an entry this build cannot read costs only that entry.

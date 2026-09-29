@@ -94,10 +94,6 @@ pub fn resolve_conflicts(pr: &PrId) -> (String, Value) {
     (format!("/v2/pull-requests/{}/resolve-conflicts", urlencode(&pr.0)), json!({}))
 }
 
-pub fn set_aside(pr: &PrId) -> (String, Value) {
-    (format!("/v2/pull-requests/{}/set-aside", urlencode(&pr.0)), json!({}))
-}
-
 pub fn cancel_reason(task: &TaskId, reason: &str) -> (String, Value) {
     (format!("/v2/tasks/{}/cancel-reason", urlencode(&task.0)), json!({"reason": reason}))
 }
@@ -167,7 +163,6 @@ mod tests {
             ("close", close(&"agent-a".into(), true)),
             ("orchestrator_retry", orchestrator(Recovery::Retry, "run-7")),
             ("resolve_conflicts", resolve_conflicts(&"pr-1".into())),
-            ("set_aside", set_aside(&"pr-1".into())),
             ("cancel_reason", cancel_reason(&"task-1".into(), "Superseded")),
             ("new_request", (REQUESTS.to_string(), new_request("request-9", "Ship it", Some("App"), &json!({"effort": "hard"}), Some("me/App#3"), &[a]))),
         ];
