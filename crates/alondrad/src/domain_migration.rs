@@ -42,9 +42,9 @@ mod schedules;
 #[cfg(test)]
 pub(crate) mod synthetic;
 pub(crate) use import::{ImportLink, ImportReport, materialize_legacy};
-pub(crate) use schedules::{LegacyScheduleInventory, LegacyScheduleReceiptRow, read_legacy_schedules_readonly};
+pub(crate) use schedules::{LegacyScheduleInventory, LegacyScheduleReceiptRow};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
 pub(crate) struct LegacyInventory {
     pub source_seq: u64,
     pub requests: usize,
@@ -231,23 +231,6 @@ pub(crate) fn ensure_legacy_schedules_readable(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The promoted store must carry exactly the schedule rows, run links, tool
-/// policies, failed launches and receipts that the verified backup holds.
-pub(crate) fn verify_staged_schedules(backup: &Path, stage: &Path) -> Result<()> {
-    let view = load_legacy_readonly(&backup.join("alondra.db"))?;
-    let mut store = crate::domain_store::DomainStore::open_readonly(&stage.join("domain-v2.db"))?;
-    let staged = store.load()?;
-    let expected = read_legacy_schedules_readonly(backup, &view, &staged)?;
-    let imported = store.legacy_schedule_inventory()?;
-    ensure!(
-        imported == expected,
-        "staged schedule import differs from the verified backup: staged {:?}, backup {:?}",
-        imported.counts(),
-        expected.counts()
-    );
-    Ok(())
-}
-
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct BackupFile {
     pub path: String,
@@ -286,31 +269,20 @@ pub(crate) const BACKUP_FILES: [&str; 14] = [
     "brew-keg-path",
 ];
 pub(crate) const BACKUP_TREES: [&str; 4] = ["service-keys", "files", "candidates", "soak"];
+/// The installed binaries a rollback reinstalls; kept in the backup, never restored into HOME.
+pub(crate) const LEGACY_BINARIES: &str = "legacy-bin";
 
-/// Caller must have stopped the daemon, jobs and legacy producers. The
-/// exclusive HOME lock makes daemon startup impossible during the backup.
-/// The destination must be new and private; no secret enters public output.
-pub(crate) fn backup_offline(
-    home: &Path,
-    destination: &Path,
-    legacy_daemon: &Path,
-) -> Result<BackupManifest> {
-    let lock = alondra_core::home_lock::HomeLock::recovery(home)?;
-    backup_locked(&lock, home, home, destination, legacy_daemon)
-}
-
-/// `recorded_home` is the HOME the legacy events were written in, which is
-/// where their absolute attachment paths point. It differs from `home` only
-/// when preparing a copy, as the cutover rehearsal does.
-fn backup_locked(
-    _lock: &alondra_core::home_lock::HomeLock,
-    home: &Path,
-    recorded_home: &Path,
-    destination: &Path,
-    legacy_daemon: &Path,
+/// Copy what a rollback needs from a stopped HOME into a new private
+/// directory: each SQLite store through the backup API, configuration, keys
+/// and stored files, with a manifest of every byte. The caller holds the
+/// exclusive HOME lock. `recorded_home` is the HOME the legacy events were
+/// written in; absolute attachment paths are resolved against it.
+pub(crate) fn backup_home(
+    home: &Path, recorded_home: &Path, destination: &Path, binaries: &[&Path],
 ) -> Result<BackupManifest> {
     ensure!(home.is_absolute() && recorded_home.is_absolute(), "source HOME must be absolute");
     destination_outside(home, destination)?;
+    ensure_legacy_schedules_readable(home)?;
     fs::DirBuilder::new().mode(0o700).create(destination)?;
     let meta = fs::symlink_metadata(destination)?;
     ensure!(
@@ -335,19 +307,19 @@ fn backup_locked(
             files.push(describe_file(destination, &target)?);
         }
     }
-    let legacy_binary = destination.join("legacy-alondrad");
-    copy_regular(legacy_daemon, &legacy_binary)?;
-    files.push(describe_file(destination, &legacy_binary)?);
     for directory in BACKUP_TREES {
         let source = home.join(directory);
         if source.exists() {
-            copy_tree(
-                &source,
-                &destination.join(directory),
-                destination,
-                &mut files,
-            )?;
+            copy_tree(&source, &destination.join(directory), destination, &mut files)?;
         }
+    }
+    if !binaries.is_empty() {
+        fs::DirBuilder::new().mode(0o700).create(destination.join(LEGACY_BINARIES))?;
+    }
+    for binary in binaries {
+        let target = destination.join(LEGACY_BINARIES).join(binary.file_name().context("binary has no name")?);
+        copy_regular(&binary.canonicalize()?, &target)?;
+        files.push(describe_file(destination, &target)?);
     }
     files.sort_by(|a, b| a.path.cmp(&b.path));
     let manifest = BackupManifest {
@@ -357,17 +329,19 @@ fn backup_locked(
         source_seq: view.seq,
         files,
     };
-    let content = serde_json::to_vec_pretty(&manifest)?;
-    let marker = destination.join("manifest.json");
     let mut output = OpenOptions::new()
         .create_new(true)
         .write(true)
         .mode(0o600)
         .custom_flags(libc::O_NOFOLLOW)
-        .open(&marker)?;
-    output.write_all(&content)?;
+        .open(destination.join("manifest.json"))?;
+    output.write_all(&serde_json::to_vec_pretty(&manifest)?)?;
     output.sync_all()?;
     File::open(destination)?.sync_all()?;
+    ensure!(
+        load_legacy_readonly(&home.join("alondra.db"))?.seq == view.seq,
+        "legacy writer advanced during the backup"
+    );
     verify_backup(destination)?;
     Ok(manifest)
 }
@@ -562,74 +536,6 @@ pub(crate) fn verify_backup_expected(root: &Path, expected_digest: &str) -> Resu
     verify_backup(root)
 }
 
-/// Recopy every preserved source under the same exclusive HOME lease used by
-/// promotion. The legacy sequence alone cannot detect changed snapshots,
-/// technical journals, configuration or stored content.
-pub(crate) fn verify_current_source_matches_backup(
-    lock: &alondra_core::home_lock::HomeLock,
-    home: &Path,
-    backup: &Path,
-    expected: &BackupManifest,
-    stage: Option<&Path>,
-    allow_unlisted_files: bool,
-) -> Result<()> {
-    let check = std::env::temp_dir().join(format!(
-        "alondra-domain-current-check-{}",
-        crate::auth::random_hex(8)
-    ));
-    let result = (|| {
-        let current = backup_locked(lock, home, home, &check, &backup.join("legacy-alondrad"))?;
-        let expected_files: std::collections::BTreeMap<_, _> = expected
-            .files
-            .iter()
-            .map(|item| (item.path.as_str(), item))
-            .collect();
-        let current_files: std::collections::BTreeMap<_, _> = current
-            .files
-            .iter()
-            .map(|item| (item.path.as_str(), item))
-            .collect();
-        let originals_match = expected_files.iter().all(|(path, item)| {
-            current_files
-                .get(path)
-                .is_some_and(|observed| *observed == *item)
-        });
-        let allowed_extra = if let Some(stage) = stage {
-            let mut staged = Vec::new();
-            if stage.join("files").exists() {
-                collect_stage_files(stage, &stage.join("files"), &mut staged)?;
-            }
-            staged
-                .into_iter()
-                .map(|item| (item.path, (item.bytes, item.sha256)))
-                .collect::<std::collections::BTreeMap<_, _>>()
-        } else {
-            Default::default()
-        };
-        let extras_match = current_files
-            .iter()
-            .filter(|(path, _)| !expected_files.contains_key(*path))
-            .all(|(path, item)| {
-                allow_unlisted_files
-                    || allowed_extra
-                        .get(*path)
-                        .is_some_and(|(bytes, sha)| *bytes == item.bytes && *sha == item.sha256)
-            });
-        ensure!(
-            current.canonical_source_home == expected.canonical_source_home
-                && current.source_seq == expected.source_seq
-                && originals_match
-                && extras_match,
-            "current HOME differs from verified cutover backup; prepare a fresh backup and stage"
-        );
-        Ok(())
-    })();
-    if check.exists() {
-        fs::remove_dir_all(&check)?;
-    }
-    result
-}
-
 fn collect_stage_files(stage: &Path, directory: &Path, files: &mut Vec<BackupFile>) -> Result<()> {
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
@@ -651,193 +557,78 @@ pub(crate) struct Rehearsal {
     pub new_data_epoch: String,
 }
 
-#[derive(Debug, Serialize)]
-pub(crate) struct CutoverPreparation {
-    pub backup_manifest_sha256: String,
-    pub backup_files: usize,
-    pub rehearsal: Rehearsal,
-}
-
-/// Binds a staged image to the exact verified backup from which it was made.
-/// This file stays outside the live HOME and contains no source data or secrets.
-#[derive(Debug, Serialize, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct StageProvenance {
-    pub format: u32,
-    pub backup_manifest_sha256: String,
-    pub source_seq: u64,
-    pub data_epoch: String,
-    pub domain_state_sha256: String,
-    pub import_map_sha256: String,
-}
-
-pub(crate) fn domain_state_digest(state: &alondra_core::domain_v2::DomainState) -> Result<String> {
-    Ok(hex(&Sha256::digest(serde_json::to_vec(state)?)))
-}
-
-pub(crate) fn import_map_digest(database: &Path) -> Result<String> {
-    let database = canonical_leaf(database)?;
-    let connection = Connection::open_with_flags(
-        &database,
-        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
-    )?;
-    let mut statement = connection.prepare("SELECT source_kind,source_id,role,target_kind,target_id,source_digest,source_seq FROM legacy_import_map ORDER BY source_kind,source_id,role")?;
-    let rows = statement
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, String>(4)?,
-                row.get::<_, String>(5)?,
-                row.get::<_, i64>(6)?,
-            ))
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()?;
-    Ok(hex(&Sha256::digest(serde_json::to_vec(&rows)?)))
-}
-
-/// Prepare the exact cutover image under one exclusive HOME lease. This does
-/// not swap the business database, start v2, or dispatch any external effect.
-/// The returned manifest digest must be recorded outside the private backup.
-pub(crate) fn prepare_cutover_offline(
-    home: &Path,
-    backup: &Path,
-    stage: &Path,
-    legacy_daemon: &Path,
-) -> Result<CutoverPreparation> {
-    let recorded = std::env::var_os(RECORDED_HOME).map(PathBuf::from);
-    prepare_cutover_recorded(home, recorded.as_deref().unwrap_or(home), backup, stage, legacy_daemon)
-}
-
 /// Set by the cutover rehearsal on a copy of a live HOME: the live HOME's path.
 pub(crate) const RECORDED_HOME: &str = "ALONDRA_CUTOVER_RECORDED_HOME";
 
-pub(crate) fn prepare_cutover_recorded(
-    home: &Path,
-    recorded_home: &Path,
-    backup: &Path,
-    stage: &Path,
-    legacy_daemon: &Path,
-) -> Result<CutoverPreparation> {
-    destination_outside(home, backup)?;
-    destination_outside(home, stage)?;
-    let lock = alondra_core::home_lock::HomeLock::recovery(home)?;
-    ensure_legacy_schedules_readable(home)?;
-    let manifest = backup_locked(&lock, home, recorded_home, backup, legacy_daemon)?;
-    let digest = backup_manifest_digest(backup)?;
-    let rehearsal = rehearse(backup, stage)?;
-    verify_backup_expected(backup, &digest)?;
-    ensure!(
-        rehearsal.source.source_seq == manifest.source_seq,
-        "staged domain does not match backup source sequence"
-    );
-    ensure!(
-        load_legacy_readonly(&home.join("alondra.db"))?.seq == manifest.source_seq,
-        "legacy writer advanced during cutover preparation"
-    );
-    Ok(CutoverPreparation {
-        backup_manifest_sha256: digest,
-        backup_files: manifest.files.len(),
-        rehearsal,
-    })
-}
-
 fn materialize_with_schedules(
-    view: &View, source_home: &Path, target_home: &Path, epoch: d::DataEpoch,
+    view: &View, source: &import::Source<'_>, target_home: &Path, epoch: d::DataEpoch,
 ) -> Result<(d::DomainState, ImportReport, LegacyScheduleInventory)> {
-    let (mut state, imported) = materialize_legacy(view, source_home, target_home, epoch)?;
-    // A verified backup already holds a rollback-journal copy. A rehearsal
-    // straight from a HOME snapshots the live WAL database the same way first.
-    let schedules = if source_home.join("manifest.json").exists()
-        || !source_home.join("schedules.db").exists()
+    let (mut state, mut imported) = materialize_legacy(view, source, target_home, epoch)?;
+    // A backup already holds a rollback-journal copy. A rehearsal straight
+    // from a live HOME snapshots its WAL database the same way first.
+    let (schedules, dropped) = if source.home.join("manifest.json").exists()
+        || !source.home.join("schedules.db").exists()
     {
-        read_legacy_schedules_readonly(source_home, view, &state)?
+        schedules::read_legacy_schedules_counted(source.home, view, &state)?
     } else {
         let snapshot = std::env::temp_dir().join(format!(
             "alondra-domain-schedule-snapshot-{}",
             crate::auth::random_hex(8)
         ));
         fs::DirBuilder::new().mode(0o700).create(&snapshot)?;
-        let result = sqlite_backup(&source_home.join("schedules.db"), &snapshot.join("schedules.db"))
-            .and_then(|()| read_legacy_schedules_readonly(&snapshot, view, &state));
+        let result = sqlite_backup(&source.home.join("schedules.db"), &snapshot.join("schedules.db"))
+            .and_then(|()| schedules::read_legacy_schedules_counted(&snapshot, view, &state));
         fs::remove_dir_all(&snapshot)?;
         result?
     };
+    imported.schedule_links_dropped = dropped.links;
+    imported.schedule_runs_dropped = dropped.runs;
     state.schedule = schedules.state.clone();
     state.validate().map_err(anyhow::Error::new)?;
     Ok((state, imported, schedules))
 }
 
-/// Rehearse against a source copy and a brand-new target HOME. The function
-/// never writes the legacy source, and leaves the target for human inspection.
-pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehearsal> {
-    destination_outside(source_home, target_home)?;
-    ensure_legacy_schedules_readable(source_home)?;
-    let backup_digest = if source_home.join("manifest.json").exists() {
-        let digest = backup_manifest_digest(source_home)?;
-        verify_backup_expected(source_home, &digest)?;
-        Some(digest)
-    } else {
-        None
-    };
+/// Import the work in flight from `source_home` into a new private stage.
+/// Nothing is written to the source; the stage is left for inspection.
+fn import_into(source: &import::Source<'_>, target_home: &Path) -> Result<(d::DomainState, ImportReport, LegacyInventory, usize)> {
+    destination_outside(source.home, target_home)?;
+    ensure_legacy_schedules_readable(source.home)?;
     fs::DirBuilder::new().mode(0o700).create(target_home)?;
-    let view = load_legacy_readonly(&source_home.join("alondra.db"))?;    let source = inventory(&view);
+    let view = load_legacy_readonly(&source.home.join("alondra.db"))?;
+    let legacy = inventory(&view);
     let mut store = crate::domain_store::DomainStore::open(&target_home.join("domain-v2.db"))?;
     let epoch = store.load()?.data_epoch;
-    let (state, imported, schedules) =
-        materialize_with_schedules(&view, source_home, target_home, epoch.clone())?;
+    let (state, imported, schedules) = materialize_with_schedules(&view, source, target_home, epoch)?;
     store.import_initial(&state, &imported.links, view.seq, &schedules)?;
     store.integrity_check()?;
     let loaded = store.load()?;
-    ensure!(
-        loaded == state,
-        "domain import SQL roundtrip changed business state"
-    );
+    ensure!(loaded == state, "domain import SQL roundtrip changed business state");
     let projection = store.project_bounded(crate::service_overview::MAX_BYTES)?;
     for revision in loaded.document_revisions.values() {
-        verify_content(
-            target_home,
-            &revision.content_reference,
-            &revision.content_digest,
-        )?;
+        verify_content(target_home, &revision.content_reference, &revision.content_digest)?;
     }
     for interaction in loaded.interactions.values() {
         for attachment in &interaction.attachments {
-            verify_content(
-                target_home,
-                &attachment.content_reference,
-                &attachment.content_digest,
-            )?;
+            verify_content(target_home, &attachment.content_reference, &attachment.content_digest)?;
         }
     }
-    if let Some(digest) = backup_digest {
-        verify_backup_expected(source_home, &digest)?;
-        let provenance = StageProvenance {
-            format: 1,
-            backup_manifest_sha256: digest,
-            source_seq: view.seq,
-            data_epoch: epoch.0.clone(),
-            domain_state_sha256: domain_state_digest(&loaded)?,
-            import_map_sha256: import_map_digest(&target_home.join("domain-v2.db"))?,
-        };
-        let mut file = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .custom_flags(libc::O_NOFOLLOW)
-            .open(target_home.join("domain-v2-stage.json"))?;
-        file.write_all(&serde_json::to_vec(&provenance)?)?;
-        file.sync_all()?;
-        File::open(target_home)?.sync_all()?;
-    }
-    Ok(Rehearsal {
-        source,
-        imported,
-        projection_bytes: projection.len(),
-        new_data_epoch: epoch.0,
-    })
+    Ok((loaded, imported, legacy, projection.len()))
+}
+
+/// Import a verified cutover backup into `stage`.
+pub(crate) fn import_backup(backup: &Path, recorded_home: &Path, stage: &Path) -> Result<(d::DomainState, ImportReport)> {
+    let digest = backup_manifest_digest(backup)?;
+    verify_backup_expected(backup, &digest)?;
+    let (state, imported, _, _) = import_into(&import::Source { home: backup, recorded_home }, stage)?;
+    verify_backup_expected(backup, &digest)?;
+    Ok((state, imported))
+}
+
+/// Rehearse the import against a source HOME and a brand-new target HOME.
+pub(crate) fn rehearse(source_home: &Path, target_home: &Path) -> Result<Rehearsal> {
+    let (state, imported, source, projection_bytes) =
+        import_into(&import::Source { home: source_home, recorded_home: source_home }, target_home)?;
+    Ok(Rehearsal { source, imported, projection_bytes, new_data_epoch: state.data_epoch.0 })
 }
 
 pub(crate) fn verify_content(home: &Path, reference: &str, digest: &str) -> Result<()> {
@@ -855,37 +646,10 @@ pub(crate) fn verify_content(home: &Path, reference: &str, digest: &str) -> Resu
     Ok(())
 }
 
-/// Validate rollback by restoring into a separate empty HOME. The real HOME
-/// remains untouched; operational rollback requires an older compatible binary
-/// and explicit reconciliation of any external effects made after cutover.
-pub(crate) fn restore_rehearsal(
-    backup: &Path,
-    expected_digest: &str,
-    target_home: &Path,
-) -> Result<LegacyInventory> {
-    let manifest = verify_backup_expected(backup, expected_digest)?;
-    fs::DirBuilder::new().mode(0o700).create(target_home)?;
-    for file in &manifest.files {
-        let relative = Path::new(&file.path);
-        let target = target_home.join(relative);
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)?;
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-        }
-        copy_regular(&backup.join(relative), &target)?;
-    }
-    let inventory = inventory(&load_legacy_readonly(&target_home.join("alondra.db"))?);
-    ensure!(
-        inventory.source_seq == manifest.source_seq,
-        "rollback rehearsal lost legacy tail"
-    );
-    Ok(inventory)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::{domain_v2::PrId, pr};
+    use alondra_core::pr;
     use serde_json::json;
 
     #[test]
@@ -916,10 +680,9 @@ mod tests {
         assert!(error.contains("unknown table"), "{error}");
         assert!(!stage.exists(), "failed rehearsal must leave no stage");
         let backup = root.join("backup");
-        let error = prepare_cutover_offline(&source, &backup, &stage, &source.join("legacy-daemon"))
-            .unwrap_err().to_string();
+        let error = backup_home(&source, &source, &backup, &[]).unwrap_err().to_string();
         assert!(error.contains("unknown table"), "{error}");
-        assert!(!backup.exists(), "failed preparation must leave no backup");
+        assert!(!backup.exists(), "a refused cutover must leave no backup");
         drop(database);
         fs::remove_file(source.join("schedules.db")).unwrap();
         fs::write(source.join("schedules.db"), b"not a SQLite database").unwrap();
@@ -938,15 +701,12 @@ mod tests {
     }
 
     #[test]
-    fn backup_rehearsal_and_rollback_preserve_tail_cards_and_content() {
+    fn one_command_cutover_imports_work_in_flight_and_rolls_back_exactly() {
         let root = std::env::temp_dir().join(format!(
             "alondra-domain-migration-{}",
             crate::auth::random_hex(8)
         ));
         let source = root.join("source");
-        let backup = root.join("backup");
-        let target = root.join("target");
-        let restored = root.join("restored");
         fs::DirBuilder::new().mode(0o700).create(&root).unwrap();
         fs::DirBuilder::new().mode(0o700).create(&source).unwrap();
         fs::DirBuilder::new()
@@ -1143,323 +903,88 @@ mod tests {
             !forbidden_stage.exists(),
             "rehearsal cannot mutate source HOME"
         );
-        let prepared =
-            prepare_cutover_offline(&source, &backup, &target, &source.join("legacy-daemon"))
-                .unwrap();
-        let manifest_digest = prepared.backup_manifest_sha256;
-        let manifest = verify_backup_expected(&backup, &manifest_digest).unwrap();
-        assert_eq!(manifest.source_seq, 2);
-        let result = prepared.rehearsal;
-        assert_eq!(result.source.requests, 3);
-        assert_eq!(result.source.tasks, 2);
-        assert_eq!(result.imported.agents, 2, "Task assignee and idle node are distinct Agents");
-        assert_eq!(result.imported.split_pr_tasks, 1);
-        assert_eq!(result.imported.formal_prs, 2);
-        assert_eq!(result.imported.questions, 3);
-        assert_eq!(result.imported.request_closures, 1);
-        assert_eq!(result.imported.request_attachments, 1);
-        assert_eq!(result.imported.open_questions_requiring_reconciliation, 1,
-            "an open question from a dead session stays historical");
-        assert_eq!(result.imported.open_questions_reopened, 1,
-            "an open question from a live session stays answerable");
-        assert_eq!(result.imported.final_presentations, 2,
-            "task-1 and its split PR Task keep their review context");
-        assert_eq!(result.imported.stacked_prs, vec![(2, 1)],
-            "a PR train is reported, not converted into a stack dependency");
-        assert_eq!(result.imported.documents, 1);
-        assert_eq!(result.imported.attachments, 2);
-        assert_eq!(result.imported.attachment_size_discrepancies, 2);
-        let mut domain =
-            crate::domain_store::DomainStore::open(&target.join("domain-v2.db")).unwrap();
-        let provenance = Connection::open(target.join("domain-v2.db")).unwrap();
-        let agent_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
-            WHERE source_kind='session' AND role='agent_conversation' AND target_kind='agent'
-            AND target_id='session-1'", [], |row| row.get(0)).unwrap();
-        assert_eq!(agent_session, "session-1");
-        let idle_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
-            WHERE source_kind='session' AND role='agent_conversation' AND target_kind='agent'
-            AND target_id='idle-session'", [], |row| row.get(0)).unwrap();
-        assert_eq!(idle_session, "idle-session");
-        let node_rows: i64 = provenance.query_row("SELECT COUNT(*) FROM legacy_import_map
-            WHERE source_kind='node' AND role='entity' AND target_kind='agent'", [], |row| row.get(0)).unwrap();
-        assert_eq!(node_rows, 2, "Orchestrator is not imported as an Agent");
-        let orchestrator_session: String = provenance.query_row("SELECT source_id FROM legacy_import_map
-            WHERE source_kind='session' AND role='orchestrator_conversation' AND target_kind='orchestrator'
-            AND target_id='generation-0'", [], |row| row.get(0)).unwrap();
-        assert_eq!(orchestrator_session, "orchestrator-session");
-        let imported = domain.load().unwrap();
-        assert_eq!(imported.agents.len(), 2);
-        assert_eq!(imported.agents[&alondra_core::domain_v2::AgentId("session-1".into())].name, "Assigned node");
-        let idle = &imported.agents[&alondra_core::domain_v2::AgentId("idle-session".into())];
-        assert_eq!(idle.name, "Idle node");
-        assert!(!idle.connected, "legacy PID must not become v2 connection state");
-        assert!(
-            imported
-                .interactions
-                .values()
-                .any(|i| i.body.contains("The historical answer"))
-        );
-        assert!(
-            imported
-                .interactions
-                .values()
-                .any(|i| i.body.contains("\"option\":\"Choice A\""))
-        );
+        let backup = root.join("backup");
+        let legacy = source.join("legacy-daemon");
         {
-            use alondra_core::domain_v2::*;
-            let reopened = &imported.interactions[&InteractionId("legacy-question-1".into())];
-            assert!(matches!(reopened.payload, InteractionPayload::Question { answer: None, .. }));
-            assert_eq!(reopened.author, Author::Agent { agent_id: "session-1".into() });
-            assert!(reopened.blocking);
-            assert!(matches!(
-                imported.interactions[&InteractionId("legacy-question-3".into())].payload,
-                InteractionPayload::Information { .. }
-            ));
-            let task = &imported.tasks[&TaskId("task-1".into())];
-            assert_eq!(task.state, TaskState::NeedsYou, "derived at import from the reopened blocking question");
-            assert_eq!(task.final_presentation, Some(InteractionId("legacy-final-task-1".into())));
-            assert!(task.documents.contains_key(&DocumentId("legacy-document-1".into())));
-            assert!(imported.document_reviews.iter().any(|r| r.task_id.0 == "task-1" && r.document_id.0 == "legacy-document-1"));
-            let presentation = &imported.interactions[&InteractionId("legacy-final-task-1".into())];
-            assert_eq!(presentation.author, Author::Agent { agent_id: "session-1".into() });
-            assert!(matches!(&presentation.payload, InteractionPayload::Delivery { targets, is_final: true, acceptance: None, .. }
-                if targets == &vec![
-                    DeliveryTarget::PullRequest { pr_id: "legacy-pr-1".into(), head: format!("{:040x}", 1) },
-                    DeliveryTarget::DocumentRevision { document_id: "legacy-document-1".into(), revision_id: "legacy-document-revision-1".into() },
-                ]));
-            assert_eq!(imported.tasks[&TaskId("legacy-pr-task-2".into())].state, TaskState::InReview);
-            assert_eq!(imported.tasks[&TaskId("task-sched".into())].state, TaskState::NotStarted);
-            let stacked: String = provenance.query_row("SELECT target_id FROM legacy_import_map
-                WHERE source_kind='pr' AND source_id='2' AND role='stacked_on'", [], |row| row.get(0)).unwrap();
-            assert_eq!(stacked, "legacy-pr-1");
-            let inventory = domain.legacy_schedule_inventory().unwrap();
-            assert_eq!(inventory.counts(), (2, 1, 1, 1, 1), "schedules, runs, tools, receipts and failed launches are imported");
-            let run = inventory.state.runs.values().next().unwrap();
-            assert_eq!(run.task_id, Some(TaskId("task-sched".into())));
+            let held = alondra_core::home_lock::HomeLock::recovery(&source).unwrap();
+            let error = crate::domain_cutover::refuse_legacy_home(&source).unwrap_err().to_string();
+            assert!(error.contains("still holds legacy data"), "{error}");
+            drop(held);
         }
+        let wait = crate::domain_cutover::LockWait { attempts: 1, interval: Duration::ZERO };
+        let result = crate::domain_cutover::cutover_offline(&source, &backup, &source, &[&legacy], &wait, |_| ())
+            .unwrap();
+        assert!(!result.resumed && !result.already_committed);
+        assert!(result.rollback.contains("--rollback-domain-v2"));
+        let imported = result.imported.unwrap();
+        assert_eq!(imported.source_seq, 2, "committed WAL tail must be imported");
+        assert_eq!((imported.requests, imported.skipped.requests), (2, 1), "the closed Request stays behind");
+        assert_eq!((imported.tasks, imported.derived_pr_tasks), (2, 1));
+        assert_eq!(imported.agents, 1, "only assignees of work in flight become Agents");
+        assert_eq!(imported.prs, 2);
+        assert_eq!(imported.stacked_prs, vec![(2, 1)],
+            "a PR train is reported, not converted into a stack dependency");
+        assert_eq!((imported.questions_reopened, imported.questions_unread, imported.skipped.questions), (1, 1, 1),
+            "the assignee's open question stays answerable, another session's arrives unread, the answered one stays behind");
+        assert_eq!((imported.documents, imported.reports_unread), (1, 1));
+        assert_eq!(imported.final_presentations, 2, "task-1 and its derived PR Task keep their review context");
+        assert_eq!((imported.attachments, imported.attachment_size_discrepancies), (2, 2));
+        crate::domain_cutover::refuse_legacy_home(&source).unwrap();
+        assert_eq!(result.marker.phase, crate::domain_cutover::Phase::Committed);
+        assert_eq!(crate::domain_cutover::read_marker(&source).unwrap().unwrap(), result.marker);
+        assert!(!source.join("alondra.db").exists() && !source.join("schedules.db").exists());
+        let archive = source.join(crate::domain_cutover::ARCHIVE);
+        assert_eq!(load_legacy_readonly(&archive.join("alondra.db")).unwrap().seq, 2,
+            "the legacy store stays in HOME, renamed");
+        assert!(archive.join("schedules.db").exists());
+        assert_eq!(fs::read(backup.join(LEGACY_BINARIES).join("legacy-daemon")).unwrap(), b"old compatible daemon");
         let bad_attachment = alondra_core::model::Attachment {
             name: "question.txt".into(),
             source_path: "/synthetic/question.txt".into(),
             stored_path: Some("/foreign/files/question.txt".into()),
             bytes: Some(16),
         };
-        assert!(import::stored_file(&backup, &bad_attachment).is_err());
-        let original_bytes = fs::read(backup.join("files/question.txt")).unwrap();
-        fs::write(backup.join("files/question.txt"), b"temporary substitution").unwrap();
-        assert!(
-            import::read_stored_bytes(&backup, &view.questions[&1].attachments[0]).is_err(),
-            "consumed bytes must match the backup manifest even if the file is later restored"
-        );
-        fs::write(backup.join("files/question.txt"), &original_bytes).unwrap();
-        verify_backup_expected(&backup, &manifest_digest).unwrap();
-        assert_eq!(imported.pull_requests.len(), 2);
-        assert!(
-            imported
-                .pull_requests
-                .contains_key(&PrId("legacy-pr-2".into()))
-        );
-        assert!(
-            domain.import_initial(&imported, &[], 2, &LegacyScheduleInventory::default()).is_err(),
-            "a populated target cannot be reimported"
-        );
-        drop(domain);
-        drop(crate::domain_runtime::DomainRuntime::open(&source).unwrap());
-        assert!(crate::legacy_sidecar_is_empty(&source.join("domain-v2.db")).unwrap());
-        assert_eq!(
-            crate::domain_runtime::DomainRuntime::open(&target)
-                .unwrap()
-                .state()
-                .unwrap()
-                .pull_requests
-                .len(),
-            2,
-            "the runtime must open the same filename populated by migration"
-        );
-        let schedule_bytes = fs::read(source.join("schedules.db")).unwrap();
-        let late_schedules = Connection::open(source.join("schedules.db")).unwrap();
-        late_schedules.execute_batch("INSERT INTO schedules(id,body) VALUES('late','{\"enabled\":true}');").unwrap();
-        drop(late_schedules);
-        let error = crate::domain_cutover::promote_stage_offline(
-            &source,
-            &backup,
-            &manifest_digest,
-            &target,
-        )
-        .unwrap_err().to_string();
-        assert!(error.contains("current HOME differs from verified cutover backup"), "{error}");
-        assert!(crate::domain_cutover::read_marker(&source).unwrap().is_none());
-        fs::write(source.join("schedules.db"), &schedule_bytes).unwrap();
-        let staged_schedules = Connection::open(target.join("domain-v2.db")).unwrap();
-        staged_schedules.execute("DELETE FROM schedule_failed_launches", []).unwrap();
-        let error = crate::domain_cutover::promote_stage_offline(
-            &source,
-            &backup,
-            &manifest_digest,
-            &target,
-        )
-        .unwrap_err().to_string();
-        assert!(error.contains("staged schedule import differs"), "{error}");
-        staged_schedules.execute("INSERT INTO schedule_failed_launches(request_id) VALUES('request-sched')", []).unwrap();
-        drop(staged_schedules);
-        let provenance = target.join("domain-v2-stage.json");
-        let original_provenance = fs::read(&provenance).unwrap();
-        fs::write(&provenance, b"mismatched backup").unwrap();
-        assert!(
-            crate::domain_cutover::promote_stage_offline(
-                &source,
-                &backup,
-                &manifest_digest,
-                &target,
-            )
-            .is_err(),
-            "a stage without verified provenance must not fence HOME"
-        );
-        assert!(
-            crate::domain_cutover::read_marker(&source)
-                .unwrap()
-                .is_none()
-        );
-        fs::write(&provenance, original_provenance).unwrap();
-        {
-            let connection = Connection::open(target.join("domain-v2.db")).unwrap();
-            connection.execute("INSERT INTO local_command_results(sender,request_id,digest,result) VALUES('test','unreconciled',?1,'{}')", [vec![0u8;32]]).unwrap();
-        }
-        assert!(
-            crate::domain_cutover::promote_stage_offline(
-                &source,
-                &backup,
-                &manifest_digest,
-                &target,
-            )
-            .is_err(),
-            "a stage with technical receipts must not be promoted"
-        );
-        assert!(
-            crate::domain_cutover::read_marker(&source)
-                .unwrap()
-                .is_none()
-        );
-        Connection::open(target.join("domain-v2.db"))
-            .unwrap()
-            .execute("DELETE FROM local_command_results WHERE sender='test'", [])
-            .unwrap();
-        let live_file = source.join("files/question.txt");
-        let live_bytes = fs::read(&live_file).unwrap();
-        fs::write(&live_file, b"changed without an event").unwrap();
-        assert!(
-            crate::domain_cutover::promote_stage_offline(
-                &source,
-                &backup,
-                &manifest_digest,
-                &target,
-            )
-            .is_err(),
-            "changed HOME content with the same event sequence must be rejected"
-        );
-        assert!(
-            crate::domain_cutover::read_marker(&source)
-                .unwrap()
-                .is_none()
-        );
-        fs::write(&live_file, live_bytes).unwrap();
-        let prepared_marker = crate::domain_cutover::Marker {
-            format: 1,
-            phase: crate::domain_cutover::Phase::Prepared,
-            backup_manifest_sha256: manifest_digest.clone(),
-            source_seq: manifest.source_seq,
-            data_epoch: imported.data_epoch.0.clone(),
-        };
-        let marker_path = source.join(crate::domain_cutover::MARKER);
-        fs::write(&marker_path, serde_json::to_vec(&prepared_marker).unwrap()).unwrap();
-        fs::set_permissions(&marker_path, fs::Permissions::from_mode(0o600)).unwrap();
-        fs::write(source.join("domain-v2.db.next"), b"interrupted copy").unwrap();
-        crate::domain_cutover::abort_prepared_offline(&source, &backup, &manifest_digest).unwrap();
-        assert!(
-            crate::domain_cutover::read_marker(&source)
-                .unwrap()
-                .is_none()
-        );
-        assert!(!source.join("domain-v2.db.next").exists());
-        drop(crate::domain_runtime::DomainRuntime::open(&source).unwrap());
-        let child = std::process::Command::new(std::env::current_exe().unwrap())
-            .arg("--exact")
-            .arg("domain_migration::tests::crash_after_empty_sidecar_wal")
-            .env("ALONDRA_CUTOVER_WAL_CHILD", source.join("domain-v2.db"))
-            .status()
-            .unwrap();
-        assert!(
-            child.success(),
-            "crashed SQLite child must exit after durable WAL write"
-        );
-        assert!(source.join("domain-v2.db-wal").exists());
-        fs::write(&marker_path, serde_json::to_vec(&prepared_marker).unwrap()).unwrap();
-        fs::set_permissions(&marker_path, fs::Permissions::from_mode(0o600)).unwrap();
-        fs::write(source.join("domain-v2.db.next"), b"interrupted copy").unwrap();
-        fs::write(
-            source.join("domain-v2-cutover.json.next"),
-            b"interrupted marker",
-        )
-        .unwrap();
-        let interrupted_content = source.join("domain-v2-content-next");
-        fs::create_dir(&interrupted_content).unwrap();
-        fs::set_permissions(&interrupted_content, fs::Permissions::from_mode(0o700)).unwrap();
-        fs::write(interrupted_content.join("partial-copy"), b"partial").unwrap();
-        let marker = crate::domain_cutover::promote_stage_offline(
-            &source,
-            &backup,
-            &manifest_digest,
-            &target,
-        )
-        .unwrap();
-        assert_eq!(marker.phase, crate::domain_cutover::Phase::Committed);
-        assert!(!source.join("domain-v2.db-wal").exists());
-        assert!(!interrupted_content.exists());
-        assert!(
-            crate::domain_cutover::abort_prepared_offline(&source, &backup, &manifest_digest)
-                .is_err(),
-            "committed HOME cannot be reopened as legacy"
-        );
-        assert_eq!(marker.source_seq, 2);
-        assert_eq!(
-            crate::domain_cutover::read_marker(&source)
-                .unwrap()
-                .unwrap(),
-            marker
-        );
-        assert_eq!(
-            crate::domain_runtime::DomainRuntime::open(&source)
-                .unwrap()
-                .state()
-                .unwrap(),
-            imported,
-            "the promoted HOME must load the staged domain without losing legacy config"
-        );
+        assert!(import::stored_file(&import::Source { home: &backup, recorded_home: &source }, &bad_attachment).is_err());
+        let again = crate::domain_cutover::cutover_offline(&source, &backup, &source, &[&legacy], &wait, |_| ()).unwrap();
+        assert!(again.already_committed, "a second run only reports the committed cutover");
         {
             use alondra_core::domain_v2::*;
-            assert_eq!(
-                crate::domain_store::DomainStore::open(&source.join("domain-v2.db")).unwrap()
-                    .legacy_schedule_inventory().unwrap().counts(),
-                (2, 1, 1, 1, 1)
-            );
             let runtime = crate::domain_runtime::DomainRuntime::open(&source).unwrap();
-            let before = runtime.state().unwrap();
+            let state = runtime.state().unwrap();
+            assert_eq!(state.agents.len(), 1);
+            assert_eq!(state.agents[&AgentId("session-1".into())].name, "Assigned node");
+            let reopened = &state.interactions[&InteractionId("legacy-question-1".into())];
+            assert!(matches!(reopened.payload, InteractionPayload::Question { answer: None, .. }));
+            assert_eq!(reopened.author, Author::Agent { agent_id: "session-1".into() });
+            assert!(reopened.blocking);
+            assert!(matches!(
+                &state.interactions[&InteractionId("legacy-question-3".into())].payload,
+                InteractionPayload::Information { read_by } if read_by.is_empty()
+            ));
+            assert!(!state.interactions.contains_key(&InteractionId("legacy-question-2".into())));
+            let task = &state.tasks[&TaskId("task-1".into())];
+            assert_eq!(task.state, TaskState::NeedsYou, "derived at import from the reopened blocking question");
+            assert_eq!(task.final_presentation, Some(InteractionId("legacy-final-task-1".into())));
+            assert!(task.documents.contains_key(&DocumentId("legacy-document-1".into())));
+            let presentation = &state.interactions[&InteractionId("legacy-final-task-1".into())];
+            assert!(matches!(&presentation.payload, InteractionPayload::Delivery { targets, is_final: true, acceptance: None, .. }
+                if targets == &vec![
+                    DeliveryTarget::PullRequest { pr_id: "legacy-pr-1".into(), head: format!("{:040x}", 1) },
+                    DeliveryTarget::DocumentRevision { document_id: "legacy-document-1".into(), revision_id: "legacy-document-revision-1".into() },
+                ]));
+            assert_eq!(state.tasks[&TaskId("legacy-pr-task-2".into())].state, TaskState::InReview);
+            assert_eq!(state.tasks[&TaskId("task-sched".into())].state, TaskState::NotStarted);
+            let inventory = crate::domain_store::DomainStore::open(&source.join("domain-v2.db")).unwrap()
+                .legacy_schedule_inventory().unwrap();
+            assert_eq!(inventory.counts(), (2, 1, 1, 1, 1), "schedules, runs, tools, receipts and failed launches are imported");
+            assert_eq!(inventory.state.runs.values().next().unwrap().task_id, Some(TaskId("task-sched".into())));
             let envelope = |id: &str, command| CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
-                data_epoch: before.data_epoch.clone(),
+                data_epoch: state.data_epoch.clone(),
                 command_id: id.into(),
                 expected_revision: runtime.state().unwrap().revision,
                 command,
             };
-            runtime.execute(&Actor::Agent { agent_id: "session-1".into() }, &envelope("live-info",
-                Command::PublishInformation {
-                    attachments: vec![],
-                    interaction_id: "live-info".into(),
-                    scope: Scope::Task { task_id: "task-1".into() },
-                    recipient: Recipient::User,
-                    body: "Still working after cutover".into(),
-                }), None, || Ok(())).unwrap();
-            assert_eq!(runtime.state().unwrap().tasks, before.tasks,
-                "the first live command must not rewrite imported Task states or revisions");
             let answered = runtime.execute(&Actor::User { user_id: "device:phone".into() }, &envelope("answer",
                 Command::AnswerQuestion {
                     attachments: vec![],
@@ -1473,73 +998,26 @@ mod tests {
                 interaction_id: Some("legacy-question-1".into()),
                 message: "Question answered".into(),
             }]);
-            assert_eq!(runtime.state().unwrap().tasks[&TaskId("task-1".into())].state, TaskState::InReview);
         }
-        assert_eq!(
-            fs::read(source.join("tui-device")).unwrap(),
-            b"private device identity",
-            "promotion must preserve the existing identity and configuration"
-        );
-        assert!(
-            crate::domain_cutover::promote_stage_offline(
-                &source,
-                &backup,
-                &manifest_digest,
-                &target,
-            )
-            .is_err(),
-            "a committed HOME cannot be promoted twice"
-        );
-        assert_eq!(
-            restore_rehearsal(&backup, &manifest_digest, &restored)
-                .unwrap()
-                .source_seq,
-            2
-        );
-        assert_ne!(
-            fs::metadata(restored.join("legacy-alondrad"))
-                .unwrap()
-                .mode()
-                & 0o111,
-            0
-        );
-        assert_eq!(
-            fs::read(restored.join("service.toml.staged")).unwrap(),
-            b"staged service configuration"
-        );
-        assert_eq!(
-            fs::read(restored.join("tui-device")).unwrap(),
-            b"private device identity"
-        );
-        assert_eq!(
-            fs::read(restored.join("candidates/candidate")).unwrap(),
-            b"candidate daemon"
-        );
-        fs::write(backup.join("files/unlisted.txt"), b"unmanifested").unwrap();
-        assert!(verify_backup_expected(&backup, &manifest_digest).is_err());
-        fs::remove_file(backup.join("files/unlisted.txt")).unwrap();
+        let reference = rehearsal::sqlite_content_digest(&backup.join("alondra.db")).unwrap();
+        let original = fs::read(backup.join("files/question.txt")).unwrap();
         fs::write(backup.join("files/question.txt"), b"tampered").unwrap();
-        assert!(
-            verify_backup(&backup).is_err(),
-            "backup verification must detect changed attachment"
-        );
+        assert!(crate::domain_cutover::rollback_offline(&source, &backup, &wait, |_| ()).is_err(),
+            "a changed backup cannot restore HOME");
+        assert!(crate::domain_cutover::read_marker(&source).unwrap().is_some());
+        fs::write(backup.join("files/question.txt"), &original).unwrap();
+        let aside = crate::domain_cutover::rollback_offline(&source, &backup, &wait, |_| ()).unwrap();
+        assert!(crate::domain_cutover::read_marker(&source).unwrap().is_none());
+        assert_eq!(rehearsal::sqlite_content_digest(&source.join("alondra.db")).unwrap(), reference);
+        assert_eq!(load_legacy_readonly(&source.join("alondra.db")).unwrap().seq, 2);
+        assert!(!source.join("domain-v2.db").exists() && !archive.exists());
+        assert!(aside.join("domain-v2.db").exists() && aside.join(crate::domain_cutover::ARCHIVE).join("alondra.db").exists(),
+            "what v2 wrote is set aside, not deleted");
+        assert!(!source.join(LEGACY_BINARIES).exists(), "retained binaries are not restored into HOME");
+        assert_eq!(fs::read(source.join("tui-device")).unwrap(), b"private device identity");
+        assert_eq!(fs::read(source.join("candidates/candidate")).unwrap(), b"candidate daemon");
+        assert!(crate::domain_cutover::refuse_legacy_home(&source).is_err());
         fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn crash_after_empty_sidecar_wal() {
-        let Some(path) = std::env::var_os("ALONDRA_CUTOVER_WAL_CHILD") else {
-            return;
-        };
-        let wal = Connection::open(Path::new(&path)).unwrap();
-        wal.execute_batch(
-            "PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
-             CREATE TABLE abandoned_wal_test(value INTEGER);
-             DROP TABLE abandoned_wal_test;",
-        )
-        .unwrap();
-        assert!(Path::new(&path).with_file_name("domain-v2.db-wal").exists());
-        unsafe { libc::_exit(0) };
     }
 
     #[test]
@@ -1617,7 +1095,7 @@ mod tests {
         drop(schedules);
 
         let result = rehearse(&source, &stage).unwrap();
-        assert_eq!(result.imported.split_pr_tasks, 1);
+        assert_eq!(result.imported.derived_pr_tasks, 1);
         let mut domain =
             crate::domain_store::DomainStore::open(&stage.join("domain-v2.db")).unwrap();
         let imported = domain.load().unwrap();

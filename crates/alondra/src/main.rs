@@ -2,16 +2,19 @@
 mod i18n;
 mod attach;
 mod account;
+mod cli;
 mod client;
 mod claude_auth;
 mod doctor;
 mod delivery;
 mod mcp;
+mod ops;
 mod overview_snapshot;
 mod service_setup;
 mod service_pair;
 mod service_client;
 mod client_pair;
+mod runtime;
 mod setup;
 mod setup_projects;
 mod statusline;
@@ -61,9 +64,14 @@ enum Cmd {
     OrchestratorAcknowledge { run_id: String, #[arg(long, required = true)] confirm: bool },
     #[command(about = "Retry an ambiguous orchestrator run after checking its previous effects")]
     OrchestratorRetry { run_id: String, #[arg(long, required = true, help = "Confirm that replay may repeat actions from this execution")] confirm: bool },
-    #[command(about = tr!("Answer a question by its number", "Contesta una pregunta por su número"))]
-    Answer { id: u64, text: Vec<String> },
-    #[command(about = tr!("Send a message to a node (name, short id or session_id)", "Manda un mensaje a un nodo (nombre, id corto o session_id)"))]
+    #[command(about = tr!("Answer a question by its id; the text goes to the option that takes it", "Contesta una pregunta por su id; el texto va a la opción que lo admite"))]
+    Answer {
+        id: String,
+        #[arg(long, help = tr!("Option number or id", "Número o id de la opción"))]
+        option: Option<String>,
+        text: Vec<String>,
+    },
+    #[command(about = tr!("Send a message to an agent (name, short id or session_id) or to the orchestrator", "Manda un mensaje a un agente (nombre, id corto o session_id) o al orquestador"))]
     Send { node: String, text: Vec<String> },
     #[command(about = tr!("Cancel tasks by id", "Cancela tareas por su id"))]
     Cancel {
@@ -72,13 +80,13 @@ enum Cmd {
         #[arg(long, help = tr!("Why, shown with each task", "Por qué, se muestra en cada tarea"))]
         reason: Option<String>,
     },
-    #[command(about = tr!("Close a node (name, short id or session_id)", "Cierra un nodo (nombre, id corto o session_id)"))]
+    #[command(about = tr!("Close an agent's session (name, short id or session_id)", "Cierra la sesión de un agente (nombre, id corto o session_id)"))]
     Close {
         node: String,
         #[arg(long, help = tr!("Close even with unpushed work or open questions", "Cierra aunque tenga trabajo sin subir o preguntas abiertas"))]
         force: bool,
     },
-    #[command(about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
+    #[command(about = tr!("Open an agent's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un agente (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
     Attach { node: String },
     #[command(about = tr!(
         "Pair an iPhone or iPad: shows a QR code with the public URL and a one-time code",
@@ -173,58 +181,14 @@ fn main() -> Result<()> {
         Some(Cmd::Account) => account::status(),
         Some(Cmd::Logout) => account::logout(),
         Some(Cmd::Status) => status(),
-        Some(Cmd::OrchestratorCancel { run_id }) => {
-            Client::for_user(Duration::from_secs(10)).post("/v1/orchestrator/cancel", &json!({"run_id": run_id}))?;
-            println!("{}", tr!("Orchestrator stop requested", "Parada del orquestador solicitada"));
-            Ok(())
-        },
-        Some(Cmd::OrchestratorAcknowledge { run_id, confirm: _ }) => {
-            Client::for_user(Duration::from_secs(10)).post("/v1/orchestrator/acknowledge", &json!({"run_id": run_id}))?;
-            println!("{}", tr!("Previous batch acknowledged; newer work remains queued", "Lote anterior resuelto; el trabajo nuevo sigue en cola"));
-            Ok(())
-        },
-        Some(Cmd::OrchestratorRetry { run_id, confirm: _ }) => {
-            Client::for_user(Duration::from_secs(10)).post("/v1/orchestrator/retry", &json!({"run_id": run_id}))?;
-            println!("{}", tr!("Orchestrator retry queued", "Reintento del orquestador encolado"));
-            Ok(())
-        },
-        Some(Cmd::Answer { id, text }) => {
-            let result = Client::for_user(Duration::from_secs(10)).post(&format!("/v1/questions/{id}/answer"), &json!({"text": text.join(" "), "device": "cli"}))?;
-            println!("{}", delivery::response_notice(&result, None).unwrap_or_else(|| trf!("Answered #{id}", "Contestada #{id}")));
-            Ok(())
-        }
-        Some(Cmd::Send { node, text }) => {
-            let r = Client::for_user(Duration::from_secs(10)).post(&format!("/v1/nodes/{}/messages", mcp::urlencode(&node)), &json!({"text": text.join(" ")}))?;
-            let msg = r.get("id").and_then(|v| v.as_u64()).unwrap_or(0);
-            println!("{}", trf!("Message {msg} is in {node}'s inbox", "Mensaje {msg} en la bandeja de {node}"));
-            Ok(())
-        }
-        Some(Cmd::Cancel { tasks, reason }) => {
-            let client = Client::for_user(Duration::from_secs(10));
-            let mut failed = 0;
-            for task in &tasks {
-                match client.post(&format!("/v1/tasks/{}/cancel", mcp::urlencode(task)), &json!({"reason": reason})) {
-                    Ok(_) => println!("{}", trf!("Cancelled {task}", "Cancelada {task}")),
-                    Err(error) => {
-                        failed += 1;
-                        eprintln!("{}", trf!("{task} not cancelled: {error:#}", "{task} no se canceló: {error:#}"));
-                    }
-                }
-            }
-            anyhow::ensure!(failed == 0, "{failed} of {} tasks not cancelled", tasks.len());
-            Ok(())
-        }
-        Some(Cmd::Close { node, force }) => {
-            Client::for_user(Duration::from_secs(90)).post(&format!("/v1/nodes/{}/close", mcp::urlencode(&node)), &json!({"force": force}))?;
-            println!("{}", trf!("Closed {node}", "Cerrado {node}"));
-            Ok(())
-        }
-        Some(Cmd::Attach { node }) => {
-            let v: serde_json::Value = Client::new(Duration::from_secs(5)).get(&format!("/v1/nodes/{}", mcp::urlencode(&node)))?;
-            anyhow::ensure!(v["node"]["is_orchestrator"] != true, "Alondra manages the orchestrator automatically; open its activity in the fleet");
-            let short = v["node"]["short_id"].as_str().unwrap_or(&node).to_string();
-            attach::attach(&short, attach::Over::Shell)
-        }
+        Some(Cmd::OrchestratorCancel { run_id }) => cli::recover(ops::Recovery::Cancel, &run_id),
+        Some(Cmd::OrchestratorAcknowledge { run_id, confirm: _ }) => cli::recover(ops::Recovery::Acknowledge, &run_id),
+        Some(Cmd::OrchestratorRetry { run_id, confirm: _ }) => cli::recover(ops::Recovery::Retry, &run_id),
+        Some(Cmd::Answer { id, option, text }) => cli::answer_cmd(&id, option.as_deref(), &text.join(" ")),
+        Some(Cmd::Send { node, text }) => cli::send(&node, &text.join(" ")),
+        Some(Cmd::Cancel { tasks, reason }) => cli::cancel(&tasks, reason.as_deref()),
+        Some(Cmd::Close { node, force }) => cli::close(&node, force),
+        Some(Cmd::Attach { node }) => cli::attach(&node),
         Some(Cmd::Pair { url: None }) if client::config().home.join("service.toml").exists() => service_pair::run(&client::config().home),
         Some(Cmd::Pair { url }) => match url.or_else(|| setup::pairing_url(client::config())) {
             Some(url) => pair(&url),
@@ -443,16 +407,31 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
 }
 
 fn status() -> Result<()> {
-    print!("{}", status_text(&Client::for_user(Duration::from_secs(10)).domain()?));
+    let client = Client::for_user(Duration::from_secs(10));
+    let mut runtime = client.runtime().unwrap_or(None);
+    let daemon: Option<runtime::Runtime> = client.get::<serde_json::Value>("/v2/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
+    if let Some(machine) = daemon.and_then(|d| d.machine).filter(|_| runtime.as_ref().is_none_or(|r| r.machine.is_none())) {
+        runtime.get_or_insert_with(Default::default).machine = Some(machine);
+    }
+    print!("{}", status_text(&client.domain()?, runtime.as_ref()));
     Ok(())
 }
 
-/// The inbox roots still pending, the open tasks and the agents, as the daemon projects them.
-fn status_text(d: &alondra_core::domain_v2::DomainProjection) -> String {
+/// The Mac's readings, the inbox roots still pending, the open tasks and the agents with what
+/// their sessions are doing, as the daemon reports them.
+fn status_text(d: &alondra_core::domain_v2::DomainProjection, runtime: Option<&runtime::Runtime>) -> String {
     let agent = |id: Option<&alondra_core::domain_v2::AgentId>| id.map_or_else(|| tr!("orchestrator", "orquestador").to_string(), |id| d.agents.iter().find(|a| &a.id == id).map_or_else(|| id.0.clone(), |a| a.name.clone()));
+    let mut out = String::new();
+    if let Some(m) = runtime.and_then(|r| r.machine.as_ref()) {
+        let mb = m.memory_available / 1_048_576;
+        let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{mb} MB available", "{mb} MB disponibles"));
+        let (l1, l5, l15) = (m.load[0], m.load[1], m.load[2]);
+        let shaky = if m.unreliable { tr!(" (unreliable readings)", " (medidas poco fiables)") } else { "" };
+        out.push_str(&trf!("Machine: memory {mem} · load {l1:.1} {l5:.1} {l15:.1}{shaky}\n\n", "Máquina: memoria {mem} · carga {l1:.1} {l5:.1} {l15:.1}{shaky}\n\n"));
+    }
     let pending: Vec<_> = d.inbox.iter().filter(|i| i.pending).collect();
     let n = pending.len();
-    let mut out = trf!("Waiting for you ({n}):\n", "Te esperan ({n}):\n");
+    out.push_str(&trf!("Waiting for you ({n}):\n", "Te esperan ({n}):\n"));
     for i in pending {
         let text = i.body.as_deref().filter(|b| !b.trim().is_empty()).unwrap_or(&i.title).lines().next().unwrap_or_default().to_string();
         out.push_str(&format!("  {:<16} {text}  · {}\n", i.kind, agent(i.agent_id.as_ref())));
@@ -466,15 +445,33 @@ fn status_text(d: &alondra_core::domain_v2::DomainProjection) -> String {
     let n = d.agents.len();
     out.push_str(&trf!("\nAgents ({n}):\n", "\nAgentes ({n}):\n"));
     for a in &d.agents {
-        let state = if a.connected { tr!("connected", "conectado") } else { tr!("not connected", "no conectado") };
-        out.push_str(&format!("  {:<14} {}\n", state, a.name));
+        match runtime.and_then(|r| r.node(&a.id)) {
+            Some(node) => {
+                let mins = (now_millis() - node.state_since) / 60_000;
+                out.push_str(&format!("  {:<24} {:<34} {:>5}m\n", node.status_label(), a.name, mins));
+            }
+            None => {
+                let state = if a.connected { tr!("connected", "conectado") } else { tr!("not connected", "no conectado") };
+                out.push_str(&format!("  {:<14} {}\n", state, a.name));
+            }
+        }
+    }
+    if let Some(o) = runtime.and_then(|r| r.orchestrator_state()) {
+        let label = o.status_label();
+        out.push_str(&trf!("\nOrchestrator: {label}\n", "\nOrquestador: {label}\n"));
+        if let Some(error) = &o.last_error {
+            out.push_str(&format!("    {error}\n"));
+        }
+        if let Some(run) = &o.active_run_id {
+            out.push_str(&format!("    execution: {run} · queue: {}\n", o.queue_depth));
+        }
     }
     out
 }
 
 fn pair(url: &str) -> Result<()> {
     let client = Client::new(Duration::from_secs(10));
-    let r = client.post("/v1/pairing", &json!({}))?;
+    let r = client.post("/v2/pairing", &json!({}))?;
     let code = r.get("code").and_then(|c| c.as_str()).unwrap_or_default();
     let payload = json!({"url": url.trim_end_matches('/'), "code": code}).to_string();
     let qr = qrcode::QrCode::new(payload.as_bytes())?;
@@ -488,12 +485,12 @@ fn pair(url: &str) -> Result<()> {
 fn devices(revoke: Option<String>) -> Result<()> {
     let client = Client::new(Duration::from_secs(10));
     if let Some(id) = revoke {
-        let path = format!("/v1/devices/{}", mcp::urlencode(&id));
+        let path = format!("/v2/devices/{}", mcp::urlencode(&id));
         client.delete(&path)?;
         println!("{}", trf!("Device {id} unpaired.", "Dispositivo {id} desvinculado."));
         return Ok(());
     }
-    let v: serde_json::Value = client.get("/v1/devices")?;
+    let v: serde_json::Value = client.get("/v2/devices")?;
     let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
     if list.is_empty() {
         println!("{}", tr!("No paired devices. Use: alondra pair --url <public URL>", "No hay dispositivos vinculados. Usa: alondra pair --url <URL pública>"));
@@ -586,10 +583,24 @@ mod status_tests {
         run(Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Instance A".into() });
         run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("a".into()), review_prs: false, dependencies: Default::default(), stack: None });
         run(Actor::Agent { agent_id: "a".into() }, Command::PublishInformation { attachments: vec![], interaction_id: "i".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Halfway there".into() });
-        let text = status_text(&s.projection());
+        let text = status_text(&s.projection(), None);
         assert!(text.contains("Waiting for you (1):") && text.contains("information") && text.contains("Halfway there  · Instance A"), "{text}");
         assert!(text.contains("Open tasks (1):") && text.contains("not started") && text.contains("Build  · Instance A"), "{text}");
         assert!(text.contains("Agents (1):") && text.contains("not connected  Instance A"), "{text}");
+        assert!(!text.contains("Machine:"), "no readings without the runtime");
+    }
+
+    #[test]
+    fn status_adds_the_machine_the_sessions_and_the_orchestrator_from_the_runtime() {
+        i18n::set_for_this_thread(i18n::Lang::En);
+        let mut s = DomainState::new("e");
+        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "c".into(), expected_revision: 0, command: Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() } };
+        s.execute(&Actor::System, &envelope).unwrap();
+        let runtime: runtime::Runtime = serde_json::from_value(runtime::fixture("runtime.json")).unwrap();
+        let text = status_text(&s.projection(), Some(&runtime));
+        assert!(text.contains("Machine: memory 25% free · load 2.5 2.0 1.5"), "{text}");
+        assert!(text.contains("  busy ") && text.contains("Instance A"), "{text}");
+        assert!(text.contains("Orchestrator: needs attention") && text.contains("The batch stopped halfway") && text.contains("execution: run-7 · queue: 2"), "{text}");
     }
 }
 

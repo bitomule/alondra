@@ -1,10 +1,13 @@
 mod agents;
 mod draw;
+mod dropped;
+mod files;
 mod inbox;
 mod input;
 mod keys;
 mod md;
 mod tasks;
+mod work;
 
 use std::collections::{HashMap, HashSet};
 use std::io::stdout;
@@ -12,7 +15,7 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use alondra_core::domain_v2::{
-    AgentId, AvailableAction, Command, CommandEnvelope, CommandOutcome, DeliveryTarget, DomainProjection, InteractionId, Revision, TaskId,
+    AgentId, AttachmentRef, AvailableAction, Command, CommandEnvelope, CommandOutcome, DeliveryTarget, DomainProjection, Interaction, InteractionId, PrId, Revision, TaskId,
 };
 use alondra_core::now_millis;
 use anyhow::Result;
@@ -23,7 +26,11 @@ use ratatui::DefaultTerminal;
 use serde_json::{Value, json};
 
 use crate::client::{Client, CommandFailure};
+use crate::i18n;
 use crate::mcp::urlencode;
+use crate::ops;
+use crate::runtime::{Activity, Runtime, TaskHistory};
+use dropped::{Chip, Upload};
 use input::TextInput;
 use keys::{Cmd, Keymap};
 use md::Block;
@@ -35,6 +42,11 @@ const HIDE_GRACE_MS: i64 = 15_000;
 const CLOCK_MS: i64 = 20_000;
 const CONFIRM_MS: i64 = 4000;
 const IDLE_POLL: Duration = Duration::from_millis(250);
+const SEARCH_DEBOUNCE_MS: i64 = 1200;
+const ACTIVITY_EVERY_MS: i64 = 60_000;
+/// Threads move with every tool call, which does not move the domain: the open agent asks again this often.
+const THREADS_EVERY_MS: i64 = 10_000;
+const PREVIEW_PIXELS: u32 = 480;
 
 /// An inbox item by the id the daemon gave it; roots and children keep their own ids.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -77,15 +89,16 @@ pub struct Comment {
 pub struct Review {
     pub comments: Vec<Comment>,
     pub general: String,
+    pub chips: Vec<Chip>,
 }
 
 impl Review {
     pub fn is_empty(&self) -> bool {
-        self.comments.is_empty() && self.general.trim().is_empty()
+        self.comments.is_empty() && self.general.trim().is_empty() && self.chips.is_empty()
     }
 
     pub fn count(&self) -> usize {
-        self.comments.len() + usize::from(!self.general.trim().is_empty())
+        self.comments.len() + usize::from(!self.general.trim().is_empty()) + self.chips.len()
     }
 
     fn feedback(&self) -> String {
@@ -105,6 +118,12 @@ impl Find {
     }
 }
 
+/// A piece of what the reader shows: Markdown, or a stored file loaded by its content route.
+pub enum Part {
+    Text(String),
+    File { name: String, route: String },
+}
+
 pub struct Reader {
     pub key: Key,
     pub agent: String,
@@ -112,7 +131,7 @@ pub struct Reader {
     pub kind: &'static str,
     pub glyph: &'static str,
     pub color: ratatui::style::Color,
-    parts: Vec<String>,
+    parts: Vec<Part>,
     pub blocks: Vec<Block>,
     pub cursor: usize,
     pub scroll: usize,
@@ -226,6 +245,8 @@ impl Reader {
 pub enum Target {
     Answer { key: Key, interaction: InteractionId, option: String, label: String, input: Option<String>, required: bool, title: String, revision: Revision },
     Feedback { key: Key, presentation: InteractionId, targets: Vec<DeliveryTarget>, title: String, revision: Revision },
+    /// A message to an agent or the orchestrator; the text is filled in when it is sent.
+    Message { key: Option<Key>, message: ops::Message, name: String, title: String },
     NewRequest,
     Comment { block: usize, quote: String },
     General { send: bool },
@@ -234,6 +255,8 @@ pub enum Target {
 pub struct Composer {
     pub target: Target,
     pub input: TextInput,
+    pub chips: Vec<Chip>,
+    pub form: Option<work::OptionsForm>,
 }
 
 impl Target {
@@ -241,15 +264,29 @@ impl Target {
         match self {
             Target::Answer { interaction, option, .. } => Some(format!("answer:{interaction}:{option}")),
             Target::Feedback { presentation, .. } => Some(format!("feedback:{presentation}")),
+            Target::Message { message: m, .. } => {
+                let (agent, interaction, pr) = (m.agent.as_ref().map_or("orchestrator", |a| a.0.as_str()), m.interaction.as_ref().map_or("", |i| i.0.as_str()), m.pr.as_ref().map_or("", |p| p.0.as_str()));
+                Some(format!("message:{:?}:{agent}:{interaction}:{pr}", m.kind))
+            }
             Target::NewRequest => Some("new".into()),
             Target::Comment { .. } | Target::General { .. } => None,
         }
     }
 }
 
+/// What the daemon found for a search nothing local matched.
+pub enum Remote {
+    Idle,
+    Pending,
+    Done { query: String, via: String, sessions: Vec<String> },
+    Failed(String),
+}
+
 pub struct Search {
     pub input: TextInput,
     pub editing: bool,
+    pub typed_at: i64,
+    pub remote: Remote,
 }
 
 impl Search {
@@ -265,12 +302,39 @@ enum Msg {
     Command { slot: String, result: Result<CommandOutcome, CommandFailure> },
     Diff { key: Key, result: Result<Value, String> },
     TaskActions { task: TaskId, revision: Revision, result: Result<Vec<AvailableAction>, String> },
+    Interaction { id: InteractionId, asked_at: Revision, result: Result<Interaction, String> },
+    /// The daemon's runtime readings; `None` from one that does not serve them.
+    Runtime(Option<Box<Runtime>>),
+    /// The local daemon's own readings: machine, usage and update state.
+    Daemon(Option<Box<Runtime>>),
+    Deliveries(Vec<crate::delivery::Attempt>),
+    /// A request that is not a domain command: what to flash, or why it failed.
+    Posted { key: Option<Key>, result: Result<String, String> },
+    Closed { name: String, result: Result<Closed, String> },
+    File { route: String, result: Result<files::FileBody, String> },
+    Uploaded { seq: u64, result: Result<AttachmentRef, String> },
+    Preview { seq: u64, image: image::DynamicImage },
+    Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
+    Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
+    Threads { agent: AgentId, threads: Option<Vec<Activity>> },
+    History { task: TaskId, result: Result<TaskHistory, String> },
+    Found { query: String, result: Result<(String, Vec<String>), String> },
+}
+
+/// How a close that alondrad accepted ended: a background job is gone; an interactive session
+/// only left the fleet and its terminal is still open.
+#[derive(Debug, PartialEq)]
+pub enum Closed {
+    Removed,
+    LeftFleet,
 }
 
 pub enum Flow {
     Go,
     Quit,
     Attach(String),
+    /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
+    Review { key: Key, pr: PrId, number: u64, dir: std::path::PathBuf },
     EditSchedule(Option<Value>),
 }
 
@@ -307,16 +371,43 @@ pub struct App {
     pub agent_detail_scroll: usize,
     pub agent_view: View,
     pub agent_zoom: bool,
-    /// A step that takes a second press within a few seconds, and until when.
-    confirm: Option<(String, i64)>,
+    /// A step that takes a second press within a few seconds, until when, and the key that
+    /// confirms it; any other key starts over.
+    confirm: Option<(String, i64, KeyCode)>,
+    pressed: KeyCode,
     sending: HashMap<String, Sent>,
     #[cfg(test)]
     sent: std::cell::RefCell<Vec<CommandEnvelope>>,
+    /// Every request that is not a domain command, as the tests read what it would have sent.
+    #[cfg(test)]
+    posted: std::cell::RefCell<Vec<(String, Value)>>,
     pub search: Option<Search>,
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
     pub reviews: HashMap<Key, Review>,
-    drafts: HashMap<String, String>,
+    drafts: HashMap<String, (String, Vec<Chip>)>,
+    chip_seq: u64,
+    /// What alondrad knows about the Mac and its sessions beyond the domain.
+    pub runtime: Option<Runtime>,
+    /// The local daemon's machine, usage and update readings from `/v2/daemon`.
+    pub daemon: Option<Runtime>,
+    pub deliveries: Vec<crate::delivery::Attempt>,
+    pub delivery_help: bool,
+    /// Stored files by content route: text to read, an image to draw, or bytes to leave to the Mac.
+    pub files: HashMap<String, Result<files::FileBody, String>>,
+    loading: HashSet<String>,
+    /// How images are drawn in this terminal: Kitty graphics in Ghostty and Kitty, iTerm2 or sixel
+    /// where supported, colour half-blocks elsewhere. Found once, when the TUI starts.
+    pub picker: Option<ratatui_image::picker::Picker>,
+    pub images: HashMap<String, ratatui_image::protocol::StatefulProtocol>,
+    /// The preview of each image attached in the composer, by chip.
+    pub previews: HashMap<u64, ratatui_image::protocol::StatefulProtocol>,
+    /// What each thread of the selected agent does, as its own route last said.
+    pub threads: Option<(AgentId, Vec<Activity>)>,
+    threads_asked: Option<(AgentId, Revision, i64)>,
+    pub histories: HashMap<TaskId, TaskHistory>,
+    history_asked: HashSet<(TaskId, Revision)>,
+    activity_told: i64,
     pub flash: Option<Flash>,
     pub help: bool,
     pub help_scroll: usize,
@@ -334,6 +425,9 @@ pub struct App {
     /// The selected task's controls as the daemon computed them, by the revision they were read at.
     pub task_actions: HashMap<TaskId, (Revision, Vec<AvailableAction>)>,
     task_actions_asked: HashSet<(TaskId, Revision)>,
+    /// Interactions read one by one as the user opens them; the projection no longer carries them.
+    pub interactions: HashMap<InteractionId, Interaction>,
+    interactions_asked: HashSet<(InteractionId, Revision)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
     last_clock: i64,
@@ -350,7 +444,10 @@ pub fn run() -> Result<()> {
     crate::attach::reset_terminal_modes();
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
-    let app = App::new(tx);
+    let runtime_tx = tx.clone();
+    std::thread::Builder::new().name("alondra-runtime".into()).spawn(move || runtime_loop(runtime_tx, Client::for_tui(Duration::from_secs(15))))?;
+    let mut app = App::new(tx);
+    app.picker = Some(ratatui_image::picker::Picker::from_query_stdio().unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()));
     let res = main_loop(&mut terminal, app, rx);
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
@@ -365,8 +462,9 @@ fn background_sync_error(error: &anyhow::Error, prefix: &str) -> Msg {
 /// Reads the projection, then waits on the daemon until it moves past that revision.
 fn sync_loop(tx: SyncSender<Msg>, quick: Client, waiter: Client) {
     let mut was_online = true;
+    let mut sections = crate::client::Sections::default();
     loop {
-        let (epoch, revision) = match quick.domain() {
+        let (epoch, revision) = match quick.sync(&mut sections) {
             Ok(p) => {
                 was_online = true;
                 let at = (p.data_epoch.clone(), p.revision);
@@ -384,10 +482,41 @@ fn sync_loop(tx: SyncSender<Msg>, quick: Client, waiter: Client) {
                 continue;
             }
         };
-        if let Err(error) = waiter.domain_changed(&epoch, revision, 50) {
+        if let Err(error) = waiter.domain_changes(&epoch, revision, 50) {
             let _ = tx.send(background_sync_error(&error, tr!("Waiting for changes failed: ", "Falló la espera de cambios: ")));
             std::thread::sleep(Duration::from_secs(1));
         }
+    }
+}
+
+/// The readings beside the domain: the runtime every few seconds, the update state and the
+/// delivery evidence less often. An alondrad without the runtime is asked again once a minute.
+fn runtime_loop(tx: SyncSender<Msg>, client: Client) {
+    let remote = crate::service_client::target().is_some();
+    let mut round = 0u64;
+    loop {
+        let runtime = client.runtime();
+        let wait = match &runtime {
+            Ok(None) if remote => Duration::from_secs(60),
+            _ if remote => Duration::from_secs(15),
+            _ => Duration::from_secs(5),
+        };
+        if let Ok(runtime) = runtime
+            && tx.send(Msg::Runtime(runtime.map(Box::new))).is_err()
+        {
+            return;
+        }
+        if !remote && round.is_multiple_of(2) {
+            let daemon = client.get::<Value>("/v2/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
+            let _ = tx.send(Msg::Daemon(daemon.map(Box::new)));
+        }
+        if round.is_multiple_of(3)
+            && let Ok(listing) = crate::delivery::list(|path| client.get::<Value>(path))
+        {
+            let _ = tx.send(Msg::Deliveries(listing.attempts));
+        }
+        round += 1;
+        std::thread::sleep(wait);
     }
 }
 
@@ -421,6 +550,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
             dirty = false;
         }
         if event::poll(IDLE_POLL)? {
+            app.note_activity();
             loop {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
@@ -437,6 +567,20 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             if let Err(e) = res {
                                 app.fail(trf!("Could not open its terminal: {e}", "No pude abrir su terminal: {e}"));
                             }
+                            repaint(terminal, &mut app)?;
+                            break;
+                        }
+                        Flow::Review { key, pr, number, dir } => {
+                            if crate::service_client::target().is_some() {
+                                app.fail(tr!("tuicr runs on the destination Mac; the diff opens here instead", "tuicr funciona en el Mac de destino; aquí se abre el diff"));
+                                break;
+                            }
+                            draw(terminal, &mut app)?;
+                            let _ = execute!(stdout(), DisableBracketedPaste);
+                            let res = crate::attach::run_tool("tuicr", &["--stdout", "--no-update-check", "pr", &number.to_string()], &dir, crate::attach::Over::Tui);
+                            crossterm::terminal::enable_raw_mode()?;
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            app.reviewed(key, pr, number, res);
                             repaint(terminal, &mut app)?;
                             break;
                         }
@@ -515,12 +659,47 @@ fn edit_schedule(existing: Option<Value>) -> Result<Option<()>> {
     Ok(Some(()))
 }
 
-/// The Mac's default app for a URL, through `open`. Tests never open one.
+/// The Mac's default app for a URL or file, through `open`. Tests never open one.
 fn open_with_mac(target: &str) {
     if cfg!(test) {
         return;
     }
     let _ = std::process::Command::new("/usr/bin/open").arg(target).spawn();
+}
+
+/// A stored file handed to the Mac's app for it: always a private local copy, never a path of
+/// the daemon's, so a remote destination and the local Mac read the same bytes.
+fn open_stored(name: &str, route: &str) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
+    let bytes = Client::for_tui(Duration::from_secs(120)).content(route)?;
+    let suffix: String = crate::service_client::random::<16>()?.iter().map(|b| format!("{b:02x}")).collect();
+    let dir = std::env::temp_dir().join(format!("alondra-attachment-{suffix}"));
+    std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
+    let name = std::path::Path::new(name).file_name().filter(|n| !n.is_empty()).unwrap_or(std::ffi::OsStr::new("attachment"));
+    let local = dir.join(name);
+    let mut file = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&local)?;
+    std::io::Write::write_all(&mut file, &bytes)?;
+    open_with_mac(&local.to_string_lossy());
+    Ok(())
+}
+
+/// Where to review a PR: the agent's own checkout, else `~/Projects/<repo name>`.
+fn clone_of(agent_cwd: Option<&str>, repository: &str) -> Option<std::path::PathBuf> {
+    let is_repo = |p: &std::path::Path| p.join(".git").exists();
+    if let Some(cwd) = agent_cwd.map(std::path::PathBuf::from).filter(|p| is_repo(p)) {
+        return Some(cwd);
+    }
+    let name = repository.rsplit('/').next()?;
+    let home = std::env::var("HOME").ok()?;
+    Some(std::path::Path::new(&home).join("Projects").join(name)).filter(|p| is_repo(p))
+}
+
+/// A tuicr export carries numbered comments anchored to files (`1. \`src/a.rs:42\` - …`).
+fn has_comments(export: &str) -> bool {
+    export.lines().any(|l| {
+        let t = l.trim_start();
+        t.split_once(". ").is_some_and(|(n, rest)| n.parse::<u32>().is_ok() && rest.starts_with('`'))
+    })
 }
 
 impl App {
@@ -549,14 +728,32 @@ impl App {
             agent_view: View::default(),
             agent_zoom: false,
             confirm: None,
+            pressed: KeyCode::Null,
             sending: HashMap::new(),
             #[cfg(test)]
             sent: Default::default(),
+            #[cfg(test)]
+            posted: Default::default(),
             search: None,
             composer: None,
             reader: None,
             reviews: HashMap::new(),
             drafts: HashMap::new(),
+            chip_seq: 0,
+            runtime: None,
+            daemon: None,
+            deliveries: vec![],
+            delivery_help: false,
+            files: HashMap::new(),
+            loading: HashSet::new(),
+            picker: cfg!(test).then(ratatui_image::picker::Picker::halfblocks),
+            images: HashMap::new(),
+            previews: HashMap::new(),
+            threads: None,
+            threads_asked: None,
+            histories: HashMap::new(),
+            history_asked: HashSet::new(),
+            activity_told: 0,
             flash: None,
             help: false,
             help_scroll: 0,
@@ -573,6 +770,8 @@ impl App {
             finished_open: false,
             task_actions: HashMap::new(),
             task_actions_asked: HashSet::new(),
+            interactions: HashMap::new(),
+            interactions_asked: HashSet::new(),
             cmdline: None,
             keymap: Keymap::default(),
             last_clock: now_millis(),
@@ -606,13 +805,137 @@ impl App {
     /// A second press of the same step within a few seconds confirms it; anything else starts over.
     fn confirmed(&mut self, step: &str, ask: String) -> bool {
         let now = now_millis();
-        if self.confirm.as_ref().is_some_and(|(s, until)| s == step && now < *until) {
+        if self.confirm.as_ref().is_some_and(|(s, until, _)| s == step && now < *until) {
             self.confirm = None;
             return true;
         }
-        self.confirm = Some((step.to_string(), now + CONFIRM_MS));
+        self.confirm = Some((step.to_string(), now + CONFIRM_MS, self.pressed));
         self.fail(ask);
         false
+    }
+
+    /// Tells alondrad the user is at the TUI, at most once a minute, so it holds back pushes.
+    fn note_activity(&mut self) {
+        let now = now_millis();
+        if now - self.activity_told < ACTIVITY_EVERY_MS {
+            return;
+        }
+        self.activity_told = now;
+        #[cfg(test)]
+        self.posted.borrow_mut().push((ops::PRESENCE.into(), json!({"client": "tui"})));
+        self.spawn(|_| {
+            let _ = Client::for_tui(Duration::from_secs(5)).post(ops::PRESENCE, &json!({"client": "tui"}));
+        });
+    }
+
+    /// A request that is not a domain command. It answers as its own message; a route the
+    /// daemon does not serve yet says so instead of failing silently.
+    fn op(&mut self, key: Option<Key>, path: String, body: Value, ok: String) {
+        #[cfg(test)]
+        self.posted.borrow_mut().push((path.clone(), body.clone()));
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(15)).post(&path, &body).map(|v| crate::delivery::response_notice(&v, crate::service_client::target()).unwrap_or(ok)).map_err(|e| {
+                if crate::client::missing(&e) { trf!("{e} ({path})", "{e} ({path})") } else { format!("{e:#}") }
+            });
+            let _ = tx.send(Msg::Posted { key, result });
+        });
+    }
+
+    /// Sends a message to an agent or the orchestrator. Only a reply that reads the item takes it
+    /// out of the inbox; anything else it is about stays until its agent acts.
+    fn message(&mut self, key: Option<Key>, message: ops::Message, ok: String) {
+        let (path, body) = (message.path(), message.body());
+        if let Some(k) = key.clone().filter(|_| message.mark_read) {
+            self.hide(k);
+        }
+        self.op(key, path, body, ok);
+    }
+
+    /// Loads a stored file once, by its content route.
+    fn fetch(&mut self, route: &str) {
+        if self.files.contains_key(route) || !self.loading.insert(route.to_string()) {
+            return;
+        }
+        let route = route.to_string();
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(30)).content(&route).map(files::FileBody::classify).map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::File { route, result });
+        });
+    }
+
+    /// What tuicr left on stdout when the user quit it: the comments go to the agent as
+    /// feedback on the delivery that presents the PR; without comments nothing is sent.
+    fn reviewed(&mut self, key: Key, pr: PrId, number: u64, res: Result<String>) {
+        match res {
+            Ok(text) if has_comments(&text) => self.pr_feedback(&key, &pr, text.trim().to_string(), vec![]),
+            Ok(_) => self.flash(trf!("PR #{number} reviewed without comments", "PR #{number} revisado sin comentarios")),
+            Err(e) if e.to_string().contains("No such file") || e.to_string().contains("could not launch") || e.to_string().contains("no pude lanzar") => {
+                self.fail(tr!("tuicr is not installed: brew install tuicr", "tuicr no está instalado: brew install tuicr"));
+            }
+            Err(e) => self.fail(trf!("tuicr: {e}", "tuicr: {e}")),
+        }
+    }
+
+    fn closed(&mut self, name: &str, result: Result<Closed, String>) {
+        match result {
+            Ok(Closed::Removed) => self.flash(trf!("{name} closed", "{name} cerrado")),
+            Ok(Closed::LeftFleet) => self.flash(trf!(
+                "{name} left the fleet; it is an interactive session, so close its terminal with /exit",
+                "{name} ha salido de la flota; es una sesión interactiva, así que cierra su terminal con /exit"
+            )),
+            Err(why) => self.fail(trf!("{name} was not closed: {why}", "{name} no se cerró: {why}")),
+        }
+    }
+
+    /// Copies a dropped file into Alondra's storage while the user keeps writing.
+    fn attach(&mut self, path: std::path::PathBuf) {
+        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        if bytes > crate::client::MAX_ATTACHMENT_BYTES {
+            let size = files::size(bytes as usize);
+            self.fail(trf!("{name} is {size}: attachments go up to 20 MB", "{name} ocupa {size}: los adjuntos llegan hasta 20 MB"));
+            return;
+        }
+        self.chip_seq += 1;
+        let seq = self.chip_seq;
+        let Some(c) = self.composer.as_mut() else { return };
+        let chip = Chip { seq, name: name.clone(), bytes, upload: Upload::Sending };
+        let preview = self.picker.is_some() && chip.image();
+        c.chips.push(chip);
+        self.spawn(move |tx| {
+            if preview && let Ok(image) = image::open(&path) {
+                let _ = tx.send(Msg::Preview { seq, image: image.thumbnail(PREVIEW_PIXELS, PREVIEW_PIXELS) });
+            }
+            let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| Client::for_tui(Duration::from_secs(120)).upload(&name, &bytes).map_err(|e| {
+                let route = crate::client::UPLOADS;
+                if crate::client::missing(&e) { trf!("{e} ({route})", "{e} ({route})") } else { format!("{e:#}") }
+            }));
+            let _ = tx.send(Msg::Uploaded { seq, result });
+        });
+    }
+
+    fn uploaded(&mut self, seq: u64, result: Result<AttachmentRef, String>) {
+        let chips = self.composer.iter_mut().flat_map(|c| c.chips.iter_mut()).chain(self.drafts.values_mut().flat_map(|(_, c)| c.iter_mut())).chain(self.reviews.values_mut().flat_map(|r| r.chips.iter_mut()));
+        let mut failed = None;
+        for chip in chips.filter(|c| c.seq == seq) {
+            match &result {
+                Ok(a) => chip.upload = Upload::Stored(a.clone()),
+                Err(e) => failed = Some((chip.name.clone(), e.clone())),
+            }
+        }
+        if let Some((name, e)) = failed {
+            if let Some(c) = self.composer.as_mut() {
+                c.chips.retain(|c| c.seq != seq);
+            }
+            for (_, chips) in self.drafts.values_mut() {
+                chips.retain(|c| c.seq != seq);
+            }
+            for r in self.reviews.values_mut() {
+                r.chips.retain(|c| c.seq != seq);
+            }
+            self.previews.remove(&seq);
+            self.fail(trf!("Could not attach {name}: {e}", "No se pudo adjuntar {name}: {e}"));
+        }
     }
 
     /// Sends a domain command. `slot` names what is being done; while one is on its way the same
@@ -650,7 +973,7 @@ impl App {
                     self.hidden.remove(k);
                 }
                 if let Some((draft, text)) = sent.draft.take().filter(|(_, t)| !t.trim().is_empty()) {
-                    self.drafts.insert(draft, text);
+                    self.drafts.insert(draft, (text, vec![]));
                 }
                 match failure {
                     CommandFailure::Rejected(error) => {
@@ -689,13 +1012,38 @@ impl App {
                 self.settle_until = now + SETTLE_MS;
             }
         }
+        let files: Vec<String> = self.sel.as_ref().and_then(|k| self.item(k)).map(|i| self.item_files(i).into_iter().map(|(_, route)| route).take(2).collect()).unwrap_or_default();
+        for route in files {
+            self.fetch(&route);
+        }
         self.reconcile_agents();
         self.reconcile_tasks();
+        self.load_selected_interaction();
+    }
+
+    /// The selected item's interaction, read when it is first shown and again when it changes.
+    fn load_selected_interaction(&mut self) {
+        let Some((id, revision)) = self.sel.as_ref().and_then(|k| self.item(k)).and_then(|i| Some((inbox::interaction_of(i)?.clone(), i.revision))) else { return };
+        self.load_interaction(id, revision);
+    }
+
+    pub(crate) fn load_interaction(&mut self, id: InteractionId, asked_at: Revision) {
+        if self.interactions.get(&id).is_some_and(|i| i.revision >= asked_at) || !self.interactions_asked.insert((id.clone(), asked_at)) {
+            return;
+        }
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(10)).interaction(&id).map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Interaction { id, asked_at, result });
+        });
     }
 
     fn on_msg(&mut self, m: Msg) {
         match m {
-            Msg::Data(p) => {
+            Msg::Data(mut p) => {
+                self.interactions.extend(std::mem::take(&mut p.interactions).into_iter().map(|i| (i.id.clone(), i)));
+                let current: HashMap<&InteractionId, Revision> = p.inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children))
+                    .filter_map(|i| Some((inbox::interaction_of(i)?, i.revision))).collect();
+                self.interactions.retain(|id, i| current.get(id).is_none_or(|at| *at <= i.revision));
                 self.domain = Some(*p);
                 self.connected = true;
                 self.loaded = true;
@@ -714,14 +1062,23 @@ impl App {
                     if let Some(reader) = self.reader.as_mut() {
                         let diff = value["diff"].as_str().unwrap_or("");
                         let head = value["head"].as_str().unwrap_or("?");
-                        reader.parts.push(format!("## Diff @ {head}\n\n```diff\n{diff}\n```"));
+                        reader.parts.push(Part::Text(format!("## Diff @ {head}\n\n```diff\n{diff}\n```")));
                         if value["truncated"] == true {
-                            reader.parts.push(tr!("The diff was cut to fit: open the PR for all of it.", "El diff se ha recortado: abre el PR para verlo entero.").into());
+                            reader.parts.push(Part::Text(tr!("The diff was cut to fit: open the PR for all of it.", "El diff se ha recortado: abre el PR para verlo entero.").into()));
                         }
                     }
                     self.rebuild_reader();
                 }
                 Ok(_) => {}
+            },
+            Msg::Interaction { id, asked_at, result } => match result {
+                Ok(interaction) => {
+                    self.interactions.insert(id, interaction);
+                }
+                Err(error) => {
+                    self.interactions_asked.remove(&(id, asked_at));
+                    self.fail(error);
+                }
             },
             Msg::TaskActions { task, revision, result } => match result {
                 Ok(actions) => {
@@ -732,6 +1089,75 @@ impl App {
                     self.fail(error);
                 }
             },
+            Msg::Runtime(runtime) => self.runtime = runtime.map(|r| *r),
+            Msg::Daemon(daemon) => self.daemon = daemon.map(|d| *d),
+            Msg::Deliveries(attempts) => self.deliveries = attempts,
+            Msg::Posted { key, result } => match result {
+                Ok(text) => {
+                    if let Some(k) = key {
+                        self.reviews.remove(&k);
+                    }
+                    self.flash(text);
+                }
+                Err(e) => {
+                    if let Some(k) = key {
+                        self.hidden.remove(&k);
+                    }
+                    self.fail(trf!("Not confirmed: {e}. Check before repeating.", "Sin confirmar: {e}. Revísalo antes de repetir."));
+                }
+            },
+            Msg::Closed { name, result } => self.closed(&name, result),
+            Msg::File { route, result } => {
+                self.loading.remove(&route);
+                if let (Ok(files::FileBody::Image(img)), Some(picker)) = (&result, &self.picker) {
+                    self.images.insert(route.clone(), picker.new_resize_protocol((**img).clone()));
+                }
+                self.files.insert(route.clone(), result);
+                if self.reader.as_ref().is_some_and(|r| r.parts.iter().any(|p| matches!(p, Part::File { route: fr, .. } if *fr == route))) {
+                    self.rebuild_reader();
+                }
+            }
+            Msg::Uploaded { seq, result } => self.uploaded(seq, result),
+            Msg::Preview { seq, image } => {
+                if let Some(p) = self.picker.as_ref() {
+                    self.previews.insert(seq, p.new_resize_protocol(image));
+                }
+            }
+            Msg::Options { project, result } => match result {
+                Ok((projects, suggested, specs, error)) => {
+                    if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
+                        f.suggested = suggested;
+                        f.loaded(project, projects, specs, error);
+                    }
+                }
+                Err(e) => {
+                    if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
+                        f.loaded(project.clone(), vec![], vec![], Some(e.clone()));
+                    }
+                    self.fail(trf!("Could not load the options: {e}", "No se pudieron cargar las opciones: {e}"));
+                }
+            },
+            Msg::Issues(result) => {
+                if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
+                    f.issues_loaded(result);
+                }
+            }
+            Msg::Threads { agent, threads: Some(threads) } => self.threads = Some((agent, threads)),
+            Msg::Threads { threads: None, .. } => {}
+            Msg::History { task, result } => match result {
+                Ok(history) => {
+                    self.histories.insert(task, history);
+                }
+                Err(e) => self.fail(trf!("Task history: {e}", "Historia de la tarea: {e}")),
+            },
+            Msg::Found { query, result } => {
+                if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
+                    s.remote = match result {
+                        Ok((via, sessions)) => Remote::Done { query, via, sessions },
+                        Err(e) => Remote::Failed(e),
+                    };
+                }
+            }
         }
     }
 
@@ -750,18 +1176,57 @@ impl App {
             self.last_task_animation = now / 500;
             dirty |= self.running_tasks();
         }
+        if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
+            dirty = true;
+        }
+        self.load_threads();
+        let wants_remote = self.search.as_ref().and_then(|s| {
+            let q = s.query();
+            (matches!(s.remote, Remote::Idle) && !q.is_empty() && now - s.typed_at >= SEARCH_DEBOUNCE_MS).then_some(q)
+        });
+        if let Some(q) = wants_remote
+            && self.local_agent_matches(&q).is_empty()
+        {
+            if let Some(s) = self.search.as_mut() {
+                s.remote = Remote::Pending;
+            }
+            self.spawn(move |tx| {
+                let result = Client::for_tui(Duration::from_secs(120))
+                    .get::<Value>(&ops::search(&q))
+                    .map(|v| {
+                        let via = v["via"].as_str().unwrap_or("").to_string();
+                        let sessions = v["sessions"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default();
+                        (via, sessions)
+                    })
+                    .map_err(|e| format!("{e:#}"));
+                let _ = tx.send(Msg::Found { query: q, result });
+            });
+            dirty = true;
+        }
         dirty
     }
 
     fn on_paste(&mut self, s: &str) {
-        if let Some(c) = self.composer.as_mut() {
+        if self.composer.is_some()
+            && let Some(files) = dropped::dropped_files(s)
+        {
+            for f in files {
+                self.attach(f);
+            }
+        } else if let Some(c) = self.composer.as_mut() {
             c.input.insert_str(s);
         } else if let Some(search) = self.search.as_mut().filter(|s| s.editing) {
             search.input.insert_str(&md::one_line(s));
+            search.typed_at = now_millis();
+            search.remote = Remote::Idle;
         }
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Flow {
+        if self.confirm.as_ref().is_some_and(|(_, _, key)| *key != k.code) {
+            self.confirm = None;
+        }
+        self.pressed = k.code;
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             return Flow::Quit;
         }
@@ -793,6 +1258,7 @@ impl App {
         {
             match k.code {
                 KeyCode::Char('?') => {
+                    self.delivery_help = false;
                     self.help = true;
                     self.help_scroll = 0;
                     return Flow::Go;
@@ -820,6 +1286,7 @@ impl App {
                     self.schedules_open = true;
                     self.reload_schedules();
                 }
+                KeyCode::Char('M') => self.message_orchestrator(),
                 _ => {
                     return match self.screen {
                         Screen::Inbox => self.inbox_key(k),
@@ -860,7 +1327,15 @@ impl App {
         self.focus = Pane::List;
         self.agent_zoom = false;
         self.task_zoom = false;
+        self.threads_asked = None;
         self.reconcile_tasks();
+        self.load_threads();
+    }
+
+    fn message_orchestrator(&mut self) {
+        let name = tr!("the orchestrator", "el orquestador").to_string();
+        let message = ops::Message::to(None, ops::MessageKind::Message, String::new());
+        self.compose(Target::Message { key: None, message, title: String::new(), name }, "");
     }
 
     fn reload_schedules(&mut self) {
@@ -974,7 +1449,13 @@ impl App {
                     return Flow::Quit;
                 }
             }
+            "deliveries" => {
+                self.delivery_help = true;
+                self.help = true;
+                self.help_scroll = 0;
+            }
             "h" | "help" => {
+                self.delivery_help = false;
                 self.help = true;
                 self.help_scroll = 0;
             }
@@ -1004,29 +1485,75 @@ impl App {
     }
 
     fn compose(&mut self, target: Target, prefill: &str) {
-        let text = target.draft_key().and_then(|k| self.drafts.remove(&k)).unwrap_or_else(|| prefill.to_string());
-        self.composer = Some(Composer { target, input: TextInput::with(&text) });
+        let (text, chips) = target.draft_key().and_then(|k| self.drafts.remove(&k)).unwrap_or_else(|| (prefill.to_string(), vec![]));
+        let form = matches!(target, Target::NewRequest).then(work::OptionsForm::default);
+        self.composer = Some(Composer { target, input: TextInput::with(&text), chips, form });
+        if self.composer.as_ref().is_some_and(|c| c.form.is_some()) {
+            self.load_options(None);
+        }
+    }
+
+    /// Asks alondrad for the open issues, which it keeps for ten minutes unless `refresh`.
+    fn load_issues(&self, refresh: bool) {
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(40)).get::<Value>(ops::issues(refresh)).map_err(|e| format!("{e:#}")).and_then(|v| {
+                let issues = serde_json::from_value(v["issues"].clone()).map_err(|e| e.to_string())?;
+                Ok((issues, v["error"].as_str().map(str::to_string)))
+            });
+            let _ = tx.send(Msg::Issues(result));
+        });
+    }
+
+    /// Fetches the options for "New" once, when it opens or its project changes.
+    fn load_options(&self, project: Option<String>) {
+        self.spawn(move |tx| {
+            let client = Client::for_tui(Duration::from_secs(10));
+            let result = client.get::<Value>(&ops::options(project.as_deref())).map_err(|e| format!("{e:#}")).and_then(|o| {
+                let specs = serde_json::from_value(o["options"].clone()).map_err(|e| e.to_string())?;
+                let listed = client.get::<Value>(ops::PROJECTS).ok();
+                let projects = listed.as_ref().and_then(|p| p["projects"].as_array().cloned()).unwrap_or_default();
+                let names = projects.iter().filter_map(|p| p["name"].as_str().map(str::to_string)).collect();
+                let root = listed.as_ref().and_then(|p| p["root"].as_str().map(std::path::PathBuf::from));
+                let here = std::env::current_dir().ok();
+                let suggested = root.zip(here).and_then(|(root, here)| alondra_core::options::project_of(&root, &here));
+                Ok((names, suggested, specs, o["error"].as_str().map(str::to_string)))
+            });
+            let _ = tx.send(Msg::Options { project, result });
+        });
     }
 
     fn cancel_composer(&mut self) {
         let Some(c) = self.composer.take() else { return };
         let text = c.input.text();
         if let Some(k) = c.target.draft_key()
-            && !text.trim().is_empty()
+            && (!text.trim().is_empty() || !c.chips.is_empty())
         {
-            self.drafts.insert(k, text);
+            self.drafts.insert(k, (text, c.chips));
             self.flash(tr!("Draft saved: open it again to pick up where you left off", "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"));
         }
     }
 
     fn composer_key(&mut self, k: KeyEvent) {
         let Some(c) = self.composer.as_mut() else { return };
+        if let Some(form) = c.form.as_mut() {
+            match form.key(k) {
+                work::FormKey::Handled => return,
+                work::FormKey::Reload(project) => return self.load_options(project),
+                work::FormKey::LoadIssues(refresh) => return self.load_issues(refresh),
+                work::FormKey::NotMine => {}
+            }
+        }
         match k.code {
             KeyCode::Esc => self.cancel_composer(),
             KeyCode::Enter if k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) => {
                 c.input.handle(k);
             }
             KeyCode::Enter => self.submit(),
+            KeyCode::Backspace if c.input.text().is_empty() && !c.chips.is_empty() => {
+                if let Some(chip) = c.chips.pop() {
+                    self.previews.remove(&chip.seq);
+                }
+            }
             _ => {
                 c.input.handle(k);
             }
@@ -1038,28 +1565,60 @@ impl App {
         let text = c.input.text().trim().to_string();
         let needs_text = match &c.target {
             Target::Answer { required, .. } => *required,
-            Target::Feedback { .. } | Target::NewRequest => true,
+            Target::Message { message, .. } if message.kind == ops::MessageKind::MoreContext => false,
+            Target::Feedback { .. } | Target::NewRequest | Target::Message { .. } => c.chips.is_empty(),
             Target::Comment { .. } | Target::General { .. } => false,
         };
         if needs_text && text.is_empty() {
             self.composer = Some(c);
             return;
         }
+        if c.chips.iter().any(|c| c.upload == Upload::Sending) {
+            self.composer = Some(c);
+            self.flash(tr!("Still copying the attachments: ⏎ again in a moment", "Aún se están copiando los adjuntos: ⏎ otra vez en un momento"));
+            return;
+        }
+        let attachments = dropped::stored(&c.chips);
+        if !matches!(c.target, Target::Comment { .. } | Target::General { .. }) {
+            for chip in &c.chips {
+                self.previews.remove(&chip.seq);
+            }
+        }
         let draft = c.target.draft_key().map(|k| (k, text.clone()));
         match c.target {
             Target::Answer { key, interaction, option, label, input, revision, .. } => {
                 let inputs = input.filter(|_| !text.is_empty()).map(|id| (id, alondra_core::domain_v2::InputValue::Text(text.clone()))).into_iter().collect();
-                self.answer(key, interaction, option, label, inputs, revision, draft);
+                self.answer(key, interaction, option, label, inputs, attachments, revision, draft);
             }
-            Target::Feedback { key, presentation, targets, revision, .. } => self.feedback(key, presentation, targets, text, revision, draft),
+            Target::Feedback { key, presentation, targets, revision, .. } => self.feedback(key, presentation, targets, text, attachments, revision, draft),
+            Target::Message { key, mut message, name, .. } => {
+                message.text = text;
+                message.attachments = attachments;
+                let ok = if message.mark_read { trf!("Sent to {name} and marked read", "Enviado a {name} y marcado leído") } else { trf!("Sent to {name}", "Enviado a {name}") };
+                self.message(key, message, ok);
+            }
             Target::NewRequest => {
-                let Some(revision) = self.domain.as_ref().map(|d| d.revision) else { return };
-                let command = Command::CreateRequest { request_id: crate::client::new_id("request").into(), body: text.clone() };
-                self.send(format!("request:{text}"), None, revision, command, tr!("Sent to the orchestrator", "Enviado al orquestador").into(), draft);
+                let request_id = crate::client::new_id("request");
+                match c.form.as_ref().filter(|f| !f.is_plain() || !attachments.is_empty()) {
+                    Some(form) => {
+                        let body = form.request(&request_id, &text, &attachments);
+                        self.op(None, ops::REQUESTS.into(), body, tr!("Sent to the orchestrator", "Enviado al orquestador").into());
+                    }
+                    None if attachments.is_empty() => {
+                        let Some(revision) = self.domain.as_ref().map(|d| d.revision) else { return };
+                        let command = Command::CreateRequest { request_id: request_id.into(), body: text.clone() };
+                        self.send(format!("request:{text}"), None, revision, command, tr!("Sent to the orchestrator", "Enviado al orquestador").into(), draft);
+                    }
+                    None => {
+                        let body = ops::new_request(&request_id, &text, None, &json!({}), None, &attachments);
+                        self.op(None, ops::REQUESTS.into(), body, tr!("Sent to the orchestrator", "Enviado al orquestador").into());
+                    }
+                }
             }
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else { return };
                 let review = self.reviews.entry(key).or_default();
+                review.chips.extend(c.chips);
                 review.comments.retain(|c| c.block != block);
                 if !text.is_empty() {
                     review.comments.push(Comment { block, quote, text });
@@ -1068,7 +1627,9 @@ impl App {
             }
             Target::General { send } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else { return };
-                self.reviews.entry(key).or_default().general = text;
+                let review = self.reviews.entry(key).or_default();
+                review.general = text;
+                review.chips.extend(c.chips);
                 if send {
                     self.send_review();
                 }
@@ -1080,7 +1641,12 @@ impl App {
         let Some(key) = self.sel.clone() else { return };
         let Some(item) = self.item(&key).cloned() else { return };
         let (glyph, kind, color) = draw::kind_glyph(&item.kind);
-        let parts = self.item_text(&item);
+        let parts = self.item_parts(&item);
+        for p in &parts {
+            if let Part::File { route, .. } = p {
+                self.fetch(route);
+            }
+        }
         self.reader = Some(Reader {
             key,
             agent: self.agent_name(item.agent_id.as_ref()),
@@ -1102,7 +1668,22 @@ impl App {
 
     fn rebuild_reader(&mut self) {
         let Some(r) = self.reader.as_mut() else { return };
-        r.blocks = r.parts.iter().flat_map(|t| md::parse(t)).collect();
+        let mut blocks = vec![];
+        for part in &r.parts {
+            match part {
+                Part::Text(t) => blocks.extend(md::parse(t)),
+                Part::File { name, route } => {
+                    blocks.push(Block::label(&format!("📎 {name}")));
+                    match self.files.get(route) {
+                        Some(Ok(files::FileBody::Text(text))) => blocks.extend(md::parse(text)),
+                        Some(Ok(body)) => blocks.push(Block::para(&files::not_text(body))),
+                        Some(Err(e)) => blocks.push(Block::para(&trf!("Could not load the file: {e}", "No he podido cargar el fichero: {e}"))),
+                        None => blocks.push(Block::para(tr!("Loading…", "Cargando…"))),
+                    }
+                }
+            }
+        }
+        r.blocks = blocks;
         r.settle_cursor();
     }
 
@@ -1174,27 +1755,79 @@ impl App {
                 }
             }
             KeyCode::Char('s') => self.send_review(),
-            KeyCode::Char('v') => self.accept(&key),
+            KeyCode::Char('v') => self.accept_or_open(&key),
             KeyCode::Char('x') => self.mark_read(&key),
             KeyCode::Char(c @ '1'..='9') => {
                 self.settle_until = 0;
-                self.choose(&key, c as usize - '1' as usize);
+                let i = c as usize - '1' as usize;
+                if self.reviews.get(&key).is_some_and(|rv| !rv.is_empty()) && self.item(&key).is_some_and(|i| matches!(i.kind.as_str(), "question" | "action_request")) {
+                    self.answer_with_review(&key, i);
+                } else {
+                    self.choose(&key, i);
+                }
             }
             _ => {}
         }
     }
 
-    /// The reader's comments go back as feedback on the delivery it shows.
+    /// The reader's comments go back to whoever the reading is about: feedback on a delivery, a
+    /// reply to information, and on a question the option the user picks carries them.
     fn send_review(&mut self) {
         let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else { return };
         let Some(review) = self.reviews.get(&key).filter(|rv| !rv.is_empty()) else {
             self.compose(Target::General { send: true }, "");
             return;
         };
-        let text = review.feedback();
-        let Some((presentation, targets, revision)) = self.feedback_subject(&key) else { return };
-        self.feedback(key, presentation, targets, text, revision, None);
+        let (text, attachments) = (review.feedback(), dropped::stored(&review.chips));
+        let Some(item) = self.item(&key).cloned() else { return };
+        match item.kind.as_str() {
+            "question" | "action_request" => {
+                self.fail(tr!("Press the number of the option your comments go with", "Pulsa el número de la opción con la que van tus comentarios"));
+                return;
+            }
+            "information" => {
+                let Some(mut message) = self.reply_to(&item, ops::MessageKind::Reply) else { return };
+                message.text = text;
+                message.attachments = attachments;
+                let name = self.agent_name(item.agent_id.as_ref());
+                let n = i18n::comments(self.reviews.get(&key).map_or(0, Review::count));
+                self.message(Some(key), message, trf!("{n} sent to {name}; marked read", "{n} enviados a {name}; marcado leído"));
+            }
+            "pull_request" => {
+                let Some(pr) = self.item_pr(&item).map(|p| p.id.clone()) else { return };
+                self.pr_feedback(&key, &pr, text, attachments);
+            }
+            _ => {
+                let Some((presentation, targets, revision)) = self.feedback_subject(&key) else { return };
+                self.feedback(key, presentation, targets, text, attachments, revision, None);
+            }
+        }
         self.reader = None;
+    }
+
+    /// The comments written on a question go as the text of the option picked, when it takes one.
+    fn answer_with_review(&mut self, key: &Key, i: usize) {
+        let Some(item) = self.item(key).cloned() else { return };
+        let Some(options) = self.options(&item) else { return };
+        let Some(option) = options.get(i) else {
+            let n = i + 1;
+            self.fail(trf!("This question has no option {n}", "Esta pregunta no tiene opción {n}"));
+            return;
+        };
+        let Some(input) = option.inputs.iter().find(|s| s.kind == alondra_core::domain_v2::InputKind::Text) else {
+            self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.", "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
+            return;
+        };
+        let Some(a) = inbox::action(&item, "answer_question").filter(|a| a.enabled).cloned() else {
+            let why = inbox::action(&item, "answer_question").map(unavailable).unwrap_or_default();
+            self.fail(why);
+            return;
+        };
+        let Some(interaction) = inbox::interaction_of(&item).cloned() else { return };
+        let Some(review) = self.reviews.get(key) else { return };
+        let (text, attachments) = (review.feedback(), dropped::stored(&review.chips));
+        let inputs = std::iter::once((input.id.clone(), alondra_core::domain_v2::InputValue::Text(text))).collect();
+        self.answer(key.clone(), interaction, option.id.clone(), option.label.clone(), inputs, attachments, a.expected_revision, None);
     }
 
     pub fn search_key(&mut self, k: KeyEvent) {
@@ -1211,6 +1844,8 @@ impl App {
                 let before = s.query();
                 s.input.handle(k);
                 if s.query() != before {
+                    s.typed_at = now_millis();
+                    s.remote = Remote::Idle;
                     self.agent_idx = 0;
                     self.agent_sel = None;
                 }
@@ -1221,6 +1856,11 @@ impl App {
     pub fn agent_name(&self, id: Option<&AgentId>) -> String {
         let Some(id) = id else { return tr!("orchestrator", "orquestador").into() };
         self.domain.as_ref().and_then(|d| d.agents.iter().find(|a| &a.id == id)).map_or_else(|| id.0.chars().take(8).collect(), |a| a.name.clone())
+    }
+
+    /// The id `claude attach` takes for an agent: its short id when the runtime knows it.
+    pub fn attach_id(&self, id: &AgentId) -> String {
+        self.runtime.as_ref().and_then(|r| r.node(id)).map_or_else(|| id.0.clone(), |n| n.short_id.clone())
     }
 }
 

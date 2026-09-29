@@ -8,9 +8,10 @@ use crossterm::event::{KeyCode, KeyEvent};
 use serde_json::Value;
 
 use super::keys::{self, Cmd, Motion};
-use super::{App, Flow, Msg, Pane, md, unavailable};
+use super::{App, Flow, Msg, Pane, Target, md, unavailable};
 use crate::client::Client;
 use crate::mcp::urlencode;
+use crate::ops::{self, MessageKind};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TaskKey {
@@ -38,6 +39,8 @@ pub struct TreeRow {
 pub enum TaskListRow {
     /// The header of what is still open, with how many requests it holds.
     Active(usize),
+    /// A project heading over its requests, when the runtime names the projects.
+    Project(String),
     /// A request with one task, as one row: that task.
     Single(TaskId),
     /// The header of a request with several tasks, above their tree: how many finished, of how many.
@@ -58,7 +61,7 @@ impl TaskListRow {
             TaskListRow::Taskless(id) => Some(TaskKey::Request(id.clone())),
             TaskListRow::Finished(_) => Some(TaskKey::Finished),
             TaskListRow::Archived(_) => Some(TaskKey::Archived),
-            TaskListRow::Active(_) | TaskListRow::Request(..) => None,
+            TaskListRow::Active(_) | TaskListRow::Project(_) | TaskListRow::Request(..) => None,
         }
     }
 }
@@ -115,6 +118,29 @@ pub fn tree(tasks: &[&Task]) -> Vec<TreeRow> {
     rows
 }
 
+/// A section's requests under their project's heading, projects in the order they first
+/// appear; without any project known, the requests as they are.
+fn by_project(groups: Vec<(Option<String>, Vec<TaskListRow>)>) -> Vec<TaskListRow> {
+    if groups.iter().all(|(p, _)| p.is_none()) {
+        return groups.into_iter().flat_map(|(_, rows)| rows).collect();
+    }
+    let other = || tr!("Other", "Otros").to_string();
+    let mut names: Vec<String> = vec![];
+    for (p, _) in &groups {
+        let name = p.clone().unwrap_or_else(other);
+        if !names.contains(&name) {
+            names.push(name);
+        }
+    }
+    names
+        .into_iter()
+        .flat_map(|name| {
+            let rows = groups.iter().filter(|(p, _)| p.clone().unwrap_or_else(other) == name).flat_map(|(_, rows)| rows.iter().cloned()).collect::<Vec<_>>();
+            std::iter::once(TaskListRow::Project(name)).chain(rows)
+        })
+        .collect()
+}
+
 /// A request's rows: one row for a single task, else its header above the tree.
 fn group_rows(r: &Request, tasks: &[&Task]) -> Vec<TaskListRow> {
     match tasks {
@@ -139,6 +165,46 @@ impl App {
         self.domain.as_ref().map(|d| d.tasks.iter().filter(|t| &t.request_id == r).collect()).unwrap_or_default()
     }
 
+    /// The project the runtime names for a task.
+    pub fn task_project(&self, t: &Task) -> Option<String> {
+        self.runtime.as_ref()?.task(&t.id.0)?.project.clone()
+    }
+
+    fn request_project(&self, tasks: &[&Task]) -> Option<String> {
+        tasks.iter().find_map(|t| self.task_project(t))
+    }
+
+    /// The tasks that wait on this one.
+    pub fn dependents(&self, t: &Task) -> Vec<&Task> {
+        self.domain.as_ref().map(|d| d.tasks.iter().filter(|o| o.dependencies.contains(&t.id) && o.id != t.id).collect()).unwrap_or_default()
+    }
+
+    /// The stack this task's PR belongs to, bottom first: the tasks it goes on top of, itself,
+    /// and the tasks stacked on it.
+    pub fn merge_order<'a>(&'a self, t: &'a Task) -> Vec<&'a Task> {
+        let mut below = vec![];
+        let mut seen: HashSet<&TaskId> = HashSet::from([&t.id]);
+        let mut at = t;
+        while let Some(up) = at.stack.as_ref().and_then(|s| self.task(&s.upstream_task)) {
+            if !seen.insert(&up.id) {
+                break;
+            }
+            below.push(up);
+            at = up;
+        }
+        below.reverse();
+        below.push(t);
+        let mut at = t;
+        while let Some(next) = self.domain.as_ref().and_then(|d| d.tasks.iter().find(|o| o.stack.as_ref().is_some_and(|s| s.upstream_task == at.id))) {
+            if !seen.insert(&next.id) {
+                break;
+            }
+            below.push(next);
+            at = next;
+        }
+        below
+    }
+
     /// What is open first; then the finished work and the archived work, each folded under one header.
     pub fn task_rows(&self) -> Vec<TaskListRow> {
         let Some(d) = &self.domain else { return vec![TaskListRow::Active(0)] };
@@ -149,41 +215,42 @@ impl App {
             if all.is_empty() {
                 if r.closed {
                     finished_n += 1;
-                    finished.push(TaskListRow::Taskless(r.id.clone()));
+                    finished.push((None, vec![TaskListRow::Taskless(r.id.clone())]));
                 } else {
                     open_n += 1;
-                    active.push(TaskListRow::Taskless(r.id.clone()));
+                    active.push((None, vec![TaskListRow::Taskless(r.id.clone())]));
                 }
                 continue;
             }
             let (old, current): (Vec<&Task>, Vec<&Task>) = all.into_iter().partition(|t| t.archived);
             if !old.is_empty() {
                 archived_n += old.len();
-                archived.extend(group_rows(r, &old));
+                archived.push((self.request_project(&old), group_rows(r, &old)));
             }
             if current.is_empty() {
                 continue;
             }
+            let project = self.request_project(&current);
             if current.iter().all(|t| t.state.terminal()) {
                 finished_n += 1;
-                finished.extend(group_rows(r, &current));
+                finished.push((project, group_rows(r, &current)));
             } else {
                 open_n += 1;
-                active.extend(group_rows(r, &current));
+                active.push((project, group_rows(r, &current)));
             }
         }
         let mut rows = vec![TaskListRow::Active(open_n)];
-        rows.extend(active);
+        rows.extend(by_project(active));
         if finished_n > 0 {
             rows.push(TaskListRow::Finished(finished_n));
             if self.finished_open {
-                rows.extend(finished);
+                rows.extend(by_project(finished));
             }
         }
         if archived_n > 0 {
             rows.push(TaskListRow::Archived(archived_n));
             if self.archived_open {
-                rows.extend(archived);
+                rows.extend(by_project(archived));
             }
         }
         rows
@@ -287,12 +354,32 @@ impl App {
         }
         if self.screen == super::Screen::Tasks {
             self.load_task_actions();
+            self.load_task_history();
         }
+    }
+
+    /// The selected task's brief and history, asked again whenever the task changes.
+    fn load_task_history(&mut self) {
+        let Some((id, revision)) = self.selected_task().map(|t| (t.id.clone(), t.revision)) else { return };
+        if !self.history_asked.insert((id.clone(), revision)) {
+            return;
+        }
+        self.spawn(move |tx| {
+            let result = match Client::for_tui(Duration::from_secs(10)).get::<Value>(&ops::history(&id)) {
+                Ok(v) => serde_json::from_value(v).map_err(|e| e.to_string()),
+                Err(e) if crate::client::missing(&e) => Ok(Default::default()),
+                Err(e) => Err(format!("{e:#}")),
+            };
+            let _ = tx.send(Msg::History { task: id, result });
+        });
     }
 
     /// The selected task's controls as the daemon computes them, asked again whenever it changes.
     fn load_task_actions(&mut self) {
-        let Some((id, revision)) = self.selected_task().map(|t| (t.id.clone(), t.revision)) else { return };
+        let Some((id, revision, presentation)) = self.selected_task().map(|t| (t.id.clone(), t.revision, t.final_presentation.clone())) else { return };
+        if let Some(presentation) = presentation {
+            self.load_interaction(presentation, revision);
+        }
         if self.task_actions.get(&id).is_some_and(|(at, _)| *at == revision) || !self.task_actions_asked.insert((id.clone(), revision)) {
             return;
         }
@@ -317,6 +404,7 @@ impl App {
         self.task_idx = idx;
         self.task_sel = Some(keys[idx].clone());
         self.load_task_actions();
+        self.load_task_history();
     }
 
     pub(super) fn tasks_cmd(&mut self, cmd: Cmd) {
@@ -348,16 +436,28 @@ impl App {
             KeyCode::Char('x') => self.task_command("cancel_task"),
             KeyCode::Char('R') => self.task_command("reopen_task"),
             KeyCode::Char('A') => self.archive_finished(),
+            KeyCode::Char('r') | KeyCode::Char('m') => self.message_task_agent(),
             KeyCode::Enter if self.task_sel == Some(TaskKey::Finished) => self.finished_open = !self.finished_open,
             KeyCode::Enter if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
             KeyCode::Char('a') | KeyCode::Enter => {
                 if let Some(agent) = self.selected_task().and_then(|t| t.agent_id.clone()) {
-                    return Flow::Attach(agent.0);
+                    return Flow::Attach(self.attach_id(&agent));
                 }
             }
             _ => {}
         }
         Flow::Go
+    }
+
+    fn message_task_agent(&mut self) {
+        let Some(t) = self.selected_task().cloned() else { return };
+        let Some(agent) = t.agent_id.clone() else {
+            self.fail(tr!("This task has no agent yet", "Esta tarea todavía no tiene agente"));
+            return;
+        };
+        let name = self.agent_name(Some(&agent));
+        let message = ops::Message::to(Some(agent), MessageKind::Message, String::new());
+        self.compose(Target::Message { key: None, message, name, title: md::one_line(&t.title) }, "");
     }
 
     /// The daemon's own control for the task, when it has already said whether it is on.

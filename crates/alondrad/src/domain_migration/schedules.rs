@@ -29,6 +29,7 @@ pub(crate) struct LegacyScheduleInventory {
     pub failed_launches: BTreeSet<d::RequestId>,
 }
 
+#[cfg(test)]
 impl LegacyScheduleInventory {
     pub fn counts(&self) -> (usize, usize, usize, usize, usize) {
         (
@@ -100,6 +101,34 @@ fn original_task_for_request(
     Ok(task.id.clone())
 }
 
+/// What the import of work in flight leaves out of the schedule store: a
+/// sent run whose Task finished (v2 needs its Request and Task), and links,
+/// tool policies and failed launches of finished Requests.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct Dropped {
+    pub runs: usize,
+    pub links: usize,
+}
+
+/// The imported original Task a schedule run launched, or None when its
+/// Request or Task finished before the cutover and was not imported.
+fn imported_original_task(view: &View, imported: &d::DomainState, request: &d::RequestId) -> Result<Option<d::TaskId>> {
+    if !original_request_exists(view, imported, request) {
+        return Ok(None);
+    }
+    let originals: Vec<_> = view.board.tasks.values().filter(|task| task.request.as_str() == request.0.as_str()).collect();
+    match originals.as_slice() {
+        [] => Ok(None),
+        [task] if !imported.tasks.contains_key(&d::TaskId(task.id.clone())) => Ok(None),
+        _ => original_task_for_request(view, imported, request).map(Some),
+    }
+}
+
+fn continue_run(result: &mut LegacyScheduleInventory, id: &d::ScheduleId, schedule: d::Schedule) -> Result<()> {
+    ensure!(result.state.schedules.insert(id.clone(), schedule).is_none(), "duplicate legacy Schedule");
+    Ok(())
+}
+
 fn ensure_no_sqlite_sidecars(home: &Path) -> Result<()> {
     for suffix in [
         "schedules.db-wal",
@@ -119,17 +148,30 @@ fn ensure_no_sqlite_sidecars(home: &Path) -> Result<()> {
 
 /// Read one coherent SQLite snapshot without calling Schedules::open, which
 /// rewrites launching/waiting state. No mission, ID, pattern or receipt is logged.
+#[cfg(test)]
 pub(crate) fn read_legacy_schedules_readonly(
     home: &Path,
     view: &View,
     imported: &d::DomainState,
 ) -> Result<LegacyScheduleInventory> {
+    read_legacy_schedules_counted(home, view, imported).map(|(inventory, _)| inventory)
+}
+
+/// Every schedule and its last run are imported. A run link, tool policy or
+/// failed launch whose Request finished before the cutover is not imported
+/// and counted instead; a link to imported work must still be unambiguous.
+pub(crate) fn read_legacy_schedules_counted(
+    home: &Path,
+    view: &View,
+    imported: &d::DomainState,
+) -> Result<(LegacyScheduleInventory, Dropped)> {
+    let mut dropped = Dropped::default();
     let path = home.join("schedules.db");
     let metadata = match fs::symlink_metadata(&path) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             ensure_no_sqlite_sidecars(home)?;
-            return Ok(LegacyScheduleInventory::default());
+            return Ok((LegacyScheduleInventory::default(), Dropped::default()));
         }
         Err(error) => return Err(error.into()),
     };
@@ -237,12 +279,19 @@ pub(crate) fn read_legacy_schedules_readonly(
                     let finished_at = old
                         .last_run
                         .context("legacy Schedule result lacks last_run")?;
-                    let (request_id, task_id) = match old.last_request {
-                        Some(request) => {
-                            let request_id = d::RequestId(request);
-                            let task_id = original_task_for_request(view, imported, &request_id)?;
-                            (Some(request_id), Some(task_id))
-                        }
+                    let (request_id, task_id) = match old.last_request.map(d::RequestId) {
+                        Some(request_id) => match imported_original_task(view, imported, &request_id)? {
+                            Some(task_id) => (Some(request_id), Some(task_id)),
+                            None if old.status == "sent" => {
+                                dropped.runs += 1;
+                                continue_run(&mut result, &schedule_id, schedule)?;
+                                continue;
+                            }
+                            None => {
+                                dropped.links += 1;
+                                (None, None)
+                            }
+                        },
                         None => (None, None),
                     };
                     let (state, error) = if old.status == "sent" {
@@ -297,10 +346,10 @@ pub(crate) fn read_legacy_schedules_readonly(
         let mut rows = query.query([])?;
         while let Some(row) = rows.next()? {
             let request = d::RequestId(row.get::<_, String>(0)?);
-            ensure!(
-                original_request_exists(view, imported, &request),
-                "schedule tool policy has no original Request"
-            );
+            if !original_request_exists(view, imported, &request) {
+                dropped.links += 1;
+                continue;
+            }
             let patterns: Vec<String> = serde_json::from_str(&row.get::<_, String>(1)?)
                 .context("invalid schedule tool policy")?;
             ensure!(
@@ -316,10 +365,10 @@ pub(crate) fn read_legacy_schedules_readonly(
         let mut rows = query.query([])?;
         while let Some(row) = rows.next()? {
             let request = d::RequestId(row.get::<_, String>(0)?);
-            ensure!(
-                original_request_exists(view, imported, &request),
-                "failed schedule launch has no original Request"
-            );
+            if !original_request_exists(view, imported, &request) {
+                dropped.links += 1;
+                continue;
+            }
             ensure!(
                 result.failed_launches.insert(request),
                 "duplicate failed schedule launch"
@@ -350,7 +399,7 @@ pub(crate) fn read_legacy_schedules_readonly(
     }
     database.execute_batch("COMMIT")?;
     result.state.validate().map_err(anyhow::Error::new)?;
-    Ok(result)
+    Ok((result, dropped))
 }
 
 #[cfg(test)]
@@ -543,23 +592,20 @@ mod tests {
     }
 
     #[test]
-    fn orphan_ambiguous_and_uncertain_links_fail_without_rewriting_source() {
+    fn finished_links_are_dropped_but_ambiguous_and_uncertain_ones_fail_without_rewriting_source() {
         let mut fixture = Fixture::new();
+        let run = d::ScheduleRunId("legacy-last-schedule-0".into());
         fixture.db().execute("UPDATE schedules SET body=json_set(body,'$.last_request','missing') WHERE id='schedule-0'", []).unwrap();
-        assert!(fixture
-            .read()
-            .unwrap_err()
-            .to_string()
-            .contains("missing original Request"));
+        let (inventory, dropped) =
+            read_legacy_schedules_counted(&fixture.home, &fixture.view, &fixture.imported).unwrap();
+        assert_eq!(dropped, Dropped { runs: 1, links: 0 }, "a sent run needs its Task, so it stays behind");
+        assert!(!inventory.state.runs.contains_key(&run));
+        assert!(inventory.state.schedules.contains_key(&d::ScheduleId("schedule-0".into())), "the schedule itself is kept");
         fixture.db().execute("UPDATE schedules SET body=json_set(body,'$.last_request','request-0') WHERE id='schedule-0'", []).unwrap();
 
         let original = fixture.view.board.requests.remove("request-0").unwrap();
         assert!(
-            fixture
-                .read()
-                .unwrap_err()
-                .to_string()
-                .contains("missing original Request"),
+            !fixture.read().unwrap().state.runs.contains_key(&run),
             "a synthesized imported Request cannot authorize the schedule link"
         );
         fixture
@@ -606,11 +652,10 @@ mod tests {
                 [],
             )
             .unwrap();
-        assert!(fixture
-            .read()
-            .unwrap_err()
-            .to_string()
-            .contains("policy has no original Request"));
+        let (inventory, dropped) =
+            read_legacy_schedules_counted(&fixture.home, &fixture.view, &fixture.imported).unwrap();
+        assert_eq!(dropped, Dropped { runs: 0, links: 1 });
+        assert!(!inventory.request_tools.contains_key(&d::RequestId("orphan".into())));
     }
 
     #[test]
@@ -713,7 +758,7 @@ mod tests {
         let mut store = crate::domain_store::DomainStore::open(&path).unwrap();
         let epoch = store.load().unwrap().data_epoch;
         let (state, report, schedules) =
-            super::super::materialize_with_schedules(&fixture.view, &fixture.home, &stage, epoch)
+            super::super::materialize_with_schedules(&fixture.view, &super::super::import::Source { home: &fixture.home, recorded_home: &fixture.home }, &stage, epoch)
                 .unwrap();
         assert_eq!(schedules.counts(), (11, 5, 6, 1, 1));
         store
@@ -808,7 +853,7 @@ mod tests {
         let mut store = crate::domain_store::DomainStore::open(&path).unwrap();
         let epoch = store.load().unwrap().data_epoch;
         let (state, report, mut schedules) =
-            super::super::materialize_with_schedules(&fixture.view, &fixture.home, &stage, epoch)
+            super::super::materialize_with_schedules(&fixture.view, &super::super::import::Source { home: &fixture.home, recorded_home: &fixture.home }, &stage, epoch)
                 .unwrap();
         schedules
             .failed_launches

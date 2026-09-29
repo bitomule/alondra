@@ -17,9 +17,12 @@ pub(crate) struct World {
     seq: u64,
 }
 
+mod parity;
+
 fn actor(alias: &str) -> Actor {
     match alias {
         "system" => Actor::System,
+        "orchestrator" => Actor::Orchestrator { generation: 1 },
         a if a.starts_with("agent") => Actor::Agent { agent_id: a.into() },
         u => Actor::User { user_id: u.into() },
     }
@@ -147,10 +150,6 @@ fn marking_information_read_changes_only_that_item_and_never_replies() {
     assert!(read("info-1") && !read("info-2"));
     assert_eq!(world.state.tasks[&TaskId::from("task-1")].state, TaskState::Running);
     select(&mut app, "interaction:info-2");
-    press(&mut app, KeyCode::Char('r'));
-    assert_eq!(sent(&app).len(), 1, "information has no reply");
-    assert!(app.composer.is_none());
-    assert!(flash(&app).contains("no reply"));
     let shown = screen(&mut app, 120, 24);
     assert!(shown.contains("Docs updated") && shown.contains("x mark read"), "{shown}");
 }
@@ -308,8 +307,6 @@ fn a_child_keeps_its_selection_when_the_inbox_is_regrouped() {
     world.question("question-1", "Keep the flag?", &[("yes", false)]);
     let mut app = app_on(&world);
     select(&mut app, "interaction:question-1");
-    press(&mut app, KeyCode::Char('r'));
-    assert!(app.composer.is_none(), "no option asks for text");
     world.pull_request();
     world.run("agent-a", Command::LinkInteractionSubject { interaction_id: "question-1".into(), subject: InteractionSubject::PullRequest { pr_id: "pr-1".into() } });
     refresh(&mut app, &world);
@@ -393,3 +390,46 @@ fn reader_navigation_search_and_comments_survive() {
     assert!(app.reviews.is_empty(), "sent comments are cleared once the daemon has them");
 }
 
+
+/// What the sectioned reads deliver: no interactions, and a body the daemon cut to fit.
+fn sectioned(world: &World, cut: &str) -> DomainProjection {
+    let mut p = world.state.projection();
+    p.interactions.clear();
+    fn shorten(item: &mut InboxItem, cut: usize) {
+        if let Some(body) = item.body.as_mut() {
+            body.truncate(cut);
+        }
+        for child in &mut item.children {
+            shorten(child, cut);
+        }
+    }
+    for root in &mut p.inbox {
+        shorten(root, cut.len());
+    }
+    p
+}
+
+#[test]
+fn a_cut_body_is_replaced_by_the_interaction_once_it_is_read() {
+    let mut world = World::base(false);
+    world.information("info-1", "Tests pass and the migration replays every fixture without a diff");
+    let (tx, _rx) = mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::Data(Box::new(sectioned(&world, "Tests pass"))));
+    app.reconcile();
+    select(&mut app, "interaction:info-1");
+    let before = screen(&mut app, 120, 24);
+    assert!(before.contains("Tests pass") && !before.contains("without a diff"), "{before}");
+    let full = world.state.interactions[&InteractionId::from("info-1")].clone();
+    let revision = full.revision;
+    app.on_msg(Msg::Interaction { id: "info-1".into(), asked_at: revision, result: Ok(full) });
+    let after = screen(&mut app, 120, 24);
+    assert!(after.contains("without a diff"), "{after}");
+    app.on_msg(Msg::Data(Box::new(sectioned(&world, "Tests pass"))));
+    app.reconcile();
+    assert!(app.interaction(&"info-1".into()).is_some(), "an unchanged item keeps its interaction");
+    world.run("user-a", Command::MarkRead { interaction_id: "info-1".into() });
+    app.on_msg(Msg::Data(Box::new(sectioned(&world, "Tests pass"))));
+    app.reconcile();
+    assert!(app.interaction(&"info-1".into()).is_none(), "a changed item drops the stale interaction");
+}

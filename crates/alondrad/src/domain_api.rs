@@ -28,6 +28,8 @@ pub(crate) trait DomainHost: Send + Sync + 'static {
     fn domain(&self) -> &DomainRuntime;
     fn home(&self) -> &FsPath;
     fn cutover_committed(&self) -> bool;
+    /// Who confirms a PR's remote head and base before an Agent's merge claim is admitted.
+    fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver;
 }
 impl DomainHost for Hub {
     fn domain(&self) -> &DomainRuntime {
@@ -39,7 +41,15 @@ impl DomainHost for Hub {
     fn cutover_committed(&self) -> bool {
         false
     }
+    fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver {
+        static GH: std::sync::OnceLock<crate::domain_github::GhCli> = std::sync::OnceLock::new();
+        GH.get_or_init(crate::domain_github::GhCli::new)
+    }
 }
+
+/// A local command carries what the producer or the terminal sends, not what
+/// fits one relay response; the relay path keeps its own budget.
+const LOCAL_COMMAND_BYTES: usize = 8 * 1024 * 1024;
 
 pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
     let router = Router::new()
@@ -59,7 +69,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         )
         .route(
             "/v2/domain/commands",
-            post(command::<H>).layer(axum::extract::DefaultBodyLimit::max(180 * 1024)),
+            post(command::<H>).layer(axum::extract::DefaultBodyLimit::max(LOCAL_COMMAND_BYTES)),
         );
     let sectioned = [
         "/v2/domain/summary",
@@ -780,6 +790,12 @@ async fn command<H: DomainHost>(
         let Some(token) = header.to_str().ok().and_then(|value| value.strip_prefix("Bearer ")) else {
             return domain_error(DomainError::new("forbidden", "invalid domain capability"));
         };
+        if let Err(error) = host.domain().resolve_bearer(token) {
+            return store_error(error);
+        }
+        if let Err(error) = crate::domain_github::verify_claim(host.domain(), host.pr_observer(), &envelope.command).await {
+            return store_error(error);
+        }
         return match host.domain().execute_bearer(token, &envelope) {
             Ok(outcome) => Json(outcome).into_response(),
             Err(error) => store_error(error),

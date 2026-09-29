@@ -1,11 +1,14 @@
-//! Explicit inspection/resolution of durable delivery evidence. Never retries a POST.
+//! Explicit inspection/resolution of the domain's durable delivery evidence. Never retries a POST.
 use crate::client::Client;
 use alondra_core::delivery::State;
+use alondra_core::domain_v2::{DataEpoch, PROTOCOL_VERSION};
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::time::Duration;
+
+pub const ATTEMPTS: &str = "/v2/domain/delivery-attempts";
 
 #[derive(Args)]
 pub struct Options {
@@ -19,9 +22,9 @@ pub struct Options {
 pub enum Command {
     /// Inspect recorded attempts, their versions and recovery instructions.
     List,
-    /// Allow another attempt after inspecting the destination terminal, node and worktree.
+    /// Allow another attempt after inspecting the destination terminal, agent and worktree.
     Retry {
-        id: u64,
+        id: i64,
         #[arg(long)]
         expected_version: u64,
         #[arg(long, required = true)]
@@ -31,26 +34,37 @@ pub enum Command {
     },
     /// Stop retrying this attempt; this does not undo an external effect.
     Discard {
-        id: u64,
+        id: i64,
         #[arg(long)]
         expected_version: u64,
         #[arg(long, required = true)]
         terminal_checked: bool,
     },
 }
-/// The channel is descriptive and extensible; unknown states fail deserialization closed.
+/// One attempt to hand a domain message to its recipient; unknown states fail deserialization closed.
 #[derive(Clone, Debug, Deserialize)]
 pub struct Attempt {
-    pub id: u64,
-    pub session_id: String,
-    pub channel: String,
+    pub attempt_id: i64,
+    pub message_id: i64,
     pub state: State,
     pub version: u64,
+    #[serde(default)]
     pub reason: Option<String>,
+    #[serde(default)]
+    pub recipient_kind: String,
+    #[serde(default)]
+    pub task_id: Option<String>,
+    #[serde(default)]
+    pub interaction_id: Option<String>,
 }
 #[derive(Deserialize)]
-struct Listing {
-    attempts: Vec<Attempt>,
+pub struct Listing {
+    pub data_epoch: DataEpoch,
+    pub attempts: Vec<Attempt>,
+    #[serde(default)]
+    pub next_after: i64,
+    #[serde(default)]
+    pub has_more: bool,
 }
 impl Attempt {
     pub fn blocks(&self) -> bool {
@@ -81,7 +95,7 @@ pub fn state_text(state: State) -> &'static str {
         ),
     }
 }
-/// Used by every answer consumer rather than treating HTTP 200 as completed execution.
+/// Used by every message consumer rather than treating HTTP 200 as completed execution.
 pub fn response_notice(value: &Value, mac: Option<&str>) -> Option<String> {
     let raw = value.get("delivery_state")?;
     let text = serde_json::from_value::<State>(raw.clone())
@@ -96,33 +110,30 @@ pub fn response_notice(value: &Value, mac: Option<&str>) -> Option<String> {
         command_prefix(mac)
     ))
 }
-pub fn post_feedback(
-    calls: Vec<(String, Value)>,
-    ok: String,
-    mac: Option<&str>,
-    mut post: impl FnMut(&str, &Value) -> Result<Value>,
-) -> Result<String> {
-    let mut feedback = ok;
-    for (index, (path, body)) in calls.into_iter().enumerate() {
-        match post(&path, &body) {
-            Ok(value) if index == 0 => {
-                if let Some(notice) = response_notice(&value, mac) {
-                    feedback = notice;
-                    if value["delivery_state"] != "handed" {
-                        break;
-                    }
-                }
-            }
-            Err(error) if index == 0 => return Err(error),
-            _ => {}
-        }
-    }
-    Ok(feedback)
-}
 fn command_prefix(mac: Option<&str>) -> String {
     match mac {
         Some(mac) => format!("alondra delivery --mac {mac}"),
         None => "alondra delivery".into(),
+    }
+}
+/// Every page of the evidence, oldest first.
+pub fn list(mut get: impl FnMut(&str) -> Result<Value>) -> Result<Listing> {
+    let mut after = 0;
+    let mut all: Option<Listing> = None;
+    loop {
+        let page: Listing = serde_json::from_value(get(&format!("{ATTEMPTS}?after={after}"))?)?;
+        let (more, next) = (page.has_more, page.next_after);
+        match all.as_mut() {
+            None => all = Some(page),
+            Some(all) => {
+                ensure!(all.data_epoch == page.data_epoch, "the domain was reset while the list was read");
+                all.attempts.extend(page.attempts);
+            }
+        }
+        if !more || next <= after {
+            return all.context("no delivery evidence");
+        }
+        after = next;
     }
 }
 pub fn details(attempts: &[Attempt], mac: Option<&str>) -> Vec<String> {
@@ -133,17 +144,9 @@ pub fn details(attempts: &[Attempt], mac: Option<&str>) -> Vec<String> {
     }
     for a in attempts.iter().rev() {
         lines.push(String::new());
-        lines.push(format!(
-            "#{} · v{} · {} · {}",
-            a.id, a.version, a.session_id, a.channel
-        ));
+        let about = a.interaction_id.as_deref().or(a.task_id.as_deref()).map(|s| format!(" · {s}")).unwrap_or_default();
+        lines.push(format!("#{} · v{} · {} · {}{about}", a.attempt_id, a.version, a.recipient_kind, a.message_id));
         lines.push(state_text(a.state).into());
-        if a.channel == "node_discard" {
-            lines.push(tr!(
-                "Inspect the node and worktree too. Retry only reopens the question; choose again explicitly. Discard retires the intent without undoing deletion.",
-                "Revisa también el nodo y el worktree. Reintentar sólo reabre la pregunta: elige de nuevo explícitamente. Descartar retira la intención sin deshacer el borrado."
-            ).into());
-        }
         if let Some(reason) = &a.reason {
             lines.push(reason.clone());
         }
@@ -156,61 +159,57 @@ pub fn details(attempts: &[Attempt], mac: Option<&str>) -> Vec<String> {
                 )
                 .into(),
             );
-            lines.push(format!("{prefix} retry {} --expected-version {} --terminal-checked --confirm-duplicate-risk", a.id, a.version));
+            lines.push(format!("{prefix} retry {} --expected-version {} --terminal-checked --confirm-duplicate-risk", a.attempt_id, a.version));
             lines.push(format!(
                 "{prefix} discard {} --expected-version {} --terminal-checked",
-                a.id, a.version
+                a.attempt_id, a.version
             ));
         }
     }
     lines
 }
+#[derive(Deserialize)]
+struct Resolved {
+    attempt_id: i64,
+    message_id: i64,
+    version: u64,
+    state: State,
+}
 fn resolve(
-    id: u64,
+    id: i64,
     version: u64,
     retry: bool,
     checked: bool,
     risk: bool,
-    mut request: impl FnMut(&str, Option<&Value>) -> Result<Value>,
-) -> Result<Attempt> {
+    mut get: impl FnMut(&str) -> Result<Value>,
+    mut post: impl FnMut(&str, &Value) -> Result<Value>,
+) -> Result<(i64, State)> {
     ensure!(
         checked && (!retry || risk),
         "Inspect the terminal and explicitly confirm duplicate risk before retrying"
     );
-    let listing: Listing = serde_json::from_value(request("/v1/delivery-attempts", None)?)?;
+    let listing = list(&mut get)?;
     let attempt = listing
         .attempts
         .iter()
-        .find(|a| a.id == id)
+        .find(|a| a.attempt_id == id)
         .context("Delivery attempt no longer exists; refresh the list")?;
     ensure!(
         attempt.version == version && attempt.state == State::Uncertain,
         "Delivery attempt changed; refresh the list before deciding"
     );
-    let action = if retry { "retry" } else { "discard" };
-    let body = json!({"expected_version": version, "terminal_checked": checked, "confirm_duplicate_risk": retry && risk});
+    let body = json!({"protocol_version": PROTOCOL_VERSION, "data_epoch": listing.data_epoch, "expected_version": version, "decision": if retry { "retry" } else { "discard" }});
     // The server checks the version again atomically. A rejection/timeout is returned, never retried.
-    let value = request(&format!("/v1/delivery-attempts/{id}/{action}"), Some(&body))?;
-    let result: Attempt = serde_json::from_value(
-        value
-            .get("attempt")
-            .context("Missing delivery result; inspect before repeating")?
-            .clone(),
-    )?;
+    let result: Resolved = serde_json::from_value(post(&format!("{ATTEMPTS}/{id}/resolve"), &body)?)?;
+    let expected = if retry { State::Retryable } else { State::Discarded };
     ensure!(
-        result.id == id
-            && result.session_id == attempt.session_id
-            && result.channel == attempt.channel
+        result.attempt_id == id
+            && result.message_id == attempt.message_id
             && result.version == version.checked_add(1).context("Invalid delivery version")?
-            && result.state
-                == if retry {
-                    State::Retryable
-                } else {
-                    State::Discarded
-                },
+            && result.state == expected,
         "Unexpected delivery result; inspect before repeating"
     );
-    Ok(result)
+    Ok((id, result.state))
 }
 fn destination_client<T>(
     mac: Option<&str>,
@@ -235,49 +234,19 @@ pub fn run(options: Options) -> Result<()> {
             }
         },
     )?;
-    let request = |path: &str, body: Option<&Value>| match body {
-        Some(body) => client.post(path, body),
-        None => client.get(path),
-    };
-    match options.command {
+    let get = |path: &str| client.get::<Value>(path);
+    let post = |path: &str, body: &Value| client.post(path, body);
+    let (id, state) = match options.command {
         Command::List => {
-            let listing: Listing = client.get("/v1/delivery-attempts")?;
-            for line in details(&listing.attempts, options.mac.as_deref()) {
+            for line in details(&list(get)?.attempts, options.mac.as_deref()) {
                 println!("{line}");
             }
+            return Ok(());
         }
-        Command::Retry {
-            id,
-            expected_version,
-            terminal_checked,
-            confirm_duplicate_risk,
-        } => {
-            let a = resolve(
-                id,
-                expected_version,
-                true,
-                terminal_checked,
-                confirm_duplicate_risk,
-                request,
-            )?;
-            println!("#{}: {}", a.id, state_text(a.state));
-        }
-        Command::Discard {
-            id,
-            expected_version,
-            terminal_checked,
-        } => {
-            let a = resolve(
-                id,
-                expected_version,
-                false,
-                terminal_checked,
-                false,
-                request,
-            )?;
-            println!("#{}: {}", a.id, state_text(a.state));
-        }
-    }
+        Command::Retry { id, expected_version, terminal_checked, confirm_duplicate_risk } => resolve(id, expected_version, true, terminal_checked, confirm_duplicate_risk, get, post)?,
+        Command::Discard { id, expected_version, terminal_checked } => resolve(id, expected_version, false, terminal_checked, false, get, post)?,
+    };
+    println!("#{id}: {}", state_text(state));
     Ok(())
 }
 
@@ -285,16 +254,10 @@ pub fn run(options: Options) -> Result<()> {
 mod tests {
     use super::*;
     fn attempt(state: &str, version: u64) -> Value {
-        json!({"id":7,"session_id":"mac-session","channel":"menu_decision","state":state,"version":version,"reason":null})
+        json!({"attempt_id":7,"message_id":3,"state":state,"current_state":state,"version":version,"reason":null,"recipient_kind":"agent","task_id":"task-1","interaction_id":"answer-1"})
     }
-    #[test]
-    fn node_discard_recovery_instructions_require_inspecting_filesystem_and_new_decision() {
-        let attempt = Attempt { id: 1, session_id: "node".into(), channel: "node_discard".into(),
-            state: State::Uncertain, version: 2, reason: None };
-        let text = details(&[attempt], Some("mac-b")).join("\n");
-        assert!(text.contains("worktree"));
-        assert!(text.contains("alondra delivery --mac mac-b retry 1 --expected-version 2"));
-        assert!(text.contains("reopens") || text.contains("reabre"));
+    fn page(attempts: Vec<Value>) -> Value {
+        json!({"protocol_version":2,"data_epoch":"e","revision":4,"attempts":attempts,"next_after":7,"has_more":false})
     }
 
     #[test]
@@ -331,124 +294,66 @@ mod tests {
             .is_err()
         );
     }
+
     #[test]
-    fn ambiguous_post_does_not_claim_success_or_run_follow_up_actions() {
-        for state in [
-            "dispatching",
-            "uncertain",
-            "retryable",
-            "discarded",
-            "future",
-            "handed",
-        ] {
-            let mut paths = vec![];
-            let result = post_feedback(
-                vec![
-                    ("answer".into(), json!({})),
-                    ("mark-read".into(), json!({})),
-                ],
-                "Answered successfully".into(),
-                Some("mac-b"),
-                |path, _| {
-                    paths.push(path.to_owned());
-                    Ok(json!({"delivery_state":state}))
-                },
-            )
-            .unwrap();
-            assert_ne!(result, "Answered successfully");
-            assert!(result.contains("alondra delivery --mac mac-b list"));
-            assert_eq!(paths.len(), if state == "handed" { 2 } else { 1 });
-        }
+    fn every_page_of_the_evidence_is_read_and_a_reset_between_pages_stops() {
+        let mut asked = vec![];
+        let listing = list(|path| {
+            asked.push(path.to_string());
+            Ok(if path.ends_with("after=0") {
+                json!({"data_epoch":"e","attempts":[attempt("handed",1)],"next_after":7,"has_more":true})
+            } else {
+                json!({"data_epoch":"e","attempts":[attempt("uncertain",2)],"next_after":9,"has_more":false})
+            })
+        })
+        .unwrap();
+        assert_eq!(asked, [format!("{ATTEMPTS}?after=0"), format!("{ATTEMPTS}?after=7")]);
+        assert_eq!(listing.attempts.len(), 2);
+        let reset = list(|path| Ok(json!({"data_epoch": if path.ends_with("after=0") { "e" } else { "f" }, "attempts":[], "next_after":7, "has_more": path.ends_with("after=0")})));
+        assert!(reset.is_err());
     }
+
     #[test]
     fn confirmations_and_stale_versions_never_post() {
-        let mut calls = 0;
-        assert!(
-            resolve(7, 2, true, true, false, |_, _| {
-                calls += 1;
-                panic!("must not contact server")
-            })
-            .is_err()
-        );
-        assert!(
-            resolve(7, 2, false, false, false, |_, _| {
-                calls += 1;
-                panic!("must not contact server")
-            })
-            .is_err()
-        );
-        assert_eq!(calls, 0);
+        let mut posts = 0;
+        assert!(resolve(7, 2, true, true, false, |_| panic!("must not contact server"), |_, _| { posts += 1; unreachable!() }).is_err());
+        assert!(resolve(7, 2, false, false, false, |_| panic!("must not contact server"), |_, _| { posts += 1; unreachable!() }).is_err());
         for (state, version) in [("uncertain", 3), ("dispatching", 2), ("handed", 2)] {
-            assert!(
-                resolve(7, 2, true, true, true, |path, body| {
-                    assert_eq!(path, "/v1/delivery-attempts");
-                    assert!(body.is_none());
-                    Ok(json!({"attempts":[attempt(state,version)]}))
-                })
-                .is_err()
-            );
+            assert!(resolve(7, 2, true, true, true, |_| Ok(page(vec![attempt(state, version)])), |_, _| { posts += 1; unreachable!() }).is_err());
         }
+        assert_eq!(posts, 0);
     }
+
     #[test]
     fn exact_versioned_payload_and_server_conflict_are_not_retried() {
         for retry in [true, false] {
-            let mut calls = vec![];
-            let result=resolve(7,2,retry,true,true,|path,body| {
-                calls.push(path.to_owned());
-                if let Some(body)=body {
-                    assert_eq!(body,&json!({"expected_version":2,"terminal_checked":true,"confirm_duplicate_risk":retry}));
-                    Ok(json!({"attempt":attempt(if retry {"retryable"} else {"discarded"},3)}))
-                } else { Ok(json!({"attempts":[attempt("uncertain",2)]})) }
-            }).unwrap();
-            assert_eq!(result.version, 3);
-            assert_eq!(
-                calls,
-                vec![
-                    "/v1/delivery-attempts".to_string(),
-                    format!(
-                        "/v1/delivery-attempts/7/{}",
-                        if retry { "retry" } else { "discard" }
-                    )
-                ]
-            );
+            let mut posted = vec![];
+            let result = resolve(7, 2, retry, true, true, |_| Ok(page(vec![attempt("uncertain", 2)])), |path, body| {
+                posted.push((path.to_string(), body.clone()));
+                Ok(json!({"attempt_id":7,"message_id":3,"version":3,"state": if retry { "retryable" } else { "discarded" }}))
+            })
+            .unwrap();
+            assert_eq!(result.1, if retry { State::Retryable } else { State::Discarded });
+            assert_eq!(posted, [(format!("{ATTEMPTS}/7/resolve"), json!({"protocol_version":2,"data_epoch":"e","expected_version":2,"decision": if retry { "retry" } else { "discard" }}))]);
         }
         let mut posts = 0;
-        assert!(
-            resolve(7, 2, true, true, true, |_, body| {
-                if body.is_some() {
-                    posts += 1;
-                    anyhow::bail!("409 changed during inspection")
-                }
-                Ok(json!({"attempts":[attempt("uncertain",2)]}))
-            })
-            .is_err()
-        );
+        assert!(resolve(7, 2, true, true, true, |_| Ok(page(vec![attempt("uncertain", 2)])), |_, _| { posts += 1; anyhow::bail!("409 changed during inspection") }).is_err());
         assert_eq!(posts, 1);
     }
+
     #[test]
     fn detail_commands_preserve_explicit_destination_and_only_uncertain_resolves() {
         let a: Attempt = serde_json::from_value(attempt("uncertain", 2)).unwrap();
         let remote = details(&[a.clone()], Some("mac-approved-B")).join("\n");
-        assert!(
-            remote.contains("alondra delivery --mac mac-approved-B retry 7 --expected-version 2")
-        );
+        assert!(remote.contains("alondra delivery --mac mac-approved-B retry 7 --expected-version 2"));
         assert!(remote.contains("alondra delivery --mac mac-approved-B discard 7"));
+        assert!(remote.contains("answer-1"));
         assert!(!details(&[a.clone()], None).join("\n").contains("--mac"));
         let mut pending = a;
         pending.state = State::Dispatching;
         assert!(pending.blocks());
-        assert!(
-            !details(&[pending], None)
-                .join("\n")
-                .contains("--terminal-checked")
-        );
-        for state in [
-            "dispatching",
-            "uncertain",
-            "retryable",
-            "discarded",
-            "future",
-        ] {
+        assert!(!details(&[pending], None).join("\n").contains("--terminal-checked"));
+        for state in ["dispatching", "uncertain", "retryable", "discarded", "future"] {
             assert!(response_notice(&json!({"delivery_state":state}), None).is_some());
         }
         assert!(response_notice(&json!({"ok":true}), None).is_none());

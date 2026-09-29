@@ -8,38 +8,49 @@ use std::io::{Read, Write};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Default, Serialize)]
+pub(crate) struct Skipped {
+    pub requests: usize,
+    pub tasks: usize,
+    pub prs: usize,
+    pub questions: usize,
+    pub reports: usize,
+    pub messages: usize,
+    pub deliveries: usize,
+}
+
+#[derive(Debug, Default, Serialize)]
 pub(crate) struct ImportReport {
     pub source_seq: u64,
     pub requests: usize,
-    pub request_closures: usize,
-    pub request_attachments: usize,
     pub tasks: usize,
+    /// Tasks made for open PRs beyond an active Task's registered one, or open
+    /// PRs no active Task owned (those share one synthetic Request).
+    pub derived_pr_tasks: usize,
     pub agents: usize,
-    pub split_pr_tasks: usize,
-    pub formal_prs: usize,
-    pub reference_only_prs: Vec<u64>,
-    pub questions: usize,
-    pub open_questions_requiring_reconciliation: usize,
-    pub open_questions_reopened: usize,
-    pub final_presentations: usize,
+    pub prs: usize,
     /// Open PRs whose base is another open PR's head, as (upper, lower) legacy ids.
     /// Stacks are reported, not converted: D02 requires explicit readiness.
     pub stacked_prs: Vec<(u64, u64)>,
     /// Tasks legacy let run that D02 holds as WaitingDependency (a dependency
     /// in review or closing, or no stack readiness): they need a manual decision.
     pub d02_waiting_dependency: Vec<String>,
-    pub reports: usize,
-    pub messages: usize,
+    /// Open questions whose author is the assignee of their active Task.
+    pub questions_reopened: usize,
+    /// Other open questions of an active Task: unread, nobody can answer them.
+    pub questions_unread: usize,
+    pub reports_unread: usize,
     pub documents: usize,
+    pub final_presentations: usize,
+    /// Legacy deliveries of unknown outcome to an active Task's assignee: shown
+    /// to the user unread, never resent or retried.
+    pub deliveries_uncertain: usize,
     pub attachments: usize,
     pub attachment_size_discrepancies: usize,
-    /// Legacy deliveries still unresolved at cutover, conserved as Interactions
-    /// and never resent: retryable ones wait unread for their imported Agent,
-    /// uncertain or dispatching ones are shown to the user, the rest are history.
-    pub conserved_undelivered: usize,
-    pub conserved_uncertain: usize,
-    pub conserved_historical: usize,
+    pub schedule_links_dropped: usize,
+    /// Sent runs whose Task finished: v2 keeps a sent run only with its Task.
+    pub schedule_runs_dropped: usize,
+    pub skipped: Skipped,
     pub mapping_rows: usize,
     #[serde(skip_serializing)]
     pub links: Vec<ImportLink>,
@@ -72,262 +83,187 @@ fn link(
     })
 }
 
-/// Materialize the current legacy state, including historical cards, into a
-/// new epoch. Imported records have System authorship and a visible provenance
-/// prefix; neither old replies nor old auto-merge flags become v2 authority.
-/// `target_home` is a new, private rehearsal HOME; all referenced content is
-/// copied and verified there before the caller may commit the resulting state.
+/// Legacy work still in flight: neither done, cancelled nor archived.
+pub(crate) fn in_flight(task: &old_task::Task) -> bool {
+    !matches!(task.state, old_task::TaskState::Done | old_task::TaskState::Cancelled)
+        && task.archived_at.is_none()
+}
+
+/// A Request neither closed nor archived.
+pub(crate) fn open_request(request: &old_task::Request) -> bool {
+    request.closed.is_none() && request.archived_at.is_none()
+}
+
+/// Every legacy PR that no active Task owned shares this one synthetic Request.
+pub(crate) const UNOWNED_PR_REQUEST: &str = "legacy-pr-request-unowned";
+
+/// The only liveness v2 can trust at import: the Agent holds this active Task.
+pub(crate) fn assigned_and_active(task: &d::Task, agent: &d::AgentId) -> bool {
+    task.agent_id.as_ref() == Some(agent) && !task.state.terminal()
+}
+
+/// Where legacy content is read from. `recorded_home` is the HOME the events
+/// were written in: absolute attachment paths point there, and a copy maps
+/// them onto its own `files/`.
+pub(crate) struct Source<'a> {
+    pub home: &'a Path,
+    pub recorded_home: &'a Path,
+}
+
+/// Materialize only the work in flight into a new epoch: open Requests and
+/// active Tasks with their Agents, PRs, documents, unanswered questions, unread
+/// reports and unsettled deliveries. Closed work and old conversation stay in
+/// the archived legacy database. Imported records have System authorship and a
+/// visible provenance prefix; neither old replies nor old auto-merge flags
+/// become v2 authority. `target_home` is a new, private stage.
 pub(crate) fn materialize_legacy(
     view: &View,
-    source_home: &Path,
+    source: &Source<'_>,
     target_home: &Path,
     epoch: d::DataEpoch,
 ) -> Result<(d::DomainState, ImportReport)> {
     let mut state = d::DomainState::new(epoch);
     state.revision = view.seq.max(1);
-    let mut report = ImportReport {
-        source_seq: view.seq,
-        requests: 0,
-        request_closures: 0,
-        request_attachments: 0,
-        tasks: 0,
-        agents: 0,
-        split_pr_tasks: 0,
-        formal_prs: 0,
-        reference_only_prs: vec![],
-        questions: 0,
-        open_questions_requiring_reconciliation: 0,
-        open_questions_reopened: 0,
-        final_presentations: 0,
-        stacked_prs: vec![],
-        d02_waiting_dependency: vec![],
-        reports: 0,
-        messages: 0,
-        documents: 0,
-        attachments: 0,
-        attachment_size_discrepancies: 0,
-        conserved_undelivered: 0,
-        conserved_uncertain: 0,
-        conserved_historical: 0,
-        mapping_rows: 0,
-        links: vec![],
-    };
-    for request in view.board.requests.values() {
+    let mut report = ImportReport { source_seq: view.seq, ..ImportReport::default() };
+    let active: BTreeMap<&String, &old_task::Task> =
+        view.board.tasks.iter().filter(|(_, task)| in_flight(task)).collect();
+    report.skipped.tasks = view.board.tasks.len() - active.len();
+    let mut request_ids: BTreeSet<&String> = view
+        .board
+        .requests
+        .iter()
+        .filter(|(_, request)| open_request(request))
+        .map(|(id, _)| id)
+        .collect();
+    request_ids.extend(active.values().map(|task| &task.request));
+    let mut ordered: Vec<(i64, d::Interaction)> = vec![];
+    for id in &request_ids {
+        let request_id = d::RequestId((*id).clone());
+        let Some(request) = view.board.requests.get(*id) else {
+            let task = active.values().find(|task| &task.request == *id).context("request owner missing")?;
+            state.requests.insert(request_id.clone(), d::Request {
+                id: request_id,
+                body: format!("Legacy request for Task {} (original request missing)", task.id),
+                closed: false,
+            });
+            report.links.push(link(task, "task", &task.id, "synthetic_request", "request", id)?);
+            report.requests += 1;
+            continue;
+        };
         let body = request
             .text
             .as_deref()
             .filter(|v| !v.trim().is_empty())
             .or(request.title.as_deref())
             .unwrap_or("Legacy request without text");
-        let id = d::RequestId(request.id.clone());
-        state.requests.insert(
-            id.clone(),
-            d::Request {
-                id,
-                body: body.to_owned(),
-                closed: request.closed.is_some(),
-            },
-        );
-        report.links.push(link(
-            request,
-            "request",
-            &request.id,
-            "entity",
-            "request",
-            &request.id,
-        )?);
+        state.requests.insert(request_id.clone(), d::Request {
+            id: request_id.clone(),
+            body: body.to_owned(),
+            closed: request.closed.is_some(),
+        });
+        report.links.push(link(request, "request", &request.id, "entity", "request", &request.id)?);
         report.requests += 1;
-    }
-    // A node may have no Task. Preserve its identity and conversation as
-    // historical data without importing transient process or connection state.
-    let orchestrator_session = view
-        .orchestrator
-        .as_ref()
-        .and_then(|runtime| runtime.session_id.as_deref());
-    for (session, node) in &view.nodes {
-        if node.is_orchestrator || Some(session.as_str()) == orchestrator_session {
-            continue;
+        if !request.attachments.is_empty() {
+            let attachments = attachments(&request.attachments, source, target_home, &mut report)?;
+            map_attachment_links(&mut report, "request", &request.id, &request.attachments, &attachments)?;
+            ordered.push((request.created_at, info(
+                format!("legacy-request-{}", request.id),
+                d::Scope::Orchestrator { request_id: Some(request_id) },
+                d::Recipient::User,
+                format!("[Legacy Request {} attachments] {}", request.id, request.text.as_deref().unwrap_or_default()),
+                attachments,
+                state.revision,
+            )));
         }
-        // R01: the Agent is the Claude session, so a live session keeps acting on
-        // its imported Tasks under the same identity.
-        let agent_id = d::AgentId(session.clone());
-        state.agents.insert(
-            agent_id.clone(),
-            d::Agent {
-                id: agent_id.clone(),
-                name: node
-                    .name
-                    .as_deref()
-                    .filter(|name| !name.trim().is_empty())
-                    .unwrap_or(session)
-                    .to_owned(),
-                connected: false,
-            },
-        );
-        report.links.push(link(node, "node", session, "entity", "agent", &agent_id.0)?);
     }
-    // A few very old cards precede durable Request records. Give them a
-    // clearly synthetic request rather than silently dropping their Task.
-    for task in view.board.tasks.values() {
-        let request_id = d::RequestId(task.request.clone());
-        if !state.requests.contains_key(&request_id) {
-            report.links.push(link(
-                task,
-                "task",
-                &task.id,
-                "synthetic_request",
-                "request",
-                &task.request,
-            )?);
-        }
-        state
-            .requests
-            .entry(request_id.clone())
-            .or_insert_with(|| d::Request {
-                id: request_id.clone(),
-                body: format!(
-                    "Legacy request for Task {} (original request missing)",
-                    task.id
-                ),
-                closed: false,
-            });
-        let agent_id = task
-            .assignee
-            .as_ref()
-            .map(|a| d::AgentId(a.session_id.clone()));
+    report.skipped.requests = view.board.requests.keys().filter(|id| !request_ids.contains(id)).count();
+    for task in active.values() {
+        let agent_id = task.assignee.as_ref().map(|a| d::AgentId(a.session_id.clone()));
         if let Some(agent_id) = &agent_id {
-            state
-                .agents
-                .entry(agent_id.clone())
-                .or_insert_with(|| d::Agent {
+            if !state.agents.contains_key(agent_id) {
+                let node = view.nodes.get(&agent_id.0);
+                state.agents.insert(agent_id.clone(), d::Agent {
                     id: agent_id.clone(),
-                    name: format!(
-                        "Legacy session {}",
-                        task.assignee.as_ref().unwrap().session_id
-                    ),
+                    name: node
+                        .and_then(|node| node.name.as_deref())
+                        .filter(|name| !name.trim().is_empty())
+                        .map_or_else(|| format!("Legacy session {}", agent_id.0), str::to_owned),
                     connected: false,
                 });
+                report.links.push(link(&agent_id.0, "session", &agent_id.0, "agent_conversation", "agent", &agent_id.0)?);
+            }
         }
         let id = d::TaskId(task.id.clone());
-        state.tasks.insert(
-            id.clone(),
-            d::Task {
-                id,
-                request_id,
-                agent_id,
-                title: nonempty(&task.title, "Legacy Task"),
-                state: task_state(task.state),
-                revision: state.revision,
-                started: task.state != old_task::TaskState::NotStarted,
-                review_prs: false,
-                final_presentation: None,
-                pr_id: None,
-                dependencies: task
-                    .depends_on
-                    .iter()
-                    .filter(|v| view.board.tasks.contains_key(*v))
-                    .map(|v| d::TaskId(v.clone()))
-                    .collect(),
-                stack: None,
-                documents: BTreeMap::new(),
-                archived: task.archived_at.is_some()
-                    && matches!(
-                        task.state,
-                        old_task::TaskState::Done | old_task::TaskState::Cancelled
-                    ),
-            },
-        );
-        report
-            .links
-            .push(link(task, "task", &task.id, "entity", "task", &task.id)?);
-        report.tasks += 1;
-    }
-    // Preserve the Claude conversation identifiers as import provenance.
-    let sessions: BTreeSet<_> = view
-        .board
-        .tasks
-        .values()
-        .filter_map(|task| task.assignee.as_ref().map(|a| a.session_id.as_str()))
-        .chain(
-            view.nodes
+        state.tasks.insert(id.clone(), d::Task {
+            id,
+            request_id: d::RequestId(task.request.clone()),
+            agent_id,
+            title: nonempty(&task.title, "Legacy Task"),
+            state: task_state(task.state),
+            revision: state.revision,
+            started: task.state != old_task::TaskState::NotStarted,
+            review_prs: false,
+            final_presentation: None,
+            pr_id: None,
+            dependencies: task
+                .depends_on
                 .iter()
-                .filter(|(session, node)| {
-                    !node.is_orchestrator && Some(session.as_str()) != orchestrator_session
-                })
-                .map(|(session, _)| session.as_str()),
-        )
-        .collect();
-    for session in sessions {
-        report.links.push(link(&session, "session", session, "agent_conversation",
-            "agent", session)?);
+                .filter(|v| active.contains_key(v))
+                .map(|v| d::TaskId(v.clone()))
+                .collect(),
+            stack: None,
+            documents: BTreeMap::new(),
+            archived: false,
+        });
+        report.links.push(link(task, "task", &task.id, "entity", "task", &task.id)?);
+        report.tasks += 1;
     }
     if let Some(session) = view.orchestrator.as_ref().and_then(|runtime| runtime.session_id.as_deref()) {
         report.links.push(link(&session, "session", session, "orchestrator_conversation",
             "orchestrator", "generation-0")?);
     }
     report.agents = state.agents.len();
-    // A legacy Task could own many PRs. Keep one on the original Task and
-    // create explicit derived Tasks for the others. Ineligible PRs still get
-    // a historical Information card carrying URL/title/state and old ID.
+    // An active Task keeps its registered PR: the open one, or else its latest.
+    // Other open PRs become derived Tasks; closed PRs of finished work stay behind.
     let mut prs: Vec<_> = view.prs.values().collect();
-    prs.sort_by_key(|p| (p.state != old_pr::PrState::Open, p.id));
+    prs.sort_by_key(|p| (p.state != old_pr::PrState::Open, if p.state == old_pr::PrState::Open { p.id } else { u64::MAX - p.id }));
     for pr in prs {
         let owner = pr
             .task
             .as_ref()
             .filter(|id| state.tasks.contains_key(&d::TaskId((*id).clone())));
+        let open = pr.state == old_pr::PrState::Open;
         let valid = pr.head_sha.as_ref().is_some_and(|v| !v.trim().is_empty())
             && pr.base.as_ref().is_some_and(|v| !v.trim().is_empty())
             && !pr.merge_methods.is_empty();
-        if !valid {
-            report.reference_only_prs.push(pr.id);
+        let registers = owner.is_some_and(|id| state.tasks[&d::TaskId(id.clone())].pr_id.is_none());
+        if !valid || !(open || registers) {
+            report.skipped.prs += 1;
             continue;
         }
-        let (task_id, split) = if let Some(owner) = owner {
-            let id = d::TaskId(owner.clone());
-            if state.tasks[&id].pr_id.is_none() {
-                (id, false)
-            } else {
-                (d::TaskId(format!("legacy-pr-task-{}", pr.id)), true)
-            }
-        } else {
-            (d::TaskId(format!("legacy-pr-task-{}", pr.id)), true)
-        };
-        if split {
-            ensure!(
-                !state.tasks.contains_key(&task_id),
-                "legacy PR split Task ID collides with an existing Task"
-            );
-            let request_id = owner
-                .and_then(|id| state.tasks.get(&d::TaskId(id.clone())))
-                .map(|task| task.request_id.clone())
-                .unwrap_or_else(|| d::RequestId(format!("legacy-pr-request-{}", pr.id)));
-            state
-                .requests
-                .entry(request_id.clone())
-                .or_insert_with(|| d::Request {
-                    id: request_id.clone(),
-                    body: format!("Legacy PR #{} without a recorded Request", pr.id),
-                    closed: false,
-                });
-            let original = owner.and_then(|id| state.tasks.get(&d::TaskId(id.clone())));
-            state.tasks.insert(
-                task_id.clone(),
-                d::Task {
+        let task_id = match owner {
+            Some(owner) if registers => d::TaskId(owner.clone()),
+            _ => {
+                let task_id = d::TaskId(format!("legacy-pr-task-{}", pr.id));
+                ensure!(!state.tasks.contains_key(&task_id), "legacy PR Task ID collides with an existing Task");
+                let original = owner.and_then(|id| state.tasks.get(&d::TaskId(id.clone())));
+                let request_id = original
+                    .map(|task| task.request_id.clone())
+                    .unwrap_or_else(|| d::RequestId(UNOWNED_PR_REQUEST.into()));
+                if !state.requests.contains_key(&request_id) {
+                    state.requests.insert(request_id.clone(), d::Request {
+                        id: request_id.clone(),
+                        body: "Imported pull requests without a task".into(),
+                        closed: false,
+                    });
+                    report.requests += 1;
+                }
+                state.tasks.insert(task_id.clone(), d::Task {
                     id: task_id.clone(),
                     request_id,
                     agent_id: original.and_then(|t| t.agent_id.clone()),
-                    title: format!(
-                        "{} · PR #{} (legacy Task {})",
-                        nonempty(&pr.title, "Legacy PR"),
-                        pr.number,
-                        owner.map_or("unassigned", String::as_str)
-                    ),
-                    state: match pr.state {
-                        old_pr::PrState::Open => d::TaskState::InReview,
-                        old_pr::PrState::Merged => d::TaskState::Done,
-                        _ => d::TaskState::Cancelled,
-                    },
+                    title: format!("{} · PR #{}", nonempty(&pr.title, "Legacy PR"), pr.number),
+                    state: d::TaskState::InReview,
                     revision: state.revision,
                     started: true,
                     review_prs: true,
@@ -337,13 +273,12 @@ pub(crate) fn materialize_legacy(
                     stack: None,
                     documents: BTreeMap::new(),
                     archived: false,
-                },
-            );
-            report
-                .links
-                .push(link(pr, "pr", pr.id, "derived_task", "task", &task_id.0)?);
-            report.split_pr_tasks += 1;
-        }
+                });
+                report.links.push(link(pr, "pr", pr.id, "derived_task", "task", &task_id.0)?);
+                report.derived_pr_tasks += 1;
+                task_id
+            }
+        };
         let id = d::PrId(format!("legacy-pr-{}", pr.id));
         let methods: Vec<_> = pr
             .merge_methods
@@ -354,44 +289,30 @@ pub(crate) fn materialize_legacy(
                 old_pr::MergeMethod::Rebase => d::MergeMethod::Rebase,
             })
             .collect();
-        let repository = pr.repo.to_ascii_lowercase();
         let state_kind = match pr.state {
             old_pr::PrState::Open => d::PrState::Open,
             old_pr::PrState::Merged => d::PrState::Merged,
             _ => d::PrState::Closed,
         };
         let head = pr.head_sha.clone().unwrap();
-        state.pull_requests.insert(
-            id.clone(),
-            d::PullRequest {
-                id: id.clone(),
-                task_id: task_id.clone(),
-                host: "github.com".into(),
-                repository,
-                number: pr.number,
-                head: head.clone(),
-                base: pr.base.clone().unwrap(),
-                state: state_kind,
-                merged_head: (state_kind == d::PrState::Merged).then_some(head),
-                allowed_methods: methods,
-                review: Some(d::PullRequestReview { decisions: vec![] }),
-            },
-        );
-        let task = state
-            .tasks
-            .get_mut(&task_id)
-            .context("imported PR Task missing")?;
-        task.pr_id = Some(id);
+        state.pull_requests.insert(id.clone(), d::PullRequest {
+            id: id.clone(),
+            task_id: task_id.clone(),
+            host: "github.com".into(),
+            repository: pr.repo.to_ascii_lowercase(),
+            number: pr.number,
+            head: head.clone(),
+            base: pr.base.clone().unwrap(),
+            state: state_kind,
+            merged_head: (state_kind == d::PrState::Merged).then_some(head),
+            allowed_methods: methods,
+            review: Some(d::PullRequestReview { decisions: vec![] }),
+        });
+        let task = state.tasks.get_mut(&task_id).context("imported PR Task missing")?;
+        task.pr_id = Some(id.clone());
         task.review_prs = true;
-        report.links.push(link(
-            pr,
-            "pr",
-            pr.id,
-            "entity",
-            "pr",
-            format!("legacy-pr-{}", pr.id),
-        )?);
-        report.formal_prs += 1;
+        report.links.push(link(pr, "pr", pr.id, "entity", "pr", &id.0)?);
+        report.prs += 1;
     }
     for pr in view.prs.values() {
         let Some(below) = view.stack_below(pr) else { continue };
@@ -404,147 +325,26 @@ pub(crate) fn materialize_legacy(
             report.links.push(link(pr, "pr", pr.id, "stacked_on", "pr", format!("legacy-pr-{}", below.id))?);
         }
     }
-    // Legacy metadata is retained on an Information card even when a PR was
-    // imported formally. Old approvals are deliberately not transferred.
-    let mut ordered: Vec<(i64, d::Interaction)> = vec![];
-    for request in view.board.requests.values() {
-        let attachments = attachments(&request.attachments, source_home, target_home, &mut report)?;
-        report.request_attachments += attachments.len();
-        map_attachment_links(
-            &mut report,
-            "request",
-            &request.id,
-            &request.attachments,
-            &attachments,
-        )?;
-        let interaction_id = format!("legacy-request-{}", request.id);
-        let mut request_body = format!(
-            "[Legacy Request {}; created_at={}; synthetic={}; archived_at={:?}; title={:?}] {}",
-            request.id,
-            request.created_at,
-            request.synthetic,
-            request.archived_at,
-            request.title,
-            request.text.as_deref().unwrap_or_default()
-        );
-        if let Some(options) = &request.options {
-            request_body.push_str("\nLegacy launch options: ");
-            request_body.push_str(&serde_json::to_string(options)?);
-        }
-        ordered.push((
-            request.created_at,
-            info(
-                interaction_id.clone(),
-                d::Scope::Orchestrator {
-                    request_id: Some(d::RequestId(request.id.clone())),
-                },
-                d::Recipient::User,
-                request_body,
-                attachments,
-                state.revision,
-            ),
-        ));
-        report.links.push(link(
-            request,
-            "request",
-            &request.id,
-            "record",
-            "interaction",
-            &interaction_id,
-        )?);
-        if let Some(closure) = &request.closed {
-            let closure_id = format!("legacy-request-closure-{}", request.id);
-            ordered.push((
-                closure.at,
-                info(
-                    closure_id.clone(),
-                    d::Scope::Orchestrator {
-                        request_id: Some(d::RequestId(request.id.clone())),
-                    },
-                    d::Recipient::User,
-                    format!(
-                        "[Legacy Request closure {}; withdrawn={}; at={}] {}",
-                        request.id,
-                        closure.withdrawn,
-                        closure.at,
-                        closure.answer.as_deref().unwrap_or("No answer recorded")
-                    ),
-                    vec![],
-                    state.revision,
-                ),
-            ));
-            report.links.push(link(
-                closure,
-                "request",
-                &request.id,
-                "closure",
-                "interaction",
-                &closure_id,
-            )?);
-            report.request_closures += 1;
-        }
-    }
-    for pr in view.prs.values() {
-        report.links.push(link(
-            pr,
-            "pr",
-            pr.id,
-            "record",
-            "interaction",
-            format!("legacy-pr-record-{}", pr.id),
-        )?);
-        let scope = pr
-            .task
-            .as_ref()
-            .filter(|v| state.tasks.contains_key(&d::TaskId((*v).clone())))
-            .map(|v| d::Scope::Task {
-                task_id: d::TaskId(v.clone()),
-            })
-            .unwrap_or(d::Scope::Orchestrator { request_id: None });
-        ordered.push((
-            pr.opened_at,
-            info(
-                format!("legacy-pr-record-{}", pr.id),
-                scope,
-                d::Recipient::User,
-                format!(
-                    "[Legacy PR #{}; state={:?}; session={}] {}\n{}\n{}",
-                    pr.id,
-                    pr.state,
-                    pr.session_id,
-                    pr.title,
-                    pr.url,
-                    pr.body.as_deref().unwrap_or("")
-                ),
-                vec![],
-                state.revision,
-            ),
-        ));
-    }
     for q in view.questions.values() {
-        let scope = legacy_scope(q.task.as_deref(), &state);
-        let recipient = if q.to_orchestrator {
-            d::Recipient::Orchestrator
-        } else {
-            d::Recipient::User
+        let task_id = q.task.as_ref().map(|id| d::TaskId(id.clone()));
+        let Some(task) = task_id.as_ref().and_then(|id| state.tasks.get(id)).filter(|_| q.status == old::QuestionStatus::Open) else {
+            report.skipped.questions += 1;
+            continue;
         };
-        let attachments = attachments(&q.attachments, source_home, target_home, &mut report)?;
+        let task_id = task.id.clone();
+        let author_session = d::AgentId(q.session_id.clone());
+        // Legacy liveness is unreliable once the daemon stops, so a question
+        // stays answerable only while its author is the current assignee of
+        // its active Task: the answer reaches that Agent. Any other open
+        // question has nobody to receive a v2 answer and arrives unread.
+        let live = assigned_and_active(task, &author_session);
+        let attachments = attachments(&q.attachments, source, target_home, &mut report)?;
         map_attachment_links(&mut report, "question", q.id, &q.attachments, &attachments)?;
-        let mut body = format!(
-            "[Legacy question #{}; status={:?}; session={}] {}",
-            q.id, q.status, q.session_id, q.title
-        );
+        let mut body = format!("[Legacy question #{}; session={}] {}", q.id, q.session_id, q.title);
         if let Some(detail) = &q.detail {
-            body.push_str("\n");
+            body.push('\n');
             body.push_str(detail);
         }
-        body.push_str("\nLegacy context: ");
-        body.push_str(&serde_json::to_string(&serde_json::json!({
-            "origin":q.origin,"to_orchestrator":q.to_orchestrator,
-            "action":q.action,"steps":q.steps,"links":q.links,
-            "mission":q.mission,"replaces":q.replaces,"about_pr":q.about_pr,
-            "tool_use_id":q.tool_use_id,"node_context":q.node_context,
-        }))?);
         if !q.options.is_empty() {
             body.push_str("\nLegacy options:");
             for option in &q.options {
@@ -556,22 +356,8 @@ pub(crate) fn materialize_legacy(
                 }
             }
         }
-        if let Some(answer) = &q.answer {
-            body.push_str("\nLegacy answer (including selected option and provenance): ");
-            body.push_str(&serde_json::to_string(answer)?);
-        }
-        let author_session = d::AgentId(q.session_id.clone());
-        let live = q.status == old::QuestionStatus::Open
-            && matches!(&scope, d::Scope::Task { task_id }
-                if state.tasks.get(task_id).is_some_and(|task| !task.state.terminal()))
-            && view.nodes.get(&q.session_id).is_some_and(|node| node.alive)
-            && state.agents.contains_key(&author_session);
-        // A question whose session is still alive on an active Task stays
-        // answerable: the answer reaches the Task's current Agent. Any other
-        // open question has nobody to receive a v2 answer (v2 refuses answers
-        // on a closed Task) and is preserved as a historical record.
         let (author, blocking, payload) = if live {
-            report.open_questions_reopened += 1;
+            report.questions_reopened += 1;
             let options = q
                 .options
                 .iter()
@@ -582,207 +368,99 @@ pub(crate) fn materialize_legacy(
                     inputs: vec![],
                 })
                 .collect();
-            (
-                d::Author::Agent { agent_id: author_session },
-                q.blocking,
-                d::InteractionPayload::Question { options, answer: None },
-            )
+            (d::Author::Agent { agent_id: author_session }, q.blocking,
+                d::InteractionPayload::Question { options, answer: None })
         } else {
-            if q.status == old::QuestionStatus::Open {
-                body.push_str("\nRequires reconciliation: no active Task Agent can receive a v2 answer to this historical question.");
-                report.open_questions_requiring_reconciliation += 1;
-            }
-            (
-                d::Author::System,
-                false,
-                d::InteractionPayload::Information {
-                    read_by: if q.status == old::QuestionStatus::Open {
-                        BTreeSet::new()
-                    } else {
-                        BTreeSet::from(["legacy-import".into()])
-                    },
-                },
-            )
+            body.push_str("\nRequires reconciliation: its author is not the assignee of this Task, so a v2 answer cannot reach it.");
+            report.questions_unread += 1;
+            (d::Author::System, false, d::InteractionPayload::Information { read_by: BTreeSet::new() })
         };
-        ordered.push((
-            q.asked_at,
-            d::Interaction {
-                id: d::InteractionId(format!("legacy-question-{}", q.id)),
-                scope,
-                author,
-                recipient,
-                body,
-                blocking,
-                subject: None,
-                payload,
-                attachments,
-                revision: state.revision,
-                order: 0,
-            },
-        ));
-        report.links.push(link(
-            q,
-            "question",
-            q.id,
-            "entity",
-            "interaction",
-            format!("legacy-question-{}", q.id),
-        )?);
-        report.questions += 1;
+        let id = format!("legacy-question-{}", q.id);
+        ordered.push((q.asked_at, d::Interaction {
+            id: d::InteractionId(id.clone()),
+            scope: d::Scope::Task { task_id },
+            author,
+            recipient: if q.to_orchestrator { d::Recipient::Orchestrator } else { d::Recipient::User },
+            body,
+            blocking,
+            subject: None,
+            payload,
+            attachments,
+            revision: state.revision,
+            order: 0,
+        }));
+        report.links.push(link(q, "question", q.id, "entity", "interaction", id)?);
     }
     for r in view.reports.values() {
-        let scope = legacy_scope(r.task.as_deref(), &state);
-        let attachments = attachments(&r.attachments, source_home, target_home, &mut report)?;
-        map_attachment_links(&mut report, "report", r.id, &r.attachments, &attachments)?;
-        let document_id = if r.kind == old::ReportKind::Document {
+        let task_id = r.task.as_ref().map(|id| d::TaskId(id.clone())).filter(|id| state.tasks.contains_key(id));
+        let final_report = task_id.as_ref().is_some_and(|id| view.board.tasks.get(&id.0).is_some_and(|task| task.final_report == Some(r.id)));
+        let document = r.kind == old::ReportKind::Document && task_id.is_some();
+        let unread = !r.read && task_id.is_some();
+        if !(document || unread || final_report) {
+            report.skipped.reports += 1;
+            continue;
+        }
+        if let (true, Some(task_id)) = (document, &task_id) {
             let bytes = if let Some(first) = r.attachments.first() {
-                read_stored_bytes(source_home, first)?.1
+                read_stored_bytes(source, first)?.1
             } else {
                 r.body.as_deref().unwrap_or(&r.title).as_bytes().to_vec()
             };
             let (digest, reference) = store_blob(target_home, &bytes)?;
             let document_id = d::DocumentId(format!("legacy-document-{}", r.id));
             let revision_id = d::DocumentRevisionId(format!("legacy-document-revision-{}", r.id));
-            state.documents.insert(
-                document_id.clone(),
-                d::Document {
-                    id: document_id.clone(),
-                    title: nonempty(&r.title, "Legacy document"),
-                    current_revision: revision_id.clone(),
-                },
-            );
-            state.document_revisions.insert(
-                revision_id.clone(),
-                d::DocumentRevision {
-                    id: revision_id,
-                    document_id: document_id.clone(),
-                    number: 1,
-                    content_digest: digest,
-                    content_reference: reference,
-                },
-            );
-            report.links.push(link(
-                r,
-                "report",
-                r.id,
-                "document",
-                "document",
-                format!("legacy-document-{}", r.id),
-            )?);
-            report.links.push(link(
-                r,
-                "report",
-                r.id,
-                "document_revision",
-                "document_revision",
-                format!("legacy-document-revision-{}", r.id),
-            )?);
-            if let d::Scope::Task { task_id } = &scope {
-                state
-                    .tasks
-                    .get_mut(task_id)
-                    .context("document Task missing")?
-                    .documents
-                    .insert(document_id.clone(), "document".into());
-                state.document_reviews.push(d::DocumentReview {
-                    task_id: task_id.clone(),
-                    document_id: document_id.clone(),
-                    decisions: vec![],
-                });
-            }
+            state.documents.insert(document_id.clone(), d::Document {
+                id: document_id.clone(),
+                title: nonempty(&r.title, "Legacy document"),
+                current_revision: revision_id.clone(),
+            });
+            state.document_revisions.insert(revision_id.clone(), d::DocumentRevision {
+                id: revision_id.clone(),
+                document_id: document_id.clone(),
+                number: 1,
+                content_digest: digest,
+                content_reference: reference,
+            });
+            report.links.push(link(r, "report", r.id, "document", "document", &document_id.0)?);
+            report.links.push(link(r, "report", r.id, "document_revision", "document_revision", &revision_id.0)?);
+            state.tasks.get_mut(task_id).context("document Task missing")?
+                .documents.insert(document_id.clone(), "document".into());
+            state.document_reviews.push(d::DocumentReview {
+                task_id: task_id.clone(),
+                document_id,
+                decisions: vec![],
+            });
             report.documents += 1;
-            Some(document_id)
-        } else {
-            None
-        };
-        let marker = document_id.map_or(String::new(), |id| format!("; document_id={id}"));
-        let body = format!(
-            "[Legacy report #{}; kind={:?}; session={}{}] {}\n{}",
-            r.id,
-            r.kind,
-            r.session_id,
-            marker,
-            r.title,
-            r.body.as_deref().unwrap_or("")
-        );
-        ordered.push((
-            r.created_at,
-            info(
-                format!("legacy-report-{}", r.id),
-                scope,
-                if r.to_orchestrator {
-                    d::Recipient::Orchestrator
-                } else {
-                    d::Recipient::User
-                },
-                body,
+        }
+        if unread {
+            let attachments = attachments(&r.attachments, source, target_home, &mut report)?;
+            map_attachment_links(&mut report, "report", r.id, &r.attachments, &attachments)?;
+            let id = format!("legacy-report-{}", r.id);
+            let mut card = info(
+                id.clone(),
+                d::Scope::Task { task_id: task_id.clone().context("unread report Task missing")? },
+                if r.to_orchestrator { d::Recipient::Orchestrator } else { d::Recipient::User },
+                format!("[Legacy report #{}; session={}] {}\n{}", r.id, r.session_id, r.title, r.body.as_deref().unwrap_or("")),
                 attachments,
                 state.revision,
-            ),
-        ));
-        report.links.push(link(
-            r,
-            "report",
-            r.id,
-            "entity",
-            "interaction",
-            format!("legacy-report-{}", r.id),
-        )?);
-        report.reports += 1;
+            );
+            card.payload = d::InteractionPayload::Information { read_by: BTreeSet::new() };
+            ordered.push((r.created_at, card));
+            report.links.push(link(r, "report", r.id, "entity", "interaction", id)?);
+            report.reports_unread += 1;
+        }
     }
-    for m in view.messages.values() {
-        let scope = match &m.about {
-            Some(old::MessageAbout::Task { task }) => legacy_scope(Some(task), &state),
-            _ => d::Scope::Orchestrator { request_id: None },
-        };
-        let attachments = attachments(&m.attachments, source_home, target_home, &mut report)?;
-        map_attachment_links(&mut report, "message", m.id, &m.attachments, &attachments)?;
-        ordered.push((
-            m.created_at,
-            info(
-                format!("legacy-message-{}", m.id),
-                scope,
-                d::Recipient::Orchestrator,
-                format!(
-                    "[Legacy message #{}; from={:?}; session={}] {}",
-                    m.id, m.from, m.session_id, m.text
-                ),
-                attachments,
-                state.revision,
-            ),
-        ));
-        report.links.push(link(
-            m,
-            "message",
-            m.id,
-            "entity",
-            "interaction",
-            format!("legacy-message-{}", m.id),
-        )?);
-        report.messages += 1;
-    }
+    report.skipped.messages = view.messages.len();
     for attempt in view.delivery_attempts.values().filter(|attempt| super::unresolved_delivery(attempt)) {
         let agent_id = d::AgentId(attempt.session_id.clone());
-        let task = state
-            .tasks
-            .values()
-            .find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.state.terminal())
-            .map(|task| task.id.clone());
-        let retryable = attempt.state == alondra_core::delivery::State::Retryable;
-        let (recipient, unread, outcome) = if retryable && state.agents.contains_key(&agent_id) {
-            report.conserved_undelivered += 1;
-            (d::Recipient::Agent { agent_id }, true,
-                "never reached the session and waits for its Agent; it is not resent automatically")
-        } else if retryable {
-            report.conserved_historical += 1;
-            (d::Recipient::User, false, "never reached the session, which was not imported")
-        } else {
-            report.conserved_uncertain += 1;
-            (d::Recipient::User, true,
-                "may already have reached the session; it is never resent automatically")
+        let task = state.tasks.values().find(|task| assigned_and_active(task, &agent_id)).map(|task| task.id.clone());
+        let (Some(task), false) = (task, attempt.state == alondra_core::delivery::State::Retryable) else {
+            report.skipped.deliveries += 1;
+            continue;
         };
+        report.deliveries_uncertain += 1;
         let mut body = format!(
-            "[Legacy delivery #{}; state={:?}; channel={:?}; reason={}; session={}] This delivery {outcome}.",
+            "[Legacy delivery #{}; state={:?}; channel={:?}; reason={}; session={}] This delivery may already have reached the session; it is never resent or retried.",
             attempt.id,
             attempt.state,
             attempt.channel,
@@ -796,47 +474,22 @@ pub(crate) fn materialize_legacy(
             body.push_str(&format!("\nTerminal decision for legacy question #{question}."));
         }
         let id = format!("legacy-delivery-{}", attempt.id);
-        ordered.push((
-            attempt.updated_at,
-            d::Interaction {
-                id: d::InteractionId(id.clone()),
-                scope: task
-                    .map(|task_id| d::Scope::Task { task_id })
-                    .unwrap_or(d::Scope::Orchestrator { request_id: None }),
-                author: d::Author::System,
-                recipient,
-                body,
-                blocking: false,
-                subject: None,
-                payload: d::InteractionPayload::Information {
-                    read_by: if unread { BTreeSet::new() } else { BTreeSet::from(["legacy-import".into()]) },
-                },
-                attachments: vec![],
-                revision: state.revision,
-                order: 0,
-            },
-        ));
+        let mut card = info(id.clone(), d::Scope::Task { task_id: task }, d::Recipient::User, body, vec![], state.revision);
+        card.payload = d::InteractionPayload::Information { read_by: BTreeSet::new() };
+        ordered.push((attempt.updated_at, card));
         report.links.push(link(attempt, "delivery_attempt", attempt.id, "conserved", "interaction", id)?);
     }
-    // Work in flight keeps its review context: an open lifetime PR and/or the
-    // legacy final report become the Task's current final presentation, so the
-    // user can decide on it and the live Agent can complete the Task in v2.
-    let active: Vec<_> = state
-        .tasks
-        .values()
-        .filter(|task| !task.state.terminal())
-        .map(|task| task.id.clone())
-        .collect();
-    for task_id in active {
+    // Work in flight keeps its review context: an open PR and/or the legacy
+    // final report become the Task's current final presentation, so the user
+    // can decide on it and the live Agent can complete the Task in v2.
+    let presented: Vec<_> = state.tasks.keys().cloned().collect();
+    for task_id in presented {
         let mut targets = vec![];
         let mut at = 0;
         let task = &state.tasks[&task_id];
         if let Some(pr) = task.pr_id.as_ref().map(|id| &state.pull_requests[id]) {
             if pr.state == d::PrState::Open {
-                targets.push(d::DeliveryTarget::PullRequest {
-                    pr_id: pr.id.clone(),
-                    head: pr.head.clone(),
-                });
+                targets.push(d::DeliveryTarget::PullRequest { pr_id: pr.id.clone(), head: pr.head.clone() });
             }
         }
         let final_report = view
@@ -849,7 +502,7 @@ pub(crate) fn materialize_legacy(
         if let Some(r) = final_report {
             at = r.created_at;
             let document_id = d::DocumentId(format!("legacy-document-{}", r.id));
-            if r.kind == old::ReportKind::Document && task.documents.contains_key(&document_id) {
+            if task.documents.contains_key(&document_id) {
                 targets.push(d::DeliveryTarget::DocumentRevision {
                     document_id,
                     revision_id: d::DocumentRevisionId(format!("legacy-document-revision-{}", r.id)),
@@ -864,86 +517,54 @@ pub(crate) fn materialize_legacy(
             continue;
         }
         let interaction_id = format!("legacy-final-{}", task_id.0);
-        ordered.push((
-            at,
-            d::Interaction {
-                id: d::InteractionId(interaction_id.clone()),
-                scope: d::Scope::Task { task_id: task_id.clone() },
-                author: match &task.agent_id {
-                    Some(agent_id) => d::Author::Agent { agent_id: agent_id.clone() },
-                    None => d::Author::System,
-                },
-                recipient: d::Recipient::User,
-                body: format!("[Legacy final presentation for Task {}] {}", task_id.0, task.title),
-                blocking: false,
-                subject: None,
-                payload: d::InteractionPayload::Delivery {
-                    targets,
-                    is_final: true,
-                    acceptance: None,
-                    feedback: vec![],
-                },
-                attachments: vec![],
-                revision: state.revision,
-                order: 0,
+        ordered.push((at, d::Interaction {
+            id: d::InteractionId(interaction_id.clone()),
+            scope: d::Scope::Task { task_id: task_id.clone() },
+            author: match &task.agent_id {
+                Some(agent_id) => d::Author::Agent { agent_id: agent_id.clone() },
+                None => d::Author::System,
             },
-        ));
-        state.tasks.get_mut(&task_id).unwrap().final_presentation =
-            Some(d::InteractionId(interaction_id.clone()));
+            recipient: d::Recipient::User,
+            body: format!("[Legacy final presentation for Task {}] {}", task_id.0, task.title),
+            blocking: false,
+            subject: None,
+            payload: d::InteractionPayload::Delivery { targets, is_final: true, acceptance: None, feedback: vec![] },
+            attachments: vec![],
+            revision: state.revision,
+            order: 0,
+        }));
+        state.tasks.get_mut(&task_id).unwrap().final_presentation = Some(d::InteractionId(interaction_id.clone()));
         report.links.push(link(&task_id.0, "task", &task_id.0, "final_presentation", "interaction", &interaction_id)?);
         report.final_presentations += 1;
     }
     ordered.sort_by(|a, b| (a.0, &a.1.id).cmp(&(b.0, &b.1.id)));
     for (index, (_, mut interaction)) in ordered.into_iter().enumerate() {
         interaction.order = index as u64 + 1;
-        state
-            .interactions
-            .insert(interaction.id.clone(), interaction);
+        state.interactions.insert(interaction.id.clone(), interaction);
     }
     state.revision = state.revision.max(state.interactions.len() as u64);
-    let legacy_states: BTreeMap<_, _> = state
-        .tasks
-        .iter()
-        .map(|(id, task)| (id.clone(), task.state))
-        .collect();
+    let legacy_states: BTreeMap<_, _> = state.tasks.iter().map(|(id, task)| (id.clone(), task.state)).collect();
     state.derive_states();
     report.d02_waiting_dependency = state
         .tasks
         .values()
-        .filter(|task| {
-            task.state == d::TaskState::WaitingDependency
-                && legacy_states[&task.id] != d::TaskState::WaitingDependency
-        })
+        .filter(|task| task.state == d::TaskState::WaitingDependency
+            && legacy_states[&task.id] != d::TaskState::WaitingDependency)
         .map(|task| task.id.0.clone())
         .collect();
     state.validate().map_err(anyhow::Error::new)?;
-    ensure!(
-        report.questions == view.questions.len()
-            && report.reports == view.reports.len()
-            && report.messages == view.messages.len()
-            && report.formal_prs + report.reference_only_prs.len() == view.prs.len(),
-        "legacy import lost a card"
-    );
     validate_links(&state, &report.links)?;
-    let coverage = |kind: &str, role: &str| {
-        report
-            .links
-            .iter()
-            .filter(|v| v.source_kind == kind && v.role == role)
-            .count()
-    };
+    let coverage = |kind: &str, role: &str| report.links.iter().filter(|v| v.source_kind == kind && v.role == role).count();
     ensure!(
-        coverage("request", "entity") == view.board.requests.len()
-            && coverage("request", "record") == view.board.requests.len()
-            && coverage("request", "closure") == report.request_closures
-            && coverage("task", "entity") == view.board.tasks.len()
-            && coverage("pr", "record") == view.prs.len()
-            && coverage("question", "entity") == view.questions.len()
-            && coverage("report", "entity") == view.reports.len()
-            && coverage("message", "entity") == view.messages.len()
+        coverage("task", "entity") == report.tasks
+            && coverage("pr", "entity") == report.prs
+            && coverage("question", "entity") == report.questions_reopened + report.questions_unread
+            && coverage("report", "entity") == report.reports_unread
             && coverage("attachment", "content") == report.attachments
-            && coverage("delivery_attempt", "conserved")
-                == view.delivery_attempts.values().filter(|a| super::unresolved_delivery(a)).count(),
+            && coverage("delivery_attempt", "conserved") == report.deliveries_uncertain
+            && report.tasks + report.skipped.tasks == view.board.tasks.len()
+            && report.prs + report.skipped.prs == view.prs.len()
+            && report.questions_reopened + report.questions_unread + report.skipped.questions == view.questions.len(),
         "legacy provenance mapping lacks source coverage"
     );
     report.mapping_rows = report.links.len();
@@ -1053,13 +674,6 @@ fn nonempty(value: &str, fallback: &str) -> String {
         value.into()
     }
 }
-fn legacy_scope(task: Option<&str>, state: &d::DomainState) -> d::Scope {
-    task.filter(|id| state.tasks.contains_key(&d::TaskId((*id).into())))
-        .map(|id| d::Scope::Task {
-            task_id: d::TaskId(id.into()),
-        })
-        .unwrap_or(d::Scope::Orchestrator { request_id: None })
-}
 fn info(
     id: String,
     scope: d::Scope,
@@ -1084,28 +698,22 @@ fn info(
         order: 0,
     }
 }
-pub(super) fn stored_file(home: &Path, attachment: &old::Attachment) -> Result<PathBuf> {
+pub(super) fn stored_file(source: &Source<'_>, attachment: &old::Attachment) -> Result<PathBuf> {
     let stored = attachment
         .stored_path
         .as_ref()
         .context("legacy attachment has no stored copy")?;
     let path = Path::new(stored);
+    let home = source.home;
     let canonical_home = home.canonicalize()?;
     let path = if path.is_absolute() {
         if path.starts_with(home) || path.starts_with(&canonical_home) {
             path.to_owned()
         } else {
-            // A coherent backup records its original HOME. Reject a path from
-            // any other tree even if it happens to share a `files/` suffix.
-            let manifest: super::BackupManifest =
-                serde_json::from_slice(&fs::read(home.join("manifest.json"))?)?;
-            ensure!(manifest.format == 1, "unsupported backup manifest");
-            let original_files = Path::new(&manifest.source_home).join("files");
-            let canonical_original_files = Path::new(&manifest.canonical_source_home).join("files");
+            // Reject a path from any other tree even if it shares a `files/` suffix.
             let suffix = path
-                .strip_prefix(&original_files)
-                .or_else(|_| path.strip_prefix(&canonical_original_files))
-                .context("legacy attachment was outside backed-up HOME files")?;
+                .strip_prefix(source.recorded_home.join("files"))
+                .context("legacy attachment was outside the recorded HOME files")?;
             home.join("files").join(suffix)
         }
     } else {
@@ -1124,38 +732,16 @@ pub(super) fn stored_file(home: &Path, attachment: &old::Attachment) -> Result<P
     Ok(path)
 }
 pub(super) fn read_stored_bytes(
-    home: &Path,
+    source: &Source<'_>,
     attachment: &old::Attachment,
 ) -> Result<(PathBuf, Vec<u8>)> {
-    let file = stored_file(home, attachment)?;
+    let file = stored_file(source, attachment)?;
     let bytes = fs::read(&file)?;
-    let marker = home.join("manifest.json");
-    if marker.exists() {
-        let manifest: super::BackupManifest = serde_json::from_slice(&fs::read(marker)?)?;
-        ensure!(manifest.format == 1, "unsupported backup manifest");
-        let canonical_home = home.canonicalize()?;
-        let relative = file
-            .strip_prefix(home)
-            .or_else(|_| file.strip_prefix(&canonical_home))
-            .context("stored file is outside backup HOME")?
-            .to_string_lossy()
-            .into_owned();
-        let entry = manifest
-            .files
-            .iter()
-            .find(|item| item.path == relative)
-            .context("stored file is absent from backup manifest")?;
-        ensure!(
-            entry.bytes == bytes.len() as u64
-                && entry.sha256 == super::hex(&Sha256::digest(&bytes)),
-            "stored file differs from backup manifest at consumption"
-        );
-    }
     Ok((file, bytes))
 }
 fn attachments(
     input: &[old::Attachment],
-    source: &Path,
+    source: &Source<'_>,
     target: &Path,
     report: &mut ImportReport,
 ) -> Result<Vec<d::AttachmentRef>> {

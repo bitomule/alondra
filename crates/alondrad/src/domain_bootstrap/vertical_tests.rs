@@ -41,6 +41,7 @@ struct Fixture {
     orchestrator: String,
     agent: String,
     next_id: u64,
+    github: Arc<crate::domain_github::FakeObserver>,
     // Dropped after the runtime, including when an assertion panics.
     _cleanup: Cleanup,
 }
@@ -65,7 +66,8 @@ impl Fixture {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let state = V2Only::open(&home, &epoch).unwrap();
+        let github = Arc::new(crate::domain_github::FakeObserver::new());
+        let state = V2Only::open_with(&home, &epoch, Box::new(github.clone())).unwrap();
         let domain = state.domain();
         let registration = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
@@ -122,6 +124,7 @@ impl Fixture {
             orchestrator,
             agent,
             next_id: 0,
+            github,
             _cleanup: Cleanup(home),
         }
     }
@@ -412,5 +415,53 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
     assert_eq!(persisted.pull_requests[&"pr-1".into()].task_id.0, "pr-task");
     assert!(persisted.interactions.contains_key(&"pr-delivery".into()));
     drop(reopened);
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_merge_claim_is_admitted_only_with_github_confirmation_and_the_merge_is_observed() {
+    use crate::domain_github::PrFacts;
+    use alondra_core::domain_v2::{MergeAttemptState, PrState};
+    let mut fixture = Fixture::start().await;
+    fixture.task("claim-task", true).await;
+    let head = "0123456789abcdef0123456789abcdef01234567";
+    fixture.producer(false, json!({"kind":"register_pr", "task_id":"claim-task", "pr_id":"pr-7",
+        "host":"github.com", "repository":"example/project", "number":7, "head":head, "base":"main",
+        "allowed_methods":["squash"]})).await;
+    fixture.producer(false, json!({"kind":"present_result", "task_id":"claim-task",
+        "interaction_id":"delivery-7", "body":"Code ready", "is_final":true,
+        "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]})).await;
+    fixture.user(json!({"kind":"authorize_merge", "authorization_id":"auth-7", "presentation_id":"delivery-7",
+        "pr_id":"pr-7", "expected_head":head, "method":"squash"}));
+    let claim = json!({"kind":"claim_merge_authorization", "authorization_id":"auth-7",
+        "remote_head":head, "remote_base":"main", "base_verified":true});
+    let envelope = fixture.envelope(claim.clone());
+    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "external_read_failed", "GitHub unavailable: the claim is not admitted");
+    fixture.github.set(7, Ok(PrFacts { head: "89abcdef0123456789abcdef0123456789abcdef".into(),
+        base: "main".into(), state: PrState::Open, merged_head: None }));
+    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    assert_eq!(body["code"], "stale_head", "the Agent's head claim must match GitHub");
+    assert_eq!(fixture.domain.state().unwrap().merge_authorizations[&"auth-7".into()].attempt,
+        MergeAttemptState::Unclaimed);
+    fixture.github.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Open, merged_head: None }));
+    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(fixture.domain.state().unwrap().merge_authorizations[&"auth-7".into()].attempt,
+        MergeAttemptState::Claimed);
+    let (status, replay) = fixture.post(&fixture.agent, &envelope).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(replay, body, "the exact claim replays its receipt");
+    fixture.github.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Merged,
+        merged_head: Some(head.into()) }));
+    crate::domain_github::reconcile(&fixture.domain, &fixture.github).await.unwrap();
+    let state = fixture.domain.state().unwrap();
+    assert_eq!(state.merge_authorizations[&"auth-7".into()].attempt, MergeAttemptState::Confirmed);
+    assert_eq!(state.pull_requests[&"pr-7".into()].merged_head.as_deref(), Some(head));
+    assert_ne!(state.tasks[&"claim-task".into()].state, TaskState::Done);
+    fixture.producer(false, json!({"kind":"complete_task", "task_id":"claim-task", "presentation_id":"delivery-7"})).await;
+    assert_eq!(fixture.domain.state().unwrap().tasks[&"claim-task".into()].state, TaskState::Done);
     fixture.finish().await;
 }

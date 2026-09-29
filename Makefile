@@ -4,7 +4,7 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen rehearse-cutover
+.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -75,6 +75,12 @@ e2e-sandbox:
 rehearse-cutover:
 	bazelisk build //crates/alondrad
 	tools/rehearse-cutover.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null)
+
+# The one-command cutover of the live HOME to domain v2 (docs/domain-v2-live-cutover.md).
+# BACKUP_ROOT, LEGACY_DAEMON and LEGACY_CLI override the defaults (tools/cutover-live.sh).
+cutover-live:
+	bazelisk build //crates/alondrad
+	tools/cutover-live.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null)
 
 soak:
 	bazelisk build //crates/alondrad
