@@ -502,7 +502,7 @@ fn schedule_schema_enforces_run_relations_and_survives_restart() {
     let before = store.load().unwrap();
     let mut upgraded = store;
     assert_eq!(upgraded.load().unwrap(), before);
-    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
+    assert_eq!(upgraded.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 5);
     upgraded.conn.execute_batch("INSERT INTO schedules
         (id,title,text,project,options,disallowed_tools,frequency,hour,minute,weekday,interval,start_at,enabled,next_run,revision,deleted_at)
         VALUES ('schedule-1','Daily work','Do work',NULL,'{}','[]','daily',9,30,7,0,-1,1,2000000,2,NULL);
@@ -1245,46 +1245,4 @@ fn persisting_a_removed_entry_is_refused_instead_of_leaving_its_row() {
     let tx = store.conn.transaction().unwrap();
     let error = repository::save_changes(&tx, &before, &after).unwrap_err();
     assert!(error.to_string().contains("cannot remove agent"), "{error}");
-}
-
-#[test]
-fn user_messages_persist_with_their_outbox_rows_and_cannot_be_rewritten() {
-    let fixture = Fixture::new();
-    let mut store = DomainStore::open(&fixture.path()).unwrap();
-    execute(&mut store, &user(), "request", Command::CreateRequest { request_id: "request-1".into(), body: "Work".into() });
-    execute(&mut store, &Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-1".into(), name: "Fixture".into() });
-    execute(&mut store, &user(), "task", Command::CreateTask {
-        task_id: "task-1".into(), request_id: "request-1".into(), title: "Task".into(),
-        agent_id: Some("agent-1".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None });
-    execute(&mut store, &agent(), "info", Command::PublishInformation {
-        attachments: vec![], interaction_id: "info-1".into(), scope: Scope::Task { task_id: "task-1".into() },
-        recipient: Recipient::User, body: "FYI".into() });
-    let reply = execute(&mut store, &user(), "reply", Command::SendMessage {
-        message_id: "message-1".into(), recipient: Recipient::Agent { agent_id: "agent-1".into() },
-        purpose: MessageKind::Reply, text: "Thanks".into(), attachments: vec![attachment("att-1")],
-        interaction_id: Some("info-1".into()), pr_id: None, mark_read: true });
-    let ids = store.outbox_ids(reply.outcome.revision).unwrap();
-    assert_eq!(ids.len(), 1);
-    let pending = store.pending_messages().unwrap().into_iter().find(|m| m.id == ids[0]).unwrap();
-    assert_eq!((pending.recipient_kind.as_str(), pending.agent_id.as_deref(), pending.task_id.as_deref(), pending.interaction_id.as_deref()),
-        ("agent", Some("agent-1"), Some("task-1"), Some("info-1")));
-    assert!(pending.message.starts_with("Thanks") && pending.message.contains("att-1.png"), "{}", pending.message);
-    assert_eq!(store.delivery_state(ids[0]).unwrap(), None, "nothing was attempted yet");
-    let tell = execute(&mut store, &user(), "tell", Command::SendMessage {
-        message_id: "message-2".into(), recipient: Recipient::Orchestrator, purpose: MessageKind::Message,
-        text: "Plan the week".into(), attachments: vec![], interaction_id: None, pr_id: None, mark_read: false });
-    let told = store.pending_messages().unwrap().into_iter().find(|m| m.id == store.outbox_ids(tell.outcome.revision).unwrap()[0]).unwrap();
-    assert_eq!((told.recipient_kind.as_str(), told.agent_id, told.message.as_str()), ("orchestrator", None, "Plan the week"));
-
-    let claim = store.claim_message(ids[0]).unwrap().unwrap();
-    assert_eq!(store.delivery_state(ids[0]).unwrap().as_deref(), Some("dispatching"));
-    assert!(store.finish_message(claim.attempt_id, claim.version, alondra_core::delivery::State::Handed, None).unwrap());
-    assert_eq!(store.delivery_state(ids[0]).unwrap().as_deref(), Some("handed"));
-
-    assert!(store.conn.execute("UPDATE user_messages SET body='changed'", []).is_err(), "a sent message is immutable");
-    assert!(store.conn.execute("DELETE FROM user_messages", []).is_err(), "a sent message is retained");
-    let expected = store.load().unwrap();
-    assert_eq!(expected.messages.len(), 2);
-    drop(store);
-    assert_eq!(DomainStore::open(&fixture.path()).unwrap().load().unwrap(), expected, "messages survive a restart");
 }

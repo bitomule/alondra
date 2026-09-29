@@ -3,8 +3,6 @@
 //! the only authority; nothing here decides an action.
 mod close;
 mod live;
-mod messages;
-mod orchestrator;
 mod pr_details;
 mod sidecar;
 
@@ -26,7 +24,6 @@ use std::time::Duration;
 
 pub(crate) use close::Sessions;
 pub(crate) use live::Live;
-pub(crate) use orchestrator::{OrchestratorControl, Step};
 pub(crate) use pr_details::{GhView, PrView};
 
 const DETAILS_INTERVAL: Duration = Duration::from_secs(60);
@@ -37,7 +34,6 @@ pub(crate) struct Client {
     gauges: crate::machine::Gauges,
     sidecar: sidecar::Sidecar,
     details: pr_details::PrDetails,
-    orchestrator: std::sync::Mutex<Option<Arc<dyn OrchestratorControl>>>,
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
 }
 
@@ -70,35 +66,17 @@ impl IntoResponse for Reply {
 
 #[derive(Debug, PartialEq)]
 pub(crate) enum Write {
-    AgentMessage(String),
-    OrchestratorMessage,
     Close(String),
-    Recover(Step),
 }
 
 /// The writes of this module by path, the way both the local listener and the relay name them.
 pub(crate) fn parse_write(path: &str) -> Option<Write> {
-    match path {
-        "/v2/orchestrator/messages" => return Some(Write::OrchestratorMessage),
-        "/v2/orchestrator/cancel" => return Some(Write::Recover(Step::Cancel)),
-        "/v2/orchestrator/acknowledge" => return Some(Write::Recover(Step::Acknowledge)),
-        "/v2/orchestrator/retry" => return Some(Write::Recover(Step::Retry)),
-        _ => {}
-    }
-    let rest = path.strip_prefix("/v2/agents/")?;
-    if let Some(id) = rest.strip_suffix("/messages").filter(|id| plain_id(id)) {
-        return Some(Write::AgentMessage(id.to_owned()));
-    }
-    rest.strip_suffix("/close").filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
+    path.strip_prefix("/v2/agents/")?.strip_suffix("/close")
+        .filter(|id| plain_id(id)).map(|id| Write::Close(id.to_owned()))
 }
 
 pub(crate) fn approved_write_path(path: &str) -> bool {
     parse_write(path).is_some()
-}
-
-/// The writes that are one domain command, which the relay journals atomically with it.
-pub(crate) fn atomic_write_path(path: &str) -> bool {
-    matches!(parse_write(path), Some(Write::AgentMessage(_) | Write::OrchestratorMessage))
 }
 
 #[derive(Debug, PartialEq)]
@@ -143,7 +121,6 @@ impl Client {
             gauges,
             sidecar: sidecar::Sidecar::open(home),
             details: Default::default(),
-            orchestrator: Default::default(),
             sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
         })
     }
@@ -155,22 +132,14 @@ impl Client {
 
     pub(crate) async fn write(
         &self,
-        user_id: &str,
         route: Write,
         body: &Value,
-        transport: Option<crate::domain_store::TransportIdentity<'_>>,
         authorize: &(dyn Fn() -> anyhow::Result<()> + Sync),
     ) -> anyhow::Result<Reply> {
         match route {
-            Write::AgentMessage(id) => self.send_message(user_id, Some(&id), body, transport, authorize),
-            Write::OrchestratorMessage => self.send_message(user_id, None, body, transport, authorize),
             Write::Close(id) => {
                 authorize()?;
                 self.close_session(&id, body).await
-            }
-            Write::Recover(step) => {
-                authorize()?;
-                Ok(self.recover_orchestrator(step, body))
             }
         }
     }
@@ -260,7 +229,7 @@ impl Client {
             .filter_map(|(id, at)| at.map(|at| (id.clone(), json!(at)))).collect();
         Json(json!({
             "machine": machine, "usage": usage, "update": crate::updates::status(&self.home),
-            "nodes": nodes, "orchestrator": self.orchestrator_status(), "tasks": tasks, "requests": requests,
+            "nodes": nodes, "tasks": tasks, "requests": requests,
             "pull_requests": pull_requests, "inbox_times": inbox_times,
         })).into_response()
     }
@@ -347,9 +316,9 @@ async fn write(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Response {
     let home = client.home().to_owned();
-    let Some(device) = crate::domain_bootstrap::signed_device(&home, &signed) else {
+    if crate::domain_bootstrap::signed_device(&home, &signed).is_none() {
         return forbidden();
-    };
+    }
     let Some(route) = parse_write(uri.path()) else {
         return StatusCode::NOT_FOUND.into_response();
     };
@@ -361,7 +330,7 @@ async fn write(
             .map(|_| ())
             .ok_or_else(|| anyhow::anyhow!("device approval was revoked"))
     };
-    match client.write(&format!("device:{}", device.device_id), route, &body, None, &authorize).await {
+    match client.write(route, &body, &authorize).await {
         Ok(reply) => reply.into_response(),
         Err(_) => storage(),
     }
@@ -369,9 +338,7 @@ async fn write(
 
 pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
-        .route("/v2/agents/{id}/messages", post(write))
         .route("/v2/agents/{id}/close", post(write))
-        .route("/v2/orchestrator/{step}", post(write))
         .route("/v2/runtime", get(read))
         .route("/v2/agents/search", get(read))
         .route("/v2/agents/{id}/activity", get(read))

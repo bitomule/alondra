@@ -234,22 +234,6 @@ pub enum Command {
         head: String,
         ready: bool,
     },
-    /// The user writes to an Agent or the orchestrator. `mark_read` marks the
-    /// Information the message replies to as read in the same commit.
-    SendMessage {
-        message_id: MessageId,
-        recipient: Recipient,
-        purpose: MessageKind,
-        text: String,
-        #[serde(default)]
-        attachments: Vec<AttachmentRef>,
-        #[serde(default)]
-        interaction_id: Option<InteractionId>,
-        #[serde(default)]
-        pr_id: Option<PrId>,
-        #[serde(default)]
-        mark_read: bool,
-    },
     CompleteTask {
         task_id: TaskId,
         presentation_id: InteractionId,
@@ -280,10 +264,6 @@ pub enum DomainEffect {
     },
     NotifyOrchestrator {
         interaction_id: InteractionId,
-    },
-    /// Words the user wrote to the orchestrator, for its next run.
-    TellOrchestrator {
-        message: String,
     },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
