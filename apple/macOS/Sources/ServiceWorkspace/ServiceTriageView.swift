@@ -157,6 +157,12 @@ struct ServiceDocumentView: View {
                 DetailHeader(style: item.style, node: store.workspace.agentName(of: item),
                     date: store.workspace.createdAt(of: item), title: store.subject.title, task: taskTitle)
                 MissionLine(mission: store.workspace.mission(of: item))
+                if question == nil {
+                    ForEach(Artifacts.urls(in: store.subject.interaction.body), id: \.self) { url in
+                        Link(destination: url) { Label(Artifacts.openInBrowserLabel, systemImage: "safari") }
+                            .buttonStyle(.borderedProminent).controlSize(.large).help(url.absoluteString)
+                    }
+                }
                 if let error = store.loadError {
                     if !store.sections.contains(where: { $0.error != nil }) { Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary) }
                     Button("Retry") { store.send(.appeared) }

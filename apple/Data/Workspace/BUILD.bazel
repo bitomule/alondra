@@ -28,6 +28,8 @@ swift_test(
     srcs = glob(["Tests/*.swift"]),
     deps = [
         ":AlondraWorkspace",
+        "//apple/Data/Notifications:AlondraNotificationActions",
+        "//apple/NotificationPayload:AlondraNotificationPayload",
         "//apple/APIClient:AlondraAPIClient",
         "//apple/Auth:AlondraAuth",
         "//apple/Contracts:AlondraContracts",

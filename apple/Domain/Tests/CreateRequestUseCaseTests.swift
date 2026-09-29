@@ -9,10 +9,10 @@ struct CreateRequestUseCaseTests {
         let attachment = NewRequestAttachment(id: UUID(), name: "broken", data: Data())
         let useCase = CreateRequestUseCase(operations: operations(
             upload: { _ in throw SubmissionFailure.refused },
-            create: { _ in Issue.record("create must not be called"); return .confirmed }
+            create: { _, _ in Issue.record("create must not be called"); return .confirmed }
         ))
         let body = NewRequestBody(text: "Do work", project: nil, options: [:], issue: nil)
-        #expect(await useCase.run(body, [attachment]) == .failed("refused"))
+        #expect(await useCase.run(body, [attachment], "command-1") == .failed("refused"))
     }
 
     @Test
@@ -23,13 +23,14 @@ struct CreateRequestUseCaseTests {
             NewRequestAttachment(id: UUID(), name: "two", data: Data([2])),
         ]
         let useCase = CreateRequestUseCase(operations: operations(
-            upload: { "stored-\($0.name)" },
-            create: { await recorder.record($0); return .confirmed }
+            upload: { DomainV2.AttachmentRef(id: "stored-\($0.name)", name: $0.name, contentDigest: "d", contentReference: "r", bytes: 1) },
+            create: { await recorder.record($0, commandID: $1); return .confirmed }
         ))
         let body = NewRequestBody(text: "Fix it", project: "Lumo", options: [:], issue: "owner/Lumo#12")
-        #expect(await useCase.run(body, attachments) == .confirmed)
+        #expect(await useCase.run(body, attachments, "command-1") == .confirmed)
         let sent = await recorder.body
-        #expect(sent?.attachments == ["stored-one", "stored-two"])
+        #expect(sent?.attachments.map(\.id) == ["stored-one", "stored-two"])
+        #expect(await recorder.commandID == "command-1", "The draft's command ID reaches the create command")
         #expect(sent?.project == "Lumo")
         #expect(sent?.issue == "owner/Lumo#12")
         #expect(sent?.options.isEmpty == true, "No effort override means the server's automatic default remains authoritative")
@@ -39,9 +40,9 @@ struct CreateRequestUseCaseTests {
     func identityRotationDuringUploadDoesNotDispatchWithReplacementSigner() async {
         let gate = SubmissionGate()
         let scope = NewWorkSubmissionScope(
-            upload: { _ in await gate.rotateToB(); return "stored-A" },
+            upload: { _ in await gate.rotateToB(); return DomainV2.AttachmentRef(id: "stored-A", name: "proof", contentDigest: "d", contentReference: "r", bytes: 1) },
             isCurrent: { await gate.isA },
-            create: { _ in await gate.recordDispatch(signer: "A"); return .confirmed }
+            create: { _, _ in await gate.recordDispatch(signer: "A"); return .confirmed }
         )
         let operations = NewWorkOperations(
             projects: { [] },
@@ -52,7 +53,7 @@ struct CreateRequestUseCaseTests {
         let useCase = CreateRequestUseCase(operations: operations)
         let attachment = NewRequestAttachment(id: UUID(), name: "proof", data: Data([1]))
         let body = NewRequestBody(text: "A request", project: nil, options: [:], issue: nil)
-        #expect(await useCase.run(body, [attachment]) == .cancelled)
+        #expect(await useCase.run(body, [attachment], "command-1") == .cancelled)
         #expect(await gate.dispatchedSigner == nil)
     }
 
@@ -60,9 +61,9 @@ struct CreateRequestUseCaseTests {
     func identityRotationBetweenPreflightAndCreateIsRejectedAtScopeBoundary() async {
         let gate = SubmissionGate()
         let scope = NewWorkSubmissionScope(
-            upload: { _ in "unused" },
+            upload: { _ in throw SubmissionFailure.refused },
             isCurrent: { await gate.checkThenRotateOnFirstCall() },
-            create: { _ in await gate.recordDispatch(signer: "A"); return .confirmed }
+            create: { _, _ in await gate.recordDispatch(signer: "A"); return .confirmed }
         )
         let operations = NewWorkOperations(
             projects: { [] },
@@ -71,14 +72,14 @@ struct CreateRequestUseCaseTests {
             captureSubmissionScope: { scope }
         )
         let body = NewRequestBody(text: "A request", project: nil, options: [:], issue: nil)
-        #expect(await CreateRequestUseCase(operations: operations).run(body, []) == .cancelled)
+        #expect(await CreateRequestUseCase(operations: operations).run(body, [], "command-1") == .cancelled)
         #expect(await gate.dispatchedSigner == nil)
     }
 
     private func operations(
         options: @escaping @Sendable (String?) async throws -> OptionsCatalog = { _ in throw SubmissionFailure.refused },
-        upload: @escaping @Sendable (NewRequestAttachment) async throws -> String = { _ in "stored" },
-        create: @escaping @Sendable (NewRequestBody) async -> CreateRequestResult = { _ in .confirmed }
+        upload: @escaping @Sendable (NewRequestAttachment) async throws -> DomainV2.AttachmentRef = { _ in throw SubmissionFailure.refused },
+        create: @escaping @Sendable (NewRequestBody, String) async -> CreateRequestResult = { _, _ in .confirmed }
     ) -> NewWorkOperations {
         NewWorkOperations(
             projects: { [] }, options: options,
@@ -95,7 +96,8 @@ private enum SubmissionFailure: Error, LocalizedError {
 
 private actor SentBody {
     private(set) var body: NewRequestBody?
-    func record(_ body: NewRequestBody) { self.body = body }
+    private(set) var commandID: String?
+    func record(_ body: NewRequestBody, commandID: String) { self.body = body; self.commandID = commandID }
 }
 
 private actor SubmissionGate {

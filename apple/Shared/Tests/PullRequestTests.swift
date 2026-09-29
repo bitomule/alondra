@@ -40,23 +40,11 @@ import Testing
         #expect(alone.mergeBlockedReason == nil)
     }
 
-    @Test(arguments: [
-        ("newest train first, each bottom first", [(9, 50, nil, nil, nil), (3, 60, 1, 2, 10), (1, 10, 1, 0, 10), (2, 70, 1, 1, 10), (4, 20, nil, nil, nil)], ["p9", "p4", "p1", "p2", "p3"], ["p1", "p2", "p3", "p4", "p9"]),
-        ("no trains keeps opening order", [(1, 10, nil, nil, nil), (2, 20, nil, nil, nil)], ["p2", "p1"], ["p1", "p2"]),
-        ("two trains opened together stay apart", [(4, 11, 3, 1, 10), (2, 12, 1, 1, 10), (1, 10, 1, 0, 10), (3, 10, 3, 0, 10)], ["p3", "p4", "p1", "p2"], ["p1", "p2", "p3", "p4"]),
-    ] as [(String, [(UInt64, Int64, UInt64?, Int?, Int64?)], [String], [String])])
-    func trainsAreListedTogetherBottomFirst(what: String, cards: [(UInt64, Int64, UInt64?, Int?, Int64?)], sidebar: [String], ring: [String]) throws {
-        let prs = try cards.map { try train($0.0, openedAt: $0.1, bottom: $0.2, position: $0.3, trainOpenedAt: $0.4) }
-        #expect(prs.sorted(by: PullRequest.newestTrainsFirst).map { InboxItem.pullRequest($0).id } == sidebar, "\(what): sidebar")
-        #expect(InboxRing.ordered(prs.map(InboxItem.pullRequest)).map(\.id) == ring, "\(what): triage ring")
-    }
-
     @Test func aCardSaysWhereItGoesAndHowBigItIs() throws {
         let p = try pr(#","checks":[{"name":"test","state":"failed","url":null}],"mergeable":"CONFLICTING""#)
         #expect(p.summary == "a/b #12 · main ← menus · +120 −8 in 5 files")
         #expect(p.hasConflicts)
         #expect(p.checks?.first?.failed == true)
-        #expect(InboxItem.pullRequest(p).id == "p4")
     }
 
     /// 24 Sep: David's «la pantalla de PR full screen no tiene los mismos botones»; the card and

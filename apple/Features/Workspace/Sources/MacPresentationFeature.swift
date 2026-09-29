@@ -53,7 +53,7 @@ public struct MacPresentationFeature {
             board.groups.compactMap { group in
                 let filtered = TaskStateGroup(kind: group.kind, tasks: group.tasks.filter { task in
                     matches(task.title) || board.request(task.requestId).map { matches(ServiceTaskPresentation.title(of: $0, in: board)) } == true
-                })
+                }, requests: group.requests.filter { matches(ServiceTaskPresentation.title(of: $0, in: board)) })
                 return filtered.count == 0 ? nil : filtered
             }
         }

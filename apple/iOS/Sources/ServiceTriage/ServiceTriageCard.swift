@@ -235,6 +235,9 @@ struct ServiceTriageCard: View {
             }
         } else if let document = store.document?.subject {
             let body = document.interaction.body
+            ForEach(Artifacts.urls(in: body), id: \.self) { url in
+                artifactButton(url)
+            }
             if !body.isEmpty {
                 if document.attachments.isEmpty && document.revisions.isEmpty && body.count > 600 {
                     excerpt(body, cta: String(localized: "Read it all"))
@@ -332,6 +335,35 @@ struct ServiceTriageCard: View {
         }
         .buttonStyle(PressStyle())
         .matchedTransitionSource(id: item.id, in: zoom)
+    }
+
+    private func artifactButton(_ url: URL) -> some View {
+        Link(destination: url) {
+            HStack(spacing: 12) {
+                Image(systemName: "safari")
+                    .font(.title3)
+                    .foregroundStyle(kind.tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Artifacts.openInBrowserLabel)
+                        .font(.headline)
+                        .foregroundStyle(Palette.ink)
+                    Text(url.absoluteString)
+                        .font(.caption)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right")
+                    .font(.footnote.weight(.bold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(kind.tint.opacity(0.10), in: .rect(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(kind.tint.opacity(0.25)))
+            .contentShape(.rect(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
     }
 
     private func reviewButton(_ title: String, detail: String, symbol: String) -> some View {

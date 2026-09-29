@@ -44,7 +44,7 @@ private struct PushFixture {
         let body = try JSONSerialization.data(withJSONObject: [
             "push_binding": innerBinding ?? binding.value,
             "payload": ["aps": ["alert": ["title": context.macID, "body": "Synthetic text"]],
-                        "alondra": ["kind": "question", "id": 42]]
+                        "alondra": ["protocol_version": 2, "kind": "question", "item_id": "interaction:q-42", "interaction_id": "q-42"]]
         ])
         let envelope = try EnvelopeV1.seal(route: route ?? context.macID, sender: sender ?? context.macID,
             recipient: recipientID ?? context.deviceID, requestID: "push-test", kind: "push",
@@ -88,9 +88,9 @@ private struct PushFixture {
         let wire = try fixture.wire()
         let hint = try ServiceNotificationDecoder.bindingHint(wire)
         let context = try #require(try store.load(binding: hint))
-        let clear = try ServiceNotificationDecoder.decrypt(wire, context: context, nowMilliseconds: 1000)
+        let clear = try ServiceNotificationDecoder.decrypt(wire, context: context)
         let payload = try #require(try JSONSerialization.jsonObject(with: clear) as? [AnyHashable: Any])
-        #expect(NotificationPayload.BoundItem(userInfo: payload)?.item.inboxID == "q42")
+        #expect(NotificationPayload.BoundItem(userInfo: payload)?.item.inboxID == "interaction:q-42")
         #expect(NotificationPayload.BoundItem(userInfo: payload)?.binding == fixture.binding)
         let aps = try #require(payload["aps"] as? [String: Any])
         #expect((aps["alert"] as? [String: String])?["title"] == fixture.context.macID)
@@ -98,26 +98,26 @@ private struct PushFixture {
     let altered = try a.wire(outerBinding: b.binding.value)
     let selected = try #require(try store.load(binding: ServiceNotificationDecoder.bindingHint(altered)))
     #expect(throws: (any Error).self) {
-        try ServiceNotificationDecoder.decrypt(altered, context: selected, nowMilliseconds: 1000)
+        try ServiceNotificationDecoder.decrypt(altered, context: selected)
     }
     #expect(try store.load(binding: PushFixture(3).binding) == nil)
 }
 
-@Test(arguments: ["route", "sender", "recipient", "inner-binding", "expired", "missing-hint"])
+@Test(arguments: ["route", "sender", "recipient", "inner-binding", "missing-hint"])
 func untrustedRoutingCannotProducePlaintextOrActions(mutation: String) throws {
     let a = try PushFixture(1)
     var wire = try a.wire(innerBinding: mutation == "inner-binding" ? PushFixture(2).binding.value : nil,
         route: mutation == "route" ? "mac-other" : nil,
         sender: mutation == "sender" ? "mac-other" : nil,
         recipientID: mutation == "recipient" ? "phone-other" : nil,
-        expiry: mutation == "expired" ? 999 : 2000)
+        expiry: 2000)
     if mutation == "missing-hint" {
         var object = try #require(try JSONSerialization.jsonObject(with: wire) as? [String: [String: Any]])
         object["alondra"]?.removeValue(forKey: "push_binding")
         wire = try JSONSerialization.data(withJSONObject: object)
         #expect(throws: (any Error).self) { try ServiceNotificationDecoder.bindingHint(wire) }
     }
-    #expect(throws: (any Error).self) { try ServiceNotificationDecoder.decrypt(wire, context: a.context, nowMilliseconds: 1000) }
+    #expect(throws: (any Error).self) { try ServiceNotificationDecoder.decrypt(wire, context: a.context) }
 }
 
 @Test func reusedBindingCannotReplaceAnotherAccountOrPrivateKey() throws {

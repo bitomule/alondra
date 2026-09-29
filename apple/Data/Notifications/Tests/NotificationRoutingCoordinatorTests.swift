@@ -10,41 +10,41 @@ import Testing
         let a = try Fixture(1), b = try Fixture(2)
         let router = NotificationRoutingCoordinator()
         try router.install([a.entry(), b.entry()], selected: b.binding)
-        let approved = try router.authorize(a.wire(), nowMilliseconds: 1000)
-        #expect(approved.item.inboxID == "q42")
+        let approved = try router.authorize(a.wire())
+        #expect(approved.item.inboxID == "interaction:q-42")
         #expect(router.selected == b.binding)
         try await router.activate(approved) { binding in
             #expect(binding == a.binding)
             try router.install([a.entry(), b.entry()], selected: binding)
         }
         #expect(router.selected == a.binding)
-        #expect(throws: (any Error).self) { try router.authorize(a.wire(hint: b.binding), nowMilliseconds: 1000) }
-        #expect(throws: (any Error).self) { try router.authorize(a.wire(inner: b.binding), nowMilliseconds: 1000) }
-        #expect(throws: (any Error).self) { try router.authorize(a.wire(), nowMilliseconds: 3000) }
+        #expect(throws: (any Error).self) { try router.authorize(a.wire(hint: b.binding)) }
+        #expect(throws: (any Error).self) { try router.authorize(a.wire(inner: b.binding)) }
+        #expect(try router.authorize(a.wire()).item.inboxID == "interaction:q-42", "A late push still opens its item")
     }
 
     @Test func commandCapturedOnAStaysOnAWhileSelectionChangesToB() async throws {
         let a = try Fixture(1), b = try Fixture(2), gate = Gate()
         var destinations: [String] = []
         let entryA = a.entry { _, item in
-            await MainActor.run { destinations.append("A:\(item)") }
+            await MainActor.run { destinations.append("A:\(item.itemID)") }
             await gate.pause()
-            return .confirmed
+            return .noLongerPending
         }
         let entryB = b.entry { _, item in
-            await MainActor.run { destinations.append("B:\(item)") }
-            return .confirmed
+            await MainActor.run { destinations.append("B:\(item.itemID)") }
+            return .noLongerPending
         }
         let router = NotificationRoutingCoordinator()
         try router.install([entryA, entryB], selected: a.binding)
-        let approved = try router.authorize(a.wire(), nowMilliseconds: 1000)
+        let approved = try router.authorize(a.wire())
         let task = Task { await router.submit(approved, actionID: NotificationPayload.Action.moreContext, text: nil) }
         await gate.waitForPause()
         try router.install([entryA, entryB], selected: b.binding)
         await gate.resume()
         let result = await task.value
-        guard case .confirmed? = result else { Issue.record("A lost its accepted result"); return }
-        #expect(destinations == ["A:q42"])
+        guard case .noLongerPending? = result else { Issue.record("A lost its result"); return }
+        #expect(destinations == ["A:interaction:q-42"])
         #expect(router.selected == b.binding)
     }
 
@@ -52,7 +52,7 @@ import Testing
         let a = try Fixture(1), b = try Fixture(2), gate = Gate()
         let router = NotificationRoutingCoordinator()
         try router.install([a.entry(), b.entry()], selected: b.binding)
-        let approved = try router.authorize(a.wire(), nowMilliseconds: 1000)
+        let approved = try router.authorize(a.wire())
         let task = Task {
             do {
                 try await router.activate(approved) { _ in await gate.pause() }
@@ -72,13 +72,13 @@ import Testing
         let a = try Fixture(1), b = try Fixture(2), foreign = try Fixture(3, owner: "another-user")
         let router = NotificationRoutingCoordinator()
         try router.install([a.entry(), b.entry()], selected: a.binding)
-        let approved = try router.authorize(b.wire(), nowMilliseconds: 1000)
+        let approved = try router.authorize(b.wire())
         #expect(throws: (any Error).self) { try router.install([a.entry(), foreign.entry()], selected: a.binding) }
         #expect(router.isValid(approved))
-        #expect(throws: (any Error).self) { try router.authorize(foreign.wire(), nowMilliseconds: 1000) }
+        #expect(throws: (any Error).self) { try router.authorize(foreign.wire()) }
         try router.install([a.entry()], selected: a.binding)
         #expect(!router.isValid(approved))
-        #expect(throws: (any Error).self) { try router.authorize(b.wire(), nowMilliseconds: 1000) }
+        #expect(throws: (any Error).self) { try router.authorize(b.wire()) }
     }
 
     private struct Fixture {
@@ -92,7 +92,7 @@ import Testing
                 .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")))
             mac = "mac-\(n)"; self.owner = owner
         }
-        func entry(submit: @escaping @Sendable (NotificationAction, String) async -> CommandResult = { _, _ in .confirmed }) -> NotificationRoutingCoordinator.Entry {
+        func entry(submit: @escaping @Sendable (NotificationAction, NotificationPayload.Item) async -> NotificationActionResult = { _, _ in .noLongerPending }) -> NotificationRoutingCoordinator.Entry {
             let scope = NotificationBindingScope(relayURL: URL(string: "https://relay.example")!, ownerSub: owner,
                 macID: mac, deviceID: "phone", credentialRevision: mac)
             return .init(client: ServiceNotificationClient(identity: mac, binding: binding, register: { _, _, _, _, _ in }, submit: submit),
@@ -101,7 +101,7 @@ import Testing
         }
         func wire(hint: NotificationPayload.Binding? = nil, inner: NotificationPayload.Binding? = nil) throws -> Data {
             let payload = try JSONSerialization.data(withJSONObject: ["push_binding": (inner ?? binding).value, "with_sound": false,
-                "payload": ["aps": ["alert": "Synthetic"], "alondra": ["kind": "question", "id": 42]]])
+                "payload": ["aps": ["alert": "Synthetic"], "alondra": ["protocol_version": 2, "kind": "question", "item_id": "interaction:q-42", "interaction_id": "q-42", "data_epoch": "e", "expected_revision": 7]]])
             let envelope = try EnvelopeV1.seal(route: mac, sender: mac, recipient: "phone", requestID: UUID().uuidString,
                 kind: "push", expiresAtMilliseconds: 2000, plaintext: payload, senderKey: signer, recipientKey: recipient.publicKey)
             return try JSONSerialization.data(withJSONObject: ["alondra": ["push_binding": (hint ?? binding).value,

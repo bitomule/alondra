@@ -34,9 +34,8 @@ struct MacServiceNavigationTests {
         let suite = "MacSidebarParity-\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
-        let requests = try decoder.decode([WorkRequest].self, from: Data(#"[{"id":"r1","title":"   ","text":"Release checklist\nDetails","created_at":1,"state":"defining","tasks":[]},{"id":"r2","text":"Finished work","created_at":1,"state":"done","tasks":[]}]"#.utf8))
+        let requests = [DomainV2.Request(id: "r1", body: "Release checklist\nDetails", closed: false),
+                        DomainV2.Request(id: "r2", body: "Finished work", closed: true)]
         let board = TaskBoard(requests: requests, tasks: [])
         let store = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
             $0.defaultAppStorage = defaults

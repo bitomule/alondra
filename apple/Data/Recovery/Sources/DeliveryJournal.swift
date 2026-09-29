@@ -42,7 +42,7 @@ extension DomainV2.DeliveryAttempt {
     public var canResolve: Bool { currentState == "uncertain" }
 }
 
-public enum DeliveryJournalError: Error, LocalizedError, Sendable {
+public enum DeliveryJournalError: Error, LocalizedError, Equatable, Sendable {
     case obsolete, changed, confirmationRequired, invalidResponse, outcomeUnknown, rejected(String)
     public var errorDescription: String? {
         switch self {

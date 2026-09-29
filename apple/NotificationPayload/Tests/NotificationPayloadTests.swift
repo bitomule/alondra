@@ -4,57 +4,63 @@ import Foundation
 import XCTest
 
 final class NotificationPayloadTests: XCTestCase {
-    func testDaemonQuestionPushRoutesToDynamicActions() throws {
+    func testQuestionPushOffersTheServerOptionsByID() throws {
         let push = try payload("""
         {"aps":{"category":"ALONDRA_QUESTION","mutable-content":1},"alondra":{
-          "kind":"question","id":42,"origin":"ask_user_question",
+          "protocol_version":2,"kind":"question","item_id":"interaction:q-42","interaction_id":"q-42",
+          "data_epoch":"epoch","expected_revision":7,
           "push_binding":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
-          "options":[" Approve ","Request changes","Approve"," ","Later"]}}
+          "options":[{"id":"approve","label":" Approve "},{"id":"changes","label":"Request changes","text_input":"why"},
+                     {"id":"approve","label":"Again"},{"id":"blank","label":" "},{"id":"later","label":"Later"}],
+          "reply_option_id":"changes"}}
         """)
         let item = try XCTUnwrap(NotificationPayload.Item(userInfo: push))
         let question = try XCTUnwrap(NotificationPayload.Question(userInfo: push))
 
-        XCTAssertEqual(item.inboxID, "q42")
-        XCTAssertEqual(question.options, ["Approve", "Request changes", "Later"])
+        XCTAssertEqual(item.inboxID, "interaction:q-42")
+        XCTAssertEqual(item.interactionID, "q-42")
+        XCTAssertEqual(item.epoch, "epoch")
+        XCTAssertEqual(item.expectedRevision, 7)
+        XCTAssertEqual(question.options.map(\.id), ["approve", "changes", "later"])
+        XCTAssertEqual(question.options.map(\.label), ["Approve", "Request changes", "Later"])
+        XCTAssertEqual(question.replyOption?.id, "changes")
         let binding = try XCTUnwrap(NotificationPayload.Binding(userInfo: push))
-        XCTAssertEqual(NotificationPayload.Category.questionID(question.id, binding: binding), "ALONDRA_Q_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_42")
-        XCTAssertEqual(NotificationPayload.Action.option(question.options[1]), "OPT:Request changes")
+        XCTAssertEqual(NotificationPayload.Category.questionID(question.id, binding: binding), "ALONDRA_Q_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA_q-42")
+        XCTAssertEqual(NotificationPayload.Action.option(question.options[1].id), "OPT:changes")
     }
 
-    func testPermissionAndReportPushesKeepFixedCategories() throws {
-        let permission = try payload("""
-        {"aps":{"category":"ALONDRA_PERMISSION","mutable-content":1},"alondra":{
-          "kind":"question","id":9,"origin":"permission","options":["Allow","Deny"]}}
+    func testOnlyV2PushesWithAnItemAreRouted() throws {
+        let information = try payload("""
+        {"aps":{"category":"ALONDRA_READ"},"alondra":{"protocol_version":2,"kind":"information","item_id":"interaction:i-8","interaction_id":"i-8"}}
         """)
-        let report = try payload("""
-        {"aps":{"category":"ALONDRA_READ"},"alondra":{"kind":"report","id":8}}
+        let v1 = try payload("""
+        {"aps":{"category":"ALONDRA_QUESTION"},"alondra":{"kind":"question","id":9,"options":["Allow","Deny"]}}
         """)
 
-        XCTAssertNil(NotificationPayload.Question(userInfo: permission))
-        XCTAssertEqual(NotificationPayload.Item(userInfo: permission)?.inboxID, "q9")
-        XCTAssertNil(NotificationPayload.Question(userInfo: report))
-        XCTAssertEqual(NotificationPayload.Item(userInfo: report)?.inboxID, "r8")
+        XCTAssertNil(NotificationPayload.Question(userInfo: information))
+        XCTAssertEqual(NotificationPayload.Item(userInfo: information)?.inboxID, "interaction:i-8")
+        XCTAssertNil(NotificationPayload.Item(userInfo: v1), "A v1 push names nothing the v2 inbox has")
         let binding = try XCTUnwrap(NotificationPayload.Binding("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
-        XCTAssertEqual(NotificationPayload.Category.questionID(from: NotificationPayload.Category.questionID(9, binding: binding))?.id, 9)
+        XCTAssertEqual(NotificationPayload.Category.questionID(from: NotificationPayload.Category.questionID("q-9", binding: binding))?.id, "q-9")
         XCTAssertNil(NotificationPayload.Category.questionID(from: "ALONDRA_Q_9"))
         XCTAssertNil(NotificationPayload.Category.questionID(from: "ALONDRA_QUESTION"))
     }
 
     func testBindingRejectsMissingMalformedAndStaleContext() throws {
         let valid = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
-        let missing: [AnyHashable: Any] = ["alondra": ["kind": "question", "id": 1]]
-        XCTAssertNil(NotificationPayload.BoundItem(userInfo: missing))
+        let item: [String: Any] = ["protocol_version": 2, "kind": "question", "item_id": "interaction:q-1"]
+        XCTAssertNil(NotificationPayload.BoundItem(userInfo: ["alondra": item]))
         XCTAssertNil(NotificationPayload.Binding(valid + "="))
         XCTAssertNil(NotificationPayload.Binding(String(repeating: "!", count: 43)))
 
         let first = try XCTUnwrap(NotificationPayload.Binding(valid))
         let second = try XCTUnwrap(NotificationPayload.Binding("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"))
-        let bound = try XCTUnwrap(NotificationPayload.BoundItem(userInfo: ["alondra": ["kind": "question", "id": 1, "push_binding": valid]]))
+        let bound = try XCTUnwrap(NotificationPayload.BoundItem(userInfo: ["alondra": item.merging(["push_binding": valid]) { $1 }]))
         XCTAssertTrue(bound.matches(first))
         XCTAssertFalse(bound.matches(second))
         XCTAssertFalse(bound.matches(nil))
-        let oldID = NotificationPayload.Category.questionID(42, binding: first)
-        let newID = NotificationPayload.Category.questionID(42, binding: second)
+        let oldID = NotificationPayload.Category.questionID("q-42", binding: first)
+        let newID = NotificationPayload.Category.questionID("q-42", binding: second)
         XCTAssertNotEqual(oldID, newID)
         XCTAssertEqual(NotificationPayload.Category.questionID(from: oldID)?.binding, first)
         XCTAssertEqual(NotificationPayload.Category.questionID(from: newID)?.binding, second)
@@ -64,7 +70,7 @@ final class NotificationPayloadTests: XCTestCase {
                 .replacingOccurrences(of: "/", with: "_")
                 .replacingOccurrences(of: "=", with: "")
         ))
-        XCTAssertEqual(NotificationPayload.Category.questionID(from: NotificationPayload.Category.questionID(42, binding: withUnderscores))?.binding, withUnderscores)
+        XCTAssertEqual(NotificationPayload.Category.questionID(from: NotificationPayload.Category.questionID("q-42", binding: withUnderscores))?.binding, withUnderscores)
     }
 
     func testPushRegistrationSendsBackendBindingField() throws {
@@ -80,9 +86,9 @@ final class NotificationPayloadTests: XCTestCase {
     func testGlobalQuestionCategoryRetentionHandlesLateOldPushAndBoundsGrowth() throws {
         let a = try XCTUnwrap(NotificationPayload.Binding("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"))
         let b = try XCTUnwrap(NotificationPayload.Binding("AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"))
-        let b1 = NotificationPayload.Category.questionID(1, binding: b)
-        let b2 = NotificationPayload.Category.questionID(2, binding: b)
-        let aLate = NotificationPayload.Category.questionID(1, binding: a)
+        let b1 = NotificationPayload.Category.questionID("1", binding: b)
+        let b2 = NotificationPayload.Category.questionID("2", binding: b)
+        let aLate = NotificationPayload.Category.questionID("1", binding: a)
         let first = NotificationPayload.Category.retainedCategoryIDs(from: [], previousOrder: [], incoming: b1, limit: 20)
         let second = NotificationPayload.Category.retainedCategoryIDs(
             from: [b1], previousOrder: first.dynamicOrder, incoming: b2, limit: 20
@@ -93,7 +99,7 @@ final class NotificationPayloadTests: XCTestCase {
         )
         XCTAssertTrue(delayed.identifiers.isSuperset(of: [b1, b2, aLate, "ALONDRA_Q_CUSTOM", "ANOTHER_APP_CATEGORY"]))
 
-        let many = (3...24).map { NotificationPayload.Category.questionID(UInt64($0), binding: b) }
+        let many = (3...24).map { NotificationPayload.Category.questionID(String($0), binding: b) }
         let bounded = NotificationPayload.Category.retainedCategoryIDs(
             from: [b1, b2, aLate, "ALONDRA_Q_CUSTOM"] + many,
             previousOrder: delayed.dynamicOrder + many,
