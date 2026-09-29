@@ -629,8 +629,8 @@
         "bzlTransitiveDigest": "UvQf9r2bSvJv7U+jRyqYj19oBr1RA6pb7W74NQs9Qeg=",
         "usagesDigest": "2g6pxya9RYC7UntLz/yBloEuUrj+sd69Obb6fEWlBHA=",
         "recordedFileInputs": {
-          "@@//Cargo.lock": "71f8fdfaf184b6b9dcf66b10ab9d35bdafd1da5042d614afafdc7cf241001d5e",
-          "@@//Cargo.toml": "ac516a50c07952627b9438f2739656f4cfc5dd68f169fc6f3860670e1e1f3c4b",
+          "@@//Cargo.lock": "012e8ac7ea70bfbb91b2aca7966287786521b53bef2d319e173848ddd93c47e9",
+          "@@//Cargo.toml": "192c24550bd085116473b68aa2232a717a31d5b69ba273c80c387f5082e89289",
           "@@//crates/alondra/Cargo.toml": "c54421c9945fe798ec3bd784b9a6952915b9bb21eecc334961138e4e688866f4",
           "@@//crates/alondrad/Cargo.toml": "c9b82e6683fed3674a12cf5ba4b4af7e71f9f11ffbf0db3b355c66a179ee9b55",
           "@@//crates/core/Cargo.toml": "99f91f65c534355e1c1b219c6dd02eafa8bc9fbeb27bb967236aa15912d1a551",
@@ -643,7 +643,7 @@
           "CARGO_BAZEL_GENERATOR_SHA256": null,
           "CARGO_BAZEL_GENERATOR_URL": null,
           "CARGO_BAZEL_ISOLATED": null,
-          "CARGO_BAZEL_REPIN": null,
+          "CARGO_BAZEL_REPIN": "1",
           "CARGO_BAZEL_REPIN_ONLY": null,
           "CARGO_BAZEL_TIMEOUT": null,
           "REPIN": null
