@@ -1,0 +1,209 @@
+//! The orchestrator's reads, as 8ccd131's `fleet`, `node` and `candidates` gave them: the live
+//! sessions the daemon observes next to the domain's Requests, Tasks, questions, results and
+//! undelivered messages. Each answer has the shape the MCP's summaries already read.
+use crate::domain_runtime::DomainRuntime;
+use alondra_core::domain_v2::{AgentId, Author, DomainError, DomainState, Interaction, InteractionPayload, PrState, Recipient, TaskId};
+use alondra_core::{Node, NodeStatus};
+use serde_json::{Value, json};
+
+fn state(domain: &DomainRuntime) -> Result<DomainState, DomainError> {
+    domain.state().map_err(|_| DomainError::new("storage_unavailable", "domain state unavailable"))
+}
+
+fn title(body: &str) -> String {
+    let line = body.lines().find(|line| !line.trim().is_empty()).unwrap_or_default().trim();
+    let mut short: String = line.chars().take(120).collect();
+    if line.chars().count() > 120 {
+        short.push('…');
+    }
+    short
+}
+
+fn wire<T: serde::Serialize>(value: &T) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
+}
+
+/// A live session as the legacy overview listed it, named after its Agent.
+fn node_row(node: &Node, state: &DomainState) -> Value {
+    let mut row = wire(node);
+    if node.name.is_none() {
+        row["name"] = json!(state.agents.get(&AgentId(node.session_id.clone())).map(|a| a.name.clone()));
+    }
+    row["project"] = json!(node.project());
+    row
+}
+
+fn author_session(i: &Interaction) -> Option<&str> {
+    match &i.author {
+        Author::Agent { agent_id } => Some(agent_id.0.as_str()),
+        _ => None,
+    }
+}
+
+fn author_name(i: &Interaction, state: &DomainState) -> String {
+    match &i.author {
+        Author::Agent { agent_id } => state.agents.get(agent_id).map_or_else(|| agent_id.0.clone(), |a| a.name.clone()),
+        Author::Orchestrator { .. } => "orchestrator".into(),
+        _ => "Alondra".into(),
+    }
+}
+
+/// A question or action request, open until answered or withdrawn.
+fn question(i: &Interaction, state: &DomainState) -> Option<Value> {
+    let (options, answer, action) = match &i.payload {
+        InteractionPayload::Question { options, answer } => (options, answer, false),
+        InteractionPayload::ActionRequest { options, answer } => (options, answer, true),
+        _ => return None,
+    };
+    let status = if i.withdrawn { "withdrawn" } else if answer.is_some() { "answered" } else { "open" };
+    Some(json!({"id": i.id, "title": title(&i.body), "detail": i.body, "blocking": i.blocking,
+        "options": options.iter().map(|o| json!({"label": o.label})).collect::<Vec<_>>(),
+        "to_orchestrator": i.recipient == Recipient::Orchestrator, "action": action, "status": status,
+        "answer": answer.as_ref().map(wire), "node_name": author_name(i, state), "session_id": author_session(i)}))
+}
+
+/// Information and presentations: what 8ccd131 called reports, read once acted on.
+fn report(i: &Interaction, state: &DomainState) -> Option<Value> {
+    let (kind, read) = match &i.payload {
+        InteractionPayload::Information { read_by } => ("notice", !read_by.is_empty()),
+        InteractionPayload::Delivery { is_final, acceptance, feedback, .. } =>
+            (if *is_final { "final" } else { "partial" }, acceptance.is_some() || !feedback.is_empty()),
+        _ => return None,
+    };
+    Some(json!({"id": i.id, "title": title(&i.body), "kind": kind, "body": i.body, "read": read,
+        "node_name": author_name(i, state), "session_id": author_session(i)}))
+}
+
+fn tasks(state: &DomainState) -> Vec<Value> {
+    state.tasks.values().filter(|t| !t.archived).map(|t| json!({
+        "id": t.id, "title": t.title, "state": wire(&t.state), "request": t.request_id,
+        "depends_on": t.dependencies, "assignee": t.agent_id.as_ref().map(|a| json!({"session_id": a})),
+    })).collect()
+}
+
+fn requests(state: &DomainState) -> Vec<Value> {
+    state.requests.values().map(|r| {
+        let has_tasks = state.tasks.values().any(|t| t.request_id == r.id);
+        let phase = if r.closed { "done" } else if has_tasks { "working" } else { "defining" };
+        json!({"id": r.id, "state": phase, "text": r.body, "title": r.title})
+    }).collect()
+}
+
+/// `fleet`: the live Agents and everything that waits on someone, in the legacy overview's shape.
+pub(crate) fn fleet(domain: &DomainRuntime, machine: Value, usage: Value) -> Result<Value, DomainError> {
+    let state = state(domain)?;
+    let nodes: Vec<Value> = domain.live.nodes().iter()
+        .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))
+        .map(|n| node_row(n, &state)).collect();
+    let interactions = || state.interactions.values().filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator));
+    let open_questions: Vec<Value> = interactions().filter_map(|i| question(i, &state))
+        .filter(|q| q["status"] == "open").collect();
+    let reports: Vec<Value> = interactions().filter(|i| i.recipient == Recipient::User).filter_map(|i| report(i, &state)).collect();
+    let pending = domain.store.lock().expect("domain store poisoned").pending_messages()
+        .map_err(|_| DomainError::new("storage_unavailable", "outbox unavailable"))?;
+    let orchestrator_messages: Vec<Value> = pending.iter().filter(|m| m.recipient_kind == "orchestrator")
+        .map(|m| json!({"id": m.id, "text": m.message, "handed_at": null})).collect();
+    Ok(json!({"nodes": nodes, "open_questions": open_questions, "reports": reports, "orchestrator_messages": orchestrator_messages,
+        "requests": requests(&state), "tasks": tasks(&state), "machine": machine, "usage": usage}))
+}
+
+/// The Agent a name, short id or session id names.
+fn agent_named(domain: &DomainRuntime, state: &DomainState, key: &str) -> Result<AgentId, DomainError> {
+    let live = domain.live.nodes();
+    let short = |id: &AgentId| live.iter().find(|n| n.session_id == id.0).map(|n| n.short_id.clone());
+    let found: Vec<&AgentId> = state.agents.values()
+        .filter(|a| a.id.0 == key || a.name == key || short(&a.id).is_some_and(|s| !s.is_empty() && s == key))
+        .map(|a| &a.id).collect();
+    match found.as_slice() {
+        [one] => Ok((*one).clone()),
+        [] => Err(DomainError::new("not_found", format!("no agent is called {key}"))),
+        _ => Err(DomainError::new("conflict", format!("{key} names several agents; use its session id"))),
+    }
+}
+
+/// `node`: one Agent's live state, its questions and results and its undelivered messages.
+pub(crate) fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainError> {
+    let state = state(domain)?;
+    let agent = agent_named(domain, &state, key)?;
+    let live = domain.live.node(&agent.0);
+    let mut node = live.as_ref().map_or_else(|| json!({"session_id": agent.0, "alive": false}), |n| node_row(n, &state));
+    if node["name"].is_null() {
+        node["name"] = json!(state.agents[&agent].name);
+    }
+    let mine = || state.interactions.values().filter(|i| author_session(i) == Some(agent.0.as_str()));
+    let pending = domain.store.lock().expect("domain store poisoned").pending_messages()
+        .map_err(|_| DomainError::new("storage_unavailable", "outbox unavailable"))?;
+    let messages: Vec<Value> = pending.iter().filter(|m| m.agent_id.as_deref() == Some(agent.0.as_str()))
+        .map(|m| json!({"id": m.id, "from": "alondra", "text": m.message, "handed_at": null})).collect();
+    Ok(json!({"node": node, "questions": mine().filter_map(|i| question(i, &state)).collect::<Vec<_>>(),
+        "reports": mine().filter_map(|i| report(i, &state)).collect::<Vec<_>>(), "messages": messages,
+        "messages_held_for_turn_end": domain.held.lock().expect("held messages poisoned").get(&agent).map_or(0, Vec::len),
+        "timeline": []}))
+}
+
+fn same(a: &str, b: &str) -> bool {
+    a.eq_ignore_ascii_case(b)
+}
+
+fn repo_name(repo: &str) -> &str {
+    repo.rsplit('/').next().unwrap_or(repo)
+}
+
+/// `candidates`: the live Agents a Task, or work in a project or repo, could go to, with why and
+/// whether they are free, as 8ccd131 ranked them.
+pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Option<&str>) -> Result<Value, DomainError> {
+    let state = state(domain)?;
+    let task = match task.map(str::trim).filter(|t| !t.is_empty()) {
+        Some(id) => Some(state.tasks.get(&TaskId::from(id)).ok_or_else(|| DomainError::new("not_found", format!("task {id} does not exist")))?),
+        None => None,
+    };
+    let repo = repo.map(str::trim).filter(|r| !r.is_empty());
+    if task.is_none() && repo.is_none() {
+        return Err(DomainError::new("invalid_input", "pass a task id or a repo"));
+    }
+    let asked = task.and_then(|t| domain.request_launch(&t.request_id).ok().flatten()).and_then(|launch| launch.project);
+    let project = repo.map(repo_name).map(str::to_owned).or(asked);
+    let mut out: Vec<(usize, bool, String, Value)> = domain.live.nodes().iter()
+        .filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon))
+        .filter_map(|n| {
+            let agent = state.agents.get(&AgentId(n.session_id.clone()))?;
+            let mine: Vec<_> = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id)).collect();
+            let mut why = vec![];
+            if let Some(p) = project.as_deref().filter(|p| same(p, &n.project())) {
+                why.push(format!("works in project {p}"));
+            }
+            if let Some(p) = project.as_deref() {
+                for pr in state.pull_requests.values().filter(|pr| pr.state == PrState::Open && same(repo_name(&pr.repository), p)
+                    && mine.iter().any(|t| t.id == pr.task_id)) {
+                    why.push(format!("has PR #{} open in {}", pr.number, pr.repository));
+                }
+            }
+            if let Some(t) = task {
+                if t.agent_id.as_ref() == Some(&agent.id) {
+                    why.push(format!("works on {} itself", t.id));
+                }
+                for m in mine.iter().filter(|m| m.id != t.id) {
+                    if t.dependencies.contains(&m.id) {
+                        why.push(format!("works on {} “{}”, which {} builds on", m.id, m.title, t.id));
+                    } else if m.dependencies.contains(&t.id) {
+                        why.push(format!("works on {} “{}”, which builds on {}", m.id, m.title, t.id));
+                    } else if m.request_id == t.request_id {
+                        why.push(format!("works on {} “{}” of the same request", m.id, m.title));
+                    }
+                }
+            }
+            (!why.is_empty()).then(|| {
+                let open: Vec<Value> = mine.iter().filter(|m| !m.state.terminal())
+                    .map(|m| json!({"id": m.id, "title": m.title, "state": wire(&m.state)})).collect();
+                let name = n.name.clone().unwrap_or_else(|| agent.name.clone());
+                (why.len(), n.status != NodeStatus::Free, name.clone(), json!({"node": name, "session_id": agent.id,
+                    "short_id": n.short_id, "project": n.project(), "status": wire(&n.status), "tasks": open, "why": why}))
+            })
+        })
+        .collect();
+    out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+    Ok(json!({"candidates": out.into_iter().map(|(_, _, _, row)| row).collect::<Vec<_>>()}))
+}
+
+#[cfg(test)]
+mod tests;
