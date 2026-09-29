@@ -391,6 +391,9 @@ async fn run_domain(config: &Config) -> Result<()> {
                 .with_client(state.client()),
         )
     });
+    if let Some(service) = &service {
+        state.attach_service(service.clone());
+    }
     let domain = state.domain();
     let state_domain = domain.clone();
     let gauges = state.gauges();

@@ -70,7 +70,7 @@ async fn local_get(
 }
 
 fn sealed(service: &Service, key: &SigningKey, id: &str, request: Value) -> Work {
-    let sender = service.devices.keys().next().unwrap();
+    let sender = &service.devices.snapshot().remove(0).0;
     Work {
         request_id: id.into(),
         envelope: EnvelopeV1::seal_random(
@@ -102,7 +102,7 @@ async fn encrypted(
     service.handle(work, &[9; 16]).await.unwrap();
     let bytes = responses.lock().unwrap().pop().unwrap();
     let envelope: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
-    let recipient = service.devices.keys().next().unwrap();
+    let recipient = &service.devices.snapshot().remove(0).0;
     let body = envelope
         .open(
             service.signing.verifying_key(),

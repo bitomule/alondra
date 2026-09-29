@@ -23,6 +23,7 @@ pub(crate) struct V2Only {
     /// The one approval list the guard verifies against and the pairing routes extend.
     auth: Arc<crate::auth::Auth>,
     client: Arc<crate::v2_client_routes::Client>,
+    service: std::sync::OnceLock<Arc<crate::service::Service>>,
 }
 
 impl V2Only {
@@ -51,7 +52,16 @@ impl V2Only {
             domain,
             gauges,
             auth: Arc::new(crate::auth::Auth::open(home)?),
+            service: std::sync::OnceLock::new(),
         }))
+    }
+
+    pub(crate) fn attach_service(&self, service: Arc<crate::service::Service>) {
+        let _ = self.service.set(service);
+    }
+
+    fn reload_service_devices(&self) -> Result<()> {
+        self.service.get().map_or(Ok(()), |service| service.reload_devices())
     }
 
     pub(crate) fn auth(&self) -> Arc<crate::auth::Auth> {
@@ -202,9 +212,12 @@ async fn service_approve_device(
     let Ok(body) = serde_json::from_slice::<ServiceApproveBody>(&body) else {
         return (StatusCode::BAD_REQUEST, "invalid service approval").into_response();
     };
-    match state.auth.approve_service(&body.device_id, &body.name, &body.signing_key) {
+    if let Err(error) = state.auth.approve_service(&body.device_id, &body.name, &body.signing_key) {
+        return (StatusCode::CONFLICT, error).into_response();
+    }
+    match state.reload_service_devices() {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => (StatusCode::CONFLICT, error).into_response(),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, format!("service devices not reloaded: {error:#}")).into_response(),
     }
 }
 
@@ -278,12 +291,17 @@ async fn revoke_device(
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    match state.auth.revoke(&id) {
-        Ok(true) => Json(json!({"ok": true})).into_response(),
-        Ok(false) => {
-            crate::domain_api::domain_error(DomainError::new("not_found", "device does not exist"))
-        }
-        Err(_) => storage(),
+    let revoked = match state.auth.revoke(&id) {
+        Ok(revoked) => revoked,
+        Err(_) => return storage(),
+    };
+    if state.reload_service_devices().is_err() {
+        return storage();
+    }
+    if revoked {
+        Json(json!({"ok": true})).into_response()
+    } else {
+        crate::domain_api::domain_error(DomainError::new("not_found", "device does not exist"))
     }
 }
 
@@ -759,6 +777,72 @@ mod tests {
         assert_eq!(approved.status(), StatusCode::NO_CONTENT);
         assert!(auth.list().iter().any(|device| device.id == "phone-a"));
         server.abort();
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn approving_and_revoking_a_phone_reloads_the_running_service() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use std::os::unix::fs::PermissionsExt;
+        let home = std::env::temp_dir().join(format!(
+            "alondra-v2-service-reload-{}",
+            crate::auth::random_hex(8)
+        ));
+        std::fs::create_dir_all(home.join("service-keys")).unwrap();
+        let mac = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        std::fs::write(home.join("service-keys/public.json"), json!({"mac_id": "mac-test",
+            "signing_key": URL_SAFE_NO_PAD.encode(mac.verifying_key().to_sec1_bytes())}).to_string()).unwrap();
+        for (name, secret) in [("service-keys/mac-signing.key", [1u8; 32]), ("service-keys/mac-agreement.key", [2u8; 32])] {
+            let path = home.join(name);
+            std::fs::write(&path, URL_SAFE_NO_PAD.encode(secret)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let config = |devices: &str| format!(
+            "relay_url = \"http://127.0.0.1:1/\"\nmac_id = \"mac-test\"\nowner_sub = \"owner\"\nsigning_key_path = \"service-keys/mac-signing.key\"\nagreement_key_path = \"service-keys/mac-agreement.key\"\n{devices}"
+        );
+        std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        let state = V2Only::open(&home).unwrap();
+        let auth = state.auth();
+        let service = Arc::new(crate::service::Service::open(&home, 0, auth.clone()).unwrap().unwrap());
+        state.attach_service(service.clone());
+        assert!(!service.has_device("phone-a"));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let app = router(state).layer(axum::middleware::from_fn_with_state(auth.clone(), crate::auth::guard));
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await.unwrap();
+        });
+        let client = reqwest::Client::new();
+        let boot: Value = client.get(format!("{base}/service/bootstrap")).send().await.unwrap().json().await.unwrap();
+        let epoch: [u8; 16] = URL_SAFE_NO_PAD.decode(boot["epoch"].as_str().unwrap()).unwrap().try_into().unwrap();
+        let phone = SigningKey::from_slice(&[5u8; 32]).unwrap();
+        let signing_wire = URL_SAFE_NO_PAD.encode(phone.verifying_key().to_sec1_bytes());
+        let agreement_wire = URL_SAFE_NO_PAD.encode(p256::SecretKey::from_slice(&[6u8; 32]).unwrap().public_key().to_sec1_bytes());
+        std::fs::write(home.join("service.toml"), config(&format!(
+            "[[devices]]\ndevice_id = \"phone-a\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n"
+        ))).unwrap();
+        let body = json!({"device_id": "phone-a", "name": "iPhone", "signing_key": signing_wire}).to_string();
+        let now = alondra_core::now_millis() as u64;
+        let nonce = [3u8; 16];
+        let signature = alondra_e2e::sign_http_challenge(&mac, "mac-test", "POST",
+            "/service/approve-device", &epoch, body.as_bytes(), now, &nonce).unwrap();
+        let approved = client.post(format!("{base}/service/approve-device"))
+            .header("x-device-id", "mac-test")
+            .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch))
+            .header("x-device-timestamp-ms", now.to_string())
+            .header("x-device-nonce", URL_SAFE_NO_PAD.encode(nonce))
+            .header("x-device-signature", signature)
+            .body(body).send().await.unwrap();
+        assert_eq!(approved.status(), StatusCode::NO_CONTENT);
+        assert!(service.has_device("phone-a"), "approval reaches the running service");
+
+        std::fs::write(home.join("service.toml"), config("devices = []\n")).unwrap();
+        let revoked = client.delete(format!("{base}/devices/phone-a")).send().await.unwrap();
+        assert_eq!(revoked.status(), StatusCode::OK);
+        assert!(!service.has_device("phone-a"), "revocation reaches the running service");
+        server.abort();
+        drop(service);
         std::fs::remove_dir_all(&home).unwrap();
     }
 
