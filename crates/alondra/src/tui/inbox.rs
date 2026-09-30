@@ -122,6 +122,7 @@ pub fn pr_url(pr: &PullRequest) -> String {
 
 impl App {
     /// Every item in the projection, hidden or not.
+    #[cfg(test)]
     pub(super) fn all_keys(&self) -> Vec<Key> {
         let Some(d) = &self.domain else { return vec![] };
         d.inbox
@@ -133,6 +134,7 @@ impl App {
 
     /// Roots by section, in the daemon's order inside each, every root followed by its children.
     /// A child is never regrouped here.
+    #[cfg(test)]
     pub fn inbox_rows(&self) -> Vec<(&InboxItem, bool)> {
         let Some(d) = &self.domain else { return vec![] };
         let shown = |i: &InboxItem| !self.hidden.contains_key(&Key(i.id.clone()));
@@ -190,6 +192,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn item(&self, key: &Key) -> Option<&InboxItem> {
         let d = self.domain.as_ref()?;
         d.inbox
@@ -198,6 +201,7 @@ impl App {
             .find(|i| i.id == key.0)
     }
 
+    #[cfg(test)]
     pub fn parent(&self, key: &Key) -> Option<&InboxItem> {
         self.domain
             .as_ref()?
@@ -206,10 +210,12 @@ impl App {
             .find(|r| r.children.iter().any(|c| c.id == key.0))
     }
 
+    #[cfg(test)]
     pub fn interaction(&self, id: &InteractionId) -> Option<&Interaction> {
         self.interactions.get(id)
     }
 
+    #[cfg(test)]
     pub fn pull_request(&self, id: &PrId) -> Option<&PullRequest> {
         self.domain
             .as_ref()?
@@ -218,6 +224,7 @@ impl App {
             .find(|p| &p.id == id)
     }
 
+    #[cfg(test)]
     pub fn authorizations(&self, pr: &PrId) -> Vec<&MergeAuthorization> {
         self.domain
             .as_ref()
@@ -232,6 +239,7 @@ impl App {
 
     /// The PR an item is about: its own subject, the PR its delivery presents or the PR it was
     /// linked to.
+    #[cfg(test)]
     pub fn item_pr(&self, item: &InboxItem) -> Option<&PullRequest> {
         match &item.subject {
             InboxSubject::PullRequest { pr_id } => self.pull_request(pr_id),
@@ -256,6 +264,7 @@ impl App {
     }
 
     /// The PR a stacked task goes on top of, while that PR is still open.
+    #[cfg(test)]
     pub fn stacked_on(&self, pr: &PullRequest) -> Option<&PullRequest> {
         let task = self.task(&pr.task_id)?;
         let below = self.pull_request(&task.stack.as_ref()?.pr_id)?;
@@ -263,6 +272,7 @@ impl App {
     }
 
     /// The delivery item that presents a PR, where feedback and authorization for it go.
+    #[cfg(test)]
     pub fn presenting(&self, pr: &PrId) -> Option<&InboxItem> {
         let d = self.domain.as_ref()?;
         d.inbox
@@ -594,6 +604,7 @@ impl App {
     }
 
     /// The runtime says the PR's branch conflicts with its base.
+    #[cfg(test)]
     pub fn conflicts(&self, pr: &PrId) -> bool {
         self.runtime
             .as_ref()
@@ -602,6 +613,7 @@ impl App {
     }
 
     /// The agent's terminal; an item of the orchestrator opens its activity instead.
+    #[cfg(test)]
     fn terminal_of(&mut self, key: &Key) -> Flow {
         match self.item(key).map(|i| i.agent_id.clone()) {
             Some(Some(agent)) => Flow::Attach(self.attach_id(&agent)),
@@ -614,6 +626,7 @@ impl App {
     }
 
     /// A root only groups; its children carry the actions, so a key never acts on a PR for a child.
+    #[cfg(test)]
     fn actionable(&mut self, key: &Key) -> Option<InboxItem> {
         let item = self.item(key)?.clone();
         if !matches!(item.subject, InboxSubject::Interaction { .. }) {
@@ -626,6 +639,7 @@ impl App {
         Some(item)
     }
 
+    #[cfg(test)]
     fn enabled(&mut self, item: &InboxItem, kind: &str) -> Option<AvailableAction> {
         match action(item, kind) {
             Some(a) if a.enabled => Some(a.clone()),
@@ -766,6 +780,7 @@ impl App {
         Some(m)
     }
 
+    #[cfg(test)]
     fn compose_message(&mut self, key: &Key, item: &InboxItem, message: ops::Message) {
         let name = if message.agent.is_some() {
             self.agent_name(item.agent_id.as_ref())
@@ -846,6 +861,7 @@ impl App {
     }
 
     /// Sends a question back to its agent asking for more context; it stays open until the agent asks again.
+    #[cfg(test)]
     fn more_context(&mut self, key: &Key) {
         let Some(item) = self.actionable(key) else {
             return;
@@ -864,6 +880,7 @@ impl App {
     }
 
     /// The PR's agent, with the PR the message is about.
+    #[cfg(test)]
     fn pr_message(&self, pr: &PrId, kind: MessageKind) -> Option<ops::Message> {
         let agent = self
             .pull_request(pr)
@@ -874,6 +891,7 @@ impl App {
         Some(m)
     }
 
+    #[cfg(test)]
     fn ask_about_pr(&mut self, key: &Key) {
         let Some(item) = self.item(key).cloned() else {
             return;
@@ -963,6 +981,7 @@ impl App {
         );
     }
 
+    #[cfg(test)]
     fn resolve_conflicts(&mut self, key: &Key, pr: &PrId) {
         let number = self.pull_request(pr).map_or(0, |p| p.number);
         let (path, body) = ops::resolve_conflicts(pr);
@@ -979,6 +998,7 @@ impl App {
     }
 
     /// d reviews the PR in tuicr on its local clone; remotely, or with no clone, its diff opens here.
+    #[cfg(test)]
     fn review_pr(&mut self, key: &Key) -> Flow {
         let Some(pr) = self.item(key).and_then(|i| self.item_pr(i)).cloned() else {
             self.fail(tr!("There is no PR here", "Aquí no hay PR"));
@@ -1008,6 +1028,7 @@ impl App {
         Flow::Go
     }
 
+    #[cfg(test)]
     pub(super) fn options(
         &mut self,
         item: &InboxItem,
@@ -1141,6 +1162,7 @@ impl App {
     }
 
     /// The delivery a feedback or an acceptance is about, exactly as it was presented.
+    #[cfg(test)]
     pub(super) fn feedback_subject(
         &mut self,
         key: &Key,
@@ -1251,6 +1273,7 @@ impl App {
         );
     }
 
+    #[cfg(test)]
     pub(super) fn load_diff(&mut self, key: &Key) {
         let Some(pr) = self
             .item(key)
@@ -1271,6 +1294,7 @@ impl App {
     }
 
     /// The stored files an item shows: its attachments and the document versions it is about.
+    #[cfg(test)]
     pub fn item_files(&self, item: &InboxItem) -> Vec<(String, String)> {
         let d = self.domain.as_ref();
         let document =
@@ -1318,6 +1342,7 @@ impl App {
     }
 
     /// What the reader shows for an item: its text, then each of its files.
+    #[cfg(test)]
     pub(super) fn item_parts(&self, item: &InboxItem) -> Vec<Part> {
         let mut parts: Vec<Part> = self.item_text(item).into_iter().map(Part::Text).collect();
         parts.extend(
@@ -1329,6 +1354,7 @@ impl App {
     }
 
     /// The item as Markdown: what it says, what it presents and where its decisions stand.
+    #[cfg(test)]
     pub fn item_text(&self, item: &InboxItem) -> Vec<String> {
         let mut parts = vec![format!("# {}", item.title)];
         if let Some(t) = item.task_id.as_ref().and_then(|id| self.task(id)) {
@@ -1387,6 +1413,7 @@ impl App {
         parts
     }
 
+    #[cfg(test)]
     fn interaction_text(&self, i: &Interaction) -> Vec<String> {
         let mut parts = vec![];
         match &i.payload {
@@ -1515,6 +1542,7 @@ impl App {
     }
 
     /// The Agents screen with the orchestrator selected and its activity open.
+    #[cfg(test)]
     pub(super) fn open_orchestrator(&mut self) {
         let Some(id) = self
             .runtime

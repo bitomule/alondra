@@ -42,6 +42,7 @@ impl App {
     }
 
     /// Whether an agent answers the search: its name and id, and what the runtime says of it.
+    #[cfg(test)]
     pub fn agent_matches(&self, a: &Agent, q: &str) -> bool {
         let tasks: Vec<String> = self
             .agent_tasks(&a.id)
@@ -63,6 +64,7 @@ impl App {
         q.split_whitespace().all(|w| hay.contains(w))
     }
 
+    #[cfg(test)]
     pub(super) fn local_agent_matches(&self, q: &str) -> Vec<AgentId> {
         self.domain
             .as_ref()
@@ -78,6 +80,7 @@ impl App {
 
     /// Agents by name, narrowed by the search when there is one: first what matches locally,
     /// else what the daemon's search found.
+    #[cfg(test)]
     pub fn agent_list(&self) -> Vec<&Agent> {
         let Some(d) = &self.domain else { return vec![] };
         let search = self.search.as_ref().filter(|s| !s.query().is_empty());
@@ -107,6 +110,7 @@ impl App {
     }
 
     /// The list grouped by project when the runtime names them; one flat list otherwise.
+    #[cfg(test)]
     pub fn agent_rows(&self) -> Vec<AgentRow> {
         let agents = self.agent_list();
         if self.runtime.is_none() {
@@ -138,6 +142,7 @@ impl App {
     }
 
     /// Every selectable agent in keyboard order: the orchestrator first, then the list.
+    #[cfg(test)]
     fn agent_ids(&self) -> Vec<AgentId> {
         let orchestrator = self.orchestrator().map(|o| AgentId(o.session_id.clone()));
         orchestrator
@@ -150,6 +155,7 @@ impl App {
     }
 
     /// The tasks assigned to an agent that are not archived.
+    #[cfg(test)]
     pub fn agent_tasks(&self, id: &AgentId) -> Vec<&Task> {
         self.domain
             .as_ref()
@@ -162,6 +168,7 @@ impl App {
             .unwrap_or_default()
     }
 
+    #[cfg(test)]
     pub fn selected_agent(&self) -> Option<&Agent> {
         let id = self.agent_sel.as_ref()?;
         self.domain.as_ref()?.agents.iter().find(|a| &a.id == id)
@@ -175,6 +182,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn reconcile_agents(&mut self) {
         let ids = self.agent_ids();
         match self
@@ -194,6 +202,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn move_agents(&mut self, to: isize) {
         let ids = self.agent_ids();
         if ids.is_empty() {
@@ -213,6 +222,7 @@ impl App {
         self.load_selected_view();
     }
 
+    #[cfg(test)]
     pub(super) fn agents_cmd(&mut self, cmd: Cmd) {
         let i = self.agent_idx as isize;
         let detail = self.agent_zoom || (self.focus == Pane::Detail && self.agent_view.shown);
@@ -247,6 +257,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn agents_key(&mut self, k: KeyEvent) -> Flow {
         match k.code {
             KeyCode::Char('J') => {
@@ -296,6 +307,7 @@ impl App {
         Flow::Go
     }
 
+    #[cfg(test)]
     fn message_agent(&mut self) {
         let Some(id) = self.agent_sel.clone() else {
             return;
@@ -318,6 +330,7 @@ impl App {
     }
 
     /// Closing a session cannot be undone, so it takes a second press within a few seconds.
+    #[cfg(test)]
     fn close_agent(&mut self) {
         let Some(id) = self.agent_sel.clone() else {
             return;
@@ -359,6 +372,7 @@ impl App {
     }
 
     /// The orchestrator's recovery: each step takes a second press and names what it risks.
+    #[cfg(test)]
     fn recover(&mut self, action: Recovery) {
         let Some(runtime) = self
             .runtime

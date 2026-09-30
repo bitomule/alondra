@@ -1,3 +1,4 @@
+#[cfg(test)]
 mod tasks;
 
 use std::collections::HashMap;
@@ -317,8 +318,8 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     };
     let (inbox, tasks, agents) = (
         count("inbox", app.inbox_count()),
-        count("tasks", app.open_task_count()),
-        count("agents", app.domain.as_ref().map_or(0, |d| d.agents.len())),
+        count("tasks", 0),
+        count("agents", 0),
     );
     left.push(tab(
         trf!("Inbox {inbox}", "Bandeja {inbox}"),
@@ -589,6 +590,7 @@ pub(super) fn readings(
     out
 }
 
+#[cfg(test)]
 fn draw_inbox(f: &mut Frame, app: &mut App, area: Rect) {
     if let Some(home) = app.home_view.clone() {
         draw_views_inbox(f, app, &home, area);
@@ -815,6 +817,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// What a row says first: a child's own text, a root's name.
+#[cfg(test)]
 fn row_title(item: &InboxItem) -> String {
     match (
         &item.subject,
@@ -826,6 +829,7 @@ fn row_title(item: &InboxItem) -> String {
 }
 
 /// One inbox row; a child is drawn indented under its root.
+#[cfg(test)]
 fn item_lines(
     app: &App,
     item: &InboxItem,
@@ -949,6 +953,7 @@ fn item_lines(
 }
 
 /// One mark for a PR's checks: failed wins over running, running over passed.
+#[cfg(test)]
 fn checks_mark(checks: &[alondra_core::pr::Check]) -> Option<(&'static str, Color)> {
     use alondra_core::pr::CheckState;
     if checks.is_empty() {
@@ -963,6 +968,7 @@ fn checks_mark(checks: &[alondra_core::pr::Check]) -> Option<(&'static str, Colo
     })
 }
 
+#[cfg(test)]
 fn section_title(s: Section) -> (&'static str, Color) {
     match s {
         Section::Waiting => (tr!("WAITING FOR YOU", "TE ESPERAN"), ACCENT),
@@ -971,6 +977,7 @@ fn section_title(s: Section) -> (&'static str, Color) {
     }
 }
 
+#[cfg(test)]
 fn draw_inbox_list(f: &mut Frame, app: &mut App, area: Rect) {
     let focused = app.focus == Pane::List || !app.detail_view.shown;
     let block = panel(Line::from(tr!(" Inbox ", " Bandeja ").bold()), focused);
@@ -1098,6 +1105,7 @@ fn image_rows(img: &image::DynamicImage, width: usize) -> usize {
     rows.clamp(4, IMAGE_MAX_ROWS)
 }
 
+#[cfg(test)]
 fn detail(app: &App, item: &InboxItem, width: usize) -> (Vec<Line<'static>>, Vec<ImageSlot>) {
     let (glyph, kind, color) = kind_glyph(&item.kind);
     let mut meta = vec![
@@ -1213,6 +1221,7 @@ fn detail(app: &App, item: &InboxItem, width: usize) -> (Vec<Line<'static>>, Vec
 
 /// The keys the selected item offers, straight from its available actions; an action that is off
 /// says why.
+#[cfg(test)]
 fn action_lines(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>> {
     let hint = |k: &str, label: String| {
         vec![
@@ -1395,6 +1404,7 @@ fn action_lines(app: &App, item: &InboxItem, width: usize) -> Vec<Line<'static>>
     out
 }
 
+#[cfg(test)]
 fn draw_item_detail(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(item) = app.sel.as_ref().and_then(|k| app.item(k)).cloned() else {
         app.detail_view.total = 0;
@@ -1477,7 +1487,7 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     let still_there = app
         .reader
         .as_ref()
-        .is_some_and(|r| r.key.0.contains(':') || app.item(&r.key).is_some());
+        .is_some_and(|r| app.card_view.as_ref().is_some_and(|view| view.key == r.key.0));
     let Some(r) = app.reader.as_mut() else { return };
     let review = app.reviews.get(&r.key);
     let (glyph, color) = (r.glyph, r.color);
@@ -1662,99 +1672,22 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
             Span::styled(d.to_string(), Style::new().fg(DIM)),
         ])
     };
-    let item = app.item(&r.key);
-    match review.filter(|rv| !rv.is_empty()) {
+    match review.filter(|review| !review.is_empty()) {
         None => {
             lines.push(Line::from(tr!("None yet.", "Todavía ninguno.").fg(DIM)));
             lines.push(Line::default());
-            lines.push(key(
-                "j/k",
-                tr!("move the cursor by blocks", "mueve el cursor por bloques"),
-            ));
-            lines.push(key(
-                "^d ^u",
-                tr!("half a page down / up", "media página abajo / arriba"),
-            ));
-            lines.push(key(
-                "/",
-                tr!(
-                    "search the text; n/N next/prev",
-                    "busca en el texto; n/N sig./ant."
-                ),
-            ));
-            lines.push(key(
-                "c",
-                tr!("comment on the marked block", "comenta el bloque marcado"),
-            ));
-            lines.push(key("Shift+C", tr!("general comment", "comentario general")));
-            if item.is_some_and(|i| action(i, "submit_feedback").is_some_and(|a| a.enabled)) {
-                lines.push(key(
-                    "s",
-                    tr!(
-                        "send your comments as feedback",
-                        "envía tus comentarios como feedback"
-                    ),
-                ));
+            for (hint, label) in [
+                ("j/k", tr!("move the cursor by blocks", "mueve el cursor por bloques")),
+                ("^d ^u", tr!("half a page down / up", "media página abajo / arriba")),
+                ("/", tr!("search the text; n/N next/prev", "busca en el texto; n/N sig./ant.")),
+                ("c", tr!("comment on the marked block", "comenta el bloque marcado")),
+                ("Shift+C", tr!("general comment", "comentario general")),
+            ] {
+                lines.push(key(hint, label));
             }
-            if item.is_some_and(|i| action(i, "accept_delivery").is_some_and(|a| a.enabled)) {
-                lines.push(key("v", tr!("accept the delivery", "acepta la entrega")));
-            }
-            if item.is_some_and(|i| action(i, "mark_read").is_some_and(|a| a.enabled)) {
-                lines.push(key("x", tr!("mark read", "marca leído")));
-            }
-            if item.is_some_and(|i| i.kind == "information") {
-                lines.push(key(
-                    "s",
-                    tr!(
-                        "send them to its agent (marks it read)",
-                        "envíalos a su agente (se marca leído)"
-                    ),
-                ));
-            }
-            if item.is_some_and(|i| matches!(i.kind.as_str(), "question" | "action_request")) {
-                lines.push(key(
-                    "1-9",
-                    tr!(
-                        "send them with the option you pick",
-                        "envíalos con la opción que elijas"
-                    ),
-                ));
-            }
-            if item.is_some_and(|i| i.kind == "pull_request") {
-                lines.push(key(
-                    "s",
-                    tr!(
-                        "send them as changes to its agent",
-                        "envíalos como cambios a su agente"
-                    ),
-                ));
-            }
-            if let Some(
-                InteractionPayload::Question {
-                    options,
-                    answer: None,
-                }
-                | InteractionPayload::ActionRequest {
-                    options,
-                    answer: None,
-                },
-            ) = item
-                .and_then(interaction_of)
-                .and_then(|id| app.interaction(id))
-                .map(|i| &i.payload)
-            {
-                lines.push(Line::default());
-                lines.push(Line::from(
-                    tr!("Or choose directly", "O elige directamente").fg(DIM),
-                ));
-                for (i, o) in options.iter().enumerate().take(9) {
-                    lines.push(fit(
-                        vec![
-                            Span::styled(format!("{:<6}", i + 1), Style::new().fg(ACCENT).bold()),
-                            Span::raw(md::one_line(i18n::option_label(&o.label))),
-                        ],
-                        width,
-                    ));
+            if let Some(view) = app.card_view.as_ref().filter(|view| view.key == r.key.0) {
+                for (hint, label) in view_footer_actions(view) {
+                    lines.push(key(&hint, &label));
                 }
             }
         }
@@ -2218,9 +2151,59 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(String, String)> {
+    let mut keys = Vec::new();
+    for action in super::view_render::actions(view).into_iter().filter(|action| action.enabled) {
+        let hint = super::view_render::action_hint(&action);
+        if !hint.is_empty() {
+            keys.push((if hint == "enter" { "⏎" } else { hint }.into(), action.label.clone()));
+        }
+        for (index, option) in action.options.iter().enumerate() {
+            let hint = option.key.clone().unwrap_or_else(|| (index + 1).to_string());
+            keys.push((hint, option.label.clone()));
+        }
+    }
+    keys
+}
+
 /// Only an uncertain handoff needs the user: a dispatching one settles by itself.
 fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
+    if app.composer.is_none() {
+        if let Some(reader) = app.reader.as_ref() {
+            if reader.find.as_ref().is_some_and(|find| find.editing) {
+                return vec![k("⏎", tr!("find", "buscar")), k("Esc", tr!("cancel", "cancela"))];
+            }
+            let mut keys = vec![k("j/k", tr!("block", "bloque")),
+                k("/", tr!("search", "buscar")), k("c", tr!("comment", "comentar")),
+                k("Shift+C", tr!("general", "general")), k("d", tr!("delete", "borrar"))];
+            if let Some(view) = app.card_view.as_ref().filter(|view| view.key == reader.key.0) {
+                keys.extend(view_footer_actions(view));
+            }
+            keys.push(k("Esc/o", tr!("back", "volver")));
+            return keys;
+        }
+        if let Some(home) = app.home_view.as_ref() {
+            let mut keys = vec![k("j/k", tr!("move", "mover")), k("⏎/o", tr!("detail", "detalle"))];
+            if let Some(card) = app.card_view.as_ref() {
+                keys.extend(view_footer_actions(card));
+            } else if let Some(selected) = app.sel.as_ref()
+                && let Some(row) = super::view_render::rows(home).into_iter()
+                    .find_map(|(row, _)| (row.id == selected.0).then_some(row))
+            {
+                for action in row.actions.iter().filter(|action| action.enabled) {
+                    let hint = super::view_render::action_hint(action);
+                    if !hint.is_empty() {
+                        keys.push((if hint == "enter" { "⏎" } else { hint }.into(), action.label.clone()));
+                    }
+                }
+            }
+            keys.extend([k("Tab", tr!("next", "siguiente")), k("n", tr!("new", "nuevo")),
+                k("q", tr!("quit", "salir"))]);
+            return keys;
+        }
+    }
+    #[cfg(test)]
     if app.schedules_open {
         let enabled = app
             .schedules
@@ -2296,6 +2279,8 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             k("Esc", tr!("cancel", "cancela")),
         ];
     }
+    #[cfg(test)]
+    {
     if let Some(r) = app.reader.as_ref() {
         if r.find.as_ref().is_some_and(|f| f.editing) {
             return vec![
@@ -2507,6 +2492,9 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             v
         }
     }
+    }
+    #[cfg(not(test))]
+    Vec::new()
 }
 
 /// Action results float above the key bar, wrapped, so they never hide the keys or get cut.
@@ -2932,6 +2920,7 @@ fn draw_help(f: &mut Frame, app: &mut App) {
     );
 }
 
+#[cfg(test)]
 fn draw_schedules(f: &mut Frame, app: &mut App, area: Rect) {
     let [list, detail] =
         Layout::horizontal([Constraint::Percentage(42), Constraint::Percentage(58)]).areas(area);
@@ -3209,6 +3198,7 @@ fn draw_schedules(f: &mut Frame, app: &mut App, area: Rect) {
     }
 }
 
+#[cfg(test)]
 fn schedule_project(schedule: &serde_json::Value) -> String {
     let project = schedule["project"]
         .as_str()
@@ -3221,6 +3211,7 @@ fn schedule_project(schedule: &serde_json::Value) -> String {
     }
 }
 
+#[cfg(test)]
 fn span_to(ms: i64) -> String {
     let minutes = (ms / 60_000).max(0);
     if minutes < 60 {
@@ -3232,6 +3223,7 @@ fn span_to(ms: i64) -> String {
     }
 }
 
+#[cfg(test)]
 fn schedule_error(error: &str) -> &str {
     match error {
         "project must be one of the available project folders" => tr!(

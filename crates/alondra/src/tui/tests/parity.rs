@@ -170,6 +170,35 @@ fn reader_review_and_read_keys_use_views_actions() {
 }
 
 #[test]
+fn reader_comments_follow_the_selected_views_text_option() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let mut view = view_fixture("card-question.json");
+    view["sections"][0]["items"][0]["actions"][0]["options"] = serde_json::json!([
+        {"id":"changes", "label":"Request changes", "style":"secondary",
+         "input":{"kind":"text", "placeholder":"Explain", "required":true,"multiline":true}, "key":"1"},
+        {"id":"approve", "label":"Approve", "style":"primary",
+         "input":{"kind":"none"}, "key":"2"}
+    ]);
+    app.view_navigation.push("card:i-1".into());
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    app.open_reader();
+    press(&mut app, KeyCode::Char('C'));
+    typed(&mut app, "Tighter");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('2'));
+    assert!(posted(&app).is_empty() && flash(&app).contains("takes no text"));
+    press(&mut app, KeyCode::Char('1'));
+    assert!(matches!(app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { option_id: Some(option), .. }) if option == "changes"));
+    assert!(app.composer.as_ref().is_some_and(|composer| composer.input.text().contains("Tighter")));
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(posted(&app)[0].1["option_id"], "changes");
+    assert!(posted(&app)[0].1["input"]["text"].as_str().unwrap().contains("Tighter"));
+}
+
+#[test]
 fn view_number_key_posts_the_matching_option_id_and_epoch() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);

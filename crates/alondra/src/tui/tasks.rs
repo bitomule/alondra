@@ -204,14 +204,17 @@ fn group_rows(r: &Request, tasks: &[&Task]) -> Vec<TaskListRow> {
 }
 
 impl App {
+    #[cfg(test)]
     pub fn task(&self, id: &TaskId) -> Option<&Task> {
         self.domain.as_ref()?.tasks.iter().find(|t| &t.id == id)
     }
 
+    #[cfg(test)]
     pub fn request(&self, id: &RequestId) -> Option<&Request> {
         self.domain.as_ref()?.requests.iter().find(|r| &r.id == id)
     }
 
+    #[cfg(test)]
     pub fn request_tasks(&self, r: &RequestId) -> Vec<&Task> {
         self.domain
             .as_ref()
@@ -220,15 +223,18 @@ impl App {
     }
 
     /// The project the runtime names for a task.
+    #[cfg(test)]
     pub fn task_project(&self, t: &Task) -> Option<String> {
         self.runtime.as_ref()?.task(&t.id.0)?.project.clone()
     }
 
+    #[cfg(test)]
     fn request_project(&self, tasks: &[&Task]) -> Option<String> {
         tasks.iter().find_map(|t| self.task_project(t))
     }
 
     /// The tasks that wait on this one.
+    #[cfg(test)]
     pub fn dependents(&self, t: &Task) -> Vec<&Task> {
         self.domain
             .as_ref()
@@ -243,6 +249,7 @@ impl App {
 
     /// The stack this task's PR belongs to, bottom first: the tasks it goes on top of, itself,
     /// and the tasks stacked on it.
+    #[cfg(test)]
     pub fn merge_order<'a>(&'a self, t: &'a Task) -> Vec<&'a Task> {
         let mut below = vec![];
         let mut seen: HashSet<&TaskId> = HashSet::from([&t.id]);
@@ -272,6 +279,7 @@ impl App {
     }
 
     /// What is open first; then the finished work and the archived work, each folded under one header.
+    #[cfg(test)]
     pub fn task_rows(&self) -> Vec<TaskListRow> {
         let Some(d) = &self.domain else {
             return vec![TaskListRow::Active(0)];
@@ -325,6 +333,7 @@ impl App {
         rows
     }
 
+    #[cfg(test)]
     pub fn task_keys(&self) -> Vec<TaskKey> {
         self.task_rows()
             .iter()
@@ -332,6 +341,7 @@ impl App {
             .collect()
     }
 
+    #[cfg(test)]
     pub fn open_task_count(&self) -> usize {
         self.domain.as_ref().map_or(0, |d| {
             d.tasks
@@ -341,6 +351,7 @@ impl App {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn running_tasks(&self) -> bool {
         self.domain.as_ref().is_some_and(|d| {
             d.tasks
@@ -349,6 +360,7 @@ impl App {
         })
     }
 
+    #[cfg(test)]
     pub fn selected_task(&self) -> Option<&Task> {
         match &self.task_sel {
             Some(TaskKey::Task(id)) => self.task(id),
@@ -356,6 +368,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn selected_request(&self) -> Option<&Request> {
         match &self.task_sel {
             Some(TaskKey::Request(id)) => self.request(id),
@@ -363,6 +376,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn request_title(&self, r: &Request) -> String {
         match self.request_tasks(&r.id).as_slice() {
             [one] => one.title.clone(),
@@ -372,6 +386,7 @@ impl App {
 
     /// Where the task's result stands, one fact at a time, as the daemon recorded it: presented,
     /// accepted, merge authorized, merged, and whether it is done. Nothing here is inferred.
+    #[cfg(test)]
     pub fn task_progress(&self, t: &Task) -> Vec<String> {
         let Some(d) = &self.domain else { return vec![] };
         let mut out = vec![];
@@ -409,6 +424,7 @@ impl App {
     }
 
     /// One line on what the task is at now, when its state alone does not say it.
+    #[cfg(test)]
     pub fn task_now(&self, t: &Task) -> Option<String> {
         let waiting = self
             .inbox_rows()
@@ -440,6 +456,7 @@ impl App {
         None
     }
 
+    #[cfg(test)]
     pub(super) fn reconcile_tasks(&mut self) {
         let keys = self.task_keys();
         match self
@@ -473,6 +490,7 @@ impl App {
         self.load_selected_view();
     }
 
+    #[cfg(test)]
     pub(super) fn move_tasks(&mut self, to: isize) {
         let keys = self.task_keys();
         if keys.is_empty() {
@@ -488,6 +506,7 @@ impl App {
         self.load_task_history();
     }
 
+    #[cfg(test)]
     pub(super) fn tasks_cmd(&mut self, cmd: Cmd) {
         let i = self.task_idx as isize;
         let detail = self.task_zoom || (self.focus == Pane::Detail && self.task_view.shown);
@@ -567,6 +586,7 @@ impl App {
         Flow::Go
     }
 
+    #[cfg(test)]
     fn message_task_agent(&mut self) {
         let Some(t) = self.selected_task().cloned() else {
             return;
@@ -592,6 +612,7 @@ impl App {
     }
 
     /// The daemon's own control for the task, when it has already said whether it is on.
+    #[cfg(test)]
     fn task_control(&self, id: &TaskId, kind: &str) -> Option<AvailableAction> {
         self.task_actions
             .get(id)

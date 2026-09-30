@@ -28,9 +28,11 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use alondra_core::domain_v2::{
-    AgentId, AttachmentRef, AvailableAction, Command, CommandEnvelope, CommandOutcome,
-    DeliveryTarget, DomainProjection, Interaction, InteractionId, PrId, Revision, TaskId,
+    AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction,
+    InteractionId, PrId, Revision, TaskId,
 };
+#[cfg(test)]
+use alondra_core::domain_v2::{CommandEnvelope, CommandOutcome, DomainProjection};
 use alondra_core::now_millis;
 use alondra_core::views::{Status as ViewStatus, View as ViewDocument};
 use anyhow::Result;
@@ -43,7 +45,9 @@ use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::DefaultTerminal;
 use serde_json::{Value, json};
 
-use crate::client::{Client, CommandFailure};
+use crate::client::Client;
+#[cfg(test)]
+use crate::client::CommandFailure;
 use crate::i18n;
 use crate::mcp::urlencode;
 use crate::ops;
@@ -516,6 +520,7 @@ pub enum Flow {
 
 /// A command on its way, or one whose outcome is unknown: sending the same thing again repeats
 /// this envelope, so the daemon answers with the first receipt instead of doing it twice.
+#[cfg(test)]
 struct Sent {
     envelope: CommandEnvelope,
     key: Option<Key>,
@@ -525,6 +530,7 @@ struct Sent {
 }
 
 pub struct App {
+    #[cfg(test)]
     pub domain: Option<DomainProjection>,
     pub home_view: Option<ViewDocument>,
     pub card_view: Option<ViewDocument>,
@@ -555,6 +561,7 @@ pub struct App {
     /// confirms it; any other key starts over.
     confirm: Option<(String, i64, KeyCode)>,
     pressed: KeyCode,
+    #[cfg(test)]
     sending: HashMap<String, Sent>,
     #[cfg(test)]
     sent: std::cell::RefCell<Vec<CommandEnvelope>>,
@@ -986,6 +993,7 @@ fn has_comments(export: &str) -> bool {
 impl App {
     fn new(tx: SyncSender<Msg>) -> Self {
         App {
+            #[cfg(test)]
             domain: None,
             home_view: None,
             card_view: None,
@@ -1014,6 +1022,7 @@ impl App {
             agent_zoom: false,
             confirm: None,
             pressed: KeyCode::Null,
+            #[cfg(test)]
             sending: HashMap::new(),
             #[cfg(test)]
             sent: Default::default(),
@@ -1623,6 +1632,7 @@ impl App {
     }
 
     /// The selected item's interaction, read when it is first shown and again when it changes.
+    #[cfg(test)]
     fn load_selected_interaction(&mut self) {
         let Some((id, revision)) = self
             .sel
@@ -1635,6 +1645,7 @@ impl App {
         self.load_interaction(id, revision);
     }
 
+    #[cfg(test)]
     pub(crate) fn load_interaction(&mut self, id: InteractionId, asked_at: Revision) {
         if self
             .interactions
@@ -1903,6 +1914,7 @@ impl App {
             self.last_clock = now;
             dirty = true;
         }
+        #[cfg(test)]
         if self.screen == Screen::Tasks && now / 500 != self.last_task_animation {
             self.last_task_animation = now / 500;
             dirty |= self.running_tasks();
@@ -1911,6 +1923,7 @@ impl App {
             dirty = true;
         }
         self.load_threads();
+        #[cfg(test)]
         let wants_remote = self.search.as_ref().and_then(|s| {
             let q = s.query();
             (matches!(s.remote, Remote::Idle)
@@ -1918,6 +1931,7 @@ impl App {
                 && now - s.typed_at >= SEARCH_DEBOUNCE_MS)
                 .then_some(q)
         });
+        #[cfg(test)]
         if let Some(q) = wants_remote
             && self.local_agent_matches(&q).is_empty()
         {
@@ -2302,11 +2316,16 @@ impl App {
             }
             n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
                 let i = n.parse::<isize>().unwrap_or(1) - 1;
-                match self.screen {
-                    Screen::Inbox => self.move_inbox(i),
-                    Screen::Tasks => self.move_tasks(i),
-                    Screen::Fleet => self.move_agents(i),
+                #[cfg(test)]
+                if self.domain.is_some() && self.home_view.is_none() {
+                    match self.screen {
+                        Screen::Inbox => self.move_inbox(i),
+                        Screen::Tasks => self.move_tasks(i),
+                        Screen::Fleet => self.move_agents(i),
+                    }
+                    return Flow::Go;
                 }
+                self.move_inbox(i);
             }
             other => self.fail(trf!(
                 "Not a command: {other}  (try :q, :help, :inbox, :tasks, :agents, :<number>)",
@@ -2471,6 +2490,7 @@ impl App {
                 self.previews.remove(&chip.seq);
             }
         }
+        #[cfg(test)]
         let draft = c.target.draft_key().map(|k| (k, text.clone()));
         match c.target {
             #[cfg(test)]
@@ -3151,6 +3171,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub fn agent_name(&self, id: Option<&AgentId>) -> String {
         let Some(id) = id else {
             return tr!("orchestrator", "orquestador").into();
