@@ -1021,8 +1021,7 @@ mod tests {
         for (path, expected) in [
             ("/schedules", StatusCode::OK),
             ("/schedules/missing", StatusCode::NOT_FOUND),
-            ("/delivery-attempts?after=0", StatusCode::OK),
-            ("/tasks/missing/actions", StatusCode::NOT_FOUND),
+            ("/views/home?protocol=1&client=tui&lang=en", StatusCode::OK),
             (
                 "/document-revisions/missing/content?offset=0",
                 StatusCode::NOT_FOUND,
@@ -1059,6 +1058,10 @@ mod tests {
                 assert_eq!(body["code"], "not_found", "handler must answer {path}");
             }
         }
+        for path in ["/delivery-attempts?after=0", "/tasks/missing/actions"] {
+            assert_eq!(client.get(format!("{base}{path}")).send().await.unwrap().status(),
+                StatusCode::NOT_FOUND, "retired {path}");
+        }
         let merge_path = "/merge-authorizations/missing";
         assert_eq!(
             client
@@ -1068,7 +1071,7 @@ mod tests {
                 .await
                 .unwrap()
                 .status(),
-            StatusCode::FORBIDDEN
+            StatusCode::NOT_FOUND
         );
         let response = client
             .get(format!("{base}{merge_path}"))
@@ -1077,11 +1080,6 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
-        let body: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(
-            body["code"], "not_found",
-            "handler must answer merge authorization read"
-        );
         assert_eq!(
             client
                 .get(format!("{base}/orchestrator/machine"))
@@ -1230,16 +1228,8 @@ mod tests {
             "{node:?}"
         );
         domain.revoke_agent("test-agent").unwrap();
-        assert_eq!(
-            client
-                .get(format!("{base}{merge_path}"))
-                .header("authorization", format!("Bearer {bearer}"))
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            StatusCode::FORBIDDEN
-        );
+        // The removed GET merge-authorizations route cannot prove revocation.
+        // Check it on the retained authenticated capability route below.
         assert_eq!(
             client
                 .get(format!("{base}/capabilities"))

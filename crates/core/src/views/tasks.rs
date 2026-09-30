@@ -163,7 +163,7 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
             .strip_prefix("tasks?section=")
             .ok_or(BuildError::InvalidKey)?;
         let (section, after) = tail.split_once("&after=").ok_or(BuildError::InvalidKey)?;
-        if !matches!(section, "finished" | "archived") || after.parse::<usize>().is_err() {
+        if !matches!(section, "active" | "finished" | "archived") || after.parse::<usize>().is_err() {
             return Err(BuildError::InvalidKey);
         }
         Some((

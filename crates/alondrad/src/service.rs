@@ -38,7 +38,7 @@ const MAX_PUSH_BODY: usize = 3_000;
 const MAX_PUSH_PLAINTEXT: usize = 1_500;
 // The legacy changes route remains available until its final caller migrates.
 // The views feed supersedes its prior waiter independently of this limit.
-const MAX_CHANGES_PER_DEVICE: usize = 1;
+const MAX_CHANGES_PER_DEVICE: usize = 2;
 const MAX_CHANGES_TOTAL: usize = 16;
 
 type WorkKey = (String, String);
@@ -3100,7 +3100,7 @@ agreement_key = "{}"
         let work = changes_work(
             &service,
             "resource-read",
-            json!({"method":"GET","path":"/summary"}),
+            json!({"method":"GET","path":"/capabilities"}),
         );
         let replay = repeat_work(&work);
         service.handle(work, &epoch).await.unwrap();
@@ -5046,7 +5046,7 @@ agreement_key = "{}"
                     kind: "request",
                     expires_at_ms: now_ms() + 60_000,
                 },
-                br#"{"method":"GET","path":"/summary"}"#,
+                br#"{"method":"GET","path":"/capabilities"}"#,
                 key,
                 &service.agreement.public_key(),
             )
@@ -5138,7 +5138,7 @@ agreement_key = "{}"
             results[0]["status"], 200,
             "the resource endpoint accepts an approved signed request"
         );
-        assert!(results[0]["body"]["sections"].is_object());
+        assert_eq!(results[0]["body"]["protocol_version"], 2);
         assert_eq!(receipts.load(Ordering::SeqCst), 1);
         *delivered.lock().unwrap() = json!({"request_id":"substituted-key","envelope":substituted});
         let error = service
@@ -5292,7 +5292,8 @@ agreement_key = "{}"
         ] {
             assert!(accepts("GET", path, None), "{path}");
         }
-        assert!(accepts("GET", "/delivery-attempts?after=0", None));
+        assert!(accepts("GET", "/views/home?protocol=1&client=ios&lang=en", None));
+        assert!(!accepts("GET", "/delivery-attempts?after=0", None));
         assert!(accepts(
             "POST",
             "/delivery-attempts/1/resolve",
@@ -5305,11 +5306,8 @@ agreement_key = "{}"
             Some(json!({}))
         ));
         for path in [
-            "/summary?include=inbox,tasks",
-            "/inbox?cursor=eyJvIjoxLCJpIjoieCJ9&limit=50",
-            "/tasks/t-1",
-            "/tasks/t-1/interactions",
-            "/interactions/i-1/body?offset=0",
+            "/views/home?protocol=1&client=ios&lang=en",
+            "/views/card:i-1?protocol=1&client=ios&lang=en",
         ] {
             assert!(accepts("GET", path, None), "{path}");
             assert!(!accepts("GET", path, Some(json!({}))), "{path}");
@@ -5317,6 +5315,7 @@ agreement_key = "{}"
         }
         assert!(!accepts("GET", "/inbox?filter=all", None));
         assert!(!accepts("GET", "/interactions", None));
+        assert!(!accepts("GET", "/summary?include=inbox,tasks", None));
         for path in [
             "/v1/questions/123/answer",
             "/v1/questions/123/more-context",
@@ -6616,9 +6615,8 @@ agreement_key = "{}"
             body: None,
         };
         for (index, path) in [
-            "/runtime",
-            "/agents/agent-a/activity",
-            "/agents/search?q=instance",
+            "/views/home?protocol=1&client=ios&lang=en",
+            "/views/tasks?protocol=1&client=ios&lang=en",
         ]
         .into_iter()
         .enumerate()
@@ -6633,18 +6631,12 @@ agreement_key = "{}"
             let answer = service.dispatch("phone-a", &read(path)).await.unwrap();
             assert_eq!(answer["status"], 200, "{path}: {answer}");
         }
-        let runtime = service
-            .dispatch("phone-a", &read("/runtime"))
+        let home_view = service
+            .dispatch("phone-a", &read("/views/home?protocol=1&client=ios&lang=en"))
             .await
             .unwrap();
-        assert_eq!(runtime["body"]["nodes"][0]["session_id"], "agent-a");
-        assert_eq!(
-            service
-                .dispatch("phone-a", &read("/agents/search?q=instance"))
-                .await
-                .unwrap()["body"]["sessions"],
-            json!(["agent-a"])
-        );
+        assert_eq!(home_view["body"]["key"], "home");
+        assert!(home_view["body"]["sections"].is_array());
         for (index, path) in ["/nothing", "/runtime?x=1", "/agents/agent-a/nothing"]
             .into_iter()
             .enumerate()

@@ -1,4 +1,4 @@
-//! V41: the signed loopback reader and the sealed service reader see the same
+//! The retained signed loopback and sealed service resource reads see the same
 //! domain state. Everything here runs in a synthetic HOME and loopback relay.
 use super::*;
 use alondra_core::domain_v2::{
@@ -310,13 +310,9 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     let epoch = domain.state().unwrap().data_epoch.0;
     let paths = [
         "/capabilities".to_owned(),
-        "/summary".to_owned(),
-        "/tasks/task-parity/actions".to_owned(),
-        "/tasks/missing/actions".to_owned(),
         "/document-revisions/rev-parity/content?offset=0".to_owned(),
         "/document-revisions/missing/content?offset=0".to_owned(),
-        format!("/changes?data_epoch={epoch}&after={initial_revision}&wait=0"),
-        "/delivery-attempts?after=0".to_owned(),
+        "/pull-requests/missing/diff".to_owned(),
     ];
     for (index, path) in paths.iter().enumerate() {
         let local = local_get(&client, &base, &phone_key, device_id, path).await;
@@ -372,7 +368,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     assert_eq!(blocked_resolve["status"], 409);
     assert_eq!(blocked_resolve["body"]["code"], "incompatible_protocol");
     assert_eq!(domain.state().unwrap(), before_schedule);
-    assert_eq!(local_get(&client, &base, &phone_key, device_id, "/summary").await["status"], 200);
+    assert_eq!(local_get(&client, &base, &phone_key, device_id, "/capabilities").await["status"], 200);
 
     let state = domain.state().unwrap();
     let command = CommandEnvelope {
@@ -581,7 +577,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             .len(),
         pending_after_read + 1
     );
-    let updated_path = "/summary";
+    let updated_path = "/capabilities";
     assert_eq!(
         local_get(&client, &base, &phone_key, device_id, updated_path).await,
         encrypted(
@@ -614,7 +610,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     );
     auth.revoke(device_id).unwrap();
     assert_eq!(
-        local_get(&client, &base, &phone_key, device_id, "/summary").await["status"],
+        local_get(&client, &base, &phone_key, device_id, "/capabilities").await["status"],
         401
     );
     assert!(
@@ -623,7 +619,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
                 &service,
                 &phone_key,
                 "after-revoke",
-                json!({"method":"GET","path":"/summary"})
+                json!({"method":"GET","path":"/capabilities"})
             ))
             .is_err()
     );

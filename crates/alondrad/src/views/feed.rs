@@ -103,7 +103,8 @@ pub(crate) async fn handle(
     transport: Transport,
 ) -> Response {
     let Some((kind, lang, wait, cursor, views)) = parse(query) else {
-        return error("invalid_input", "invalid changes query");
+        return error("invalid_input", "invalid changes query", "consulta de cambios no válida",
+            if query.split('&').any(|part| part == "lang=es") { Lang::Es } else { Lang::En });
     };
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let generation = client.feeds.next.fetch_add(1, Ordering::Relaxed);
@@ -186,7 +187,8 @@ async fn current(
     let state = client
         .domain
         .state()
-        .map_err(|_| error("storage_unavailable", "domain state unavailable"))?;
+        .map_err(|_| error("storage_unavailable", "domain state unavailable",
+            "estado de datos no disponible", lang))?;
     let status_key = status_view_key(kind);
     let mut keys = Vec::with_capacity(views.len() + 1);
     keys.push(status_key.to_owned());
@@ -199,7 +201,8 @@ async fn current(
     let status_view = client
         .views
         .render(status_key, &state, &live, kind, lang, transport)
-        .map_err(|_| error("storage_unavailable", "view status unavailable"))?;
+        .map_err(|_| error("storage_unavailable", "view status unavailable",
+            "estado de la vista no disponible", lang))?;
     let mut stale = Vec::new();
     for (key, version) in views {
         let stale_view = if super::routes::valid_open_key(key) {
@@ -306,8 +309,9 @@ fn parse(query: &str) -> Option<(Client, Lang, u64, Option<String>, Vec<(String,
     Some((kind, lang, wait, cursor, parsed))
 }
 
-fn error(code: &str, message: &str) -> Response {
-    crate::domain_api::domain_error(DomainError::new(code, message))
+fn error(code: &str, english: &str, spanish: &str, lang: Lang) -> Response {
+    crate::domain_api::domain_error(DomainError::new(code,
+        if lang == Lang::Es { spanish } else { english }))
 }
 
 fn valid_key(key: &str) -> bool {

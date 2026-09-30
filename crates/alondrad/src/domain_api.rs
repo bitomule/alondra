@@ -1700,7 +1700,7 @@ mod tests {
             .bearer_auth("not-a-capability").send().await.unwrap().status(),
             reqwest::StatusCode::FORBIDDEN);
         assert_eq!(client.get(format!("{base}/merge-authorizations/missing"))
-            .send().await.unwrap().status(), reqwest::StatusCode::FORBIDDEN);
+            .send().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
         assert_eq!(client.get(format!("{base}/merge-authorizations/missing"))
             .bearer_auth(token.expose_for_child_environment()).send().await.unwrap().status(),
             reqwest::StatusCode::NOT_FOUND);
