@@ -141,7 +141,7 @@ fn action_ids_round_trip() {
     assert!(ActionId::parse("ans:i-42@117~abc:def").is_err());
 }
 #[test]
-fn home_ios_includes_the_first_two_details_only() {
+fn home_ios_sends_only_ordered_ids() {
     let state = fixture();
     let live = LiveSnapshot::default();
     let view = render(
@@ -152,27 +152,12 @@ fn home_ios_includes_the_first_two_details_only() {
         "home",
         "2026-09-30T10:00:00Z",
     );
-    let cards: Vec<_> = view.sections[0]
-        .items
-        .iter()
-        .filter_map(|item| {
-            if let Item::Card(card) = item {
-                Some(card)
-            } else {
-                None
-            }
-        })
-        .collect();
-    assert_eq!(cards.len(), 2);
-    assert_eq!(
-        cards.iter().map(|card| card.detail).collect::<Vec<_>>(),
-        vec![Detail::Included, Detail::Included]
-    );
+    assert!(view.sections[0].items.is_empty());
     assert_eq!(view.sections[0].card_ids, ["i-1", "i-2", "i-3"]);
 }
 
 #[test]
-fn huge_home_sends_only_ordered_ids_after_the_first_two_cards() {
+fn huge_home_sends_only_ordered_ids() {
     let mut state = fixture();
     for index in 0..2_000 {
         let id = format!("q-{index:04}");
@@ -209,13 +194,13 @@ fn huge_home_sends_only_ordered_ids_after_the_first_two_cards() {
     );
     let queue = &view.sections[0];
     assert_eq!(queue.card_ids.len(), 2_003);
-    assert_eq!(queue.items.len(), 2);
+    assert!(queue.items.is_empty());
     assert_eq!(queue.card_ids.first().unwrap(), "i-1");
     assert_eq!(queue.card_ids.last().unwrap(), "q-1999");
     assert!(serde_json::to_vec(&view).unwrap().len() < 160 * 1024);
 }
 #[test]
-fn focus_puts_the_card_first_with_its_detail() {
+fn focus_puts_the_id_first() {
     let state = fixture();
     let live = LiveSnapshot::default();
     let view = render(
@@ -226,11 +211,7 @@ fn focus_puts_the_card_first_with_its_detail() {
         "home?focus=i-3",
         "2026-09-30T10:00:00Z",
     );
-    let Item::Card(first) = &view.sections[0].items[0] else {
-        panic!("first item must be card")
-    };
-    assert_eq!(first.id, "i-3");
-    assert_eq!(first.detail, Detail::Included);
+    assert!(view.sections[0].items.is_empty());
     assert_eq!(view.sections[0].card_ids[0], "i-3");
 }
 #[test]
@@ -328,7 +309,7 @@ fn pull_request_contains_its_question() {
     );
     assert!(view.sections[0].card_ids.contains(&"pr-1".to_owned()));
     assert!(!view.sections[0].card_ids.contains(&"i-5".to_owned()));
-    assert_eq!(view.sections[0].items.len(), 2);
+    assert!(view.sections[0].items.is_empty());
     let detail = render(
         &state,
         &live,

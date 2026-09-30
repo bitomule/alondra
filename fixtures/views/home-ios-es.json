@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v022a0035d290e028",
+  "version": "ve7c9ce32304d6569",
   "cursor": "cursor-1",
   "status": {
     "version": "v8721d9127b0633bd",
@@ -49,149 +49,7 @@
       "title": "Te espera",
       "count": 4,
       "collapsed": false,
-      "items": [
-        {
-          "type": "card",
-          "id": "i-1",
-          "link": {
-            "kind": "view",
-            "key": "card:i-1"
-          },
-          "icon": "question",
-          "eyebrow": {
-            "text": "Pregunta",
-            "tone": "accent"
-          },
-          "title": "Build a feature",
-          "context": [
-            {
-              "icon": "node",
-              "text": "Node One",
-              "link": {
-                "kind": "view",
-                "key": "node:a-1"
-              }
-            },
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Misión · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "body": {
-            "text": "Body 0",
-            "truncated": false,
-            "commentable": false
-          },
-          "actions": [
-            {
-              "id": "ans:i-1@1",
-              "label": "Responder",
-              "style": "primary",
-              "presentation": "options",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "Respondida"
-            },
-            {
-              "id": "ctx:i-1@1",
-              "label": "Pedir más contexto",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "¿Qué falta?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true
-            }
-          ]
-        },
-        {
-          "type": "card",
-          "id": "i-2",
-          "link": {
-            "kind": "view",
-            "key": "card:i-2"
-          },
-          "icon": "notice",
-          "eyebrow": {
-            "text": "Aviso",
-            "tone": "accent"
-          },
-          "title": "Build a feature",
-          "context": [
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Misión · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "body": {
-            "text": "Body 1",
-            "truncated": false,
-            "commentable": false
-          },
-          "actions": [
-            {
-              "id": "read:i-2@1",
-              "label": "Marcar como leído",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Leída",
-              "key": "x"
-            },
-            {
-              "id": "reply:i-2@1",
-              "label": "Responder",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Escribe una respuesta",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true
-            }
-          ]
-        }
-      ],
+      "items": [],
       "card_ids": [
         "i-1",
         "i-2",

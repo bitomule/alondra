@@ -37,18 +37,13 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 .iter()
                 .map(|item| public_id(item).to_owned())
                 .collect();
-            let cards = roots
-                .iter()
-                .take(2)
-                .map(|item| Item::Card(from_item(item, context, true)))
-                .collect();
             (
                 vec![Section {
                     id: "queue".into(),
                     title: Some(t!(context.lang, "Waiting for You", "Te espera").into()),
                     count: Some(count),
                     collapsed: false,
-                    items: cards,
+                    items: vec![],
                     card_ids,
                     more: None,
                 }],
