@@ -58,6 +58,57 @@ final class ViewsDataTests: XCTestCase {
         }
         XCTAssertTrue(updated, "a missing view must not end the feed for another open view")
     }
+
+    func testIdleLongPollDoesNotPublishRepeatedSnapshots() async throws {
+        let transport = IdleViewTransport()
+        let session = ViewsFeedSession(transport: transport, client: .ios, lang: "en")
+        let counter = SnapshotCounter()
+        let stream = await session.snapshots()
+        let watcher = Task {
+            for await _ in stream { await counter.add() }
+        }
+        defer { watcher.cancel(); Task { await session.stop() } }
+        _ = try await session.open("home")
+        for _ in 0..<100 {
+            if await transport.polls >= 2 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        try await Task.sleep(for: .milliseconds(20))
+        let baseline = await counter.value
+        for _ in 0..<100 {
+            if await transport.polls >= 5 { break }
+            try await Task.sleep(for: .milliseconds(20))
+        }
+        let polls = await transport.polls
+        let finalCount = await counter.value
+        XCTAssertGreaterThanOrEqual(polls, 5)
+        XCTAssertEqual(finalCount, baseline)
+    }
+}
+
+private actor SnapshotCounter {
+    private(set) var value = 0
+    func add() { value += 1 }
+}
+
+private actor IdleViewTransport: ViewsTransport {
+    private(set) var polls = 0
+
+    func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch {
+        let json = #"{"protocol":1,"view":"home","key":"home","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[]}"#
+        return try ViewsCodec.decode(ViewFetch.self, from: Data(json.utf8))
+    }
+
+    func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed {
+        polls += 1
+        try await Task.sleep(for: .milliseconds(20))
+        let json = #"{"protocol":1,"cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"stale":[],"reset":false,"superseded":false}"#
+        return try ViewsCodec.decode(ViewFeed.self, from: Data(json.utf8))
+    }
+
+    func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
+        throw ViewsDataError.unknownCommand
+    }
 }
 
 private actor MissingViewTransport: ViewsTransport {

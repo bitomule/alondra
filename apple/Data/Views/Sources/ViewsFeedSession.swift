@@ -206,6 +206,8 @@ public actor ViewsFeedSession {
                 let reply = try await transport.fetchChanges(client: client, lang: lang, wait: 50, cursor: cursor, views: openVersions)
                 guard !Task.isCancelled, generation == current else { return }
                 if reply.superseded { return }
+                let priorStatus = status
+                let priorEpoch = dataEpoch
                 cursor = reply.cursor; dataEpoch = reply.dataEpoch; status = reply.status
                 if reply.reset {
                     versions.removeAll(); documents.removeAll()
@@ -216,7 +218,7 @@ public actor ViewsFeedSession {
                     let keys = reply.stale.filter { openKeys.contains($0) }.sorted()
                     emit(.stale(keys))
                     try await refresh(keys, generation: current)
-                } else {
+                } else if priorStatus != reply.status || priorEpoch != reply.dataEpoch {
                     publish(reset: false)
                 }
                 let missing = openKeys.filter { versions[$0] == nil }.sorted()

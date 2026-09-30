@@ -336,7 +336,8 @@ fn direct_stack_parent<'a>(pr: &PullRequest, state: &'a DomainState) -> Option<&
     if pr.state != PrState::Open { return None; }
     state.pull_requests.values()
         .filter(|candidate| candidate.id != pr.id && candidate.state == PrState::Open
-            && candidate.repository == pr.repository && candidate.head == pr.base)
+            && candidate.host == pr.host && candidate.repository == pr.repository
+            && candidate.head == pr.base)
         .min_by_key(|candidate| candidate.number)
 }
 
@@ -498,6 +499,11 @@ mod tests {
         let mut closed = below.clone();
         closed.state = PrState::Merged;
         state.pull_requests.insert(closed.id.clone(), closed);
+        assert!(stacked_below(&above, &state).is_none());
+        let mut foreign = pr("enterprise.example/bitomule/alondra#154", 154,
+            "base-branch", "main");
+        foreign.host = "enterprise.example".into();
+        state.pull_requests.insert(foreign.id.clone(), foreign);
         assert!(stacked_below(&above, &state).is_none());
         let mut cycle = below;
         cycle.base = "feature-branch".into();
