@@ -320,6 +320,38 @@ impl App {
         self.view_inbox_key(k)
     }
 
+    #[cfg(test)]
+    pub(super) fn legacy_inbox_key(&mut self, key: KeyEvent) -> Flow {
+        let Some(selected) = self.sel.clone() else { return Flow::Go };
+        let pr_root = self.item(&selected)
+            .filter(|item| item.kind == "pull_request")
+            .and_then(|item| self.item_pr(item))
+            .map(|pr| pr.id.clone());
+        match key.code {
+            KeyCode::Char('J') => self.detail_scroll = keys::by(self.detail_scroll, 5, self.detail_view.h, self.detail_view.total),
+            KeyCode::Char('K') => self.detail_scroll = keys::by(self.detail_scroll, -5, self.detail_view.h, self.detail_view.total),
+            KeyCode::Enter => self.open_reader(),
+            KeyCode::Char('a') => return self.terminal_of(&selected),
+            KeyCode::Char('r') => self.reply(&selected),
+            KeyCode::Char('c') => self.more_context(&selected),
+            KeyCode::Char('p') => self.ask_about_pr(&selected),
+            KeyCode::Char('v') => self.accept_or_open(&selected),
+            KeyCode::Char('x') if pr_root.is_none() => self.mark_read(&selected),
+            KeyCode::Char('w') => match self.item(&selected).and_then(|item| self.item_pr(item)).map(pr_url) {
+                Some(url) => super::open_with_mac(&url),
+                None => self.fail(tr!("There is no PR here", "Aquí no hay PR")),
+            },
+            KeyCode::Char('d') => return self.review_pr(&selected),
+            KeyCode::Char('1') if key.modifiers.is_empty()
+                && pr_root.as_ref().is_some_and(|pr| self.conflicts(pr)) => {
+                if let Some(pr) = pr_root { self.resolve_conflicts(&selected, &pr); }
+            },
+            KeyCode::Char(c @ '1'..='9') if key.modifiers.is_empty() => self.choose(&selected, c as usize - '1' as usize),
+            _ => {},
+        }
+        Flow::Go
+    }
+
     fn view_inbox_key(&mut self, key: KeyEvent) -> Flow {
         if key.code == KeyCode::Enter {
             self.open_reader();

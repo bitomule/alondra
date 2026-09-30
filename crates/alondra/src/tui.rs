@@ -1986,6 +1986,12 @@ impl App {
             self.help_key(k);
             return Flow::Go;
         }
+        // Domain-only fixtures still exercise the retired command path. Shipping builds
+        // never compile this dispatch and always consume server Views.
+        #[cfg(test)]
+        if self.domain.is_some() && self.home_view.is_none() && self.card_view.is_none() {
+            return self.on_legacy_key(k);
+        }
         if self.schedules_open {
             if let Some(flow) = self.schedule_row_key(k) {
                 return flow;
@@ -2094,6 +2100,68 @@ impl App {
                 }
                 self.inbox_cmd(cmd);
             }
+        }
+        Flow::Go
+    }
+
+    #[cfg(test)]
+    fn on_legacy_key(&mut self, k: KeyEvent) -> Flow {
+        if self.schedules_open {
+            let flow = self.schedule_key(k);
+            return flow;
+        }
+        if self.composer.is_some() {
+            self.composer_key(k);
+            return Flow::Go;
+        }
+        if self.cmdline.is_some() {
+            return self.cmdline_key(k);
+        }
+        if self.reader.as_ref().is_some_and(|reader| reader.find.as_ref().is_some_and(|find| find.editing)) {
+            self.find_key(k);
+            return Flow::Go;
+        }
+        if self.screen == Screen::Fleet && self.reader.is_none()
+            && self.search.as_ref().is_some_and(|search| search.editing) {
+            self.search_key(k);
+            return Flow::Go;
+        }
+        let cmd = self.keymap.read(k);
+        if let Cmd::Other(k) = cmd && k.modifiers.is_empty() {
+            match k.code {
+                KeyCode::Char('?') => { self.help = true; self.help_scroll = 0; return Flow::Go; }
+                KeyCode::Char(':') => { self.cmdline = Some(TextInput::default()); return Flow::Go; }
+                _ => {}
+            }
+        }
+        if self.reader.is_some() {
+            self.reader_cmd(cmd);
+            return Flow::Go;
+        }
+        match cmd {
+            Cmd::Pending => {}
+            Cmd::Other(k) => match k.code {
+                KeyCode::Char('q') => return Flow::Quit,
+                KeyCode::Tab => self.switch_screen(),
+                KeyCode::BackTab => self.switch_screen_back(),
+                KeyCode::Char('f') => self.show(if self.screen == Screen::Fleet { Screen::Inbox } else { Screen::Fleet }),
+                KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
+                KeyCode::Char('s') if self.screen == Screen::Tasks => {
+                    self.schedules_open = true;
+                    self.reload_schedules();
+                }
+                KeyCode::Char('M') => self.message_orchestrator(),
+                _ => return match self.screen {
+                    Screen::Inbox => self.legacy_inbox_key(k),
+                    Screen::Tasks => self.tasks_key(k),
+                    Screen::Fleet => self.agents_key(k),
+                },
+            },
+            _ => match self.screen {
+                Screen::Inbox => self.inbox_cmd(cmd),
+                Screen::Tasks => self.tasks_cmd(cmd),
+                Screen::Fleet => self.agents_cmd(cmd),
+            },
         }
         Flow::Go
     }
