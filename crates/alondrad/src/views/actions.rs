@@ -109,6 +109,7 @@ async fn execute(
     // short-lived per-device receipt table promised by the views protocol. Holding this
     // async lock through dispatch also coalesces simultaneous retries of one command.
     let external = ActionId::parse(&request.action_id).is_ok_and(|action| is_external(action.verb));
+    let spanish = request.lang == "es";
     let receipt_key = (device.to_owned(), request.command_id.clone());
     let body = serde_json::to_vec(&request).unwrap_or_default();
     let mut receipts = if identity.is_none() && external {
@@ -117,7 +118,9 @@ async fn execute(
     if let Some(receipts) = receipts.as_mut() {
         receipts.retain(|_, entry| entry.at.elapsed() < std::time::Duration::from_secs(600));
         if let Some(entry) = receipts.get(&receipt_key) {
-            if entry.body != body { return error("idempotency_conflict", "command_id was reused with different input"); }
+            if entry.body != body { return error("idempotency_conflict", if spanish {
+                "El identificador del comando ya se usó con otra acción"
+            } else { "command_id was reused with different input" }); }
             return (StatusCode::OK, Json(entry.reply.clone())).into_response();
         }
     }
@@ -133,7 +136,9 @@ async fn execute(
             }
             (StatusCode::OK, Json(reply)).into_response()
         },
-        Err(_) => error("storage_unavailable", "action could not be completed"),
+        Err(_) => error("storage_unavailable", if spanish {
+            "No se pudo completar la acción"
+        } else { "action could not be completed" }),
     }
 }
 
@@ -163,16 +168,16 @@ async fn execute_action(
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
+    let lang = match request.lang.as_str() { "en" => Lang::En, "es" => Lang::Es, _ => return Ok(error_value("invalid_input", "invalid language")) };
     let action = match ActionId::parse(&request.action_id) {
         Ok(action) => action,
-        Err(_) => return Ok(error_value("invalid_input", "invalid action_id")),
+        Err(_) => return Ok(error_value_lang(lang, "invalid_input", "invalid action_id")),
     };
     if request.protocol != VIEWS_PROTOCOL {
-        return Ok(error_value("incompatible_protocol", "Update Alondra"));
+        return Ok(error_value_lang(lang, "incompatible_protocol", "Update Alondra"));
     }
-    let lang = match request.lang.as_str() { "en" => Lang::En, "es" => Lang::Es, _ => return Ok(error_value("invalid_input", "invalid language")) };
     if !matches!(request.client.as_str(), "ios" | "mac" | "tui") || !is_uuid_v4(&request.command_id) {
-        return Ok(error_value("invalid_input", "invalid action request"));
+        return Ok(error_value_lang(lang, "invalid_input", "invalid action request"));
     }
     let attachments = match resolve_attachments(home, &request.input.attachments) {
         Ok(attachments) => attachments,
@@ -219,7 +224,7 @@ async fn execute_external(
 
     let state = domain.state()?;
     if authorize().is_err() {
-        return Ok(error_value("forbidden", "device approval was revoked"));
+        return Ok(error_value_lang(lang, "forbidden", "device approval was revoked"));
     }
     let user_id = format!("device:{device}");
     let transport = identity.map(|(sender, request_id, digest)| (sender, request_id, digest));
@@ -255,7 +260,8 @@ async fn execute_external(
         } else if status == 404 || status == 409 {
             no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This action is no longer available"))
         } else {
-            json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":body.get("message").and_then(Value::as_str).unwrap_or("Action was rejected"),"code":body.get("code").cloned().unwrap_or(json!("action_rejected"))})
+            let message = body.get("message").and_then(Value::as_str).unwrap_or("Action was rejected");
+            json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":if lang == Lang::Es { "No se pudo completar la acción" } else { message },"code":body.get("code").cloned().unwrap_or(json!("action_rejected"))})
         }
     };
     match action.verb {
@@ -277,9 +283,9 @@ async fn execute_external(
             };
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This agent is no longer available")); }
             let note = request.input.text.as_deref().unwrap_or_default().trim();
-            if note.is_empty() { return Ok(error_value("invalid_input", "text is required")); }
+            if action.verb == Verb::Reply && note.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let (kind, text, mark_read) = if action.verb == Verb::Ctx {
-                ("more_context", format!("I need more context before deciding. [What is missing: {note}] Explain what is at stake, the options with their consequences and your recommendation, and ask again."), false)
+                ("more_context", context_request(note), false)
             } else { ("reply", note.to_owned(), true) };
             let body = json!({"text":text,"attachments":attachments,"kind":kind,
                 "mark_read":mark_read,"interaction_id":interaction_id,"task_id":task_id});
@@ -297,7 +303,7 @@ async fn execute_external(
                 return Ok(no_longer_available(lang, "This pull request has no active agent"));
             };
             let text = request.input.text.as_deref().unwrap_or_default().trim();
-            if text.is_empty() { return Ok(error_value("invalid_input", "text is required")); }
+            if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let body = json!({"text":text,"attachments":attachments,"kind":"pr_question",
                 "pr_id":pr.id,"task_id":task.id});
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, agent, body).await;
@@ -313,7 +319,7 @@ async fn execute_external(
         }
         Verb::Msg if action.subject == "view" => {
             let text = request.input.text.as_deref().unwrap_or_default().trim();
-            if text.is_empty() { return Ok(error_value("invalid_input", "text is required")); }
+            if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let body = json!({"text":text,"attachments":attachments});
             let reply = client.write(&user_id, Write::OrchestratorMessage, &body, transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
@@ -322,7 +328,7 @@ async fn execute_external(
             let agent = AgentId(action.subject.clone());
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This agent is no longer available")); }
             let text = request.input.text.as_deref().unwrap_or_default().trim();
-            if text.is_empty() { return Ok(error_value("invalid_input", "text is required")); }
+            if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let task_id = if let Some(id) = action.extra.as_deref() {
                 let task = state.tasks.get(&TaskId(id.into()))
                     .filter(|task| task.agent_id.as_ref() == Some(&agent));
@@ -364,7 +370,7 @@ async fn execute_external(
         Verb::NewRequest => {
             let fields = &request.input.fields;
             let text = fields.get("text").and_then(Value::as_str).unwrap_or_default().trim();
-            if text.is_empty() { return Ok(error_value("invalid_input", "text is required")); }
+            if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let mut options = fields.get("options").and_then(Value::as_object).cloned().unwrap_or_default();
             for (key, value) in fields {
                 if matches!(key.as_str(), "text" | "attachments" | "project" | "issue" | "options") { continue; }
@@ -471,7 +477,8 @@ fn schedule_reply(result: Value, lang: Lang, stamp: &str, revision: u64) -> Valu
     } else if status == 404 || status == 409 {
         no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This schedule changed"))
     } else {
-        json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":body.get("code").cloned().unwrap_or(json!("schedule_rejected")),"message":body.get("message").and_then(Value::as_str).unwrap_or("Schedule action failed")})
+        let message = body.get("message").and_then(Value::as_str).unwrap_or("Schedule action failed");
+        json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":body.get("code").cloned().unwrap_or(json!("schedule_rejected")),"message":if lang == Lang::Es { "No se pudo completar la acción de programación" } else { message }})
     }
 }
 
@@ -483,19 +490,19 @@ fn execute_value(
     identity: Option<(&str, &str, &[u8; 32])>,
     authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
-    if request.protocol != VIEWS_PROTOCOL {
-        return Ok(error_value("incompatible_protocol", "Update Alondra"));
-    }
     let lang = match request.lang.as_str() { "en" => Lang::En, "es" => Lang::Es, _ => return Ok(error_value("invalid_input", "invalid language")) };
+    if request.protocol != VIEWS_PROTOCOL {
+        return Ok(error_value_lang(lang, "incompatible_protocol", "Update Alondra"));
+    }
     if !matches!(request.client.as_str(), "ios" | "mac" | "tui") {
-        return Ok(error_value("invalid_input", "invalid client"));
+        return Ok(error_value_lang(lang, "invalid_input", "invalid client"));
     }
     let action = match ActionId::parse(&request.action_id) {
         Ok(action) => action,
-        Err(_) => return Ok(error_value("invalid_input", "invalid action_id")),
+        Err(_) => return Ok(error_value_lang(lang, "invalid_input", "invalid action_id")),
     };
     if !is_uuid_v4(&request.command_id) {
-        return Ok(error_value("invalid_input", "command_id must be a UUID v4"));
+        return Ok(error_value_lang(lang, "invalid_input", "command_id must be a UUID v4"));
     }
     let command_id = CommandId(request.command_id.clone());
     let state = match domain.state() {
@@ -627,7 +634,7 @@ fn map_domain_action(
             Some((Command::AcceptDelivery { presentation_id: interaction.id.clone(), targets: targets.clone() }, stamp("Accepted", "Aceptada")))
         }
         Verb::Changes => {
-            let (interaction, pr_head) = if action.subject.starts_with("pr-") {
+            let (interaction, pr_head) = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
                 let pr = state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))?;
                 let head = action.extra.as_deref()?;
                 if head != head_prefix(&pr.head) {
@@ -656,7 +663,7 @@ fn map_domain_action(
                 attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")))
         }
         Verb::Merge => {
-            let (interaction, target_pr) = if action.subject.starts_with("pr-") {
+            let (interaction, target_pr) = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
                 let (head, presentation_id) = action.extra.as_deref()?.split_once('-')?;
                 let pr = state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))?;
                 if head != head_prefix(&pr.head) { return None; }
@@ -674,6 +681,11 @@ fn map_domain_action(
             if expected_presentation != interaction.id.0 || prefix != head_prefix(head) { return None; }
             let pr = state.pull_requests.get(pr_id)?;
             if pr.head != *head || pr.state != alondra_core::domain_v2::PrState::Open { return None; }
+            if state.pull_requests.values().any(|upstream| upstream.id != pr.id
+                && upstream.state == alondra_core::domain_v2::PrState::Open
+                && upstream.repository == pr.repository && upstream.head == pr.base) {
+                return None;
+            }
             let method = match request.option_id.as_deref()? {
                 "merge" => MergeMethod::Merge,
                 "squash" => MergeMethod::Squash,
@@ -714,14 +726,14 @@ fn changed_pr_head(
     lang: Lang,
 ) -> Option<Value> {
     let (pr_id, presentation_id, old_prefix) = match action.verb {
-        Verb::Changes if action.subject.starts_with("pr-") => (
+        Verb::Changes if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) => (
             alondra_core::domain_v2::PrId(action.subject.clone()),
             None,
             action.extra.as_deref()?,
         ),
         Verb::Merge => {
             let (prefix, presentation_id) = action.extra.as_deref()?.split_once('-')?;
-            let pr_id = if action.subject.starts_with("pr-") {
+            let pr_id = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
                 alondra_core::domain_v2::PrId(action.subject.clone())
             } else {
                 let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
@@ -742,7 +754,7 @@ fn changed_pr_head(
         Verb::Changes => (Verb::Changes, pr_id.0.clone(), state.revision, new_prefix.to_owned()),
         Verb::Merge => {
             let presentation = presentation_id?;
-            let id = if action.subject.starts_with("pr-") { presentation } else { action.subject.as_str() };
+            let id = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) { presentation } else { action.subject.as_str() };
             let revision = state.interactions.get(&InteractionId(id.to_owned())).map_or(state.revision, |interaction| interaction.revision);
             (Verb::Merge, action.subject.clone(), revision, format!("{new_prefix}-{presentation}"))
         }
@@ -757,8 +769,13 @@ fn changed_pr_head(
     }))
 }
 
+fn context_request(note: &str) -> String {
+    let detail = if note.is_empty() { String::new() } else { format!(" [What is missing: {note}]") };
+    format!("I need more context before deciding.{detail} Explain what is at stake, the options with their consequences and your recommendation, and ask again.")
+}
+
 fn no_longer_available(lang: Lang, message: &str) -> Value {
-    json!({"protocol":VIEWS_PROTOCOL,"outcome":"no_longer_available","message": if lang == Lang::Es { "Ya no está disponible" } else { message }})
+    json!({"protocol":VIEWS_PROTOCOL,"outcome":"no_longer_available","message":localize(lang, message)})
 }
 
 fn resolve_attachments(
@@ -780,8 +797,43 @@ fn error_value(code: &str, message: &str) -> Value {
     json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":code,"message":message})
 }
 
+fn error_value_lang(lang: Lang, code: &str, message: &'static str) -> Value {
+    error_value(code, localize(lang, message))
+}
+
 fn rejected_field(lang: Lang, field: &str, message: &str) -> Value {
-    json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","field":field,"message":if lang == Lang::Es { "Esta opción necesita texto" } else { message }})
+    json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","field":field,"message":localize(lang, message)})
+}
+
+fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
+    if lang != Lang::Es { return message; }
+    match message {
+        "invalid action_id" => "Acción no válida",
+        "Update Alondra" => "Actualiza Alondra",
+        "invalid action request" => "Solicitud de acción no válida",
+        "invalid client" => "Cliente no válido",
+        "device approval was revoked" => "Se ha revocado la aprobación del dispositivo",
+        "text is required" | "This option needs text" => "Escribe un texto",
+        "command_id must be a UUID v4" => "El identificador del comando no es válido",
+        "An attachment is no longer available" => "Un archivo adjunto ya no está disponible",
+        "Choose an option" => "Elige una opción",
+        "This item is no longer available" => "Este elemento ya no está disponible",
+        "This item has changed" => "Este elemento ha cambiado",
+        "This action is no longer available" => "Esta acción ya no está disponible",
+        "This item has no active agent" => "Este elemento no tiene un agente activo",
+        "This agent is no longer available" => "Este agente ya no está disponible",
+        "This pull request is no longer open" => "Esta PR ya no está abierta",
+        "This pull request is no longer available" => "Esta PR ya no está disponible",
+        "This pull request has no active agent" => "Esta PR no tiene un agente activo",
+        "This task is no longer assigned to the node" => "Esta tarea ya no está asignada al nodo",
+        "This run is no longer active" => "Esta ejecución ya no está activa",
+        "This schedule is no longer available" => "Esta programación ya no está disponible",
+        "This schedule has changed" | "This schedule changed" => "Esta programación ha cambiado",
+        "This schedule action is unavailable" => "Esta acción de programación no está disponible",
+        "This view has changed" => "Esta vista ha cambiado",
+        "A completed task changed; refresh the view" => "Una tarea completada ha cambiado; actualiza la vista",
+        _ => "Ya no está disponible",
+    }
 }
 
 fn error(code: &str, message: &str) -> Response {
@@ -851,6 +903,68 @@ mod tests {
         assert!(!is_uuid_v4("5f0c2d9e-8d0b-1c71-9b0e-2b6f5d8f1a10"));
         assert!(!is_uuid_v4("5f0c2d9e-8d0b-4c71-7b0e-2b6f5d8f1a10"));
         assert!(!is_uuid_v4("not-a-uuid"));
+    }
+
+    #[test]
+    fn spanish_action_errors_keep_the_specific_reason() {
+        assert_eq!(rejected_field(Lang::Es, "attachments", "An attachment is no longer available")["message"],
+            "Un archivo adjunto ya no está disponible");
+        assert_eq!(rejected_field(Lang::Es, "option_id", "Choose an option")["message"],
+            "Elige una opción");
+        assert_eq!(no_longer_available(Lang::Es, "This pull request is no longer open")["message"],
+            "Esta PR ya no está abierta");
+    }
+
+    #[test]
+    fn more_context_without_a_note_still_requests_explanation() {
+        assert_eq!(context_request(""),
+            "I need more context before deciding. Explain what is at stake, the options with their consequences and your recommendation, and ask again.");
+        assert!(context_request("Timing").contains("[What is missing: Timing]"));
+    }
+
+    #[test]
+    fn canonical_pr_subject_maps_changes_merge_and_stale_head() {
+        use alondra_core::domain_v2::{Author, DeliveryTarget, Interaction, PrState, PullRequest,
+            Recipient, Scope};
+        let id = "github.com/bitomule/alondra#154";
+        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        state.pull_requests.insert(id.into(), PullRequest {
+            id: id.into(), task_id: "t-1".into(), host: "github.com".into(),
+            repository: "bitomule/alondra".into(), number: 154,
+            head: "abcdef123456".into(), base: "main".into(), state: PrState::Open,
+            merged_head: None, allowed_methods: vec![MergeMethod::Merge], review: None,
+        });
+        state.interactions.insert("i-1".into(), Interaction {
+            attachments: vec![], id: "i-1".into(), scope: Scope::Task { task_id: "t-1".into() },
+            author: Author::System, recipient: Recipient::User, body: "Review".into(),
+            blocking: true, subject: None,
+            payload: InteractionPayload::Delivery {
+                targets: vec![DeliveryTarget::PullRequest { pr_id: id.into(), head: "abcdef123456".into() }],
+                is_final: false, acceptance: None, feedback: vec![],
+            }, revision: 1, order: 1, withdrawn: false,
+        });
+        let request = ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "ios".into(), lang: "en".into(),
+            action_id: String::new(), option_id: Some("merge".into()),
+            input: ActionInput { text: Some("Please revise".into()), ..Default::default() },
+        };
+        let changes = ActionId::new(Verb::Changes, id, 1, Some("abcdef12".into())).unwrap();
+        assert!(matches!(map_domain_action(&state, &changes, &request, &[], Lang::En),
+            Some((Command::SubmitFeedback { .. }, _))));
+        let merge = ActionId::new(Verb::Merge, id, 1, Some("abcdef12-i-1".into())).unwrap();
+        assert!(matches!(map_domain_action(&state, &merge, &request, &[], Lang::En),
+            Some((Command::AuthorizeMerge { .. }, _))));
+        state.pull_requests.get_mut(&id.into()).unwrap().base = "upstream-head".into();
+        state.pull_requests.insert("github.com/bitomule/alondra#153".into(), PullRequest {
+            id: "github.com/bitomule/alondra#153".into(), task_id: "t-2".into(), host: "github.com".into(),
+            repository: "bitomule/alondra".into(), number: 153, head: "upstream-head".into(),
+            base: "main".into(), state: PrState::Open, merged_head: None,
+            allowed_methods: vec![MergeMethod::Merge], review: None,
+        });
+        assert!(map_domain_action(&state, &merge, &request, &[], Lang::En).is_none());
+        let old = ActionId::new(Verb::Changes, id, 1, Some("00000000".into())).unwrap();
+        assert_eq!(changed_pr_head(&state, &old, Lang::En).unwrap()["outcome"], "changed");
     }
 
     #[test]

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:pr-1",
   "client": "ios",
-  "version": "v65d769f5bae723df",
+  "version": "v6cc8a3b16a8c55c9",
   "cursor": "cursor-1",
   "title": "example/repo #12",
   "status": {
@@ -139,7 +139,7 @@
                   "input": {
                     "kind": "text",
                     "placeholder": "What is missing?",
-                    "required": true,
+                    "required": false,
                     "multiline": true
                   },
                   "attachments": false,

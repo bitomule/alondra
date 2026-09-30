@@ -105,6 +105,13 @@ final class NotificationPayloadTests: XCTestCase {
         XCTAssertTrue(item.actions[2].text)
     }
 
+    func testRealPRCardCanCarryNotificationActions() throws {
+        let item = try XCTUnwrap(NotificationPayload.Item(userInfo: payload(#"{"alondra":{"protocol":1,"kind":"pull_request","card":"github.com/bitomule/alondra#154","data_epoch":"e","actions":[{"id":"ask_pr:github.com/bitomule/alondra#154@117","label":"Ask"}]}}"#)))
+        XCTAssertEqual(item.card, "github.com/bitomule/alondra#154")
+        XCTAssertEqual(item.actions.first?.id, "ask_pr:github.com/bitomule/alondra#154@117")
+        XCTAssertFalse(NotificationPayload.Category.isSafe("github.com/../alondra#154"))
+    }
+
     private func payload(_ json: String) throws -> [AnyHashable: Any] {
         try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any])
     }

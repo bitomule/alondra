@@ -398,6 +398,7 @@ impl Search {
 }
 
 enum Msg {
+    #[cfg(test)]
     Data(Box<DomainProjection>),
     ViewHome(Result<ViewDocument, String>),
     ViewCard {
@@ -607,6 +608,7 @@ pub struct App {
     card_view_asked: Option<String>,
     screen_view_asked: Option<String>,
     view_navigation: Vec<String>,
+    compose_orchestrator_on_load: bool,
 }
 
 pub fn run() -> Result<()> {
@@ -1053,6 +1055,7 @@ impl App {
             card_view_asked: None,
             screen_view_asked: None,
             view_navigation: vec![],
+            compose_orchestrator_on_load: false,
         }
     }
 
@@ -1288,7 +1291,45 @@ impl App {
     fn reviewed(&mut self, key: Key, pr: PrId, number: u64, res: Result<String>) {
         match res {
             Ok(text) if has_comments(&text) => {
-                self.pr_feedback(&key, &pr, text.trim().to_string(), vec![])
+                if let Some(view) = self
+                    .card_view
+                    .as_ref()
+                    .filter(|view| view.key == self.selected_view_key().unwrap_or_default())
+                {
+                    let action = view_render::actions(view).into_iter().find(|action| {
+                        action.enabled
+                            && alondra_core::views::action_id::ActionId::parse(&action.id)
+                                .is_ok_and(|id| {
+                                    id.verb == alondra_core::views::action_id::Verb::Changes
+                                })
+                    });
+                    if let Some(action) = action {
+                        let request = Client::action_body(
+                            &view.data_epoch,
+                            &action.id,
+                            None,
+                            json!({"text": text.trim()}),
+                        );
+                        #[cfg(test)]
+                        self.posted
+                            .borrow_mut()
+                            .push(("/actions".into(), request.clone()));
+                        self.spawn(move |tx| {
+                            let result = Client::for_tui(Duration::from_secs(20))
+                                .post("/actions", &request)
+                                .map_err(|error| format!("{error:#}"))
+                                .and_then(view_action_result);
+                            let _ = tx.send(Msg::ViewAction(result));
+                        });
+                    } else {
+                        self.fail(tr!(
+                            "Request changes is unavailable for this PR",
+                            "No se pueden solicitar cambios para esta PR"
+                        ));
+                    }
+                } else {
+                    self.pr_feedback(&key, &pr, text.trim().to_string(), vec![])
+                }
             }
             Ok(_) => self.flash(trf!(
                 "PR #{number} reviewed without comments",
@@ -1488,29 +1529,36 @@ impl App {
     }
 
     fn reconcile(&mut self) {
-        if self.home_view.is_some() {
-            let keys = self.inbox_keys();
-            let previous = self.sel.clone();
-            match self
-                .sel
-                .as_ref()
-                .and_then(|selected| keys.iter().position(|key| key == selected))
-            {
-                Some(index) => self.sel_idx = index,
-                None => {
-                    self.sel_idx = self.sel_idx.min(keys.len().saturating_sub(1));
-                    self.sel = keys.get(self.sel_idx).cloned();
-                }
-            }
-            if self.sel != previous {
-                self.detail_scroll = 0;
-                self.card_view = None;
-                self.card_view_asked = None;
-            }
-            self.load_selected_view();
-            self.sync_open_views();
+        if self.home_view.is_none() {
+            self.load_screen_view();
+            #[cfg(test)]
+            self.reconcile_legacy_fixture();
             return;
         }
+        let keys = self.inbox_keys();
+        let previous = self.sel.clone();
+        match self
+            .sel
+            .as_ref()
+            .and_then(|selected| keys.iter().position(|key| key == selected))
+        {
+            Some(index) => self.sel_idx = index,
+            None => {
+                self.sel_idx = self.sel_idx.min(keys.len().saturating_sub(1));
+                self.sel = keys.get(self.sel_idx).cloned();
+            }
+        }
+        if self.sel != previous {
+            self.detail_scroll = 0;
+            self.card_view = None;
+            self.card_view_asked = None;
+        }
+        self.load_selected_view();
+        self.sync_open_views();
+    }
+
+    #[cfg(test)]
+    fn reconcile_legacy_fixture(&mut self) {
         let now = now_millis();
         let present: HashSet<Key> = self.all_keys().into_iter().collect();
         self.hidden
@@ -1596,6 +1644,7 @@ impl App {
 
     fn on_msg(&mut self, m: Msg) {
         match m {
+            #[cfg(test)]
             Msg::Data(mut p) => {
                 self.interactions.extend(
                     std::mem::take(&mut p.interactions)
@@ -1642,6 +1691,11 @@ impl App {
                     self.card_view_asked = None;
                     self.view_data_epoch = Some(view.data_epoch.clone());
                     self.card_view = Some(view);
+                    if key == "node:orchestrator" && self.compose_orchestrator_on_load {
+                        self.compose_orchestrator_on_load = false;
+                        let _ = self
+                            .view_action_key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE));
+                    }
                 }
             }
             Msg::ViewCard {
@@ -1650,6 +1704,9 @@ impl App {
             } => {
                 if self.card_view_asked.as_deref() == Some(&key) {
                     self.card_view_asked = None;
+                    if key == "node:orchestrator" {
+                        self.compose_orchestrator_on_load = false;
+                    }
                     self.fail(error);
                 }
             }
@@ -1915,6 +1972,9 @@ impl App {
             return Flow::Go;
         }
         if self.schedules_open {
+            if let Some(flow) = self.schedule_row_key(k) {
+                return flow;
+            }
             if let Some(flow) = self.view_action_key(k) {
                 return flow;
             }
@@ -1985,70 +2045,39 @@ impl App {
                 } else {
                     Screen::Fleet
                 }),
-                KeyCode::Char('n') if self.home_view.is_some() => {
+                KeyCode::Char('n') => {
                     self.navigate_view("new_request");
                 }
-                KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
                 KeyCode::Char('s') if self.screen == Screen::Tasks => {
                     self.schedules_open = true;
-                    if self.home_view.is_some() {
-                        self.home_view = None;
-                        self.screen_view_asked = None;
-                        self.load_screen_view();
-                    } else {
-                        self.reload_schedules();
-                    }
+                    self.home_view = None;
+                    self.screen_view_asked = None;
+                    self.load_screen_view();
                     self.load_selected_view();
                     self.sync_open_views();
                 }
-                KeyCode::Char('M') if self.home_view.is_some() => {
+                KeyCode::Char('M') => {
                     if let Some(flow) = self.view_action_key(k) {
                         return flow;
                     }
+                    self.compose_orchestrator_on_load = true;
+                    self.navigate_view("node:orchestrator");
                 }
-                KeyCode::Char('M') => self.message_orchestrator(),
-                _ if self.home_view.is_some() => {
-                    if let Some(flow) = self.view_action_key(k) {
-                        return flow;
-                    }
-                    return if self.screen == Screen::Inbox {
-                        self.inbox_key(k)
-                    } else {
-                        self.inbox_cmd(cmd);
-                        Flow::Go
-                    };
+                KeyCode::Char('/') if self.screen == Screen::Fleet => {
+                    self.navigate_view("search");
                 }
                 _ => {
-                    if self.screen != Screen::Inbox
-                        && let Some(flow) = self.view_action_key(k)
-                    {
+                    if let Some(flow) = self.view_action_key(k) {
                         return flow;
                     }
-                    return match self.screen {
-                        Screen::Inbox => self.inbox_key(k),
-                        Screen::Tasks => self.tasks_key(k),
-                        Screen::Fleet => self.agents_key(k),
-                    };
+                    return self.inbox_key(k);
                 }
             },
             _ => {
-                if self.home_view.is_some() {
-                    if let Some(flow) = self.view_action_key(k) {
-                        return flow;
-                    }
-                    self.inbox_cmd(cmd);
-                    return Flow::Go;
-                }
-                if self.screen != Screen::Inbox
-                    && let Some(flow) = self.view_action_key(k)
-                {
+                if let Some(flow) = self.view_action_key(k) {
                     return flow;
                 }
-                match self.screen {
-                    Screen::Inbox => self.inbox_cmd(cmd),
-                    Screen::Tasks => self.tasks_cmd(cmd),
-                    Screen::Fleet => self.agents_cmd(cmd),
-                }
+                self.inbox_cmd(cmd);
             }
         }
         Flow::Go
@@ -2074,6 +2103,7 @@ impl App {
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
         self.view_navigation.clear();
+        self.compose_orchestrator_on_load = false;
         self.schedules_open = false;
         self.focus = Pane::List;
         self.agent_zoom = false;
@@ -2105,126 +2135,28 @@ impl App {
     }
 
     fn reload_schedules(&mut self) {
-        if self.screen == Screen::Tasks && self.home_view.is_some() {
-            self.home_view = None;
-            self.screen_view_asked = None;
-            self.load_screen_view();
-            return;
-        }
-        match Client::for_tui(Duration::from_secs(5)).get::<Value>(SCHEDULES) {
-            Ok(value) => {
-                self.schedules = value["schedules"].as_array().cloned().unwrap_or_default();
-                self.schedule_idx = self
-                    .schedule_idx
-                    .min(self.schedules.len().saturating_sub(1));
-            }
-            Err(e) => self.fail(trf!("Schedules: {e}", "Programaciones: {e}")),
-        }
+        self.home_view = None;
+        self.screen_view_asked = None;
+        self.load_screen_view();
     }
 
     fn schedule_key(&mut self, k: KeyEvent) -> Flow {
-        if self.home_view.is_some() {
-            match k.code {
-                KeyCode::Esc | KeyCode::Tab | KeyCode::Char('s') => {
-                    self.schedules_open = false;
-                    self.home_view = None;
-                    self.screen_view_asked = None;
-                    self.load_screen_view();
-                    return Flow::Go;
-                }
-                KeyCode::Char('n') => {
-                    self.navigate_view("schedule:new");
-                    return Flow::Go;
-                }
-                KeyCode::Char('r') => {
-                    self.reload_schedules();
-                    return Flow::Go;
-                }
-                _ => {
-                    let command = self.keymap.read(k);
-                    self.inbox_cmd(command);
-                    return Flow::Go;
-                }
-            }
-        }
-        let selected = self.schedules.get(self.schedule_idx).cloned();
         match k.code {
-            KeyCode::Esc | KeyCode::Tab | KeyCode::Char('s') => self.schedules_open = false,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.schedule_idx =
-                    (self.schedule_idx + 1).min(self.schedules.len().saturating_sub(1));
-                self.schedule_delete = None;
+            KeyCode::Esc | KeyCode::Tab | KeyCode::Char('s') => {
+                self.schedules_open = false;
+                self.reload_schedules();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.schedule_idx = self.schedule_idx.saturating_sub(1);
-                self.schedule_delete = None;
-            }
-            KeyCode::Char('n') => {
-                self.navigate_view("schedule:new");
-                return Flow::Go;
-            }
+            KeyCode::Char('n') => self.navigate_view("schedule:new"),
             KeyCode::Char('e') => {
-                if let Some(value) = selected {
-                    return Flow::EditSchedule(Some(value));
+                if let Some(key) = self.selected_view_key() {
+                    self.navigate_view(&key);
                 }
             }
             KeyCode::Char('r') => self.reload_schedules(),
-            KeyCode::Char('p') => {
-                if let Some(value) = selected {
-                    let id = value["id"].as_str().unwrap_or("").to_owned();
-                    let mut draft = schedule_draft(&value);
-                    draft["enabled"] = json!(!value["enabled"].as_bool().unwrap_or(false));
-                    match Client::for_tui(Duration::from_secs(15))
-                        .put(&format!("{SCHEDULES}/{}", urlencode(&id)), &draft)
-                    {
-                        Ok(_) => self.reload_schedules(),
-                        Err(e) => self.fail(e.to_string()),
-                    }
-                }
+            _ => {
+                let cmd = self.keymap.read(k);
+                self.inbox_cmd(cmd);
             }
-            KeyCode::Enter => {
-                if let Some(value) = selected {
-                    let id = value["id"].as_str().unwrap_or("");
-                    match Client::for_tui(Duration::from_secs(15))
-                        .post(&ops::schedule_run(id), &json!(null))
-                    {
-                        Ok(_) => {
-                            self.flash(tr!("Run requested", "Ejecución pedida"));
-                            self.reload_schedules();
-                        }
-                        Err(e) => {
-                            self.fail(e.to_string());
-                            self.reload_schedules();
-                        }
-                    }
-                }
-            }
-            KeyCode::Char('d') => {
-                if let Some(value) = selected {
-                    let id = value["id"].as_str().unwrap_or("");
-                    let now = now_millis();
-                    if self
-                        .schedule_delete
-                        .as_ref()
-                        .is_some_and(|(pending, until)| pending == id && now < *until)
-                    {
-                        self.schedule_delete = None;
-                        match Client::for_tui(Duration::from_secs(15))
-                            .delete(&format!("{SCHEDULES}/{}", urlencode(id)))
-                        {
-                            Ok(()) => self.reload_schedules(),
-                            Err(e) => self.fail(e.to_string()),
-                        }
-                    } else {
-                        self.schedule_delete = Some((id.to_string(), now + CONFIRM_MS));
-                        self.flash(tr!(
-                            "Press d again to delete this schedule",
-                            "Pulsa d otra vez para borrar esta programación"
-                        ));
-                    }
-                }
-            }
-            _ => {}
         }
         Flow::Go
     }

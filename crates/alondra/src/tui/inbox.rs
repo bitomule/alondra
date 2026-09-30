@@ -157,10 +157,17 @@ impl App {
                 .map(|(row, _)| Key(row.id.clone()))
                 .collect();
         }
-        self.inbox_rows()
-            .into_iter()
-            .map(|(i, _)| Key(i.id.clone()))
-            .collect()
+        #[cfg(test)]
+        {
+            self.inbox_rows()
+                .into_iter()
+                .map(|(i, _)| Key(i.id.clone()))
+                .collect()
+        }
+        #[cfg(not(test))]
+        {
+            Vec::new()
+        }
     }
 
     pub fn inbox_count(&self) -> usize {
@@ -170,10 +177,17 @@ impl App {
                 .filter(|(_, nested)| !nested)
                 .count();
         }
-        self.inbox_rows()
-            .into_iter()
-            .filter(|(_, nested)| !nested)
-            .count()
+        #[cfg(test)]
+        {
+            self.inbox_rows()
+                .into_iter()
+                .filter(|(_, nested)| !nested)
+                .count()
+        }
+        #[cfg(not(test))]
+        {
+            0
+        }
     }
 
     pub fn item(&self, key: &Key) -> Option<&InboxItem> {
@@ -272,39 +286,6 @@ impl App {
     }
 
     pub(super) fn inbox_cmd(&mut self, cmd: Cmd) {
-        if self.home_view.is_some() {
-            let i = self.sel_idx as isize;
-            let detail = self.focus == Pane::Detail && self.detail_view.shown;
-            match cmd {
-                Cmd::Move(m) if detail => {
-                    self.detail_scroll = keys::scroll(
-                        self.detail_scroll,
-                        m,
-                        self.detail_view.h,
-                        self.detail_view.total,
-                    )
-                }
-                Cmd::Move(Motion::Down) => self.move_inbox(i + 1),
-                Cmd::Move(Motion::Up) => self.move_inbox(i - 1),
-                Cmd::Move(Motion::Top) => self.move_inbox(0),
-                Cmd::Move(Motion::Bottom) => self.move_inbox(isize::MAX),
-                Cmd::Move(m) => {
-                    self.detail_scroll = keys::scroll(
-                        self.detail_scroll,
-                        m,
-                        self.detail_view.h,
-                        self.detail_view.total,
-                    )
-                }
-                Cmd::Right if self.detail_view.shown && self.sel.is_some() => {
-                    self.focus = Pane::Detail
-                }
-                Cmd::Right | Cmd::Expand => self.open_reader(),
-                Cmd::Left | Cmd::Back => self.focus = Pane::List,
-                Cmd::Pending | Cmd::Other(_) => {}
-            }
-            return;
-        }
         let i = self.sel_idx as isize;
         let detail = self.focus == Pane::Detail && self.detail_view.shown;
         match cmd {
@@ -336,78 +317,10 @@ impl App {
     }
 
     pub(super) fn inbox_key(&mut self, k: KeyEvent) -> Flow {
-        if self.home_view.is_some() {
-            return self.view_inbox_key(k);
-        }
-        let Some(key) = self.sel.clone() else {
-            return Flow::Go;
-        };
-        let pr_root = self
-            .item(&key)
-            .filter(|i| i.kind == "pull_request")
-            .and_then(|i| self.item_pr(i))
-            .map(|p| p.id.clone());
-        match k.code {
-            KeyCode::Char('J') => {
-                self.detail_scroll = keys::by(
-                    self.detail_scroll,
-                    5,
-                    self.detail_view.h,
-                    self.detail_view.total,
-                )
-            }
-            KeyCode::Char('K') => {
-                self.detail_scroll = keys::by(
-                    self.detail_scroll,
-                    -5,
-                    self.detail_view.h,
-                    self.detail_view.total,
-                )
-            }
-            KeyCode::Enter => self.open_reader(),
-            KeyCode::Char('a') => return self.terminal_of(&key),
-            KeyCode::Char('r') => self.reply(&key),
-            KeyCode::Char('c') => self.more_context(&key),
-            KeyCode::Char('p') => self.ask_about_pr(&key),
-            KeyCode::Char('v') => self.accept_or_open(&key),
-            KeyCode::Char('x') if pr_root.is_none() => self.mark_read(&key),
-            KeyCode::Char('w') => match self.item(&key).and_then(|i| self.item_pr(i)).map(pr_url) {
-                Some(url) => super::open_with_mac(&url),
-                None => self.fail(tr!("There is no PR here", "Aquí no hay PR")),
-            },
-            KeyCode::Char('d') => return self.review_pr(&key),
-            KeyCode::Char('1')
-                if k.modifiers.is_empty()
-                    && pr_root.as_ref().is_some_and(|pr| self.conflicts(pr)) =>
-            {
-                if let Some(pr) = pr_root {
-                    self.resolve_conflicts(&key, &pr);
-                }
-            }
-            KeyCode::Char(c @ '1'..='9') if k.modifiers.is_empty() => {
-                self.choose(&key, c as usize - '1' as usize)
-            }
-            _ => {}
-        }
-        Flow::Go
+        self.view_inbox_key(k)
     }
 
     fn view_inbox_key(&mut self, key: KeyEvent) -> Flow {
-        let Some(selected) = self.sel.clone() else {
-            return Flow::Go;
-        };
-        let Some(_card) = self
-            .card_view
-            .as_ref()
-            .filter(|view| view.key == format!("card:{}", selected.0))
-            .and_then(super::view_render::detail_card)
-            .cloned()
-        else {
-            if key.code == KeyCode::Enter {
-                self.open_reader();
-            }
-            return Flow::Go;
-        };
         if key.code == KeyCode::Enter {
             self.open_reader();
             return Flow::Go;
@@ -477,7 +390,12 @@ impl App {
         for action in super::view_render::actions(document) {
             if hint_matches(super::view_render::action_hint(&action), key) {
                 let local_key = self.sel.clone().unwrap_or_else(|| Key(selected.clone()));
-                return Some(self.run_view_action(&action, None, &local_key));
+                return Some(self.run_view_action(
+                    &action,
+                    None,
+                    &local_key,
+                    document.data_epoch.clone(),
+                ));
             }
             for (index, option) in action.options.iter().enumerate() {
                 let matches = option.key.as_deref().map_or_else(
@@ -492,18 +410,48 @@ impl App {
                 );
                 if matches {
                     let local_key = self.sel.clone().unwrap_or_else(|| Key(selected.clone()));
-                    return Some(self.run_view_action(&action, Some(option), &local_key));
+                    return Some(self.run_view_action(
+                        &action,
+                        Some(option),
+                        &local_key,
+                        document.data_epoch.clone(),
+                    ));
                 }
             }
         }
         None
     }
 
+    pub(super) fn schedule_row_key(&mut self, key: KeyEvent) -> Option<Flow> {
+        let document = self
+            .home_view
+            .as_ref()
+            .filter(|view| view.key == "schedules")?;
+        let selected = self.sel.as_ref()?;
+        let row = super::view_render::rows(document)
+            .into_iter()
+            .find_map(|(row, _)| (row.id == selected.0).then_some(row))?;
+        let action = row
+            .actions
+            .iter()
+            .find(|action| {
+                action
+                    .key
+                    .as_deref()
+                    .is_some_and(|hint| hint_matches(hint, key))
+            })?
+            .clone();
+        let epoch = document.data_epoch.clone();
+        let selected = selected.clone();
+        Some(self.run_view_action(&action, None, &selected, epoch))
+    }
+
     fn run_view_action(
         &mut self,
         action: &alondra_core::views::Action,
         option: Option<&alondra_core::views::ActionOption>,
-        _selected: &Key,
+        selected: &Key,
+        epoch: String,
     ) -> Flow {
         if action.id.is_empty()
             && let Some(link) = action.link.as_ref()
@@ -531,21 +479,10 @@ impl App {
                         ));
                     }
                     alondra_core::views::LocalLink::ReviewClone { repo, pr, .. } => {
-                        let local_key = self
-                            .sel
-                            .as_ref()
-                            .filter(|_| self.screen == super::Screen::Inbox);
-                        if let (Some(key), Some(pr_id), Some(dir)) = (
-                            local_key,
-                            local_key
-                                .and_then(|key| self.item(key))
-                                .and_then(|item| self.item_pr(item))
-                                .map(|pr| pr.id.clone()),
-                            super::clone_of(None, repo),
-                        ) {
+                        if let Some(dir) = super::clone_of(None, repo) {
                             return Flow::Review {
-                                key: key.clone(),
-                                pr: pr_id,
+                                key: selected.clone(),
+                                pr: PrId(selected.0.clone()),
                                 number: *pr,
                                 dir,
                             };
@@ -576,9 +513,6 @@ impl App {
                 return Flow::Go;
             }
         }
-        let Some(epoch) = self.card_view.as_ref().map(|view| view.data_epoch.clone()) else {
-            return Flow::Go;
-        };
         let input = option.map_or(&action.input, |option| &option.input);
         match input {
             alondra_core::views::Input::Text {
@@ -1570,14 +1504,14 @@ pub(super) fn safe_github_url(value: &str) -> bool {
 }
 
 fn hint_matches(hint: &str, key: KeyEvent) -> bool {
+    if hint.chars().count() == 1 {
+        return key.code == KeyCode::Char(hint.chars().next().unwrap_or('\0'))
+            && key.modifiers.is_empty();
+    }
     match hint.to_ascii_lowercase().as_str() {
         "enter" | "return" => key.code == KeyCode::Enter,
         "space" => key.code == KeyCode::Char(' '),
         "esc" | "escape" => key.code == KeyCode::Esc,
-        value if value.len() == 1 => {
-            key.code == KeyCode::Char(value.chars().next().unwrap_or('\0'))
-                && key.modifiers.is_empty()
-        }
         _ => false,
     }
 }

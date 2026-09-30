@@ -11,6 +11,11 @@ final class ViewsDataTests: XCTestCase {
         XCTAssertEqual(route?.query.first?.1, "i-42")
         XCTAssertTrue(ViewsFeedSession.validViewKey("home?focus=i-42"))
         XCTAssertEqual(ViewRoute.parse("card:i-42")?.path, "card:i-42")
+        XCTAssertEqual(ViewRoute.parse("pull_request:github.com/bitomule/alondra#154")?.path,
+                       "pull_request:github.com/bitomule/alondra#154")
+        XCTAssertEqual(ViewRoute.parse("node:a98d034b-249e-4487-a89b-57de38c26372")?.path,
+                       "node:a98d034b-249e-4487-a89b-57de38c26372")
+        XCTAssertNil(ViewRoute.parse("card:github.com/../alondra#154"))
         XCTAssertNil(ViewRoute.parse("home?focus=../devices"))
         XCTAssertNil(ViewRoute.parse("home?focus="))
     }

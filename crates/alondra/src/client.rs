@@ -228,7 +228,7 @@ impl Client {
     pub fn action_body(data_epoch: &str, action_id: &str, option_id: Option<&str>, input: Value) -> Value {
         let mut body = serde_json::json!({
             "protocol": VIEWS_PROTOCOL,
-            "command_id": new_id("tui"),
+            "command_id": new_views_command_id(),
             "data_epoch": data_epoch,
             "client": "tui",
             "lang": lang_name(crate::i18n::lang()),
@@ -449,6 +449,15 @@ pub fn new_id(prefix: &str) -> String {
     format!("{prefix}-{hex}")
 }
 
+/// Views actions require a UUID v4 so the daemon can deduplicate retries.
+fn new_views_command_id() -> String {
+    let mut bytes = crate::service_client::random::<16>().expect("secure command randomness");
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!("{}-{}-{}-{}-{}", &hex[..8], &hex[8..12], &hex[12..16], &hex[16..20], &hex[20..])
+}
+
 pub fn envelope(epoch: &DataEpoch, expected_revision: Revision, command: Command) -> CommandEnvelope {
     CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: epoch.clone(), command_id: new_id("tui").into(), expected_revision, command }
 }
@@ -530,6 +539,17 @@ mod tests {
         let b = envelope(&epoch, 3, Command::MarkRead { interaction_id: "i".into() });
         assert_ne!(a.command_id, b.command_id);
         assert_eq!((a.protocol_version, a.expected_revision), (PROTOCOL_VERSION, 3));
+    }
+
+    #[test]
+    fn views_action_uses_uuid_v4_command_id() {
+        let a = Client::action_body("e", "read:hf-weekly-2026-09-30@1", None, serde_json::json!({}));
+        let b = Client::action_body("e", "read:hf-weekly-2026-09-30@1", None, serde_json::json!({}));
+        let id = a["command_id"].as_str().unwrap();
+        assert_eq!(id.len(), 36);
+        assert_eq!(&id[14..15], "4");
+        assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
+        assert_ne!(a["command_id"], b["command_id"]);
     }
 }
 

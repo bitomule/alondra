@@ -412,6 +412,46 @@ fn pr_fixture() -> DomainState {
     );
     state
 }
+
+#[test]
+fn real_pr_id_opens_detail_diff_and_actions() {
+    let mut state = pr_fixture();
+    let id = "github.com/bitomule/alondra#154";
+    let mut pr = state.pull_requests.remove(&"pr-1".into()).unwrap();
+    pr.id = id.into();
+    state.pull_requests.insert(id.into(), pr);
+    for interaction in state.interactions.values_mut() {
+        if let Some(InteractionSubject::PullRequest { pr_id }) = &mut interaction.subject {
+            *pr_id = id.into();
+        }
+    }
+    let live = LiveSnapshot::default();
+    let card = render(&state, &live, Client::Ios, Lang::En, &format!("card:{id}"), "");
+    let Item::Card(card) = &card.sections[0].items[0] else { panic!("PR card") };
+    assert!(card.actions.iter().any(|action| action.label == "Ask about the PR" &&
+        action_id::ActionId::parse(&action.id).is_ok()));
+    assert!(push_actions(&state, id, Lang::En).iter().any(|action|
+        action.id.starts_with("ask_pr:github.com/bitomule/alondra#154@")));
+    let detail = render(&state, &live, Client::Mac, Lang::En, &format!("pull_request:{id}"), "");
+    assert!(detail.sections.iter().flat_map(|section| &section.items).any(|item|
+        matches!(item, Item::ContentRef(content) if content.fetch ==
+            "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff")));
+}
+
+#[test]
+fn agent_uuid_keeps_message_and_close_actions() {
+    let mut state = fixture();
+    let id = "a98d034b-249e-4487-a89b-57de38c26372";
+    let mut agent = state.agents.remove(&"a-1".into()).unwrap();
+    agent.id = id.into();
+    state.agents.insert(id.into(), agent);
+    let live = LiveSnapshot::default();
+    let detail = render(&state, &live, Client::Tui, Lang::En, &format!("node:{id}"), "");
+    let actions = detail.sections.iter().flat_map(|section| &section.items).find_map(|item|
+        if let Item::Actions(bar) = item { Some(&bar.actions) } else { None }).unwrap();
+    assert!(actions.iter().any(|action| action.id.starts_with(&format!("msg:{id}@"))));
+    assert!(actions.iter().any(|action| action.id.starts_with(&format!("close:{id}@"))));
+}
 fn assert_golden(filename: &str, actual: &View, expected: &str) {
     let actual = serde_json::to_value(actual).unwrap();
     let expected: serde_json::Value = serde_json::from_str(expected).unwrap();
@@ -750,4 +790,90 @@ fn spanish_builder_text_differs() {
     );
     assert_ne!(en.status.summary, es.status.summary);
     assert_ne!(en.sections[0].title, es.sections[0].title);
+}
+
+#[test]
+fn more_context_action_allows_a_blank_note() {
+    let state = fixture();
+    let view = render(
+        &state,
+        &LiveSnapshot::default(),
+        Client::Tui,
+        Lang::En,
+        "card:i-1",
+        "",
+    );
+    let action = view
+        .sections
+        .iter()
+        .flat_map(|section| &section.items)
+        .find_map(|item| match item {
+            Item::Card(card) => card.actions.iter().find(|action| {
+                action_id::ActionId::parse(&action.id)
+                    .is_ok_and(|id| id.verb == action_id::Verb::Ctx)
+            }),
+            _ => None,
+        })
+        .expect("the question must offer More Context");
+    assert!(matches!(
+        action.input,
+        Input::Text {
+            required: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
+    use crate::domain_v2::{DeliveryTarget, MergeMethod};
+    let mut state = pr_fixture();
+    state.pull_requests.get_mut(&"pr-1".into()).unwrap().base = "upstream-head".into();
+    state
+        .pull_requests
+        .get_mut(&"pr-1".into())
+        .unwrap()
+        .allowed_methods = vec![MergeMethod::Squash];
+    let mut upstream = state.pull_requests[&"pr-1".into()].clone();
+    upstream.id = "github.com/bitomule/alondra#153".into();
+    upstream.number = 153;
+    upstream.head = "upstream-head".into();
+    upstream.base = "main".into();
+    state.pull_requests.insert(upstream.id.clone(), upstream);
+    if let InteractionPayload::Delivery { targets, .. } =
+        &mut state.interactions.get_mut(&"i-3".into()).unwrap().payload
+    {
+        targets.push(DeliveryTarget::PullRequest {
+            pr_id: "pr-1".into(),
+            head: "abcdef12".into(),
+        });
+    }
+    let mut live = LiveSnapshot::default();
+    live.pull_requests.push(LivePullRequest {
+        id: "pr-1".into(),
+        checks_passed: None,
+        conflicts: false,
+        stacked_on: Some("github.com/bitomule/alondra#153".into()),
+        url: None,
+    });
+    let view = render(&state, &live, Client::Ios, Lang::En, "card:pr-1", "");
+    let Item::Card(card) = &view.sections[0].items[0] else {
+        panic!("PR card")
+    };
+    let merge = card
+        .actions
+        .iter()
+        .find(|action| {
+            action_id::ActionId::parse(&action.id).is_ok_and(|id| id.verb == action_id::Verb::Merge)
+        })
+        .expect("merge action");
+    assert!(!merge.enabled);
+    assert_eq!(merge.disabled_reason.as_deref(), Some("Merge #153 first"));
+    assert!(card.facts.as_ref().is_some_and(|facts| {
+        facts.items.iter().any(|fact| {
+            fact.value == "#153"
+                && matches!(&fact.link, Some(Link::View { key })
+            if key == "pull_request:github.com/bitomule/alondra#153")
+        })
+    }));
 }

@@ -223,10 +223,23 @@ struct ViewRoute {
     }
 
     private static func validID(_ id: String) -> Bool {
-        !id.isEmpty && id.utf8.count <= 256 && id.utf8.allSatisfy { byte in
+        guard !id.isEmpty, id.utf8.count <= 256 else { return false }
+        if id.utf8.allSatisfy({ byte in
             (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
                 || byte == 45 || byte == 95
-        }
+        }) { return true }
+        guard id.hasPrefix("github.com/"), let hash = id.firstIndex(of: "#") else { return false }
+        let repo = id[id.index(id.startIndex, offsetBy: "github.com/".count)..<hash]
+        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts.allSatisfy({ part in
+            !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
+                (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+                    || byte == 45 || byte == 95 || byte == 46
+            }
+        }) else { return false }
+        let number = id[id.index(after: hash)...]
+        return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
+            && (UInt64(number).map { $0 > 0 } ?? false)
     }
 }
 

@@ -85,12 +85,25 @@ public struct ServiceRequest: Sendable, Equatable {
 
     private static func validViewKey(_ key: String) -> Bool {
         if key == "home" { return true }
-        guard key.hasPrefix("card:") else { return false }
-        let id = key.dropFirst("card:".count)
-        return !id.isEmpty && id.utf8.count <= 256 && id.utf8.allSatisfy { byte in
+        guard key.hasPrefix("card:"), key.utf8.count <= 261 else { return false }
+        let id = String(key.dropFirst("card:".count))
+        guard !id.isEmpty else { return false }
+        if id.utf8.allSatisfy({ byte in
             (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
                 || byte == 45 || byte == 95
-        }
+        }) { return true }
+        guard id.hasPrefix("github.com/"), let hash = id.firstIndex(of: "#") else { return false }
+        let repo = id[id.index(id.startIndex, offsetBy: "github.com/".count)..<hash]
+        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts.allSatisfy({ part in
+            !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
+                (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+                    || byte == 45 || byte == 95 || byte == 46
+            }
+        }) else { return false }
+        let number = id[id.index(after: hash)...]
+        return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
+            && (UInt64(number).map { $0 > 0 } ?? false)
     }
 
     public static func validResourceMutationPath(method: HTTPMethod, path: String) -> Bool {

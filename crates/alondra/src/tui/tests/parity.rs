@@ -87,6 +87,63 @@ fn views_mode_schedules_loads_the_server_screen() {
 }
 
 #[test]
+fn schedule_row_keys_post_the_selected_views_action() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.schedules_open = true;
+    let mut view = view_fixture("home-tui.json");
+    view["key"] = serde_json::json!("schedules");
+    view["sections"] = serde_json::json!([{
+        "id": "schedules", "collapsed": false, "items": [{
+            "type": "row", "id": "hf-weekly-2026-09-30",
+            "link": {"kind": "view", "key": "schedule:hf-weekly-2026-09-30"},
+            "icon": "schedule", "title": "Weekly", "depth": 0, "struck": false,
+            "actions": [{
+                "id": "sched_run:s-hf-weekly-2026-09-30@1", "label": "Run Now",
+                "style": "secondary", "presentation": "button", "input": {"kind": "none"},
+                "attachments": false, "enabled": true, "key": "enter"
+            }]
+        }]
+    }]);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view).unwrap())));
+    press(&mut app, KeyCode::Enter);
+    let requests = posted(&app);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].1["action_id"],
+        "sched_run:s-hf-weekly-2026-09-30@1"
+    );
+    assert_eq!(requests[0].1["data_epoch"], "test-epoch");
+}
+
+#[test]
+fn global_message_key_opens_the_orchestrator_views_composer() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    press(&mut app, KeyCode::Char('M'));
+    assert_eq!(
+        app.view_navigation.last().map(String::as_str),
+        Some("node:orchestrator")
+    );
+    let mut view = view_fixture("card-question.json");
+    view["key"] = serde_json::json!("node:orchestrator");
+    view["sections"][0]["items"][0]["actions"] = serde_json::json!([{
+        "id": "msg:view@1", "label": "Message", "style": "primary",
+        "presentation": "button", "input": {"kind": "text", "placeholder": "Write", "required": true, "multiline": true},
+        "attachments": true, "enabled": true, "key": "M"
+    }]);
+    app.on_msg(Msg::ViewCard {
+        key: "node:orchestrator".into(),
+        result: Ok(serde_json::from_value(view).unwrap()),
+    });
+    assert!(
+        matches!(app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { action_id, .. }) if action_id == "msg:view@1")
+    );
+}
+
+#[test]
 fn view_number_key_posts_the_matching_option_id_and_epoch() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -416,38 +473,47 @@ fn conflicts_the_runtime_reports_are_resolved_from_the_pr_root_by_its_agent() {
 }
 
 #[test]
-fn tuicr_reviews_the_agents_clone_and_its_comments_become_feedback_on_the_delivery() {
-    let mut world = super::pr_with_question_child();
-    let clone = scratch("clone");
-    std::fs::create_dir_all(clone.0.join(".git")).unwrap();
-    let mut rt = runtime();
-    rt.nodes
-        .iter_mut()
-        .find(|n| n.session_id == "agent-a")
-        .unwrap()
-        .node
-        .cwd = Some(clone.0.to_string_lossy().into());
-    let mut app = app_on(&world);
-    with_runtime(&mut app, rt);
-    select(&mut app, "pr:pr-1");
-    let Flow::Review {
-        key,
-        pr,
-        number,
-        dir,
-    } = app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE))
-    else {
-        panic!("d opens tuicr on the clone")
-    };
-    assert_eq!((pr.0.as_str(), number, dir), ("pr-1", 7, clone.0.clone()));
-    assert!(flash(&app).contains("Opening PR #7 in tuicr"));
-    app.reviewed(key.clone(), pr.clone(), number, Ok("Reviewed.\n".into()));
-    assert!(sent(&app).is_empty() && flash(&app).contains("without comments"));
-    app.reviewed(key, pr, number, Ok("1. `src/a.rs:4` - rename it\n".into()));
-    assert!(
-        matches!(&sent(&app)[0].command, Command::SubmitFeedback { presentation_id, body, .. } if presentation_id.0 == "delivery-1" && body.contains("src/a.rs:4"))
+fn tuicr_comments_use_the_views_changes_action() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let pr = "github.com/bitomule/alondra#154";
+    let key = format!("pull_request:{pr}");
+    let mut view = view_fixture("card-question.json");
+    view["key"] = serde_json::json!(key);
+    view["sections"][0]["items"][0]["actions"] = serde_json::json!([{
+        "id": format!("changes:{pr}@1~abcdef12"),
+        "label": "Request changes", "style": "secondary", "presentation": "button",
+        "input": {"kind": "text", "placeholder": "Describe the changes", "required": false, "multiline": true},
+        "attachments": true, "enabled": true
+    }]);
+    app.view_navigation.push(key.clone());
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    app.reviewed(
+        Key(pr.into()),
+        PrId(pr.into()),
+        154,
+        Ok("Reviewed.\n".into()),
     );
-    deliver(&mut app, &mut world).unwrap();
+    assert!(posted(&app).is_empty() && flash(&app).contains("without comments"));
+    app.reviewed(
+        Key(pr.into()),
+        PrId(pr.into()),
+        154,
+        Ok("1. `src/a.rs:4` - rename it\n".into()),
+    );
+    let requests = posted(&app);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "/actions");
+    assert_eq!(requests[0].1["data_epoch"], "test-epoch");
+    assert_eq!(
+        requests[0].1["action_id"],
+        format!("changes:{pr}@1~abcdef12")
+    );
+    assert_eq!(
+        requests[0].1["input"]["text"],
+        "1. `src/a.rs:4` - rename it"
+    );
 }
 
 #[test]

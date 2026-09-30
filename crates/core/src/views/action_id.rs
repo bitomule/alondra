@@ -118,7 +118,7 @@ impl ActionId {
         Ok(id)
     }
     pub fn parse(value: &str) -> Result<Self, ActionIdError> {
-        if value.len() > 96 {
+        if value.len() > 320 {
             return Err(ActionIdError::TooLong);
         }
         let (verb, tail) = value.split_once(':').ok_or(ActionIdError::Invalid)?;
@@ -139,7 +139,7 @@ impl ActionId {
         )
     }
     fn validate(&self) -> Result<(), ActionIdError> {
-        if self.to_string().len() > 96 {
+        if self.to_string().len() > 320 {
             return Err(ActionIdError::TooLong);
         }
         let valid = |s: &str| {
@@ -147,15 +147,12 @@ impl ActionId {
                 && s.bytes()
                     .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
         };
-        let suffix = ["pr-", "run-", "i-", "t-", "r-", "a-", "s-"]
-            .into_iter()
-            .find_map(|prefix| self.subject.strip_prefix(prefix));
         let orchestrator_action = self.subject == "orchestrator"
             && matches!(self.verb, Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop);
-        if self.subject != "view" && !orchestrator_action && suffix.is_none_or(str::is_empty) {
+        if self.subject != "view" && !orchestrator_action && !super::id::valid(&self.subject) {
             return Err(ActionIdError::Invalid);
         }
-        if !valid(&self.subject) || self.extra.as_deref().is_some_and(|extra| !valid(extra)) {
+        if self.extra.as_deref().is_some_and(|extra| !valid(extra)) {
             return Err(ActionIdError::Invalid);
         }
         Ok(())
@@ -174,5 +171,22 @@ impl fmt::Display for ActionId {
             write!(f, "~{extra}")?;
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn real_subjects_round_trip_and_unsafe_delimiters_fail() {
+        for subject in ["hf-weekly-2026-09-30", "a98d034b-249e-4487-a89b-57de38c26372",
+            "github.com/bitomule/alondra#154"] {
+            let id = ActionId::new(Verb::Msg, subject, 117, None).unwrap();
+            assert_eq!(ActionId::parse(&id.to_string()).unwrap(), id);
+        }
+        for subject in ["../secret", "github.com/../repo#154", "a@12", "a~b", "a:b"] {
+            assert!(ActionId::new(Verb::Msg, subject, 117, None).is_err());
+        }
     }
 }

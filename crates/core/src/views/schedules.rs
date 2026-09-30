@@ -32,16 +32,24 @@ fn instant(millis: i64) -> String {
     let z = seconds.div_euclid(86_400) + 719_468;
     let era = z.div_euclid(146_097);
     let day_of_era = z - era * 146_097;
-    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
     let mut year = year_of_era + era * 400;
     let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
     let month_part = (5 * day_of_year + 2) / 153;
     let day = day_of_year - (153 * month_part + 2) / 5 + 1;
     let month = month_part + if month_part < 10 { 3 } else { -9 };
-    if month <= 2 { year += 1; }
+    if month <= 2 {
+        year += 1;
+    }
     let daytime = seconds.rem_euclid(86_400);
-    format!("{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
-        daytime / 3_600, daytime / 60 % 60, daytime % 60, millis.rem_euclid(1_000))
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}.{:03}Z",
+        daytime / 3_600,
+        daytime / 60 % 60,
+        daytime % 60,
+        millis.rem_euclid(1_000)
+    )
 }
 
 pub(super) fn list(context: &RenderContext<'_>) -> View {
@@ -60,6 +68,12 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         let revision = schedule.revision as u64;
         for (verb, label, style) in [(Verb::SchedRun, t!(context.lang, "Run Now", "Ejecutar ahora"), Style::Secondary), (Verb::SchedToggle, if schedule.enabled { t!(context.lang, "Pause", "Pausar") } else { t!(context.lang, "Resume", "Reanudar") }, Style::Secondary), (Verb::SchedDelete, t!(context.lang, "Delete", "Eliminar"), Style::Destructive)] {
             if let Some(mut action) = common::action(verb, &format!("s-{}", schedule.id.0), revision, label, style) {
+                action.key = Some(match verb {
+                    Verb::SchedRun => "enter",
+                    Verb::SchedToggle => "p",
+                    Verb::SchedDelete => "d",
+                    _ => unreachable!(),
+                }.into());
                 if verb == Verb::SchedDelete { action.confirm = Some(Confirm { title: label.into(), message: t!(context.lang, "Future runs will stop. Delete this schedule?", "Las próximas ejecuciones se detendrán. ¿Eliminar esta programación?").into(), button: label.into() }); }
                 row.actions.push(action);
             }
@@ -145,13 +159,18 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
         label: t!(context.lang, "Projects folder", "Carpeta de proyectos").into(),
     }];
     for name in context
-        .live.projects.iter().map(|project| &project.name)
-        .chain(context
-        .domain
-        .schedule
-        .schedules
-        .values()
-        .filter_map(|s| s.project.as_ref()))
+        .live
+        .projects
+        .iter()
+        .map(|project| &project.name)
+        .chain(
+            context
+                .domain
+                .schedule
+                .schedules
+                .values()
+                .filter_map(|s| s.project.as_ref()),
+        )
     {
         if !projects.iter().any(|item| item.id == *name) {
             projects.push(ChoiceItem {
@@ -203,11 +222,18 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
                 .into_iter()
                 .map(|id| ChoiceItem {
                     id: id.into(),
-                    label: frequency_label(match id {
-                        "daily" => ScheduleFrequency::Daily, "weekly" => ScheduleFrequency::Weekly,
-                        "every_hours" => ScheduleFrequency::EveryHours, "every_days" => ScheduleFrequency::EveryDays,
-                        "every_months" => ScheduleFrequency::EveryMonths, _ => ScheduleFrequency::Once,
-                    }, context.lang).into(),
+                    label: frequency_label(
+                        match id {
+                            "daily" => ScheduleFrequency::Daily,
+                            "weekly" => ScheduleFrequency::Weekly,
+                            "every_hours" => ScheduleFrequency::EveryHours,
+                            "every_days" => ScheduleFrequency::EveryDays,
+                            "every_months" => ScheduleFrequency::EveryMonths,
+                            _ => ScheduleFrequency::Once,
+                        },
+                        context.lang,
+                    )
+                    .into(),
                 })
                 .collect(),
             },
@@ -229,7 +255,8 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
                             4 => t!(context.lang, "Thursday", "Jueves"),
                             5 => t!(context.lang, "Friday", "Viernes"),
                             _ => t!(context.lang, "Saturday", "Sábado"),
-                        }.into(),
+                        }
+                        .into(),
                     })
                     .collect(),
             },
@@ -356,6 +383,9 @@ mod tests {
     #[test]
     fn schedule_instants_are_absolute_utc() {
         assert_eq!(super::instant(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(super::instant(1_784_204_760_123), "2026-07-16T12:26:00.123Z");
+        assert_eq!(
+            super::instant(1_784_204_760_123),
+            "2026-07-16T12:26:00.123Z"
+        );
     }
 }

@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v71a28b251757dbb5",
+  "version": "v022a0035d290e028",
   "cursor": "cursor-1",
   "status": {
     "version": "v8721d9127b0633bd",
@@ -116,7 +116,7 @@
               "input": {
                 "kind": "text",
                 "placeholder": "¿Qué falta?",
-                "required": true,
+                "required": false,
                 "multiline": true
               },
               "attachments": false,

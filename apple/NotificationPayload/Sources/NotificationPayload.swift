@@ -98,8 +98,19 @@ public enum NotificationPayload {
 
         /// IDs that can appear in a category or action identifier unchanged.
         public static func isSafe(_ id: String) -> Bool {
-            (1...128).contains(id.utf8.count)
-                && id.utf8.allSatisfy { (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }
+            guard (1...256).contains(id.utf8.count) else { return false }
+            if id.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }) { return true }
+            guard id.hasPrefix("github.com/"), let hash = id.firstIndex(of: "#") else { return false }
+            let repo = id[id.index(id.startIndex, offsetBy: "github.com/".count)..<hash]
+            let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+            guard parts.count == 2, parts.allSatisfy({ part in
+                !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy {
+                    (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 || $0 == 46
+                }
+            }) else { return false }
+            let number = id[id.index(after: hash)...]
+            return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
+                && (UInt64(number).map { $0 > 0 } ?? false)
         }
 
         public static func questionID(_ id: String, binding: Binding) -> String {

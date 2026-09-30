@@ -60,11 +60,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     })
 }
 pub(super) fn plain_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 256
-        && id
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    super::id::valid(id)
 }
 pub(super) fn public_id(item: &InboxItem) -> &str {
     match &item.subject {
@@ -308,7 +304,8 @@ fn pr_detail(
     if let Some(stacked) = live.and_then(|detail| detail.stacked_on.as_deref()) {
         facts.push(Fact {
             label: t!(context.lang, "Stacked on", "Depende de").into(),
-            value: stacked.into(),
+            value: context.domain.pull_requests.get(&crate::domain_v2::PrId(stacked.into()))
+                .map_or_else(|| stacked.into(), |upstream| format!("#{}", upstream.number)),
             tone: Some(Tone::Warning),
             link: Some(Link::View {
                 key: format!("pull_request:{stacked}"),
@@ -503,13 +500,10 @@ fn pr_detail(
                     button: t!(context.lang, "Merge", "Integrar").into(),
                 }),
                 enabled: available.enabled && stacked.is_none(),
-                disabled_reason: stacked.map(|id| {
-                    tf!(
-                        context.lang,
-                        "Merge PR {id} first",
-                        "Integra primero la PR {id}"
-                    )
-                }),
+                disabled_reason: stacked.map(|id| context.domain.pull_requests.get(&crate::domain_v2::PrId(id.into()))
+                    .map_or_else(
+                        || t!(context.lang, "Merge the upstream PR first", "Fusiona primero la PR anterior").into(),
+                        |upstream| tf!(context.lang, "Merge #{number} first", "Fusiona primero la #{number}", number = upstream.number))),
                 stamp: None,
                 key: None,
                 link: None,
@@ -581,7 +575,7 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action> {
                     options: vec![],
                     input: Input::Text {
                         placeholder: placeholder.into(),
-                        required: true,
+                        required: verb != Verb::Ctx,
                         multiline: true,
                     },
                     attachments: verb == Verb::Reply,

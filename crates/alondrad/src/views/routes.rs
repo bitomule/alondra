@@ -97,7 +97,14 @@ async fn respond(
         return error("invalid_input", "protocol is required");
     };
     if protocol != VIEWS_PROTOCOL {
-        return error("incompatible_protocol", "Update Alondra");
+        return error(
+            "incompatible_protocol",
+            if lang.as_deref() == Some("es") {
+                "Actualiza Alondra"
+            } else {
+                "Update Alondra"
+            },
+        );
     }
     let client_kind = match kind.as_deref() {
         Some("ios") => Client::Ios,
@@ -115,17 +122,17 @@ async fn respond(
             || !version.starts_with('v')
             || !version[1..].bytes().all(|byte| byte.is_ascii_hexdigit())
     }) {
-        return error("invalid_input", "invalid known version");
+        return error_lang(language, "invalid_input", "invalid known version");
     }
     let Some(base_key) = normalize_key(path_key) else {
-        return error("invalid_input", "invalid view key");
+        return error_lang(language, "invalid_input", "invalid view key");
     };
     let Some(key) = view_key(&base_key, &options) else {
-        return error("invalid_input", "invalid view parameter");
+        return error_lang(language, "invalid_input", "invalid view parameter");
     };
     let state = match client.domain.state() {
         Ok(state) => state,
-        Err(_) => return error("storage_unavailable", "domain state unavailable"),
+        Err(_) => return error_lang(language, "storage_unavailable", "domain state unavailable"),
     };
     let live = super::live::gather(client, &state, language, std::slice::from_ref(&key), true, false).await;
     if key == "issue_picker?refresh=1" {
@@ -136,22 +143,28 @@ async fn respond(
         .render(&key, &state, &live, client_kind, language, transport)
     {
         Ok(view) => view,
-        Err(BuildError::NotFound) => return error("not_found", "view not found"),
+        Err(BuildError::NotFound) => return error_lang(language, "not_found", "view not found"),
         Err(BuildError::InvalidKey | BuildError::UnsupportedClient) => {
-            return error("invalid_input", "invalid view key");
+            return error_lang(language, "invalid_input", "invalid view key");
         }
     };
     if known.as_deref() == Some(view.version.as_str()) {
-        return Json(json!({"protocol":VIEWS_PROTOCOL,"unchanged":true,"cursor":view.cursor,
-            "data_epoch":view.data_epoch}))
-            .into_response();
+        return Json(
+            json!({"protocol":VIEWS_PROTOCOL,"unchanged":true,"cursor":view.cursor,
+            "data_epoch":view.data_epoch}),
+        )
+        .into_response();
     }
     let bytes = match serde_json::to_vec(&view) {
         Ok(bytes) => bytes,
-        Err(_) => return error("storage_unavailable", "view serialization failed"),
+        Err(_) => return error_lang(language, "storage_unavailable", "view serialization failed"),
     };
     if bytes.len() > super::VIEW_BUDGET_BYTES {
-        return error("payload_too_large", "view exceeds the response budget");
+        return error_lang(
+            language,
+            "payload_too_large",
+            "view exceeds the response budget",
+        );
     }
     (
         StatusCode::OK,
@@ -239,7 +252,7 @@ fn view_key(base: &str, options: &ViewOptions) -> Option<String> {
     if base == "tasks" && focus.is_none() && project.is_none() && q.is_none() && refresh.is_none() {
         return match (section.as_deref(), after.as_deref()) {
             (None, None) => Some(base.into()),
-            (Some("finished" | "archived"), Some(n)) if n.parse::<usize>().is_ok() => {
+            (Some("active" | "finished" | "archived"), Some(n)) if n.parse::<usize>().is_ok() => {
                 Some(format!("tasks?section={}&after={n}", section.as_deref()?))
             }
             _ => None,
@@ -336,6 +349,34 @@ pub(super) fn valid_open_key(key: &str) -> bool {
 }
 
 fn normalize_key(raw: &str) -> Option<String> {
+    // Relay requests carry the entire key as one encoded path segment. Axum may
+    // already have decoded its Path extractor; decoding twice is never allowed.
+    let decoded;
+    let raw = if raw.contains('%') {
+        if raw.contains('&') || raw.contains('+') {
+            return None;
+        }
+        if raw.as_bytes().iter().enumerate().any(|(i, b)| {
+            *b == b'%'
+                && (i + 2 >= raw.len()
+                    || !raw.as_bytes()[i + 1].is_ascii_hexdigit()
+                    || !raw.as_bytes()[i + 2].is_ascii_hexdigit())
+        }) {
+            return None;
+        }
+        let encoded = format!("key={raw}");
+        let mut fields = url::form_urlencoded::parse(encoded.as_bytes());
+        decoded = fields.next()?.1.into_owned();
+        if fields.next().is_some() {
+            return None;
+        }
+        if decoded.contains('%') {
+            return None;
+        }
+        decoded.as_str()
+    } else {
+        raw
+    };
     if matches!(
         raw,
         "home"
@@ -372,15 +413,29 @@ fn normalize_key(raw: &str) -> Option<String> {
 }
 
 fn plain_id(id: &str) -> bool {
-    !id.is_empty()
-        && id.len() <= 256
-        && id
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    alondra_core::views::id::valid(id)
 }
 
 fn error(code: &str, message: &str) -> Response {
     crate::domain_api::domain_error(DomainError::new(code, message))
+}
+
+fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
+    let translated = if lang == Lang::Es {
+        match message {
+            "invalid known version" => "Versión conocida no válida",
+            "invalid view key" => "Vista no válida",
+            "invalid view parameter" => "Parámetro de vista no válido",
+            "domain state unavailable" => "El estado no está disponible",
+            "view not found" => "Vista no encontrada",
+            "view serialization failed" => "No se pudo preparar la vista",
+            "view exceeds the response budget" => "La vista supera el límite de tamaño",
+            _ => message,
+        }
+    } else {
+        message
+    };
+    error(code, translated)
 }
 
 #[cfg(test)]
@@ -409,6 +464,15 @@ mod tests {
         assert!(approved_read_path(
             "/views/card%3Ai-42?protocol=1&client=ios&lang=en"
         ));
+        assert!(approved_read_path(
+            "/views/pull_request%3Agithub.com%2Fbitomule%2Falondra%23154?protocol=1&client=mac&lang=en"
+        ));
+        assert!(approved_read_path(
+            "/views/node%3Aa98d034b-249e-4487-a89b-57de38c26372?protocol=1&client=tui&lang=en"
+        ));
+        assert!(approved_read_path(
+            "/views/tasks?protocol=1&client=tui&lang=en&section=active&after=20"
+        ));
         assert!(!approved_read_path(
             "/views/home?protocol=2&client=ios&lang=en"
         ));
@@ -420,6 +484,12 @@ mod tests {
         ));
         assert!(!approved_read_path(
             "/views/card:%2F?protocol=1&client=ios&lang=en"
+        ));
+        assert!(!approved_read_path(
+            "/views/pull_request%3Agithub.com%2F..%2Falondra%23154?protocol=1&client=mac&lang=en"
+        ));
+        assert!(!approved_read_path(
+            "/views/card%3Ai-42&ignore=1?protocol=1&client=ios&lang=en"
         ));
         assert!(!approved_read_path(
             "/views/home?protocol=1&client=ios&lang=en&future=1"

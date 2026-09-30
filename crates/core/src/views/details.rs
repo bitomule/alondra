@@ -157,7 +157,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
             title: t!(context.lang, "Diff", "Diferencias").into(),
             size: 0,
             digest: Some(pr.head.clone()),
-            fetch: format!("/pull-requests/{id}/diff"),
+            fetch: format!("/pull-requests/{}/diff", super::id::path_segment(id)),
             commentable: true,
         })],
     ));

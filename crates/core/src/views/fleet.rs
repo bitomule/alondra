@@ -339,6 +339,7 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
         message.input = super::Input::Text { placeholder: t!(context.lang, "Write to the orchestrator…", "Escribe al orquestador…").into(),
             required: true, multiline: true };
         message.attachments = true;
+        message.key = (context.client == super::Client::Tui).then(|| "M".into());
         actions.push(message);
     }
     if let Some(run) = live.and_then(|o| o.active_run_id.as_deref()) {

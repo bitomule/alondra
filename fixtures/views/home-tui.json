@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "va84d841f7c4ff7e8",
+  "version": "v1386702ccd6a2f62",
   "cursor": "cursor-1",
   "status": {
     "version": "v2d6ccffc4668392a",
@@ -207,7 +207,7 @@
               "input": {
                 "kind": "text",
                 "placeholder": "What is missing?",
-                "required": true,
+                "required": false,
                 "multiline": true
               },
               "attachments": false,
