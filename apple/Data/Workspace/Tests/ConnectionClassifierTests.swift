@@ -29,6 +29,14 @@ final class ConnectionClassifierTests: XCTestCase {
         }
     }
 
+    func testAReadTheMacNeverAnswersIsExplainedInWordsNotTheCaseName() {
+        let described = ReadFailure.describing(ServiceAPIError.outcomeUnknown).localizedDescription
+        XCTAssertTrue(described.contains("Your Mac didn’t answer"), described)
+        XCTAssertFalse(described.contains("ServiceAPIError"), described)
+        XCTAssertTrue(ReadFailure.describing(CancellationError()) is CancellationError)
+        XCTAssertTrue(ReadFailure.describing(DomainV2.DomainError(code: "stale_head", message: "x", currentRevision: nil, subject: nil)) is DomainV2.DomainError)
+    }
+
     func testANetworkWithoutAPathIsNoInternetEvenWhenTheRelayReadJustTimesOut() {
         XCTAssertEqual(ConnectionClassifier.problem(for: RelaySessionError.outcomeUnknown, local: false, networkOffline: true), .noInternet)
     }
