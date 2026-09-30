@@ -11,6 +11,8 @@ pub(crate) async fn gather(
     state: &DomainState,
     lang: Lang,
     keys: &[String],
+    allow_issue_refresh: bool,
+    clock_only: bool,
 ) -> LiveSnapshot {
     let nodes = client
         .domain
@@ -137,7 +139,7 @@ pub(crate) async fn gather(
         tone: Tone::Info,
         action: None,
     });
-    let inbox_times = {
+    let inbox_times = if clock_only { vec![] } else {
         let orders = state
             .projection()
             .inbox
@@ -177,12 +179,22 @@ pub(crate) async fn gather(
     let gauges = if let Some((machine, usage)) = sample {
         let mut published = client.views_gauges.lock().expect("published views gauges poisoned");
         if published.as_ref().is_none_or(|(at, _, _)| at.elapsed() >= std::time::Duration::from_secs(60)) {
-            *published = Some((std::time::Instant::now(), gauges(&machine, usage.as_ref(), Lang::En),
-                gauges(&machine, usage.as_ref(), Lang::Es)));
+            let en = gauges(&machine, usage.as_ref(), Lang::En);
+            let es = gauges(&machine, usage.as_ref(), Lang::Es);
+            match published.as_mut() {
+                Some((at, old_en, old_es)) => {
+                    *at = std::time::Instant::now();
+                    if !same_visible_gauges(old_en, &en) || !same_visible_gauges(old_es, &es) {
+                        *old_en = en;
+                        *old_es = es;
+                    }
+                }
+                None => *published = Some((std::time::Instant::now(), en, es)),
+            }
         }
         published.as_ref().map(|(_, en, es)| if lang == Lang::En { en.clone() } else { es.clone() }).unwrap_or_default()
     } else { vec![] };
-    let request_times = client
+    let request_times = if clock_only { BTreeMap::new() } else { client
         .domain
         .store
         .lock()
@@ -191,7 +203,7 @@ pub(crate) async fn gather(
         .unwrap_or_default()
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
-        .collect();
+        .collect() };
     let wants_new = keys
         .iter()
         .any(|key| key.as_str() == "new_request" || key.starts_with("new_request?"));
@@ -230,15 +242,16 @@ pub(crate) async fn gather(
         .filter(|key| key.as_str() == "issue_picker" || key.starts_with("issue_picker?"))
         .collect();
     if !issue_keys.is_empty() {
-        let refresh = issue_keys.iter().any(|key| key.contains("refresh=1"));
-        let path = if refresh {
-            "/issues?refresh=1"
-        } else {
-            "/issues"
-        };
-        if let Some(data) = read_json(client, path).await {
-            issues = serde_json::from_value(data["issues"].clone()).unwrap_or_default();
-            issue_error = data["error"].as_str().map(str::to_owned);
+        if allow_issue_refresh {
+            let refresh = issue_keys.iter().any(|key| key.contains("refresh=1"));
+            let path = if refresh { "/issues?refresh=1" } else { "/issues" };
+            if let Some(data) = read_json(client, path).await {
+                issues = serde_json::from_value(data["issues"].clone()).unwrap_or_default();
+                issue_error = data["error"].as_str().map(str::to_owned);
+            }
+        } else if let Some(cached) = client.cached_issues().await {
+            issues = cached.issues;
+            issue_error = cached.error;
         }
     }
     let mut activity = BTreeMap::new();
@@ -330,6 +343,13 @@ async fn read_json(client: &crate::v2_client_routes::Client, path: &str) -> Opti
     serde_json::from_slice(&bytes).ok()
 }
 
+fn same_visible_gauges(left: &[Gauge], right: &[Gauge]) -> bool {
+    left.len() == right.len()
+        && left.iter().zip(right).all(|(a, b)| {
+            a.id == b.id && a.text == b.text && a.level == b.level && a.detail == b.detail
+        })
+}
+
 fn gauges(
     machine: &alondra_core::Machine,
     usage: Option<&alondra_core::usage::Usage>,
@@ -392,21 +412,6 @@ fn gauges(
             },
         });
     }
-    let cpu = machine.cpu_usage as f64;
-    out.push(Gauge {
-        id: "cpu".into(),
-        label: "CPU".into(),
-        value: cpu / 100.0,
-        text: format!("{}%", cpu.round()),
-        detail: None,
-        level: if machine.unreliable {
-            Level::Hot
-        } else if cpu >= 85.0 {
-            Level::Warm
-        } else {
-            Level::Calm
-        },
-    });
     if machine.disk_total > 0 {
         let used = machine.disk_total.saturating_sub(machine.disk_available);
         let ratio = used as f64 / machine.disk_total as f64;
@@ -441,4 +446,32 @@ fn timestamp(millis: i64) -> String {
         millis.div_euclid(1000) as libc::time_t,
         millis.rem_euclid(1000) as u32,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn gauges_change_only_when_displayed_text_or_level_changes() {
+        let first = Gauge { id: "memory".into(), label: "RAM".into(), value: 0.501,
+            text: "50%".into(), detail: None, level: Level::Calm };
+        let mut sampled = first.clone();
+        sampled.value = 0.504;
+        assert!(same_visible_gauges(&[first.clone()], &[sampled.clone()]));
+        sampled.text = "51%".into();
+        assert!(!same_visible_gauges(&[first.clone()], &[sampled.clone()]));
+        sampled.text = first.text.clone();
+        sampled.level = Level::Warm;
+        assert!(!same_visible_gauges(&[first], &[sampled]));
+    }
+
+    #[test]
+    fn machine_gauges_do_not_add_an_unrequested_cpu_indicator() {
+        let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
+            memory_free_percent: Some(50), load: [0.0; 3], cpus: 8, cpu_usage: 90.0,
+            disk_total: 100, disk_available: 50, unreliable: false };
+        let ids = gauges(&machine, None, Lang::En).into_iter().map(|gauge| gauge.id).collect::<Vec<_>>();
+        assert_eq!(ids, ["memory", "disk"]);
+    }
 }

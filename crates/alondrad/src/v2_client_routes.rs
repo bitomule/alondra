@@ -193,8 +193,12 @@ pub(crate) fn upload_step(path: &str) -> Option<&str> {
 }
 
 impl Client {
+    pub(crate) async fn cached_issues(&self) -> Option<crate::issues::IssueList> {
+        self.issue_cache.lock().await.clone()
+    }
+
     pub(crate) fn open(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges) -> Arc<Self> {
-        Arc::new(Self {
+        let client = Arc::new(Self {
             domain,
             home: home.to_owned(),
             gauges,
@@ -206,7 +210,9 @@ impl Client {
             github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
             options: Default::default(),
             issue_cache: Default::default(),
-        })
+        });
+        crate::views::feed::start_clock(&client);
+        client
     }
 
     #[cfg(test)]

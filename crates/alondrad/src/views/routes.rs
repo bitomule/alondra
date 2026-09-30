@@ -127,7 +127,10 @@ async fn respond(
         Ok(state) => state,
         Err(_) => return error("storage_unavailable", "domain state unavailable"),
     };
-    let live = super::live::gather(client, &state, language, std::slice::from_ref(&key)).await;
+    let live = super::live::gather(client, &state, language, std::slice::from_ref(&key), true, false).await;
+    if key == "issue_picker?refresh=1" {
+        client.feeds.wake();
+    }
     let view = match client
         .views
         .render(&key, &state, &live, client_kind, language, transport)

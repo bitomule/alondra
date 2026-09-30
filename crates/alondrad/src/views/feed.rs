@@ -10,17 +10,69 @@ use sha2::Digest;
 use std::{
     collections::HashMap,
     sync::{
-        Mutex,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::Duration,
 };
-use tokio::sync::oneshot;
+use tokio::sync::{oneshot, watch};
 
-#[derive(Default)]
 pub(crate) struct Feeds {
     waiters: Mutex<HashMap<String, (u64, oneshot::Sender<()>)>>,
     next: AtomicU64,
+    clock: watch::Sender<u64>,
+}
+
+impl Default for Feeds {
+    fn default() -> Self {
+        let (clock, _) = watch::channel(0);
+        Self { waiters: Mutex::default(), next: AtomicU64::new(0), clock }
+    }
+}
+
+impl Feeds {
+    pub(crate) fn wake(&self) {
+        let next = self.next.fetch_add(1, Ordering::Relaxed) + 1;
+        self.clock.send_replace(next);
+    }
+}
+
+/// One live sampler belongs to the daemon client, independently of how many devices poll.
+/// It reads in-memory live state and publishes only when its visible projection changes.
+pub(crate) fn start_clock(client: &Arc<crate::v2_client_routes::Client>) {
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    let weak = Arc::downgrade(client);
+    runtime.spawn(async move {
+        let mut interval = tokio::time::interval_at(
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            Duration::from_secs(5),
+        );
+        let Some(initial_client) = weak.upgrade() else { return };
+        let mut domain_changes = initial_client.domain.subscribe();
+        let mut state = initial_client.domain.state().ok();
+        drop(initial_client);
+        let mut last = None;
+        loop {
+            let domain_advanced = tokio::select! {
+                _ = interval.tick() => false,
+                changed = domain_changes.changed() => {
+                    if changed.is_err() { break; }
+                    true
+                },
+            };
+            let Some(client) = weak.upgrade() else { break };
+            if domain_advanced || state.is_none() {
+                state = client.domain.state().ok();
+            }
+            let Some(state) = state.as_ref() else { continue };
+            let live = super::live::gather(&client, &state, Lang::En, &[], false, true).await;
+            let digest = live_revision(&live);
+            if last.as_ref() != Some(&digest) {
+                last = Some(digest);
+                client.feeds.wake();
+            }
+        }
+    });
 }
 
 #[derive(Serialize)]
@@ -32,6 +84,16 @@ struct Reply {
     stale: Vec<String>,
     reset: bool,
     superseded: bool,
+}
+
+#[derive(Clone)]
+struct Current {
+    cursor: String,
+    status: alondra_core::views::Status,
+    stale: Vec<String>,
+    epoch: String,
+    // Rendering is needed only when domain or displayed live data changed.
+    clock: (String, u64, String),
 }
 
 pub(crate) async fn handle(
@@ -56,45 +118,52 @@ pub(crate) async fn handle(
     }
     let started = tokio::time::Instant::now();
     let mut domain_changes = client.domain.subscribe();
+    let mut live_changes = client.feeds.clock.subscribe();
+    let mut previous = None;
     loop {
-        let current = match current(client, kind, lang, transport, &views).await {
+        let current = match current(client, kind, lang, transport, &views, previous.as_ref()).await {
             Ok(current) => current,
             Err(response) => {
                 remove_waiter(client, device, generation);
                 return response;
             }
         };
-        let (new_cursor, status, stale, epoch) = current;
         let old_epoch = cursor.as_deref().and_then(decode_cursor).map(|c| c.0);
-        let reset = old_epoch.as_deref().is_some_and(|old| old != epoch);
+        let reset = old_epoch.as_deref().is_some_and(|old| old != current.epoch);
         let changed = cursor.is_none()
             || reset
-            || !stale.is_empty()
+            || !current.stale.is_empty()
             || cursor
                 .as_deref()
                 .and_then(decode_cursor)
-                .is_some_and(|c| c.3 != status.version);
+                .is_some_and(|c| c.3 != current.status.version);
         if changed || started.elapsed() >= Duration::from_secs(wait) {
             remove_waiter(client, device, generation);
             return Json(Reply {
                 protocol: VIEWS_PROTOCOL,
-                cursor: new_cursor,
-                data_epoch: epoch,
-                status,
-                stale,
+                cursor: current.cursor,
+                data_epoch: current.epoch,
+                status: current.status,
+                stale: current.stale,
                 reset,
                 superseded: false,
             })
             .into_response();
         }
-        let tick = tokio::time::sleep(
-            Duration::from_secs(5).min(Duration::from_secs(wait).saturating_sub(started.elapsed())),
-        );
-        tokio::pin!(tick);
+        previous = Some(current.clone());
+        let timeout = tokio::time::sleep(Duration::from_secs(wait).saturating_sub(started.elapsed()));
+        tokio::pin!(timeout);
         tokio::select! {
-            _ = &mut cancel_rx => return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: new_cursor, data_epoch: epoch, status, stale: vec![], reset: false, superseded: true }).into_response(),
+            _ = &mut cancel_rx => {
+                remove_waiter(client, device, generation);
+                return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: true }).into_response();
+            },
             _ = domain_changes.changed() => {},
-            _ = &mut tick => {},
+            _ = live_changes.changed() => {},
+            _ = &mut timeout => {
+                remove_waiter(client, device, generation);
+                return Json(Reply { protocol: VIEWS_PROTOCOL, cursor: current.cursor, data_epoch: current.epoch, status: current.status, stale: vec![], reset: false, superseded: false }).into_response();
+            },
         }
     }
 }
@@ -112,7 +181,8 @@ async fn current(
     lang: Lang,
     transport: Transport,
     views: &[(String, String)],
-) -> Result<(String, alondra_core::views::Status, Vec<String>, String), Response> {
+    previous: Option<&Current>,
+) -> Result<Current, Response> {
     let state = client
         .domain
         .state()
@@ -120,31 +190,37 @@ async fn current(
     let status_key = status_view_key(kind);
     let mut keys = Vec::with_capacity(views.len() + 1);
     keys.push(status_key.to_owned());
-    keys.extend(views.iter().map(|(key, _)| key.clone()));
-    let live = super::live::gather(client, &state, lang, &keys).await;
+    keys.extend(views.iter().filter(|(key, _)| super::routes::valid_open_key(key)).map(|(key, _)| key.clone()));
+    let live = super::live::gather(client, &state, lang, &keys, false, false).await;
+    let clock = (state.data_epoch.0.clone(), state.revision, live_revision(&live));
+    if let Some(previous) = previous.filter(|previous| previous.clock == clock) {
+        return Ok(previous.clone());
+    }
     let status_view = client
         .views
         .render(status_key, &state, &live, kind, lang, transport)
         .map_err(|_| error("storage_unavailable", "view status unavailable"))?;
     let mut stale = Vec::new();
     for (key, version) in views {
-        let view = client
-            .views
-            .render(key, &state, &live, kind, lang, transport)
-            .map_err(|_| error("invalid_input", "invalid open view key"))?;
-        if &view.version != version {
+        let stale_view = if super::routes::valid_open_key(key) {
+            match client.views.render(key, &state, &live, kind, lang, transport) {
+                Ok(view) => &view.version != version,
+                Err(_) => true,
+            }
+        } else { true };
+        if stale_view {
             stale.push(key.clone());
         }
     }
     let tuple = (
-        state.data_epoch.0.clone(),
-        state.revision,
-        live_revision(&live),
+        clock.0.clone(),
+        clock.1,
+        clock.2.clone(),
         status_view.status.version.clone(),
     );
     let bytes = serde_json::to_vec(&tuple).expect("feed cursor serialization");
     let cursor = format!("c1.{}", URL_SAFE_NO_PAD.encode(bytes));
-    Ok((cursor, status_view.status, stale, state.data_epoch.0))
+    Ok(Current { cursor, status: status_view.status, stale, epoch: clock.0.clone(), clock })
 }
 
 fn status_view_key(kind: Client) -> &'static str {
@@ -235,7 +311,12 @@ fn error(code: &str, message: &str) -> Response {
 }
 
 fn valid_key(key: &str) -> bool {
-    super::routes::valid_open_key(key)
+    // Old clients may still report a view removed by a newer daemon. Keep that
+    // entry in the stale list without ever resolving or rendering its key.
+    !key.is_empty()
+        && key.len() <= 512
+        && key.bytes().all(|byte| byte.is_ascii_alphanumeric()
+            || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'#' | b'?' | b'=' | b'&' | b'%'))
 }
 
 fn remove_waiter(client: &crate::v2_client_routes::Client, device: &str, generation: u64) {
@@ -268,9 +349,18 @@ mod tests {
         assert!(parse("protocol=1&client=ios&lang=es&wait=51").is_none());
         assert!(parse("protocol=1&client=ios&lang=es&wait=1&wait=2").is_none());
         assert!(parse("protocol=2&client=ios&lang=es&wait=1").is_none());
-        assert!(
-            parse("protocol=1&client=ios&lang=es&wait=1&views=card%3A%2F@v0123456789abcdef")
-                .is_none()
-        );
+        assert!(parse("protocol=1&client=ios&lang=es&wait=1&views=card%3A%2F@v0123456789abcdef").is_some());
+        assert!(parse("protocol=1&client=ios&lang=es&wait=1&views=card%3A%0A@v0123456789abcdef").is_none());
+    }
+
+    #[tokio::test]
+    async fn one_live_clock_wakes_every_open_feed() {
+        let feeds = Feeds::default();
+        let mut first = feeds.clock.subscribe();
+        let mut second = feeds.clock.subscribe();
+        feeds.wake();
+        first.changed().await.unwrap();
+        second.changed().await.unwrap();
+        assert_eq!(*first.borrow(), *second.borrow());
     }
 }

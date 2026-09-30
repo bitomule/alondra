@@ -38,7 +38,7 @@ const MAX_PUSH_BODY: usize = 3_000;
 const MAX_PUSH_PLAINTEXT: usize = 1_500;
 // The legacy changes route remains available until its final caller migrates.
 // The views feed supersedes its prior waiter independently of this limit.
-const MAX_CHANGES_PER_DEVICE: usize = 2;
+const MAX_CHANGES_PER_DEVICE: usize = 1;
 const MAX_CHANGES_TOTAL: usize = 16;
 
 type WorkKey = (String, String);
