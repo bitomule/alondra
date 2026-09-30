@@ -100,6 +100,19 @@ fn the_inbox_lists_what_waits_then_pull_requests_then_what_to_read() {
 }
 
 #[test]
+fn a_question_answered_from_another_device_leaves_the_inbox() {
+    let mut world = World::base(false);
+    world.question("question-1", "Keep the flag?", &[("yes", false)]);
+    let mut app = app_on(&world);
+    assert_eq!(app.inbox_keys().iter().map(|k| k.0.as_str()).collect::<Vec<_>>(), ["interaction:question-1"]);
+    world.run("device:phone", Command::AnswerQuestion { attachments: vec![], interaction_id: "question-1".into(), option_id: "yes".into(), inputs: Default::default() });
+    refresh(&mut app, &world);
+    assert!(app.inbox_keys().is_empty(), "{:?}", app.inbox_keys());
+    let shown = screen(&mut app, 120, 30);
+    assert!(!shown.contains("WAITING FOR YOU") && !shown.contains("Keep the flag?"), "{shown}");
+}
+
+#[test]
 fn a_pr_root_takes_changes_and_questions_but_never_an_authorization() {
     let mut world = super::pr_with_question_child();
     let mut app = app_on(&world);

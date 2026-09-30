@@ -47,6 +47,11 @@ pub fn section_of(item: &InboxItem) -> Section {
     }
 }
 
+/// A question or action request nobody has to answer any more: answered, or withdrawn.
+fn answered(item: &InboxItem) -> bool {
+    matches!(item.kind.as_str(), "question" | "action_request") && !item.pending
+}
+
 pub fn merge_method(m: MergeMethod) -> &'static str {
     match m {
         MergeMethod::Merge => tr!("merge commit", "commit de fusión"),
@@ -105,7 +110,7 @@ impl App {
         let shown = |i: &InboxItem| !self.hidden.contains_key(&Key(i.id.clone()));
         let mut rows = vec![];
         for section in SECTIONS {
-            for root in d.inbox.iter().filter(|r| shown(r) && section_of(r) == section) {
+            for root in d.inbox.iter().filter(|r| !answered(r) && shown(r) && section_of(r) == section) {
                 rows.push((root, false));
                 rows.extend(root.children.iter().filter(|c| shown(c)).map(|c| (c, true)));
             }
