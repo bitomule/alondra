@@ -111,10 +111,6 @@ pub fn task_actions(task: &TaskId) -> String {
     format!("/tasks/{}/actions", urlencode(&task.0))
 }
 
-pub fn pull_request_diff(pr: &PrId) -> String {
-    format!("/pull-requests/{}/diff", urlencode(&pr.0))
-}
-
 pub fn schedule_run(schedule_id: &str) -> String {
     format!("/schedules/{}/runs", urlencode(schedule_id))
 }
@@ -179,7 +175,6 @@ mod tests {
         assert_eq!(orchestrator(Recovery::Retry, "run-1").0, "/orchestrator/retry");
         assert_eq!(history(&"task-1".into()), "/tasks/task-1/history");
         assert_eq!(task_actions(&"task/1".into()), "/tasks/task%2F1/actions");
-        assert_eq!(pull_request_diff(&"pr/1".into()), "/pull-requests/pr%2F1/diff");
         assert_eq!(schedule_run("schedule/1"), "/schedules/schedule%2F1/runs");
         assert_eq!(cancel_reason(&"task-1".into(), "done").0, "/tasks/task-1/cancel-reason");
         assert_eq!(PRESENCE, "/activity");

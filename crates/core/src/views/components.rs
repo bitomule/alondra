@@ -430,6 +430,7 @@ pub enum LocalLink {
         repo: String,
         branch: String,
         pr: u64,
+        pr_id: String,
     },
     OpenPath {
         path: String,

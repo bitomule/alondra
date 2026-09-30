@@ -431,10 +431,6 @@ enum Msg {
         slot: String,
         result: Result<CommandOutcome, CommandFailure>,
     },
-    Diff {
-        key: Key,
-        result: Result<Value, String>,
-    },
     TaskActions {
         task: TaskId,
         revision: Revision,
@@ -626,6 +622,7 @@ pub struct App {
     screen_view_asked: Option<String>,
     view_navigation: Vec<String>,
     compose_orchestrator_on_load: bool,
+    reader_after_view: Option<String>,
 }
 
 pub fn run() -> Result<()> {
@@ -981,6 +978,7 @@ impl App {
             screen_view_asked: None,
             view_navigation: vec![],
             compose_orchestrator_on_load: false,
+            reader_after_view: None,
         }
     }
 
@@ -1076,6 +1074,7 @@ impl App {
     }
 
     pub(super) fn navigate_view(&mut self, key: &str) {
+        self.reader_after_view = None;
         self.view_navigation.push(key.to_owned());
         self.card_view = None;
         self.card_view_asked = None;
@@ -1643,6 +1642,10 @@ impl App {
                     self.card_view_asked = None;
                     self.view_data_epoch = Some(view.data_epoch.clone());
                     self.card_view = Some(view);
+                    if self.reader_after_view.as_deref() == Some(&key) {
+                        self.reader_after_view = None;
+                        self.open_reader();
+                    }
                     if key == "node:orchestrator" && self.compose_orchestrator_on_load {
                         self.compose_orchestrator_on_load = false;
                         let _ = self
@@ -1656,6 +1659,9 @@ impl App {
             } => {
                 if self.card_view_asked.as_deref() == Some(&key) {
                     self.card_view_asked = None;
+                    if self.reader_after_view.as_deref() == Some(&key) {
+                        self.reader_after_view = None;
+                    }
                     if key == "node:orchestrator" {
                         self.compose_orchestrator_on_load = false;
                     }
@@ -1691,30 +1697,6 @@ impl App {
             }
             #[cfg(test)]
             Msg::Command { slot, result } => self.command_done(slot, result),
-            Msg::Diff { key, result } => match result {
-                Err(error) => self.fail(error),
-                Ok(value) if self.sel.as_ref() == Some(&key) => {
-                    self.open_reader();
-                    if let Some(reader) = self.reader.as_mut() {
-                        let diff = value["diff"].as_str().unwrap_or("");
-                        let head = value["head"].as_str().unwrap_or("?");
-                        reader.parts.push(Part::Text(format!(
-                            "## Diff @ {head}\n\n```diff\n{diff}\n```"
-                        )));
-                        if value["truncated"] == true {
-                            reader.parts.push(Part::Text(
-                                tr!(
-                                    "The diff was cut to fit: open the PR for all of it.",
-                                    "El diff se ha recortado: abre el PR para verlo entero."
-                                )
-                                .into(),
-                            ));
-                        }
-                    }
-                    self.rebuild_reader();
-                }
-                Ok(_) => {}
-            },
             Msg::Interaction {
                 id,
                 asked_at,
@@ -2128,6 +2110,7 @@ impl App {
         self.screen = screen;
         self.view_navigation.clear();
         self.compose_orchestrator_on_load = false;
+        self.reader_after_view = None;
         self.schedules_open = false;
         self.focus = Pane::List;
         self.agent_zoom = false;

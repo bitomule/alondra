@@ -436,6 +436,10 @@ fn real_pr_id_opens_detail_diff_and_actions() {
     assert!(detail.sections.iter().flat_map(|section| &section.items).any(|item|
         matches!(item, Item::ContentRef(content) if content.fetch ==
             "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff")));
+    let tui = render(&state, &live, Client::Tui, Lang::En, &format!("card:{id}"), "");
+    let Item::Card(tui_card) = &tui.sections[0].items[0] else { panic!("PR card") };
+    assert!(tui_card.actions.iter().any(|action| action.key.as_deref() == Some("d") &&
+        matches!(&action.link, Some(Link::Local { local: LocalLink::ReviewClone { pr_id, pr: 12, .. } }) if pr_id == id)));
 }
 
 #[test]

@@ -280,7 +280,7 @@ fn pr_detail(
     };
     if context.client == Client::Tui && context.transport == super::Transport::Loopback {
         actions.push(local_action(t!(context.lang, "Review local clone", "Revisar copia local"), "d",
-            LocalLink::ReviewClone { repo: pr.repository.clone(), branch: pr.head.clone(), pr: pr.number }));
+            LocalLink::ReviewClone { repo: pr.repository.clone(), branch: pr.head.clone(), pr: pr.number, pr_id: pr.id.0.clone() }));
     }
     let live = context
         .live

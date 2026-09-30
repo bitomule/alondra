@@ -202,6 +202,38 @@ fn canonical_pr_diff_content_ref_opens_in_the_views_reader() {
 }
 
 #[test]
+fn d_on_a_selected_delivery_opens_the_views_diff_without_a_clone() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let pr_id = "github.com/bitomule/alondra#154";
+    let key = format!("pull_request:{pr_id}");
+    let route = "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff";
+    let mut delivery = view_fixture("card-question.json");
+    delivery["key"] = serde_json::json!("card:delivery-1");
+    delivery["sections"][0]["items"][0]["actions"] = serde_json::json!([{
+        "id":"", "label":"Review local clone", "style":"plain", "presentation":"button",
+        "input":{"kind":"none"}, "attachments":false, "enabled":true, "key":"d",
+        "link":{"kind":"local", "local":{"kind":"review_clone",
+            "repo":"owner/alondra-no-clone-fixture-999", "branch":"head-154", "pr":154,
+            "pr_id":pr_id}}
+    }]);
+    app.view_navigation.push("card:delivery-1".into());
+    app.card_view = Some(serde_json::from_value(delivery).unwrap());
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.view_navigation.last(), Some(&key));
+    assert_eq!(app.reader_after_view.as_deref(), Some(key.as_str()));
+
+    let mut detail = view_fixture("card-question.json");
+    detail["key"] = serde_json::json!(key);
+    detail["sections"] = serde_json::json!([{"id":"diff", "collapsed":false, "items":[{
+        "type":"content_ref", "kind":"diff", "title":"Diff", "size":0,
+        "digest":"head-154", "fetch":route, "commentable":true
+    }]}]);
+    app.on_msg(Msg::ViewCard { key, result: Ok(serde_json::from_value(detail).unwrap()) });
+    assert!(app.reader.is_some() && app.loading.contains(route));
+}
+
+#[test]
 fn reader_comments_follow_the_selected_views_text_option() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -591,14 +623,14 @@ fn tuicr_comments_use_the_views_changes_action() {
     app.view_navigation.push(key.clone());
     app.card_view = Some(serde_json::from_value(view).unwrap());
     app.reviewed(
-        Key(pr.into()),
+        Key("interaction:delivery-1".into()),
         PrId(pr.into()),
         154,
         Ok("Reviewed.\n".into()),
     );
     assert!(posted(&app).is_empty() && flash(&app).contains("without comments"));
     app.reviewed(
-        Key(pr.into()),
+        Key("interaction:delivery-1".into()),
         PrId(pr.into()),
         154,
         Ok("1. `src/a.rs:4` - rename it\n".into()),
@@ -618,35 +650,15 @@ fn tuicr_comments_use_the_views_changes_action() {
 }
 
 #[test]
-fn without_a_local_clone_the_diff_opens_in_the_reader() {
-    let mut world = World::base(true);
-    world.run(
-        "agent-a",
-        Command::RegisterPr {
-            task_id: "task-1".into(),
-            pr_id: "pr-1".into(),
-            host: "github.com".into(),
-            repository: "owner/alondra-no-clone-here".into(),
-            number: 7,
-            head: "head1".into(),
-            base: "main".into(),
-            allowed_methods: vec![MergeMethod::Squash],
-        },
-    );
-    world.present("delivery-1", World::pr());
-    let mut app = app_on(&world);
-    select(&mut app, "interaction:delivery-1");
-    assert!(matches!(
-        app.on_key(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::NONE)),
-        Flow::Go
-    ));
-    assert!(flash(&app).contains("Loading the PR diff"));
-    app.on_msg(Msg::Diff {
-        key: Key("interaction:delivery-1".into()),
-        result: Ok(serde_json::json!({"diff": "+fn main() {}", "head": "head1"})),
-    });
-    let shown = screen(&mut app, 120, 30);
-    assert!(shown.contains("fn main()"), "{shown}");
+fn review_clone_flow_keeps_delivery_selection_and_uses_canonical_pr_id() {
+    let selected = Key("interaction:delivery-1".into());
+    let dir = std::path::PathBuf::from("/private/tmp/synthetic-clone");
+    let flow = inbox::review_clone_flow(
+        &selected, "github.com/bitomule/alondra#154", 154, dir.clone(),
+    ).unwrap();
+    assert!(matches!(flow, Flow::Review { key, pr, number: 154, dir: path }
+        if key == selected && pr.0 == "github.com/bitomule/alondra#154" && path == dir));
+    assert!(inbox::review_clone_flow(&selected, "../wrong", 154, dir).is_none());
 }
 
 #[test]

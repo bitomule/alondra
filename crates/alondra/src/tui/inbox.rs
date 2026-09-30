@@ -2,7 +2,6 @@
 //! the item offers. Reading is not replying, and authorizing a merge is not a merge.
 
 use std::collections::BTreeMap;
-use std::time::Duration;
 
 use alondra_core::domain_v2::{
     AttachmentRef, AvailableAction, Command, DeliveryTarget, InboxItem, InboxSubject, InputKind,
@@ -11,11 +10,9 @@ use alondra_core::domain_v2::{
 };
 use alondra_core::now_millis;
 use crossterm::event::{KeyCode, KeyEvent};
-use serde_json::Value;
 
 use super::keys::{self, Cmd, Motion};
 use super::{App, Flow, Key, Msg, Pane, Part, Screen, Target, md, unavailable};
-use crate::client::Client;
 use crate::ops::{self, MessageKind};
 
 pub fn action<'a>(item: &'a InboxItem, kind: &str) -> Option<&'a AvailableAction> {
@@ -38,6 +35,15 @@ pub enum Section {
 }
 
 pub const SECTIONS: [Section; 3] = [Section::Waiting, Section::PullRequests, Section::ToRead];
+
+pub(super) fn review_clone_flow(selected: &Key, pr_id: &str, number: u64, dir: std::path::PathBuf) -> Option<Flow> {
+    alondra_core::views::id::valid(pr_id).then(|| Flow::Review {
+        key: selected.clone(),
+        pr: PrId(pr_id.to_string()),
+        number,
+        dir,
+    })
+}
 
 pub fn section_of(item: &InboxItem) -> Section {
     match item.kind.as_str() {
@@ -351,7 +357,6 @@ impl App {
                 Some(url) => super::open_with_mac(&url),
                 None => self.fail(tr!("There is no PR here", "Aquí no hay PR")),
             },
-            KeyCode::Char('d') => return self.review_pr(&selected),
             KeyCode::Char('1') if key.modifiers.is_empty()
                 && pr_root.as_ref().is_some_and(|pr| self.conflicts(pr)) => {
                 if let Some(pr) = pr_root { self.resolve_conflicts(&selected, &pr); }
@@ -521,19 +526,20 @@ impl App {
                             "Referencia de archivo local: {path}"
                         ));
                     }
-                    alondra_core::views::LocalLink::ReviewClone { repo, pr, .. } => {
-                        if let Some(dir) = super::clone_of(None, repo) {
-                            return Flow::Review {
-                                key: selected.clone(),
-                                pr: PrId(selected.0.clone()),
-                                number: *pr,
-                                dir,
-                            };
+                    alondra_core::views::LocalLink::ReviewClone { repo, pr, pr_id, .. } => {
+                        if !alondra_core::views::id::valid(pr_id) {
+                            self.fail(tr!("Invalid PR review target", "Destino de revisión de PR no válido"));
+                            return Flow::Go;
                         }
-                        self.fail(tr!(
-                            "There is no local clone for this PR",
-                            "No hay copia local para esta PR"
-                        ));
+                        if let Some(dir) = super::clone_of(None, repo) {
+                            if let Some(flow) = review_clone_flow(selected, pr_id, *pr, dir) {
+                                return flow;
+                            }
+                        }
+                        let key = format!("pull_request:{pr_id}");
+                        self.navigate_view(&key);
+                        self.reader_after_view = Some(key);
+                        self.flash(tr!("Opening the PR diff…", "Abriendo las diferencias de la PR…"));
                     }
                 },
             }
@@ -997,37 +1003,6 @@ impl App {
         self.hide(key.clone());
     }
 
-    /// d reviews the PR in tuicr on its local clone; remotely, or with no clone, its diff opens here.
-    #[cfg(test)]
-    fn review_pr(&mut self, key: &Key) -> Flow {
-        let Some(pr) = self.item(key).and_then(|i| self.item_pr(i)).cloned() else {
-            self.fail(tr!("There is no PR here", "Aquí no hay PR"));
-            return Flow::Go;
-        };
-        if crate::service_client::target().is_none() {
-            let cwd = self
-                .task(&pr.task_id)
-                .and_then(|t| t.agent_id.as_ref())
-                .and_then(|a| self.runtime.as_ref()?.node(a))
-                .and_then(|n| n.cwd.clone());
-            if let Some(dir) = super::clone_of(cwd.as_deref(), &pr.repository) {
-                let number = pr.number;
-                self.flash(trf!(
-                    "Opening PR #{number} in tuicr…",
-                    "Abriendo el PR #{number} en tuicr…"
-                ));
-                return Flow::Review {
-                    key: key.clone(),
-                    pr: pr.id,
-                    number,
-                    dir,
-                };
-            }
-        }
-        self.load_diff(key);
-        Flow::Go
-    }
-
     #[cfg(test)]
     pub(super) fn options(
         &mut self,
@@ -1271,26 +1246,6 @@ impl App {
             ok,
             None,
         );
-    }
-
-    #[cfg(test)]
-    pub(super) fn load_diff(&mut self, key: &Key) {
-        let Some(pr) = self
-            .item(key)
-            .and_then(|i| self.item_pr(i))
-            .map(|p| p.id.clone())
-        else {
-            self.fail(tr!("There is no PR here", "Aquí no hay PR"));
-            return;
-        };
-        let key = key.clone();
-        self.flash(tr!("Loading the PR diff…", "Cargando el diff del PR…"));
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(90))
-                .get::<Value>(&ops::pull_request_diff(&pr))
-                .map_err(|e| e.to_string());
-            let _ = tx.send(Msg::Diff { key, result });
-        });
     }
 
     /// The stored files an item shows: its attachments and the document versions it is about.
