@@ -1,3 +1,4 @@
+import AlondraAPIClient
 import AlondraViews
 @testable import AlondraViewsData
 import Foundation
@@ -18,6 +19,28 @@ final class ViewsDataTests: XCTestCase {
         XCTAssertNil(ViewRoute.parse("card:github.com/../alondra#154"))
         XCTAssertNil(ViewRoute.parse("home?focus=../devices"))
         XCTAssertNil(ViewRoute.parse("home?focus="))
+    }
+
+    func testActiveTasksPageUsesTheServerRoute() {
+        let key = "tasks?section=active&after=42"
+        let route = ViewRoute.parse(key)
+        XCTAssertEqual(route?.path, "tasks")
+        XCTAssertEqual(route?.query.map { $0.0 }, ["section", "after"])
+        XCTAssertEqual(route?.query.map { $0.1 }, ["active", "42"])
+        XCTAssertTrue(ViewsFeedSession.validViewKey(key))
+        XCTAssertNil(ViewRoute.parse("tasks?section=active&after=-1"))
+        XCTAssertNil(ViewRoute.parse("tasks?section=unknown&after=42"))
+    }
+
+    func testCanonicalPullRequestDiffSegmentDecodesOnce() {
+        let rawID = "github.com/bitomule/alondra#154"
+        let fetch = "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff"
+        XCTAssertEqual(AlondraAPIClient.decodedPullRequestID(from: fetch), rawID)
+        XCTAssertEqual(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/pr-154/diff"), "pr-154")
+        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/github.com%252Fbitomule%252Falondra%2523154/diff"))
+        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/github.com%2fbitomule%2falondra%23154/diff"))
+        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/..%2F154/diff"))
+        XCTAssertNil(AlondraAPIClient.decodedPullRequestID(from: "/pull-requests/github.com%2Fbitomule%2Falondra%23154/extra/diff"))
     }
 
     func testConditionalViewResponseIsNotDecodedAsDocument() throws {

@@ -8,6 +8,23 @@ import Testing
 @MainActor
 struct MacServiceNavigationTests {
     @Test
+    func explicitRefreshOmitsTheKnownViewVersion() async throws {
+        let data = Data(#"{"protocol":1,"view":"tasks","key":"tasks","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[]}"#.utf8)
+        var state = ViewsScreenFeature.State(key: .tasks, owner: "refresh-test")
+        state.document = try JSONDecoder().decode(ViewDocument.self, from: data)
+        let store = TestStore(initialState: state) { ViewsScreenFeature() } withDependencies: {
+            $0.viewsClient.openScreen = { _, _ in }
+            $0.viewsClient.load = { key, known in
+                #expect(key == .tasks)
+                #expect(known == nil)
+                return .unchanged(cursor: "c2")
+            }
+        }
+        await store.send(.refresh) { $0.loading = true }
+        await store.receive(\.loaded) { $0.loading = false }
+    }
+
+    @Test
     func changingSearchCancelsThePreviousViewsRequest() async throws {
         let clock = TestClock()
         let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {

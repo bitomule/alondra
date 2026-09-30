@@ -12,5 +12,5 @@ swift_library(
 swift_test(
     name = "AlondraViewsDataTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = [":AlondraViewsData", "//apple/Views:AlondraViews"],
+    deps = [":AlondraViewsData", "//apple/APIClient:AlondraAPIClient", "//apple/Views:AlondraViews"],
 )

@@ -623,7 +623,10 @@ pub(crate) async fn encrypted_read_runtime(
         capabilities_inner(domain)
     } else if let Some(id) = path.strip_prefix("/pull-requests/")
         .and_then(|suffix| suffix.strip_suffix("/diff")) {
-        pull_request_diff_inner(domain, id.to_owned()).await
+        let Some(id) = crate::domain_reads::decoded_pull_request_id(id) else {
+            anyhow::bail!("unapproved encrypted domain read path");
+        };
+        pull_request_diff_inner(domain, id).await
     } else if let Some((id, query)) = path.strip_prefix("/document-revisions/")
         .and_then(|suffix| suffix.split_once("/content?")) {
         document_content_inner(domain, home, id.to_owned(), Some(query.to_owned())).await
@@ -1369,6 +1372,16 @@ mod tests {
         assert!(!approved_resource_read_path("/tasks?unknown=1"));
         assert!(!approved_resource_read_path("/merge-authorizations/auth-1"));
         assert!(approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%23154/diff"));
+        assert_eq!(
+            crate::domain_reads::decoded_pull_request_id("github.com%2Fowner%2Frepo%23154")
+                .as_deref(),
+            Some("github.com/owner/repo#154")
+        );
+        assert!(
+            crate::domain_reads::decoded_pull_request_id("github.com%252Fowner%252Frepo%2523154")
+                .is_none()
+        );
+        assert!(!approved_resource_read_path("/pull-requests/..%2F154/diff"));
         assert!(!approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%3F154/diff"));
         assert!(!approved_resource_read_path("/merge-authorizations/../auth-1"));
         assert!(!is_resource_mutation_path("POST", "/tasks//start"));

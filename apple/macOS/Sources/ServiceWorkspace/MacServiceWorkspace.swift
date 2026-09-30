@@ -376,7 +376,16 @@ private struct MacViewSidebarRow: View {
                 VStack(alignment: .leading, spacing: 3) {
                     rowLabel
                     ForEach(visibleChildren, id: \.id) { child in
-                        MacNodeTaskRow(row: child)
+                        if let selection = selectionTag(for: child) {
+                            Button { presentation.send(.select(selection)) } label: {
+                                MacNodeTaskRow(row: child)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .contentShape(.rect)
+                            }
+                            .buttonStyle(.plain)
+                        } else {
+                            MacNodeTaskRow(row: child)
+                        }
                     }
                 }
             } else if row.children.isEmpty {

@@ -49,7 +49,10 @@ extension AlondraAPIClient: ViewsTransport {
 
     public func fetchContent(_ content: ContentRef) async throws -> String {
         let path = content.fetch.split(separator: "/", omittingEmptySubsequences: true).map(String.init)
-        guard content.fetch.hasPrefix("/"), path.allSatisfy(Self.validPathComponent) else {
+        let ordinaryPath = path.allSatisfy(Self.validPathComponent)
+        let encodedDiffPath = content.kind == .diff && path.count == 3
+            && Self.validPathComponent(path[0]) && Self.validPathComponent(path[2])
+        guard content.fetch.hasPrefix("/"), ordinaryPath || encodedDiffPath else {
             throw ViewsDataError.unsupportedContent
         }
         switch content.kind {
@@ -61,11 +64,13 @@ extension AlondraAPIClient: ViewsTransport {
             return try await readChunks(path: path, expectedDigest: digest, expectedID: path[1])
         case .diff:
             guard path.count == 3, path[0] == "pull-requests", path[2] == "diff",
-                  content.fetch == "/pull-requests/\(path[1])/diff", let expectedHead = content.digest else {
+                  let rawID = Self.decodedPullRequestID(from: content.fetch), let expectedHead = content.digest else {
                 throw ViewsDataError.unsupportedContent
             }
-            let diff = try await send(Endpoint<DiffResponse>(.get, path: path) { try JSONDecoder().decode(DiffResponse.self, from: $0) })
-            guard diff.prID == path[1], diff.head == expectedHead else { throw ViewsDataError.invalidContent }
+            let diff = try await send(Endpoint<DiffResponse>(.get, path: ["pull-requests", rawID, "diff"]) {
+                try JSONDecoder().decode(DiffResponse.self, from: $0)
+            })
+            guard diff.prID == rawID, diff.head == expectedHead else { throw ViewsDataError.invalidContent }
             return diff.diff
         case .file:
             guard path.first == "files", let digest = content.digest else { throw ViewsDataError.unsupportedContent }
@@ -160,6 +165,16 @@ extension AlondraAPIClient: ViewsTransport {
         !value.isEmpty && value != "." && value != ".." && value.utf8.count <= 256
             && value.utf8.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 || $0 == 95 }
     }
+    static func decodedPullRequestID(from fetch: String) -> String? {
+        let parts = fetch.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 4, parts[0].isEmpty, parts[1] == "pull-requests", parts[3] == "diff",
+              let decoded = String(parts[2]).removingPercentEncoding,
+              ViewRoute.validID(decoded) else { return nil }
+        let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
+        guard let canonical = decoded.addingPercentEncoding(withAllowedCharacters: unreserved),
+              canonical == parts[2] else { return nil }
+        return decoded
+    }
     private static func validDigest(_ digest: String) -> Bool {
         digest.utf8.count == 64 && digest.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
     }
@@ -205,7 +220,7 @@ struct ViewRoute {
             guard values.count == 1, let focus = values["focus"], validID(focus) else { return nil }
             return ViewRoute(path: path, query: [("focus", focus)])
         case "tasks":
-            guard values.count == 2, let section = values["section"], ["finished", "archived"].contains(section),
+            guard values.count == 2, let section = values["section"], ["active", "finished", "archived"].contains(section),
                   let after = values["after"], UInt(after) != nil else { return nil }
             return ViewRoute(path: path, query: [("section", section), ("after", after)])
         case "new_request", "schedule:new":
@@ -222,7 +237,7 @@ struct ViewRoute {
         }
     }
 
-    private static func validID(_ id: String) -> Bool {
+    static func validID(_ id: String) -> Bool {
         guard !id.isEmpty, id.utf8.count <= 256 else { return false }
         if id.utf8.allSatisfy({ byte in
             (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)

@@ -188,7 +188,13 @@ pub(crate) fn is_pull_request_id(id: &str) -> bool {
 }
 
 pub(crate) fn encoded_pull_request_id(raw: &str) -> bool {
-    decode_segment(raw).is_some_and(|id| is_pull_request_id(&id))
+    decoded_pull_request_id(raw).is_some()
+}
+
+pub(crate) fn decoded_pull_request_id(raw: &str) -> Option<String> {
+    let id = decode_segment(raw)?;
+    (alondra_core::views::id::valid(&id) && alondra_core::views::id::path_segment(&id) == raw)
+        .then_some(id)
 }
 
 fn is_inbox_id(id: &str) -> bool {

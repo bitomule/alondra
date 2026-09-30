@@ -92,7 +92,7 @@ struct ViewsScreenView: View {
                 ProgressView().tint(Palette.dawn).frame(maxWidth: .infinity, maxHeight: .infinity)
                     .background(DawnBackground(glow: screenGlow))
             } else {
-                ContentUnavailableView(store.error ?? "Unable to load this screen", systemImage: "exclamationmark.triangle")
+                ContentUnavailableView(store.error ?? String(localized: "Unable to load this screen"), systemImage: "exclamationmark.triangle")
                     .background(DawnBackground(glow: screenGlow))
             }
         }

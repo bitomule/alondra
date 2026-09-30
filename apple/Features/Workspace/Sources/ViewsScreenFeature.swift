@@ -7,6 +7,8 @@ import Foundation
 /// Loads one server-owned screen and keeps its feed registration scoped to this presentation.
 @Reducer
 public struct ViewsScreenFeature {
+    public init() {}
+
     @ObservableState
     public struct State: Equatable {
         public var key: ViewKey
@@ -67,7 +69,7 @@ public struct ViewsScreenFeature {
             case .refresh:
                 state.loading = true
                 state.error = nil
-                return load(state, known: nil)
+                return load(state, force: true)
             case .disappeared:
                 state.isPresented = false
                 return .merge(.cancel(id: CancelID.load), .run { [viewsClient, owner = state.owner] _ in
@@ -102,7 +104,7 @@ public struct ViewsScreenFeature {
                 state.key = next
                 state.document = nil
                 state.loading = true
-                return load(state, known: nil)
+                return load(state)
             case .presentForm(let form):
                 state.form = form
                 let fields = Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) })
@@ -237,10 +239,10 @@ public struct ViewsScreenFeature {
         }
     }
 
-    private func load(_ state: State, known: String? = nil) -> Effect<Action> {
+    private func load(_ state: State, force: Bool = false) -> Effect<Action> {
         let key = state.key
         let owner = state.owner
-        let version = known ?? state.document?.version
+        let version = force ? nil : state.document?.version
         return .run { [viewsClient] send in
             await viewsClient.openScreen(owner, [key])
             do { await send(.loaded(try await viewsClient.load(key, version))) }
