@@ -1,4 +1,4 @@
-use alondra_core::domain_v2::{DomainState, TaskId};
+use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LivePullRequest, LiveSnapshot, Notice, Tone,
@@ -109,7 +109,7 @@ pub(crate) async fn gather(
                         .all(|check| check.state == alondra_core::pr::CheckState::Passed)
                 }),
                 conflicts: details.as_ref().is_some_and(|details| details.conflicts),
-                stacked_on: None,
+                stacked_on: stacked_below(pr, state).map(|below| below.id.0.clone()),
                 url: Some(alondra_core::pr::canonical(&pr.repository, pr.number)),
             }
         })
@@ -332,6 +332,25 @@ pub(crate) async fn gather(
     }
 }
 
+fn direct_stack_parent<'a>(pr: &PullRequest, state: &'a DomainState) -> Option<&'a PullRequest> {
+    if pr.state != PrState::Open { return None; }
+    state.pull_requests.values()
+        .filter(|candidate| candidate.id != pr.id && candidate.state == PrState::Open
+            && candidate.repository == pr.repository && candidate.head == pr.base)
+        .min_by_key(|candidate| candidate.number)
+}
+
+fn stacked_below<'a>(pr: &PullRequest, state: &'a DomainState) -> Option<&'a PullRequest> {
+    let direct = direct_stack_parent(pr, state)?;
+    let mut seen = std::collections::HashSet::new();
+    let mut current = direct;
+    loop {
+        if current.id == pr.id || !seen.insert(current.id.clone()) { return None; }
+        let Some(next) = direct_stack_parent(current, state) else { return Some(direct); };
+        current = next;
+    }
+}
+
 async fn read_json(client: &crate::v2_client_routes::Client, path: &str) -> Option<Value> {
     let response = client.read(path).await?;
     if !response.status().is_success() {
@@ -451,6 +470,40 @@ fn timestamp(millis: i64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn pr(id: &str, number: u64, head: &str, base: &str) -> PullRequest {
+        PullRequest {
+            id: alondra_core::domain_v2::PrId(id.into()),
+            task_id: TaskId("task".into()),
+            host: "github.com".into(),
+            repository: "bitomule/alondra".into(),
+            number,
+            head: head.into(),
+            base: base.into(),
+            state: PrState::Open,
+            merged_head: None,
+            allowed_methods: vec![],
+            review: None,
+        }
+    }
+
+    #[test]
+    fn stacked_pr_uses_the_open_parent_and_ignores_cycles() {
+        let mut state = DomainState::new("epoch");
+        let below = pr("github.com/bitomule/alondra#154", 154, "base-branch", "main");
+        let above = pr("github.com/bitomule/alondra#155", 155, "feature-branch", "base-branch");
+        state.pull_requests.insert(below.id.clone(), below.clone());
+        state.pull_requests.insert(above.id.clone(), above.clone());
+        assert_eq!(stacked_below(&above, &state).map(|pr| pr.number), Some(154));
+        let mut closed = below.clone();
+        closed.state = PrState::Merged;
+        state.pull_requests.insert(closed.id.clone(), closed);
+        assert!(stacked_below(&above, &state).is_none());
+        let mut cycle = below;
+        cycle.base = "feature-branch".into();
+        state.pull_requests.insert(cycle.id.clone(), cycle);
+        assert!(stacked_below(&above, &state).is_none());
+    }
 
     #[test]
     fn gauges_change_only_when_displayed_text_or_level_changes() {
