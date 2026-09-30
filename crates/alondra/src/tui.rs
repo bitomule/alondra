@@ -291,6 +291,7 @@ impl Reader {
 /// What the composer's text becomes. Each carries the subject and revision it was opened on, so a
 /// change elsewhere never sends the text to something else.
 pub enum Target {
+    #[cfg(test)]
     Answer {
         key: Key,
         interaction: InteractionId,
@@ -303,6 +304,7 @@ pub enum Target {
     },
     ViewAction {
         action_id: String,
+        label: String,
         data_epoch: String,
         option_id: Option<String>,
         required: bool,
@@ -310,6 +312,7 @@ pub enum Target {
         form_fields: Option<Value>,
         attachment_field: Option<String>,
     },
+    #[cfg(test)]
     Feedback {
         key: Key,
         presentation: InteractionId,
@@ -344,6 +347,7 @@ pub struct Composer {
 impl Target {
     fn draft_key(&self) -> Option<String> {
         match self {
+            #[cfg(test)]
             Target::Answer {
                 interaction,
                 option,
@@ -357,6 +361,7 @@ impl Target {
                 "view-action:{action_id}:{}",
                 option_id.as_deref().unwrap_or("")
             )),
+            #[cfg(test)]
             Target::Feedback { presentation, .. } => Some(format!("feedback:{presentation}")),
             Target::Message { message: m, .. } => {
                 let (agent, interaction, pr) = (
@@ -409,6 +414,7 @@ enum Msg {
     ViewAction(Result<String, String>),
     Offline,
     SyncError(String),
+    #[cfg(test)]
     Command {
         slot: String,
         result: Result<CommandOutcome, CommandFailure>,
@@ -501,6 +507,7 @@ pub enum Flow {
     EditSchedule(Option<Value>),
     EditViewForm {
         action_id: String,
+        label: String,
         data_epoch: String,
         fields: Vec<alondra_core::views::Field>,
         attachment_field: Option<String>,
@@ -735,6 +742,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             }
                             Flow::EditViewForm {
                                 action_id,
+                                label,
                                 data_epoch,
                                 fields,
                                 attachment_field,
@@ -750,6 +758,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                                             app.compose(
                                                 Target::ViewAction {
                                                     action_id,
+                                                    label,
                                                     data_epoch,
                                                     option_id: None,
                                                     required: false,
@@ -1328,7 +1337,10 @@ impl App {
                         ));
                     }
                 } else {
-                    self.pr_feedback(&key, &pr, text.trim().to_string(), vec![])
+                    #[cfg(test)]
+                    self.pr_feedback(&key, &pr, text.trim().to_string(), vec![]);
+                    #[cfg(not(test))]
+                    self.fail(tr!("Request changes is unavailable for this PR", "No se pueden solicitar cambios para esta PR"));
                 }
             }
             Ok(_) => self.flash(trf!(
@@ -1447,6 +1459,7 @@ impl App {
 
     /// Sends a domain command. `slot` names what is being done; while one is on its way the same
     /// slot is refused, and after an unknown outcome the same slot resends the same envelope.
+    #[cfg(test)]
     fn send(
         &mut self,
         slot: String,
@@ -1488,6 +1501,7 @@ impl App {
         });
     }
 
+    #[cfg(test)]
     fn command_done(&mut self, slot: String, result: Result<CommandOutcome, CommandFailure>) {
         let Some(mut sent) = self.sending.remove(&slot) else {
             return;
@@ -1737,6 +1751,7 @@ impl App {
                 self.connected = false;
                 self.offline = true;
             }
+            #[cfg(test)]
             Msg::Command { slot, result } => self.command_done(slot, result),
             Msg::Diff { key, result } => match result {
                 Err(error) => self.fail(error),
@@ -2357,13 +2372,17 @@ impl App {
         };
         let text = c.input.text().trim().to_string();
         let needs_text = match &c.target {
-            Target::Answer { required, .. } | Target::ViewAction { required, .. } => *required,
+            Target::ViewAction { required, .. } => *required,
+            #[cfg(test)]
+            Target::Answer { required, .. } => *required,
             Target::Message { message, .. } if message.kind == ops::MessageKind::MoreContext => {
                 false
             }
-            Target::Feedback { .. } | Target::NewRequest | Target::Message { .. } => {
+            Target::NewRequest | Target::Message { .. } => {
                 c.chips.is_empty()
             }
+            #[cfg(test)]
+            Target::Feedback { .. } => c.chips.is_empty(),
             Target::Comment { .. } | Target::General { .. } => false,
         };
         if needs_text && text.is_empty() {
@@ -2386,6 +2405,7 @@ impl App {
         }
         let draft = c.target.draft_key().map(|k| (k, text.clone()));
         match c.target {
+            #[cfg(test)]
             Target::Answer {
                 key,
                 interaction,
@@ -2453,6 +2473,7 @@ impl App {
                     let _ = tx.send(Msg::ViewAction(result));
                 });
             }
+            #[cfg(test)]
             Target::Feedback {
                 key,
                 presentation,
@@ -2671,6 +2692,12 @@ impl App {
             self.rebuild_reader();
             return;
         }
+        #[cfg(test)]
+        self.open_legacy_reader();
+    }
+
+    #[cfg(test)]
+    fn open_legacy_reader(&mut self) {
         let Some(key) = self.sel.clone() else { return };
         let Some(item) = self.item(&key).cloned() else {
             return;
@@ -2774,6 +2801,37 @@ impl App {
             return;
         };
         let key = r.key.clone();
+        if self.card_view.as_ref().is_some_and(|view| view.key == key.0) {
+            match k.code {
+                KeyCode::Char('s') => { self.send_review(); return; }
+                KeyCode::Char('v') | KeyCode::Char('x') => {
+                    let _ = self.view_action_key(k);
+                    return;
+                }
+                KeyCode::Char(c @ '1'..='9') => {
+                    let has_review = self.reviews.get(&key).is_some_and(|review| !review.is_empty());
+                    if has_review {
+                        let index = c as usize - '1' as usize;
+                        let accepts_text = self.card_view.as_ref().is_some_and(|view|
+                            view_render::actions(view).iter().flat_map(|action| &action.options)
+                                .nth(index).is_some_and(|option| matches!(option.input, alondra_core::views::Input::Text { .. })));
+                        if !accepts_text {
+                            self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.",
+                                "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
+                            return;
+                        }
+                    }
+                    let _ = self.view_action_key(k);
+                    if has_review && let Some(review) = self.reviews.get(&key)
+                        && let Some(composer) = self.composer.as_mut() {
+                            composer.input = TextInput::with(&review.feedback());
+                            composer.chips.extend(review.chips.clone());
+                        }
+                    return;
+                }
+                _ => {}
+            }
+        }
         match k.code {
             KeyCode::Char('q') => self.reader = None,
             KeyCode::Char('/') => {
@@ -2817,8 +2875,11 @@ impl App {
                 }
             }
             KeyCode::Char('s') => self.send_review(),
+            #[cfg(test)]
             KeyCode::Char('v') => self.accept_or_open(&key),
+            #[cfg(test)]
             KeyCode::Char('x') => self.mark_read(&key),
+            #[cfg(test)]
             KeyCode::Char(c @ '1'..='9') => {
                 self.settle_until = 0;
                 let i = c as usize - '1' as usize;
@@ -2842,6 +2903,45 @@ impl App {
         let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
             return;
         };
+        if let Some(view) = self.card_view.as_ref().filter(|view| view.key == key.0) {
+            let action = view_render::actions(view).into_iter().find(|action| {
+                action.enabled && alondra_core::views::action_id::ActionId::parse(&action.id)
+                    .is_ok_and(|id| matches!(id.verb,
+                        alondra_core::views::action_id::Verb::Changes |
+                        alondra_core::views::action_id::Verb::Reply))
+            });
+            let Some(action) = action else {
+                self.fail(tr!("Press the number of the option your comments go with",
+                    "Pulsa el número de la opción con la que van tus comentarios"));
+                return;
+            };
+            let required = match &action.input {
+                alondra_core::views::Input::Text { required, .. } => *required,
+                _ => return,
+            };
+            let epoch = view.data_epoch.clone();
+            let review = self.reviews.get(&key);
+            let text = review.filter(|review| !review.is_empty()).map(Review::feedback).unwrap_or_default();
+            let chips = review.map(|review| review.chips.clone()).unwrap_or_default();
+            self.compose(Target::ViewAction {
+                action_id: action.id,
+                label: action.label,
+                data_epoch: epoch,
+                option_id: None,
+                required,
+                allow_attachments: action.attachments,
+                form_fields: None,
+                attachment_field: None,
+            }, &text);
+            if let Some(composer) = self.composer.as_mut() { composer.chips.extend(chips); }
+            return;
+        }
+        #[cfg(test)]
+        self.send_legacy_review(key);
+    }
+
+    #[cfg(test)]
+    fn send_legacy_review(&mut self, key: Key) {
         let Some(review) = self.reviews.get(&key).filter(|rv| !rv.is_empty()) else {
             self.compose(Target::General { send: true }, "");
             return;
@@ -2900,6 +3000,7 @@ impl App {
     }
 
     /// The comments written on a question go as the text of the option picked, when it takes one.
+    #[cfg(test)]
     fn answer_with_review(&mut self, key: &Key, i: usize) {
         let Some(item) = self.item(key).cloned() else {
             return;

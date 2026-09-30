@@ -144,6 +144,32 @@ fn global_message_key_opens_the_orchestrator_views_composer() {
 }
 
 #[test]
+fn reader_review_and_read_keys_use_views_actions() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let mut view = view_fixture("card-question.json");
+    view["sections"][0]["items"][0]["actions"] = serde_json::json!([
+        {"id":"changes:i-1@1", "label":"Request changes", "style":"secondary",
+         "presentation":"button", "input":{"kind":"text","placeholder":"Describe", "required":true,"multiline":true},
+         "attachments":true,"enabled":true,"key":"s"},
+        {"id":"read:i-1@1", "label":"Mark as read", "style":"secondary",
+         "presentation":"button", "input":{"kind":"none"},
+         "attachments":false,"enabled":true,"key":"x"}
+    ]);
+    app.view_navigation.push("card:i-1".into());
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    app.open_reader();
+    assert!(app.reader.is_some());
+    press(&mut app, KeyCode::Char('s'));
+    assert!(matches!(app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { action_id, .. }) if action_id == "changes:i-1@1"));
+    app.composer = None;
+    press(&mut app, KeyCode::Char('x'));
+    assert_eq!(posted(&app)[0].1["action_id"], "read:i-1@1");
+}
+
+#[test]
 fn view_number_key_posts_the_matching_option_id_and_epoch() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -232,7 +258,7 @@ fn view_form_opens_editor_with_its_bound_action_and_epoch() {
 
     assert!(matches!(
         app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
-        Flow::EditViewForm { action_id, data_epoch, fields, attachment_field }
+        Flow::EditViewForm { action_id, data_epoch, fields, attachment_field, .. }
             if action_id == "sched_save:s-new@1"
                 && data_epoch == "test-epoch"
                 && fields.len() == 2

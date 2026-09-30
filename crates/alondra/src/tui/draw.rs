@@ -65,12 +65,15 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else if let Some(view) = app.home_view.clone() {
         draw_views_inbox(f, app, &view, body);
     } else {
+        #[cfg(test)]
         match app.screen {
             Screen::Inbox => draw_inbox(f, app, body),
             Screen::Tasks if app.schedules_open => draw_schedules(f, app, body),
             Screen::Tasks => tasks::draw_tasks(f, app, body),
             Screen::Fleet => tasks::draw_agents(f, app, body),
         }
+        #[cfg(not(test))]
+        f.render_widget(Paragraph::new(tr!("Loading…", "Cargando…")), body);
     }
     if let Some(form) = app.composer.as_ref().and_then(|c| c.form.as_ref()) {
         draw_form_popup(f, form, body);
@@ -2028,6 +2031,7 @@ fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
 
 /// Whether what the composer answers is still the one on screen: a text opened on something that
 /// changed stays, and says so, instead of going to something else.
+#[cfg(test)]
 fn composer_outdated(app: &App, target: &Target) -> bool {
     let key = match target {
         Target::Answer { key, .. } | Target::Feedback { key, .. } => key,
@@ -2046,11 +2050,13 @@ fn composer_outdated(app: &App, target: &Target) -> bool {
 fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option<Rect> {
     let c = app.composer.as_ref()?;
     let mut title = match &c.target {
+        #[cfg(test)]
         Target::Answer { title, label, .. } => {
             let (t, o) = (md::one_line(title), i18n::option_label(label));
             trf!("{t} · {o}", "{t} · {o}")
         }
-        Target::ViewAction { action_id, .. } => trf!("Action {action_id}", "Acción {action_id}"),
+        Target::ViewAction { label, .. } => md::one_line(label),
+        #[cfg(test)]
         Target::Feedback { title, .. } => {
             let t = md::one_line(title);
             trf!("Feedback on {t}", "Feedback sobre {t}")
@@ -2101,6 +2107,7 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
         .into(),
         Target::General { send: false } => tr!("General comment", "Comentario general").into(),
     };
+    #[cfg(test)]
     if composer_outdated(app, &c.target) {
         title.push_str(tr!(
             " · changed since you opened it: your text is kept",

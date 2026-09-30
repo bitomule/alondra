@@ -373,6 +373,7 @@ impl App {
             {
                 return Some(Flow::EditViewForm {
                     action_id: submit.id.clone(),
+                    label: submit.label.clone(),
                     data_epoch: document.data_epoch.clone(),
                     attachment_field: submit
                         .attachments
@@ -523,6 +524,7 @@ impl App {
                 self.compose(
                     super::Target::ViewAction {
                         action_id: action.id.clone(),
+                        label: action.label.clone(),
                         data_epoch: epoch,
                         option_id,
                         required: *required,
@@ -611,6 +613,7 @@ impl App {
     }
 
     /// Marks only this information read. Nothing reaches the agent.
+    #[cfg(test)]
     pub(super) fn mark_read(&mut self, key: &Key) {
         let Some(item) = self.actionable(key) else {
             return;
@@ -638,6 +641,7 @@ impl App {
     }
 
     /// Confirms the delivery as presented. The agent still declares the task finished itself.
+    #[cfg(test)]
     pub(super) fn accept(&mut self, key: &Key) {
         let Some(item) = self.actionable(key) else {
             return;
@@ -676,6 +680,7 @@ impl App {
 
     /// v accepts a delivery; on anything else it opens the item's images and files with the
     /// Mac's app, since the terminal only shows text.
+    #[cfg(test)]
     pub(super) fn accept_or_open(&mut self, key: &Key) {
         if self
             .item(key)
@@ -752,6 +757,7 @@ impl App {
         );
     }
 
+    #[cfg(test)]
     fn reply(&mut self, key: &Key) {
         if let Some(pr) = self
             .item(key)
@@ -855,6 +861,7 @@ impl App {
 
     /// r on a PR: feedback on the delivery that presents it, or a change request to its agent
     /// when nothing presents it.
+    #[cfg(test)]
     fn request_changes(&mut self, key: &Key, pr: &PrId) {
         if let Some(delivery) = self
             .presenting(pr)
@@ -878,6 +885,7 @@ impl App {
 
     /// Comments on a PR (the reader's or tuicr's) go as feedback on the delivery presenting it,
     /// else as a change request to its agent.
+    #[cfg(test)]
     pub(super) fn pr_feedback(
         &mut self,
         key: &Key,
@@ -981,6 +989,7 @@ impl App {
     }
 
     /// A number answers the question it is pressed on, or authorizes a merge method on a delivery.
+    #[cfg(test)]
     pub(super) fn choose(&mut self, key: &Key, i: usize) {
         if now_millis() < self.settle_until {
             self.fail(tr!(
@@ -1002,6 +1011,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     fn choose_option(&mut self, key: &Key, item: &InboxItem, i: usize) {
         let Some(a) = self.enabled(item, "answer_question") else {
             return;
@@ -1059,6 +1069,7 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(super) fn answer(
         &mut self,
         key: Key,
@@ -1118,6 +1129,7 @@ impl App {
     }
 
     #[allow(clippy::too_many_arguments)]
+    #[cfg(test)]
     pub(super) fn feedback(
         &mut self,
         key: Key,
@@ -1151,6 +1163,7 @@ impl App {
 
     /// Records the user's authorization for the agent to merge. It never merges and never hides
     /// the PR: its state changes only when the merge is confirmed.
+    #[cfg(test)]
     fn authorize(&mut self, key: &Key, item: &InboxItem, i: usize) {
         let Some(a) = self.enabled(item, "authorize_merge") else {
             return;

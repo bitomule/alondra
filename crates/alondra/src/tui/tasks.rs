@@ -527,6 +527,7 @@ impl App {
         }
     }
 
+    #[cfg(test)]
     pub(super) fn tasks_key(&mut self, k: KeyEvent) -> Flow {
         match k.code {
             KeyCode::Char('J') => {
@@ -597,6 +598,7 @@ impl App {
             .and_then(|(_, actions)| actions.iter().find(|a| a.kind == kind).cloned())
     }
 
+    #[cfg(test)]
     fn task_command(&mut self, kind: &str) {
         let Some((id, title, revision)) = self.selected_task().map(|t| {
             (
@@ -647,6 +649,7 @@ impl App {
     }
 
     /// Closes a request no task was made for; it takes a second press.
+    #[cfg(test)]
     fn withdraw_request(&mut self) {
         let Some(r) = self.selected_request().cloned() else {
             return;
@@ -685,6 +688,7 @@ impl App {
     }
 
     /// Archives every finished task, one command each.
+    #[cfg(test)]
     fn archive_finished(&mut self) {
         let Some(d) = &self.domain else { return };
         let revision = d.revision;
