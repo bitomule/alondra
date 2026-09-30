@@ -177,7 +177,8 @@ impl RelayTransport {
         };
         let status = response.status().as_u16();
         // Fully drain the bounded body so the connection can return to the pool.
-        let bytes = response.body_mut().with_config().limit(512 * 1024).read_to_vec()?;
+        // A completed work reply wraps the 1 MiB encrypted response in status JSON.
+        let bytes = response.body_mut().with_config().limit(1024 * 1024 + 64 * 1024).read_to_vec()?;
         let value = if bytes.is_empty() { Value::Null } else {
             match serde_json::from_slice(&bytes) {
                 Ok(value) => value,

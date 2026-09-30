@@ -27,9 +27,9 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-// Base64 adds ~33%; 180 KiB plus envelope metadata stays below the relay's 256 KiB cap.
-pub(crate) const MAX_LOCAL_RESPONSE: usize = 180 * 1024;
-pub(crate) const MAX_RELAY_RESPONSE: usize = 256 * 1024;
+// Base64 adds ~33%; 760 KiB plus encryption and envelope metadata stays below 1 MiB.
+pub(crate) const MAX_LOCAL_RESPONSE: usize = 760 * 1024;
+pub(crate) const MAX_RELAY_RESPONSE: usize = 1024 * 1024;
 // A 2 MiB diff whose every byte needs a six-byte JSON escape, plus the snapshot fields.
 const MAX_LOCAL_DIFF_SNAPSHOT: usize = 12 * 1024 * 1024 + 4096;
 // The relay wraps the envelope in a 4 KiB APNs alert. Leave room for its
@@ -6149,6 +6149,19 @@ agreement_key = "{}"
             &service.agreement.public_key(),
         )
         .unwrap();
+        let near_limit = json!({"status":200,"body":{"text":"a".repeat(MAX_LOCAL_RESPONSE - 128)}});
+        assert!(serde_json::to_vec(&near_limit).unwrap().len() <= MAX_LOCAL_RESPONSE);
+        let delivered = service.encode_response(
+            &e,
+            &service.devices.get("phone-1").unwrap(),
+            &near_limit,
+            &LocalRequest { method: "GET".into(), path: "/views/card:i-1".into(), body: None },
+        ).unwrap();
+        assert!(delivered.len() > 256 * 1024 && delivered.len() <= MAX_RELAY_RESPONSE);
+        let envelope: EnvelopeV1 = serde_json::from_slice(&delivered).unwrap();
+        let opened = envelope.open(service.signing.verifying_key(), &phone_agreement,
+            "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
+        assert_eq!(serde_json::from_slice::<Value>(&opened).unwrap(), near_limit);
         let oversized = service
             .encode_response(
                 &e,

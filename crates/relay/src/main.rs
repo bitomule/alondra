@@ -875,6 +875,29 @@ mod http_tests {
 
     static NEXT_TEST_REGISTRY: AtomicU64 = AtomicU64::new(0);
 
+    #[test]
+    fn response_envelopes_accept_near_one_mib_and_reject_larger_bodies() {
+        let signing = SigningKey::from_slice(&[1u8; 32]).unwrap();
+        let recipient = SecretKey::from_slice(&[2u8; 32]).unwrap();
+        let envelope = EnvelopeV1::seal_random(
+            Context {
+                route: "mac-1", sender: "mac-1", recipient: "phone-1",
+                request_id: "request-1", kind: "response", expires_at_ms: now_ms() + 60_000,
+            },
+            &vec![b'a'; 740 * 1024],
+            &signing,
+            &recipient.public_key(),
+        ).unwrap();
+        let bytes = serde_json::to_vec(&envelope).unwrap();
+        assert!(bytes.len() > 256 * 1024 && bytes.len() <= state::MAX_RESPONSE_BYTES);
+        assert!(parse_envelope(&bytes, state::MAX_RESPONSE_BYTES).is_ok());
+        let too_large = vec![b'x'; state::MAX_RESPONSE_BYTES + 1];
+        assert!(matches!(parse_envelope(&too_large, state::MAX_RESPONSE_BYTES),
+            Err((StatusCode::PAYLOAD_TOO_LARGE, _))));
+        assert_eq!(state::MAX_ENVELOPE_BYTES, 256 * 1024);
+        assert_eq!(state::MAX_STORED, 512);
+    }
+
     fn key_bytes(key: &SigningKey) -> String {
         URL_SAFE_NO_PAD.encode(key.verifying_key().to_sec1_point(false).as_bytes())
     }
