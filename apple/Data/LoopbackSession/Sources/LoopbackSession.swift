@@ -86,7 +86,7 @@ public actor LoopbackSession: ServiceOperationTransport {
     func exchange(method: String, target: String, body: Data?, operationID: String?,
                   contentType: String = "application/json", timeout: TimeInterval? = nil) async throws -> LoopbackOutcome {
         let isRead = method == "GET"
-        let limit = timeout ?? (isRead ? 30 : 120)
+        let limit = timeout ?? (isRead ? Self.readTimeout(target) : 120)
         var repaired = false
         while true {
             let device = try await pairedDeviceID()
@@ -109,6 +109,13 @@ public actor LoopbackSession: ServiceOperationTransport {
             if !isRead, let operationID { outcomes[operationID] = outcome }
             return outcome
         }
+    }
+
+    private static func readTimeout(_ target: String) -> TimeInterval {
+        guard target.hasPrefix("/changes?"), let components = URLComponents(string: target),
+              let wait = components.queryItems?.first(where: { $0.name == "wait" })?.value.flatMap(Int.init),
+              (0...50).contains(wait) else { return 30 }
+        return TimeInterval(wait + 20)
     }
 
     private static func provesNothingWasSent(_ error: URLError) -> Bool {

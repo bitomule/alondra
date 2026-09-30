@@ -1,6 +1,6 @@
+import AlondraAPIClient
 import AlondraContracts
 import AlondraDomain
-import AlondraAPIClient
 import AlondraAttachmentStorage
 import AlondraAuth
 import AlondraLoopbackSession
@@ -9,6 +9,8 @@ import AlondraRelayOutbox
 import AlondraRelaySession
 import AlondraServicePairing
 import AlondraSync
+import AlondraViews
+import AlondraViewsData
 import CryptoKit
 import Foundation
 
@@ -16,10 +18,10 @@ import Foundation
 public actor CloudAppServices {
     public let api: AlondraAPIClient
     public let domainSync: DomainSyncSession
+    public let viewsFeed: ViewsFeedSession
+    public let viewActionSender: ViewActionSender
     private let operations: any WorkspaceOperations
     let scope: CommandScope
-    let macID: String
-    var deliveryJournal: DeliveryJournal?
     let attachmentStorage = AttachmentDownloadStorage()
     /// Envelopes whose outcome is unknown, by command ID. A retry resends the same envelope,
     /// so the server returns the first outcome instead of applying the command twice.
@@ -38,7 +40,7 @@ public actor CloudAppServices {
             bearer: { try await auth.bearerToken() }, signing: signing, agreement: agreement,
             macSigning: approved.macSigningPublicKey(),
             macAgreement: approved.macAgreementPublicKey())
-        self.init(operations: relay, server: approved.relayURL, deviceID: approved.deviceID, macID: approved.macID,
+        self.init(operations: relay, server: approved.relayURL, deviceID: approved.deviceID,
                   revision: revision)
     }
 
@@ -46,22 +48,28 @@ public actor CloudAppServices {
     public static func local(_ session: LoopbackSession, identity: LoopbackIdentityStore) async throws -> CloudAppServices {
         let revision = try await identity.credentialRevision()
         return CloudAppServices(operations: session, server: session.base, deviceID: Self.localDeviceID,
-            macID: Self.localMacID, revision: revision)
+            revision: revision)
     }
 
     public static let localDeviceID = "mac"
-    public static let localMacID = "local"
-
     public nonisolated var isLocal: Bool { operations is LoopbackSession }
 
-    private init(operations: any WorkspaceOperations, server: URL, deviceID: String, macID: String, revision: String) {
+    private init(operations: any WorkspaceOperations, server: URL, deviceID: String, revision: String) {
         let scope = CommandScope(server: server, deviceID: deviceID, credentialRevision: revision, generation: 0)
         let identity = SyncIdentity(server: server, deviceID: deviceID, credentialRevision: revision)
         self.scope = scope
-        self.macID = macID
         self.operations = operations
-        api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: operations)
         let local = operations is LoopbackSession
+        api = AlondraAPIClient(serviceURL: server, deviceID: deviceID, operations: operations)
+        #if os(macOS)
+        let client: ViewClient = .mac
+        #else
+        let client: ViewClient = .ios
+        #endif
+        let preferred = Locale.preferredLanguages.first?.split(separator: "-").first.map(String.init) ?? "en"
+        let lang = preferred == "es" ? "es" : "en"
+        viewsFeed = ViewsFeedSession(transport: api, client: client, lang: lang)
+        viewActionSender = ViewActionSender(transport: api)
         let classify: @Sendable (any Error) -> ConnectionProblem = { error in
             ConnectionClassifier.problem(for: error, local: local, networkOffline: NetworkReachability.shared.isOffline)
         }
@@ -71,17 +79,24 @@ public actor CloudAppServices {
     public func deactivate() async {
         active = false
         unresolved = [:]
-        await deliveryJournal?.stop()
         await attachmentStorage.deactivate()
         await operations.deactivate()
         await domainSync.stop()
+        await viewsFeed.stop()
     }
 
     /// Retries now instead of waiting out the backoff: the network came back or the app returned
     /// to the foreground.
     public func retryConnection() async {
         guard active else { return }
+        await viewsFeed.reconnect()
         await domainSync.retryNow()
+    }
+
+    /// Views-only shipping scenes reconnect their feed without waking the legacy poller.
+    public func retryViewsConnection() async {
+        guard active else { return }
+        await viewsFeed.reconnect()
     }
 
     public nonisolated func connectionProblem(for error: any Error) -> ConnectionProblem {

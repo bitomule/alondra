@@ -18,10 +18,11 @@ rust_test(
         "//crates/core:fixtures/quill.jsonl",
         "//crates/core:src/domain_v2/tests.rs",
         "//fixtures/client-v2",
+        "//fixtures/views:all",
         "//fixtures/domain-v2:acceptance.json",
     ],
     crate = ":alondrad",
-    data = ["//crates/alondra:alondra", "//fixtures/client-v2"],
+    data = ["//crates/alondra:alondra", "//fixtures/client-v2", "//fixtures/views:all"],
     edition = "2024",
     rustc_env = {"CARGO_BIN_EXE_alondra": "$(rootpath //crates/alondra:alondra)"},
 )

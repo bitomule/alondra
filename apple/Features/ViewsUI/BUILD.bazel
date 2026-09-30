@@ -1,0 +1,26 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraViewsUI",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraViewsUI",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Features/Attachments:AlondraAttachmentsFeature",
+        "//apple:AlondraShared",
+        "//apple/Features/ViewsDependency:AlondraViewsDependency",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraViewsUITests",
+    srcs = glob(["Tests/**/*.swift"]),
+    data = ["//fixtures/views:all"],
+    deps = [
+        ":AlondraViewsUI",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)

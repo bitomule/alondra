@@ -132,7 +132,10 @@ mod tests {
         assert_eq!(m.read(ctrl('u')), Cmd::Move(Motion::HalfUp));
         assert_eq!(m.read(key(KeyCode::Char('o'))), Cmd::Expand);
         assert_eq!(m.read(key(KeyCode::Esc)), Cmd::Back);
-        assert_eq!(m.read(key(KeyCode::Char('d'))), Cmd::Other(key(KeyCode::Char('d'))));
+        assert_eq!(
+            m.read(key(KeyCode::Char('d'))),
+            Cmd::Other(key(KeyCode::Char('d')))
+        );
     }
 
     #[test]

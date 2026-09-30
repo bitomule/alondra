@@ -1,18 +1,16 @@
 import AlondraContracts
-import AlondraDomain
-import AlondraFleetFeature
-import AlondraShared
 import Foundation
 import ComposableArchitecture
+import AlondraViews
+import AlondraViewsDependency
+import AlondraViewsUI
 
 /// Per-window navigation and disclosure state. The service graph remains the sole
 /// owner of snapshots, drafts and mutations.
 @Reducer
 public struct MacPresentationFeature {
     public init() {}
-    public enum Selection: Hashable {
-        case item(String), node(String), task(DomainV2.TaskId), request(DomainV2.RequestId), schedules
-    }
+    public enum Selection: Hashable { case viewKey(String) }
     @ObservableState
     public struct State: Equatable {
         public init() {}
@@ -23,94 +21,206 @@ public struct MacPresentationFeature {
         @Shared(.appStorage("toggledTaskGroups")) public var toggledTaskGroupsRaw = ""
         public var collapsedProjects: Set<String> { Set(collapsedProjectsRaw.split(separator: "\n").map(String.init)) }
         public var toggledTaskGroups: Set<String> { Set(toggledTaskGroupsRaw.split(separator: "\n").map(String.init)) }
-        public var newRequestPresented = false
-        public var inboxIDs: [String] = []
-        public var didAutoSelect = false
         public var smartMatches: Set<String>?
         public var smartStatus = ""
         public var searchRevision: UInt64 = 0
-
-        public func projects(_ snapshot: FleetSnapshot?) -> [MacSidebarProject] {
-            (snapshot?.sections ?? []).compactMap { section in
-                let nodes = section.nodes.filter { entry in
-                    if let smartMatches { return smartMatches.contains(entry.id) }
-                    return matches(([entry.node.displayName, section.name, entry.node.fleetLabel, entry.node.summary] + entry.tasks.map(\.title)).joined(separator: " "))
-                }
-                return nodes.isEmpty ? nil : MacSidebarProject(name: section.name, nodes: nodes)
-            }
-        }
+        public var sidebarDocument: ViewDocument?
+        public var detailDocument: ViewDocument?
+        public var selectedViewKey: String?
+        public var viewError: String?
+        public var actionFeature = ActionFeature.State(dataEpoch: "", client: .mac, lang: "en")
+        public var actionPresented = false
+        public var activeForm: AlondraViews.Form?
+        public var contentTitle = ""
+        public var contentBody = ""
+        public var contentIsDiff = false
+        public var contentLoading = false
+        public var contentError: String?
+        public var contentPresented = false
+        public var contentImageData: Data?
 
         private var terms: [Substring] { query.lowercased().split(separator: " ") }
         public func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
-        public func groupExpanded(_ group: TaskStateGroup) -> Bool {
-            !terms.isEmpty || (!group.isFinished != toggledTaskGroups.contains(String(describing: group.kind)))
+        public func rowExpanded(_ id: String, defaultExpanded: Bool = true) -> Bool {
+            !toggledTaskGroups.contains(id) ? defaultExpanded : !defaultExpanded
         }
         public func matches(_ text: String) -> Bool {
             let haystack = text.lowercased()
             return terms.allSatisfy { haystack.contains($0) }
         }
-        public func groups(in board: TaskBoard) -> [TaskStateGroup] {
-            board.groups.compactMap { group in
-                let filtered = TaskStateGroup(kind: group.kind, tasks: group.tasks.filter { task in
-                    matches(task.title) || board.request(task.requestId).map { matches(ServiceTaskPresentation.title(of: $0, in: board)) } == true
-                }, requests: group.requests.filter { matches(ServiceTaskPresentation.title(of: $0, in: board)) })
-                return filtered.count == 0 ? nil : filtered
-            }
-        }
-        public func inbox(_ items: [DomainV2.InboxItem], pullRequests: Bool) -> [DomainV2.InboxItem] {
-            items.filter { $0.isPullRequest == pullRequests && matches("\($0.title) \($0.body ?? "")") }
-        }
     }
     public enum Action {
         case select(Selection?)
-        case inboxChanged([String])
         case queryChanged(String)
-        case searchRequested(inbox: [DomainV2.InboxItem], board: TaskBoard, fleet: FleetSnapshot?)
+        case searchRequested
         case searchStarted(UInt64)
-        case searchFinished(UInt64, SearchResult?)
+        case searchFinished(UInt64, ViewFetch?)
         case disappeared
         case tasksExpanded(Bool)
-        case projectExpanded(String, Bool)
-        case groupExpanded(String, defaultExpanded: Bool, expanded: Bool)
-        case newRequestPresented(Bool)
+        case rowExpanded(String, defaultExpanded: Bool, expanded: Bool)
+        case sidebarSectionExpanded(String, Bool)
+        case appeared
+        case viewsStale([String])
+        case viewsReset
+        case viewLoaded(String, ViewFetch)
+        case viewFailed(String, String)
+        case beginViewAction(AlondraViews.Action)
+        case beginViewForm(AlondraViews.Form)
+        case contentRequested(AlondraViews.ContentRef)
+        case attachmentRequested(AlondraViews.Attachment)
+        case contentLoaded(AlondraViews.ContentRef, String)
+        case attachmentLoaded(AlondraViews.Attachment, Data)
+        case contentFailed(String)
+        case contentPresented(Bool)
+        case actionPresented(Bool)
+        case action(ActionFeature.Action)
     }
-    @Dependency(\.macConversationSearch) var search
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.viewsClient) var viewsClient
     private enum CancelID { case search }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
-            case .select(let selection): state.selection = selection
-            case .inboxChanged(let ids):
-                if !state.didAutoSelect, state.selection == nil, let first = ids.first {
-                    state.didAutoSelect = true
-                    state.selection = .item(first)
-                } else if case .item(let id) = state.selection, !ids.contains(id) {
-                    if let index = state.inboxIDs.firstIndex(of: id) {
-                        let remaining = Set(ids)
-                        let next = state.inboxIDs[(index + 1)...].first(where: remaining.contains)
-                            ?? state.inboxIDs[..<index].last(where: remaining.contains)
-                        state.selection = next.map(Selection.item)
-                    } else { state.selection = ids.first.map(Selection.item) }
+            case .beginViewAction(let action):
+                guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
+                let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
+                state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
+                state.activeForm = nil
+                state.actionPresented = true
+                return .send(.action(.present(action)))
+            case .beginViewForm(let form):
+                guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
+                let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
+                state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
+                state.activeForm = form
+                state.actionPresented = true
+                let requiresAttachments = form.fields.contains { if case .attachments = $0.kind { true } else { false } }
+                return .send(.action(.presentForm(form.submit, Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) }), requiresAttachments: requiresAttachments)))
+            case .contentRequested(let content):
+                state.contentTitle = content.title
+                state.contentIsDiff = content.kind == .diff
+                state.contentBody = ""
+                state.contentError = nil
+                state.contentLoading = true
+                state.contentPresented = true
+                state.contentImageData = nil
+                return .run { [viewsClient] send in
+                    do { await send(.contentLoaded(content, try await viewsClient.fetchContent(content))) }
+                    catch { await send(.contentFailed(String(describing: error))) }
                 }
-                state.inboxIDs = ids
+            case .attachmentRequested(let attachment):
+                state.contentTitle = attachment.name
+                state.contentIsDiff = false
+                state.contentBody = ""
+                state.contentError = nil
+                state.contentLoading = true
+                state.contentPresented = true
+                state.contentImageData = nil
+                return .run { [viewsClient] send in
+                    do { await send(.attachmentLoaded(attachment, try await viewsClient.fetchAttachment(attachment))) }
+                    catch { await send(.contentFailed(String(describing: error))) }
+                }
+            case let .contentLoaded(content, body):
+                state.contentTitle = content.title
+                state.contentIsDiff = content.kind == .diff
+                state.contentBody = body
+                state.contentLoading = false
+                state.contentError = nil
+                state.contentImageData = nil
+            case let .attachmentLoaded(attachment, data):
+                state.contentTitle = attachment.name
+                state.contentLoading = false
+                state.contentError = nil
+                if attachment.kind == .image {
+                    state.contentImageData = data
+                } else if let text = String(data: data, encoding: .utf8) {
+                    state.contentBody = text
+                    state.contentImageData = nil
+                } else {
+                    state.contentError = String(localized: "This attachment can’t be previewed as text.")
+                    state.contentImageData = nil
+                }
+            case .contentFailed(let message):
+                state.contentLoading = false
+                state.contentError = message
+            case .contentPresented(let value):
+                state.contentPresented = value
+            case .actionPresented(let value):
+                state.actionPresented = value
+                if !value {
+                    state.actionFeature.action = nil
+                    state.activeForm = nil
+                }
+            case .action(let childAction):
+                if case .response(let reply) = childAction, reply.outcome == .applied {
+                    let keys = ["sidebar", state.selectedViewKey].compactMap { $0 }
+                    return .merge(keys.map { key in
+                        let known = key == "sidebar" ? state.sidebarDocument?.version : state.detailDocument?.version
+                        return loadView(key, known: known)
+                    })
+                }
+            case .select(let selection):
+                guard let key = viewKey(for: selection) else {
+                    state.selection = nil
+                    state.selectedViewKey = nil
+                    state.detailDocument = nil
+                    return openVisibleViews(&state)
+                }
+                state.selection = .viewKey(key)
+                state.selectedViewKey = key
+                state.detailDocument = nil
+                return loadAndOpenView(key, visibleKeys: visibleViewKeys(state))
+            case .appeared:
+                return loadAndOpenView("sidebar", visibleKeys: visibleViewKeys(state))
+            case .viewsStale(let keys):
+                let visible = Set(["sidebar", state.selectedViewKey].compactMap { $0 })
+                return .merge(keys.filter(visible.contains).map { key in
+                    let known = key == "sidebar" ? state.sidebarDocument?.version : state.detailDocument?.version
+                    return loadView(key, known: known)
+                })
+            case .viewsReset:
+                state.sidebarDocument = nil
+                state.detailDocument = nil
+                return .merge(loadView("sidebar"), state.selectedViewKey.map { loadView($0) } ?? .none)
+            case let .viewLoaded(key, fetch):
+                state.viewError = nil
+                if case let .document(document) = fetch {
+                    if key == "sidebar" {
+                        state.sidebarDocument = document
+                        let links = document.sections.flatMap(\.items).flatMap { item -> [String] in
+                            guard case let .row(row) = item else { return [] }
+                            return viewLinks(in: row)
+                        }
+                        if case let .viewKey(current)? = state.selection, !links.contains(current) {
+                            let next = links.first
+                            state.selection = next.map(Selection.viewKey)
+                            state.selectedViewKey = next
+                            state.detailDocument = nil
+                            if let next { return loadAndOpenView(next, visibleKeys: visibleViewKeys(state)) }
+                            return openVisibleViews(&state)
+                        } else if state.selection == nil, let first = links.first {
+                            state.selection = .viewKey(first)
+                            state.selectedViewKey = first
+                            return loadAndOpenView(first, visibleKeys: visibleViewKeys(state))
+                        }
+                    }
+                    if key == state.selectedViewKey { state.detailDocument = document }
+                }
+            case let .viewFailed(_, message): state.viewError = message
             case .queryChanged(let query):
                 state.query = query
                 state.smartMatches = nil
                 state.smartStatus = ""
                 state.searchRevision &+= 1
                 return .cancel(id: CancelID.search)
-            case .searchRequested(let inbox, let board, let fleet):
+            case .searchRequested:
                 let query = state.query.trimmingCharacters(in: .whitespaces)
-                guard query.count >= 3, state.projects(fleet).isEmpty,
-                      state.inbox(inbox, pullRequests: false).isEmpty,
-                      state.inbox(inbox, pullRequests: true).isEmpty,
-                      state.groups(in: board).isEmpty else { return .none }
+                guard query.count >= 3 else { return .none }
                 let revision = state.searchRevision
-                return .run { send in
+                return .run { [viewsClient] send in
                     try await clock.sleep(for: .milliseconds(1200))
                     await send(.searchStarted(revision))
-                    let result = try? await search.run(query)
+                    let result = try? await viewsClient.load(ViewKey.search(query), nil)
                     try Task.checkCancellation()
                     await send(.searchFinished(revision, result))
                 }.cancellable(id: CancelID.search, cancelInFlight: true)
@@ -119,49 +229,87 @@ public struct MacPresentationFeature {
                 state.smartStatus = String(localized: "Searching the conversations…")
             case .searchFinished(let revision, let result):
                 guard revision == state.searchRevision else { return .none }
-                state.smartMatches = result.map { Set($0.sessions) }
-                state.smartStatus = result.map { $0.sessions.isEmpty ? String(localized: "Not in the conversations either") : String(localized: "Found in the conversations") } ?? ""
+                guard case let .document(document)? = result else {
+                    state.smartMatches = nil
+                    state.smartStatus = ""
+                    return .none
+                }
+                let matches = viewRowIDs(document.sections.flatMap(\.items))
+                state.smartMatches = Set(matches)
+                state.smartStatus = matches.isEmpty ? String(localized: "No results") : String(localized: "Search results")
             case .disappeared:
                 state.searchRevision &+= 1
-                return .cancel(id: CancelID.search)
+                return .merge(.cancel(id: CancelID.search), .run { _ in await viewsClient.closeScreen("mac-presentation") })
             case .tasksExpanded(let expanded): state.$tasksExpanded.withLock { $0 = expanded }
-            case .projectExpanded(let name, let expanded):
-                state.$collapsedProjectsRaw.withLock { raw in
-                    var collapsed = Set(raw.split(separator: "\n").map(String.init))
-                    if expanded { collapsed.remove(name) } else { collapsed.insert(name) }
-                    raw = collapsed.sorted().joined(separator: "\n")
-                }
-            case .groupExpanded(let key, let defaultExpanded, let expanded):
+            case .rowExpanded(let key, let defaultExpanded, let expanded):
                 state.$toggledTaskGroupsRaw.withLock { raw in
                     var toggled = Set(raw.split(separator: "\n").map(String.init))
                     if expanded == defaultExpanded { toggled.remove(key) } else { toggled.insert(key) }
                     raw = toggled.sorted().joined(separator: "\n")
                 }
-            case .newRequestPresented(let presented): state.newRequestPresented = presented
+            case .sidebarSectionExpanded(let id, let expanded):
+                if id == "tasks" { state.$tasksExpanded.withLock { $0 = expanded } }
+                else if id.hasPrefix("project:") {
+                    let name = String(id.dropFirst("project:".count))
+                    state.$collapsedProjectsRaw.withLock { raw in
+                        var collapsed = Set(raw.split(separator: "\n").map(String.init))
+                        if expanded { collapsed.remove(name) } else { collapsed.insert(name) }
+                        raw = collapsed.sorted().joined(separator: "\n")
+                    }
+                }
             }
             return .none
         }
+        Scope(state: \.actionFeature, action: \.action) { ActionFeature() }
+    }
+
+    private func loadView(_ key: String, known: String? = nil) -> Effect<Action> {
+        .run { [viewsClient] send in
+            do {
+                await send(.viewLoaded(key, try await viewsClient.load(ViewKey(rawValue: key), known)))
+            } catch { await send(.viewFailed(key, String(describing: error))) }
+        }
+    }
+
+    private func loadAndOpenView(_ key: String, visibleKeys: Set<ViewKey>) -> Effect<Action> {
+        .run { [viewsClient] send in
+            do {
+                let result = try await viewsClient.load(ViewKey(rawValue: key), nil)
+                await viewsClient.openScreen("mac-presentation", visibleKeys)
+                await send(.viewLoaded(key, result))
+            } catch { await send(.viewFailed(key, String(describing: error))) }
+        }
+    }
+
+    private func visibleViewKeys(_ state: State) -> Set<ViewKey> {
+        Set(["sidebar", state.selectedViewKey].compactMap { $0 }.map { ViewKey(rawValue: $0) })
+    }
+
+    private func viewKey(for selection: Selection?) -> String? {
+        guard let selection else { return nil }
+        switch selection {
+        case .viewKey(let key): return key
+        }
+    }
+
+    private func openVisibleViews(_ state: inout State) -> Effect<Action> {
+        let keys = visibleViewKeys(state)
+        return .run { [viewsClient] _ in await viewsClient.openScreen("mac-presentation", keys) }
     }
 }
 
-public struct MacSidebarProject: Identifiable {
-    public var id: String { name }
-    public let name: String
-    public let nodes: [FleetNode]
+private func viewLinks(in row: Row) -> [String] {
+    let own: [String]
+    if case let .view(key)? = row.link { own = [key] } else { own = [] }
+    return own + row.children.flatMap(viewLinks(in:))
 }
 
-public struct MacConversationSearch: Sendable {
-    public var run: @Sendable (String) async throws -> SearchResult?
-    public init(run: @escaping @Sendable (String) async throws -> SearchResult?) { self.run = run }
-    public static let unavailable = Self(run: { _ in nil })
-}
-private enum MacConversationSearchKey: DependencyKey {
-    static let liveValue = MacConversationSearch.unavailable
-    static let testValue = liveValue
-}
-public extension DependencyValues {
-    var macConversationSearch: MacConversationSearch {
-        get { self[MacConversationSearchKey.self] }
-        set { self[MacConversationSearchKey.self] = newValue }
+private func viewRowIDs(_ items: [ViewItem]) -> [String] {
+    items.flatMap { item -> [String] in
+        switch item {
+        case let .row(row): return [row.id] + row.children.flatMap { viewRowIDs([.row($0)]) }
+        case let .card(card): return [card.id] + card.children.flatMap { viewRowIDs([.card($0)]) }
+        default: return []
+        }
     }
 }

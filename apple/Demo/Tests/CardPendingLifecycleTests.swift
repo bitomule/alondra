@@ -145,9 +145,7 @@ struct CardPendingLifecycleTests {
         detail.questionFeatures[id: "q5"]?.question.pendingSubmission = .answer
         var initial = ServiceRootFeature.State()
         initial.pullRequest = detail
-        initial.macPresentation.selection = .item(pr.id)
-        initial.macPresentation.inboxIDs = [pr.id, question.id, information.id]
-        initial.macPresentation.didAutoSelect = true
+        initial.macPresentation.selection = .viewKey("pull_request:pr-5")
         initial.triage.triage.workspace = workspace
         initial.triage.triage.items = [question, information]
         let log = CommandLog()
@@ -157,13 +155,13 @@ struct CardPendingLifecycleTests {
         let action: ServiceRootFeature.Action = switch navigation {
         case .question: .focusInbox(question.id)
         case .information: .focusInbox(information.id)
-        case .node: .macPresentation(.select(.node("node")))
-        case .task: .macPresentation(.select(.task("task")))
-        case .request: .macPresentation(.select(.request("request")))
-        case .schedules: .macPresentation(.select(.schedules))
+        case .node: .macPresentation(.select(.viewKey("node:node")))
+        case .task: .macPresentation(.select(.viewKey("task:task")))
+        case .request: .macPresentation(.select(.viewKey("request:request")))
+        case .schedules: .macPresentation(.select(.viewKey("schedules")))
         case .cleared: .macPresentation(.select(nil))
-        case .inboxChanged: .macPresentation(.inboxChanged([question.id, information.id]))
-        case .unchanged: .macPresentation(.select(.item(pr.id)))
+        case .inboxChanged: .macPresentation(.select(.viewKey("card:q1")))
+        case .unchanged: .macPresentation(.select(.viewKey("pull_request:pr-5")))
         }
         let transition = store.send(action)
         // Inspect before awaiting the queued focus/open effects or a SwiftUI callback.
@@ -181,7 +179,7 @@ struct CardPendingLifecycleTests {
         if navigation == .question || navigation == .information {
             #expect(store.triage.document?.subject.id == (navigation == .information ? information.id : question.id))
         }
-        if navigation == .inboxChanged { #expect(store.macPresentation.selection == .item(question.id)) }
+        if navigation == .inboxChanged { #expect(store.macPresentation.selection == .viewKey("card:q1")) }
     }
 
     @Test func closingRootDoesNotCancelAlreadyDispatchedCommandOrLoseItsUnknownOutcome() async throws {

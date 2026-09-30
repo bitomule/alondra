@@ -11,6 +11,7 @@ swift_library(
         "//apple/Domain:AlondraDomain",
         "//apple/Features/Attachments:AlondraAttachmentsFeature",
         "//apple/Features/Fleet:AlondraFleetFeature",
+        "//apple/Features/Home:AlondraHomeFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",
         "//apple/Data/Recovery:AlondraRecovery",
         "//apple/Features/DomainDependency:AlondraDomainDependency",
@@ -19,6 +20,9 @@ swift_library(
         "//apple/Features/Tasks:AlondraTasksFeature",
         "//apple/Features/Questions:AlondraQuestionsFeature",
         "//apple/Features/PullRequests:AlondraPullRequestsFeature",
+        "//apple/Features/ViewsDependency:AlondraViewsDependency",
+        "//apple/Features/ViewsUI:AlondraViewsUI",
+        "//apple/Views:AlondraViews",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

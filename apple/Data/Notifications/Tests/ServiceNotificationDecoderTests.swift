@@ -16,7 +16,7 @@ final class ServiceNotificationDecoderTests: XCTestCase {
         let plaintext = try JSONSerialization.data(withJSONObject: [
             "push_binding": binding, "with_sound": false,
             "payload": ["aps": ["alert": ["title": "Question", "body": "Approve?"], "sound": "default"],
-                        "alondra": ["protocol_version": 2, "kind": "question", "item_id": "interaction:q-42", "interaction_id": "q-42", "data_epoch": "e", "expected_revision": 7]]
+                        "alondra": ["protocol": 1, "kind": "question", "card": "q-42", "data_epoch": "e", "actions": [["id": "ans:q-42@1", "option": "yes", "label": "Yes"]]]]
         ])
         let envelope = try EnvelopeV1.seal(route: "mac-1", sender: "mac-1", recipient: "client-1",
             requestID: "push-123", kind: "push", expiresAtMilliseconds: 2000, plaintext: plaintext,

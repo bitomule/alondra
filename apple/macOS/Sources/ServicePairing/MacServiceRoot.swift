@@ -2,16 +2,11 @@ import AlondraShared
 import AlondraAttachmentsFeature
 import AlondraDemoWorkspace
 import AlondraWorkspaceFeature
-import AlondraFleetFeature
-import AlondraNewWorkFeature
 import AlondraAppComposition
 import AlondraCloudPairingFeature
 import AlondraConnectionFeature
 import AlondraSync
-import AlondraPullRequestsFeature
-import AlondraQuestionsFeature
-import AlondraTasksFeature
-import AlondraTriageFeature
+import AlondraViewsDependency
 import ComposableArchitecture
 import Observation
 import SwiftUI
@@ -68,30 +63,15 @@ private final class MacServiceWindowContext {
     private(set) var store: StoreOf<ServiceRootFeature>?
     func connect(_ services: CloudAppServices) async {
         guard store == nil else { return }
-        let workspace = await services.domainWorkspaceClient()
-        let schedules = await services.scheduleOperations()
-        let nodes = await services.nodeOperations()
-        let newWork = await services.newWorkOperations()
-        let downloads = await services.attachmentDownloadClient()
-        let sync = await services.domainSync
-        await sync.require(.everything)
+        let viewsFeed = await services.viewsFeed
+        let viewActionSender = await services.viewActionSender
         guard !Task.isCancelled else { return }
-        store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
-            $0.macConversationSearch = MacConversationSearch(run: { try await services.searchConversations($0) })
-            $0.domainWorkspace = workspace
-            $0.scheduleOperations = schedules
-            $0.deliveryJournal = DeliveryJournalClient(refresh: { try await services.journal().refresh() },
-                resolve: { attempt, scope, retry, checked, risk in
-                    try await services.journal().resolve(attempt, in: scope, retry: retry, terminalChecked: checked, duplicateRisk: risk)
-                })
-            $0.attachmentDownload = downloads
+        store = Store(initialState: ServiceRootFeature.State(usesViews: true)) { ServiceRootFeature() } withDependencies: {
+            $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: viewActionSender)
             $0.attachmentImport = CloudAppServices.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
                 try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
             })
-            $0.nodeOperations = nodes
-            $0.newWorkOperations = newWork
-            $0.serviceTasksClient = ServiceTasksClient(refresh: { await sync.refresh() })
         }
     }
 }
@@ -105,7 +85,8 @@ private struct MacServiceWindow: View {
             if let store = context.store {
                 MacServiceWorkspace(store: store, accountContent: MacServiceSettingsScene(services: services, owner: account))
                     .connectionLostOverlay(store: store, retry: retry,
-                                           signIn: account.map { account in { account.store.send(.reauthenticate) } })
+                                           signIn: account.map { account in { account.store.send(.reauthenticate) } },
+                                           usesViews: true)
             } else {
                 ProgressView("Opening workspace…")
             }
@@ -118,6 +99,6 @@ private struct MacServiceWindow: View {
     }
 
     private func retry() {
-        Task { await services.retryConnection() }
+        Task { await services.retryViewsConnection() }
     }
 }

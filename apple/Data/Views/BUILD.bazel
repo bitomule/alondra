@@ -1,0 +1,16 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraViewsData",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraViewsData",
+    features = ["swift.enable_testing"],
+    visibility = ["//visibility:public"],
+    deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Contracts:AlondraContracts", "//apple/Views:AlondraViews"],
+)
+
+swift_test(
+    name = "AlondraViewsDataTests",
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [":AlondraViewsData", "//apple/Views:AlondraViews"],
+)

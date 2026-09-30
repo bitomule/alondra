@@ -1,13 +1,12 @@
-# Integration in the central Apple BUILD
+# Notification payloads
 
-This branch only adds the payload package. The C integration branch owns `apple/BUILD.bazel` and changes the extension atomically with its new dependency. Add this dependency to `AlondraNotificationServiceLib` there:
+The notification extension and app share this parser for the encrypted views payload. The
+payload names a card and carries up to four rendered actions, including their opaque action
+IDs, option IDs, labels and text-input hints. The extension maps those actions to `A0` through
+`A3`; the app resolves that index against the authenticated payload and posts the exact action
+to `/actions` through `ViewActionSender`.
 
-```starlark
-deps = ["//apple/NotificationPayload:AlondraNotificationPayload"],
-```
-
-In `iOSNotificationService/Sources/NotificationService.swift`, import `AlondraNotificationPayload`; replace `OptionQuestion(userInfo:)` with `NotificationPayload.Question(userInfo:)` and remove the old `OptionQuestion` definition. Change `QuestionCategories.register` and `category` to accept `NotificationPayload.Question`. Use `NotificationPayload.Category.questionID(question.id)` for the generated identifier and `NotificationPayload.Category.questionID(from: category.identifier)` when filtering existing categories. Use `NotificationPayload.Action.option(label)`, `.reply`, and `.moreContext` for its action IDs. Leave `Delivery` and `QuestionCategories.register` concurrency and timing unchanged: the single content-handler invocation, 20 category registration polls, 50 ms poll interval, and fallback on expiry are existing behavior.
-
-Once the iOS app replaces its duplicate `NotificationItem` parser and `NotificationCategory` identifiers in `iOS/Sources/PushNotifications.swift`, add the same dependency to `AlondraiOSEntry`. Keep the app's localized `UNNotificationCategory` construction in the app target.
-
-The package test uses APNs JSON shapes emitted by `crates/alondrad/src/push.rs`: a dynamic ask-user question, a fixed permission question, and a report. It checks the routing IDs and action IDs that must agree between daemon, extension, and app.
+Question category identifiers are scoped to both the push binding and card ID. Retention is
+global to the notification service extension because UserNotifications stores categories
+process-wide. The extension keeps the existing bounded retention and asynchronous registration
+polling behavior.

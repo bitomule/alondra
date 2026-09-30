@@ -18,6 +18,7 @@ swift_library(
         "//apple/Data/RelaySession:AlondraRelaySession",
         "//apple/Data/LoopbackSession:AlondraLoopbackSession",
         "//apple/Data/Sync:AlondraSync",
+        "//apple/Data/Views:AlondraViewsData",
         "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/NotificationPayload:AlondraNotificationPayload",
     ],
@@ -36,5 +37,7 @@ swift_test(
         "//apple/Domain:AlondraDomain",
         "//apple/Data/LoopbackSession:AlondraLoopbackSession",
         "//apple/Data/RelaySession:AlondraRelaySession",
+        "//apple/Data/Views:AlondraViewsData",
+        "//apple/Views:AlondraViews",
     ],
 )

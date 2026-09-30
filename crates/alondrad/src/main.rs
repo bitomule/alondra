@@ -58,6 +58,7 @@ mod updates;
 mod uploads;
 mod usage;
 mod v2_client_routes;
+mod views;
 mod wake;
 mod watcher;
 mod worktree;

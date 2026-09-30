@@ -399,65 +399,37 @@ fn compact_hook_payload(payload: &mut serde_json::Value) {
 
 fn status() -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
-    let mut runtime = client.runtime().unwrap_or(None);
-    let daemon: Option<runtime::Runtime> = client.get::<serde_json::Value>("/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
-    if let Some(machine) = daemon.and_then(|d| d.machine).filter(|_| runtime.as_ref().is_none_or(|r| r.machine.is_none())) {
-        runtime.get_or_insert_with(Default::default).machine = Some(machine);
+    let home = client.views("home", None)?;
+    println!("{}", home.status.summary);
+    for (key, fallback) in [
+        ("home", tr!("Waiting for You", "Te espera")),
+        ("tasks", tr!("Tasks", "Tareas")),
+        ("fleet", tr!("Fleet", "Flota")),
+    ] {
+        let view = if key == "home" { home.clone() } else { client.views(key, None)? };
+        println!("\n{fallback}:");
+        for section in &view.sections {
+            if key != "home" {
+                if let Some(title) = &section.title { println!("  {title}:"); }
+            }
+            for item in &section.items {
+                match item {
+                    alondra_core::views::Item::Card(card) => {
+                        let summary = card.body.as_ref().map(|body| body.text.lines().next().unwrap_or_default()).unwrap_or(&card.title);
+                        println!("  {:<16} {}", card.eyebrow.as_ref().map_or("item", |label| label.text.as_str()), summary);
+                    }
+                    alondra_core::views::Item::Row(row) => println!("  {:<24} {}", row.state_key.as_deref().unwrap_or(""), row.title),
+                    alondra_core::views::Item::Markdown(markdown) => println!("  {}", markdown.text.lines().next().unwrap_or_default()),
+                    _ => {}
+                }
+            }
+        }
     }
-    print!("{}", status_text(&client.domain()?, runtime.as_ref()));
+    if !home.status.gauges.is_empty() {
+        println!("\n{}:", tr!("Machine", "Máquina"));
+        for gauge in &home.status.gauges { println!("  {}: {}", gauge.label, gauge.text); }
+    }
     Ok(())
-}
-
-/// The Mac's readings, the inbox roots still pending, the open tasks and the agents with what
-/// their sessions are doing, as the daemon reports them.
-fn status_text(d: &alondra_core::domain_v2::DomainProjection, runtime: Option<&runtime::Runtime>) -> String {
-    let agent = |id: Option<&alondra_core::domain_v2::AgentId>| id.map_or_else(|| tr!("orchestrator", "orquestador").to_string(), |id| d.agents.iter().find(|a| &a.id == id).map_or_else(|| id.0.clone(), |a| a.name.clone()));
-    let mut out = String::new();
-    if let Some(m) = runtime.and_then(|r| r.machine.as_ref()) {
-        let mb = m.memory_available / 1_048_576;
-        let mem = m.memory_free_percent.map(|p| trf!("{p}% free", "{p}% libre")).unwrap_or_else(|| trf!("{mb} MB available", "{mb} MB disponibles"));
-        let (l1, l5, l15) = (m.load[0], m.load[1], m.load[2]);
-        let shaky = if m.unreliable { tr!(" (unreliable readings)", " (medidas poco fiables)") } else { "" };
-        out.push_str(&trf!("Machine: memory {mem} · load {l1:.1} {l5:.1} {l15:.1}{shaky}\n\n", "Máquina: memoria {mem} · carga {l1:.1} {l5:.1} {l15:.1}{shaky}\n\n"));
-    }
-    let pending: Vec<_> = d.inbox.iter().filter(|i| i.pending).collect();
-    let n = pending.len();
-    out.push_str(&trf!("Waiting for you ({n}):\n", "Te esperan ({n}):\n"));
-    for i in pending {
-        let text = i.body.as_deref().filter(|b| !b.trim().is_empty()).unwrap_or(&i.title).lines().next().unwrap_or_default().to_string();
-        out.push_str(&format!("  {:<16} {text}  · {}\n", i.kind, agent(i.agent_id.as_ref())));
-    }
-    let open: Vec<_> = d.tasks.iter().filter(|t| !t.state.terminal() && !t.archived).collect();
-    let n = open.len();
-    out.push_str(&trf!("\nOpen tasks ({n}):\n", "\nTareas abiertas ({n}):\n"));
-    for t in open {
-        out.push_str(&format!("  {:<20} {}  · {}\n", tui::state_label(t.state), t.title, agent(t.agent_id.as_ref())));
-    }
-    let n = d.agents.len();
-    out.push_str(&trf!("\nAgents ({n}):\n", "\nAgentes ({n}):\n"));
-    for a in &d.agents {
-        match runtime.and_then(|r| r.node(&a.id)) {
-            Some(node) => {
-                let mins = (now_millis() - node.state_since) / 60_000;
-                out.push_str(&format!("  {:<24} {:<34} {:>5}m\n", node.status_label(), a.name, mins));
-            }
-            None => {
-                let state = if a.connected { tr!("connected", "conectado") } else { tr!("not connected", "no conectado") };
-                out.push_str(&format!("  {:<14} {}\n", state, a.name));
-            }
-        }
-    }
-    if let Some(o) = runtime.and_then(|r| r.orchestrator_state()) {
-        let label = o.status_label();
-        out.push_str(&trf!("\nOrchestrator: {label}\n", "\nOrquestador: {label}\n"));
-        if let Some(error) = &o.last_error {
-            out.push_str(&format!("    {error}\n"));
-        }
-        if let Some(run) = &o.active_run_id {
-            out.push_str(&format!("    execution: {run} · queue: {}\n", o.queue_depth));
-        }
-    }
-    out
 }
 
 fn pair(url: &str) -> Result<()> {
@@ -551,45 +523,6 @@ mod destination_tests {
         assert!(Cli::try_parse_from(["alondra", "--remote"]).is_err());
         let connect = Cli::try_parse_from(["alondra", "connect", "mac-a"]).unwrap();
         assert!(matches!(connect.command, Some(Cmd::Connect { mac, repair: false }) if mac == "mac-a"));
-    }
-}
-
-#[cfg(test)]
-mod status_tests {
-    use super::*;
-    use alondra_core::domain_v2::*;
-
-    #[test]
-    fn status_lists_what_waits_the_open_tasks_and_the_agents_from_the_projection() {
-        i18n::set_for_this_thread(i18n::Lang::En);
-        let mut s = DomainState::new("e");
-        let mut run = |actor: Actor, command: Command| {
-            let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: format!("c{}", s.revision).into(), expected_revision: s.revision, command };
-            s.execute(&actor, &envelope).unwrap();
-        };
-        let user = || Actor::User { user_id: "u".into() };
-        run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
-        run(Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Instance A".into() });
-        run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(), agent_id: Some("a".into()), review_prs: false, dependencies: Default::default(), stack: None });
-        run(Actor::Agent { agent_id: "a".into() }, Command::PublishInformation { attachments: vec![], interaction_id: "i".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Halfway there".into() });
-        let text = status_text(&s.projection(), None);
-        assert!(text.contains("Waiting for you (1):") && text.contains("information") && text.contains("Halfway there  · Instance A"), "{text}");
-        assert!(text.contains("Open tasks (1):") && text.contains("not started") && text.contains("Build  · Instance A"), "{text}");
-        assert!(text.contains("Agents (1):") && text.contains("not connected  Instance A"), "{text}");
-        assert!(!text.contains("Machine:"), "no readings without the runtime");
-    }
-
-    #[test]
-    fn status_adds_the_machine_the_sessions_and_the_orchestrator_from_the_runtime() {
-        i18n::set_for_this_thread(i18n::Lang::En);
-        let mut s = DomainState::new("e");
-        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: s.data_epoch.clone(), command_id: "c".into(), expected_revision: 0, command: Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() } };
-        s.execute(&Actor::System, &envelope).unwrap();
-        let runtime: runtime::Runtime = serde_json::from_value(runtime::fixture("runtime.json")).unwrap();
-        let text = status_text(&s.projection(), Some(&runtime));
-        assert!(text.contains("Machine: memory 25% free · load 2.5 2.0 1.5"), "{text}");
-        assert!(text.contains("  busy ") && text.contains("Instance A"), "{text}");
-        assert!(text.contains("Orchestrator: needs attention") && text.contains("The batch stopped halfway") && text.contains("execution: run-7 · queue: 2"), "{text}");
     }
 }
 

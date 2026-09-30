@@ -1,0 +1,129 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:i-1",
+  "client": "ios",
+  "version": "vbaf44f88529a6966",
+  "cursor": "cursor-1",
+  "title": "Build a feature",
+  "status": {
+    "version": "v2d6ccffc4668392a",
+    "summary": "1 question · 3 to read · 0 nodes working",
+    "badge": 4,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Agents",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "i-1",
+          "link": {
+            "kind": "view",
+            "key": "card:i-1"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Question",
+            "tone": "accent"
+          },
+          "title": "Build a feature",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Node One",
+              "link": {
+                "kind": "view",
+                "key": "node:a-1"
+              }
+            },
+            {
+              "icon": "task",
+              "text": "Build a feature",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              }
+            },
+            {
+              "icon": "mission",
+              "text": "Mission · Build a feature",
+              "link": {
+                "kind": "view",
+                "key": "request:r-1"
+              }
+            }
+          ],
+          "detail": "included",
+          "body": {
+            "text": "Body 0",
+            "truncated": false,
+            "commentable": false
+          },
+          "actions": [
+            {
+              "id": "ans:i-1@1",
+              "label": "Answer",
+              "style": "primary",
+              "presentation": "options",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": true,
+              "enabled": true,
+              "stamp": "Answered"
+            },
+            {
+              "id": "ctx:i-1@1",
+              "label": "Need more context",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "What is missing?",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

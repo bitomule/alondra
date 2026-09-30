@@ -64,6 +64,10 @@ public struct ServiceRequest: Sendable, Equatable {
         case (.get, ["runtime"]), (.get, ["agents", "search"]), (.get, ["projects"]), (.get, ["options"]),
              (.get, ["issues"]), (.post, ["requests"]), (.post, ["device", "push-binding"]), (.post, ["orchestrator", "messages"]):
             return true
+        case (.get, ["changes"]), (.post, ["actions"]):
+            return true
+        case (.get, let rest) where rest.count == 2 && rest[0] == "views":
+            return validViewKey(rest[1])
         case (.get, let rest) where rest.count == 3 && rest[0] == "agents" && rest[2] == "activity":
             return true
         case (.post, let rest) where rest.count == 3 && rest[0] == "agents" && ["messages", "close"].contains(rest[2]):
@@ -76,6 +80,16 @@ public struct ServiceRequest: Sendable, Equatable {
             return OrchestratorDecision(rawValue: rest[1]) != nil
         default:
             return false
+        }
+    }
+
+    private static func validViewKey(_ key: String) -> Bool {
+        if key == "home" { return true }
+        guard key.hasPrefix("card:") else { return false }
+        let id = key.dropFirst("card:".count)
+        return !id.isEmpty && id.utf8.count <= 256 && id.utf8.allSatisfy { byte in
+            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+                || byte == 45 || byte == 95
         }
     }
 

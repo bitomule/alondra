@@ -263,7 +263,7 @@ struct ServiceDocumentView: View {
 
 }
 
-private struct ServiceBlockRow: View {
+struct ServiceBlockRow: View {
     let block: MarkdownBlock
     let comment: String?
     let tint: Color
@@ -313,7 +313,7 @@ private struct ServiceBlockRow: View {
     }
 }
 
-private struct ServiceTableRows: View {
+struct ServiceTableRows: View {
     let rows: [MarkdownBlock]
     let comments: [String: String]
     let tint: Color
@@ -383,7 +383,7 @@ private struct BlockButtonStyle: ButtonStyle {
     }
 }
 
-private struct ServiceCommentSheet: View {
+struct ServiceCommentSheet: View {
     let block: MarkdownBlock
     let initial: String
     let onSave: (String) -> Void

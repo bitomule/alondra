@@ -9,7 +9,7 @@ pub fn stamp() -> String {
     local_iso(now.as_secs() as libc::time_t, now.subsec_millis())
 }
 
-fn local_iso(secs: libc::time_t, millis: u32) -> String {
+pub(crate) fn local_iso(secs: libc::time_t, millis: u32) -> String {
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     if unsafe { libc::localtime_r(&secs, &mut tm) }.is_null() {
         return format!("@{secs}");

@@ -6,7 +6,7 @@ public extension CloudAppServices {
     /// access has not been revoked remotely.
     func checkSettingsConnection() async throws {
         try checkActive()
-        _ = try await api.domainCapabilities()
+        _ = try await api.send(.data(.get, path: ["capabilities"]))
         try checkActive()
     }
 }

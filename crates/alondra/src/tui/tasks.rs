@@ -1,16 +1,15 @@
 //! The Tasks screen: every request with its task tree, and what the daemon says each task is at.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
 
-use alondra_core::domain_v2::{AvailableAction, Command, InteractionPayload, MergeAttemptState, PrState, Request, RequestId, Task, TaskId, TaskState};
+use alondra_core::domain_v2::{
+    AvailableAction, Command, InteractionPayload, MergeAttemptState, PrState, Request, RequestId,
+    Task, TaskId, TaskState,
+};
 use crossterm::event::{KeyCode, KeyEvent};
-use serde_json::Value;
 
 use super::keys::{self, Cmd, Motion};
 use super::{App, Flow, Msg, Pane, Target, md, unavailable};
-use crate::client::Client;
-use crate::mcp::urlencode;
 use crate::ops::{self, MessageKind};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -85,7 +84,16 @@ pub fn tree(tasks: &[&Task]) -> Vec<TreeRow> {
     let mut ordered: Vec<&Task> = tasks.to_vec();
     ordered.sort_by(|a, b| a.id.cmp(&b.id));
     let known: HashSet<&TaskId> = ordered.iter().map(|t| &t.id).collect();
-    let parent: HashMap<&TaskId, &TaskId> = ordered.iter().filter_map(|t| t.dependencies.iter().filter(|d| **d != t.id && known.contains(d)).max().map(|p| (&t.id, p))).collect();
+    let parent: HashMap<&TaskId, &TaskId> = ordered
+        .iter()
+        .filter_map(|t| {
+            t.dependencies
+                .iter()
+                .filter(|d| **d != t.id && known.contains(d))
+                .max()
+                .map(|p| (&t.id, p))
+        })
+        .collect();
     let mut children: HashMap<&TaskId, Vec<&TaskId>> = HashMap::new();
     for t in &ordered {
         if let Some(p) = parent.get(&t.id) {
@@ -94,23 +102,60 @@ pub fn tree(tasks: &[&Task]) -> Vec<TreeRow> {
     }
     let mut rows = vec![];
     let mut placed = HashSet::new();
-    fn place<'a>(id: &'a TaskId, depth: usize, last: bool, lines: Vec<bool>, children: &HashMap<&TaskId, Vec<&'a TaskId>>, placed: &mut HashSet<&'a TaskId>, rows: &mut Vec<TreeRow>) {
+    fn place<'a>(
+        id: &'a TaskId,
+        depth: usize,
+        last: bool,
+        lines: Vec<bool>,
+        children: &HashMap<&TaskId, Vec<&'a TaskId>>,
+        placed: &mut HashSet<&'a TaskId>,
+        rows: &mut Vec<TreeRow>,
+    ) {
         if !placed.insert(id) {
             return;
         }
-        let kids: Vec<&TaskId> = children.get(id).map(|k| k.iter().copied().filter(|k| !placed.contains(k)).collect()).unwrap_or_default();
-        rows.push(TreeRow { id: id.clone(), depth, last, lines: lines.clone(), has_children: !kids.is_empty() });
+        let kids: Vec<&TaskId> = children
+            .get(id)
+            .map(|k| k.iter().copied().filter(|k| !placed.contains(k)).collect())
+            .unwrap_or_default();
+        rows.push(TreeRow {
+            id: id.clone(),
+            depth,
+            last,
+            lines: lines.clone(),
+            has_children: !kids.is_empty(),
+        });
         let mut below = lines;
         if depth > 0 {
             below.push(!last);
         }
         for (i, k) in kids.iter().enumerate() {
-            place(k, depth + 1, i + 1 == kids.len(), below.clone(), children, placed, rows);
+            place(
+                k,
+                depth + 1,
+                i + 1 == kids.len(),
+                below.clone(),
+                children,
+                placed,
+                rows,
+            );
         }
     }
-    let roots: Vec<&TaskId> = ordered.iter().map(|t| &t.id).filter(|id| !parent.contains_key(id)).collect();
+    let roots: Vec<&TaskId> = ordered
+        .iter()
+        .map(|t| &t.id)
+        .filter(|id| !parent.contains_key(id))
+        .collect();
     for (i, r) in roots.iter().enumerate() {
-        place(r, 0, i + 1 == roots.len(), vec![], &children, &mut placed, &mut rows);
+        place(
+            r,
+            0,
+            i + 1 == roots.len(),
+            vec![],
+            &children,
+            &mut placed,
+            &mut rows,
+        );
     }
     for t in &ordered {
         place(&t.id, 0, true, vec![], &children, &mut placed, &mut rows);
@@ -135,7 +180,11 @@ fn by_project(groups: Vec<(Option<String>, Vec<TaskListRow>)>) -> Vec<TaskListRo
     names
         .into_iter()
         .flat_map(|name| {
-            let rows = groups.iter().filter(|(p, _)| p.clone().unwrap_or_else(other) == name).flat_map(|(_, rows)| rows.iter().cloned()).collect::<Vec<_>>();
+            let rows = groups
+                .iter()
+                .filter(|(p, _)| p.clone().unwrap_or_else(other) == name)
+                .flat_map(|(_, rows)| rows.iter().cloned())
+                .collect::<Vec<_>>();
             std::iter::once(TaskListRow::Project(name)).chain(rows)
         })
         .collect()
@@ -147,7 +196,9 @@ fn group_rows(r: &Request, tasks: &[&Task]) -> Vec<TaskListRow> {
         [one] => vec![TaskListRow::Single(one.id.clone())],
         _ => {
             let done = tasks.iter().filter(|t| t.state.terminal()).count();
-            std::iter::once(TaskListRow::Request(r.id.clone(), done, tasks.len())).chain(tree(tasks).into_iter().map(TaskListRow::Task)).collect()
+            std::iter::once(TaskListRow::Request(r.id.clone(), done, tasks.len()))
+                .chain(tree(tasks).into_iter().map(TaskListRow::Task))
+                .collect()
         }
     }
 }
@@ -162,7 +213,10 @@ impl App {
     }
 
     pub fn request_tasks(&self, r: &RequestId) -> Vec<&Task> {
-        self.domain.as_ref().map(|d| d.tasks.iter().filter(|t| &t.request_id == r).collect()).unwrap_or_default()
+        self.domain
+            .as_ref()
+            .map(|d| d.tasks.iter().filter(|t| &t.request_id == r).collect())
+            .unwrap_or_default()
     }
 
     /// The project the runtime names for a task.
@@ -176,7 +230,15 @@ impl App {
 
     /// The tasks that wait on this one.
     pub fn dependents(&self, t: &Task) -> Vec<&Task> {
-        self.domain.as_ref().map(|d| d.tasks.iter().filter(|o| o.dependencies.contains(&t.id) && o.id != t.id).collect()).unwrap_or_default()
+        self.domain
+            .as_ref()
+            .map(|d| {
+                d.tasks
+                    .iter()
+                    .filter(|o| o.dependencies.contains(&t.id) && o.id != t.id)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The stack this task's PR belongs to, bottom first: the tasks it goes on top of, itself,
@@ -195,7 +257,11 @@ impl App {
         below.reverse();
         below.push(t);
         let mut at = t;
-        while let Some(next) = self.domain.as_ref().and_then(|d| d.tasks.iter().find(|o| o.stack.as_ref().is_some_and(|s| s.upstream_task == at.id))) {
+        while let Some(next) = self.domain.as_ref().and_then(|d| {
+            d.tasks
+                .iter()
+                .find(|o| o.stack.as_ref().is_some_and(|s| s.upstream_task == at.id))
+        }) {
             if !seen.insert(&next.id) {
                 break;
             }
@@ -207,7 +273,9 @@ impl App {
 
     /// What is open first; then the finished work and the archived work, each folded under one header.
     pub fn task_rows(&self) -> Vec<TaskListRow> {
-        let Some(d) = &self.domain else { return vec![TaskListRow::Active(0)] };
+        let Some(d) = &self.domain else {
+            return vec![TaskListRow::Active(0)];
+        };
         let (mut active, mut finished, mut archived) = (vec![], vec![], vec![]);
         let (mut open_n, mut finished_n, mut archived_n) = (0, 0, 0);
         for r in &d.requests {
@@ -222,7 +290,8 @@ impl App {
                 }
                 continue;
             }
-            let (old, current): (Vec<&Task>, Vec<&Task>) = all.into_iter().partition(|t| t.archived);
+            let (old, current): (Vec<&Task>, Vec<&Task>) =
+                all.into_iter().partition(|t| t.archived);
             if !old.is_empty() {
                 archived_n += old.len();
                 archived.push((self.request_project(&old), group_rows(r, &old)));
@@ -257,15 +326,27 @@ impl App {
     }
 
     pub fn task_keys(&self) -> Vec<TaskKey> {
-        self.task_rows().iter().filter_map(TaskListRow::key).collect()
+        self.task_rows()
+            .iter()
+            .filter_map(TaskListRow::key)
+            .collect()
     }
 
     pub fn open_task_count(&self) -> usize {
-        self.domain.as_ref().map_or(0, |d| d.tasks.iter().filter(|t| !t.state.terminal() && !t.archived).count())
+        self.domain.as_ref().map_or(0, |d| {
+            d.tasks
+                .iter()
+                .filter(|t| !t.state.terminal() && !t.archived)
+                .count()
+        })
     }
 
     pub(super) fn running_tasks(&self) -> bool {
-        self.domain.as_ref().is_some_and(|d| d.tasks.iter().any(|t| t.state == TaskState::Running && !t.archived))
+        self.domain.as_ref().is_some_and(|d| {
+            d.tasks
+                .iter()
+                .any(|t| t.state == TaskState::Running && !t.archived)
+        })
     }
 
     pub fn selected_task(&self) -> Option<&Task> {
@@ -294,7 +375,10 @@ impl App {
     pub fn task_progress(&self, t: &Task) -> Vec<String> {
         let Some(d) = &self.domain else { return vec![] };
         let mut out = vec![];
-        let presented = t.final_presentation.as_ref().and_then(|id| self.interaction(id));
+        let presented = t
+            .final_presentation
+            .as_ref()
+            .and_then(|id| self.interaction(id));
         let accepted = presented.is_some_and(|i| matches!(&i.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid));
         if presented.is_some() {
             out.push(tr!("presented", "presentada").to_string());
@@ -303,7 +387,10 @@ impl App {
             out.push(tr!("accepted", "aceptada").to_string());
         }
         let pr = t.pr_id.as_ref().and_then(|id| self.pull_request(id));
-        let authorized = d.merge_authorizations.iter().any(|a| a.task_id == t.id && a.valid && a.attempt != MergeAttemptState::Confirmed);
+        let authorized = d
+            .merge_authorizations
+            .iter()
+            .any(|a| a.task_id == t.id && a.valid && a.attempt != MergeAttemptState::Confirmed);
         if authorized {
             out.push(tr!("merge authorized", "fusión autorizada").to_string());
         }
@@ -313,7 +400,9 @@ impl App {
         match t.state {
             TaskState::Done => out.push(tr!("done", "terminada").to_string()),
             TaskState::Cancelled => {}
-            _ if accepted || authorized => out.push(tr!("waiting for the agent", "pendiente del agente").to_string()),
+            _ if accepted || authorized => {
+                out.push(tr!("waiting for the agent", "pendiente del agente").to_string())
+            }
             _ => {}
         }
         out
@@ -321,7 +410,13 @@ impl App {
 
     /// One line on what the task is at now, when its state alone does not say it.
     pub fn task_now(&self, t: &Task) -> Option<String> {
-        let waiting = self.inbox_rows().into_iter().filter(|(i, _)| i.pending && i.task_id.as_ref() == Some(&t.id) && i.children.is_empty()).count();
+        let waiting = self
+            .inbox_rows()
+            .into_iter()
+            .filter(|(i, _)| {
+                i.pending && i.task_id.as_ref() == Some(&t.id) && i.children.is_empty()
+            })
+            .count();
         if waiting > 0 && !t.state.terminal() {
             return Some(trf!("{waiting} waiting for you", "{waiting} te esperan"));
         }
@@ -330,7 +425,13 @@ impl App {
             return Some(progress.join(" · "));
         }
         if t.state == TaskState::WaitingDependency {
-            let titles: Vec<String> = t.dependencies.iter().filter_map(|id| self.task(id)).filter(|d| !d.state.terminal()).map(|d| md::one_line(&d.title)).collect();
+            let titles: Vec<String> = t
+                .dependencies
+                .iter()
+                .filter_map(|id| self.task(id))
+                .filter(|d| !d.state.terminal())
+                .map(|d| md::one_line(&d.title))
+                .collect();
             if !titles.is_empty() {
                 let titles = titles.join(", ");
                 return Some(trf!("waits for {titles}", "espera a {titles}"));
@@ -341,7 +442,11 @@ impl App {
 
     pub(super) fn reconcile_tasks(&mut self) {
         let keys = self.task_keys();
-        match self.task_sel.as_ref().and_then(|s| keys.iter().position(|k| k == s)) {
+        match self
+            .task_sel
+            .as_ref()
+            .and_then(|s| keys.iter().position(|k| k == s))
+        {
             Some(i) => self.task_idx = i,
             None => {
                 self.task_idx = self.task_idx.min(keys.len().saturating_sub(1));
@@ -358,38 +463,14 @@ impl App {
         }
     }
 
-    /// The selected task's brief and history, asked again whenever the task changes.
+    /// The task detail View carries its brief and history.
     fn load_task_history(&mut self) {
-        let Some((id, revision)) = self.selected_task().map(|t| (t.id.clone(), t.revision)) else { return };
-        if !self.history_asked.insert((id.clone(), revision)) {
-            return;
-        }
-        self.spawn(move |tx| {
-            let result = match Client::for_tui(Duration::from_secs(10)).get::<Value>(&ops::history(&id)) {
-                Ok(v) => serde_json::from_value(v).map_err(|e| e.to_string()),
-                Err(e) if crate::client::missing(&e) => Ok(Default::default()),
-                Err(e) => Err(format!("{e:#}")),
-            };
-            let _ = tx.send(Msg::History { task: id, result });
-        });
+        self.load_selected_view();
     }
 
-    /// The selected task's controls as the daemon computes them, asked again whenever it changes.
+    /// The task detail View carries the available controls and their current state.
     fn load_task_actions(&mut self) {
-        let Some((id, revision, presentation)) = self.selected_task().map(|t| (t.id.clone(), t.revision, t.final_presentation.clone())) else { return };
-        if let Some(presentation) = presentation {
-            self.load_interaction(presentation, revision);
-        }
-        if self.task_actions.get(&id).is_some_and(|(at, _)| *at == revision) || !self.task_actions_asked.insert((id.clone(), revision)) {
-            return;
-        }
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(10))
-                .get::<Value>(&ops::task_actions(&id))
-                .map_err(|e| e.to_string())
-                .and_then(|v| serde_json::from_value::<Vec<AvailableAction>>(v["actions"].clone()).map_err(|e| e.to_string()));
-            let _ = tx.send(Msg::TaskActions { task: id, revision, result });
-        });
+        self.load_selected_view();
     }
 
     pub(super) fn move_tasks(&mut self, to: isize) {
@@ -411,14 +492,32 @@ impl App {
         let i = self.task_idx as isize;
         let detail = self.task_zoom || (self.focus == Pane::Detail && self.task_view.shown);
         match cmd {
-            Cmd::Move(m) if detail => self.task_detail_scroll = keys::scroll(self.task_detail_scroll, m, self.task_view.h, self.task_view.total),
+            Cmd::Move(m) if detail => {
+                self.task_detail_scroll = keys::scroll(
+                    self.task_detail_scroll,
+                    m,
+                    self.task_view.h,
+                    self.task_view.total,
+                )
+            }
             Cmd::Move(Motion::Down) => self.move_tasks(i + 1),
             Cmd::Move(Motion::Up) => self.move_tasks(i - 1),
             Cmd::Move(Motion::Top) => self.move_tasks(0),
             Cmd::Move(Motion::Bottom) => self.move_tasks(isize::MAX),
-            Cmd::Move(m) => self.task_detail_scroll = keys::scroll(self.task_detail_scroll, m, self.task_view.h, self.task_view.total),
-            Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Finished) => self.finished_open = !self.finished_open,
-            Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
+            Cmd::Move(m) => {
+                self.task_detail_scroll = keys::scroll(
+                    self.task_detail_scroll,
+                    m,
+                    self.task_view.h,
+                    self.task_view.total,
+                )
+            }
+            Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Finished) => {
+                self.finished_open = !self.finished_open
+            }
+            Cmd::Right | Cmd::Expand if self.task_sel == Some(TaskKey::Archived) => {
+                self.archived_open = !self.archived_open
+            }
             Cmd::Right if self.task_view.shown && !self.task_zoom => self.focus = Pane::Detail,
             Cmd::Right => self.task_zoom = self.task_sel.is_some(),
             Cmd::Expand => self.task_zoom = !self.task_zoom && self.task_sel.is_some(),
@@ -430,15 +529,33 @@ impl App {
 
     pub(super) fn tasks_key(&mut self, k: KeyEvent) -> Flow {
         match k.code {
-            KeyCode::Char('J') => self.task_detail_scroll = keys::by(self.task_detail_scroll, 5, self.task_view.h, self.task_view.total),
-            KeyCode::Char('K') => self.task_detail_scroll = keys::by(self.task_detail_scroll, -5, self.task_view.h, self.task_view.total),
+            KeyCode::Char('J') => {
+                self.task_detail_scroll = keys::by(
+                    self.task_detail_scroll,
+                    5,
+                    self.task_view.h,
+                    self.task_view.total,
+                )
+            }
+            KeyCode::Char('K') => {
+                self.task_detail_scroll = keys::by(
+                    self.task_detail_scroll,
+                    -5,
+                    self.task_view.h,
+                    self.task_view.total,
+                )
+            }
             KeyCode::Char('x') if self.selected_request().is_some() => self.withdraw_request(),
             KeyCode::Char('x') => self.task_command("cancel_task"),
             KeyCode::Char('R') => self.task_command("reopen_task"),
             KeyCode::Char('A') => self.archive_finished(),
             KeyCode::Char('r') | KeyCode::Char('m') => self.message_task_agent(),
-            KeyCode::Enter if self.task_sel == Some(TaskKey::Finished) => self.finished_open = !self.finished_open,
-            KeyCode::Enter if self.task_sel == Some(TaskKey::Archived) => self.archived_open = !self.archived_open,
+            KeyCode::Enter if self.task_sel == Some(TaskKey::Finished) => {
+                self.finished_open = !self.finished_open
+            }
+            KeyCode::Enter if self.task_sel == Some(TaskKey::Archived) => {
+                self.archived_open = !self.archived_open
+            }
             KeyCode::Char('a') | KeyCode::Enter => {
                 if let Some(agent) = self.selected_task().and_then(|t| t.agent_id.clone()) {
                     return Flow::Attach(self.attach_id(&agent));
@@ -450,23 +567,46 @@ impl App {
     }
 
     fn message_task_agent(&mut self) {
-        let Some(t) = self.selected_task().cloned() else { return };
+        let Some(t) = self.selected_task().cloned() else {
+            return;
+        };
         let Some(agent) = t.agent_id.clone() else {
-            self.fail(tr!("This task has no agent yet", "Esta tarea todavía no tiene agente"));
+            self.fail(tr!(
+                "This task has no agent yet",
+                "Esta tarea todavía no tiene agente"
+            ));
             return;
         };
         let name = self.agent_name(Some(&agent));
         let message = ops::Message::to(Some(agent), MessageKind::Message, String::new());
-        self.compose(Target::Message { key: None, message, name, title: md::one_line(&t.title) }, "");
+        self.compose(
+            Target::Message {
+                key: None,
+                message,
+                name,
+                title: md::one_line(&t.title),
+            },
+            "",
+        );
     }
 
     /// The daemon's own control for the task, when it has already said whether it is on.
     fn task_control(&self, id: &TaskId, kind: &str) -> Option<AvailableAction> {
-        self.task_actions.get(id).and_then(|(_, actions)| actions.iter().find(|a| a.kind == kind).cloned())
+        self.task_actions
+            .get(id)
+            .and_then(|(_, actions)| actions.iter().find(|a| a.kind == kind).cloned())
     }
 
     fn task_command(&mut self, kind: &str) {
-        let Some((id, title, revision)) = self.selected_task().map(|t| (t.id.clone(), md::truncate(&md::one_line(&t.title), 60), self.domain.as_ref().map_or(0, |d| d.revision))) else { return };
+        let Some((id, title, revision)) = self.selected_task().map(|t| {
+            (
+                t.id.clone(),
+                md::truncate(&md::one_line(&t.title), 60),
+                self.domain.as_ref().map_or(0, |d| d.revision),
+            )
+        }) else {
+            return;
+        };
         let expected = match self.task_control(&id, kind) {
             Some(a) if !a.enabled => {
                 let why = unavailable(&a);
@@ -477,9 +617,24 @@ impl App {
             None => revision,
         };
         let (command, ok, ask) = if kind == "cancel_task" {
-            (Command::CancelTask { task_id: id.clone() }, trf!("Cancelled: {title}", "Descartada: {title}"), Some(trf!("Press x again to cancel “{title}”", "Pulsa x otra vez para descartar «{title}»")))
+            (
+                Command::CancelTask {
+                    task_id: id.clone(),
+                },
+                trf!("Cancelled: {title}", "Descartada: {title}"),
+                Some(trf!(
+                    "Press x again to cancel “{title}”",
+                    "Pulsa x otra vez para descartar «{title}»"
+                )),
+            )
         } else {
-            (Command::ReopenTask { task_id: id.clone() }, trf!("Reopened: {title}", "Reabierta: {title}"), None)
+            (
+                Command::ReopenTask {
+                    task_id: id.clone(),
+                },
+                trf!("Reopened: {title}", "Reabierta: {title}"),
+                None,
+            )
         };
         let slot = format!("{kind}:{id}");
         if let Some(ask) = ask
@@ -493,32 +648,75 @@ impl App {
 
     /// Closes a request no task was made for; it takes a second press.
     fn withdraw_request(&mut self) {
-        let Some(r) = self.selected_request().cloned() else { return };
+        let Some(r) = self.selected_request().cloned() else {
+            return;
+        };
         if r.closed {
             self.fail(tr!("It is already closed", "Ya está cerrada"));
             return;
         }
         let title = md::truncate(&self.request_title(&r), 60);
         let slot = format!("close_request:{}", r.id);
-        if !self.sending.contains_key(&slot) && !self.confirmed(&slot, trf!("Press x again to withdraw “{title}”", "Pulsa x otra vez para retirar «{title}»")) {
+        if !self.sending.contains_key(&slot)
+            && !self.confirmed(
+                &slot,
+                trf!(
+                    "Press x again to withdraw “{title}”",
+                    "Pulsa x otra vez para retirar «{title}»"
+                ),
+            )
+        {
             return;
         }
         let revision = self.domain.as_ref().map_or(0, |d| d.revision);
-        self.send(slot, None, revision, Command::CloseRequest { request_id: r.id.clone(), answer: None, withdrawn: true, title: None }, trf!("Withdrawn: {title}", "Retirada: {title}"), None);
+        self.send(
+            slot,
+            None,
+            revision,
+            Command::CloseRequest {
+                request_id: r.id.clone(),
+                answer: None,
+                withdrawn: true,
+                title: None,
+            },
+            trf!("Withdrawn: {title}", "Retirada: {title}"),
+            None,
+        );
     }
 
     /// Archives every finished task, one command each.
     fn archive_finished(&mut self) {
         let Some(d) = &self.domain else { return };
         let revision = d.revision;
-        let done: Vec<TaskId> = d.tasks.iter().filter(|t| t.state.terminal() && !t.archived).map(|t| t.id.clone()).collect();
+        let done: Vec<TaskId> = d
+            .tasks
+            .iter()
+            .filter(|t| t.state.terminal() && !t.archived)
+            .map(|t| t.id.clone())
+            .collect();
         if done.is_empty() {
-            self.fail(tr!("Nothing finished to archive", "No hay nada terminado que archivar"));
+            self.fail(tr!(
+                "Nothing finished to archive",
+                "No hay nada terminado que archivar"
+            ));
             return;
         }
         for id in done {
-            let title = self.task(&id).map(|t| md::truncate(&md::one_line(&t.title), 60)).unwrap_or_default();
-            self.send(format!("archive:{id}"), None, revision, Command::ArchiveTask { task_id: id, archived: true }, trf!("Archived: {title}", "Archivada: {title}"), None);
+            let title = self
+                .task(&id)
+                .map(|t| md::truncate(&md::one_line(&t.title), 60))
+                .unwrap_or_default();
+            self.send(
+                format!("archive:{id}"),
+                None,
+                revision,
+                Command::ArchiveTask {
+                    task_id: id,
+                    archived: true,
+                },
+                trf!("Archived: {title}", "Archivada: {title}"),
+                None,
+            );
         }
     }
 }
@@ -540,7 +738,10 @@ mod tests {
             review_prs: false,
             final_presentation: None,
             pr_id: None,
-            dependencies: deps.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(),
+            dependencies: deps
+                .iter()
+                .map(|d| TaskId::from(*d))
+                .collect::<BTreeSet<_>>(),
             stack: None,
             documents: BTreeMap::new(),
             archived: false,
@@ -548,13 +749,23 @@ mod tests {
     }
 
     fn shape(tasks: &[Task]) -> Vec<(String, usize, bool)> {
-        tree(&tasks.iter().collect::<Vec<_>>()).into_iter().map(|r| (r.id.0, r.depth, r.last)).collect()
+        tree(&tasks.iter().collect::<Vec<_>>())
+            .into_iter()
+            .map(|r| (r.id.0, r.depth, r.last))
+            .collect()
     }
 
     #[test]
     fn a_task_nests_under_its_dependency_and_parallel_ones_share_a_level() {
         let tasks = [task("a", &[]), task("b", &["a"]), task("c", &[])];
-        assert_eq!(shape(&tasks), vec![("a".into(), 0, false), ("b".into(), 1, true), ("c".into(), 0, true)]);
+        assert_eq!(
+            shape(&tasks),
+            vec![
+                ("a".into(), 0, false),
+                ("b".into(), 1, true),
+                ("c".into(), 0, true)
+            ]
+        );
     }
 
     #[test]

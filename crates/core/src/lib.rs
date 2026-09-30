@@ -22,6 +22,7 @@ pub mod update;
 pub mod upkeep;
 pub mod usage;
 pub mod view;
+pub mod views;
 
 pub use event::{DaemonObservation, Event, HookEvent, ReviewVerdict};
 pub use model::*;

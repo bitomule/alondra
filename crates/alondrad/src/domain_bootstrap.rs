@@ -130,6 +130,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/orchestrator/candidates", get(orchestrator_candidates))
         .route("/agents/waiting-machine", post(agent_waiting_machine))
         .merge(crate::domain_api::routes())
+        .merge(crate::views::routes::router())
         .with_state(state)
         .merge(crate::v2_client_routes::router(client))
 }
@@ -381,11 +382,10 @@ async fn orchestrator_decision(
             "unknown orchestrator decision",
         ));
     };
-    let executor = crate::domain_orchestrator::executor(state.domain(), &state.home);
     let body = body.map(|Json(body)| body);
-    match tokio::task::spawn_blocking(move || {
-        crate::domain_orchestrator::decide(&executor, decision, body.as_ref())
-    })
+    let domain = state.domain();
+    let home = state.home.clone();
+    match tokio::task::spawn_blocking(move || apply_orchestrator_decision(domain, &home, decision, body.as_ref()))
     .await
     {
         Ok(answer) => {
@@ -397,6 +397,27 @@ async fn orchestrator_decision(
         }
         Err(_) => storage(),
     }
+}
+
+/// Shared adapter used by `/agents/{id}/messages` and the views action dispatcher.
+pub(crate) async fn send_agent_message(
+    domain: &DomainRuntime,
+    home: &Path,
+    sender: &str,
+    agent: &alondra_core::domain_v2::AgentId,
+    body: Value,
+) -> Value {
+    crate::domain_messages::relayed(domain, home, sender, agent.clone(), Some(&body)).await
+}
+
+/// Shared adapter used by explicit orchestrator routes and the views action dispatcher.
+pub(crate) fn apply_orchestrator_decision(
+    domain: Arc<DomainRuntime>,
+    home: &Path,
+    decision: crate::domain_orchestrator::Decision,
+    body: Option<&Value>,
+) -> Value {
+    crate::domain_orchestrator::decide(&crate::domain_orchestrator::executor(domain, home), decision, body)
 }
 
 /// The orchestrator execution calling a tool route: local, with its current bearer.
@@ -959,7 +980,7 @@ mod tests {
                 .status(),
             StatusCode::NOT_FOUND
         );
-        let path = "/summary";
+        let path = "/views/home?protocol=1&client=tui&lang=en";
         let timestamp = alondra_core::now_millis().to_string();
         let message = crate::auth::signed_message("GET", path, &timestamp, b"");
         let signature: Signature = key.sign(message.as_bytes());
@@ -976,7 +997,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body: serde_json::Value = response.json().await.unwrap();
-        assert_eq!(body["protocol_version"], 2);
+        assert_eq!(body["protocol"], 1);
         assert_eq!(body["data_epoch"].as_str(), Some(epoch.as_str()));
         let producer = client
             .get(format!("{base}/capabilities"))

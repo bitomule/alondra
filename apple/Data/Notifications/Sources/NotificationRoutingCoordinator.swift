@@ -15,7 +15,6 @@ public final class NotificationRoutingCoordinator {
     }
     public struct Authorized {
         public let item: NotificationPayload.Item
-        public let question: NotificationPayload.Question?
         public let binding: NotificationPayload.Binding
         fileprivate let capability: UUID
     }
@@ -63,7 +62,7 @@ public final class NotificationRoutingCoordinator {
               let bound = NotificationPayload.BoundItem(userInfo: payload), bound.binding == hint else {
             throw NotificationDecryptionError.invalidPayload
         }
-        return Authorized(item: bound.item, question: NotificationPayload.Question(userInfo: payload), binding: hint,
+        return Authorized(item: bound.item, binding: hint,
                           capability: live.capability)
     }
 
@@ -80,9 +79,9 @@ public final class NotificationRoutingCoordinator {
 
     public func submit(_ authorized: Authorized, actionID: String, text: String?) async -> NotificationActionResult? {
         guard isValid(authorized), let client = entries[authorized.binding]?.entry.client,
-              let action = NotificationAction(item: authorized.item, question: authorized.question,
-                                              action: actionID, text: text) else { return nil }
-        let result = await client.submit(action, authorized.item)
+              let action = NotificationAction(item: authorized.item, action: actionID, text: text,
+                                              lang: Locale.preferredLanguages.first?.split(separator: "-").first.map(String.init) ?? "en") else { return nil }
+        let result = await client.submit(action.request(for: authorized.item))
         guard isValid(authorized), !Task.isCancelled else { return nil }
         return result
     }

@@ -1,8 +1,10 @@
-import AlondraFleetFeature
 import AlondraShared
 import AlondraWorkspaceFeature
 import ComposableArchitecture
 import SwiftUI
+import AlondraViews
+import AlondraViewsUI
+import AppKit
 
 struct MacServiceWorkspace<AccountContent: View>: View {
     @Bindable var store: StoreOf<ServiceRootFeature>
@@ -19,16 +21,16 @@ struct MacServiceWorkspace<AccountContent: View>: View {
 
     var body: some View {
         NavigationSplitView {
-            MacServiceSidebar(store: store, presentation: presentation)
+            MacServiceSidebar(presentation: presentation)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
                 .searchable(text: Binding(get: { presentation.query }, set: {
                     presentation.send(.queryChanged($0))
-                    presentation.send(.searchRequested(inbox: store.triage.triage.queue, board: store.tasks.taskBoard, fleet: store.fleet.fleet.snapshot))
+                    presentation.send(.searchRequested)
                 }), placement: .sidebar, prompt: "Search")
                 .searchFocused($searchFocused)
         } detail: {
             ZStack {
-                MacServiceDetail(store: store, presentation: presentation)
+                MacServiceDetail(presentation: presentation)
                     .id(presentation.selection)
                     .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity))
             }
@@ -36,200 +38,495 @@ struct MacServiceWorkspace<AccountContent: View>: View {
             .overlay(alignment: .top) { ServiceDeliveryBanner(store: store) }
         }
         .environment(\.searchActive, searchFocused)
-        .environment(\.yourTurnTasks, store.workspace?.yourTurnTasks ?? [])
         .navigationTitle("Alondra")
-        .navigationSubtitle(store.macSubtitle)
+        .navigationSubtitle(presentation.sidebarDocument?.status.summary ?? "Connecting to the fleet…")
         .toolbar {
-            if store.triage.triage.connection == .online, let machine = store.workspace?.runtime?.machine {
-                ToolbarItem(placement: .status) { StatusGauges(machine: machine, usage: store.workspace?.runtime?.usage) }
+            if let status = presentation.sidebarDocument?.status {
+                ToolbarItem(placement: .status) { MacViewStatusGauges(gauges: status.gauges) }
                     .sharedBackgroundVisibility(.hidden)
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Button { presentation.send(.newRequestPresented(true)) } label: { Label("New", systemImage: "square.and.pencil") }
+                Button { presentation.send(.select(.viewKey("new_request"))) } label: { Label("New", systemImage: "square.and.pencil") }
                     .keyboardShortcut("n").help("Ask for new work (⌘N)")
-                Button { store.send(.tasks(.board(.archiveTapped))) } label: { Label("Archive Completed", systemImage: "archivebox") }
-                    .disabled(!store.tasks.board.canArchive || store.tasks.board.isArchiving)
-                    .help("Archive completed tasks")
             }
         }
         .focusedSceneValue(\.workspaceSettingsStore, isActive ? store : nil)
-        .sheet(isPresented: Binding(get: { presentation.newRequestPresented }, set: { presentation.send(.newRequestPresented($0)) })) {
-            ServiceNewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
-        }
         .sheet(isPresented: Binding(get: { store.settingsPresented }, set: { store.send(.settingsPresented($0)) })) {
             accountContent.frame(minWidth: 600, minHeight: 520)
         }
-        .task { guard isActive else { return }; await store.send(.appeared).finish() }
-        .task { guard isActive else { return }; await store.send(.tasks(.appeared)).finish() }
-        .task { guard isActive else { return }; await store.send(.fleet(.appeared)).finish() }
+        .task { guard isActive else { return }; await store.send(.appeared).finish(); presentation.send(.appeared) }
         .onDisappear {
             presentation.send(.disappeared)
             guard isActive else { return }
             store.send(.disappeared)
-            store.send(.tasks(.disappeared))
-            store.send(.fleet(.disappeared))
-        }
-        .onChange(of: presentation.selection) { _, selection in
-            switch selection {
-            case .item(let id): store.send(.focusInbox(id))
-            case .node(let id): store.send(.fleet(.openNode(id)))
-            case .task(let id): store.send(.tasks(.openTask(id)))
-            case .request, .schedules, nil: break
-            }
-        }
-        .onChange(of: store.triage.triage.queue.map(\.id), initial: true) { _, ids in
-            presentation.send(.inboxChanged(ids))
         }
         .frame(minWidth: 860, minHeight: 540)
     }
 }
 
 private struct MacServiceSidebar: View {
-    let store: StoreOf<ServiceRootFeature>
     let presentation: StoreOf<MacPresentationFeature>
     var body: some View {
         List(selection: Binding(get: { presentation.selection }, set: { presentation.send(.select($0)) })) {
-            if !presentation.smartStatus.isEmpty {
-                Label(presentation.smartStatus, systemImage: "text.magnifyingglass").font(.callout).foregroundStyle(.secondary)
-            }
-            if let entry = store.fleet.fleet.snapshot?.orchestrator {
-                Section {
-                    NodeRow(node: entry.node).tag(MacPresentationFeature.Selection.node(entry.id))
-                } header: { SidebarCountHeader(title: String(localized: "Orchestrator"), count: 0, tint: .orange) }
-            }
-            MacServiceInboxSection(store: store, presentation: presentation, pullRequests: false)
-            MacServiceInboxSection(store: store, presentation: presentation, pullRequests: true)
-            Section(isExpanded: Binding(get: { presentation.tasksExpanded }, set: { presentation.send(.tasksExpanded($0)) })) {
-                Label("Scheduled Tasks", systemImage: "calendar.badge.clock").tag(MacPresentationFeature.Selection.schedules)
-                ForEach(presentation.withState { $0.groups(in: store.tasks.taskBoard) }) { group in
-                    DisclosureGroup(isExpanded: Binding(get: { presentation.withState { $0.groupExpanded(group) } }, set: { presentation.send(.groupExpanded(String(describing: group.kind), defaultExpanded: !group.isFinished, expanded: $0)) })) {
-                        ForEach(group.tasks) { task in
-                            MacServiceTaskRow(task: task, board: store.tasks.taskBoard, subtitle: store.tasks.presentation.sidebarSubtitle(for: task)).tag(MacPresentationFeature.Selection.task(task.id))
-                        }
-                        ForEach(group.requests) { request in
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(store.tasks.presentation.title(of: request)).fontWeight(.medium).lineLimit(2)
-                                Text(verbatim: store.tasks.presentation.sidebarSubtitle(for: request)).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }.padding(.vertical, 2).accessibilityElement(children: .combine).tag(MacPresentationFeature.Selection.request(request.id))
-                        }
-                    } label: { TaskGroupLabel(group: group) }
+            if let document = presentation.sidebarDocument {
+                if !presentation.smartStatus.isEmpty {
+                    Label(presentation.smartStatus, systemImage: "text.magnifyingglass").font(.callout).foregroundStyle(.secondary)
                 }
-            } header: { SidebarCountHeader(title: String(localized: "Tasks"), count: store.tasks.taskBoard.openCount, tint: .gray) }
-            ForEach(presentation.withState { $0.projects(store.fleet.fleet.snapshot) }) { section in
-                Section(isExpanded: Binding(get: { presentation.withState { $0.projectExpanded(section.name) } }, set: { presentation.send(.projectExpanded(section.name, $0)) })) {
-                    ForEach(section.nodes) { entry in
-                        NodeRow(node: entry.node, tasks: entry.tasks).badge(entry.pendingCount)
-                            .tag(MacPresentationFeature.Selection.node(entry.id))
-                            .contextMenu {
-                                Button(role: .destructive) { store.send(.fleet(.fleet(.closeRequested(entry.id)))) } label: { Label("Close Node…", systemImage: "xmark.bin") }
-                            }
+                ForEach(document.sections, id: \.id) { section in
+                    Section(isExpanded: Binding(
+                        get: { sidebarSectionExpanded(section) },
+                        set: { presentation.send(.sidebarSectionExpanded(section.id, $0)) }
+                    )) {
+                        ForEach(visibleRows(section), id: \.id) { row in
+                            MacViewSidebarRow(row: row, presentation: presentation, filterText: presentation.query)
+                        }
+                    } header: {
+                        sectionHeader(section)
                     }
-                } header: { ProjectHeader(name: section.name, nodes: section.nodes.map(\.node)) }
+                }
+            } else if let error = presentation.viewError {
+                VStack(spacing: 10) {
+                    ContentUnavailableView("Couldn’t load the sidebar", systemImage: "exclamationmark.triangle", description: Text(error))
+                    Button("Retry") { presentation.send(.appeared) }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ProgressView("Connecting to the fleet…").frame(maxWidth: .infinity)
             }
         }
-        .animation(.snappy, value: store.triage.triage.queue.map(\.id))
-        .closeConfirmation(Binding(get: { store.fleet.fleet.closeRequest }, set: { if $0 == nil { store.send(.fleet(.fleet(.closeCancelled))) } })) { _ in
-            store.send(.fleet(.fleet(.closeConfirmed)))
+        .animation(.snappy, value: presentation.sidebarDocument?.version)
+    }
+
+    private func sidebarSectionExpanded(_ section: ViewSection) -> Bool {
+        if section.id == "tasks" { return presentation.tasksExpanded }
+        if section.id.hasPrefix("project:") {
+            return presentation.withState { $0.projectExpanded(String(section.id.dropFirst("project:".count))) }
         }
-        .closeRefusalAlert(Binding(get: { store.fleet.fleet.closeRefusal }, set: { if $0 == nil { store.send(.fleet(.fleet(.dismissCloseRefusal))) } }))
+        return !section.collapsed
+    }
+
+    private func visibleRows(_ section: ViewSection) -> [Row] {
+        let rows = section.items.compactMap { item -> Row? in
+            guard case let .row(row) = item else { return nil }
+            return row
+        }
+        return presentation.withState { state in
+            if section.id.hasPrefix("project:"), let matches = state.smartMatches {
+                return rows.filter { matches.contains($0.id) }
+            }
+            guard !state.query.isEmpty else { return rows }
+            return rows.filter { row in
+                let childText = row.children.map { [$0.title, $0.subtitle ?? ""].joined(separator: " ") }.joined(separator: " ")
+                return state.matches(([row.title, row.subtitle ?? ""] + row.badges.map(\.text) + [childText]).joined(separator: " "))
+            }
+        }
+    }
+
+    @ViewBuilder private func sectionHeader(_ section: ViewSection) -> some View {
+        if section.id.hasPrefix("project:") {
+            let rows = visibleRows(section)
+            let urgent = rows.filter { row in
+                if case let .count(count)? = row.trailing { return count > 0 }
+                return false
+            }.count
+            HStack(spacing: 6) {
+                Text(section.title ?? String(section.id.dropFirst("project:".count)))
+                if urgent > 0 {
+                    Circle().fill(NodeState.waitingAnswer.color).frame(width: 6, height: 6)
+                        .help("\(urgent) nodes waiting")
+                }
+            }
+        } else {
+            SidebarCountHeader(title: section.title ?? section.id.capitalized,
+                               count: Int(section.count ?? 0), tint: sectionTint(section.id))
+        }
     }
 }
 
-private struct MacServiceInboxSection: View {
-    let store: StoreOf<ServiceRootFeature>
-    let presentation: StoreOf<MacPresentationFeature>
-    let pullRequests: Bool
-    var body: some View {
-        let items = presentation.withState { $0.inbox(store.triage.triage.queue, pullRequests: pullRequests) }
-        if !pullRequests || !items.isEmpty {
-            Section {
-                if items.isEmpty {
-                    Label(presentation.query.isEmpty ? "All caught up" : "Nothing matches", systemImage: presentation.query.isEmpty ? "checkmark.circle" : "magnifyingglass").foregroundStyle(.secondary)
-                }
-                ForEach(items) { item in
-                    let context = store.withState { $0.rowContext(item) }
-                    InboxRow(item: item, agent: context.agent, date: context.date, stackedOn: context.stackedOn,
-                             asks: store.withState { $0.asksOnPullRequest(item) }).tag(MacPresentationFeature.Selection.item(item.id))
-                }
-            } header: {
-                SidebarCountHeader(title: pullRequests ? String(localized: "Pull Requests") : String(localized: "Waiting for You"), count: store.withState { $0.inboxCount(pullRequests: pullRequests) }, tint: pullRequests ? .purple : .orange)
-            }
-        }
-    }
-}
-
-private struct MacServiceTaskRow: View {
-    let task: DomainV2.Task
-    let board: TaskBoard
-    let subtitle: String
-    var body: some View {
-        VStack(alignment: .leading, spacing: 2) {
-            Text(task.title).fontWeight(.medium).strikethrough(task.state == .cancelled).lineLimit(2)
-            Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-        }.padding(.vertical, 2).accessibilityElement(children: .combine).accessibilityValue(task.state.label)
+private func sectionTint(_ id: String) -> Color {
+    switch id {
+    case "waiting": .orange
+    case "pull_requests": .purple
+    case "tasks": .gray
+    case "orchestrator": .orange
+    default: .secondary
     }
 }
 
 private struct MacServiceDetail: View {
-    @Bindable var store: StoreOf<ServiceRootFeature>
     let presentation: StoreOf<MacPresentationFeature>
+    @Environment(\.openURL) private var openURL
     var body: some View {
-        switch presentation.selection {
-        case .item(let id):
-            if let selected = store.pullRequestID, id == ServiceRootFeature.State.itemID(of: selected),
-               let child = store.scope(state: \.pullRequests, action: \.pullRequests).first(where: { $0.id == selected }) {
-                ServicePullRequestView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
-            } else if let child = store.scope(state: \.triage.question, action: \.triage.question.presented), id == child.question.item.id {
-                ServiceQuestionView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) })
-            } else if let child = store.scope(state: \.triage.documents, action: \.triage.documents).first(where: { $0.subject.id == id }) {
-                ServiceDocumentView(store: child, taskTitle: store.withState { $0.taskTitle(forInboxID: id) }, markRead: { store.send(.triage(.triage(.hide(id)))) })
-            } else { MacServiceHome(store: store, presentation: presentation) }
-        case .node(let id):
-            if let child = store.scope(state: \.fleet.nodes, action: \.fleet.nodes).first(where: { $0.sessionID == id }) {
-                ServiceNodeView(store: child, presentation: store.fleet.presentation,
-                    pending: store.triage.triage.queue.filter { $0.agentId?.rawValue == child.sessionID },
-                    openInbox: { presentation.send(.select(.item($0))) },
-                    openTask: { presentation.send(.select(.task($0))) })
-            } else { ContentUnavailableView("This node is gone", systemImage: "questionmark.circle") }
-        case .task:
-            if let child = store.scope(state: \.tasks.detail, action: \.tasks.detail.presented) {
-                ServiceTaskDetailView(store: child, context: store.tasks.detailContext,
-                    openTask: { presentation.send(.select(.task($0))) }, focusInbox: { presentation.send(.select(.item($0))) })
-            } else { ContentUnavailableView("This task is gone", systemImage: "questionmark.circle") }
-        case .request(let id):
-            if let request = store.tasks.taskBoard.request(id) {
-                ServiceRequestDetail(request: request, store: store.scope(state: \.tasks, action: \.tasks),
-                    selectTask: { presentation.send(.select(.task($0))) })
-            } else { ContentUnavailableView("This request is gone", systemImage: "questionmark.circle") }
-        case .schedules: ServiceSchedulesView(store: store.scope(state: \.tasks, action: \.tasks))
-        case nil: MacServiceHome(store: store, presentation: presentation)
+        Group {
+            if let document = presentation.detailDocument {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 18) {
+                        if let title = document.title { Text(title).font(.title2.weight(.semibold)) }
+                        ForEach(document.sections, id: \.id) { section in
+                            SectionView(section: section,
+                                        onAction: perform,
+                                        onLink: openLink,
+                                        onMore: { presentation.send(.select(.viewKey($0))) },
+                                        onForm: { presentation.send(.beginViewForm($0)) },
+                                        onContent: { presentation.send(.contentRequested($0)) },
+                                        onAttachment: { presentation.send(.attachmentRequested($0)) })
+                        }
+                    }.frame(maxWidth: 900, alignment: .leading).padding(24)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .overlay(alignment: .top) {
+                    if let error = presentation.viewError {
+                        Text(error).font(.callout).foregroundStyle(.red).padding(10)
+                            .background(.regularMaterial, in: .capsule).padding(.top, 10)
+                    }
+                }
+                .overlay {
+                    VStack(spacing: 0) {
+                        ForEach(Array(keyedActions(document).enumerated()), id: \.offset) { _, action in
+                            if let key = action.key, key.count == 1, let character = key.first {
+                                Button(action.label) { perform(action) }
+                                    .keyboardShortcut(KeyEquivalent(character), modifiers: [])
+                                    .hidden().frame(width: 0, height: 0)
+                            }
+                        }
+                    }.accessibilityHidden(true)
+                }
+                .sheet(isPresented: Binding(get: { presentation.actionPresented }, set: { presentation.send(.actionPresented($0)) })) {
+                    MacViewActionSheet(store: actionStore, form: presentation.activeForm,
+                                       onDismiss: { presentation.send(.actionPresented(false)) })
+                        .frame(minWidth: 420, minHeight: 240)
+                }
+                .sheet(isPresented: Binding(get: { presentation.contentPresented }, set: { presentation.send(.contentPresented($0)) })) {
+                    MacContentViewer(title: presentation.contentTitle, contentText: presentation.contentBody,
+                                     isDiff: presentation.contentIsDiff, loading: presentation.contentLoading,
+                                     error: presentation.contentError, imageData: presentation.contentImageData)
+                        .frame(minWidth: 620, minHeight: 420)
+                }
+            } else if let error = presentation.viewError {
+                ContentUnavailableView("Couldn’t load this view", systemImage: "exclamationmark.triangle", description: Text(error))
+            } else { ProgressView("Loading…") }
+        }
+    }
+
+    private func perform(_ action: AlondraViews.Action) {
+        if let link = action.link { openLink(link) }
+        else { presentation.send(.beginViewAction(action)) }
+    }
+
+    private func openLink(_ link: AlondraViews.Link) {
+        switch link {
+        case let .view(key): presentation.send(.select(.viewKey(key)))
+        case let .url(raw):
+            guard let url = URL(string: raw), url.scheme?.lowercased() == "https",
+                  let host = url.host?.lowercased(), host == "github.com" || host.hasSuffix(".github.com") else { return }
+            openURL(url)
+        case let .local(local):
+            if case let .attach(session) = local {
+                presentation.send(.select(.viewKey("card:\(session)")))
+            }
+        }
+    }
+
+    private var actionStore: StoreOf<ActionFeature> {
+        presentation.scope(state: \.actionFeature, action: \.action)
+    }
+
+    private func keyedActions(_ document: ViewDocument) -> [AlondraViews.Action] {
+        document.sections.flatMap(\.items).flatMap(keyedActions)
+    }
+    private func keyedActions(_ item: ViewItem) -> [AlondraViews.Action] {
+        switch item {
+        case let .card(card): return card.actions + card.children.flatMap { $0.actions }
+        case let .row(row): return row.actions + row.children.flatMap { $0.actions }
+        case let .actions(bar): return bar.actions
+        case let .form(form): return [form.submit]
+        case let .notice(notice): return [notice.action].compactMap { $0 }
+        default: return []
         }
     }
 }
 
-private struct MacServiceHome: View {
-    let store: StoreOf<ServiceRootFeature>
-    let presentation: StoreOf<MacPresentationFeature>
+private struct MacContentViewer: View {
+    let title: String
+    let contentText: String
+    let isDiff: Bool
+    let loading: Bool
+    let error: String?
+    let imageData: Data?
+
     var body: some View {
-        if !store.triage.triage.hasSnapshot {
-            ProgressView("Connecting to the fleet…")
-        } else if store.triage.triage.queue.isEmpty {
-            ContentUnavailableView {
-                Label("All caught up", systemImage: "checkmark.circle")
-            } description: {
-                Text("No node needs you right now. Anything new will show up in Waiting for You.")
-            } actions: {
-                Button("Ask for Something New…") { presentation.send(.newRequestPresented(true)) }
+        VStack(alignment: .leading, spacing: 12) {
+            Text(title).font(.title3.weight(.semibold))
+            if loading { ProgressView("Loading…") }
+            else if let error { ContentUnavailableView("Couldn’t load content", systemImage: "exclamationmark.triangle", description: Text(error)) }
+            else if let imageData, let image = NSImage(data: imageData) {
+                Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-        } else {
-            ContentUnavailableView {
-                Label("\(store.triage.triage.queue.count) things waiting for you", systemImage: "tray.full")
-            } description: {
-                Text("Answer, and it moves on to the next one by itself.")
-            } actions: {
-                Button("Start") { presentation.send(.select(store.triage.triage.queue.first.map { .item($0.id) })) }
-                    .keyboardShortcut(.defaultAction).controlSize(.large)
+            else {
+                ScrollView([.vertical, .horizontal]) {
+                    Text(contentText).font(isDiff ? .system(.body, design: .monospaced) : .body)
+                        .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(12)
+                }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+            }
+        }.padding(20).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+}
+
+private struct MacViewActionSheet: View {
+    @Bindable var store: StoreOf<ActionFeature>
+    let form: AlondraViews.Form?
+    let onDismiss: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if let action = store.action {
+                Text(action.label).font(.title3.weight(.semibold))
+                ActionInputView(store: store, form: form)
+                HStack {
+                    Spacer()
+                    Button(store.stamp == nil ? "Cancel" : "Done") { store.send(.dismiss); onDismiss() }.keyboardShortcut(.cancelAction)
+                    Button(action.label) { store.send(.submit) }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!action.enabled || store.inFlight)
+                }
             }
         }
+        .padding(24)
+        .confirmationDialog(store.confirmation?.title ?? "", isPresented: Binding(get: { store.confirmation != nil }, set: { if !$0 { store.send(.cancelConfirmation) } })) {
+            if let confirmation = store.confirmation {
+                Button(confirmation.button, role: .destructive) { store.send(.confirm) }
+                Button("Cancel", role: .cancel) { store.send(.cancelConfirmation) }
+            }
+        } message: {
+            if let confirmation = store.confirmation { Text(confirmation.message) }
+        }
+        .alert("The item changed", isPresented: Binding(get: { store.changed != nil }, set: { if !$0 { store.send(.dismiss) } })) {
+            Button("Continue", role: .destructive) { store.send(.sendChangedAction) }
+            Button("Cancel", role: .cancel) { store.send(.dismiss); onDismiss() }
+        } message: {
+            if let changed = store.changed { Text(changed.button) }
+        }
+    }
+}
+
+private struct MacViewSidebarRow: View {
+    let row: Row
+    let presentation: StoreOf<MacPresentationFeature>
+    let filterText: String
+    @ViewBuilder var body: some View {
+        if let selectionTag { rowContent.tag(selectionTag) }
+        else { rowContent }
+    }
+    @ViewBuilder private var rowContent: some View {
+        Group {
+            if row.icon == .node && !row.children.isEmpty {
+                VStack(alignment: .leading, spacing: 3) {
+                    rowLabel
+                    ForEach(visibleChildren, id: \.id) { child in
+                        MacNodeTaskRow(row: child)
+                    }
+                }
+            } else if row.children.isEmpty {
+                rowLabel
+            } else {
+                DisclosureGroup(isExpanded: Binding(
+                    get: { presentation.withState { $0.rowExpanded(row.id, defaultExpanded: true) } },
+                    set: { presentation.send(.rowExpanded(row.id, defaultExpanded: true, expanded: $0)) }
+                )) {
+                    ForEach(visibleChildren, id: \.id) { child in
+                        if let selectionTag = selectionTag(for: child) {
+                            MacTaskSidebarRow(row: child).tag(selectionTag)
+                        } else {
+                            MacTaskSidebarRow(row: child)
+                        }
+                    }
+                } label: { rowLabel }
+            }
+        }
+        .contextMenu {
+            ForEach(Array(row.actions.enumerated()), id: \.offset) { _, action in
+                Button(role: action.style == .destructive ? .destructive : nil) {
+                    presentation.send(.beginViewAction(action))
+                } label: { Text(action.label) }
+                    .disabled(!action.enabled)
+            }
+        }
+    }
+    @ViewBuilder private var rowLabel: some View {
+        if row.icon == .task && !row.children.isEmpty {
+            HStack(spacing: 7) {
+                StatusDot(color: taskTint(row))
+                Text(row.title).fontWeight(.semibold)
+                Spacer(minLength: 4)
+                if case let .count(count)? = row.trailing {
+                    Text(count, format: .number).font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                }
+            }.font(.callout)
+        } else if row.icon == .node || row.icon == .orchestrator {
+            HStack(spacing: 8) {
+                StatusDot(color: nodeTint).frame(width: 16)
+                Text(shortName(row.title)).lineLimit(1)
+                if row.icon == .orchestrator { Image(systemName: "sparkle").font(.caption2).foregroundStyle(.secondary) }
+                if let subtitle = row.subtitle {
+                    Spacer(minLength: 4)
+                    Text(verbatim: subtitle).font(.caption).foregroundStyle(nodeTint == .yellow ? .orange : .secondary).lineLimit(1)
+                }
+                if let badge = row.badges.first {
+                    Text(badge.text).font(.caption)
+                        .foregroundStyle(badge.tone == .warning || badge.tone == .critical ? .orange : .secondary)
+                        .lineLimit(1)
+                }
+                if case let .count(count)? = row.trailing { Text(count, format: .number).font(.caption).monospacedDigit().foregroundStyle(.secondary) }
+            }
+            .help(row.tooltip ?? [row.title, row.subtitle ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+            .accessibilityElement(children: .combine)
+        } else {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 8) {
+                Image(systemName: symbol).foregroundStyle(tint).frame(width: 16)
+                Text(row.title).fontWeight(.medium).strikethrough(row.struck).lineLimit(2)
+                Spacer(minLength: 4)
+                if case let .count(value)? = row.trailing { Text("\(value)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+            }
+            if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).padding(.leading, 24) }
+            if !row.badges.isEmpty { Text(row.badges.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).padding(.leading, 24).lineLimit(1) }
+        }
+        .padding(.vertical, 3)
+        .accessibilityElement(children: .combine)
+        }
+    }
+    private var selectionTag: MacPresentationFeature.Selection? {
+        guard case let .view(key)? = row.link else { return nil }
+        return .viewKey(key)
+    }
+    private var visibleChildren: [Row] {
+        guard !filterText.isEmpty else { return row.children }
+        return row.children.filter { child in
+            let text = ([child.title, child.subtitle ?? ""] + child.badges.map(\.text)).joined(separator: " ")
+            return text.localizedCaseInsensitiveContains(filterText)
+        }
+    }
+    private var symbol: String {
+        switch row.icon {
+        case .question: "questionmark.bubble.fill"
+        case .action: "hand.point.right.fill"
+        case .document: "doc.text.fill"
+        case .pullRequest: "arrow.triangle.pull"
+        case .node: "cpu"
+        case .orchestrator: "point.3.connected.trianglepath.dotted"
+        case .mission: "scope"
+        case .request: "paperplane"
+        case .schedule: "calendar.badge.clock"
+        case .task: "checklist"
+        default: "bell.fill"
+        }
+    }
+    private var tint: Color {
+        switch row.icon {
+        case .question: .orange
+        case .action: .pink
+        case .document: .blue
+        case .pullRequest: .green
+        case .node: nodeTint
+        case .task: .secondary
+        default: .secondary
+        }
+    }
+    private var nodeTint: Color {
+        switch row.stateKey {
+        case "busy", "working": .green
+        case "free", "done", "delivered": .gray
+        case "waiting_machine": .yellow
+        case "waiting_answer": .orange
+        case "your_turn": .pink
+        case "waiting_merge": .mint
+        case "unclear": .purple
+        case "stalled": .red
+        default: .gray
+        }
+    }
+    private func taskTint(_ row: Row) -> Color {
+        color(forTaskRow: row)
+    }
+    private func selectionTag(for row: Row) -> MacPresentationFeature.Selection? {
+        guard case let .view(key)? = row.link else { return nil }
+        return .viewKey(key)
+    }
+}
+
+private struct MacTaskSidebarRow: View {
+    let row: Row
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 7) {
+                StatusDot(color: taskColor).frame(width: 6)
+                Text(row.title).fontWeight(.medium).strikethrough(row.struck).lineLimit(2)
+            }
+            if let subtitle = row.subtitle { Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+        }.padding(.vertical, 2).accessibilityElement(children: .combine)
+    }
+    private var taskColor: Color {
+        color(forTaskRow: row)
+    }
+}
+
+private struct MacNodeTaskRow: View {
+    let row: Row
+    var body: some View {
+        HStack(spacing: 7) {
+            StatusDot(color: row.struck ? .gray : taskTint).frame(width: 6)
+            Text(row.title).strikethrough(row.struck).lineLimit(1)
+        }
+        .font(.caption).foregroundStyle(.secondary).padding(.leading, 19)
+        .accessibilityElement(children: .combine)
+    }
+    private var taskTint: Color {
+        color(forTaskRow: row)
+    }
+}
+
+private func color(forTaskRow row: Row) -> Color {
+        if row.struck { return .gray }
+        switch row.stateKey {
+        case "not_started": return .secondary
+        case "running": return .green
+        case "needs_you": return row.icon == .action ? .pink : .orange
+        case "in_review": return .mint
+        case "waiting_dependency": return .indigo
+        case "closing": return .teal
+        case "done", "cancelled", "archived": return .gray
+        case "defining": return .purple
+        default: break
+        }
+        guard let tone = row.badges.first?.tone else { return .gray }
+        switch tone {
+        case .neutral: return .gray
+        case .info: return .indigo
+        case .accent: return .orange
+        case .success: return .green
+        case .warning: return .orange
+        case .critical: return .red
+        }
+}
+
+private struct MacViewStatusGauges: View {
+    let gauges: [WireGauge]
+    var body: some View {
+        HStack(spacing: 12) {
+            ForEach(Array(gauges.enumerated()), id: \.offset) { _, gauge in
+                HStack(spacing: 5) {
+                    Capsule().fill(.quaternary).frame(width: 28, height: 4).overlay(alignment: .leading) {
+                        Capsule().fill(color(gauge.level)).frame(width: 28 * max(0.06, min(gauge.value, 1)))
+                    }
+                    Text(gauge.text).font(.caption).monospacedDigit().foregroundStyle(gauge.level == .hot ? .red : .secondary)
+                }
+                .help(gauge.detail ?? "\(gauge.label): \(gauge.text)")
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(gauge.label): \(gauge.text)")
+            }
+        }.padding(.horizontal, 6)
+    }
+    private func color(_ level: Level) -> Color {
+        switch level { case .calm: .accentColor; case .warm: .orange; case .hot: .red }
     }
 }

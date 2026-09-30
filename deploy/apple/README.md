@@ -178,3 +178,83 @@ trust status as well as the exact leaf, using C locale. Six packaging tests pass
 including the observed misleading-success status. Probe evidence is private under
 `/private/tmp/alondra-installer-identity-probe`; it is not an Alondra app build,
 installation, upload or release approval.
+
+## Scripted TestFlight beta
+
+`beta.py` adapts the installed `/beta` release checks to Alondra's two Apple
+apps and the local signed-artifact gate. Unlike that skill's generic script, it
+does not bump source versions or commit, tag, fetch changes into the checkout,
+or push. It requires a clean checkout exactly equal to reviewed `origin/main`,
+takes the version from `apple/BUILD.bazel`, and looks up independent next build
+numbers and external groups for:
+
+| Platform | ASC app ID | ASC platform |
+| --- | --- | --- |
+| iOS | `6816262826` | `IOS` |
+| Mac | `6816263014` | `MAC_OS` |
+
+It verifies ASC authentication, account/agreement health, the selected Apple
+Distribution certificate and its 14-day expiry window, both external groups,
+and both local signing/profile preflights before a build. It prepares, uploads,
+waits for `VALID` processing, writes `en-US`, `de-DE`, and `es-MX` What to Test
+localizations, adds the build to that app's configured group and confirms group
+membership and sends the TestFlight notification before starting the next platform. Mac and iOS build numbers are
+independent. It writes a private `release-result.json` and preserves artifact
+manifests. A partial run after upload names the platform and says not to upload
+again.
+
+The default is plan-only and performs no ASC calls, builds, or signing. Supply
+the app-specific external group names and localized notes in a private file
+outside the checkout. Then review the plan:
+
+```sh
+python3 deploy/apple/beta.py \
+  --notes /private/tmp/alondra-beta-notes.txt \
+  --ios-group "<iOS external group>" \
+  --macos-group "<Mac external group>" \
+  --identity "$APPLE_DISTRIBUTION_SHA1" \
+  --installer-identity "$MAC_INSTALLER_SHA1" \
+  --output-root /Volumes/Externo/alondra-beta-0.1.1
+```
+
+Notes format:
+
+```text
+[en-US]
+- Test the new workspace and selected details.
+
+[de-DE]
+- Testen Sie den neuen Arbeitsbereich und die ausgewählten Details.
+
+[es-MX]
+- Prueba el nuevo espacio de trabajo y los detalles seleccionados.
+```
+
+To execute signed builds and TestFlight ASC operations, add `--publish` and
+select the coordinated Bazel cache explicitly:
+
+```sh
+python3 deploy/apple/beta.py \
+  --notes /private/tmp/alondra-beta-notes.txt \
+  --ios-group "<iOS external group>" \
+  --macos-group "<Mac external group>" \
+  --identity "$APPLE_DISTRIBUTION_SHA1" \
+  --installer-identity "$MAC_INSTALLER_SHA1" \
+  --output-root /Volumes/Externo/alondra-beta-0.1.1 \
+  --bazel-output-user-root /Volumes/Externo/bazel/output \
+  --publish
+```
+
+Use a new output directory for each attempt. The adapter refuses an existing
+directory and refuses to re-upload a build number that changed or already
+appeared in ASC. Before running it, inspect external group names without writes:
+
+```sh
+asc testflight groups list --app 6816262826 --external --paginate --output table
+asc testflight groups list --app 6816263014 --external --paginate --output table
+```
+
+Plan mode has no `--publish` side effects; publish mode is a real release
+operation and must run only from reviewed, clean main after reserving the local
+Apple/Bazel build slot. Offline adapter tests do not claim ASC account health,
+signing, processing, review approval, or tester access.

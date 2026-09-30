@@ -1,0 +1,444 @@
+use alondra_core::domain_v2::{DomainState, TaskId};
+use alondra_core::views::{
+    Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
+    LivePullRequest, LiveSnapshot, Notice, Tone,
+};
+use serde_json::Value;
+use std::collections::BTreeMap;
+
+pub(crate) async fn gather(
+    client: &crate::v2_client_routes::Client,
+    state: &DomainState,
+    lang: Lang,
+    keys: &[String],
+) -> LiveSnapshot {
+    let nodes = client
+        .domain
+        .live
+        .nodes()
+        .into_iter()
+        .filter_map(|node| {
+            let agent = state.agents.get(&node.session_id.as_str().into())?;
+            let project = node.project();
+            let state_key = if node.status == alondra_core::NodeStatus::Free {
+                "free".to_owned()
+            } else if node.status == alondra_core::NodeStatus::Busy {
+                "busy".to_owned()
+            } else {
+                serde_json::to_value(node.state).ok()?.as_str()?.to_owned()
+            };
+            let state_label = match lang {
+                Lang::En => node.state.label().to_owned(),
+                Lang::Es => match node.state {
+                    alondra_core::NodeState::Working => "trabajando",
+                    alondra_core::NodeState::WaitingAnswer => "esperando respuesta",
+                    alondra_core::NodeState::YourTurn => "te toca",
+                    alondra_core::NodeState::WaitingMerge => "espera tu revisión",
+                    alondra_core::NodeState::Delivered => "entrega resultado",
+                    alondra_core::NodeState::WaitingMachine => "esperando máquina",
+                    alondra_core::NodeState::Done => "terminado",
+                    alondra_core::NodeState::Unclear => "no sé qué quiere",
+                    alondra_core::NodeState::Stalled => "parado",
+                }.to_owned(),
+            };
+            let summary = node.tool.as_ref().map(|tool| tool.summary.clone().unwrap_or_else(|| tool.name.clone()))
+                .or_else(|| node.daemon_needs.clone())
+                .or_else(|| node.daemon_detail.clone())
+                .or_else(|| node.last_message.clone())
+                .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
+            let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
+                alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
+                    let count = node.background.iter().filter(|item| item.kind == kind).count();
+                    (count > 0).then(|| {
+                        let noun = match (lang, kind) {
+                            (Lang::En, alondra_core::BackgroundKind::Agent) => "subagents",
+                            (Lang::En, alondra_core::BackgroundKind::Shell) => "shells",
+                            (Lang::En, alondra_core::BackgroundKind::Other) => "tasks",
+                            (Lang::Es, alondra_core::BackgroundKind::Agent) => "subagentes",
+                            (Lang::Es, alondra_core::BackgroundKind::Shell) => "shells",
+                            (Lang::Es, alondra_core::BackgroundKind::Other) => "tareas",
+                        };
+                        format!("{count} {noun}")
+                    })
+                }).collect::<Vec<_>>();
+            let background_suspect = node.background.iter().any(|item| item.suspect);
+            let background_badge = (!counts.is_empty()).then(|| {
+                let mut text = counts.join(" · ");
+                if background_suspect { text.push_str(match lang { Lang::En => " · hung?", Lang::Es => " · ¿colgado?" }); }
+                text
+            });
+            Some(LiveNode {
+                agent_id: node.session_id,
+                short_id: Some(node.short_id),
+                name: agent.name.clone(),
+                project: Some(project),
+                state_key: Some(state_key),
+                state_label: Some(state_label),
+                summary,
+                needs: node.daemon_needs.clone(),
+                background: node.background.iter().map(|item| LiveBackground {
+                    kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
+                    label: item.label.clone(),
+                    since: timestamp(item.started_at),
+                    suspect: item.suspect,
+                }).collect(),
+                background_badge,
+                background_suspect,
+                working: node.busy || node.status == alondra_core::NodeStatus::Busy,
+                waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
+                    alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
+                    alondra_core::NodeState::WaitingMachine),
+                last_message: node.last_message,
+                last_message_at: node.last_message_at.map(timestamp),
+            })
+        })
+        .collect();
+    let pull_requests = state
+        .pull_requests
+        .values()
+        .map(|pr| {
+            let details = client.details.get(&pr.id.0);
+            LivePullRequest {
+                id: pr.id.0.clone(),
+                checks_passed: details.as_ref().map(|details| {
+                    details
+                        .checks
+                        .iter()
+                        .all(|check| check.state == alondra_core::pr::CheckState::Passed)
+                }),
+                conflicts: details.as_ref().is_some_and(|details| details.conflicts),
+                stacked_on: None,
+                url: Some(alondra_core::pr::canonical(&pr.repository, pr.number)),
+            }
+        })
+        .collect();
+    let orchestrator = crate::domain_orchestrator::status(&crate::domain_orchestrator::executor(
+        client.domain.clone(),
+        client.home(),
+    ))
+    .ok()
+    .map(|value| LiveOrchestrator {
+        working: value["phase"] == "running",
+        summary: value["last_error"].as_str().map(str::to_owned),
+        queue_depth: value["queue_depth"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
+        active_run_id: value["active_run_id"].as_str().map(str::to_owned),
+        can_retry: value["can_retry"].as_bool().unwrap_or(false),
+        can_cancel: value["can_cancel"].as_bool().unwrap_or(false),
+    });
+    let update = crate::updates::status(client.home());
+    let update = update.available.then(|| Notice {
+        text: match lang {
+            Lang::En => format!("Alondra {} is available", update.latest.unwrap_or_default()),
+            Lang::Es => format!(
+                "Alondra {} está disponible",
+                update.latest.unwrap_or_default()
+            ),
+        },
+        tone: Tone::Info,
+        action: None,
+    });
+    let inbox_times = {
+        let orders = state
+            .projection()
+            .inbox
+            .into_iter()
+            .flat_map(|root| {
+                let root_order = (root.id, root.order);
+                std::iter::once(root_order)
+                    .chain(root.children.into_iter().map(|child| (child.id, child.order)))
+            })
+            .collect::<Vec<_>>();
+        let revisions = orders.iter().map(|(_, order)| *order).collect::<Vec<_>>();
+        client
+            .domain
+            .store
+            .lock()
+            .expect("domain store poisoned")
+            .revision_times(&revisions)
+            .ok()
+            .map(|times| {
+                orders
+                    .into_iter()
+                    .filter_map(|(id, order)| {
+                        times.get(&order).copied().map(|at| InboxTime {
+                            id,
+                            at: timestamp(at),
+                        })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    };
+    let sample = client
+        .gauges
+        .lock()
+        .expect("machine gauges poisoned")
+        .clone();
+    let gauges = if let Some((machine, usage)) = sample {
+        let mut published = client.views_gauges.lock().expect("published views gauges poisoned");
+        if published.as_ref().is_none_or(|(at, _, _)| at.elapsed() >= std::time::Duration::from_secs(60)) {
+            *published = Some((std::time::Instant::now(), gauges(&machine, usage.as_ref(), Lang::En),
+                gauges(&machine, usage.as_ref(), Lang::Es)));
+        }
+        published.as_ref().map(|(_, en, es)| if lang == Lang::En { en.clone() } else { es.clone() }).unwrap_or_default()
+    } else { vec![] };
+    let request_times = client
+        .domain
+        .store
+        .lock()
+        .expect("domain store poisoned")
+        .request_times()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|(id, at)| (id.0, timestamp(at)))
+        .collect();
+    let wants_new = keys
+        .iter()
+        .any(|key| key.as_str() == "new_request" || key.starts_with("new_request?"));
+    let mut projects = Vec::new();
+    let mut options = Vec::new();
+    let mut project_options = BTreeMap::new();
+    if wants_new {
+        if let Some(data) = read_json(client, "/projects").await {
+            projects = serde_json::from_value(data["projects"].clone()).unwrap_or_default();
+        }
+        if let Some(data) = read_json(client, "/options").await {
+            options = serde_json::from_value(data["options"].clone()).unwrap_or_default();
+        }
+        let selected: std::collections::BTreeSet<_> = keys
+            .iter()
+            .filter_map(|key| key.split_once('?').map(|(_, query)| query))
+            .flat_map(|query| url::form_urlencoded::parse(query.as_bytes()))
+            .filter(|(name, _)| name == "project")
+            .map(|(_, project)| project.into_owned())
+            .filter(|project| !project.is_empty())
+            .collect();
+        for project in selected {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("project", &project)
+                .finish();
+            if let Some(data) = read_json(client, &format!("/options?{query}")).await {
+                let catalog = serde_json::from_value(data["options"].clone()).unwrap_or_default();
+                project_options.insert(project, catalog);
+            }
+        }
+    }
+    let mut issues = Vec::new();
+    let mut issue_error = None;
+    let issue_keys: Vec<_> = keys
+        .iter()
+        .filter(|key| key.as_str() == "issue_picker" || key.starts_with("issue_picker?"))
+        .collect();
+    if !issue_keys.is_empty() {
+        let refresh = issue_keys.iter().any(|key| key.contains("refresh=1"));
+        let path = if refresh {
+            "/issues?refresh=1"
+        } else {
+            "/issues"
+        };
+        if let Some(data) = read_json(client, path).await {
+            issues = serde_json::from_value(data["issues"].clone()).unwrap_or_default();
+            issue_error = data["error"].as_str().map(str::to_owned);
+        }
+    }
+    let mut activity = BTreeMap::new();
+    for id in keys
+        .iter()
+        .filter_map(|key| key.strip_prefix("node:"))
+        .filter(|id| *id != "orchestrator")
+    {
+        if let Some(data) = read_json(client, &format!("/agents/{id}/activity")).await {
+            let entries: Vec<alondra_core::activity::Activity> =
+                serde_json::from_value(data["activity"].clone()).unwrap_or_default();
+            activity.insert(
+                id.to_owned(),
+                entries
+                    .into_iter()
+                    .map(|entry| LiveActivity {
+                        agent_id: entry.agent_id,
+                        agent_type: entry.agent_type,
+                        task: entry.task,
+                        tool: entry.tool,
+                        summary: entry.summary,
+                        since: timestamp(entry.since),
+                    })
+                    .collect(),
+            );
+        }
+    }
+    let mut task_history = BTreeMap::new();
+    for id in keys.iter().filter_map(|key| key.strip_prefix("task:")) {
+        let task = TaskId(id.to_owned());
+        if let Ok(history) = client
+            .domain
+            .store
+            .lock()
+            .expect("domain store poisoned")
+            .task_history(&task)
+        {
+            task_history.insert(
+                id.to_owned(),
+                history
+                    .into_iter()
+                    .map(|step| LiveHistoryStep {
+                        at: timestamp(step.at),
+                        state: step.state,
+                        summary: step.summary,
+                    })
+                    .collect(),
+            );
+        }
+    }
+    let mut search_matches = None;
+    if let Some(query) = keys.iter().filter_map(|key| key.strip_prefix("search?q=")).next() {
+        let query = url::form_urlencoded::parse(format!("q={query}").as_bytes())
+            .find(|(name, _)| name == "q").map(|(_, value)| value.into_owned()).unwrap_or_default();
+        if query.chars().count() >= 3 {
+            let path = format!("/agents/search?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>());
+            if let Some(data) = read_json(client, &path).await {
+                search_matches = serde_json::from_value(data["sessions"].clone()).ok();
+            }
+        }
+    }
+    LiveSnapshot {
+        nodes,
+        pull_requests,
+        orchestrator,
+        update,
+        gauges,
+        inbox_times,
+        request_times,
+        projects,
+        options,
+        project_options,
+        issues,
+        issue_error,
+        activity,
+        task_history,
+        search_matches,
+    }
+}
+
+async fn read_json(client: &crate::v2_client_routes::Client, path: &str) -> Option<Value> {
+    let response = client.read(path).await?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let bytes = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024)
+        .await
+        .ok()?;
+    serde_json::from_slice(&bytes).ok()
+}
+
+fn gauges(
+    machine: &alondra_core::Machine,
+    usage: Option<&alondra_core::usage::Usage>,
+    lang: Lang,
+) -> Vec<Gauge> {
+    let mut out = Vec::new();
+    if let Some(usage) = usage {
+        out.push(Gauge {
+            id: "claude_week".into(),
+            label: match lang {
+                Lang::En => "Claude week",
+                Lang::Es => "Claude semana",
+            }
+            .into(),
+            value: usage.week_percent / 100.0,
+            text: format!("{}%", usage.week_percent.round()),
+            detail: None,
+            level: if usage.week_percent >= 85.0 {
+                Level::Hot
+            } else {
+                Level::Calm
+            },
+        });
+        if let Some((spent, share)) = usage.today_spent.zip(usage.today_share) {
+            let level = if usage.over_pace {
+                Level::Hot
+            } else if spent >= share * 0.75 {
+                Level::Warm
+            } else {
+                Level::Calm
+            };
+            out.push(Gauge {
+                id: "claude_today".into(),
+                label: match lang {
+                    Lang::En => "Claude today",
+                    Lang::Es => "Claude hoy",
+                }
+                .into(),
+                value: spent / share.max(0.1),
+                text: format!("{}/{}%", spent.round(), share.round()),
+                detail: None,
+                level,
+            });
+        }
+    }
+    if let Some(free) = machine.memory_free_percent {
+        let used = 100 - free.min(100);
+        out.push(Gauge {
+            id: "memory".into(),
+            label: "RAM".into(),
+            value: used as f64 / 100.0,
+            text: format!("{used}%"),
+            detail: None,
+            level: if free < 15 {
+                Level::Hot
+            } else if free < 30 {
+                Level::Warm
+            } else {
+                Level::Calm
+            },
+        });
+    }
+    let cpu = machine.cpu_usage as f64;
+    out.push(Gauge {
+        id: "cpu".into(),
+        label: "CPU".into(),
+        value: cpu / 100.0,
+        text: format!("{}%", cpu.round()),
+        detail: None,
+        level: if machine.unreliable {
+            Level::Hot
+        } else if cpu >= 85.0 {
+            Level::Warm
+        } else {
+            Level::Calm
+        },
+    });
+    if machine.disk_total > 0 {
+        let used = machine.disk_total.saturating_sub(machine.disk_available);
+        let ratio = used as f64 / machine.disk_total as f64;
+        let free = machine.disk_available as f64 / 1_000_000_000.0;
+        out.push(Gauge {
+            id: "disk".into(),
+            label: match lang {
+                Lang::En => "Disk",
+                Lang::Es => "Disco",
+            }
+            .into(),
+            value: ratio,
+            text: match lang {
+                Lang::En => format!("{free:.0} GB free"),
+                Lang::Es => format!("{free:.0} GB libres"),
+            },
+            detail: None,
+            level: if ratio >= 0.95 {
+                Level::Hot
+            } else if ratio >= 0.85 {
+                Level::Warm
+            } else {
+                Level::Calm
+            },
+        });
+    }
+    out
+}
+
+fn timestamp(millis: i64) -> String {
+    crate::log::local_iso(
+        millis.div_euclid(1000) as libc::time_t,
+        millis.rem_euclid(1000) as u32,
+    )
+}

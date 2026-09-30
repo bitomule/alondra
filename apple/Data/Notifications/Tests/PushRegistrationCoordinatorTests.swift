@@ -31,7 +31,7 @@ private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> S
         .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: ""))!
     return ServiceNotificationClient(identity: "mac-\(n)", binding: binding, register: { token, _, start, _, revision in
         try await recorder.register(mac: "mac-\(n)", token: token, revision: revision, quiet: start)
-    }, submit: { _, _ in .sent(.obsolete) })
+    }, submit: { _ in .uncertain })
 }
 
 @Test @MainActor func oneDeviceTokenRegistersEveryMacAndSelectionDoesNotRotatePreferences() async throws {

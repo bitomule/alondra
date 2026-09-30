@@ -41,6 +41,10 @@ final class DomainV2WireTests: XCTestCase {
         XCTAssertFalse(ServiceRequest.validClientContractRoute(method: .get, path: ["v2", "runtime"]))
         XCTAssertTrue(ServiceRequest.validClientContractRoute(method: .post, path: ["uploads", "finish"]))
         XCTAssertFalse(ServiceRequest.validClientContractRoute(method: .post, path: ["uploads", "transfer-1", "finish"]))
+        XCTAssertTrue(ServiceRequest.validClientContractRoute(method: .get, path: ["views", "home"]))
+        XCTAssertTrue(ServiceRequest.validClientContractRoute(method: .get, path: ["views", "card:i-42"]))
+        XCTAssertFalse(ServiceRequest.validClientContractRoute(method: .get, path: ["views", "card:../devices"]))
+        XCTAssertFalse(ServiceRequest.validClientContractRoute(method: .post, path: ["views", "home"]))
     }
 
     func testCommandUsesSpecificResourceAndKeepsDurableIdentityWithoutGenericCommandRoute() async throws {

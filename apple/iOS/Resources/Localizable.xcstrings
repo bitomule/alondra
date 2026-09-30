@@ -3017,6 +3017,41 @@
         }
       }
     },
+    "Back": {
+      "localizations": {
+        "es": {
+          "stringUnit": { "state": "translated", "value": "Atrás" }
+        }
+      }
+    },
+    "Continue": {
+      "localizations": {
+        "es": {
+          "stringUnit": { "state": "translated", "value": "Continuar" }
+        }
+      }
+    },
+    "Action updated": {
+      "localizations": {
+        "es": {
+          "stringUnit": { "state": "translated", "value": "La acción se ha actualizado" }
+        }
+      }
+    },
+    "Unable to load this screen": {
+      "localizations": {
+        "es": {
+          "stringUnit": { "state": "translated", "value": "No se pudo cargar esta pantalla" }
+        }
+      }
+    },
+    "The item changed. Confirm to send your response to the current version.": {
+      "localizations": {
+        "es": {
+          "stringUnit": { "state": "translated", "value": "El elemento ha cambiado. Confirma para enviar tu respuesta a la versión actual." }
+        }
+      }
+    },
     "No scheduled tasks": {
       "localizations": {
         "es": {

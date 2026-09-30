@@ -74,6 +74,14 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     /// Product callers use AlondraAPIClient. This capability preserves the caller's durable
     /// operation identity through encrypted dispatch and status-only reconciliation.
     public func perform(_ request: ServiceRequest) async throws -> ServiceResponse {
+        if request.method == "GET", request.path.hasPrefix("/changes?"), request.body == nil,
+           let wait = Self.viewsChangeWait(request.path) {
+            switch try await waitForReadCompletion(requestID: "read-" + UUID().uuidString, path: request.path,
+                                                   seconds: wait, deadlineSlack: 20) {
+            case let .completed(status, body): return .completed(status: status, body: body)
+            case .unknown: return .unknown
+            }
+        }
         if request.method == "GET", request.path.hasPrefix("/changes?"), request.body == nil {
             guard let components = URLComponents(string: request.path),
                   let items = components.queryItems,
@@ -160,6 +168,21 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
         let route = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
         let segments = route.split(separator: "/", omittingEmptySubsequences: false).dropFirst().map(String.init)
         return ServiceRequest.validClientContractRoute(method: method, path: segments)
+    }
+
+    static func viewsChangeWait(_ path: String) -> Int? {
+        guard path.hasPrefix("/changes?"), let components = URLComponents(string: path),
+              let items = components.queryItems else { return nil }
+        let allowed: Set<String> = ["protocol", "client", "lang", "wait", "cursor", "views"]
+        let names = items.map(\.name)
+        guard Set(names).isSubset(of: allowed), Set(names).count == names.count,
+              ["protocol", "client", "lang", "wait"].allSatisfy(names.contains),
+              items.first(where: { $0.name == "protocol" })?.value == "1",
+              ["ios", "mac", "tui"].contains(items.first(where: { $0.name == "client" })?.value ?? ""),
+              ["en", "es"].contains(items.first(where: { $0.name == "lang" })?.value ?? ""),
+              let wait = items.first(where: { $0.name == "wait" })?.value.flatMap(Int.init), (0...50).contains(wait)
+        else { return nil }
+        return wait
     }
 
     /// Mirror the Mac's exact Schedule v2 operation shapes before sealing.
@@ -250,9 +273,10 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
 
     /// Relay changes wake this read's status query; they never invalidate daemon content
     /// themselves. The completed response still crosses the same authenticated envelope gate.
-    private func waitForReadCompletion(requestID: String, path: String, seconds: Int) async throws -> RelayOperationResult {
+    private func waitForReadCompletion(requestID: String, path: String, seconds: Int,
+                                       deadlineSlack: Int = 5) async throws -> RelayOperationResult {
         // Includes bootstrap, the one submission, status reconciliation and every HTTP wait.
-        let deadline = ContinuousClock().now.advanced(by: .seconds(seconds + 5))
+        let deadline = ContinuousClock().now.advanced(by: .seconds(seconds + deadlineSlack))
         let waitForDeadline = waitForReadDeadline
         return try await withThrowingTaskGroup(of: RelayOperationResult.self) { group in
             group.addTask {

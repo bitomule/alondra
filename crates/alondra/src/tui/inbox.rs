@@ -5,8 +5,9 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use alondra_core::domain_v2::{
-    AttachmentRef, AvailableAction, Command, DeliveryTarget, InboxItem, InboxSubject, InputKind, InputValue, Interaction, InteractionId, InteractionPayload, MergeAttemptState, MergeAuthorization,
-    MergeMethod, PrId, PrState, PullRequest, Revision,
+    AttachmentRef, AvailableAction, Command, DeliveryTarget, InboxItem, InboxSubject, InputKind,
+    InputValue, Interaction, InteractionId, InteractionPayload, MergeAttemptState,
+    MergeAuthorization, MergeMethod, PrId, PrState, PullRequest, Revision,
 };
 use alondra_core::now_millis;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -15,7 +16,6 @@ use serde_json::Value;
 use super::keys::{self, Cmd, Motion};
 use super::{App, Flow, Key, Msg, Pane, Part, Screen, Target, md, unavailable};
 use crate::client::Client;
-use crate::mcp::urlencode;
 use crate::ops::{self, MessageKind};
 
 pub fn action<'a>(item: &'a InboxItem, kind: &str) -> Option<&'a AvailableAction> {
@@ -72,14 +72,32 @@ pub fn pr_state(s: PrState) -> &'static str {
 pub fn authorization_state(a: &MergeAuthorization) -> String {
     let method = merge_method(a.method);
     if !a.valid {
-        return trf!("merge authorization ({method}) no longer valid", "autorización de fusión ({method}) ya no vale");
+        return trf!(
+            "merge authorization ({method}) no longer valid",
+            "autorización de fusión ({method}) ya no vale"
+        );
     }
     match a.attempt {
-        MergeAttemptState::Unclaimed => trf!("merge authorized ({method}) · waiting for the agent", "fusión autorizada ({method}) · pendiente del agente"),
-        MergeAttemptState::Claimed => trf!("merge authorized ({method}) · the agent is merging", "fusión autorizada ({method}) · el agente la está haciendo"),
-        MergeAttemptState::Uncertain => trf!("merge authorized ({method}) · outcome not confirmed", "fusión autorizada ({method}) · resultado sin confirmar"),
-        MergeAttemptState::Confirmed => trf!("merged by the agent ({method})", "fusionado por el agente ({method})"),
-        MergeAttemptState::Failed => trf!("merge authorized ({method}) · the merge failed", "fusión autorizada ({method}) · la fusión falló"),
+        MergeAttemptState::Unclaimed => trf!(
+            "merge authorized ({method}) · waiting for the agent",
+            "fusión autorizada ({method}) · pendiente del agente"
+        ),
+        MergeAttemptState::Claimed => trf!(
+            "merge authorized ({method}) · the agent is merging",
+            "fusión autorizada ({method}) · el agente la está haciendo"
+        ),
+        MergeAttemptState::Uncertain => trf!(
+            "merge authorized ({method}) · outcome not confirmed",
+            "fusión autorizada ({method}) · resultado sin confirmar"
+        ),
+        MergeAttemptState::Confirmed => trf!(
+            "merged by the agent ({method})",
+            "fusionado por el agente ({method})"
+        ),
+        MergeAttemptState::Failed => trf!(
+            "merge authorized ({method}) · the merge failed",
+            "fusión autorizada ({method}) · la fusión falló"
+        ),
     }
 }
 
@@ -89,7 +107,13 @@ fn short(head: &str) -> &str {
 
 pub fn pr_line(pr: &PullRequest) -> String {
     let state = pr_state(pr.state);
-    format!("{} #{} · {} ← {} · {state}", pr.repository, pr.number, pr.base, short(&pr.head))
+    format!(
+        "{} #{} · {} ← {} · {state}",
+        pr.repository,
+        pr.number,
+        pr.base,
+        short(&pr.head)
+    )
 }
 
 pub fn pr_url(pr: &PullRequest) -> String {
@@ -100,7 +124,11 @@ impl App {
     /// Every item in the projection, hidden or not.
     pub(super) fn all_keys(&self) -> Vec<Key> {
         let Some(d) = &self.domain else { return vec![] };
-        d.inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children)).map(|i| Key(i.id.clone())).collect()
+        d.inbox
+            .iter()
+            .flat_map(|r| std::iter::once(r).chain(&r.children))
+            .map(|i| Key(i.id.clone()))
+            .collect()
     }
 
     /// Roots by section, in the daemon's order inside each, every root followed by its children.
@@ -110,7 +138,11 @@ impl App {
         let shown = |i: &InboxItem| !self.hidden.contains_key(&Key(i.id.clone()));
         let mut rows = vec![];
         for section in SECTIONS {
-            for root in d.inbox.iter().filter(|r| !answered(r) && shown(r) && section_of(r) == section) {
+            for root in d
+                .inbox
+                .iter()
+                .filter(|r| !answered(r) && shown(r) && section_of(r) == section)
+            {
                 rows.push((root, false));
                 rows.extend(root.children.iter().filter(|c| shown(c)).map(|c| (c, true)));
             }
@@ -119,20 +151,45 @@ impl App {
     }
 
     pub fn inbox_keys(&self) -> Vec<Key> {
-        self.inbox_rows().into_iter().map(|(i, _)| Key(i.id.clone())).collect()
+        if let Some(view) = &self.home_view {
+            return super::view_render::rows(view)
+                .into_iter()
+                .map(|(row, _)| Key(row.id.clone()))
+                .collect();
+        }
+        self.inbox_rows()
+            .into_iter()
+            .map(|(i, _)| Key(i.id.clone()))
+            .collect()
     }
 
     pub fn inbox_count(&self) -> usize {
-        self.inbox_rows().into_iter().filter(|(_, nested)| !nested).count()
+        if let Some(view) = &self.home_view {
+            return super::view_render::rows(view)
+                .into_iter()
+                .filter(|(_, nested)| !nested)
+                .count();
+        }
+        self.inbox_rows()
+            .into_iter()
+            .filter(|(_, nested)| !nested)
+            .count()
     }
 
     pub fn item(&self, key: &Key) -> Option<&InboxItem> {
         let d = self.domain.as_ref()?;
-        d.inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children)).find(|i| i.id == key.0)
+        d.inbox
+            .iter()
+            .flat_map(|r| std::iter::once(r).chain(&r.children))
+            .find(|i| i.id == key.0)
     }
 
     pub fn parent(&self, key: &Key) -> Option<&InboxItem> {
-        self.domain.as_ref()?.inbox.iter().find(|r| r.children.iter().any(|c| c.id == key.0))
+        self.domain
+            .as_ref()?
+            .inbox
+            .iter()
+            .find(|r| r.children.iter().any(|c| c.id == key.0))
     }
 
     pub fn interaction(&self, id: &InteractionId) -> Option<&Interaction> {
@@ -140,11 +197,23 @@ impl App {
     }
 
     pub fn pull_request(&self, id: &PrId) -> Option<&PullRequest> {
-        self.domain.as_ref()?.pull_requests.iter().find(|p| &p.id == id)
+        self.domain
+            .as_ref()?
+            .pull_requests
+            .iter()
+            .find(|p| &p.id == id)
     }
 
     pub fn authorizations(&self, pr: &PrId) -> Vec<&MergeAuthorization> {
-        self.domain.as_ref().map(|d| d.merge_authorizations.iter().filter(|a| &a.pr_id == pr).collect()).unwrap_or_default()
+        self.domain
+            .as_ref()
+            .map(|d| {
+                d.merge_authorizations
+                    .iter()
+                    .filter(|a| &a.pr_id == pr)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// The PR an item is about: its own subject, the PR its delivery presents or the PR it was
@@ -155,11 +224,16 @@ impl App {
             InboxSubject::Interaction { interaction_id } => {
                 let i = self.interaction(interaction_id)?;
                 match (&i.payload, &i.subject) {
-                    (InteractionPayload::Delivery { targets, .. }, _) => targets.iter().find_map(|t| match t {
-                        DeliveryTarget::PullRequest { pr_id, .. } => self.pull_request(pr_id),
-                        _ => None,
-                    }),
-                    (_, Some(alondra_core::domain_v2::InteractionSubject::PullRequest { pr_id })) => self.pull_request(pr_id),
+                    (InteractionPayload::Delivery { targets, .. }, _) => {
+                        targets.iter().find_map(|t| match t {
+                            DeliveryTarget::PullRequest { pr_id, .. } => self.pull_request(pr_id),
+                            _ => None,
+                        })
+                    }
+                    (
+                        _,
+                        Some(alondra_core::domain_v2::InteractionSubject::PullRequest { pr_id }),
+                    ) => self.pull_request(pr_id),
                     _ => None,
                 }
             }
@@ -177,7 +251,10 @@ impl App {
     /// The delivery item that presents a PR, where feedback and authorization for it go.
     pub fn presenting(&self, pr: &PrId) -> Option<&InboxItem> {
         let d = self.domain.as_ref()?;
-        d.inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children)).find(|i| i.kind == "delivery" && self.item_pr(i).is_some_and(|p| &p.id == pr))
+        d.inbox
+            .iter()
+            .flat_map(|r| std::iter::once(r).chain(&r.children))
+            .find(|i| i.kind == "delivery" && self.item_pr(i).is_some_and(|p| &p.id == pr))
     }
 
     pub(super) fn move_inbox(&mut self, to: isize) {
@@ -195,15 +272,62 @@ impl App {
     }
 
     pub(super) fn inbox_cmd(&mut self, cmd: Cmd) {
+        if self.home_view.is_some() {
+            let i = self.sel_idx as isize;
+            let detail = self.focus == Pane::Detail && self.detail_view.shown;
+            match cmd {
+                Cmd::Move(m) if detail => {
+                    self.detail_scroll = keys::scroll(
+                        self.detail_scroll,
+                        m,
+                        self.detail_view.h,
+                        self.detail_view.total,
+                    )
+                }
+                Cmd::Move(Motion::Down) => self.move_inbox(i + 1),
+                Cmd::Move(Motion::Up) => self.move_inbox(i - 1),
+                Cmd::Move(Motion::Top) => self.move_inbox(0),
+                Cmd::Move(Motion::Bottom) => self.move_inbox(isize::MAX),
+                Cmd::Move(m) => {
+                    self.detail_scroll = keys::scroll(
+                        self.detail_scroll,
+                        m,
+                        self.detail_view.h,
+                        self.detail_view.total,
+                    )
+                }
+                Cmd::Right if self.detail_view.shown && self.sel.is_some() => {
+                    self.focus = Pane::Detail
+                }
+                Cmd::Right | Cmd::Expand => self.open_reader(),
+                Cmd::Left | Cmd::Back => self.focus = Pane::List,
+                Cmd::Pending | Cmd::Other(_) => {}
+            }
+            return;
+        }
         let i = self.sel_idx as isize;
         let detail = self.focus == Pane::Detail && self.detail_view.shown;
         match cmd {
-            Cmd::Move(m) if detail => self.detail_scroll = keys::scroll(self.detail_scroll, m, self.detail_view.h, self.detail_view.total),
+            Cmd::Move(m) if detail => {
+                self.detail_scroll = keys::scroll(
+                    self.detail_scroll,
+                    m,
+                    self.detail_view.h,
+                    self.detail_view.total,
+                )
+            }
             Cmd::Move(Motion::Down) => self.move_inbox(i + 1),
             Cmd::Move(Motion::Up) => self.move_inbox(i - 1),
             Cmd::Move(Motion::Top) => self.move_inbox(0),
             Cmd::Move(Motion::Bottom) => self.move_inbox(isize::MAX),
-            Cmd::Move(m) => self.detail_scroll = keys::scroll(self.detail_scroll, m, self.detail_view.h, self.detail_view.total),
+            Cmd::Move(m) => {
+                self.detail_scroll = keys::scroll(
+                    self.detail_scroll,
+                    m,
+                    self.detail_view.h,
+                    self.detail_view.total,
+                )
+            }
             Cmd::Right if self.detail_view.shown && self.sel.is_some() => self.focus = Pane::Detail,
             Cmd::Right | Cmd::Expand => self.open_reader(),
             Cmd::Left | Cmd::Back => self.focus = Pane::List,
@@ -212,11 +336,34 @@ impl App {
     }
 
     pub(super) fn inbox_key(&mut self, k: KeyEvent) -> Flow {
-        let Some(key) = self.sel.clone() else { return Flow::Go };
-        let pr_root = self.item(&key).filter(|i| i.kind == "pull_request").and_then(|i| self.item_pr(i)).map(|p| p.id.clone());
+        if self.home_view.is_some() {
+            return self.view_inbox_key(k);
+        }
+        let Some(key) = self.sel.clone() else {
+            return Flow::Go;
+        };
+        let pr_root = self
+            .item(&key)
+            .filter(|i| i.kind == "pull_request")
+            .and_then(|i| self.item_pr(i))
+            .map(|p| p.id.clone());
         match k.code {
-            KeyCode::Char('J') => self.detail_scroll = keys::by(self.detail_scroll, 5, self.detail_view.h, self.detail_view.total),
-            KeyCode::Char('K') => self.detail_scroll = keys::by(self.detail_scroll, -5, self.detail_view.h, self.detail_view.total),
+            KeyCode::Char('J') => {
+                self.detail_scroll = keys::by(
+                    self.detail_scroll,
+                    5,
+                    self.detail_view.h,
+                    self.detail_view.total,
+                )
+            }
+            KeyCode::Char('K') => {
+                self.detail_scroll = keys::by(
+                    self.detail_scroll,
+                    -5,
+                    self.detail_view.h,
+                    self.detail_view.total,
+                )
+            }
             KeyCode::Enter => self.open_reader(),
             KeyCode::Char('a') => return self.terminal_of(&key),
             KeyCode::Char('r') => self.reply(&key),
@@ -229,20 +376,261 @@ impl App {
                 None => self.fail(tr!("There is no PR here", "Aquí no hay PR")),
             },
             KeyCode::Char('d') => return self.review_pr(&key),
-            KeyCode::Char('1') if k.modifiers.is_empty() && pr_root.as_ref().is_some_and(|pr| self.conflicts(pr)) => {
+            KeyCode::Char('1')
+                if k.modifiers.is_empty()
+                    && pr_root.as_ref().is_some_and(|pr| self.conflicts(pr)) =>
+            {
                 if let Some(pr) = pr_root {
                     self.resolve_conflicts(&key, &pr);
                 }
             }
-            KeyCode::Char(c @ '1'..='9') if k.modifiers.is_empty() => self.choose(&key, c as usize - '1' as usize),
+            KeyCode::Char(c @ '1'..='9') if k.modifiers.is_empty() => {
+                self.choose(&key, c as usize - '1' as usize)
+            }
             _ => {}
+        }
+        Flow::Go
+    }
+
+    fn view_inbox_key(&mut self, key: KeyEvent) -> Flow {
+        let Some(selected) = self.sel.clone() else {
+            return Flow::Go;
+        };
+        let Some(_card) = self
+            .card_view
+            .as_ref()
+            .filter(|view| view.key == format!("card:{}", selected.0))
+            .and_then(super::view_render::detail_card)
+            .cloned()
+        else {
+            if key.code == KeyCode::Enter {
+                self.open_reader();
+            }
+            return Flow::Go;
+        };
+        if key.code == KeyCode::Enter {
+            self.open_reader();
+            return Flow::Go;
+        }
+        if key.code == KeyCode::Char('J') {
+            self.detail_scroll = keys::by(
+                self.detail_scroll,
+                5,
+                self.detail_view.h,
+                self.detail_view.total,
+            );
+            return Flow::Go;
+        }
+        if key.code == KeyCode::Char('K') {
+            self.detail_scroll = keys::by(
+                self.detail_scroll,
+                -5,
+                self.detail_view.h,
+                self.detail_view.total,
+            );
+            return Flow::Go;
+        }
+
+        self.view_action_key(key).unwrap_or(Flow::Go)
+    }
+
+    pub(super) fn view_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
+        let selected = self.selected_view_key()?;
+        let document = self
+            .card_view
+            .as_ref()
+            .filter(|view| view.key == selected)?;
+        if let Some(form) = document
+            .sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .find_map(|item| {
+                if let alondra_core::views::Item::Form(form) = item {
+                    Some(form)
+                } else {
+                    None
+                }
+            })
+        {
+            let submit = &form.submit;
+            let hint = super::view_render::action_hint(submit);
+            if key.code == KeyCode::Enter
+                || key.code == KeyCode::Char('e')
+                || (!hint.is_empty() && hint_matches(hint, key))
+            {
+                return Some(Flow::EditViewForm {
+                    action_id: submit.id.clone(),
+                    data_epoch: document.data_epoch.clone(),
+                    attachment_field: submit
+                        .attachments
+                        .then(|| {
+                            form.fields.iter().find_map(|field| {
+                                matches!(field.kind, alondra_core::views::FieldKind::Attachments)
+                                    .then(|| field.id.clone())
+                            })
+                        })
+                        .flatten(),
+                    fields: form.fields.clone(),
+                });
+            }
+        }
+        for action in super::view_render::actions(document) {
+            if hint_matches(super::view_render::action_hint(&action), key) {
+                let local_key = self.sel.clone().unwrap_or_else(|| Key(selected.clone()));
+                return Some(self.run_view_action(&action, None, &local_key));
+            }
+            for (index, option) in action.options.iter().enumerate() {
+                let matches = option.key.as_deref().map_or_else(
+                    || {
+                        key.code
+                            == KeyCode::Char(
+                                char::from_digit((index + 1) as u32, 10).unwrap_or('\0'),
+                            )
+                            && key.modifiers.is_empty()
+                    },
+                    |hint| hint_matches(hint, key),
+                );
+                if matches {
+                    let local_key = self.sel.clone().unwrap_or_else(|| Key(selected.clone()));
+                    return Some(self.run_view_action(&action, Some(option), &local_key));
+                }
+            }
+        }
+        None
+    }
+
+    fn run_view_action(
+        &mut self,
+        action: &alondra_core::views::Action,
+        option: Option<&alondra_core::views::ActionOption>,
+        _selected: &Key,
+    ) -> Flow {
+        if action.id.is_empty()
+            && let Some(link) = action.link.as_ref()
+        {
+            match link {
+                alondra_core::views::Link::Url { url } => {
+                    if safe_github_url(url) {
+                        super::open_with_mac(url);
+                    } else {
+                        self.fail(tr!(
+                            "Only HTTPS GitHub links can be opened from this view",
+                            "Solo se pueden abrir enlaces HTTPS de GitHub desde esta vista"
+                        ));
+                    }
+                }
+                alondra_core::views::Link::View { key } => self.navigate_view(key),
+                alondra_core::views::Link::Local { local } => match local {
+                    alondra_core::views::LocalLink::Attach { session } => {
+                        return Flow::Attach(session.clone());
+                    }
+                    alondra_core::views::LocalLink::OpenPath { path } => {
+                        self.flash(trf!(
+                            "Local file reference: {path}",
+                            "Referencia de archivo local: {path}"
+                        ));
+                    }
+                    alondra_core::views::LocalLink::ReviewClone { repo, pr, .. } => {
+                        let local_key = self
+                            .sel
+                            .as_ref()
+                            .filter(|_| self.screen == super::Screen::Inbox);
+                        if let (Some(key), Some(pr_id), Some(dir)) = (
+                            local_key,
+                            local_key
+                                .and_then(|key| self.item(key))
+                                .and_then(|item| self.item_pr(item))
+                                .map(|pr| pr.id.clone()),
+                            super::clone_of(None, repo),
+                        ) {
+                            return Flow::Review {
+                                key: key.clone(),
+                                pr: pr_id,
+                                number: *pr,
+                                dir,
+                            };
+                        }
+                        self.fail(tr!(
+                            "There is no local clone for this PR",
+                            "No hay copia local para esta PR"
+                        ));
+                    }
+                },
+            }
+            return Flow::Go;
+        }
+        if !action.enabled {
+            self.fail(action.disabled_reason.clone().unwrap_or_else(|| {
+                tr!(
+                    "This action is unavailable",
+                    "Esta acción no está disponible"
+                )
+                .into()
+            }));
+            return Flow::Go;
+        }
+        let option_id = option.map(|option| option.id.clone());
+        if let Some(confirm) = &action.confirm {
+            let step = format!("{}:{}", action.id, option_id.as_deref().unwrap_or(""));
+            if !self.confirmed(&step, confirm.message.clone()) {
+                return Flow::Go;
+            }
+        }
+        let Some(epoch) = self.card_view.as_ref().map(|view| view.data_epoch.clone()) else {
+            return Flow::Go;
+        };
+        let input = option.map_or(&action.input, |option| &option.input);
+        match input {
+            alondra_core::views::Input::Text {
+                placeholder,
+                required,
+                ..
+            } => {
+                self.compose(
+                    super::Target::ViewAction {
+                        action_id: action.id.clone(),
+                        data_epoch: epoch,
+                        option_id,
+                        required: *required,
+                        allow_attachments: action.attachments,
+                        form_fields: None,
+                        attachment_field: None,
+                    },
+                    placeholder,
+                );
+            }
+            alondra_core::views::Input::None => {
+                let action_id = action.id.clone();
+                let data_epoch = epoch;
+                let option_id = option_id.clone();
+                let request = crate::client::Client::action_body(
+                    &data_epoch,
+                    &action_id,
+                    option_id.as_deref(),
+                    serde_json::json!({}),
+                );
+                #[cfg(test)]
+                self.posted
+                    .borrow_mut()
+                    .push(("/actions".into(), request.clone()));
+                self.spawn(move |tx| {
+                    let result = crate::client::Client::for_tui(std::time::Duration::from_secs(20))
+                        .post("/actions", &request)
+                        .map_err(|error| format!("{error:#}"))
+                        .and_then(super::view_action_result);
+                    let _ = tx.send(super::Msg::ViewAction(result));
+                });
+            }
         }
         Flow::Go
     }
 
     /// The runtime says the PR's branch conflicts with its base.
     pub fn conflicts(&self, pr: &PrId) -> bool {
-        self.runtime.as_ref().and_then(|r| r.pull_request(&pr.0)).is_some_and(|p| p.conflicts)
+        self.runtime
+            .as_ref()
+            .and_then(|r| r.pull_request(&pr.0))
+            .is_some_and(|p| p.conflicts)
     }
 
     /// The agent's terminal; an item of the orchestrator opens its activity instead.
@@ -261,7 +649,10 @@ impl App {
     fn actionable(&mut self, key: &Key) -> Option<InboxItem> {
         let item = self.item(key)?.clone();
         if !matches!(item.subject, InboxSubject::Interaction { .. }) {
-            self.fail(tr!("Select the item under it: each one has its own actions", "Selecciona el elemento de debajo: cada uno tiene sus acciones"));
+            self.fail(tr!(
+                "Select the item under it: each one has its own actions",
+                "Selecciona el elemento de debajo: cada uno tiene sus acciones"
+            ));
             return None;
         }
         Some(item)
@@ -276,7 +667,10 @@ impl App {
                 None
             }
             None => {
-                self.fail(tr!("That is not available on this item", "Eso no está disponible en este elemento"));
+                self.fail(tr!(
+                    "That is not available on this item",
+                    "Eso no está disponible en este elemento"
+                ));
                 None
             }
         }
@@ -284,45 +678,104 @@ impl App {
 
     /// Marks only this information read. Nothing reaches the agent.
     pub(super) fn mark_read(&mut self, key: &Key) {
-        let Some(item) = self.actionable(key) else { return };
-        let Some(a) = self.enabled(&item, "mark_read") else { return };
-        let Some(id) = interaction_of(&item).cloned() else { return };
-        let title = md::truncate(&md::one_line(item.body.as_deref().unwrap_or(&item.title)), 60);
-        self.send(format!("read:{id}"), Some(key.clone()), a.expected_revision, Command::MarkRead { interaction_id: id }, trf!("Read: {title}", "Leído: {title}"), None);
+        let Some(item) = self.actionable(key) else {
+            return;
+        };
+        let Some(a) = self.enabled(&item, "mark_read") else {
+            return;
+        };
+        let Some(id) = interaction_of(&item).cloned() else {
+            return;
+        };
+        let title = md::truncate(
+            &md::one_line(item.body.as_deref().unwrap_or(&item.title)),
+            60,
+        );
+        self.send(
+            format!("read:{id}"),
+            Some(key.clone()),
+            a.expected_revision,
+            Command::MarkRead { interaction_id: id },
+            trf!("Read: {title}", "Leído: {title}"),
+            None,
+        );
         self.reader = None;
         self.hide(key.clone());
     }
 
     /// Confirms the delivery as presented. The agent still declares the task finished itself.
     pub(super) fn accept(&mut self, key: &Key) {
-        let Some(item) = self.actionable(key) else { return };
-        let Some(a) = self.enabled(&item, "accept_delivery") else { return };
-        let Some((presentation, targets, _)) = self.feedback_subject(key) else { return };
+        let Some(item) = self.actionable(key) else {
+            return;
+        };
+        let Some(a) = self.enabled(&item, "accept_delivery") else {
+            return;
+        };
+        let Some((presentation, targets, _)) = self.feedback_subject(key) else {
+            return;
+        };
         if self.reviews.get(key).is_some_and(|r| !r.is_empty()) {
-            self.fail(tr!("Your comments are not sent with an acceptance: s sends them as feedback", "Tus comentarios no van con la aceptación: s los envía como feedback"));
+            self.fail(tr!(
+                "Your comments are not sent with an acceptance: s sends them as feedback",
+                "Tus comentarios no van con la aceptación: s los envía como feedback"
+            ));
             return;
         }
-        let command = Command::AcceptDelivery { presentation_id: presentation.clone(), targets };
-        self.send(format!("accept:{presentation}"), Some(key.clone()), a.expected_revision, command, tr!("Delivery accepted · waiting for the agent to finish", "Entrega aceptada · pendiente de que el agente termine").into(), None);
+        let command = Command::AcceptDelivery {
+            presentation_id: presentation.clone(),
+            targets,
+        };
+        self.send(
+            format!("accept:{presentation}"),
+            Some(key.clone()),
+            a.expected_revision,
+            command,
+            tr!(
+                "Delivery accepted · waiting for the agent to finish",
+                "Entrega aceptada · pendiente de que el agente termine"
+            )
+            .into(),
+            None,
+        );
         self.reader = None;
     }
 
     /// v accepts a delivery; on anything else it opens the item's images and files with the
     /// Mac's app, since the terminal only shows text.
     pub(super) fn accept_or_open(&mut self, key: &Key) {
-        if self.item(key).is_some_and(|i| action(i, "accept_delivery").is_some()) {
+        if self
+            .item(key)
+            .is_some_and(|i| action(i, "accept_delivery").is_some())
+        {
             return self.accept(key);
         }
-        let Some(item) = self.item(key).cloned() else { return };
-        let files: Vec<(String, String)> = self.item_files(&item).into_iter().filter(|(_, route)| !matches!(self.files.get(route), Some(Ok(super::files::FileBody::Text(_))))).collect();
+        let Some(item) = self.item(key).cloned() else {
+            return;
+        };
+        let files: Vec<(String, String)> = self
+            .item_files(&item)
+            .into_iter()
+            .filter(|(_, route)| {
+                !matches!(
+                    self.files.get(route),
+                    Some(Ok(super::files::FileBody::Text(_)))
+                )
+            })
+            .collect();
         if files.is_empty() {
-            self.fail(tr!("No image or file to open here", "Aquí no hay imagen ni fichero que abrir"));
+            self.fail(tr!(
+                "No image or file to open here",
+                "Aquí no hay imagen ni fichero que abrir"
+            ));
             return;
         }
         self.spawn(move |tx| {
             for (name, route) in files {
                 if let Err(e) = super::open_stored(&name, &route) {
-                    let _ = tx.send(Msg::Posted { key: None, result: Err(format!("{name}: {e:#}")) });
+                    let _ = tx.send(Msg::Posted {
+                        key: None,
+                        result: Err(format!("{name}: {e:#}")),
+                    });
                 }
             }
         });
@@ -343,34 +796,78 @@ impl App {
     }
 
     fn compose_message(&mut self, key: &Key, item: &InboxItem, message: ops::Message) {
-        let name = if message.agent.is_some() { self.agent_name(item.agent_id.as_ref()) } else { tr!("the orchestrator", "el orquestador").into() };
-        let title = md::one_line(item.body.as_deref().filter(|b| !b.trim().is_empty()).unwrap_or(&item.title));
-        self.compose(Target::Message { key: Some(key.clone()), message, name, title }, "");
+        let name = if message.agent.is_some() {
+            self.agent_name(item.agent_id.as_ref())
+        } else {
+            tr!("the orchestrator", "el orquestador").into()
+        };
+        let title = md::one_line(
+            item.body
+                .as_deref()
+                .filter(|b| !b.trim().is_empty())
+                .unwrap_or(&item.title),
+        );
+        self.compose(
+            Target::Message {
+                key: Some(key.clone()),
+                message,
+                name,
+                title,
+            },
+            "",
+        );
     }
 
     fn reply(&mut self, key: &Key) {
-        if let Some(pr) = self.item(key).filter(|i| i.kind == "pull_request").and_then(|i| self.item_pr(i)).map(|p| p.id.clone()) {
+        if let Some(pr) = self
+            .item(key)
+            .filter(|i| i.kind == "pull_request")
+            .and_then(|i| self.item_pr(i))
+            .map(|p| p.id.clone())
+        {
             return self.request_changes(key, &pr);
         }
-        let Some(item) = self.actionable(key) else { return };
+        let Some(item) = self.actionable(key) else {
+            return;
+        };
         match item.kind.as_str() {
             "question" | "action_request" => {
                 let Some(i) = self.options(&item) else { return };
-                match i.iter().position(|o| o.inputs.iter().any(|s| s.kind == InputKind::Text)) {
+                match i
+                    .iter()
+                    .position(|o| o.inputs.iter().any(|s| s.kind == InputKind::Text))
+                {
                     Some(n) => self.choose(key, n),
                     None => {
-                        let Some(m) = self.reply_to(&item, MessageKind::Reply) else { return };
+                        let Some(m) = self.reply_to(&item, MessageKind::Reply) else {
+                            return;
+                        };
                         self.compose_message(key, &item, m);
                     }
                 }
             }
             "delivery" => {
-                let Some(a) = self.enabled(&item, "submit_feedback") else { return };
-                let Some((presentation, targets, _)) = self.feedback_subject(key) else { return };
-                self.compose(Target::Feedback { key: key.clone(), presentation, targets, title: item.title.clone(), revision: a.expected_revision }, "");
+                let Some(a) = self.enabled(&item, "submit_feedback") else {
+                    return;
+                };
+                let Some((presentation, targets, _)) = self.feedback_subject(key) else {
+                    return;
+                };
+                self.compose(
+                    Target::Feedback {
+                        key: key.clone(),
+                        presentation,
+                        targets,
+                        title: item.title.clone(),
+                        revision: a.expected_revision,
+                    },
+                    "",
+                );
             }
             _ => {
-                let Some(m) = self.reply_to(&item, MessageKind::Reply) else { return };
+                let Some(m) = self.reply_to(&item, MessageKind::Reply) else {
+                    return;
+                };
                 self.compose_message(key, &item, m);
             }
         }
@@ -378,72 +875,132 @@ impl App {
 
     /// Sends a question back to its agent asking for more context; it stays open until the agent asks again.
     fn more_context(&mut self, key: &Key) {
-        let Some(item) = self.actionable(key) else { return };
+        let Some(item) = self.actionable(key) else {
+            return;
+        };
         if !matches!(item.kind.as_str(), "question" | "action_request") {
-            self.fail(tr!("Only a question can be sent back for more context", "Solo una pregunta se puede devolver pidiendo más contexto"));
+            self.fail(tr!(
+                "Only a question can be sent back for more context",
+                "Solo una pregunta se puede devolver pidiendo más contexto"
+            ));
             return;
         }
-        let Some(m) = self.reply_to(&item, MessageKind::MoreContext) else { return };
+        let Some(m) = self.reply_to(&item, MessageKind::MoreContext) else {
+            return;
+        };
         self.compose_message(key, &item, m);
     }
 
     /// The PR's agent, with the PR the message is about.
     fn pr_message(&self, pr: &PrId, kind: MessageKind) -> Option<ops::Message> {
-        let agent = self.pull_request(pr).and_then(|p| self.task(&p.task_id)).and_then(|t| t.agent_id.clone())?;
+        let agent = self
+            .pull_request(pr)
+            .and_then(|p| self.task(&p.task_id))
+            .and_then(|t| t.agent_id.clone())?;
         let mut m = ops::Message::to(Some(agent), kind, String::new());
         m.pr = Some(pr.clone());
         Some(m)
     }
 
     fn ask_about_pr(&mut self, key: &Key) {
-        let Some(item) = self.item(key).cloned() else { return };
+        let Some(item) = self.item(key).cloned() else {
+            return;
+        };
         let Some(pr) = self.item_pr(&item).map(|p| p.id.clone()) else {
             self.fail(tr!("There is no PR here", "Aquí no hay PR"));
             return;
         };
         match self.pr_message(&pr, MessageKind::PrQuestion) {
             Some(m) => self.compose_message(key, &item, m),
-            None => self.fail(tr!("This PR's task has no agent to ask", "La tarea de este PR no tiene agente al que preguntar")),
+            None => self.fail(tr!(
+                "This PR's task has no agent to ask",
+                "La tarea de este PR no tiene agente al que preguntar"
+            )),
         }
     }
 
     /// r on a PR: feedback on the delivery that presents it, or a change request to its agent
     /// when nothing presents it.
     fn request_changes(&mut self, key: &Key, pr: &PrId) {
-        if let Some(delivery) = self.presenting(pr).filter(|d| action(d, "submit_feedback").is_some_and(|a| a.enabled)).map(|d| Key(d.id.clone())) {
+        if let Some(delivery) = self
+            .presenting(pr)
+            .filter(|d| action(d, "submit_feedback").is_some_and(|a| a.enabled))
+            .map(|d| Key(d.id.clone()))
+        {
             self.sel = Some(delivery.clone());
             return self.reply(&delivery);
         }
-        let Some(item) = self.item(key).cloned() else { return };
+        let Some(item) = self.item(key).cloned() else {
+            return;
+        };
         match self.pr_message(pr, MessageKind::PrChanges) {
             Some(m) => self.compose_message(key, &item, m),
-            None => self.fail(tr!("This PR's task has no agent to ask", "La tarea de este PR no tiene agente al que preguntar")),
+            None => self.fail(tr!(
+                "This PR's task has no agent to ask",
+                "La tarea de este PR no tiene agente al que preguntar"
+            )),
         }
     }
 
     /// Comments on a PR (the reader's or tuicr's) go as feedback on the delivery presenting it,
     /// else as a change request to its agent.
-    pub(super) fn pr_feedback(&mut self, key: &Key, pr: &PrId, text: String, attachments: Vec<AttachmentRef>) {
-        let presenting = self.presenting(pr).filter(|d| action(d, "submit_feedback").is_some_and(|a| a.enabled)).map(|d| Key(d.id.clone()));
+    pub(super) fn pr_feedback(
+        &mut self,
+        key: &Key,
+        pr: &PrId,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+    ) {
+        let presenting = self
+            .presenting(pr)
+            .filter(|d| action(d, "submit_feedback").is_some_and(|a| a.enabled))
+            .map(|d| Key(d.id.clone()));
         if let Some(delivery) = presenting
             && let Some((presentation, targets, revision)) = self.feedback_subject(&delivery)
         {
-            return self.feedback(delivery, presentation, targets, text, attachments, revision, None);
+            return self.feedback(
+                delivery,
+                presentation,
+                targets,
+                text,
+                attachments,
+                revision,
+                None,
+            );
         }
         let Some(mut m) = self.pr_message(pr, MessageKind::PrChanges) else {
-            self.fail(tr!("This PR's task has no agent to ask", "La tarea de este PR no tiene agente al que preguntar"));
+            self.fail(tr!(
+                "This PR's task has no agent to ask",
+                "La tarea de este PR no tiene agente al que preguntar"
+            ));
             return;
         };
         m.text = text;
         m.attachments = attachments;
-        let name = self.pull_request(pr).and_then(|p| self.task(&p.task_id)).map(|t| self.agent_name(t.agent_id.as_ref())).unwrap_or_default();
-        self.message(Some(key.clone()), m, trf!("Changes requested from {name}", "Cambios pedidos a {name}"));
+        let name = self
+            .pull_request(pr)
+            .and_then(|p| self.task(&p.task_id))
+            .map(|t| self.agent_name(t.agent_id.as_ref()))
+            .unwrap_or_default();
+        self.message(
+            Some(key.clone()),
+            m,
+            trf!("Changes requested from {name}", "Cambios pedidos a {name}"),
+        );
     }
 
     fn resolve_conflicts(&mut self, key: &Key, pr: &PrId) {
         let number = self.pull_request(pr).map_or(0, |p| p.number);
         let (path, body) = ops::resolve_conflicts(pr);
-        self.op(Some(key.clone()), path, body, trf!("Asked its agent to resolve the conflicts of PR #{number}", "Pedido a su agente que resuelva los conflictos del PR #{number}"));
+        self.op(
+            Some(key.clone()),
+            path,
+            body,
+            trf!(
+                "Asked its agent to resolve the conflicts of PR #{number}",
+                "Pedido a su agente que resuelva los conflictos del PR #{number}"
+            ),
+        );
         self.hide(key.clone());
     }
 
@@ -454,21 +1011,37 @@ impl App {
             return Flow::Go;
         };
         if crate::service_client::target().is_none() {
-            let cwd = self.task(&pr.task_id).and_then(|t| t.agent_id.as_ref()).and_then(|a| self.runtime.as_ref()?.node(a)).and_then(|n| n.cwd.clone());
+            let cwd = self
+                .task(&pr.task_id)
+                .and_then(|t| t.agent_id.as_ref())
+                .and_then(|a| self.runtime.as_ref()?.node(a))
+                .and_then(|n| n.cwd.clone());
             if let Some(dir) = super::clone_of(cwd.as_deref(), &pr.repository) {
                 let number = pr.number;
-                self.flash(trf!("Opening PR #{number} in tuicr…", "Abriendo el PR #{number} en tuicr…"));
-                return Flow::Review { key: key.clone(), pr: pr.id, number, dir };
+                self.flash(trf!(
+                    "Opening PR #{number} in tuicr…",
+                    "Abriendo el PR #{number} en tuicr…"
+                ));
+                return Flow::Review {
+                    key: key.clone(),
+                    pr: pr.id,
+                    number,
+                    dir,
+                };
             }
         }
         self.load_diff(key);
         Flow::Go
     }
 
-    pub(super) fn options(&mut self, item: &InboxItem) -> Option<Vec<alondra_core::domain_v2::QuestionOption>> {
+    pub(super) fn options(
+        &mut self,
+        item: &InboxItem,
+    ) -> Option<Vec<alondra_core::domain_v2::QuestionOption>> {
         let id = interaction_of(item)?;
         match &self.interaction(id)?.payload {
-            InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. } => Some(options.clone()),
+            InteractionPayload::Question { options, .. }
+            | InteractionPayload::ActionRequest { options, .. } => Some(options.clone()),
             _ => None,
         }
     }
@@ -476,29 +1049,53 @@ impl App {
     /// A number answers the question it is pressed on, or authorizes a merge method on a delivery.
     pub(super) fn choose(&mut self, key: &Key, i: usize) {
         if now_millis() < self.settle_until {
-            self.fail(tr!("The selection just changed: check which one it is and press again", "La selección acaba de cambiar: mira cuál es y vuelve a pulsar"));
+            self.fail(tr!(
+                "The selection just changed: check which one it is and press again",
+                "La selección acaba de cambiar: mira cuál es y vuelve a pulsar"
+            ));
             return;
         }
-        let Some(item) = self.actionable(key) else { return };
+        let Some(item) = self.actionable(key) else {
+            return;
+        };
         match item.kind.as_str() {
             "question" | "action_request" => self.choose_option(key, &item, i),
             "delivery" => self.authorize(key, &item, i),
-            _ => self.fail(tr!("This item has no numbered options", "Este elemento no tiene opciones numeradas")),
+            _ => self.fail(tr!(
+                "This item has no numbered options",
+                "Este elemento no tiene opciones numeradas"
+            )),
         }
     }
 
     fn choose_option(&mut self, key: &Key, item: &InboxItem, i: usize) {
-        let Some(a) = self.enabled(item, "answer_question") else { return };
-        let Some(options) = self.options(item) else { return };
-        let Some(option) = options.get(i) else {
-            let n = i + 1;
-            self.fail(trf!("This question has no option {n}", "Esta pregunta no tiene opción {n}"));
+        let Some(a) = self.enabled(item, "answer_question") else {
             return;
         };
-        let Some(interaction) = interaction_of(item).cloned() else { return };
+        let Some(options) = self.options(item) else {
+            return;
+        };
+        let Some(option) = options.get(i) else {
+            let n = i + 1;
+            self.fail(trf!(
+                "This question has no option {n}",
+                "Esta pregunta no tiene opción {n}"
+            ));
+            return;
+        };
+        let Some(interaction) = interaction_of(item).cloned() else {
+            return;
+        };
         let text = option.inputs.iter().find(|s| s.kind == InputKind::Text);
-        if option.inputs.iter().any(|s| s.required && s.kind != InputKind::Text) {
-            self.fail(tr!("This option asks for values the terminal cannot fill yet", "Esta opción pide valores que el terminal aún no sabe rellenar"));
+        if option
+            .inputs
+            .iter()
+            .any(|s| s.required && s.kind != InputKind::Text)
+        {
+            self.fail(tr!(
+                "This option asks for values the terminal cannot fill yet",
+                "Esta opción pide valores que el terminal aún no sabe rellenar"
+            ));
             return;
         }
         if let Some(input) = text {
@@ -515,73 +1112,181 @@ impl App {
             self.compose(target, "");
             return;
         }
-        self.answer(key.clone(), interaction, option.id.clone(), option.label.clone(), BTreeMap::new(), vec![], a.expected_revision, None);
+        self.answer(
+            key.clone(),
+            interaction,
+            option.id.clone(),
+            option.label.clone(),
+            BTreeMap::new(),
+            vec![],
+            a.expected_revision,
+            None,
+        );
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn answer(&mut self, key: Key, interaction: InteractionId, option: String, label: String, inputs: BTreeMap<String, InputValue>, attachments: Vec<AttachmentRef>, revision: Revision, draft: Option<(String, String)>) {
-        let agent = self.item(&key).map(|i| self.agent_name(i.agent_id.as_ref())).unwrap_or_default();
-        let slot = format!("answer:{interaction}:{option}:{}:{}", serde_json::to_string(&inputs).unwrap_or_default(), attachments.len());
-        let command = Command::AnswerQuestion { attachments, interaction_id: interaction, option_id: option, inputs };
-        self.send(slot, Some(key.clone()), revision, command, format!("«{label}» → {agent}"), draft);
+    pub(super) fn answer(
+        &mut self,
+        key: Key,
+        interaction: InteractionId,
+        option: String,
+        label: String,
+        inputs: BTreeMap<String, InputValue>,
+        attachments: Vec<AttachmentRef>,
+        revision: Revision,
+        draft: Option<(String, String)>,
+    ) {
+        let agent = self
+            .item(&key)
+            .map(|i| self.agent_name(i.agent_id.as_ref()))
+            .unwrap_or_default();
+        let slot = format!(
+            "answer:{interaction}:{option}:{}:{}",
+            serde_json::to_string(&inputs).unwrap_or_default(),
+            attachments.len()
+        );
+        let command = Command::AnswerQuestion {
+            attachments,
+            interaction_id: interaction,
+            option_id: option,
+            inputs,
+        };
+        self.send(
+            slot,
+            Some(key.clone()),
+            revision,
+            command,
+            format!("«{label}» → {agent}"),
+            draft,
+        );
         self.reader = None;
         self.hide(key);
     }
 
     /// The delivery a feedback or an acceptance is about, exactly as it was presented.
-    pub(super) fn feedback_subject(&mut self, key: &Key) -> Option<(InteractionId, Vec<DeliveryTarget>, Revision)> {
+    pub(super) fn feedback_subject(
+        &mut self,
+        key: &Key,
+    ) -> Option<(InteractionId, Vec<DeliveryTarget>, Revision)> {
         let item = self.item(key)?.clone();
         let id = interaction_of(&item)?.clone();
         let revision = action(&item, "submit_feedback").map(|a| a.expected_revision)?;
         match &self.interaction(&id)?.payload {
             InteractionPayload::Delivery { targets, .. } => Some((id, targets.clone(), revision)),
             _ => {
-                self.fail(tr!("Only a delivery takes feedback", "Solo una entrega admite feedback"));
+                self.fail(tr!(
+                    "Only a delivery takes feedback",
+                    "Solo una entrega admite feedback"
+                ));
                 None
             }
         }
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn feedback(&mut self, key: Key, presentation: InteractionId, targets: Vec<DeliveryTarget>, text: String, attachments: Vec<AttachmentRef>, revision: Revision, draft: Option<(String, String)>) {
-        let agent = self.item(&key).map(|i| self.agent_name(i.agent_id.as_ref())).unwrap_or_default();
+    pub(super) fn feedback(
+        &mut self,
+        key: Key,
+        presentation: InteractionId,
+        targets: Vec<DeliveryTarget>,
+        text: String,
+        attachments: Vec<AttachmentRef>,
+        revision: Revision,
+        draft: Option<(String, String)>,
+    ) {
+        let agent = self
+            .item(&key)
+            .map(|i| self.agent_name(i.agent_id.as_ref()))
+            .unwrap_or_default();
         let slot = format!("feedback:{presentation}:{text}:{}", attachments.len());
-        let command = Command::SubmitFeedback { attachments, presentation_id: presentation, targets, body: text };
-        self.send(slot, Some(key), revision, command, trf!("Feedback sent to {agent}", "Feedback enviado a {agent}"), draft);
+        let command = Command::SubmitFeedback {
+            attachments,
+            presentation_id: presentation,
+            targets,
+            body: text,
+        };
+        self.send(
+            slot,
+            Some(key),
+            revision,
+            command,
+            trf!("Feedback sent to {agent}", "Feedback enviado a {agent}"),
+            draft,
+        );
     }
 
     /// Records the user's authorization for the agent to merge. It never merges and never hides
     /// the PR: its state changes only when the merge is confirmed.
     fn authorize(&mut self, key: &Key, item: &InboxItem, i: usize) {
-        let Some(a) = self.enabled(item, "authorize_merge") else { return };
-        let Some(pr) = self.item_pr(item).cloned() else { return };
-        let Some(&method) = pr.allowed_methods.get(i) else {
-            let n = i + 1;
-            self.fail(trf!("This PR has no option {n}", "Este PR no tiene opción {n}"));
+        let Some(a) = self.enabled(item, "authorize_merge") else {
             return;
         };
-        let (Some(presentation), Some(head)) = (a.presentation_id.clone(), a.expected_head.clone()) else { return };
+        let Some(pr) = self.item_pr(item).cloned() else {
+            return;
+        };
+        let Some(&method) = pr.allowed_methods.get(i) else {
+            let n = i + 1;
+            self.fail(trf!(
+                "This PR has no option {n}",
+                "Este PR no tiene opción {n}"
+            ));
+            return;
+        };
+        let (Some(presentation), Some(head)) = (a.presentation_id.clone(), a.expected_head.clone())
+        else {
+            return;
+        };
         let label = merge_method(method);
         let number = pr.number;
         let slot = format!("authorize:{presentation}:{}:{head}:{label}", pr.id);
         let n = i + 1;
-        if !self.sending.contains_key(&slot) && !self.confirmed(&slot, trf!("Press {n} again to authorize the merge of PR #{number} ({label})", "Pulsa {n} otra vez para autorizar la fusión del PR #{number} ({label})")) {
+        if !self.sending.contains_key(&slot)
+            && !self.confirmed(
+                &slot,
+                trf!(
+                    "Press {n} again to authorize the merge of PR #{number} ({label})",
+                    "Pulsa {n} otra vez para autorizar la fusión del PR #{number} ({label})"
+                ),
+            )
+        {
             return;
         }
-        let command = Command::AuthorizeMerge { authorization_id: crate::client::new_id("authorization").into(), presentation_id: presentation, pr_id: pr.id.clone(), expected_head: head, method };
-        let ok = trf!("Merge of PR #{number} authorized ({label}) · the agent merges it", "Fusión del PR #{number} autorizada ({label}) · la hace el agente");
-        self.send(slot, Some(key.clone()), a.expected_revision, command, ok, None);
+        let command = Command::AuthorizeMerge {
+            authorization_id: crate::client::new_id("authorization").into(),
+            presentation_id: presentation,
+            pr_id: pr.id.clone(),
+            expected_head: head,
+            method,
+        };
+        let ok = trf!(
+            "Merge of PR #{number} authorized ({label}) · the agent merges it",
+            "Fusión del PR #{number} autorizada ({label}) · la hace el agente"
+        );
+        self.send(
+            slot,
+            Some(key.clone()),
+            a.expected_revision,
+            command,
+            ok,
+            None,
+        );
     }
 
     pub(super) fn load_diff(&mut self, key: &Key) {
-        let Some(pr) = self.item(key).and_then(|i| self.item_pr(i)).map(|p| p.id.clone()) else {
+        let Some(pr) = self
+            .item(key)
+            .and_then(|i| self.item_pr(i))
+            .map(|p| p.id.clone())
+        else {
             self.fail(tr!("There is no PR here", "Aquí no hay PR"));
             return;
         };
         let key = key.clone();
         self.flash(tr!("Loading the PR diff…", "Cargando el diff del PR…"));
         self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(90)).get::<Value>(&ops::pull_request_diff(&pr)).map_err(|e| e.to_string());
+            let result = Client::for_tui(Duration::from_secs(90))
+                .get::<Value>(&ops::pull_request_diff(&pr))
+                .map_err(|e| e.to_string());
             let _ = tx.send(Msg::Diff { key, result });
         });
     }
@@ -589,25 +1294,45 @@ impl App {
     /// The stored files an item shows: its attachments and the document versions it is about.
     pub fn item_files(&self, item: &InboxItem) -> Vec<(String, String)> {
         let d = self.domain.as_ref();
-        let document = |document_id: &alondra_core::domain_v2::DocumentId, revision_id: &alondra_core::domain_v2::DocumentRevisionId| {
-            let title = d.and_then(|d| d.documents.iter().find(|x| &x.id == document_id)).map_or(document_id.0.clone(), |x| x.title.clone());
-            let number = d.and_then(|d| d.document_revisions.iter().find(|r| &r.id == revision_id)).map_or(0, |r| r.number);
-            (trf!("{title} · version {number}", "{title} · versión {number}"), crate::client::document_content(&revision_id.0))
-        };
+        let document =
+            |document_id: &alondra_core::domain_v2::DocumentId,
+             revision_id: &alondra_core::domain_v2::DocumentRevisionId| {
+                let title = d
+                    .and_then(|d| d.documents.iter().find(|x| &x.id == document_id))
+                    .map_or(document_id.0.clone(), |x| x.title.clone());
+                let number = d
+                    .and_then(|d| d.document_revisions.iter().find(|r| &r.id == revision_id))
+                    .map_or(0, |r| r.number);
+                (
+                    trf!("{title} · version {number}", "{title} · versión {number}"),
+                    crate::client::document_content(&revision_id.0),
+                )
+            };
         let mut files = vec![];
         match &item.subject {
             InboxSubject::Interaction { interaction_id } => {
                 if let Some(i) = self.interaction(interaction_id) {
-                    files.extend(i.attachments.iter().map(|a| (a.name.clone(), crate::client::attachment_content(a))));
+                    files.extend(
+                        i.attachments
+                            .iter()
+                            .map(|a| (a.name.clone(), crate::client::attachment_content(a))),
+                    );
                     if let InteractionPayload::Delivery { targets, .. } = &i.payload {
                         files.extend(targets.iter().filter_map(|t| match t {
-                            DeliveryTarget::DocumentRevision { document_id, revision_id } => Some(document(document_id, revision_id)),
+                            DeliveryTarget::DocumentRevision {
+                                document_id,
+                                revision_id,
+                            } => Some(document(document_id, revision_id)),
                             _ => None,
                         }));
                     }
                 }
             }
-            InboxSubject::DocumentReview { document_id, revision_id, .. } => files.push(document(document_id, revision_id)),
+            InboxSubject::DocumentReview {
+                document_id,
+                revision_id,
+                ..
+            } => files.push(document(document_id, revision_id)),
             InboxSubject::PullRequest { .. } => {}
         }
         files
@@ -616,7 +1341,11 @@ impl App {
     /// What the reader shows for an item: its text, then each of its files.
     pub(super) fn item_parts(&self, item: &InboxItem) -> Vec<Part> {
         let mut parts: Vec<Part> = self.item_text(item).into_iter().map(Part::Text).collect();
-        parts.extend(self.item_files(item).into_iter().map(|(name, route)| Part::File { name, route }));
+        parts.extend(
+            self.item_files(item)
+                .into_iter()
+                .map(|(name, route)| Part::File { name, route }),
+        );
         parts
     }
 
@@ -625,9 +1354,14 @@ impl App {
         let mut parts = vec![format!("# {}", item.title)];
         if let Some(t) = item.task_id.as_ref().and_then(|id| self.task(id)) {
             let (state, title) = (super::tasks::state_label(t.state), md::one_line(&t.title));
-            parts.push(trf!("Task: **{title}** · {state}", "Tarea: **{title}** · {state}"));
+            parts.push(trf!(
+                "Task: **{title}** · {state}",
+                "Tarea: **{title}** · {state}"
+            ));
         }
-        let full = interaction_of(item).and_then(|id| self.interaction(id)).map(|i| &i.body);
+        let full = interaction_of(item)
+            .and_then(|id| self.interaction(id))
+            .map(|i| &i.body);
         if let Some(body) = full.or(item.body.as_ref()).filter(|b| !b.trim().is_empty()) {
             parts.push(body.clone());
         }
@@ -642,7 +1376,10 @@ impl App {
                     parts.push(pr_line(pr));
                     if let Some(below) = self.stacked_on(pr) {
                         let n = below.number;
-                        parts.push(trf!("Goes on top of PR #{n}, which is still open", "Va encima del PR #{n}, que sigue abierto"));
+                        parts.push(trf!(
+                            "Goes on top of PR #{n}, which is still open",
+                            "Va encima del PR #{n}, que sigue abierto"
+                        ));
                     }
                     parts.push(pr_url(pr));
                     for a in self.authorizations(pr_id) {
@@ -650,11 +1387,22 @@ impl App {
                     }
                 }
             }
-            InboxSubject::DocumentReview { document_id, revision_id, .. } => {
+            InboxSubject::DocumentReview {
+                document_id,
+                revision_id,
+                ..
+            } => {
                 let d = self.domain.as_ref();
-                let title = d.and_then(|d| d.documents.iter().find(|x| &x.id == document_id)).map_or(document_id.0.clone(), |x| x.title.clone());
-                let number = d.and_then(|d| d.document_revisions.iter().find(|r| &r.id == revision_id)).map_or(0, |r| r.number);
-                parts.push(trf!("Document **{title}** · version {number}", "Documento **{title}** · versión {number}"));
+                let title = d
+                    .and_then(|d| d.documents.iter().find(|x| &x.id == document_id))
+                    .map_or(document_id.0.clone(), |x| x.title.clone());
+                let number = d
+                    .and_then(|d| d.document_revisions.iter().find(|r| &r.id == revision_id))
+                    .map_or(0, |r| r.number);
+                parts.push(trf!(
+                    "Document **{title}** · version {number}",
+                    "Documento **{title}** · versión {number}"
+                ));
             }
         }
         parts
@@ -668,12 +1416,17 @@ impl App {
                     parts.push(tr!("Read.", "Leído.").into());
                 }
             }
-            InteractionPayload::Question { options, answer } | InteractionPayload::ActionRequest { options, answer } => {
+            InteractionPayload::Question { options, answer }
+            | InteractionPayload::ActionRequest { options, answer } => {
                 let list: Vec<String> = options
                     .iter()
                     .enumerate()
                     .map(|(n, o)| {
-                        let asks = if o.inputs.iter().any(|s| s.kind == InputKind::Text) { tr!(" (asks you to write)", " (pide que escribas)") } else { "" };
+                        let asks = if o.inputs.iter().any(|s| s.kind == InputKind::Text) {
+                            tr!(" (asks you to write)", " (pide que escribas)")
+                        } else {
+                            ""
+                        };
                         format!("{}. {}{asks}", n + 1, o.label)
                     })
                     .collect();
@@ -681,35 +1434,79 @@ impl App {
                     parts.push(list.join("\n"));
                 }
                 if let Some(a) = answer {
-                    let label = options.iter().find(|o| o.id == a.option_id).map_or(a.option_id.as_str(), |o| o.label.as_str());
+                    let label = options
+                        .iter()
+                        .find(|o| o.id == a.option_id)
+                        .map_or(a.option_id.as_str(), |o| o.label.as_str());
                     parts.push(trf!("Answered: {label}", "Contestada: {label}"));
                 }
             }
-            InteractionPayload::Delivery { targets, acceptance, feedback, is_final } => {
-                parts.push(if *is_final { tr!("## Final delivery", "## Entrega final") } else { tr!("## Delivery", "## Entrega") }.into());
+            InteractionPayload::Delivery {
+                targets,
+                acceptance,
+                feedback,
+                is_final,
+            } => {
+                parts.push(
+                    if *is_final {
+                        tr!("## Final delivery", "## Entrega final")
+                    } else {
+                        tr!("## Delivery", "## Entrega")
+                    }
+                    .into(),
+                );
                 for t in targets {
                     parts.push(match t {
                         DeliveryTarget::Text { text } => text.clone(),
-                        DeliveryTarget::DocumentRevision { document_id, revision_id } => {
+                        DeliveryTarget::DocumentRevision {
+                            document_id,
+                            revision_id,
+                        } => {
                             let d = self.domain.as_ref();
-                            let title = d.and_then(|d| d.documents.iter().find(|x| &x.id == document_id)).map_or(document_id.0.clone(), |x| x.title.clone());
-                            let number = d.and_then(|d| d.document_revisions.iter().find(|r| &r.id == revision_id)).map_or(0, |r| r.number);
-                            trf!("Document **{title}** · version {number}", "Documento **{title}** · versión {number}")
+                            let title = d
+                                .and_then(|d| d.documents.iter().find(|x| &x.id == document_id))
+                                .map_or(document_id.0.clone(), |x| x.title.clone());
+                            let number = d
+                                .and_then(|d| {
+                                    d.document_revisions.iter().find(|r| &r.id == revision_id)
+                                })
+                                .map_or(0, |r| r.number);
+                            trf!(
+                                "Document **{title}** · version {number}",
+                                "Documento **{title}** · versión {number}"
+                            )
                         }
-                        DeliveryTarget::PullRequest { pr_id, head } => match self.pull_request(pr_id) {
-                            Some(pr) => {
-                                let mut line = format!("PR {} #{} @ {} · {}", pr.repository, pr.number, short(head), pr_state(pr.state));
-                                if &pr.head != head {
-                                    line.push_str(tr!(" · the PR moved since", " · el PR ha cambiado desde entonces"));
+                        DeliveryTarget::PullRequest { pr_id, head } => {
+                            match self.pull_request(pr_id) {
+                                Some(pr) => {
+                                    let mut line = format!(
+                                        "PR {} #{} @ {} · {}",
+                                        pr.repository,
+                                        pr.number,
+                                        short(head),
+                                        pr_state(pr.state)
+                                    );
+                                    if &pr.head != head {
+                                        line.push_str(tr!(
+                                            " · the PR moved since",
+                                            " · el PR ha cambiado desde entonces"
+                                        ));
+                                    }
+                                    line
                                 }
-                                line
+                                None => format!("PR {pr_id}"),
                             }
-                            None => format!("PR {pr_id}"),
-                        },
+                        }
                     });
                 }
                 if acceptance.as_ref().is_some_and(|a| a.valid) {
-                    parts.push(tr!("Accepted · waiting for the agent to finish", "Aceptada · pendiente de que el agente termine").into());
+                    parts.push(
+                        tr!(
+                            "Accepted · waiting for the agent to finish",
+                            "Aceptada · pendiente de que el agente termine"
+                        )
+                        .into(),
+                    );
                 }
                 if let Some(pr) = targets.iter().find_map(|t| match t {
                     DeliveryTarget::PullRequest { pr_id, .. } => Some(pr_id),
@@ -721,8 +1518,16 @@ impl App {
                     let n = feedback.len();
                     parts.push(trf!("## Feedback sent ({n})", "## Feedback enviado ({n})"));
                     parts.extend(feedback.iter().map(|f| {
-                        let clips: Vec<String> = f.attachments.iter().map(|a| format!("📎 {}", a.name)).collect();
-                        if clips.is_empty() { f.body.clone() } else { format!("{}\n\n{}", f.body, clips.join(" · ")) }
+                        let clips: Vec<String> = f
+                            .attachments
+                            .iter()
+                            .map(|a| format!("📎 {}", a.name))
+                            .collect();
+                        if clips.is_empty() {
+                            f.body.clone()
+                        } else {
+                            format!("{}\n\n{}", f.body, clips.join(" · "))
+                        }
                     }));
                 }
             }
@@ -732,7 +1537,12 @@ impl App {
 
     /// The Agents screen with the orchestrator selected and its activity open.
     pub(super) fn open_orchestrator(&mut self) {
-        let Some(id) = self.runtime.as_ref().and_then(|r| r.orchestrator_node()).map(|n| alondra_core::domain_v2::AgentId(n.session_id.clone())) else {
+        let Some(id) = self
+            .runtime
+            .as_ref()
+            .and_then(|r| r.orchestrator_node())
+            .map(|n| alondra_core::domain_v2::AgentId(n.session_id.clone()))
+        else {
             self.fail(tr!("Alondra manages the orchestrator automatically; its activity shows here once alondrad reports it", "Alondra gestiona el orquestador automáticamente; su actividad aparece aquí cuando alondrad la informa"));
             return;
         };
@@ -742,5 +1552,32 @@ impl App {
         self.agent_zoom = true;
         self.threads_asked = None;
         self.load_threads();
+    }
+}
+
+pub(super) fn safe_github_url(value: &str) -> bool {
+    let Ok(url) = url::Url::parse(value) else {
+        return false;
+    };
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    url.scheme() == "https"
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.port_or_known_default() == Some(443)
+        && (host == "github.com" || host.ends_with(".github.com"))
+}
+
+fn hint_matches(hint: &str, key: KeyEvent) -> bool {
+    match hint.to_ascii_lowercase().as_str() {
+        "enter" | "return" => key.code == KeyCode::Enter,
+        "space" => key.code == KeyCode::Char(' '),
+        "esc" | "escape" => key.code == KeyCode::Esc,
+        value if value.len() == 1 => {
+            key.code == KeyCode::Char(value.chars().next().unwrap_or('\0'))
+                && key.modifiers.is_empty()
+        }
+        _ => false,
     }
 }

@@ -31,10 +31,13 @@ pub(crate) use pr_details::{GhView, PrView};
 const DETAILS_INTERVAL: Duration = Duration::from_secs(60);
 
 pub(crate) struct Client {
-    domain: Arc<DomainRuntime>,
+    pub(crate) domain: Arc<DomainRuntime>,
     home: PathBuf,
-    gauges: crate::machine::Gauges,
-    details: pr_details::PrDetails,
+    pub(crate) gauges: crate::machine::Gauges,
+    pub(crate) views_gauges: std::sync::Mutex<Option<(std::time::Instant, Vec<alondra_core::views::Gauge>, Vec<alondra_core::views::Gauge>)>>,
+    pub(crate) details: pr_details::PrDetails,
+    pub(crate) views: crate::views::cache::Cache,
+    pub(crate) feeds: crate::views::feed::Feeds,
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
     github: std::sync::Mutex<Arc<dyn Github>>,
     options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
@@ -180,7 +183,7 @@ pub(crate) fn parse_read(path_and_query: &str) -> Option<Route> {
 }
 
 pub(crate) fn approved_read_path(path_and_query: &str) -> bool {
-    parse_read(path_and_query).is_some()
+    parse_read(path_and_query).is_some_and(|route| !matches!(route, Route::Runtime))
 }
 
 /// The steps of a chunked upload, which only the encrypted relay carries: on this Mac a
@@ -195,7 +198,10 @@ impl Client {
             domain,
             home: home.to_owned(),
             gauges,
+            views_gauges: Default::default(),
             details: Default::default(),
+            views: Default::default(),
+            feeds: Default::default(),
             sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
             github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
             options: Default::default(),
@@ -494,7 +500,6 @@ pub(crate) fn router(client: Arc<Client>) -> Router {
         .route("/options", get(read))
         .route("/projects", get(read))
         .route("/issues", get(read))
-        .route("/runtime", get(read))
         .route("/agents/search", get(read))
         .route("/agents/{id}/activity", get(read))
         .with_state(client)

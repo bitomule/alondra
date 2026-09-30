@@ -137,7 +137,7 @@ impl DomainState {
             expected_head: head,
         }
     }
-    fn item(&self, i: &Interaction) -> InboxItem {
+    pub(crate) fn item(&self, i: &Interaction) -> InboxItem {
         let task_id = match &i.scope {
             Scope::Task { task_id } => Some(task_id.clone()),
             _ => None,
@@ -169,7 +169,8 @@ impl DomainState {
             ),
             InteractionPayload::Question { answer, .. }
             | InteractionPayload::ActionRequest { answer, .. } => {
-                let enabled = answer.is_none() && !i.withdrawn && active && i.recipient == Recipient::User;
+                let enabled =
+                    answer.is_none() && !i.withdrawn && active && i.recipient == Recipient::User;
                 let reason = if i.withdrawn {
                     Some("withdrawn".into())
                 } else if i.recipient != Recipient::User {
@@ -435,7 +436,12 @@ impl DomainState {
             .filter_map(|t| {
                 self.interactions
                     .values()
-                    .filter(|p| p.scope == (Scope::Task { task_id: t.id.clone() }))
+                    .filter(|p| {
+                        p.scope
+                            == (Scope::Task {
+                                task_id: t.id.clone(),
+                            })
+                    })
                     .filter_map(|p| match &p.payload {
                         InteractionPayload::Delivery {
                             acceptance: Some(a),

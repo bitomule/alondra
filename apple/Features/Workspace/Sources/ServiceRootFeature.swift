@@ -3,11 +3,14 @@ import AlondraConnectionFeature
 import AlondraContracts
 import AlondraDomain
 import AlondraFleetFeature
+import AlondraHomeFeature
 import AlondraNewWorkFeature
 import AlondraPullRequestsFeature
 import AlondraQuestionsFeature
 import AlondraShared
 import AlondraTasksFeature
+import AlondraViewsDependency
+import AlondraViews
 import ComposableArchitecture
 import Foundation
 
@@ -16,12 +19,14 @@ public struct ServiceRootFeature {
     public init() {}
     @ObservableState
     public struct State {
-        public init() {}
+        public init(usesViews: Bool = false) {
+            self.usesViews = usesViews
+        }
         public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
+        public var usesViews: Bool
         public var macPresentation = MacPresentationFeature.State()
         public var tab = Tab.inbox
         public var settingsPresented = false
-        public var deliveryJournal = DeliveryJournalFeature.State()
         public var macError: WorkspaceNotice?
         var lastMacErrorMessage: String?
         var macErrorMessage: String? {
@@ -32,6 +37,12 @@ public struct ServiceRootFeature {
         public var notice: WorkspaceNotice?
         public var closeRefusal: String?
         public var triage = ServiceTriageFeature.State()
+        public var home = HomeFeature.State()
+        public var serverTasks = ViewsScreenFeature.State(key: .tasks, owner: "ios.tasks")
+        public var serverFleet = ViewsScreenFeature.State(key: .fleet, owner: "ios.fleet")
+        public var serverNewRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
+        public var serverReview = ViewsScreenFeature.State(key: .pullRequest("pending"), owner: "ios.detail")
+        public var serverDetailPresented = false
         public var tasks = ServiceTasksFeature.State()
         public var fleet = ServiceFleetFeature.State()
         public var newRequest = NewRequestFeature.State()
@@ -80,14 +91,22 @@ public struct ServiceRootFeature {
     public enum Action {
         case appeared, disappeared
         case macPresentation(MacPresentationFeature.Action)
-        case deliveryJournal(DeliveryJournalFeature.Action)
         case dismissMacError(UUID)
         case dismissNotice(UUID)
         case dismissCloseRefusal
         case tabSelected(State.Tab)
         case settingsPresented(Bool)
         case focusInbox(String)
+        case openLegacyReview(String)
+        case openServerView(String)
+        case serverDetailDismissed
         case triage(ServiceTriageFeature.Action)
+        case home(HomeFeature.Action)
+        case serverTasks(ViewsScreenFeature.Action)
+        case serverFleet(ViewsScreenFeature.Action)
+        case serverNewRequest(ViewsScreenFeature.Action)
+        case serverReview(ViewsScreenFeature.Action)
+        case viewsFeed(FeedEvent)
         case tasks(ServiceTasksFeature.Action)
         case fleet(ServiceFleetFeature.Action)
         case newRequest(NewRequestFeature.Action)
@@ -96,7 +115,8 @@ public struct ServiceRootFeature {
     }
     @Dependency(\.continuousClock) var noticeClock
     @Dependency(\.domainWorkspace) var domain
-    private enum NoticeCancelID { case timeout, macTimeout }
+    @Dependency(\.viewsClient) var viewsClient
+    private enum NoticeCancelID { case timeout, macTimeout, viewsFeed }
     public var body: some ReducerOf<Self> {
         // Observe the accepted operation before child navigation removes its state.
         Reduce { state, action in
@@ -128,14 +148,18 @@ public struct ServiceRootFeature {
                     state.triage.cancelPendingSubmissions()
                     state.fleet.cancelPendingSubmissions()
                     state.pullRequest?.cancelPendingSubmission()
-                    if let id = state.pullRequestID, state.macPresentation.selection != .item(State.itemID(of: id)) {
+                    if let id = state.pullRequestID, state.macPresentation.selection != .viewKey("pull_request:\(id.rawValue)") {
                         state.pullRequestID = nil
                     }
                     return .none
                 }
             }
-        Scope(state: \.deliveryJournal, action: \.deliveryJournal) { DeliveryJournalFeature() }
         Scope(state: \.triage, action: \.triage) { ServiceTriageFeature() }
+        Scope(state: \.home, action: \.home) { HomeFeature() }
+        Scope(state: \.serverTasks, action: \.serverTasks) { ViewsScreenFeature() }
+        Scope(state: \.serverFleet, action: \.serverFleet) { ViewsScreenFeature() }
+        Scope(state: \.serverNewRequest, action: \.serverNewRequest) { ViewsScreenFeature() }
+        Scope(state: \.serverReview, action: \.serverReview) { ViewsScreenFeature() }
         Scope(state: \.tasks, action: \.tasks) { ServiceTasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { ServiceFleetFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
@@ -147,12 +171,17 @@ public struct ServiceRootFeature {
             state.tasks.connection = state.triage.triage.connection
             switch action {
             case .appeared:
-                return .merge(.send(.deliveryJournal(.appeared)), .send(.triage(.triage(.appeared))), open(.inbox))
+                if state.usesViews {
+                    return subscribeToViews()
+                }
+                return .merge(.send(.triage(.triage(.appeared))),
+                              subscribeToViews(), open(.inbox))
             case .disappeared:
                 state.triage.cancelPendingSubmissions()
                 state.fleet.cancelPendingSubmissions()
                 state.pullRequest?.cancelPendingSubmission()
-                return .merge(.send(.deliveryJournal(.disappeared)), .send(.triage(.triage(.disappeared))))
+                return .merge(.send(.triage(.triage(.disappeared))),
+                              .send(.home(.disappeared)), .cancel(id: NoticeCancelID.viewsFeed))
             case .tabSelected(let tab):
                 if state.tab != tab {
                     state.triage.cancelPendingSubmissions()
@@ -161,9 +190,9 @@ public struct ServiceRootFeature {
                 }
                 state.tab = tab
                 switch tab {
-                case .tasks: return open(.tasks)
-                case .fleet: return open(.fleet)
-                case .newRequest: return open(.newRequest)
+                case .tasks: return state.usesViews ? .none : open(.tasks)
+                case .fleet: return state.usesViews ? .none : open(.fleet)
+                case .newRequest: return state.usesViews ? .none : open(.newRequest)
                 case .inbox, .account: return .none
                 }
             case .settingsPresented(let value): state.settingsPresented = value; return .none
@@ -179,7 +208,42 @@ public struct ServiceRootFeature {
                     }
                 }
                 state.pendingInboxID = id
+                if state.usesViews { return .send(.home(.focus(publicHomeID(id)))) }
+                return .merge(routePending(&state), .send(.home(.focus(publicHomeID(id)))))
+            case .openLegacyReview(let publicID):
+                if state.usesViews {
+                    state.serverReview.key = .pullRequest(publicID)
+                    state.serverDetailPresented = true
+                    return .none
+                }
+                // PR10 replaces this route with the pull_request view destination.
+                state.pendingInboxID = state.triage.triage.items.first(where: {
+                    $0.id.hasSuffix(":\(publicID)")
+                })?.id ?? "pr:\(publicID)"
                 return routePending(&state)
+            case .openServerView(let key):
+                state.serverReview.key = ViewKey(rawValue: key)
+                state.serverDetailPresented = true
+                return .none
+            case .serverDetailDismissed:
+                state.serverDetailPresented = false
+                return .send(.serverReview(.disappeared))
+            case .viewsFeed(.stale(let keys)):
+                return .merge(.send(.home(.stale(keys))), .send(.macPresentation(.viewsStale(keys))),
+                    .send(.serverTasks(.stale(keys))), .send(.serverFleet(.stale(keys))),
+                    .send(.serverNewRequest(.stale(keys))), .send(.serverReview(.stale(keys))))
+            case .viewsFeed(.reset):
+                return .merge(.send(.home(.reset)), .send(.macPresentation(.viewsReset)),
+                    .send(.serverTasks(.reset)), .send(.serverFleet(.reset)),
+                    .send(.serverNewRequest(.reset)), .send(.serverReview(.reset)))
+            case .viewsFeed(.snapshot(let snapshot)):
+                if snapshot.reset {
+                    return .merge(.send(.home(.reset)), .send(.macPresentation(.viewsReset)),
+                        .send(.serverTasks(.reset)), .send(.serverFleet(.reset)),
+                        .send(.serverNewRequest(.reset)), .send(.serverReview(.reset)))
+                }
+                if let status = snapshot.status { return .send(.home(.feedStatus(status))) }
+                return .none
             case .triage(.triage(.identityChanged(let identity))):
                 if state.pullRequestIdentity != identity {
                     state.pullRequestIdentity = identity
@@ -200,7 +264,6 @@ public struct ServiceRootFeature {
                     .send(.tasks(.workspaceChanged(workspace))), .send(.tasks(.hiddenInboxChanged(hidden))),
                     .send(.fleet(.workspaceChanged(workspace))), .send(.fleet(.hiddenInboxChanged(hidden))),
                 ]
-                if let revision = workspace?.revision { updates.append(.send(.deliveryJournal(.syncTick(revision)))) }
                 for detail in state.pullRequests {
                     let id = detail.id
                     guard let workspace else {
@@ -217,6 +280,7 @@ public struct ServiceRootFeature {
                 }
                 return .merge(updates)
             case .triage(.delegate(.pullRequest(let card))):
+                state.serverReview.key = .pullRequest(card.id.rawValue)
                 guard let workspace = state.workspace else { return .none }
                 state.pullRequestIdentity = state.triage.triage.identity
                 state.pullRequest?.cancelPendingSubmission()
@@ -249,7 +313,8 @@ public struct ServiceRootFeature {
             case .triage:
                 let hidden = state.triage.triage.hiddenIDs
                 return .merge(.send(.fleet(.hiddenInboxChanged(hidden))), .send(.tasks(.hiddenInboxChanged(hidden))))
-            case .macPresentation, .dismissMacError, .deliveryJournal, .tasks, .fleet, .newRequest, .pullRequests,
+            case .home, .serverTasks, .serverFleet, .serverNewRequest, .serverReview,
+                 .macPresentation, .dismissMacError, .tasks, .fleet, .newRequest, .pullRequests,
                  .dismissNotice, .dismissCloseRefusal: return .none
             }
         }.forEach(\.pullRequests, action: \.pullRequests) { ServicePullRequestFeature() }
@@ -269,6 +334,23 @@ public struct ServiceRootFeature {
 
     private func open(_ screen: DomainScreen) -> Effect<Action> {
         .run { [domain] _ in await domain.open(screen) }
+    }
+
+    private func subscribeToViews() -> Effect<Action> {
+        .run { [viewsClient] send in
+            for await event in await viewsClient.feed() {
+                await send(.viewsFeed(event))
+            }
+        }.cancellable(id: NoticeCancelID.viewsFeed, cancelInFlight: true)
+    }
+
+    /// Transitional navigation at the still-domain-backed Tasks/Fleet/Push boundary.
+    /// Remove when their callers send public card IDs after those screens migrate.
+    private func publicHomeID(_ id: String) -> String {
+        if id.hasPrefix("interaction:") || id.hasPrefix("pr:") || id.hasPrefix("document:") {
+            return String(id.split(separator: ":").last ?? Substring(id))
+        }
+        return id
     }
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {

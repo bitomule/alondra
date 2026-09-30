@@ -104,6 +104,12 @@ impl Fixture {
         serde_json::from_slice(&body).unwrap()
     }
 
+    async fn runtime_json(&self) -> Value {
+        let response = self.client.runtime();
+        let body = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&body).unwrap()
+    }
+
     pub(super) async fn send(&self, method: &str, path: &str, body: &Value) -> (StatusCode, Value) {
         let response = self.signed(method, path, Some(body)).send().await.unwrap();
         let status = response.status();
@@ -200,8 +206,8 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
     *fixture.client.gauges.lock().unwrap() = Some((serde_json::from_value(fixture_json("runtime.json")["machine"].clone()).unwrap(),
         serde_json::from_value(fixture_json("runtime.json")["usage"].clone()).ok()));
 
-    assert_eq!(fixture.unsigned_get("/runtime").await, StatusCode::FORBIDDEN, "runtime is for a paired device");
-    let runtime = fixture.get_json("/runtime").await;
+    assert_eq!(fixture.unsigned_get("/runtime").await, StatusCode::NOT_FOUND);
+    let runtime = fixture.runtime_json().await;
     let expected = fixture_json("runtime.json");
     for key in ["machine", "usage"] {
         assert_covers(&expected[key], &runtime[key], key);
@@ -250,7 +256,7 @@ async fn the_runtime_carries_live_sessions_times_and_pull_requests_in_the_fixtur
 async fn times_are_the_commits_own_and_survive_a_restart() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    let before = fixture.get_json("/runtime").await;
+    let before = fixture.runtime_json().await;
     let created = before["requests"]["request-1"]["created_at"].as_i64().unwrap();
     let started = before["tasks"]["task-1"]["state_since"].as_i64().unwrap();
     assert!(created > 0 && started >= created, "the task began after its request");
@@ -260,13 +266,13 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
         attachments: vec![], interaction_id: "info-1".into(),
         scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(),
     });
-    let informed = fixture.get_json("/runtime").await;
+    let informed = fixture.runtime_json().await;
     assert_eq!(informed["tasks"]["task-1"]["state_since"], before["tasks"]["task-1"]["state_since"], "information does not move the task's state");
     let appeared = informed["inbox_times"]["interaction:info-1"].as_i64().unwrap();
     assert!(appeared >= started, "the inbox row carries the time of the commit that added it");
 
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
-    let cancelled = fixture.get_json("/runtime").await;
+    let cancelled = fixture.runtime_json().await;
     assert!(cancelled["tasks"]["task-1"]["state_since"].as_i64().unwrap() >= appeared, "a change of state is timed by the commit that made it");
     let history = fixture.domain.store.lock().unwrap().task_history(&"task-1".into()).unwrap();
     assert_eq!(history.last().map(|step| step.state.as_str()), Some("cancelled"));
@@ -316,13 +322,13 @@ async fn unknown_v2_routes_are_a_bare_404_and_reads_are_named_exactly() {
         let (status, body) = fixture.get(path).await;
         assert_eq!((status, body.len()), (StatusCode::NOT_FOUND, 0), "{path}");
     }
-    assert_eq!(fixture.get("/agents").await.0, StatusCode::OK, "the resource API exposes the agents collection");
+    assert_eq!(fixture.get("/agents").await.0, StatusCode::NOT_FOUND);
     assert_eq!(fixture.get("/runtime?x=1").await, (StatusCode::NOT_FOUND, vec![]), "a runtime read takes no query");
     assert_eq!(fixture.get("/agents/search").await, (StatusCode::NOT_FOUND, vec![]), "a search needs its query");
-    for path in ["/runtime", "/agents/a-1/activity", "/agents/search?q=x%20y"] {
+    for path in ["/agents/a-1/activity", "/agents/search?q=x%20y"] {
         assert!(approved_read_path(path), "{path}");
     }
-    for path in ["/runtime?x=1", "/agents/a%2Fb/activity", "/agents//activity", "/agents/search",
+    for path in ["/runtime", "/runtime?x=1", "/agents/a%2Fb/activity", "/agents//activity", "/agents/search",
         "/agents/search?q=", "/agents/search?q=a&q=b", "/agents/search?q=a&x=1", "/runtime/", "/agents/a/activity?x=1"] {
         assert!(!approved_read_path(path), "{path}");
     }
@@ -385,7 +391,7 @@ async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fle
     assert!(calls.iter().any(|call| call == &["rm".to_string(), short.clone()]), "{calls:?}");
     assert!(!fixture.domain.state().unwrap().agents[&"agent-a".into()].connected, "the domain sees the session gone");
     assert!(fixture.domain.resolve_bearer(&bearer).is_err(), "its capability is revoked");
-    let runtime = fixture.get_json("/runtime").await;
+    let runtime = fixture.runtime_json().await;
     assert!(runtime["nodes"].as_array().unwrap().iter().all(|node| node["session_id"] != "agent-a"), "what was observed of it is forgotten");
 }
 
@@ -626,7 +632,7 @@ async fn a_new_request_keeps_what_the_user_chose_in_the_same_commit_as_the_reque
     fixture.user("task-9", Command::CreateTask {
         task_id: "task-9".into(), request_id: "request-9".into(), title: "Ship".into(), agent_id: None,
         review_prs: true, dependencies: BTreeSet::new(), stack: None });
-    let runtime = fixture.get_json("/runtime").await;
+    let runtime = fixture.runtime_json().await;
     assert_eq!((runtime["tasks"]["task-9"]["project"].as_str(), runtime["tasks"]["task-9"]["effort"].as_str()), (Some("App"), Some("hard")), "its tasks carry what it asked for");
 }
 
@@ -778,14 +784,14 @@ async fn the_reason_for_cancelling_is_recorded_beside_the_cancelled_task() {
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
     let (status, answer) = fixture.send("PUT", path, &request["body"]).await;
     assert_eq!((status, &answer), (StatusCode::OK, &request["response"]), "{answer}");
-    assert_eq!(fixture.get_json("/runtime").await["tasks"]["task-1"]["cancel_reason"], "Superseded");
+    assert_eq!(fixture.runtime_json().await["tasks"]["task-1"]["cancel_reason"], "Superseded");
     assert_eq!(fixture.send("PUT", path, &json!({"reason": "  Replaced by task-2  "})).await.0, StatusCode::OK);
-    assert_eq!(fixture.get_json("/runtime").await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "the latest words are kept, trimmed");
+    assert_eq!(fixture.runtime_json().await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "the latest words are kept, trimmed");
     for body in [json!({"reason": "   "}), json!({"reason": "x".repeat(4097)}), json!({"reason": "a", "extra": 1}), json!({})] {
         assert_eq!(fixture.send("PUT", path, &body).await.0, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
     }
     assert_eq!(fixture.send("PUT", "/tasks/nothing/cancel-reason", &json!({"reason": "x"})).await.0, StatusCode::NOT_FOUND);
-    assert_eq!(fixture.get_json("/runtime").await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "refusals change nothing");
+    assert_eq!(fixture.runtime_json().await["tasks"]["task-1"]["cancel_reason"], "Replaced by task-2", "refusals change nothing");
     let unsigned = reqwest::Client::new().put(format!("{}{path}", fixture.base)).json(&json!({"reason": "x"})).send().await.unwrap();
     assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
     assert_eq!(parse_put("/tasks/task-1/cancel-reason"), Some(Write::CancelReason("task-1".into())));

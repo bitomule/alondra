@@ -38,79 +38,58 @@ public enum NotificationPayload {
         public func matches(_ currentBinding: Binding?) -> Bool { binding == currentBinding }
     }
 
-    /// A v2 push names the server's inbox item and, for an actionable item, the epoch and
-    /// revision its action is decided against (docs/domain-v2-apple-client-contracts.md).
+    /// A views push names the card and carries the exact opaque actions shown by the server.
     public struct Item: Hashable, Sendable {
-        public enum Kind: String, Sendable {
+        public enum Kind: String, Hashable, Sendable {
             case question, actionRequest = "action_request", information, delivery, pullRequest = "pull_request"
         }
 
         public let kind: Kind
-        public let itemID: String
-        public let interactionID: String?
-        public let epoch: String?
-        public let expectedRevision: UInt64?
+        public let card: String
+        public let epoch: String
+        public let actions: [PushAction]
 
-        public var inboxID: String { itemID }
+        public var itemID: String { card }
+        public var inboxID: String { "interaction:\(card)" }
+        public var interactionID: String? { card }
 
         public init?(userInfo: [AnyHashable: Any]) {
             guard let alondra = userInfo["alondra"] as? [String: Any],
-                  (alondra["protocol_version"] as? NSNumber)?.intValue == 2,
+                  (alondra["protocol"] as? NSNumber)?.intValue == 1,
                   let kind = (alondra["kind"] as? String).flatMap(Kind.init(rawValue:)),
-                  let itemID = alondra["item_id"] as? String, !itemID.isEmpty, itemID.utf8.count <= 512
+                  let card = alondra["card"] as? String, Category.isSafe(card),
+                  let epoch = alondra["data_epoch"] as? String, !epoch.isEmpty,
+                  let raw = alondra["actions"] as? [[String: Any]]
             else { return nil }
             self.kind = kind
-            self.itemID = itemID
-            interactionID = (alondra["interaction_id"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            epoch = (alondra["data_epoch"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-            expectedRevision = (alondra["expected_revision"] as? NSNumber).flatMap { UInt64(exactly: $0.int64Value) }
+            self.card = card
+            self.epoch = epoch
+            self.actions = Array(raw.prefix(4)).compactMap { entry in
+                guard let id = entry["id"] as? String, !id.isEmpty, id.utf8.count <= 512,
+                      let label = (entry["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                      !label.isEmpty else { return nil }
+                let option = (entry["option"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                let text = (entry["text"] as? Bool) ?? false
+                let placeholder = (entry["placeholder"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+                return PushAction(id: id, option: option, label: label, text: text, placeholder: placeholder)
+            }
         }
     }
 
-    /// The server's options for a question, offered as notification buttons by option ID.
-    public struct Question: Sendable {
-        public static let maxOptions = 4
-
-        public struct Option: Hashable, Sendable {
-            public let id: String
-            public let label: String
-            /// The option's text input, for the reply action.
-            public let textInput: String?
-        }
-
+    public struct PushAction: Hashable, Sendable {
         public let id: String
-        public let options: [Option]
-        /// The option a typed notification reply answers with, when the server names one.
-        public let replyOption: Option?
-
-        public init?(userInfo: [AnyHashable: Any]) {
-            guard let item = Item(userInfo: userInfo), item.kind == .question || item.kind == .actionRequest,
-                  let id = item.interactionID, Category.isSafe(id),
-                  let alondra = userInfo["alondra"] as? [String: Any],
-                  let raw = alondra["options"] as? [[String: Any]] else { return nil }
-            var seen = Set<String>()
-            let all: [Option] = raw.compactMap { entry in
-                guard let id = entry["id"] as? String, Category.isSafe(id),
-                      let label = (entry["label"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                      !label.isEmpty, seen.insert(id).inserted else { return nil }
-                return Option(id: id, label: label, textInput: (entry["text_input"] as? String).flatMap { $0.isEmpty ? nil : $0 })
-            }
-            let options = Array(all.prefix(Self.maxOptions))
-            guard !options.isEmpty else { return nil }
-            self.id = id
-            self.options = options
-            replyOption = (alondra["reply_option_id"] as? String).flatMap { reply in
-                all.first { $0.id == reply && $0.textInput != nil }
-            }
-        }
+        public let option: String?
+        public let label: String
+        public let text: Bool
+        public let placeholder: String?
     }
 
     public enum Category {
-        public static let question = "ALONDRA_QUESTION"
-        public static let permission = "ALONDRA_PERMISSION"
-        public static let plan = "ALONDRA_PLAN"
-        public static let read = "ALONDRA_READ"
-        public static let questionPrefix = "ALONDRA_Q_"
+        public static let question = "ALONDRA_PUSH"
+        public static let permission = "ALONDRA_PUSH"
+        public static let plan = "ALONDRA_PUSH"
+        public static let read = "ALONDRA_PUSH"
+        public static let questionPrefix = "ALONDRA_"
 
         public struct QuestionIdentity: Equatable, Sendable {
             public let binding: Binding
@@ -167,15 +146,11 @@ public enum NotificationPayload {
     }
 
     public enum Action {
-        public static let reply = "REPLY"
-        public static let moreContext = "MORE_CONTEXT"
-        public static let allow = "ALLOW"
-        public static let deny = "DENY"
-        public static let approve = "APPROVE"
-        public static let review = "REVIEW"
-        public static let markRead = "READ"
-        public static let optionPrefix = "OPT:"
-
-        public static func option(_ id: String) -> String { optionPrefix + id }
+        public static func indexed(_ index: Int) -> String { "A\(index)" }
+        public static func index(_ identifier: String) -> Int? {
+            let bytes = Array(identifier.utf8)
+            guard bytes.count == 2, bytes[0] == 65, (48...51).contains(bytes[1]) else { return nil }
+            return Int(bytes[1] - 48)
+        }
     }
 }

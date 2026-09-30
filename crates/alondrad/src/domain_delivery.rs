@@ -7,10 +7,9 @@ use crate::push::Push;
 use crate::service::Service;
 use alondra_core::Event;
 use alondra_core::delivery::State;
+use alondra_core::views::{self, Lang};
 use anyhow::Result;
-use alondra_core::domain_v2::{
-    DomainState, InputKind, InteractionId, InteractionPayload, QuestionOption,
-};
+use alondra_core::domain_v2::{DomainState, InteractionId, InteractionPayload};
 use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::path::Path;
@@ -221,7 +220,7 @@ async fn deliver_user_runtime(
     let state = domain
         .state()
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
-    let payload = user_push_payload(&state, message.interaction_id.as_deref());
+    let payload = user_push_payload(&state, message.interaction_id.as_deref(), Lang::En);
     if let Some(service) = service {
         let (attempted, accepted) = service
             .broadcast_push_report(&payload, true)
@@ -241,67 +240,38 @@ async fn deliver_user_runtime(
     Ok(())
 }
 
-const PUSH_OPTION_LIMIT: usize = 4;
-
-fn user_push_payload(state: &DomainState, interaction_id: Option<&str>) -> Value {
-    let mut alondra = json!({"protocol_version": 2, "data_epoch": state.data_epoch});
+fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: Lang) -> Value {
+    let mut alondra = json!({"protocol": views::VIEWS_PROTOCOL, "data_epoch": state.data_epoch,
+        "actions": []});
     let mut aps = json!({"alert": {"title": "Alondra", "body": "New activity in Alondra"},
         "sound": "default"});
     if let Some(id) = interaction_id {
-        alondra["item_id"] = json!(format!("interaction:{id}"));
-        alondra["interaction_id"] = json!(id);
+        alondra["card"] = json!(id);
         if let Some(interaction) = state.interactions.get(&InteractionId::from(id)) {
-            let (kind, category) = match interaction.payload {
-                InteractionPayload::Information { .. } => ("information", Some("ALONDRA_READ")),
-                InteractionPayload::Question { .. } => ("question", Some("ALONDRA_QUESTION")),
-                InteractionPayload::ActionRequest { .. } => {
-                    ("action_request", Some("ALONDRA_QUESTION"))
-                }
-                InteractionPayload::Delivery { .. } => ("delivery", None),
+            let kind = match interaction.payload {
+                InteractionPayload::Information { .. } => "information",
+                InteractionPayload::Question { .. } => "question",
+                InteractionPayload::ActionRequest { .. } => "action_request",
+                InteractionPayload::Delivery { .. } => "delivery",
             };
             alondra["kind"] = json!(kind);
-            if let Some(category) = category {
-                alondra["expected_revision"] = json!(interaction.revision);
-                aps["category"] = json!(category);
+            let actions = views::push_actions(state, id, lang);
+            if !actions.is_empty() {
+                alondra["actions"] = json!(actions);
+                let spanish = views::push_actions(state, id, Lang::Es);
+                if spanish != actions {
+                    // The extension selects this localized copy on the device before
+                    // handing the authenticated payload to the app.
+                    alondra["actions_es"] = json!(spanish);
+                }
+                // The extension replaces this bootstrap category with a per-card
+                // category after authenticating the encrypted payload.
+                aps["category"] = json!("ALONDRA_PUSH");
                 aps["mutable-content"] = json!(1);
-            }
-            if let InteractionPayload::Question { options, .. }
-            | InteractionPayload::ActionRequest { options, .. } = &interaction.payload
-            {
-                let (options, reply_option_id) = push_options(options);
-                if !options.is_empty() {
-                    alondra["options"] = json!(options);
-                }
-                if let Some(reply) = reply_option_id {
-                    alondra["reply_option_id"] = json!(reply);
-                }
             }
         }
     }
     json!({"aps": aps, "alondra": alondra})
-}
-
-/// The options the phone can answer from a notification: those with no required input become
-/// buttons, and the first with a single text input is answered by typing a reply.
-fn push_options(options: &[QuestionOption]) -> (Vec<Value>, Option<String>) {
-    let mut pushed = Vec::new();
-    let mut reply = None;
-    for option in options {
-        if pushed.len() == PUSH_OPTION_LIMIT {
-            break;
-        }
-        let mut entry = json!({"id": option.id, "label": option.label});
-        match option.inputs.as_slice() {
-            [input] if input.kind == InputKind::Text => {
-                entry["text_input"] = json!(input.id);
-                reply.get_or_insert_with(|| option.id.clone());
-            }
-            inputs if inputs.iter().all(|input| !input.required) => {}
-            _ => continue,
-        }
-        pushed.push(entry);
-    }
-    (pushed, reply)
 }
 
 #[cfg(test)]
@@ -826,7 +796,7 @@ mod tests {
     #[test]
     fn user_push_payload_matches_the_apple_client_fixture() {
         let fixture: Value =
-            serde_json::from_str(include_str!("../../../fixtures/client-v2/push-payloads.json"))
+            serde_json::from_str(include_str!("../../../fixtures/views/push-payloads.json"))
                 .unwrap();
         let mut state = DomainState::new(fixture["data_epoch"].as_str().unwrap());
         let options = vec![
@@ -923,10 +893,39 @@ mod tests {
         for case in cases {
             let name = case["interaction"].as_str().unwrap();
             assert_eq!(
-                user_push_payload(&state, Some(&format!("i-{name}"))),
+                user_push_payload(&state, Some(&format!("i-{name}")), Lang::En),
                 case["payload"],
                 "{name}"
             );
         }
+    }
+
+    #[test]
+    fn push_payload_fits_1500_bytes_with_four_spanish_options() {
+        let mut state = DomainState::new("epoch-1");
+        let id = InteractionId::from("i-spanish");
+        let options = ["Mantener cookies", "Abrir en Safari", "Usar otra cuenta", "Cancelar"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, label)| QuestionOption {
+                id: format!("option-{index}"), label: label.into(), description: None, inputs: vec![],
+            })
+            .collect();
+        state.interactions.insert(id.clone(), Interaction {
+            attachments: vec![], id, scope: Scope::Task { task_id: "task-a".into() },
+            author: Author::System, recipient: Recipient::User, body: "¿Qué debería hacer?".into(),
+            blocking: true, subject: None,
+            payload: InteractionPayload::Question { options, answer: None },
+            revision: 117, order: 1, withdrawn: false,
+        });
+
+        let payload = user_push_payload(&state, Some("i-spanish"), Lang::En);
+        let actions = payload["alondra"]["actions"].as_array().unwrap();
+        assert_eq!(actions.len(), 4);
+        assert_eq!(actions[0]["label"], "Mantener cookies");
+        let plaintext = serde_json::to_vec(&json!({
+            "push_binding": "A".repeat(43), "payload": payload, "with_sound": true,
+        })).unwrap();
+        assert!(plaintext.len() <= 1_500, "encrypted push plaintext is {} bytes", plaintext.len());
     }
 }

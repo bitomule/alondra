@@ -16,22 +16,6 @@ struct NotificationRoute: Hashable {
     let binding: NotificationPayload.Binding
 }
 
-enum NotificationCategory {
-    static let question = NotificationPayload.Category.question
-    static let permission = NotificationPayload.Category.permission
-    static let plan = NotificationPayload.Category.plan
-    static let read = NotificationPayload.Category.read
-
-    static let reply = NotificationPayload.Action.reply
-    static let moreContext = NotificationPayload.Action.moreContext
-    static let allow = NotificationPayload.Action.allow
-    static let deny = NotificationPayload.Action.deny
-    static let approve = NotificationPayload.Action.approve
-    static let review = NotificationPayload.Action.review
-    static let markRead = NotificationPayload.Action.markRead
-    static let optionPrefix = NotificationPayload.Action.optionPrefix
-}
-
 struct NotificationResponse: Sendable {
     let action: String
     let text: String?
@@ -219,10 +203,7 @@ final class PushCenter {
         switch response.action {
         case UNNotificationDefaultActionIdentifier:
             guard await activate(authorized) else { return }
-            route = NotificationRoute(itemID: item.inboxID, opensDetail: item.kind != .question && item.kind != .actionRequest, binding: binding)
-        case NotificationCategory.review:
-            guard await activate(authorized) else { return }
-            route = NotificationRoute(itemID: item.inboxID, opensDetail: true, binding: binding)
+            route = NotificationRoute(itemID: item.card, opensDetail: false, binding: binding)
         default:
             await send(response, authorized: authorized)
         }
@@ -242,14 +223,19 @@ final class PushCenter {
         defer { UIApplication.shared.endBackgroundTask(background) }
         guard let result = await submission.value else { return }
         switch result {
-        case .sent(.recorded):
-            break
-        case .sent(.uncertain):
+        case .sent(let action):
+            switch action.outcome {
+            case .applied:
+                break
+            case .noLongerAvailable:
+                await reportNoLongerPending(response)
+            case .changed, .rejected:
+                await reportFailure(response, reason: action.message ?? String(localized: "This action could not be completed."))
+            }
+        case .uncertain:
             await reportUncertain(response)
-        case .sent(.rejected(let rejection)):
-            await reportFailure(response, reason: rejection.localizedMessage)
-        case .sent(.obsolete):
-            return
+        case .failed(let reason):
+            await reportFailure(response, reason: reason)
         case .noLongerPending:
             await reportNoLongerPending(response)
         }

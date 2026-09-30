@@ -79,7 +79,7 @@ public struct DemoAccountView: View {
         guard id != nil, current == generation, !Task.isCancelled else { return }
         do {
             let session = try DemoWorkspace()
-            let store = Store(initialState: ServiceRootFeature.State()) { ServiceRootFeature() } withDependencies: {
+            let store = Store(initialState: ServiceRootFeature.State(usesViews: true)) { ServiceRootFeature() } withDependencies: {
                 session.install(into: &$0)
             }
             self.session = session; self.store = store

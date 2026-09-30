@@ -15,7 +15,10 @@ pub enum Kind {
     Item(String),
     Code(Option<String>),
     Quote,
-    Row { header: bool, aligns: Vec<Alignment> },
+    Row {
+        header: bool,
+        aligns: Vec<Alignment>,
+    },
     Rule,
     Label,
 }
@@ -48,12 +51,23 @@ pub struct Block {
 
 impl Block {
     fn new(kind: Kind, depth: usize) -> Self {
-        let lines = if matches!(kind, Kind::Row { .. } | Kind::Rule) { vec![] } else { vec![vec![]] };
+        let lines = if matches!(kind, Kind::Row { .. } | Kind::Rule) {
+            vec![]
+        } else {
+            vec![vec![]]
+        };
         Block { kind, depth, lines }
     }
 
     fn plain_text(kind: Kind, text: &str) -> Self {
-        Block { kind, depth: 0, lines: vec![vec![Run { text: text.to_string(), fmt: Fmt::default() }]] }
+        Block {
+            kind,
+            depth: 0,
+            lines: vec![vec![Run {
+                text: text.to_string(),
+                fmt: Fmt::default(),
+            }]],
+        }
     }
 
     pub fn label(text: &str) -> Self {
@@ -66,9 +80,18 @@ impl Block {
 
     pub fn plain(&self) -> String {
         let (sep, lines): (&str, Vec<String>) = match self.kind {
-            Kind::Row { .. } => (" | ", self.lines.iter().map(|c| one_line(&plain(c))).collect()),
-            Kind::Code(_) => (" ", self.lines.iter().map(|l| one_line(&plain(l))).collect()),
-            _ => ("\n", self.lines.iter().map(|l| one_line(&plain(l))).collect()),
+            Kind::Row { .. } => (
+                " | ",
+                self.lines.iter().map(|c| one_line(&plain(c))).collect(),
+            ),
+            Kind::Code(_) => (
+                " ",
+                self.lines.iter().map(|l| one_line(&plain(l))).collect(),
+            ),
+            _ => (
+                "\n",
+                self.lines.iter().map(|l| one_line(&plain(l))).collect(),
+            ),
         };
         lines.join(sep).trim().to_string()
     }
@@ -83,11 +106,21 @@ impl Block {
 }
 
 fn plain(text: &[Run]) -> String {
-    text.iter().filter(|r| !r.fmt.host).map(|r| r.text.as_str()).collect()
+    text.iter()
+        .filter(|r| !r.fmt.host)
+        .map(|r| r.text.as_str())
+        .collect()
 }
 
 pub fn clip(s: &str, max: usize) -> String {
-    if s.chars().count() <= max { s.to_string() } else { format!("{}…", s.chars().take(max.saturating_sub(1)).collect::<String>()) }
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        format!(
+            "{}…",
+            s.chars().take(max.saturating_sub(1)).collect::<String>()
+        )
+    }
 }
 
 fn host(url: &str) -> Option<&str> {
@@ -141,11 +174,21 @@ impl Builder {
     }
 
     fn current_line(&self) -> String {
-        self.cur.as_ref().and_then(|b| b.lines.last()).map(|l| plain(l)).unwrap_or_default()
+        self.cur
+            .as_ref()
+            .and_then(|b| b.lines.last())
+            .map(|l| plain(l))
+            .unwrap_or_default()
     }
 
     fn push(&mut self, text: &str, host: bool) {
-        self.push_fmt(text, Fmt { host, ..Fmt::default() });
+        self.push_fmt(
+            text,
+            Fmt {
+                host,
+                ..Fmt::default()
+            },
+        );
     }
 
     fn push_fmt(&mut self, text: &str, extra: Fmt) {
@@ -166,7 +209,10 @@ impl Builder {
         let line = b.lines.last_mut().expect("a line was just ensured");
         match line.last_mut() {
             Some(r) if r.fmt == fmt => r.text.push_str(text),
-            _ => line.push(Run { text: text.to_string(), fmt }),
+            _ => line.push(Run {
+                text: text.to_string(),
+                fmt,
+            }),
         }
     }
 
@@ -178,8 +224,18 @@ impl Builder {
                 Some(code) => code.push_str(&t),
                 None => self.push(&t, false),
             },
-            Event::Code(t) => self.push_fmt(&t, Fmt { code: true, ..Fmt::default() }),
-            Event::InlineHtml(t) | Event::Html(t) | Event::InlineMath(t) | Event::DisplayMath(t) | Event::FootnoteReference(t) => self.push(&t, false),
+            Event::Code(t) => self.push_fmt(
+                &t,
+                Fmt {
+                    code: true,
+                    ..Fmt::default()
+                },
+            ),
+            Event::InlineHtml(t)
+            | Event::Html(t)
+            | Event::InlineMath(t)
+            | Event::DisplayMath(t)
+            | Event::FootnoteReference(t) => self.push(&t, false),
             Event::SoftBreak => self.push(" ", false),
             Event::HardBreak => match self.cur.as_mut() {
                 Some(b) if !matches!(b.kind, Kind::Row { .. }) => b.lines.push(vec![]),
@@ -190,7 +246,11 @@ impl Builder {
                 self.flush();
             }
             Event::TaskListMarker(done) => {
-                if let Some(Block { kind: Kind::Item(marker), .. }) = self.cur.as_mut() {
+                if let Some(Block {
+                    kind: Kind::Item(marker),
+                    ..
+                }) = self.cur.as_mut()
+                {
                     *marker = if done { "☑" } else { "☐" }.into();
                 }
             }
@@ -207,7 +267,9 @@ impl Builder {
             }
             Tag::CodeBlock(kind) => {
                 let lang = match kind {
-                    CodeBlockKind::Fenced(info) => info.split_whitespace().next().map(str::to_string),
+                    CodeBlockKind::Fenced(info) => {
+                        info.split_whitespace().next().map(str::to_string)
+                    }
                     CodeBlockKind::Indented => None,
                 };
                 self.open(Kind::Code(lang), self.nesting());
@@ -233,7 +295,13 @@ impl Builder {
                 self.flush();
                 self.aligns = aligns;
             }
-            Tag::TableHead | Tag::TableRow => self.open(Kind::Row { header: tag == Tag::TableHead, aligns: self.aligns.clone() }, self.nesting()),
+            Tag::TableHead | Tag::TableRow => self.open(
+                Kind::Row {
+                    header: tag == Tag::TableHead,
+                    aligns: self.aligns.clone(),
+                },
+                self.nesting(),
+            ),
             Tag::TableCell => {
                 if let Some(b) = self.cur.as_mut() {
                     b.lines.push(vec![]);
@@ -242,8 +310,21 @@ impl Builder {
             Tag::Emphasis => self.emphasis += 1,
             Tag::Strong => self.strong += 1,
             Tag::Strikethrough => self.strike += 1,
-            Tag::Link { link_type, dest_url, .. } | Tag::Image { link_type, dest_url, .. } => {
-                let dest = if matches!(link_type, LinkType::Autolink | LinkType::Email) { String::new() } else { dest_url.to_string() };
+            Tag::Link {
+                link_type,
+                dest_url,
+                ..
+            }
+            | Tag::Image {
+                link_type,
+                dest_url,
+                ..
+            } => {
+                let dest = if matches!(link_type, LinkType::Autolink | LinkType::Email) {
+                    String::new()
+                } else {
+                    dest_url.to_string()
+                };
                 self.links.push((dest, self.current_line().len()));
             }
             _ => {}
@@ -252,13 +333,29 @@ impl Builder {
 
     fn end(&mut self, tag: TagEnd) {
         match tag {
-            TagEnd::Paragraph | TagEnd::Heading(_) | TagEnd::HtmlBlock | TagEnd::Item | TagEnd::TableHead | TagEnd::TableRow => self.flush(),
+            TagEnd::Paragraph
+            | TagEnd::Heading(_)
+            | TagEnd::HtmlBlock
+            | TagEnd::Item
+            | TagEnd::TableHead
+            | TagEnd::TableRow => self.flush(),
             TagEnd::CodeBlock => {
                 let code = self.code.take().unwrap_or_default();
                 let code = code.strip_suffix('\n').unwrap_or(&code);
                 if let Some(b) = self.cur.as_mut() {
-                    let fmt = Fmt { code: true, ..Fmt::default() };
-                    b.lines = code.split('\n').map(|l| vec![Run { text: l.replace('\t', "    "), fmt }]).collect();
+                    let fmt = Fmt {
+                        code: true,
+                        ..Fmt::default()
+                    };
+                    b.lines = code
+                        .split('\n')
+                        .map(|l| {
+                            vec![Run {
+                                text: l.replace('\t', "    "),
+                                fmt,
+                            }]
+                        })
+                        .collect();
                 }
                 self.flush();
             }
@@ -274,7 +371,9 @@ impl Builder {
             TagEnd::Strong => self.strong = self.strong.saturating_sub(1),
             TagEnd::Strikethrough => self.strike = self.strike.saturating_sub(1),
             TagEnd::Link | TagEnd::Image => {
-                let Some((dest, at)) = self.links.pop() else { return };
+                let Some((dest, at)) = self.links.pop() else {
+                    return;
+                };
                 let line = self.current_line();
                 let text = line.get(at..).unwrap_or_default().trim();
                 if let Some(h) = host(&dest).filter(|h| text != dest && text != *h) {
@@ -288,7 +387,10 @@ impl Builder {
 
 pub fn parse(text: &str) -> Vec<Block> {
     let mut b = Builder::default();
-    for event in Parser::new_ext(text, Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH) {
+    for event in Parser::new_ext(
+        text,
+        Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH,
+    ) {
         b.event(event);
     }
     b.flush();
@@ -297,7 +399,11 @@ pub fn parse(text: &str) -> Vec<Block> {
 
 fn style(fmt: Fmt, base: Style) -> Style {
     let mut s = base;
-    for (on, m) in [(fmt.bold, Modifier::BOLD), (fmt.italic, Modifier::ITALIC), (fmt.strike, Modifier::CROSSED_OUT)] {
+    for (on, m) in [
+        (fmt.bold, Modifier::BOLD),
+        (fmt.italic, Modifier::ITALIC),
+        (fmt.strike, Modifier::CROSSED_OUT),
+    ] {
         if on {
             s = s.add_modifier(m);
         }
@@ -315,7 +421,10 @@ fn style(fmt: Fmt, base: Style) -> Style {
 }
 
 fn spans(text: &[Run], base: Style, hosts: bool) -> Vec<Span<'static>> {
-    text.iter().filter(|r| hosts || !r.fmt.host).map(|r| Span::styled(r.text.clone(), style(r.fmt, base))).collect()
+    text.iter()
+        .filter(|r| hosts || !r.fmt.host)
+        .map(|r| Span::styled(r.text.clone(), style(r.fmt, base)))
+        .collect()
 }
 
 pub fn char_width(c: char) -> usize {
@@ -354,13 +463,21 @@ fn prefix_width(p: &[Span]) -> usize {
 }
 
 fn close_line(mut line: Vec<Span<'static>>) -> Line<'static> {
-    while line.last().is_some_and(|s| !s.content.is_empty() && s.content.trim().is_empty()) {
+    while line
+        .last()
+        .is_some_and(|s| !s.content.is_empty() && s.content.trim().is_empty())
+    {
         line.pop();
     }
     Line::from(line)
 }
 
-pub fn wrap(spans: Vec<Span<'static>>, width: usize, first: Vec<Span<'static>>, rest: Vec<Span<'static>>) -> Vec<Line<'static>> {
+pub fn wrap(
+    spans: Vec<Span<'static>>,
+    width: usize,
+    first: Vec<Span<'static>>,
+    rest: Vec<Span<'static>>,
+) -> Vec<Line<'static>> {
     let width = width.max(4);
     let mut tokens: Vec<(String, Style, bool)> = vec![];
     for s in spans {
@@ -434,7 +551,10 @@ fn hard_wrap(text: &str, width: usize, prefix: Span<'static>, style: Style) -> V
     for ch in text.chars() {
         let cw = char_width(ch);
         if w + cw > avail {
-            out.push(Line::from(vec![prefix.clone(), Span::styled(std::mem::take(&mut cur), style)]));
+            out.push(Line::from(vec![
+                prefix.clone(),
+                Span::styled(std::mem::take(&mut cur), style),
+            ]));
             w = 0;
         }
         cur.push(ch);
@@ -450,7 +570,10 @@ pub struct Rendered {
 }
 
 fn joins_previous(prev: &Kind, cur: &Kind) -> bool {
-    matches!((prev, cur), (Kind::Item(_), Kind::Item(_)) | (Kind::Row { .. }, Kind::Row { .. }))
+    matches!(
+        (prev, cur),
+        (Kind::Item(_), Kind::Item(_)) | (Kind::Row { .. }, Kind::Row { .. })
+    )
 }
 
 #[derive(Clone, Copy, Default, PartialEq, Debug)]
@@ -470,14 +593,23 @@ struct Table {
 }
 
 fn table_at(blocks: &[Block], start: usize, width: usize) -> Table {
-    let rows: Vec<&Block> = blocks[start..].iter().take_while(|b| matches!(b.kind, Kind::Row { .. })).collect();
+    let rows: Vec<&Block> = blocks[start..]
+        .iter()
+        .take_while(|b| matches!(b.kind, Kind::Row { .. }))
+        .collect();
     let columns = rows.iter().map(|r| r.lines.len()).max().unwrap_or(0);
     let (mut natural, mut min) = (vec![0; columns], vec![0; columns]);
     for r in &rows {
         for (i, c) in r.lines.iter().enumerate() {
             let text = plain(c);
             let w = str_width(&text);
-            let word = text.split_whitespace().map(str_width).max().unwrap_or(0).min(CELL_WORD_MAX).max(w.min(4));
+            let word = text
+                .split_whitespace()
+                .map(str_width)
+                .max()
+                .unwrap_or(0)
+                .min(CELL_WORD_MAX)
+                .max(w.min(4));
             natural[i] = natural[i].max(w);
             min[i] = min[i].max(word);
         }
@@ -485,7 +617,11 @@ fn table_at(blocks: &[Block], start: usize, width: usize) -> Table {
     let gaps = 3 * columns.saturating_sub(1);
     let fits = |w: &[usize]| w.iter().sum::<usize>() + gaps <= width;
     let header = match rows.first() {
-        Some(Block { kind: Kind::Row { header: true, .. }, lines, .. }) => Some(lines.iter().map(|c| one_line(&plain(c))).collect()),
+        Some(Block {
+            kind: Kind::Row { header: true, .. },
+            lines,
+            ..
+        }) => Some(lines.iter().map(|c| one_line(&plain(c))).collect()),
         _ => None,
     };
     let (mode, widths) = if fits(&natural) {
@@ -495,15 +631,28 @@ fn table_at(blocks: &[Block], start: usize, width: usize) -> Table {
     } else {
         (Mode::Records, natural)
     };
-    let ruled = mode == Mode::Wrapped && rows.iter().any(|r| matches!(r.kind, Kind::Row { header: false, .. }) && row_cells(r, &widths, Style::new()).iter().any(|c| c.len() > 1));
-    Table { widths, header, mode, ruled }
+    let ruled = mode == Mode::Wrapped
+        && rows.iter().any(|r| {
+            matches!(r.kind, Kind::Row { header: false, .. })
+                && row_cells(r, &widths, Style::new())
+                    .iter()
+                    .any(|c| c.len() > 1)
+        });
+    Table {
+        widths,
+        header,
+        mode,
+        ruled,
+    }
 }
 
 /// Spare width goes to each column in proportion to its natural width, never past it.
 fn share(natural: &[usize], mut widths: Vec<usize>, avail: usize) -> Vec<usize> {
     let mut spare = avail.saturating_sub(widths.iter().sum());
     while spare > 0 {
-        let open: Vec<usize> = (0..widths.len()).filter(|&i| widths[i] < natural[i]).collect();
+        let open: Vec<usize> = (0..widths.len())
+            .filter(|&i| widths[i] < natural[i])
+            .collect();
         let total: usize = open.iter().map(|&i| natural[i]).sum();
         if open.is_empty() || total == 0 {
             break;
@@ -526,7 +675,17 @@ fn share(natural: &[usize], mut widths: Vec<usize>, avail: usize) -> Vec<usize> 
 }
 
 fn row_cells(b: &Block, widths: &[usize], base: Style) -> Vec<Vec<Line<'static>>> {
-    b.lines.iter().zip(widths).map(|(c, &w)| if w == 0 { vec![Line::default()] } else { wrap(spans(c, base, false), w, vec![], vec![]) }).collect()
+    b.lines
+        .iter()
+        .zip(widths)
+        .map(|(c, &w)| {
+            if w == 0 {
+                vec![Line::default()]
+            } else {
+                wrap(spans(c, base, false), w, vec![], vec![])
+            }
+        })
+        .collect()
 }
 
 fn pad(line: Line<'static>, width: usize, align: Alignment) -> Vec<Span<'static>> {
@@ -543,7 +702,14 @@ fn pad(line: Line<'static>, width: usize, align: Alignment) -> Vec<Span<'static>
 }
 
 fn separator(widths: &[usize]) -> Line<'static> {
-    Line::styled(widths.iter().map(|w| "─".repeat(*w)).collect::<Vec<_>>().join("─┼─"), Style::new().fg(DIM))
+    Line::styled(
+        widths
+            .iter()
+            .map(|w| "─".repeat(*w))
+            .collect::<Vec<_>>()
+            .join("─┼─"),
+        Style::new().fg(DIM),
+    )
 }
 
 pub fn render(blocks: &[Block], width: usize) -> Rendered {
@@ -552,7 +718,11 @@ pub fn render(blocks: &[Block], width: usize) -> Rendered {
     let mut ranges = vec![];
     let mut table = Table::default();
     for (i, b) in blocks.iter().enumerate() {
-        let indent = if matches!(b.kind, Kind::Item(_)) { 0 } else { 2 * b.depth };
+        let indent = if matches!(b.kind, Kind::Item(_)) {
+            0
+        } else {
+            2 * b.depth
+        };
         let inner = width.saturating_sub(indent).max(8);
         let row = |k: &Kind| matches!(k, Kind::Row { header: false, .. });
         if i > 0 && !joins_previous(&blocks[i - 1].kind, &b.kind) {
@@ -560,11 +730,17 @@ pub fn render(blocks: &[Block], width: usize) -> Rendered {
         } else if i > 0 && table.ruled && row(&blocks[i - 1].kind) && row(&b.kind) {
             lines.push(indented(separator(&table.widths), indent));
         }
-        if matches!(b.kind, Kind::Row { .. }) && (i == 0 || !matches!(blocks[i - 1].kind, Kind::Row { .. })) {
+        if matches!(b.kind, Kind::Row { .. })
+            && (i == 0 || !matches!(blocks[i - 1].kind, Kind::Row { .. }))
+        {
             table = table_at(blocks, i, inner);
         }
         let start = lines.len();
-        lines.extend(render_block(b, inner, &table).into_iter().map(|l| indented(l, indent)));
+        lines.extend(
+            render_block(b, inner, &table)
+                .into_iter()
+                .map(|l| indented(l, indent)),
+        );
         ranges.push((start, lines.len()));
     }
     Rendered { lines, ranges }
@@ -585,23 +761,53 @@ fn record(cs: &[Text], header: Option<&[String]>, width: usize) -> Vec<Line<'sta
     for (i, c) in cs.iter().enumerate() {
         let lead = if i == 0 { "▸ " } else { "  " };
         let mut first = vec![Span::styled(lead, Style::new().fg(ACCENT))];
-        if let Some(name) = header.and_then(|h| h.get(i)).filter(|n| !n.trim().is_empty()) {
-            first.push(Span::styled(format!("{name}: "), Style::new().fg(DIM).add_modifier(Modifier::BOLD)));
+        if let Some(name) = header
+            .and_then(|h| h.get(i))
+            .filter(|n| !n.trim().is_empty())
+        {
+            first.push(Span::styled(
+                format!("{name}: "),
+                Style::new().fg(DIM).add_modifier(Modifier::BOLD),
+            ));
         }
-        out.extend(wrap(spans(c, Style::new(), false), width, first, vec![Span::raw("    ")]));
+        out.extend(wrap(
+            spans(c, Style::new(), false),
+            width,
+            first,
+            vec![Span::raw("    ")],
+        ));
     }
     out
 }
 
-fn wrap_text(b: &Block, base: Style, width: usize, first: Vec<Span<'static>>, rest: Vec<Span<'static>>) -> Vec<Line<'static>> {
-    b.lines.iter().enumerate().flat_map(|(k, l)| wrap(spans(l, base, true), width, if k == 0 { first.clone() } else { rest.clone() }, rest.clone())).collect()
+fn wrap_text(
+    b: &Block,
+    base: Style,
+    width: usize,
+    first: Vec<Span<'static>>,
+    rest: Vec<Span<'static>>,
+) -> Vec<Line<'static>> {
+    b.lines
+        .iter()
+        .enumerate()
+        .flat_map(|(k, l)| {
+            wrap(
+                spans(l, base, true),
+                width,
+                if k == 0 { first.clone() } else { rest.clone() },
+                rest.clone(),
+            )
+        })
+        .collect()
 }
 
 fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
     match &b.kind {
         Kind::Heading(level) => {
             let style = match level {
-                1 => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
+                1 => Style::new()
+                    .fg(ACCENT)
+                    .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
                 2 => Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
                 _ => Style::new().add_modifier(Modifier::BOLD),
             };
@@ -611,19 +817,42 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
         Kind::Item(marker) => {
             let indent = "  ".repeat(b.depth);
             let color = if marker.ends_with('.') { ACCENT } else { DIM };
-            let first = vec![Span::raw(indent.clone()), Span::styled(format!("{marker} "), Style::new().fg(color))];
-            let rest = vec![Span::raw(format!("{indent}{}", " ".repeat(str_width(marker) + 1)))];
+            let first = vec![
+                Span::raw(indent.clone()),
+                Span::styled(format!("{marker} "), Style::new().fg(color)),
+            ];
+            let rest = vec![Span::raw(format!(
+                "{indent}{}",
+                " ".repeat(str_width(marker) + 1)
+            ))];
             wrap_text(b, Style::new(), width, first, rest)
         }
         Kind::Quote => {
             let bar = || vec![Span::styled("▎ ", Style::new().fg(DIM))];
-            wrap_text(b, Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC), width, bar(), bar())
+            wrap_text(
+                b,
+                Style::new().fg(Color::Gray).add_modifier(Modifier::ITALIC),
+                width,
+                bar(),
+                bar(),
+            )
         }
         Kind::Code(lang) => {
             let prefix = Span::styled("│ ", Style::new().fg(DIM));
-            let mut out: Vec<Line<'static>> = lang.iter().map(|l| Line::styled(truncate(l, width), Style::new().fg(DIM))).collect();
-            let lines = if b.lines.is_empty() { vec![String::new()] } else { b.lines.iter().map(|l| plain(l)).collect() };
-            out.extend(lines.iter().flat_map(|l| hard_wrap(l, width, prefix.clone(), Style::new().fg(CODE))));
+            let mut out: Vec<Line<'static>> = lang
+                .iter()
+                .map(|l| Line::styled(truncate(l, width), Style::new().fg(DIM)))
+                .collect();
+            let lines = if b.lines.is_empty() {
+                vec![String::new()]
+            } else {
+                b.lines.iter().map(|l| plain(l)).collect()
+            };
+            out.extend(
+                lines
+                    .iter()
+                    .flat_map(|l| hard_wrap(l, width, prefix.clone(), Style::new().fg(CODE))),
+            );
             out
         }
         Kind::Row { header, aligns } => {
@@ -633,7 +862,11 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
                     (_, names) => record(&b.lines, names, width),
                 };
             }
-            let base = if *header { Style::new().add_modifier(Modifier::BOLD) } else { Style::new() };
+            let base = if *header {
+                Style::new().add_modifier(Modifier::BOLD)
+            } else {
+                Style::new()
+            };
             let mut cells = row_cells(b, &table.widths, base);
             let height = cells.iter().map(Vec::len).max().unwrap_or(1);
             let mut out = vec![];
@@ -643,8 +876,16 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
                     if i > 0 {
                         spans.push(Span::styled(" │ ", Style::new().fg(DIM)));
                     }
-                    let line = cells.get_mut(i).and_then(|c| c.get_mut(k)).map(std::mem::take).unwrap_or_default();
-                    spans.extend(pad(line, *w, aligns.get(i).copied().unwrap_or(Alignment::None)));
+                    let line = cells
+                        .get_mut(i)
+                        .and_then(|c| c.get_mut(k))
+                        .map(std::mem::take)
+                        .unwrap_or_default();
+                    spans.extend(pad(
+                        line,
+                        *w,
+                        aligns.get(i).copied().unwrap_or(Alignment::None),
+                    ));
                 }
                 out.push(Line::from(spans));
             }
@@ -658,7 +899,10 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
             let text = b.plain();
             let head = format!("── {} ", truncate(&text, width.saturating_sub(4)));
             let fill = width.saturating_sub(str_width(&head));
-            vec![Line::styled(format!("{head}{}", "─".repeat(fill)), Style::new().fg(Color::Cyan))]
+            vec![Line::styled(
+                format!("{head}{}", "─".repeat(fill)),
+                Style::new().fg(Color::Cyan),
+            )]
         }
     }
 }
@@ -666,8 +910,17 @@ fn render_block(b: &Block, width: usize, table: &Table) -> Vec<Line<'static>> {
 pub fn feedback(comments: &[(String, String)], general: &str, author: &str) -> String {
     let mut out = format!("Comments from {author}:");
     for (i, (quote, text)) in comments.iter().enumerate() {
-        let body = text.trim().lines().map(|l| format!("   {l}")).collect::<Vec<_>>().join("\n");
-        out.push_str(&format!("\n\n{}. On \"{}\":\n{body}", i + 1, clip(quote, QUOTE_MAX)));
+        let body = text
+            .trim()
+            .lines()
+            .map(|l| format!("   {l}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        out.push_str(&format!(
+            "\n\n{}. On \"{}\":\n{body}",
+            i + 1,
+            clip(quote, QUOTE_MAX)
+        ));
     }
     let general = general.trim();
     if !general.is_empty() {
@@ -689,7 +942,11 @@ mod tests {
     }
 
     fn rendered(md: &str, width: usize) -> Vec<String> {
-        render(&parse(md), width).lines.iter().map(|l| text_of(l).trim_end().to_string()).collect()
+        render(&parse(md), width)
+            .lines
+            .iter()
+            .map(|l| text_of(l).trim_end().to_string())
+            .collect()
     }
 
     #[test]
@@ -697,7 +954,10 @@ mod tests {
         let md = "# Plan\n\nFirst paragraph\ncontinues here.\n\n- one\n  continues one\n- [x] two\n  1. nested\n\n```rust\nfn main() {}\n\n```\n\n> long\n> quote\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\n---\n";
         let b = parse(md);
         let kinds: Vec<(&Kind, usize)> = b.iter().map(|b| (&b.kind, b.depth)).collect();
-        let row = |header| Kind::Row { header, aligns: vec![Alignment::None; 2] };
+        let row = |header| Kind::Row {
+            header,
+            aligns: vec![Alignment::None; 2],
+        };
         assert_eq!(
             kinds,
             vec![
@@ -715,7 +975,10 @@ mod tests {
         );
         assert_eq!(b[1].plain(), "First paragraph continues here.");
         assert_eq!(b[2].plain(), "one continues one");
-        assert_eq!(b[5].lines.iter().map(|l| plain(l)).collect::<Vec<_>>(), vec!["fn main() {}".to_string(), String::new()]);
+        assert_eq!(
+            b[5].lines.iter().map(|l| plain(l)).collect::<Vec<_>>(),
+            vec!["fn main() {}".to_string(), String::new()]
+        );
         assert_eq!(b[7].plain(), "a | b");
     }
 
@@ -725,40 +988,104 @@ mod tests {
     #[test]
     fn a_table_is_a_grid_then_a_wrapped_grid_then_one_record_per_row() {
         let wide = rendered(WIDE, 200);
-        assert!(wide.iter().any(|l| l.starts_with("Lo que traen") && l.contains(" │ ¿Lo tenemos?")), "{wide:#?}");
-        assert_eq!(wide.iter().filter(|l| l.contains("─┼─")).count(), 1, "{wide:#?}");
+        assert!(
+            wide.iter()
+                .any(|l| l.starts_with("Lo que traen") && l.contains(" │ ¿Lo tenemos?")),
+            "{wide:#?}"
+        );
+        assert_eq!(
+            wide.iter().filter(|l| l.contains("─┼─")).count(),
+            1,
+            "{wide:#?}"
+        );
 
         let wrapped = rendered(WIDE, 60);
         assert!(wrapped.iter().all(|l| str_width(l) <= 60), "{wrapped:#?}");
-        assert!(wrapped.iter().any(|l| l.starts_with("Fuente de datos") && l.contains(" │ No, y a ")), "{wrapped:#?}");
-        assert_eq!(wrapped.iter().filter(|l| l.contains("─┼─")).count(), 2, "header rule and one rule between the two rows: {wrapped:#?}");
+        assert!(
+            wrapped
+                .iter()
+                .any(|l| l.starts_with("Fuente de datos") && l.contains(" │ No, y a ")),
+            "{wrapped:#?}"
+        );
+        assert_eq!(
+            wrapped.iter().filter(|l| l.contains("─┼─")).count(),
+            2,
+            "header rule and one rule between the two rows: {wrapped:#?}"
+        );
 
         let narrow = rendered(WIDE, 36);
-        assert!(narrow.iter().all(|l| !l.contains(" │ ") && str_width(l) <= 36), "{narrow:#?}");
+        assert!(
+            narrow
+                .iter()
+                .all(|l| !l.contains(" │ ") && str_width(l) <= 36),
+            "{narrow:#?}"
+        );
         let records: Vec<&String> = narrow.iter().filter(|l| l.starts_with("▸ ")).collect();
         assert_eq!(records.len(), 2, "{narrow:#?}");
-        assert!(records[0].starts_with("▸ Lo que traen: Fuente de datos"), "{narrow:#?}");
-        assert!(narrow.iter().any(|l| l.starts_with("  ¿Lo tenemos?: No, y a")), "{narrow:#?}");
-        assert!(narrow.iter().any(|l| l.starts_with("  ¿Cambia lo que haríamos?: No.")), "{narrow:#?}");
+        assert!(
+            records[0].starts_with("▸ Lo que traen: Fuente de datos"),
+            "{narrow:#?}"
+        );
+        assert!(
+            narrow
+                .iter()
+                .any(|l| l.starts_with("  ¿Lo tenemos?: No, y a")),
+            "{narrow:#?}"
+        );
+        assert!(
+            narrow
+                .iter()
+                .any(|l| l.starts_with("  ¿Cambia lo que haríamos?: No.")),
+            "{narrow:#?}"
+        );
     }
 
     #[test]
     fn a_wide_table_with_an_empty_header_still_reads_row_by_row() {
-        let narrow = rendered("| | | |\n|---|---|---|\n| aaaaaaaaaaaa | bbbbbbbbbbbbbbbb | cccccccccccccc |\n", 20);
-        assert_eq!(narrow.iter().filter(|l| l.starts_with("▸ ")).count(), 1, "{narrow:#?}");
-        assert!(narrow.iter().all(|l| !l.contains(" │ ") && !l.contains(": ")), "{narrow:#?}");
+        let narrow = rendered(
+            "| | | |\n|---|---|---|\n| aaaaaaaaaaaa | bbbbbbbbbbbbbbbb | cccccccccccccc |\n",
+            20,
+        );
+        assert_eq!(
+            narrow.iter().filter(|l| l.starts_with("▸ ")).count(),
+            1,
+            "{narrow:#?}"
+        );
+        assert!(
+            narrow
+                .iter()
+                .all(|l| !l.contains(" │ ") && !l.contains(": ")),
+            "{narrow:#?}"
+        );
     }
 
     #[test]
     fn cells_follow_the_alignment_of_the_separator_row() {
         let lines = rendered("| left | right | mid |\n|:--|--:|:-:|\n| a | b | c |\n", 40);
-        assert_eq!(lines, vec!["left │ right │ mid", "─────┼───────┼────", "a    │     b │  c"]);
+        assert_eq!(
+            lines,
+            vec![
+                "left │ right │ mid",
+                "─────┼───────┼────",
+                "a    │     b │  c"
+            ]
+        );
     }
 
     #[test]
     fn inline_styles_become_span_styles() {
-        let line = &render(&parse("**b** *i* ***bi*** ~~s~~ `c` [t](https://docs.rs/x)"), 80).lines[0];
-        let style_of = |text: &str| line.spans.iter().find(|s| s.content == text).unwrap_or_else(|| panic!("{text} in {line:?}")).style;
+        let line = &render(
+            &parse("**b** *i* ***bi*** ~~s~~ `c` [t](https://docs.rs/x)"),
+            80,
+        )
+        .lines[0];
+        let style_of = |text: &str| {
+            line.spans
+                .iter()
+                .find(|s| s.content == text)
+                .unwrap_or_else(|| panic!("{text} in {line:?}"))
+                .style
+        };
         let cases = [
             ("b", Modifier::BOLD),
             ("i", Modifier::ITALIC),
@@ -767,7 +1094,11 @@ mod tests {
             ("t", Modifier::UNDERLINED),
         ];
         for (text, m) in cases {
-            assert!(style_of(text).add_modifier.contains(m), "{text}: {:?}", style_of(text));
+            assert!(
+                style_of(text).add_modifier.contains(m),
+                "{text}: {:?}",
+                style_of(text)
+            );
         }
         assert_eq!(style_of("c").fg, Some(CODE));
         assert_eq!(style_of("(docs.rs)").fg, Some(DIM));
@@ -776,7 +1107,10 @@ mod tests {
     #[test]
     fn a_link_shows_its_host_unless_the_text_already_is_the_url() {
         let cases = [
-            ("[the guide](https://www.docs.rs/a?b)", "the guide (docs.rs)"),
+            (
+                "[the guide](https://www.docs.rs/a?b)",
+                "the guide (docs.rs)",
+            ),
             ("<https://example.com>", "https://example.com"),
             ("[https://x.y](https://x.y)", "https://x.y"),
             ("[x.y](https://x.y/z)", "x.y"),
@@ -791,7 +1125,10 @@ mod tests {
 
     #[test]
     fn a_hard_break_starts_a_new_line_under_the_same_prefix() {
-        assert_eq!(rendered("- one  \n  two\\\n  three", 40), vec!["• one", "  two", "  three"]);
+        assert_eq!(
+            rendered("- one  \n  two\\\n  three", 40),
+            vec!["• one", "  two", "  three"]
+        );
         assert_eq!(parse("one  \ntwo")[0].quote(), "one two");
     }
 
@@ -811,23 +1148,43 @@ mod tests {
 
     #[test]
     fn snake_case_and_lone_asterisks_stay_literal() {
-        assert_eq!(parse("my_var_x and 2 * 3 * 4")[0].plain(), "my_var_x and 2 * 3 * 4");
+        assert_eq!(
+            parse("my_var_x and 2 * 3 * 4")[0].plain(),
+            "my_var_x and 2 * 3 * 4"
+        );
         assert_eq!(parse(r"52\. two \*not\*")[0].plain(), "52. two *not*");
     }
 
     #[test]
     fn feedback_has_the_exact_format_the_nodes_expect() {
-        let f = feedback(&[("Step 2".into(), "Do it before\nstep 1".into()), ("Table".into(), "Not needed".into())], "Otherwise, fine.", "Ana");
+        let f = feedback(
+            &[
+                ("Step 2".into(), "Do it before\nstep 1".into()),
+                ("Table".into(), "Not needed".into()),
+            ],
+            "Otherwise, fine.",
+            "Ana",
+        );
         assert_eq!(
             f,
             "Comments from Ana:\n\n1. On \"Step 2\":\n   Do it before\n   step 1\n\n2. On \"Table\":\n   Not needed\n\nOtherwise, fine."
         );
-        assert_eq!(feedback(&[], "  Just this  ", "Ana"), "Comments from Ana:\n\nJust this");
+        assert_eq!(
+            feedback(&[], "  Just this  ", "Ana"),
+            "Comments from Ana:\n\nJust this"
+        );
     }
 
     #[test]
     fn wrap_respects_width_prefixes_and_long_words() {
-        let lines = wrap(vec![Span::raw("one two three four supercalifragilisticexpialidocious")], 12, vec![Span::raw("• ")], vec![Span::raw("  ")]);
+        let lines = wrap(
+            vec![Span::raw(
+                "one two three four supercalifragilisticexpialidocious",
+            )],
+            12,
+            vec![Span::raw("• ")],
+            vec![Span::raw("  ")],
+        );
         for l in &lines {
             assert!(l.width() <= 12, "{:?}", text_of(l));
         }

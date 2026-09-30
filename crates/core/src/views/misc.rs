@@ -1,0 +1,349 @@
+use super::{
+    BuildError, ChoiceItem, Client, Field, FieldKind, Form, Icon, Item, Notice, RenderContext,
+    Style, TimeFormat, Tone, Trailing, View, action_id::Verb, common, text::t,
+};
+use crate::options::{Kind as OptionKind, Spec};
+use serde_json::json;
+
+pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
+    let project = common::key_param(key, "new_request", "project")?.unwrap_or_default();
+    let mut view = common::view(
+        "new_request",
+        key,
+        Some(t!(context.lang, "Ask for Something New", "Pide algo nuevo").into()),
+        context,
+        vec![],
+    );
+    let mut projects = vec![ChoiceItem {
+        id: "".into(),
+        label: t!(
+            context.lang,
+            "The orchestrator picks the project",
+            "El orquestador elige el proyecto"
+        )
+        .into(),
+    }];
+    for entry in &context.live.projects {
+        if !projects.iter().any(|item| item.id == entry.name) {
+            projects.push(ChoiceItem {
+                id: entry.name.clone(),
+                label: entry.name.clone(),
+            });
+        }
+    }
+    for name in context
+        .domain
+        .schedule
+        .schedules
+        .values()
+        .filter_map(|s| s.project.as_ref())
+    {
+        if !projects.iter().any(|item| item.id == *name) {
+            projects.push(ChoiceItem {
+                id: name.clone(),
+                label: name.clone(),
+            });
+        }
+    }
+    if !project.is_empty() && !projects.iter().any(|item| item.id == project) {
+        projects.push(ChoiceItem {
+            id: project.clone(),
+            label: project.clone(),
+        });
+    }
+    let mut project_field = Field {
+        id: "project".into(),
+        label: t!(context.lang, "Project", "Proyecto").into(),
+        kind: FieldKind::Choice { items: projects },
+        value: json!(project),
+        required: false,
+        help: None,
+        visible_when: None,
+        reload_on_change: true,
+    };
+    project_field.reload_on_change = true;
+    let mut submit = common::action(
+        Verb::NewRequest,
+        "view",
+        context.domain.revision,
+        t!(context.lang, "Send Request", "Enviar solicitud"),
+        Style::Primary,
+    )
+    .ok_or(BuildError::InvalidKey)?;
+    submit.attachments = true;
+    let mut fields = vec![
+        Field {
+            id: "text".into(),
+            label: t!(
+                context.lang,
+                "What do you want done?",
+                "¿Qué quieres que se haga?"
+            )
+            .into(),
+            kind: FieldKind::Multiline { placeholder: None },
+            value: json!(""),
+            required: true,
+            help: None,
+            visible_when: None,
+            reload_on_change: false,
+        },
+        Field {
+            id: "attachments".into(),
+            label: t!(context.lang, "Attachments", "Adjuntos").into(),
+            kind: FieldKind::Attachments,
+            value: json!([]),
+            required: false,
+            help: None,
+            visible_when: None,
+            reload_on_change: false,
+        },
+        project_field,
+    ];
+    let specs = context
+        .live
+        .project_options
+        .get(&project)
+        .unwrap_or(&context.live.options);
+    fields.extend(specs.iter().map(option_field));
+    fields.push(Field {
+        id: "issue".into(),
+        label: t!(context.lang, "Issue", "Incidencia").into(),
+        kind: FieldKind::Picker {
+            source: "issue_picker".into(),
+        },
+        value: json!(""),
+        required: false,
+        help: None,
+        visible_when: None,
+        reload_on_change: false,
+    });
+    view.sections.push(common::section(
+        "form",
+        None,
+        vec![Item::Form(Form {
+            id: "new_request".into(),
+            fields,
+            submit,
+        })],
+    ));
+    if context.client == Client::Ios {
+        let mut requests: Vec<_> = context.domain.requests.values().collect();
+        requests.sort_by(|left, right| {
+            context.live.request_times.get(&right.id.0).cmp(&context.live.request_times.get(&left.id.0))
+                .then_with(|| right.id.cmp(&left.id))
+        });
+        let sent = requests
+            .into_iter()
+            .take(8)
+            .map(|request| {
+                let mut row = common::row(
+                    &request.id.0,
+                    &format!("request:{}", request.id),
+                    Icon::Request,
+                    request.title.clone().unwrap_or_else(|| {
+                        request
+                            .body
+                            .trim_start_matches("[Alondra] ")
+                            .lines()
+                            .next()
+                            .unwrap_or("")
+                            .chars()
+                            .take(100)
+                            .collect()
+                    }),
+                    None,
+                );
+                row.badges.push(super::Label {
+                    text: if request.closed {
+                        t!(context.lang, "Delivered", "Entregada")
+                    } else {
+                        t!(context.lang, "Queued", "En cola")
+                    }
+                    .into(),
+                    tone: Tone::Neutral,
+                });
+                row.trailing =
+                    context
+                        .live
+                        .request_times
+                        .get(&request.id.0)
+                        .map(|at| Trailing::Time {
+                            at: at.clone(),
+                            format: TimeFormat::Relative,
+                        });
+                Item::Row(row)
+            })
+            .collect();
+        view.sections.push(common::section(
+            "sent",
+            Some(t!(context.lang, "Recent Requests", "Solicitudes recientes").into()),
+            sent,
+        ));
+    }
+    Ok(view)
+}
+
+fn option_field(spec: &Spec) -> Field {
+    let kind = match spec.kind {
+        OptionKind::Toggle => FieldKind::Toggle,
+        OptionKind::Choice => FieldKind::Choice {
+            items: spec
+                .values
+                .iter()
+                .map(|value| ChoiceItem {
+                    id: value.id.clone(),
+                    label: value.label.clone(),
+                })
+                .collect(),
+        },
+    };
+    Field {
+        id: spec.id.clone(),
+        label: spec.label.clone(),
+        kind,
+        value: serde_json::to_value(&spec.default).unwrap_or(serde_json::Value::Null),
+        required: false,
+        help: None,
+        visible_when: None,
+        reload_on_change: false,
+    }
+}
+
+pub(super) fn issue_picker(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
+    let query = if key == "issue_picker" || key == "issue_picker?refresh=1" {
+        String::new()
+    } else {
+        common::key_param(key, "issue_picker", "q")?.unwrap_or_default()
+    };
+    let mut view = common::view(
+        "issue_picker",
+        key,
+        Some(t!(context.lang, "Issues", "Incidencias").into()),
+        context,
+        vec![common::section("issues", None, vec![])],
+    );
+    let rows = context
+        .live
+        .issues
+        .iter()
+        .filter(|issue| issue.matches(&query))
+        .take(50)
+        .map(|issue| {
+            let mut row = common::row(
+                &issue.reference(),
+                "issue_picker",
+                Icon::Mission,
+                issue.reference(),
+                Some(issue.title.clone()),
+            );
+            row.link = None;
+            row.badges = issue
+                .labels
+                .iter()
+                .take(3)
+                .map(|label| super::Label {
+                    text: label.clone(),
+                    tone: Tone::Neutral,
+                })
+                .collect();
+            row.trailing = issue.updated_at.clone().map(|at| Trailing::Time {
+                at,
+                format: TimeFormat::Relative,
+            });
+            Item::Row(row)
+        })
+        .collect::<Vec<_>>();
+    view.sections[0].items = rows;
+    if view.sections[0].items.is_empty() {
+        let text = if context.live.issue_error.is_some() {
+            t!(
+                context.lang,
+                "Issues are unavailable",
+                "Las incidencias no están disponibles"
+            )
+        } else if query.is_empty() {
+            t!(
+                context.lang,
+                "No open issues found",
+                "No se encontraron incidencias abiertas"
+            )
+        } else {
+            t!(
+                context.lang,
+                "No matching issues",
+                "No hay incidencias que coincidan"
+            )
+        };
+        view.empty = Some(Notice {
+            text: text.into(),
+            tone: Tone::Neutral,
+            action: None,
+        });
+    }
+    Ok(view)
+}
+
+pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
+    if context.client == Client::Ios {
+        return Err(BuildError::UnsupportedClient);
+    }
+    let q = common::key_param(key, "search", "q")?
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let mut view = common::view(
+        "search",
+        key,
+        Some(t!(context.lang, "Search", "Buscar").into()),
+        context,
+        vec![],
+    );
+    let rows = context
+        .domain
+        .agents
+        .values()
+        .filter(|agent| agent.name.to_ascii_lowercase().contains(&q)
+            || context.live.search_matches.as_ref().is_some_and(|matches| matches.contains(&agent.id.0)))
+        .map(|agent| {
+            Item::Row(common::row(
+                &agent.id.0,
+                &format!("node:{}", agent.id),
+                Icon::Node,
+                agent.name.clone(),
+                None,
+            ))
+        })
+        .collect();
+    view.sections.push(common::section("results", None, rows));
+    Ok(view)
+}
+
+pub(super) fn machine(context: &RenderContext<'_>) -> View {
+    let mut view = common::view(
+        "machine",
+        "machine",
+        Some(t!(context.lang, "Machine", "Máquina").into()),
+        context,
+        vec![],
+    );
+    view.sections.push(common::section(
+        "gauges",
+        None,
+        vec![Item::Facts(super::Facts {
+            items: context
+                .live
+                .gauges
+                .iter()
+                .map(|g| super::Fact {
+                    label: g.label.clone(),
+                    value: g.text.clone(),
+                    tone: None,
+                    link: None,
+                })
+                .collect(),
+        })],
+    ));
+    if let Some(update) = &context.live.update {
+        view.notices.push(update.clone());
+    }
+    view
+}

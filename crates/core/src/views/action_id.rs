@@ -1,0 +1,178 @@
+use std::fmt;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Verb {
+    Ans,
+    Read,
+    Accept,
+    Changes,
+    Merge,
+    Cancel,
+    Reopen,
+    Archive,
+    Unarchive,
+    ArchiveDone,
+    Withdraw,
+    Ctx,
+    Reply,
+    AskPr,
+    Conflicts,
+    Msg,
+    Close,
+    OrchRetry,
+    OrchAck,
+    OrchStop,
+    SchedRun,
+    SchedToggle,
+    SchedDelete,
+    SchedSave,
+    NewRequest,
+}
+impl Verb {
+    pub const ALL: [Self; 25] = [
+        Self::Ans,
+        Self::Read,
+        Self::Accept,
+        Self::Changes,
+        Self::Merge,
+        Self::Cancel,
+        Self::Reopen,
+        Self::Archive,
+        Self::Unarchive,
+        Self::ArchiveDone,
+        Self::Withdraw,
+        Self::Ctx,
+        Self::Reply,
+        Self::AskPr,
+        Self::Conflicts,
+        Self::Msg,
+        Self::Close,
+        Self::OrchRetry,
+        Self::OrchAck,
+        Self::OrchStop,
+        Self::SchedRun,
+        Self::SchedToggle,
+        Self::SchedDelete,
+        Self::SchedSave,
+        Self::NewRequest,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Ans => "ans",
+            Self::Read => "read",
+            Self::Accept => "accept",
+            Self::Changes => "changes",
+            Self::Merge => "merge",
+            Self::Cancel => "cancel",
+            Self::Reopen => "reopen",
+            Self::Archive => "archive",
+            Self::Unarchive => "unarchive",
+            Self::ArchiveDone => "archive_done",
+            Self::Withdraw => "withdraw",
+            Self::Ctx => "ctx",
+            Self::Reply => "reply",
+            Self::AskPr => "ask_pr",
+            Self::Conflicts => "conflicts",
+            Self::Msg => "msg",
+            Self::Close => "close",
+            Self::OrchRetry => "orch_retry",
+            Self::OrchAck => "orch_ack",
+            Self::OrchStop => "orch_stop",
+            Self::SchedRun => "sched_run",
+            Self::SchedToggle => "sched_toggle",
+            Self::SchedDelete => "sched_delete",
+            Self::SchedSave => "sched_save",
+            Self::NewRequest => "new_request",
+        }
+    }
+    fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|verb| verb.as_str() == value)
+    }
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ActionId {
+    pub verb: Verb,
+    pub subject: String,
+    pub revision: u64,
+    pub extra: Option<String>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActionIdError {
+    Invalid,
+    TooLong,
+}
+impl ActionId {
+    pub fn new(
+        verb: Verb,
+        subject: impl Into<String>,
+        revision: u64,
+        extra: Option<String>,
+    ) -> Result<Self, ActionIdError> {
+        let id = Self {
+            verb,
+            subject: subject.into(),
+            revision,
+            extra,
+        };
+        id.validate()?;
+        Ok(id)
+    }
+    pub fn parse(value: &str) -> Result<Self, ActionIdError> {
+        if value.len() > 96 {
+            return Err(ActionIdError::TooLong);
+        }
+        let (verb, tail) = value.split_once(':').ok_or(ActionIdError::Invalid)?;
+        let (subject, revision_extra) = tail.split_once('@').ok_or(ActionIdError::Invalid)?;
+        let (revision, extra) = match revision_extra.split_once('~') {
+            Some((revision, extra)) => (revision, Some(extra.to_owned())),
+            None => (revision_extra, None),
+        };
+        if revision.is_empty() || !revision.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(ActionIdError::Invalid);
+        }
+        let revision = revision.parse().map_err(|_| ActionIdError::Invalid)?;
+        Self::new(
+            Verb::parse(verb).ok_or(ActionIdError::Invalid)?,
+            subject,
+            revision,
+            extra,
+        )
+    }
+    fn validate(&self) -> Result<(), ActionIdError> {
+        if self.to_string().len() > 96 {
+            return Err(ActionIdError::TooLong);
+        }
+        let valid = |s: &str| {
+            !s.is_empty()
+                && s.bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        };
+        let suffix = ["pr-", "run-", "i-", "t-", "r-", "a-", "s-"]
+            .into_iter()
+            .find_map(|prefix| self.subject.strip_prefix(prefix));
+        let orchestrator_action = self.subject == "orchestrator"
+            && matches!(self.verb, Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop);
+        if self.subject != "view" && !orchestrator_action && suffix.is_none_or(str::is_empty) {
+            return Err(ActionIdError::Invalid);
+        }
+        if !valid(&self.subject) || self.extra.as_deref().is_some_and(|extra| !valid(extra)) {
+            return Err(ActionIdError::Invalid);
+        }
+        Ok(())
+    }
+}
+impl fmt::Display for ActionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}:{}@{}",
+            self.verb.as_str(),
+            self.subject,
+            self.revision
+        )?;
+        if let Some(extra) = &self.extra {
+            write!(f, "~{extra}")?;
+        }
+        Ok(())
+    }
+}

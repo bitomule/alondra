@@ -5,12 +5,62 @@ use std::collections::BTreeMap;
 use std::time::Duration;
 
 use alondra_core::domain_v2::{AgentId, Command, DomainProjection, InboxItem, InputKind, InputValue, Interaction, InteractionId, InteractionPayload, QuestionOption, Revision, TaskId};
+use alondra_core::views::{Action, Item, Link, View};
 use anyhow::{Context, Result, anyhow, bail};
 use serde_json::Value;
 
-use crate::client::{Client, CommandFailure};
-use crate::ops::{self, MessageKind, Recovery};
+use crate::client::Client;
+use crate::ops::{self, Recovery};
 use crate::runtime::Runtime;
+
+fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Action> {
+    fn scan(items: &[Item], predicate: &impl Fn(&Action) -> bool) -> Option<Action> {
+        for item in items {
+            match item {
+                Item::Card(card) => {
+                    if let Some(action) = card.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); }
+                    for child in &card.children {
+                        if let Some(action) = child.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); }
+                    }
+                }
+                Item::Actions(bar) => if let Some(action) = bar.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); },
+                Item::Row(row) => {
+                    if let Some(action) = row.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); }
+                }
+                Item::Form(form) => if predicate(&form.submit) { return Some(form.submit.clone()); },
+                _ => {}
+            }
+        }
+        None
+    }
+    view.sections.iter().find_map(|section| scan(&section.items, &predicate))
+}
+
+fn local_attach(view: &View) -> Option<String> {
+    fn scan(items: &[Item]) -> Option<String> {
+        for item in items {
+            let actions: &[Action] = match item {
+                Item::Card(card) => &card.actions,
+                Item::Actions(bar) => &bar.actions,
+                Item::Row(row) => &row.actions,
+                Item::Form(form) => std::slice::from_ref(&form.submit),
+                _ => &[],
+            };
+            for action in actions {
+                if let Some(Link::Local { local: alondra_core::views::LocalLink::Attach { session } }) = &action.link {
+                    return Some(session.clone());
+                }
+            }
+        }
+        None
+    }
+    view.sections.iter().find_map(|section| scan(&section.items))
+}
+
+fn submit(client: &Client, view: &View, action: &Action, option: Option<&str>, input: Value) -> Result<Value> {
+    anyhow::ensure!(action.enabled, "{}", action.disabled_reason.as_deref().unwrap_or("This action is unavailable"));
+    client.action(&view.data_epoch, &action.id, option, input)
+}
 
 /// The agent a name, short id or session id names; `None` for the orchestrator.
 pub fn agent(d: &DomainProjection, runtime: Option<&Runtime>, name: &str) -> Result<Option<AgentId>> {
@@ -82,21 +132,29 @@ fn user() -> Client {
     Client::for_user(Duration::from_secs(15))
 }
 
-fn run(client: &Client, d: &DomainProjection, revision: Revision, command: Command) -> Result<Revision> {
-    match client.command(&crate::client::envelope(&d.data_epoch, revision, command)) {
-        Ok(outcome) => Ok(outcome.revision),
-        Err(CommandFailure::Rejected(e)) => Err(anyhow!(crate::client::refusal(&e))),
-        Err(CommandFailure::Uncertain(why)) => Err(anyhow!(trf!("Not confirmed: {why}; check before repeating", "Sin confirmar: {why}; revísalo antes de repetir"))),
-    }
-}
-
 pub fn answer_cmd(interaction: &str, option: Option<&str>, text: &str) -> Result<()> {
     let client = user();
-    let d = client.domain()?;
-    let id = InteractionId::from(interaction.strip_prefix("interaction:").unwrap_or(interaction));
-    let found = client.interaction(&id).with_context(|| trf!("No question {id}", "No hay ninguna pregunta {id}"))?;
-    let (revision, command) = answer(&d, &found, option, text)?;
-    run(&client, &d, revision, command)?;
+    let id = interaction.strip_prefix("interaction:").unwrap_or(interaction);
+    let view = client.views(&format!("card:{id}"), None).with_context(|| trf!("No question {id}", "No hay ninguna pregunta {id}"))?;
+    let action = view_action(&view, |action| action.enabled && action.id.starts_with("ans:"))
+        .context(trf!("{id} is not an unanswered question", "{id} no es una pregunta sin responder"))?;
+    let selected = match option {
+        Some(value) => value.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|n| action.options.get(n))
+            .or_else(|| action.options.iter().find(|candidate| candidate.id == value)),
+        None if !text.is_empty() => action.options.iter().find(|candidate| matches!(candidate.input, alondra_core::views::Input::Text { .. })),
+        _ => None,
+    }.with_context(|| {
+        let labels = action.options.iter().enumerate().map(|(i, o)| format!("  {} {} [{}]", i + 1, o.label, o.id)).collect::<Vec<_>>().join("\n");
+        trf!("Choose an option with --option:\n{labels}", "Elige una opción con --option:\n{labels}")
+    })?;
+    let input_spec = &selected.input;
+    let label = &selected.label;
+    match input_spec {
+        alondra_core::views::Input::Text { required, .. } if text.is_empty() && *required => bail!(trf!("Option {label} needs your text", "La opción {label} necesita tu texto")),
+        alondra_core::views::Input::None if !text.is_empty() => bail!(trf!("Option {label} takes no text", "La opción {label} no admite texto")),
+        _ => {}
+    }
+    submit(&client, &view, &action, Some(&selected.id), if text.is_empty() { serde_json::json!({}) } else { serde_json::json!({"text":text}) })?;
     println!("{}", trf!("Answered {interaction}", "Contestada {interaction}"));
     Ok(())
 }
@@ -105,15 +163,13 @@ pub fn answer_cmd(interaction: &str, option: Option<&str>, text: &str) -> Result
 /// is recorded beside a cancelled task.
 pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
     let client = user();
-    let d = client.domain()?;
-    let mut revision = d.revision;
     let mut failed = 0;
     for task in tasks {
-        let id = TaskId::from(task.as_str());
-        let done = run(&client, &d, revision, Command::CancelTask { task_id: id.clone() }).and_then(|r| {
-            revision = r;
+        let done = client.views(&format!("task:{task}"), None).and_then(|view| {
+            let action = view_action(&view, |action| action.id.starts_with("cancel:")).context("Task cannot be cancelled")?;
+            submit(&client, &view, &action, None, serde_json::json!({}))?;
             if let Some(reason) = reason.map(str::trim).filter(|r| !r.is_empty()) {
-                let (path, body) = ops::cancel_reason(&id, reason);
+                let (path, body) = ops::cancel_reason(&TaskId::from(task.as_str()), reason);
                 client.put(&path, &body).map_err(|e| anyhow!(trf!("cancelled, but the reason was not recorded: {e:#}", "descartada, pero no se guardó el motivo: {e:#}")))?;
             }
             Ok(())
@@ -130,30 +186,58 @@ pub fn cancel(tasks: &[String], reason: Option<&str>) -> Result<()> {
     Ok(())
 }
 
-fn resolved(client: &Client, name: &str) -> Result<(Option<AgentId>, Option<Runtime>)> {
-    let d = client.domain()?;
-    let runtime = client.runtime().unwrap_or(None);
-    Ok((agent(&d, runtime.as_ref(), name)?, runtime))
+fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<String>)> {
+    if name.eq_ignore_ascii_case("orchestrator") { return Ok((None, None)); }
+    let fleet = client.views("fleet", None)?;
+    let mut found = Vec::new();
+    fn rows(items: &[Item], out: &mut Vec<(String, String)>) {
+        for item in items { if let Item::Row(row) = item {
+            if let Some(Link::View { key }) = &row.link {
+                if let Some(id) = key.strip_prefix("node:") { out.push((id.into(), row.title.clone())); }
+            }
+            rows(&row.children.iter().cloned().map(Item::Row).collect::<Vec<_>>(), out);
+        }}
+    }
+    for section in &fleet.sections { rows(&section.items, &mut found); }
+    let exact: Vec<_> = found.iter().filter(|(id, title)| id == name || title.eq_ignore_ascii_case(name) || id.rsplit('-').next() == Some(name)).collect();
+    let mut matches: Vec<(String, String)> = if exact.is_empty() {
+        found.iter().filter(|(id, _)| id.starts_with(name)).cloned().collect()
+    } else {
+        exact.into_iter().map(|(id, title)| (id.clone(), title.clone())).collect()
+    };
+    if matches.is_empty() {
+        for (id, _) in &found {
+            if client.views(&format!("node:{id}"), None).ok().and_then(|view| local_attach(&view)).as_deref() == Some(name) {
+                matches.push((id.clone(), String::new()));
+            }
+        }
+    }
+    match matches.as_slice() {
+        [one] => Ok((Some(one.0.clone()), Some(one.0.clone()))),
+        [] => bail!(trf!("No agent is called {name}", "Ningún agente se llama {name}")),
+        _ => bail!(trf!("{name} names several agents", "{name} nombra varios agentes")),
+    }
 }
 
 /// A Task id sends to the Task's agent, about that Task; anything else names the agent.
 pub fn send(name: &str, text: &str) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(60));
-    let d = client.domain()?;
-    let task = d.tasks.iter().find(|t| t.id.0 == name);
-    let message = match task {
-        Some(t) => {
-            let agent = t.agent_id.clone().with_context(|| trf!("{name} has no agent yet", "{name} aún no tiene agente"))?;
-            ops::Message { task: Some(t.id.clone()), ..ops::Message::to(Some(agent), MessageKind::Message, text.to_string()) }
-        }
-        None => ops::Message::to(resolved(&client, name)?.0, MessageKind::Message, text.to_string()),
+    let view = if name.starts_with("t-") {
+        client.views(&format!("task:{name}"), None).with_context(|| trf!("No task {name}", "No hay ninguna tarea {name}"))?
+    } else if name.eq_ignore_ascii_case("orchestrator") {
+        client.views("node:orchestrator", None)?
+    } else {
+        let agent = resolved(&client, name)?.0.context("Agent not found")?;
+        client.views(&format!("node:{agent}"), None)?
     };
-    let answer = client.post(&message.path(), &message.body())?;
+    let action = view_action(&view, |a| a.id.starts_with("msg:" )).context("Message action unavailable")?;
+    let answer = submit(&client, &view, &action, None, serde_json::json!({"text":text}))?;
     println!("{}", sent_notice(&answer, name));
     Ok(())
 }
 
 fn sent_notice(answer: &Value, name: &str) -> String {
+    if let Some(stamp) = answer.get("stamp").and_then(Value::as_str) { return stamp.to_string(); }
     if let Some(note) = answer.get("note").and_then(Value::as_str) {
         return note.to_string();
     }
@@ -167,9 +251,10 @@ fn sent_notice(answer: &Value, name: &str) -> String {
 pub fn close(name: &str, force: bool) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(90));
     let Some(agent) = resolved(&client, name)?.0 else { bail!(tr!("Alondra manages the orchestrator automatically", "Alondra gestiona el orquestador automáticamente")) };
-    let (path, body) = ops::close(&agent, force);
-    let answer: Value = client.post(&path, &body)?;
-    if answer.get("interactive").and_then(Value::as_bool) == Some(true) {
+    let view = client.views(&format!("node:{agent}"), None)?;
+    let action = view_action(&view, |a| a.id.starts_with("close:" )).context("Close action unavailable")?;
+    let answer = submit(&client, &view, &action, None, serde_json::json!({"fields":{"force":force}}))?;
+    if answer.get("detail").and_then(|detail| detail.get("interactive")).and_then(Value::as_bool) == Some(true) {
         println!("{}", trf!("{name} left the fleet; it is an interactive session, so close its terminal with /exit", "{name} ha salido de la flota; es una sesión interactiva, así que cierra su terminal con /exit"));
     } else {
         println!("{}", trf!("Closed {name}", "Cerrado {name}"));
@@ -179,10 +264,11 @@ pub fn close(name: &str, force: bool) -> Result<()> {
 
 pub fn attach(name: &str) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
-    let (agent, runtime) = resolved(&client, name)?;
+    let (agent, _runtime) = resolved(&client, name)?;
     let Some(agent) = agent else { bail!(tr!("Alondra manages the orchestrator automatically; open its activity in the Agents screen", "Alondra gestiona el orquestador automáticamente; abre su actividad en la pantalla de agentes")) };
-    let short = runtime.as_ref().and_then(|r| r.node(&agent)).map_or_else(|| agent.0.clone(), |n| n.short_id.clone());
-    crate::attach::attach(&short, crate::attach::Over::Shell)
+    let view = client.views(&format!("node:{agent}"), None)?;
+    let session = local_attach(&view).context("This node has no attachable session")?;
+    crate::attach::attach(&session, crate::attach::Over::Shell)
 }
 
 pub fn recover(action: Recovery, run_id: &str) -> Result<()> {

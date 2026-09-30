@@ -245,7 +245,7 @@ impl Fixture {
 }
 
 #[tokio::test]
-async fn http_producer_answer_and_document_are_visible_to_signed_reader() {
+async fn http_producer_answer_and_document_are_persisted() {
     let mut fixture = Fixture::start().await;
     fixture.task("answer-task", false).await;
     fixture
@@ -257,29 +257,14 @@ async fn http_producer_answer_and_document_are_visible_to_signed_reader() {
         "options":[{"id":"yes", "label":"Yes", "inputs":[]}]}),
         )
         .await;
-    let (status, projection) = fixture.get_signed("/tasks/answer-task/interactions").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        projection["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|interaction| interaction["id"] == "question-1")
-    );
+    assert!(fixture.domain.state().unwrap().interactions.contains_key(&"question-1".into()));
     fixture.user(
         json!({"kind":"answer_question", "interaction_id":"question-1",
         "option_id":"yes", "inputs":{}}),
     );
-    let (status, projection) = fixture.get_signed("/tasks/answer-task/interactions").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        projection["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|interaction| interaction["id"] == "question-1"
-                && interaction["payload"]["answer"]["option_id"] == "yes")
-    );
+    let answered_state = fixture.domain.state().unwrap();
+    let answered = &answered_state.interactions[&"question-1".into()];
+    assert_eq!(serde_json::to_value(&answered.payload).unwrap()["answer"]["option_id"], "yes");
     let text = json!({"kind":"text", "text":"The requested answer"});
     fixture
         .producer(
@@ -359,15 +344,7 @@ async fn http_producer_answer_and_document_are_visible_to_signed_reader() {
         "presentation_id":"doc-delivery"}),
         )
         .await;
-    let (status, projection) = fixture.get_signed("/tasks").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(
-        projection["items"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|task| task["id"] == "doc-task" && task["state"] == "done")
-    );
+    assert_eq!(fixture.domain.state().unwrap().tasks[&"doc-task".into()].state, TaskState::Done);
     let reopened = DomainRuntime::open(&fixture.home).unwrap();
     let persisted = reopened.state().unwrap();
     assert_eq!(
@@ -417,15 +394,11 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
         "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]}),
         )
         .await;
-    let (status, projection) = fixture.get_signed("/pull-requests").await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(projection["items"].as_array().unwrap().len(), 1);
-    assert_eq!(projection["items"][0]["task_id"], "pr-task");
-    assert_eq!(projection["items"][0]["head"], "0123456789abcdef");
-    let (status, interactions) = fixture.get_signed("/tasks/pr-task/interactions").await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(interactions["items"].as_array().unwrap().iter()
-        .any(|interaction| interaction["id"] == "pr-delivery"));
+    let state = fixture.domain.state().unwrap();
+    assert_eq!(state.pull_requests.len(), 1);
+    assert_eq!(state.pull_requests[&"pr-1".into()].task_id.0, "pr-task");
+    assert_eq!(state.pull_requests[&"pr-1".into()].head, "0123456789abcdef");
+    assert!(state.interactions.contains_key(&"pr-delivery".into()));
     assert_ne!(
         fixture.domain.state().unwrap().tasks[&"pr-task".into()].state,
         TaskState::Done

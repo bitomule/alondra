@@ -8,6 +8,7 @@ import AlondraNewWorkFeature
 import AlondraShared
 import AlondraTasksFeature
 import AlondraWorkspaceFeature
+import AlondraViewsDependency
 import ComposableArchitecture
 import CryptoKit
 import Foundation
@@ -178,6 +179,7 @@ public actor DemoWorkspace {
     }
 
     public nonisolated func install(into values: inout DependencyValues) {
+        values.viewsClient = DemoViews.client()
         values.attachmentImport = AttachmentImportClient(file: { try AttachmentImporter.file($0) }, photo: { try await AttachmentImporter.photo($0) }, camera: { try AttachmentImporter.camera($0) }, thumbnail: { await AttachmentImporter.thumbnail($0) })
         values.attachmentUpload = AttachmentUploadClient(upload: {
             try await self.storeAttachment(id: $0.id, name: $0.name, data: $0.data)

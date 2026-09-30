@@ -4,11 +4,7 @@ use std::sync::OnceLock;
 use alondra_core::tasks::{RequestState, TaskState};
 use alondra_core::{BackgroundItem, BackgroundKind, Node, NodeState, OrchestratorState, ReportKind};
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Lang {
-    En,
-    Es,
-}
+pub use alondra_core::views::Lang;
 
 static DETECTED: OnceLock<Lang> = OnceLock::new();
 

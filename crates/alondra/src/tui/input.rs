@@ -11,7 +11,10 @@ pub struct TextInput {
 impl TextInput {
     pub fn with(text: &str) -> Self {
         let chars: Vec<char> = text.chars().collect();
-        TextInput { cursor: chars.len(), chars }
+        TextInput {
+            cursor: chars.len(),
+            chars,
+        }
     }
 
     pub fn text(&self) -> String {
@@ -42,11 +45,17 @@ impl TextInput {
     }
 
     fn line_start(&self) -> usize {
-        self.chars[..self.cursor].iter().rposition(|&c| c == '\n').map_or(0, |p| p + 1)
+        self.chars[..self.cursor]
+            .iter()
+            .rposition(|&c| c == '\n')
+            .map_or(0, |p| p + 1)
     }
 
     fn line_end(&self) -> usize {
-        self.chars[self.cursor..].iter().position(|&c| c == '\n').map_or(self.chars.len(), |p| self.cursor + p)
+        self.chars[self.cursor..]
+            .iter()
+            .position(|&c| c == '\n')
+            .map_or(self.chars.len(), |p| self.cursor + p)
     }
 
     pub fn handle(&mut self, k: KeyEvent) -> bool {
@@ -94,7 +103,8 @@ impl TextInput {
     pub fn layout(&self, width: usize) -> (Vec<String>, (usize, usize)) {
         let width = width.max(2);
         let mut rows: Vec<Vec<(usize, char)>> = vec![vec![]];
-        let row_width = |row: &[(usize, char)]| row.iter().map(|&(_, c)| char_width(c)).sum::<usize>();
+        let row_width =
+            |row: &[(usize, char)]| row.iter().map(|&(_, c)| char_width(c)).sum::<usize>();
         for (i, &c) in self.chars.iter().enumerate() {
             if c == '\n' {
                 rows.push(vec![]);
@@ -106,7 +116,9 @@ impl TextInput {
                 continue;
             }
             let carried = match row.iter().rposition(|&(_, ch)| ch == ' ') {
-                Some(space) if space + 1 < row.len() || space + 1 == row.len() => row.split_off(space + 1),
+                Some(space) if space + 1 < row.len() || space + 1 == row.len() => {
+                    row.split_off(space + 1)
+                }
                 _ => vec![],
             };
             rows.push(carried);
@@ -123,12 +135,22 @@ impl TextInput {
             }
         }
         let cursor = cursor.unwrap_or_else(|| {
-            let before_cursor_newline = self.chars[..self.cursor].iter().filter(|&&c| c == '\n').count();
-            let r = if self.cursor == self.chars.len() { rows.len() - 1 } else { before_cursor_newline.min(rows.len() - 1) };
+            let before_cursor_newline = self.chars[..self.cursor]
+                .iter()
+                .filter(|&&c| c == '\n')
+                .count();
+            let r = if self.cursor == self.chars.len() {
+                rows.len() - 1
+            } else {
+                before_cursor_newline.min(rows.len() - 1)
+            };
             let col = row_width(&rows[r]);
             if col >= width { (r + 1, 0) } else { (r, col) }
         });
-        let mut lines: Vec<String> = rows.into_iter().map(|row| row.into_iter().map(|(_, c)| c).collect()).collect();
+        let mut lines: Vec<String> = rows
+            .into_iter()
+            .map(|row| row.into_iter().map(|(_, c)| c).collect())
+            .collect();
         if cursor.0 >= lines.len() {
             lines.push(String::new());
         }

@@ -13,7 +13,10 @@ pub fn dropped_files(pasted: &str) -> Option<Vec<PathBuf>> {
         if words.is_empty() {
             return None;
         }
-        words.iter().map(|w| file_path(w).filter(|p| p.is_file())).collect()
+        words
+            .iter()
+            .map(|w| file_path(w).filter(|p| p.is_file()))
+            .collect()
     };
     as_words().or_else(|| file_path(pasted).filter(|p| p.is_file()).map(|p| vec![p]))
 }
@@ -84,8 +87,14 @@ fn percent_decode(s: &str) -> Option<String> {
 }
 
 pub fn is_image(name: &str) -> bool {
-    let ext = std::path::Path::new(name).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-    ["png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp"].contains(&ext.as_str())
+    let ext = std::path::Path::new(name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    [
+        "png", "jpg", "jpeg", "gif", "webp", "heic", "heif", "tif", "tiff", "bmp",
+    ]
+    .contains(&ext.as_str())
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -96,10 +105,13 @@ pub enum Upload {
 
 /// The references of the chips already stored; one still copying is never sent half-way.
 pub fn stored(chips: &[Chip]) -> Vec<alondra_core::domain_v2::AttachmentRef> {
-    chips.iter().filter_map(|c| match &c.upload {
-        Upload::Stored(a) => Some(a.clone()),
-        Upload::Sending => None,
-    }).collect()
+    chips
+        .iter()
+        .filter_map(|c| match &c.upload {
+            Upload::Stored(a) => Some(a.clone()),
+            Upload::Sending => None,
+        })
+        .collect()
 }
 
 /// A file attached in the composer: its upload goes on while the user keeps typing.
@@ -141,20 +153,70 @@ mod tests {
 
     #[test]
     fn every_way_a_terminal_delivers_a_dropped_file_is_recognised() {
-        let s = scratch("forms", &["Captura de pantalla 2026-09-24.png", "it's.txt", "plain.pdf"]);
+        let s = scratch(
+            "forms",
+            &[
+                "Captura de pantalla 2026-09-24.png",
+                "it's.txt",
+                "plain.pdf",
+            ],
+        );
         let d = s.0.to_string_lossy().to_string();
         let shot = s.0.join("Captura de pantalla 2026-09-24.png");
         let cases = [
-            ("backslash-escaped spaces (Terminal.app, iTerm2, Ghostty)", format!("{d}/Captura\\ de\\ pantalla\\ 2026-09-24.png"), vec![shot.clone()]),
-            ("single quotes (Terminal.app)", format!("'{d}/Captura de pantalla 2026-09-24.png'"), vec![shot.clone()]),
-            ("double quotes", format!("\"{d}/Captura de pantalla 2026-09-24.png\""), vec![shot.clone()]),
-            ("file:// URI (kitty)", format!("file://{}/Captura%20de%20pantalla%202026-09-24.png", d.replace(' ', "%20")), vec![shot.clone()]),
-            ("file://localhost URI", format!("file://localhost{d}/plain.pdf"), vec![s.0.join("plain.pdf")]),
-            ("trailing space some terminals add", format!("{d}/plain.pdf "), vec![s.0.join("plain.pdf")]),
-            ("an apostrophe escaped", format!("{d}/it\\'s.txt"), vec![s.0.join("it's.txt")]),
-            ("two files at once", format!("{d}/plain.pdf {d}/Captura\\ de\\ pantalla\\ 2026-09-24.png"), vec![s.0.join("plain.pdf"), shot.clone()]),
-            ("unquoted, as a terminal that does not escape sends it", format!("{d}/Captura de pantalla 2026-09-24.png"), vec![shot.clone()]),
-            ("one per line", format!("{d}/plain.pdf\n'{d}/it'\\''s.txt'"), vec![s.0.join("plain.pdf"), s.0.join("it's.txt")]),
+            (
+                "backslash-escaped spaces (Terminal.app, iTerm2, Ghostty)",
+                format!("{d}/Captura\\ de\\ pantalla\\ 2026-09-24.png"),
+                vec![shot.clone()],
+            ),
+            (
+                "single quotes (Terminal.app)",
+                format!("'{d}/Captura de pantalla 2026-09-24.png'"),
+                vec![shot.clone()],
+            ),
+            (
+                "double quotes",
+                format!("\"{d}/Captura de pantalla 2026-09-24.png\""),
+                vec![shot.clone()],
+            ),
+            (
+                "file:// URI (kitty)",
+                format!(
+                    "file://{}/Captura%20de%20pantalla%202026-09-24.png",
+                    d.replace(' ', "%20")
+                ),
+                vec![shot.clone()],
+            ),
+            (
+                "file://localhost URI",
+                format!("file://localhost{d}/plain.pdf"),
+                vec![s.0.join("plain.pdf")],
+            ),
+            (
+                "trailing space some terminals add",
+                format!("{d}/plain.pdf "),
+                vec![s.0.join("plain.pdf")],
+            ),
+            (
+                "an apostrophe escaped",
+                format!("{d}/it\\'s.txt"),
+                vec![s.0.join("it's.txt")],
+            ),
+            (
+                "two files at once",
+                format!("{d}/plain.pdf {d}/Captura\\ de\\ pantalla\\ 2026-09-24.png"),
+                vec![s.0.join("plain.pdf"), shot.clone()],
+            ),
+            (
+                "unquoted, as a terminal that does not escape sends it",
+                format!("{d}/Captura de pantalla 2026-09-24.png"),
+                vec![shot.clone()],
+            ),
+            (
+                "one per line",
+                format!("{d}/plain.pdf\n'{d}/it'\\''s.txt'"),
+                vec![s.0.join("plain.pdf"), s.0.join("it's.txt")],
+            ),
         ];
         for (case, pasted, want) in cases {
             assert_eq!(dropped_files(&pasted), Some(want), "{case}: {pasted}");
@@ -167,7 +229,10 @@ mod tests {
         let d = s.0.to_string_lossy().to_string();
         let cases = [
             ("a sentence", "mira el fallo en la línea 3".to_string()),
-            ("a path that does not exist", "/no/such/file.png".to_string()),
+            (
+                "a path that does not exist",
+                "/no/such/file.png".to_string(),
+            ),
             ("a directory", d.clone()),
             ("a path inside a sentence", format!("mira {d}/a.png")),
             ("a relative path", "a.png".to_string()),

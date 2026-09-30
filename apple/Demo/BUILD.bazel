@@ -18,6 +18,8 @@ swift_library(
         "//apple/Features/Fleet:AlondraFleetFeature",
         "//apple/Features/NewWork:AlondraNewWorkFeature",
         "//apple/Features/Workspace:AlondraWorkspaceFeature",
+        "//apple/Views:AlondraViews",
+        "//apple/Features/ViewsDependency:AlondraViewsDependency",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

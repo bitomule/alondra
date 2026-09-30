@@ -1,5 +1,6 @@
 import AlondraContracts
 import AlondraShared
+import AlondraViews
 import SwiftUI
 import UIKit
 
@@ -75,6 +76,17 @@ struct Kind {
         case "pull_request": self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
         case "document_review": self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
         case "delivery": self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
+        default: self.init(String(localized: "Notice"), "bell", Palette.slate)
+        }
+    }
+
+    init(_ card: AlondraViews.Card) {
+        switch card.icon {
+        case .action: self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
+        case .question: self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
+        case .pullRequest: self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
+        case .document: self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
+        case .delivery: self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
         default: self.init(String(localized: "Notice"), "bell", Palette.slate)
         }
     }

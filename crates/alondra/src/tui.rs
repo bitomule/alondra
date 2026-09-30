@@ -7,7 +7,20 @@ mod input;
 mod keys;
 mod md;
 mod tasks;
+mod view_feed;
+mod view_render;
 mod work;
+
+fn view_action_result(value: serde_json::Value) -> std::result::Result<String, String> {
+    match value["outcome"].as_str() {
+        Some("applied") => Ok(value["stamp"].as_str().unwrap_or("Done").to_owned()),
+        Some("rejected" | "changed" | "no_longer_available") => Err(value["message"]
+            .as_str()
+            .unwrap_or("Action could not be completed")
+            .to_owned()),
+        _ => Err("Unexpected action response".to_owned()),
+    }
+}
 
 use std::collections::{HashMap, HashSet};
 use std::io::stdout;
@@ -15,11 +28,16 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use alondra_core::domain_v2::{
-    AgentId, AttachmentRef, AvailableAction, Command, CommandEnvelope, CommandOutcome, DeliveryTarget, DomainProjection, Interaction, InteractionId, PrId, Revision, TaskId,
+    AgentId, AttachmentRef, AvailableAction, Command, CommandEnvelope, CommandOutcome,
+    DeliveryTarget, DomainProjection, Interaction, InteractionId, PrId, Revision, TaskId,
 };
 use alondra_core::now_millis;
+use alondra_core::views::{Status as ViewStatus, View as ViewDocument};
 use anyhow::Result;
-use crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
+};
 use crossterm::execute;
 use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::DefaultTerminal;
@@ -102,7 +120,11 @@ impl Review {
     }
 
     fn feedback(&self) -> String {
-        let pairs: Vec<(String, String)> = self.comments.iter().map(|c| (c.quote.clone(), c.text.clone())).collect();
+        let pairs: Vec<(String, String)> = self
+            .comments
+            .iter()
+            .map(|c| (c.quote.clone(), c.text.clone()))
+            .collect();
         md::feedback(&pairs, &self.general, &crate::client::config().name)
     }
 }
@@ -194,29 +216,55 @@ impl Reader {
         let (top, bottom) = (self.scroll, self.scroll + h);
         let fits = |&(s, e): &(usize, usize)| s >= top && e <= bottom;
         let covers = |&(s, e): &(usize, usize)| s <= top && e >= bottom;
-        if self.ranges.get(self.cursor).is_some_and(|r| fits(r) || covers(r)) {
+        if self
+            .ranges
+            .get(self.cursor)
+            .is_some_and(|r| fits(r) || covers(r))
+        {
             return;
         }
-        let ok = |i: &usize| self.blocks.get(*i).is_some_and(Block::commentable) && self.ranges.get(*i).is_some_and(|r| fits(r) || covers(r));
+        let ok = |i: &usize| {
+            self.blocks.get(*i).is_some_and(Block::commentable)
+                && self.ranges.get(*i).is_some_and(|r| fits(r) || covers(r))
+        };
         let n = self.ranges.len();
-        let found = if d > 0 { (0..n).find(ok) } else { (0..n).rev().find(ok) };
+        let found = if d > 0 {
+            (0..n).find(ok)
+        } else {
+            (0..n).rev().find(ok)
+        };
         if let Some(i) = found {
             self.cursor = i;
-        } else if let Some(i) = (0..n).find(|&i| self.blocks.get(i).is_some_and(Block::commentable) && self.ranges[i].0 >= top) {
+        } else if let Some(i) = (0..n).find(|&i| {
+            self.blocks.get(i).is_some_and(Block::commentable) && self.ranges[i].0 >= top
+        }) {
             self.cursor = i;
         }
     }
 
     fn matches(&self) -> Vec<usize> {
-        let Some(q) = self.find.as_ref().map(Find::query).filter(|q| !q.is_empty()) else { return vec![] };
-        (0..self.blocks.len()).filter(|&i| self.blocks[i].commentable() && self.blocks[i].plain().to_lowercase().contains(&q)).collect()
+        let Some(q) = self
+            .find
+            .as_ref()
+            .map(Find::query)
+            .filter(|q| !q.is_empty())
+        else {
+            return vec![];
+        };
+        (0..self.blocks.len())
+            .filter(|&i| {
+                self.blocks[i].commentable() && self.blocks[i].plain().to_lowercase().contains(&q)
+            })
+            .collect()
     }
 
     fn jump(&mut self, forward: bool, include_current: bool) -> bool {
         let hits = self.matches();
         let c = self.cursor;
         let next = if forward {
-            hits.iter().find(|&&i| i > c || (include_current && i == c)).or(hits.first())
+            hits.iter()
+                .find(|&&i| i > c || (include_current && i == c))
+                .or(hits.first())
         } else {
             hits.iter().rev().find(|&&i| i < c).or(hits.last())
         };
@@ -243,13 +291,47 @@ impl Reader {
 /// What the composer's text becomes. Each carries the subject and revision it was opened on, so a
 /// change elsewhere never sends the text to something else.
 pub enum Target {
-    Answer { key: Key, interaction: InteractionId, option: String, label: String, input: Option<String>, required: bool, title: String, revision: Revision },
-    Feedback { key: Key, presentation: InteractionId, targets: Vec<DeliveryTarget>, title: String, revision: Revision },
+    Answer {
+        key: Key,
+        interaction: InteractionId,
+        option: String,
+        label: String,
+        input: Option<String>,
+        required: bool,
+        title: String,
+        revision: Revision,
+    },
+    ViewAction {
+        action_id: String,
+        data_epoch: String,
+        option_id: Option<String>,
+        required: bool,
+        allow_attachments: bool,
+        form_fields: Option<Value>,
+        attachment_field: Option<String>,
+    },
+    Feedback {
+        key: Key,
+        presentation: InteractionId,
+        targets: Vec<DeliveryTarget>,
+        title: String,
+        revision: Revision,
+    },
     /// A message to an agent or the orchestrator; the text is filled in when it is sent.
-    Message { key: Option<Key>, message: ops::Message, name: String, title: String },
+    Message {
+        key: Option<Key>,
+        message: ops::Message,
+        name: String,
+        title: String,
+    },
     NewRequest,
-    Comment { block: usize, quote: String },
-    General { send: bool },
+    Comment {
+        block: usize,
+        quote: String,
+    },
+    General {
+        send: bool,
+    },
 }
 
 pub struct Composer {
@@ -262,10 +344,26 @@ pub struct Composer {
 impl Target {
     fn draft_key(&self) -> Option<String> {
         match self {
-            Target::Answer { interaction, option, .. } => Some(format!("answer:{interaction}:{option}")),
+            Target::Answer {
+                interaction,
+                option,
+                ..
+            } => Some(format!("answer:{interaction}:{option}")),
+            Target::ViewAction {
+                action_id,
+                option_id,
+                ..
+            } => Some(format!(
+                "view-action:{action_id}:{}",
+                option_id.as_deref().unwrap_or("")
+            )),
             Target::Feedback { presentation, .. } => Some(format!("feedback:{presentation}")),
             Target::Message { message: m, .. } => {
-                let (agent, interaction, pr) = (m.agent.as_ref().map_or("orchestrator", |a| a.0.as_str()), m.interaction.as_ref().map_or("", |i| i.0.as_str()), m.pr.as_ref().map_or("", |p| p.0.as_str()));
+                let (agent, interaction, pr) = (
+                    m.agent.as_ref().map_or("orchestrator", |a| a.0.as_str()),
+                    m.interaction.as_ref().map_or("", |i| i.0.as_str()),
+                    m.pr.as_ref().map_or("", |p| p.0.as_str()),
+                );
                 Some(format!("message:{:?}:{agent}:{interaction}:{pr}", m.kind))
             }
             Target::NewRequest => Some("new".into()),
@@ -278,7 +376,11 @@ impl Target {
 pub enum Remote {
     Idle,
     Pending,
-    Done { query: String, via: String, sessions: Vec<String> },
+    Done {
+        query: String,
+        via: String,
+        sessions: Vec<String>,
+    },
     Failed(String),
 }
 
@@ -297,28 +399,83 @@ impl Search {
 
 enum Msg {
     Data(Box<DomainProjection>),
+    ViewHome(Result<ViewDocument, String>),
+    ViewCard {
+        key: String,
+        result: Result<ViewDocument, String>,
+    },
+    ViewFeed(Result<crate::client::ViewsFeed, String>),
+    ViewAction(Result<String, String>),
     Offline,
     SyncError(String),
-    Command { slot: String, result: Result<CommandOutcome, CommandFailure> },
-    Diff { key: Key, result: Result<Value, String> },
-    TaskActions { task: TaskId, revision: Revision, result: Result<Vec<AvailableAction>, String> },
-    Interaction { id: InteractionId, asked_at: Revision, result: Result<Interaction, String> },
+    Command {
+        slot: String,
+        result: Result<CommandOutcome, CommandFailure>,
+    },
+    Diff {
+        key: Key,
+        result: Result<Value, String>,
+    },
+    TaskActions {
+        task: TaskId,
+        revision: Revision,
+        result: Result<Vec<AvailableAction>, String>,
+    },
+    Interaction {
+        id: InteractionId,
+        asked_at: Revision,
+        result: Result<Interaction, String>,
+    },
     /// The daemon's runtime readings; `None` from one that does not serve them.
     Runtime(Option<Box<Runtime>>),
     /// The local daemon's own readings: machine, usage and update state.
     Daemon(Option<Box<Runtime>>),
-    Deliveries(Vec<crate::delivery::Attempt>),
     /// A request that is not a domain command: what to flash, or why it failed.
-    Posted { key: Option<Key>, result: Result<String, String> },
-    Closed { name: String, result: Result<Closed, String> },
-    File { route: String, result: Result<files::FileBody, String> },
-    Uploaded { seq: u64, result: Result<AttachmentRef, String> },
-    Preview { seq: u64, image: image::DynamicImage },
-    Options { project: Option<String>, result: Result<(Vec<String>, Option<String>, Vec<alondra_core::options::Spec>, Option<String>), String> },
+    Posted {
+        key: Option<Key>,
+        result: Result<String, String>,
+    },
+    Closed {
+        name: String,
+        result: Result<Closed, String>,
+    },
+    File {
+        route: String,
+        result: Result<files::FileBody, String>,
+    },
+    Uploaded {
+        seq: u64,
+        result: Result<AttachmentRef, String>,
+    },
+    Preview {
+        seq: u64,
+        image: image::DynamicImage,
+    },
+    Options {
+        project: Option<String>,
+        result: Result<
+            (
+                Vec<String>,
+                Option<String>,
+                Vec<alondra_core::options::Spec>,
+                Option<String>,
+            ),
+            String,
+        >,
+    },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
-    Threads { agent: AgentId, threads: Option<Vec<Activity>> },
-    History { task: TaskId, result: Result<TaskHistory, String> },
-    Found { query: String, result: Result<(String, Vec<String>), String> },
+    Threads {
+        agent: AgentId,
+        threads: Option<Vec<Activity>>,
+    },
+    History {
+        task: TaskId,
+        result: Result<TaskHistory, String>,
+    },
+    Found {
+        query: String,
+        result: Result<(String, Vec<String>), String>,
+    },
 }
 
 /// How a close that alondrad accepted ended: a background job is gone; an interactive session
@@ -334,8 +491,19 @@ pub enum Flow {
     Quit,
     Attach(String),
     /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
-    Review { key: Key, pr: PrId, number: u64, dir: std::path::PathBuf },
+    Review {
+        key: Key,
+        pr: PrId,
+        number: u64,
+        dir: std::path::PathBuf,
+    },
     EditSchedule(Option<Value>),
+    EditViewForm {
+        action_id: String,
+        data_epoch: String,
+        fields: Vec<alondra_core::views::Field>,
+        attachment_field: Option<String>,
+    },
 }
 
 /// A command on its way, or one whose outcome is unknown: sending the same thing again repeats
@@ -350,6 +518,10 @@ struct Sent {
 
 pub struct App {
     pub domain: Option<DomainProjection>,
+    pub home_view: Option<ViewDocument>,
+    pub card_view: Option<ViewDocument>,
+    pub view_status: Option<ViewStatus>,
+    pub view_data_epoch: Option<String>,
     pub connected: bool,
     pub loaded: bool,
     pub offline: bool,
@@ -391,8 +563,6 @@ pub struct App {
     pub runtime: Option<Runtime>,
     /// The local daemon's machine, usage and update readings from `/daemon`.
     pub daemon: Option<Runtime>,
-    pub deliveries: Vec<crate::delivery::Attempt>,
-    pub delivery_help: bool,
     /// Stored files by content route: text to read, an image to draw, or bytes to leave to the Mac.
     pub files: HashMap<String, Result<files::FileBody, String>>,
     loading: HashSet<String>,
@@ -433,21 +603,23 @@ pub struct App {
     last_clock: i64,
     last_task_animation: i64,
     tx: SyncSender<Msg>,
+    open_views: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
+    card_view_asked: Option<String>,
+    screen_view_asked: Option<String>,
+    view_navigation: Vec<String>,
 }
 
 pub fn run() -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<Msg>(64);
-    let quick = Client::for_tui(Duration::from_secs(15));
-    let waiter = Client::for_tui(Duration::from_secs(70));
-    let sync_tx = tx.clone();
-    std::thread::Builder::new().name("alondra-sync".into()).spawn(move || sync_loop(sync_tx, quick, waiter))?;
     crate::attach::reset_terminal_modes();
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
-    let runtime_tx = tx.clone();
-    std::thread::Builder::new().name("alondra-runtime".into()).spawn(move || runtime_loop(runtime_tx, Client::for_tui(Duration::from_secs(15))))?;
     let mut app = App::new(tx);
-    app.picker = Some(ratatui_image::picker::Picker::from_query_stdio().unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()));
+    app.picker = Some(
+        ratatui_image::picker::Picker::from_query_stdio()
+            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()),
+    );
+    app.start_view_feed();
     let res = main_loop(&mut terminal, app, rx);
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
@@ -456,67 +628,10 @@ pub fn run() -> Result<()> {
 }
 
 fn background_sync_error(error: &anyhow::Error, prefix: &str) -> Msg {
-    if error.is::<crate::account::AccountBusy>() { Msg::Offline } else { Msg::SyncError(format!("{prefix}{error}")) }
-}
-
-/// Reads the projection, then waits on the daemon until it moves past that revision.
-fn sync_loop(tx: SyncSender<Msg>, quick: Client, waiter: Client) {
-    let mut was_online = true;
-    let mut sections = crate::client::Sections::default();
-    loop {
-        let (epoch, revision) = match quick.sync(&mut sections) {
-            Ok(p) => {
-                was_online = true;
-                let at = (p.data_epoch.clone(), p.revision);
-                if tx.send(Msg::Data(Box::new(p))).is_err() {
-                    return;
-                }
-                at
-            }
-            Err(error) => {
-                if was_online && (tx.send(background_sync_error(&error, "")).is_err() || tx.send(Msg::Offline).is_err()) {
-                    return;
-                }
-                was_online = false;
-                std::thread::sleep(Duration::from_secs(2));
-                continue;
-            }
-        };
-        if let Err(error) = waiter.domain_changes(&epoch, revision, 50) {
-            let _ = tx.send(background_sync_error(&error, tr!("Waiting for changes failed: ", "Falló la espera de cambios: ")));
-            std::thread::sleep(Duration::from_secs(1));
-        }
-    }
-}
-
-/// The readings beside the domain: the runtime every few seconds, the update state and the
-/// delivery evidence less often. An alondrad without the runtime is asked again once a minute.
-fn runtime_loop(tx: SyncSender<Msg>, client: Client) {
-    let remote = crate::service_client::target().is_some();
-    let mut round = 0u64;
-    loop {
-        let runtime = client.runtime();
-        let wait = match &runtime {
-            Ok(None) if remote => Duration::from_secs(60),
-            _ if remote => Duration::from_secs(15),
-            _ => Duration::from_secs(5),
-        };
-        if let Ok(runtime) = runtime
-            && tx.send(Msg::Runtime(runtime.map(Box::new))).is_err()
-        {
-            return;
-        }
-        if !remote && round.is_multiple_of(2) {
-            let daemon = client.get::<Value>("/daemon").ok().and_then(|v| serde_json::from_value(v).ok());
-            let _ = tx.send(Msg::Daemon(daemon.map(Box::new)));
-        }
-        if round.is_multiple_of(3)
-            && let Ok(listing) = crate::delivery::list(|path| client.get::<Value>(path))
-        {
-            let _ = tx.send(Msg::Deliveries(listing.attempts));
-        }
-        round += 1;
-        std::thread::sleep(wait);
+    if error.is::<crate::account::AccountBusy>() {
+        Msg::Offline
+    } else {
+        Msg::SyncError(format!("{prefix}{error}"))
     }
 }
 
@@ -553,56 +668,109 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
             app.note_activity();
             loop {
                 match event::read()? {
-                    Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
-                        Flow::Quit => return Ok(()),
-                        Flow::Attach(agent) => {
-                            if crate::service_client::target().is_some() {
-                                app.fail(tr!("Remote terminal attachment is unavailable; open the terminal on the destination Mac", "El terminal remoto no está disponible; ábrelo en el Mac de destino"));
-                                break;
-                            }
-                            let _ = execute!(stdout(), DisableBracketedPaste);
-                            let res = crate::attach::attach(&agent, crate::attach::Over::Tui);
-                            crossterm::terminal::enable_raw_mode()?;
-                            let _ = execute!(stdout(), EnableBracketedPaste);
-                            if let Err(e) = res {
-                                app.fail(trf!("Could not open its terminal: {e}", "No pude abrir su terminal: {e}"));
-                            }
-                            repaint(terminal, &mut app)?;
-                            break;
-                        }
-                        Flow::Review { key, pr, number, dir } => {
-                            if crate::service_client::target().is_some() {
-                                app.fail(tr!("tuicr runs on the destination Mac; the diff opens here instead", "tuicr funciona en el Mac de destino; aquí se abre el diff"));
-                                break;
-                            }
-                            draw(terminal, &mut app)?;
-                            let _ = execute!(stdout(), DisableBracketedPaste);
-                            let res = crate::attach::run_tool("tuicr", &["--stdout", "--no-update-check", "pr", &number.to_string()], &dir, crate::attach::Over::Tui);
-                            crossterm::terminal::enable_raw_mode()?;
-                            let _ = execute!(stdout(), EnableBracketedPaste);
-                            app.reviewed(key, pr, number, res);
-                            repaint(terminal, &mut app)?;
-                            break;
-                        }
-                        Flow::EditSchedule(existing) => {
-                            let _ = execute!(stdout(), DisableBracketedPaste);
-                            ratatui::restore();
-                            let result = edit_schedule(existing);
-                            *terminal = ratatui::init();
-                            let _ = execute!(stdout(), EnableBracketedPaste);
-                            match result {
-                                Ok(Some(())) => {
-                                    app.flash(tr!("Schedule saved", "Programación guardada"));
-                                    app.reload_schedules();
+                    Event::Key(k) if k.kind != KeyEventKind::Release => {
+                        match app.on_key(k) {
+                            Flow::Quit => return Ok(()),
+                            Flow::Attach(agent) => {
+                                if crate::service_client::target().is_some() {
+                                    app.fail(tr!("Remote terminal attachment is unavailable; open the terminal on the destination Mac", "El terminal remoto no está disponible; ábrelo en el Mac de destino"));
+                                    break;
                                 }
-                                Ok(None) => app.flash(tr!("No changes saved", "No se guardaron cambios")),
-                                Err(e) => app.fail(e.to_string()),
+                                let _ = execute!(stdout(), DisableBracketedPaste);
+                                let res = crate::attach::attach(&agent, crate::attach::Over::Tui);
+                                crossterm::terminal::enable_raw_mode()?;
+                                let _ = execute!(stdout(), EnableBracketedPaste);
+                                if let Err(e) = res {
+                                    app.fail(trf!(
+                                        "Could not open its terminal: {e}",
+                                        "No pude abrir su terminal: {e}"
+                                    ));
+                                }
+                                repaint(terminal, &mut app)?;
+                                break;
                             }
-                            repaint(terminal, &mut app)?;
-                            break;
+                            Flow::Review {
+                                key,
+                                pr,
+                                number,
+                                dir,
+                            } => {
+                                if crate::service_client::target().is_some() {
+                                    app.fail(tr!("tuicr runs on the destination Mac; the diff opens here instead", "tuicr funciona en el Mac de destino; aquí se abre el diff"));
+                                    break;
+                                }
+                                draw(terminal, &mut app)?;
+                                let _ = execute!(stdout(), DisableBracketedPaste);
+                                let res = crate::attach::run_tool(
+                                    "tuicr",
+                                    &["--stdout", "--no-update-check", "pr", &number.to_string()],
+                                    &dir,
+                                    crate::attach::Over::Tui,
+                                );
+                                crossterm::terminal::enable_raw_mode()?;
+                                let _ = execute!(stdout(), EnableBracketedPaste);
+                                app.reviewed(key, pr, number, res);
+                                repaint(terminal, &mut app)?;
+                                break;
+                            }
+                            Flow::EditSchedule(existing) => {
+                                let _ = execute!(stdout(), DisableBracketedPaste);
+                                ratatui::restore();
+                                let result = edit_schedule(existing);
+                                *terminal = ratatui::init();
+                                let _ = execute!(stdout(), EnableBracketedPaste);
+                                match result {
+                                    Ok(Some(())) => {
+                                        app.flash(tr!("Schedule saved", "Programación guardada"));
+                                        app.reload_schedules();
+                                    }
+                                    Ok(None) => app
+                                        .flash(tr!("No changes saved", "No se guardaron cambios")),
+                                    Err(e) => app.fail(e.to_string()),
+                                }
+                                repaint(terminal, &mut app)?;
+                                break;
+                            }
+                            Flow::EditViewForm {
+                                action_id,
+                                data_epoch,
+                                fields,
+                                attachment_field,
+                            } => {
+                                let _ = execute!(stdout(), DisableBracketedPaste);
+                                ratatui::restore();
+                                let result = edit_view_fields(&fields);
+                                *terminal = ratatui::init();
+                                let _ = execute!(stdout(), EnableBracketedPaste);
+                                match result {
+                                    Ok(Some(fields)) => {
+                                        if attachment_field.is_some() {
+                                            app.compose(
+                                                Target::ViewAction {
+                                                    action_id,
+                                                    data_epoch,
+                                                    option_id: None,
+                                                    required: false,
+                                                    allow_attachments: true,
+                                                    form_fields: Some(fields),
+                                                    attachment_field,
+                                                },
+                                                "",
+                                            );
+                                        } else {
+                                            app.submit_view_fields(&action_id, &data_epoch, fields)
+                                        }
+                                    }
+                                    Ok(None) => app
+                                        .flash(tr!("No changes saved", "No se guardaron cambios")),
+                                    Err(error) => app.fail(error.to_string()),
+                                }
+                                repaint(terminal, &mut app)?;
+                                break;
+                            }
+                            Flow::Go => {}
                         }
-                        Flow::Go => {}
-                    },
+                    }
                     Event::Paste(s) => app.on_paste(&s),
                     _ => {}
                 }
@@ -624,39 +792,125 @@ const SCHEDULES: &str = "/schedules";
 
 /// The fields a schedule write accepts; what the daemon adds when it lists one stays out.
 fn schedule_draft(value: &Value) -> Value {
-    let fields = ["title", "text", "project", "options", "disallowed_tools", "frequency", "hour", "minute", "weekday", "interval", "start_at", "enabled", "revision"];
-    Value::Object(fields.iter().filter_map(|f| value.get(*f).map(|v| (f.to_string(), v.clone()))).collect())
+    let fields = [
+        "title",
+        "text",
+        "project",
+        "options",
+        "disallowed_tools",
+        "frequency",
+        "hour",
+        "minute",
+        "weekday",
+        "interval",
+        "start_at",
+        "enabled",
+        "revision",
+    ];
+    Value::Object(
+        fields
+            .iter()
+            .filter_map(|f| value.get(*f).map(|v| (f.to_string(), v.clone())))
+            .collect(),
+    )
 }
 
 fn edit_schedule(existing: Option<Value>) -> Result<Option<()>> {
-    let path = std::env::temp_dir().join(format!("alondra-schedule-{}-{}.json", std::process::id(), now_millis()));
-    let body = existing.as_ref().map(schedule_draft).unwrap_or_else(|| json!({
-        "title": "", "text": "", "project": null, "options": {}, "disallowed_tools": [],
-        "frequency": "daily", "hour": 9, "minute": 0, "weekday": 1,
-        "interval": 1, "start_at": now_millis() + 3_600_000, "enabled": true
-    }));
+    let path = std::env::temp_dir().join(format!(
+        "alondra-schedule-{}-{}.json",
+        std::process::id(),
+        now_millis()
+    ));
+    let body = existing.as_ref().map(schedule_draft).unwrap_or_else(|| {
+        json!({
+            "title": "", "text": "", "project": null, "options": {}, "disallowed_tools": [],
+            "frequency": "daily", "hour": 9, "minute": 0, "weekday": 1,
+            "interval": 1, "start_at": now_millis() + 3_600_000, "enabled": true
+        })
+    });
     let before = serde_json::to_vec_pretty(&body)?;
     use std::io::Write;
-    #[cfg(unix)] use std::os::unix::fs::OpenOptionsExt;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
     let mut file = std::fs::OpenOptions::new();
     file.write(true).create_new(true);
-    #[cfg(unix)] file.mode(0o600);
+    #[cfg(unix)]
+    file.mode(0o600);
     file.open(&path)?.write_all(&before)?;
     let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
     let status = std::process::Command::new(editor).arg(&path).status();
     let edited = std::fs::read(&path);
     let _ = std::fs::remove_file(&path);
-    if !status?.success() { anyhow::bail!("editor exited without saving"); }
+    if !status?.success() {
+        anyhow::bail!("editor exited without saving");
+    }
     let edited = edited?;
-    if edited == before { return Ok(None); }
-    let body: Value = serde_json::from_slice(&edited).map_err(|e| anyhow::anyhow!("Invalid schedule JSON: {e}"))?;
+    if edited == before {
+        return Ok(None);
+    }
+    let body: Value = serde_json::from_slice(&edited)
+        .map_err(|e| anyhow::anyhow!("Invalid schedule JSON: {e}"))?;
     let client = Client::for_tui(Duration::from_secs(15));
     if let Some(id) = existing.as_ref().and_then(|v| v["id"].as_str()) {
-        client.put(&format!("{SCHEDULES}/{}", urlencode(id)), &schedule_draft(&body))?;
+        client.put(
+            &format!("{SCHEDULES}/{}", urlencode(id)),
+            &schedule_draft(&body),
+        )?;
     } else {
         client.post(SCHEDULES, &schedule_draft(&body))?;
     }
     Ok(Some(()))
+}
+
+fn edit_view_fields(fields: &[alondra_core::views::Field]) -> Result<Option<Value>> {
+    let values = Value::Object(
+        fields
+            .iter()
+            .map(|field| (field.id.clone(), field.value.clone()))
+            .collect(),
+    );
+    let toml_value = toml::Value::try_from(&values)?;
+    let before = toml::to_string_pretty(&toml_value)?;
+    let path = std::env::temp_dir().join(format!(
+        "alondra-view-form-{}-{}.toml",
+        std::process::id(),
+        now_millis()
+    ));
+    use std::io::Write;
+    #[cfg(unix)]
+    use std::os::unix::fs::OpenOptionsExt;
+    let mut file = std::fs::OpenOptions::new();
+    file.write(true).create_new(true);
+    #[cfg(unix)]
+    file.mode(0o600);
+    file.open(&path)?.write_all(before.as_bytes())?;
+    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
+    let status = std::process::Command::new(editor).arg(&path).status();
+    let edited = std::fs::read_to_string(&path);
+    let _ = std::fs::remove_file(&path);
+    if !status?.success() {
+        anyhow::bail!("editor exited without saving");
+    }
+    let edited = edited?;
+    if edited == before {
+        return Ok(None);
+    }
+    let parsed: toml::Value =
+        toml::from_str(&edited).map_err(|error| anyhow::anyhow!("Invalid form TOML: {error}"))?;
+    let values: Value = serde_json::to_value(parsed)?;
+    for field in fields.iter().filter(|field| field.required) {
+        let value = values.get(&field.id);
+        let missing = value.is_none_or(|value| match value {
+            Value::Null => true,
+            Value::String(text) => text.trim().is_empty(),
+            Value::Array(items) => items.is_empty(),
+            _ => false,
+        });
+        if missing {
+            anyhow::bail!("{} is required", field.label);
+        }
+    }
+    Ok(Some(values))
 }
 
 /// The Mac's default app for a URL or file, through `open`. Tests never open one.
@@ -664,7 +918,9 @@ fn open_with_mac(target: &str) {
     if cfg!(test) {
         return;
     }
-    let _ = std::process::Command::new("/usr/bin/open").arg(target).spawn();
+    let _ = std::process::Command::new("/usr/bin/open")
+        .arg(target)
+        .spawn();
 }
 
 /// A stored file handed to the Mac's app for it: always a private local copy, never a path of
@@ -672,12 +928,22 @@ fn open_with_mac(target: &str) {
 fn open_stored(name: &str, route: &str) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let bytes = Client::for_tui(Duration::from_secs(120)).content(route)?;
-    let suffix: String = crate::service_client::random::<16>()?.iter().map(|b| format!("{b:02x}")).collect();
+    let suffix: String = crate::service_client::random::<16>()?
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
     let dir = std::env::temp_dir().join(format!("alondra-attachment-{suffix}"));
     std::fs::DirBuilder::new().mode(0o700).create(&dir)?;
-    let name = std::path::Path::new(name).file_name().filter(|n| !n.is_empty()).unwrap_or(std::ffi::OsStr::new("attachment"));
+    let name = std::path::Path::new(name)
+        .file_name()
+        .filter(|n| !n.is_empty())
+        .unwrap_or(std::ffi::OsStr::new("attachment"));
     let local = dir.join(name);
-    let mut file = std::fs::OpenOptions::new().create_new(true).write(true).mode(0o600).open(&local)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .mode(0o600)
+        .open(&local)?;
     std::io::Write::write_all(&mut file, &bytes)?;
     open_with_mac(&local.to_string_lossy());
     Ok(())
@@ -686,7 +952,10 @@ fn open_stored(name: &str, route: &str) -> Result<()> {
 /// Where to review a PR: the agent's own checkout, else `~/Projects/<repo name>`.
 fn clone_of(agent_cwd: Option<&str>, repository: &str) -> Option<std::path::PathBuf> {
     let is_repo = |p: &std::path::Path| p.join(".git").exists();
-    if let Some(cwd) = agent_cwd.map(std::path::PathBuf::from).filter(|p| is_repo(p)) {
+    if let Some(cwd) = agent_cwd
+        .map(std::path::PathBuf::from)
+        .filter(|p| is_repo(p))
+    {
         return Some(cwd);
     }
     let name = repository.rsplit('/').next()?;
@@ -698,7 +967,8 @@ fn clone_of(agent_cwd: Option<&str>, repository: &str) -> Option<std::path::Path
 fn has_comments(export: &str) -> bool {
     export.lines().any(|l| {
         let t = l.trim_start();
-        t.split_once(". ").is_some_and(|(n, rest)| n.parse::<u32>().is_ok() && rest.starts_with('`'))
+        t.split_once(". ")
+            .is_some_and(|(n, rest)| n.parse::<u32>().is_ok() && rest.starts_with('`'))
     })
 }
 
@@ -706,6 +976,10 @@ impl App {
     fn new(tx: SyncSender<Msg>) -> Self {
         App {
             domain: None,
+            home_view: None,
+            card_view: None,
+            view_status: None,
+            view_data_epoch: None,
             connected: false,
             loaded: false,
             offline: false,
@@ -742,8 +1016,6 @@ impl App {
             chip_seq: 0,
             runtime: None,
             daemon: None,
-            deliveries: vec![],
-            delivery_help: false,
             files: HashMap::new(),
             loading: HashSet::new(),
             picker: cfg!(test).then(ratatui_image::picker::Picker::halfblocks),
@@ -777,15 +1049,143 @@ impl App {
             last_clock: now_millis(),
             last_task_animation: now_millis() / 500,
             tx,
+            open_views: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
+            card_view_asked: None,
+            screen_view_asked: None,
+            view_navigation: vec![],
         }
     }
 
+    fn start_view_feed(&self) {
+        let tx = self.tx.clone();
+        let open_views = self.open_views.clone();
+        view_feed::start(tx, open_views);
+    }
+
+    fn load_selected_view(&mut self) {
+        let Some(key) = self.selected_view_key() else {
+            return;
+        };
+        if self.home_view.as_ref().is_some_and(|view| view.key == key)
+            || self.card_view.as_ref().is_some_and(|view| view.key == key)
+            || self.card_view_asked.as_deref() == Some(&key)
+        {
+            return;
+        }
+        self.card_view_asked = Some(key.clone());
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(25))
+                .views(&key, None)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::ViewCard { key, result });
+        });
+    }
+
+    fn selected_view_key(&self) -> Option<String> {
+        if let Some(key) = self.view_navigation.last() {
+            return Some(key.clone());
+        }
+        if let (Some(selected), Some(view)) = (self.sel.as_ref(), self.home_view.as_ref()) {
+            let row = view_render::rows(view)
+                .into_iter()
+                .find_map(|(row, _)| (row.id == selected.0).then_some(row));
+            if let Some(row) = row {
+                return match &row.link {
+                    Some(alondra_core::views::Link::View { key }) => Some(key.clone()),
+                    _ => None,
+                };
+            }
+        }
+        if self.screen == Screen::Tasks {
+            return match self.task_sel.as_ref()? {
+                tasks::TaskKey::Task(id) => Some(format!("task:{}", id.0)),
+                tasks::TaskKey::Request(id) => Some(format!("request:{}", id.0)),
+                tasks::TaskKey::Finished | tasks::TaskKey::Archived => None,
+            };
+        }
+        let selected = self.sel.as_ref()?;
+        (self.screen == Screen::Inbox).then(|| format!("card:{}", selected.0))
+    }
+
+    fn screen_view_key(&self) -> &str {
+        match self.screen {
+            Screen::Inbox => "home",
+            Screen::Tasks if self.schedules_open => "schedules",
+            Screen::Tasks => "tasks",
+            Screen::Fleet => "fleet",
+        }
+    }
+
+    fn load_screen_view(&mut self) {
+        let key = self.screen_view_key().to_owned();
+        if self.home_view.as_ref().is_some_and(|view| view.key == key)
+            || self.screen_view_asked.as_deref() == Some(&key)
+        {
+            return;
+        }
+        self.screen_view_asked = Some(key.clone());
+        self.home_view = None;
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(25))
+                .views(&key, None)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::ViewHome(result));
+        });
+    }
+
+    fn sync_open_views(&self) {
+        let mut open = self
+            .open_views
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        open.clear();
+        if let Some(home) = &self.home_view {
+            open.insert(home.key.clone(), home.version.clone());
+        }
+        if let Some(card) = self.card_view.as_ref() {
+            open.insert(card.key.clone(), card.version.clone());
+        }
+    }
+
+    pub(super) fn navigate_view(&mut self, key: &str) {
+        self.view_navigation.push(key.to_owned());
+        self.card_view = None;
+        self.card_view_asked = None;
+        self.detail_scroll = 0;
+        self.load_selected_view();
+        self.sync_open_views();
+    }
+
+    fn submit_view_fields(&mut self, action_id: &str, data_epoch: &str, fields: Value) {
+        let input = json!({"fields": fields});
+        let request = Client::action_body(data_epoch, action_id, None, input);
+        #[cfg(test)]
+        self.posted
+            .borrow_mut()
+            .push(("/actions".into(), request.clone()));
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(30))
+                .post("/actions", &request)
+                .map_err(|error| format!("{error:#}"))
+                .and_then(view_action_result);
+            let _ = tx.send(Msg::ViewAction(result));
+        });
+    }
+
     pub fn flash(&mut self, text: impl Into<String>) {
-        self.flash = Some(Flash { text: text.into(), error: false, at: now_millis() });
+        self.flash = Some(Flash {
+            text: text.into(),
+            error: false,
+            at: now_millis(),
+        });
     }
 
     pub fn fail(&mut self, text: impl Into<String>) {
-        self.flash = Some(Flash { text: text.into(), error: true, at: now_millis() });
+        self.flash = Some(Flash {
+            text: text.into(),
+            error: true,
+            at: now_millis(),
+        });
     }
 
     fn hide(&mut self, key: Key) {
@@ -805,7 +1205,11 @@ impl App {
     /// A second press of the same step within a few seconds confirms it; anything else starts over.
     fn confirmed(&mut self, step: &str, ask: String) -> bool {
         let now = now_millis();
-        if self.confirm.as_ref().is_some_and(|(s, until, _)| s == step && now < *until) {
+        if self
+            .confirm
+            .as_ref()
+            .is_some_and(|(s, until, _)| s == step && now < *until)
+        {
             self.confirm = None;
             return true;
         }
@@ -822,9 +1226,12 @@ impl App {
         }
         self.activity_told = now;
         #[cfg(test)]
-        self.posted.borrow_mut().push((ops::PRESENCE.into(), json!({"client": "tui"})));
+        self.posted
+            .borrow_mut()
+            .push((ops::PRESENCE.into(), json!({"client": "tui"})));
         self.spawn(|_| {
-            let _ = Client::for_tui(Duration::from_secs(5)).post(ops::PRESENCE, &json!({"client": "tui"}));
+            let _ = Client::for_tui(Duration::from_secs(5))
+                .post(ops::PRESENCE, &json!({"client": "tui"}));
         });
     }
 
@@ -834,9 +1241,19 @@ impl App {
         #[cfg(test)]
         self.posted.borrow_mut().push((path.clone(), body.clone()));
         self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(15)).post(&path, &body).map(|v| crate::delivery::response_notice(&v, crate::service_client::target()).unwrap_or(ok)).map_err(|e| {
-                if crate::client::missing(&e) { trf!("{e} ({path})", "{e} ({path})") } else { format!("{e:#}") }
-            });
+            let result = Client::for_tui(Duration::from_secs(15))
+                .post(&path, &body)
+                .map(|v| {
+                    crate::delivery::response_notice(&v, crate::service_client::target())
+                        .unwrap_or(ok)
+                })
+                .map_err(|e| {
+                    if crate::client::missing(&e) {
+                        trf!("{e} ({path})", "{e} ({path})")
+                    } else {
+                        format!("{e:#}")
+                    }
+                });
             let _ = tx.send(Msg::Posted { key, result });
         });
     }
@@ -858,7 +1275,10 @@ impl App {
         }
         let route = route.to_string();
         self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(30)).content(&route).map(files::FileBody::classify).map_err(|e| format!("{e:#}"));
+            let result = Client::for_tui(Duration::from_secs(30))
+                .content(&route)
+                .map(files::FileBody::classify)
+                .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::File { route, result });
         });
     }
@@ -867,10 +1287,22 @@ impl App {
     /// feedback on the delivery that presents the PR; without comments nothing is sent.
     fn reviewed(&mut self, key: Key, pr: PrId, number: u64, res: Result<String>) {
         match res {
-            Ok(text) if has_comments(&text) => self.pr_feedback(&key, &pr, text.trim().to_string(), vec![]),
-            Ok(_) => self.flash(trf!("PR #{number} reviewed without comments", "PR #{number} revisado sin comentarios")),
-            Err(e) if e.to_string().contains("No such file") || e.to_string().contains("could not launch") || e.to_string().contains("no pude lanzar") => {
-                self.fail(tr!("tuicr is not installed: brew install tuicr", "tuicr no está instalado: brew install tuicr"));
+            Ok(text) if has_comments(&text) => {
+                self.pr_feedback(&key, &pr, text.trim().to_string(), vec![])
+            }
+            Ok(_) => self.flash(trf!(
+                "PR #{number} reviewed without comments",
+                "PR #{number} revisado sin comentarios"
+            )),
+            Err(e)
+                if e.to_string().contains("No such file")
+                    || e.to_string().contains("could not launch")
+                    || e.to_string().contains("no pude lanzar") =>
+            {
+                self.fail(tr!(
+                    "tuicr is not installed: brew install tuicr",
+                    "tuicr no está instalado: brew install tuicr"
+                ));
             }
             Err(e) => self.fail(trf!("tuicr: {e}", "tuicr: {e}")),
         }
@@ -889,33 +1321,64 @@ impl App {
 
     /// Copies a dropped file into Alondra's storage while the user keeps writing.
     fn attach(&mut self, path: std::path::PathBuf) {
-        let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_default();
         let bytes = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
         if bytes > crate::client::MAX_ATTACHMENT_BYTES {
             let size = files::size(bytes as usize);
-            self.fail(trf!("{name} is {size}: attachments go up to 20 MB", "{name} ocupa {size}: los adjuntos llegan hasta 20 MB"));
+            self.fail(trf!(
+                "{name} is {size}: attachments go up to 20 MB",
+                "{name} ocupa {size}: los adjuntos llegan hasta 20 MB"
+            ));
             return;
         }
         self.chip_seq += 1;
         let seq = self.chip_seq;
-        let Some(c) = self.composer.as_mut() else { return };
-        let chip = Chip { seq, name: name.clone(), bytes, upload: Upload::Sending };
+        let Some(c) = self.composer.as_mut() else {
+            return;
+        };
+        let chip = Chip {
+            seq,
+            name: name.clone(),
+            bytes,
+            upload: Upload::Sending,
+        };
         let preview = self.picker.is_some() && chip.image();
         c.chips.push(chip);
         self.spawn(move |tx| {
             if preview && let Ok(image) = image::open(&path) {
-                let _ = tx.send(Msg::Preview { seq, image: image.thumbnail(PREVIEW_PIXELS, PREVIEW_PIXELS) });
+                let _ = tx.send(Msg::Preview {
+                    seq,
+                    image: image.thumbnail(PREVIEW_PIXELS, PREVIEW_PIXELS),
+                });
             }
-            let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|bytes| Client::for_tui(Duration::from_secs(120)).upload(&name, &bytes).map_err(|e| {
-                let route = crate::client::UPLOADS;
-                if crate::client::missing(&e) { trf!("{e} ({route})", "{e} ({route})") } else { format!("{e:#}") }
-            }));
+            let result = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|bytes| {
+                    Client::for_tui(Duration::from_secs(120))
+                        .upload(&name, &bytes)
+                        .map_err(|e| {
+                            let route = crate::client::UPLOADS;
+                            if crate::client::missing(&e) {
+                                trf!("{e} ({route})", "{e} ({route})")
+                            } else {
+                                format!("{e:#}")
+                            }
+                        })
+                });
             let _ = tx.send(Msg::Uploaded { seq, result });
         });
     }
 
     fn uploaded(&mut self, seq: u64, result: Result<AttachmentRef, String>) {
-        let chips = self.composer.iter_mut().flat_map(|c| c.chips.iter_mut()).chain(self.drafts.values_mut().flat_map(|(_, c)| c.iter_mut())).chain(self.reviews.values_mut().flat_map(|r| r.chips.iter_mut()));
+        let chips = self
+            .composer
+            .iter_mut()
+            .flat_map(|c| c.chips.iter_mut())
+            .chain(self.drafts.values_mut().flat_map(|(_, c)| c.iter_mut()))
+            .chain(self.reviews.values_mut().flat_map(|r| r.chips.iter_mut()));
         let mut failed = None;
         for chip in chips.filter(|c| c.seq == seq) {
             match &result {
@@ -934,17 +1397,33 @@ impl App {
                 r.chips.retain(|c| c.seq != seq);
             }
             self.previews.remove(&seq);
-            self.fail(trf!("Could not attach {name}: {e}", "No se pudo adjuntar {name}: {e}"));
+            self.fail(trf!(
+                "Could not attach {name}: {e}",
+                "No se pudo adjuntar {name}: {e}"
+            ));
         }
     }
 
     /// Sends a domain command. `slot` names what is being done; while one is on its way the same
     /// slot is refused, and after an unknown outcome the same slot resends the same envelope.
-    fn send(&mut self, slot: String, key: Option<Key>, expected: Revision, command: Command, ok: String, draft: Option<(String, String)>) {
-        let Some(epoch) = self.domain.as_ref().map(|d| d.data_epoch.clone()) else { return };
+    fn send(
+        &mut self,
+        slot: String,
+        key: Option<Key>,
+        expected: Revision,
+        command: Command,
+        ok: String,
+        draft: Option<(String, String)>,
+    ) {
+        let Some(epoch) = self.domain.as_ref().map(|d| d.data_epoch.clone()) else {
+            return;
+        };
         let envelope = match self.sending.get(&slot) {
             Some(sent) if sent.waiting => {
-                self.fail(tr!("Still sending the previous one: wait for its answer", "Aún se está enviando el anterior: espera a su respuesta"));
+                self.fail(tr!(
+                    "Still sending the previous one: wait for its answer",
+                    "Aún se está enviando el anterior: espera a su respuesta"
+                ));
                 return;
             }
             Some(sent) => sent.envelope.clone(),
@@ -952,7 +1431,16 @@ impl App {
         };
         #[cfg(test)]
         self.sent.borrow_mut().push(envelope.clone());
-        self.sending.insert(slot.clone(), Sent { envelope: envelope.clone(), key, ok, draft, waiting: true });
+        self.sending.insert(
+            slot.clone(),
+            Sent {
+                envelope: envelope.clone(),
+                key,
+                ok,
+                draft,
+                waiting: true,
+            },
+        );
         self.spawn(move |tx| {
             let result = Client::for_tui(Duration::from_secs(15)).command(&envelope);
             let _ = tx.send(Msg::Command { slot, result });
@@ -960,7 +1448,9 @@ impl App {
     }
 
     fn command_done(&mut self, slot: String, result: Result<CommandOutcome, CommandFailure>) {
-        let Some(mut sent) = self.sending.remove(&slot) else { return };
+        let Some(mut sent) = self.sending.remove(&slot) else {
+            return;
+        };
         match result {
             Ok(_) => {
                 if let Some(k) = &sent.key {
@@ -972,13 +1462,17 @@ impl App {
                 if let Some(k) = &sent.key {
                     self.hidden.remove(k);
                 }
-                if let Some((draft, text)) = sent.draft.take().filter(|(_, t)| !t.trim().is_empty()) {
+                if let Some((draft, text)) = sent.draft.take().filter(|(_, t)| !t.trim().is_empty())
+                {
                     self.drafts.insert(draft, (text, vec![]));
                 }
                 match failure {
                     CommandFailure::Rejected(error) => {
                         let why = crate::client::refusal(&error);
-                        self.fail(trf!("Not done: {why}. Your text is kept.", "No se hizo: {why}. Tu texto se conserva."));
+                        self.fail(trf!(
+                            "Not done: {why}. Your text is kept.",
+                            "No se hizo: {why}. Tu texto se conserva."
+                        ));
                     }
                     CommandFailure::Uncertain(why) => {
                         sent.waiting = false;
@@ -994,12 +1488,40 @@ impl App {
     }
 
     fn reconcile(&mut self) {
+        if self.home_view.is_some() {
+            let keys = self.inbox_keys();
+            let previous = self.sel.clone();
+            match self
+                .sel
+                .as_ref()
+                .and_then(|selected| keys.iter().position(|key| key == selected))
+            {
+                Some(index) => self.sel_idx = index,
+                None => {
+                    self.sel_idx = self.sel_idx.min(keys.len().saturating_sub(1));
+                    self.sel = keys.get(self.sel_idx).cloned();
+                }
+            }
+            if self.sel != previous {
+                self.detail_scroll = 0;
+                self.card_view = None;
+                self.card_view_asked = None;
+            }
+            self.load_selected_view();
+            self.sync_open_views();
+            return;
+        }
         let now = now_millis();
         let present: HashSet<Key> = self.all_keys().into_iter().collect();
-        self.hidden.retain(|k, at| present.contains(k) && now - *at < HIDE_GRACE_MS);
+        self.hidden
+            .retain(|k, at| present.contains(k) && now - *at < HIDE_GRACE_MS);
         let keys = self.inbox_keys();
         let prev = self.sel.clone();
-        match self.sel.as_ref().and_then(|s| keys.iter().position(|k| k == s)) {
+        match self
+            .sel
+            .as_ref()
+            .and_then(|s| keys.iter().position(|k| k == s))
+        {
             Some(i) => self.sel_idx = i,
             None => {
                 self.sel_idx = self.sel_idx.min(keys.len().saturating_sub(1));
@@ -1008,47 +1530,151 @@ impl App {
         }
         if self.sel != prev {
             self.detail_scroll = 0;
+            self.card_view = None;
+            self.card_view_asked = None;
             if prev.is_some() {
                 self.settle_until = now + SETTLE_MS;
             }
         }
-        let files: Vec<String> = self.sel.as_ref().and_then(|k| self.item(k)).map(|i| self.item_files(i).into_iter().map(|(_, route)| route).take(2).collect()).unwrap_or_default();
+        let files: Vec<String> = self
+            .sel
+            .as_ref()
+            .and_then(|k| self.item(k))
+            .map(|i| {
+                self.item_files(i)
+                    .into_iter()
+                    .map(|(_, route)| route)
+                    .take(2)
+                    .collect()
+            })
+            .unwrap_or_default();
         for route in files {
             self.fetch(&route);
         }
         self.reconcile_agents();
         self.reconcile_tasks();
-        self.load_selected_interaction();
+        self.load_selected_view();
+        if self.screen != Screen::Inbox {
+            self.load_selected_interaction();
+        }
+        self.sync_open_views();
     }
 
     /// The selected item's interaction, read when it is first shown and again when it changes.
     fn load_selected_interaction(&mut self) {
-        let Some((id, revision)) = self.sel.as_ref().and_then(|k| self.item(k)).and_then(|i| Some((inbox::interaction_of(i)?.clone(), i.revision))) else { return };
+        let Some((id, revision)) = self
+            .sel
+            .as_ref()
+            .and_then(|k| self.item(k))
+            .and_then(|i| Some((inbox::interaction_of(i)?.clone(), i.revision)))
+        else {
+            return;
+        };
         self.load_interaction(id, revision);
     }
 
     pub(crate) fn load_interaction(&mut self, id: InteractionId, asked_at: Revision) {
-        if self.interactions.get(&id).is_some_and(|i| i.revision >= asked_at) || !self.interactions_asked.insert((id.clone(), asked_at)) {
+        if self
+            .interactions
+            .get(&id)
+            .is_some_and(|i| i.revision >= asked_at)
+            || !self.interactions_asked.insert((id.clone(), asked_at))
+        {
             return;
         }
         self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(10)).interaction(&id).map_err(|e| e.to_string());
-            let _ = tx.send(Msg::Interaction { id, asked_at, result });
+            let result = Client::for_tui(Duration::from_secs(10))
+                .interaction(&id)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Interaction {
+                id,
+                asked_at,
+                result,
+            });
         });
     }
 
     fn on_msg(&mut self, m: Msg) {
         match m {
             Msg::Data(mut p) => {
-                self.interactions.extend(std::mem::take(&mut p.interactions).into_iter().map(|i| (i.id.clone(), i)));
-                let current: HashMap<&InteractionId, Revision> = p.inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children))
-                    .filter_map(|i| Some((inbox::interaction_of(i)?, i.revision))).collect();
-                self.interactions.retain(|id, i| current.get(id).is_none_or(|at| *at <= i.revision));
+                self.interactions.extend(
+                    std::mem::take(&mut p.interactions)
+                        .into_iter()
+                        .map(|i| (i.id.clone(), i)),
+                );
+                let current: HashMap<&InteractionId, Revision> = p
+                    .inbox
+                    .iter()
+                    .flat_map(|r| std::iter::once(r).chain(&r.children))
+                    .filter_map(|i| Some((inbox::interaction_of(i)?, i.revision)))
+                    .collect();
+                self.interactions
+                    .retain(|id, i| current.get(id).is_none_or(|at| *at <= i.revision));
                 self.domain = Some(*p);
                 self.connected = true;
                 self.loaded = true;
                 self.offline = false;
             }
+            Msg::ViewHome(Ok(view)) => {
+                if view.key != self.screen_view_key() {
+                    return;
+                }
+                self.screen_view_asked = None;
+                self.view_data_epoch = Some(view.data_epoch.clone());
+                self.view_status = Some(view.status.clone());
+                self.home_view = Some(view);
+                self.loaded = true;
+                self.connected = true;
+                self.offline = false;
+                self.reconcile();
+            }
+            Msg::ViewHome(Err(error)) => {
+                if self.home_view.is_none() {
+                    self.screen_view_asked = None;
+                    self.fail(error);
+                }
+            }
+            Msg::ViewCard {
+                key,
+                result: Ok(view),
+            } => {
+                if self.selected_view_key().as_deref() == Some(&key) {
+                    self.card_view_asked = None;
+                    self.view_data_epoch = Some(view.data_epoch.clone());
+                    self.card_view = Some(view);
+                }
+            }
+            Msg::ViewCard {
+                key,
+                result: Err(error),
+            } => {
+                if self.card_view_asked.as_deref() == Some(&key) {
+                    self.card_view_asked = None;
+                    self.fail(error);
+                }
+            }
+            Msg::ViewFeed(Ok(feed)) => {
+                self.view_data_epoch = Some(feed.data_epoch);
+                self.view_status = Some(feed.status);
+                if feed.reset {
+                    self.home_view = None;
+                    self.card_view = None;
+                    self.card_view_asked = None;
+                    self.screen_view_asked = None;
+                    self.load_screen_view();
+                }
+                self.connected = true;
+                self.offline = false;
+            }
+            Msg::ViewFeed(Err(error)) => {
+                if self.view_status.is_none() {
+                    self.fail(error);
+                }
+            }
+            Msg::ViewAction(Ok(message)) => {
+                self.flash(message);
+            }
+            Msg::ViewAction(Err(error)) => self.fail(error),
             Msg::SyncError(error) => self.fail(error),
             Msg::Offline => {
                 self.connected = false;
@@ -1062,16 +1688,28 @@ impl App {
                     if let Some(reader) = self.reader.as_mut() {
                         let diff = value["diff"].as_str().unwrap_or("");
                         let head = value["head"].as_str().unwrap_or("?");
-                        reader.parts.push(Part::Text(format!("## Diff @ {head}\n\n```diff\n{diff}\n```")));
+                        reader.parts.push(Part::Text(format!(
+                            "## Diff @ {head}\n\n```diff\n{diff}\n```"
+                        )));
                         if value["truncated"] == true {
-                            reader.parts.push(Part::Text(tr!("The diff was cut to fit: open the PR for all of it.", "El diff se ha recortado: abre el PR para verlo entero.").into()));
+                            reader.parts.push(Part::Text(
+                                tr!(
+                                    "The diff was cut to fit: open the PR for all of it.",
+                                    "El diff se ha recortado: abre el PR para verlo entero."
+                                )
+                                .into(),
+                            ));
                         }
                     }
                     self.rebuild_reader();
                 }
                 Ok(_) => {}
             },
-            Msg::Interaction { id, asked_at, result } => match result {
+            Msg::Interaction {
+                id,
+                asked_at,
+                result,
+            } => match result {
                 Ok(interaction) => {
                     self.interactions.insert(id, interaction);
                 }
@@ -1080,7 +1718,11 @@ impl App {
                     self.fail(error);
                 }
             },
-            Msg::TaskActions { task, revision, result } => match result {
+            Msg::TaskActions {
+                task,
+                revision,
+                result,
+            } => match result {
                 Ok(actions) => {
                     self.task_actions.insert(task, (revision, actions));
                 }
@@ -1091,7 +1733,6 @@ impl App {
             },
             Msg::Runtime(runtime) => self.runtime = runtime.map(|r| *r),
             Msg::Daemon(daemon) => self.daemon = daemon.map(|d| *d),
-            Msg::Deliveries(attempts) => self.deliveries = attempts,
             Msg::Posted { key, result } => match result {
                 Ok(text) => {
                     if let Some(k) = key {
@@ -1103,17 +1744,25 @@ impl App {
                     if let Some(k) = key {
                         self.hidden.remove(&k);
                     }
-                    self.fail(trf!("Not confirmed: {e}. Check before repeating.", "Sin confirmar: {e}. Revísalo antes de repetir."));
+                    self.fail(trf!(
+                        "Not confirmed: {e}. Check before repeating.",
+                        "Sin confirmar: {e}. Revísalo antes de repetir."
+                    ));
                 }
             },
             Msg::Closed { name, result } => self.closed(&name, result),
             Msg::File { route, result } => {
                 self.loading.remove(&route);
                 if let (Ok(files::FileBody::Image(img)), Some(picker)) = (&result, &self.picker) {
-                    self.images.insert(route.clone(), picker.new_resize_protocol((**img).clone()));
+                    self.images
+                        .insert(route.clone(), picker.new_resize_protocol((**img).clone()));
                 }
                 self.files.insert(route.clone(), result);
-                if self.reader.as_ref().is_some_and(|r| r.parts.iter().any(|p| matches!(p, Part::File { route: fr, .. } if *fr == route))) {
+                if self.reader.as_ref().is_some_and(|r| {
+                    r.parts
+                        .iter()
+                        .any(|p| matches!(p, Part::File { route: fr, .. } if *fr == route))
+                }) {
                     self.rebuild_reader();
                 }
             }
@@ -1134,7 +1783,10 @@ impl App {
                     if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
                         f.loaded(project.clone(), vec![], vec![], Some(e.clone()));
                     }
-                    self.fail(trf!("Could not load the options: {e}", "No se pudieron cargar las opciones: {e}"));
+                    self.fail(trf!(
+                        "Could not load the options: {e}",
+                        "No se pudieron cargar las opciones: {e}"
+                    ));
                 }
             },
             Msg::Issues(result) => {
@@ -1142,7 +1794,10 @@ impl App {
                     f.issues_loaded(result);
                 }
             }
-            Msg::Threads { agent, threads: Some(threads) } => self.threads = Some((agent, threads)),
+            Msg::Threads {
+                agent,
+                threads: Some(threads),
+            } => self.threads = Some((agent, threads)),
             Msg::Threads { threads: None, .. } => {}
             Msg::History { task, result } => match result {
                 Ok(history) => {
@@ -1153,7 +1808,11 @@ impl App {
             Msg::Found { query, result } => {
                 if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
                     s.remote = match result {
-                        Ok((via, sessions)) => Remote::Done { query, via, sessions },
+                        Ok((via, sessions)) => Remote::Done {
+                            query,
+                            via,
+                            sessions,
+                        },
                         Err(e) => Remote::Failed(e),
                     };
                 }
@@ -1182,7 +1841,10 @@ impl App {
         self.load_threads();
         let wants_remote = self.search.as_ref().and_then(|s| {
             let q = s.query();
-            (matches!(s.remote, Remote::Idle) && !q.is_empty() && now - s.typed_at >= SEARCH_DEBOUNCE_MS).then_some(q)
+            (matches!(s.remote, Remote::Idle)
+                && !q.is_empty()
+                && now - s.typed_at >= SEARCH_DEBOUNCE_MS)
+                .then_some(q)
         });
         if let Some(q) = wants_remote
             && self.local_agent_matches(&q).is_empty()
@@ -1191,12 +1853,26 @@ impl App {
                 s.remote = Remote::Pending;
             }
             self.spawn(move |tx| {
+                let query = url::form_urlencoded::Serializer::new(String::new())
+                    .append_pair("q", &q)
+                    .finish();
+                let key = format!("search?{query}");
                 let result = Client::for_tui(Duration::from_secs(120))
-                    .get::<Value>(&ops::search(&q))
-                    .map(|v| {
-                        let via = v["via"].as_str().unwrap_or("").to_string();
-                        let sessions = v["sessions"].as_array().map(|a| a.iter().filter_map(|s| s.as_str().map(str::to_string)).collect()).unwrap_or_default();
-                        (via, sessions)
+                    .views(&key, None)
+                    .map(|view| {
+                        let sessions = view
+                            .sections
+                            .iter()
+                            .flat_map(|section| &section.items)
+                            .filter_map(|item| {
+                                if let alondra_core::views::Item::Row(row) = item {
+                                    Some(row.id.clone())
+                                } else {
+                                    None
+                                }
+                            })
+                            .collect();
+                        ("session transcripts".to_owned(), sessions)
                     })
                     .map_err(|e| format!("{e:#}"));
                 let _ = tx.send(Msg::Found { query: q, result });
@@ -1223,7 +1899,11 @@ impl App {
     }
 
     fn on_key(&mut self, k: KeyEvent) -> Flow {
-        if self.confirm.as_ref().is_some_and(|(_, _, key)| *key != k.code) {
+        if self
+            .confirm
+            .as_ref()
+            .is_some_and(|(_, _, key)| *key != k.code)
+        {
             self.confirm = None;
         }
         self.pressed = k.code;
@@ -1235,7 +1915,13 @@ impl App {
             return Flow::Go;
         }
         if self.schedules_open {
-            return self.schedule_key(k);
+            if let Some(flow) = self.view_action_key(k) {
+                return flow;
+            }
+            let flow = self.schedule_key(k);
+            self.load_selected_view();
+            self.sync_open_views();
+            return flow;
         }
         if self.composer.is_some() {
             self.composer_key(k);
@@ -1244,11 +1930,18 @@ impl App {
         if self.cmdline.is_some() {
             return self.cmdline_key(k);
         }
-        if self.reader.as_ref().is_some_and(|r| r.find.as_ref().is_some_and(|f| f.editing)) {
+        if self
+            .reader
+            .as_ref()
+            .is_some_and(|r| r.find.as_ref().is_some_and(|f| f.editing))
+        {
             self.find_key(k);
             return Flow::Go;
         }
-        if self.screen == Screen::Fleet && self.reader.is_none() && self.search.as_ref().is_some_and(|s| s.editing) {
+        if self.screen == Screen::Fleet
+            && self.reader.is_none()
+            && self.search.as_ref().is_some_and(|s| s.editing)
+        {
             self.search_key(k);
             return Flow::Go;
         }
@@ -1258,7 +1951,6 @@ impl App {
         {
             match k.code {
                 KeyCode::Char('?') => {
-                    self.delivery_help = false;
                     self.help = true;
                     self.help_scroll = 0;
                     return Flow::Go;
@@ -1274,20 +1966,64 @@ impl App {
             self.reader_cmd(cmd);
             return Flow::Go;
         }
+        if matches!(cmd, Cmd::Back) && !self.view_navigation.is_empty() {
+            self.view_navigation.pop();
+            self.card_view = None;
+            self.card_view_asked = None;
+            self.load_selected_view();
+            self.sync_open_views();
+            return Flow::Go;
+        }
         match cmd {
             Cmd::Pending => {}
             Cmd::Other(k) => match k.code {
                 KeyCode::Char('q') => return Flow::Quit,
                 KeyCode::Tab => self.switch_screen(),
                 KeyCode::BackTab => self.switch_screen_back(),
-                KeyCode::Char('f') => self.show(if self.screen == Screen::Fleet { Screen::Inbox } else { Screen::Fleet }),
+                KeyCode::Char('f') => self.show(if self.screen == Screen::Fleet {
+                    Screen::Inbox
+                } else {
+                    Screen::Fleet
+                }),
+                KeyCode::Char('n') if self.home_view.is_some() => {
+                    self.navigate_view("new_request");
+                }
                 KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
                 KeyCode::Char('s') if self.screen == Screen::Tasks => {
                     self.schedules_open = true;
-                    self.reload_schedules();
+                    if self.home_view.is_some() {
+                        self.home_view = None;
+                        self.screen_view_asked = None;
+                        self.load_screen_view();
+                    } else {
+                        self.reload_schedules();
+                    }
+                    self.load_selected_view();
+                    self.sync_open_views();
+                }
+                KeyCode::Char('M') if self.home_view.is_some() => {
+                    if let Some(flow) = self.view_action_key(k) {
+                        return flow;
+                    }
                 }
                 KeyCode::Char('M') => self.message_orchestrator(),
+                _ if self.home_view.is_some() => {
+                    if let Some(flow) = self.view_action_key(k) {
+                        return flow;
+                    }
+                    return if self.screen == Screen::Inbox {
+                        self.inbox_key(k)
+                    } else {
+                        self.inbox_cmd(cmd);
+                        Flow::Go
+                    };
+                }
                 _ => {
+                    if self.screen != Screen::Inbox
+                        && let Some(flow) = self.view_action_key(k)
+                    {
+                        return flow;
+                    }
                     return match self.screen {
                         Screen::Inbox => self.inbox_key(k),
                         Screen::Tasks => self.tasks_key(k),
@@ -1295,11 +2031,25 @@ impl App {
                     };
                 }
             },
-            _ => match self.screen {
-                Screen::Inbox => self.inbox_cmd(cmd),
-                Screen::Tasks => self.tasks_cmd(cmd),
-                Screen::Fleet => self.agents_cmd(cmd),
-            },
+            _ => {
+                if self.home_view.is_some() {
+                    if let Some(flow) = self.view_action_key(k) {
+                        return flow;
+                    }
+                    self.inbox_cmd(cmd);
+                    return Flow::Go;
+                }
+                if self.screen != Screen::Inbox
+                    && let Some(flow) = self.view_action_key(k)
+                {
+                    return flow;
+                }
+                match self.screen {
+                    Screen::Inbox => self.inbox_cmd(cmd),
+                    Screen::Tasks => self.tasks_cmd(cmd),
+                    Screen::Fleet => self.agents_cmd(cmd),
+                }
+            }
         }
         Flow::Go
     }
@@ -1323,44 +2073,96 @@ impl App {
 
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
+        self.view_navigation.clear();
         self.schedules_open = false;
         self.focus = Pane::List;
         self.agent_zoom = false;
         self.task_zoom = false;
         self.threads_asked = None;
-        self.reconcile_tasks();
-        self.load_threads();
+        self.card_view = None;
+        self.card_view_asked = None;
+        self.home_view = None;
+        self.screen_view_asked = None;
+        self.sel = None;
+        self.sel_idx = 0;
+        self.load_screen_view();
+        self.load_selected_view();
+        self.sync_open_views();
     }
 
     fn message_orchestrator(&mut self) {
         let name = tr!("the orchestrator", "el orquestador").to_string();
         let message = ops::Message::to(None, ops::MessageKind::Message, String::new());
-        self.compose(Target::Message { key: None, message, title: String::new(), name }, "");
+        self.compose(
+            Target::Message {
+                key: None,
+                message,
+                title: String::new(),
+                name,
+            },
+            "",
+        );
     }
 
     fn reload_schedules(&mut self) {
+        if self.screen == Screen::Tasks && self.home_view.is_some() {
+            self.home_view = None;
+            self.screen_view_asked = None;
+            self.load_screen_view();
+            return;
+        }
         match Client::for_tui(Duration::from_secs(5)).get::<Value>(SCHEDULES) {
             Ok(value) => {
                 self.schedules = value["schedules"].as_array().cloned().unwrap_or_default();
-                self.schedule_idx = self.schedule_idx.min(self.schedules.len().saturating_sub(1));
+                self.schedule_idx = self
+                    .schedule_idx
+                    .min(self.schedules.len().saturating_sub(1));
             }
             Err(e) => self.fail(trf!("Schedules: {e}", "Programaciones: {e}")),
         }
     }
 
     fn schedule_key(&mut self, k: KeyEvent) -> Flow {
+        if self.home_view.is_some() {
+            match k.code {
+                KeyCode::Esc | KeyCode::Tab | KeyCode::Char('s') => {
+                    self.schedules_open = false;
+                    self.home_view = None;
+                    self.screen_view_asked = None;
+                    self.load_screen_view();
+                    return Flow::Go;
+                }
+                KeyCode::Char('n') => {
+                    self.navigate_view("schedule:new");
+                    return Flow::Go;
+                }
+                KeyCode::Char('r') => {
+                    self.reload_schedules();
+                    return Flow::Go;
+                }
+                _ => {
+                    let command = self.keymap.read(k);
+                    self.inbox_cmd(command);
+                    return Flow::Go;
+                }
+            }
+        }
         let selected = self.schedules.get(self.schedule_idx).cloned();
         match k.code {
             KeyCode::Esc | KeyCode::Tab | KeyCode::Char('s') => self.schedules_open = false,
             KeyCode::Char('j') | KeyCode::Down => {
-                self.schedule_idx = (self.schedule_idx + 1).min(self.schedules.len().saturating_sub(1));
+                self.schedule_idx =
+                    (self.schedule_idx + 1).min(self.schedules.len().saturating_sub(1));
                 self.schedule_delete = None;
             }
             KeyCode::Char('k') | KeyCode::Up => {
                 self.schedule_idx = self.schedule_idx.saturating_sub(1);
                 self.schedule_delete = None;
             }
-            KeyCode::Char('n') => return Flow::EditSchedule(None),
+            KeyCode::Char('n') => {
+                self.navigate_view("schedule:new");
+                return Flow::Go;
+            }
             KeyCode::Char('e') => {
                 if let Some(value) = selected {
                     return Flow::EditSchedule(Some(value));
@@ -1372,7 +2174,9 @@ impl App {
                     let id = value["id"].as_str().unwrap_or("").to_owned();
                     let mut draft = schedule_draft(&value);
                     draft["enabled"] = json!(!value["enabled"].as_bool().unwrap_or(false));
-                    match Client::for_tui(Duration::from_secs(15)).put(&format!("{SCHEDULES}/{}", urlencode(&id)), &draft) {
+                    match Client::for_tui(Duration::from_secs(15))
+                        .put(&format!("{SCHEDULES}/{}", urlencode(&id)), &draft)
+                    {
                         Ok(_) => self.reload_schedules(),
                         Err(e) => self.fail(e.to_string()),
                     }
@@ -1381,7 +2185,9 @@ impl App {
             KeyCode::Enter => {
                 if let Some(value) = selected {
                     let id = value["id"].as_str().unwrap_or("");
-                    match Client::for_tui(Duration::from_secs(15)).post(&ops::schedule_run(id), &json!(null)) {
+                    match Client::for_tui(Duration::from_secs(15))
+                        .post(&ops::schedule_run(id), &json!(null))
+                    {
                         Ok(_) => {
                             self.flash(tr!("Run requested", "Ejecución pedida"));
                             self.reload_schedules();
@@ -1397,15 +2203,24 @@ impl App {
                 if let Some(value) = selected {
                     let id = value["id"].as_str().unwrap_or("");
                     let now = now_millis();
-                    if self.schedule_delete.as_ref().is_some_and(|(pending, until)| pending == id && now < *until) {
+                    if self
+                        .schedule_delete
+                        .as_ref()
+                        .is_some_and(|(pending, until)| pending == id && now < *until)
+                    {
                         self.schedule_delete = None;
-                        match Client::for_tui(Duration::from_secs(15)).delete(&format!("{SCHEDULES}/{}", urlencode(id))) {
+                        match Client::for_tui(Duration::from_secs(15))
+                            .delete(&format!("{SCHEDULES}/{}", urlencode(id)))
+                        {
                             Ok(()) => self.reload_schedules(),
                             Err(e) => self.fail(e.to_string()),
                         }
                     } else {
                         self.schedule_delete = Some((id.to_string(), now + CONFIRM_MS));
-                        self.flash(tr!("Press d again to delete this schedule", "Pulsa d otra vez para borrar esta programación"));
+                        self.flash(tr!(
+                            "Press d again to delete this schedule",
+                            "Pulsa d otra vez para borrar esta programación"
+                        ));
                     }
                 }
             }
@@ -1416,14 +2231,19 @@ impl App {
 
     fn help_key(&mut self, k: KeyEvent) {
         match self.keymap.read(k) {
-            Cmd::Move(m) => self.help_scroll = keys::scroll(self.help_scroll, m, self.help_view.h, self.help_view.total),
+            Cmd::Move(m) => {
+                self.help_scroll =
+                    keys::scroll(self.help_scroll, m, self.help_view.h, self.help_view.total)
+            }
             Cmd::Pending => {}
             _ => self.help = false,
         }
     }
 
     fn cmdline_key(&mut self, k: KeyEvent) -> Flow {
-        let Some(input) = self.cmdline.as_mut() else { return Flow::Go };
+        let Some(input) = self.cmdline.as_mut() else {
+            return Flow::Go;
+        };
         match k.code {
             KeyCode::Esc => self.cmdline = None,
             KeyCode::Backspace if input.text().is_empty() => self.cmdline = None,
@@ -1449,13 +2269,7 @@ impl App {
                     return Flow::Quit;
                 }
             }
-            "deliveries" => {
-                self.delivery_help = true;
-                self.help = true;
-                self.help_scroll = 0;
-            }
             "h" | "help" => {
-                self.delivery_help = false;
                 self.help = true;
                 self.help_scroll = 0;
             }
@@ -1479,15 +2293,26 @@ impl App {
                     Screen::Fleet => self.move_agents(i),
                 }
             }
-            other => self.fail(trf!("Not a command: {other}  (try :q, :help, :inbox, :tasks, :agents, :<number>)", "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :agents, :<número>)")),
+            other => self.fail(trf!(
+                "Not a command: {other}  (try :q, :help, :inbox, :tasks, :agents, :<number>)",
+                "No es un comando: {other}  (prueba :q, :help, :inbox, :tasks, :agents, :<número>)"
+            )),
         }
         Flow::Go
     }
 
     fn compose(&mut self, target: Target, prefill: &str) {
-        let (text, chips) = target.draft_key().and_then(|k| self.drafts.remove(&k)).unwrap_or_else(|| (prefill.to_string(), vec![]));
+        let (text, chips) = target
+            .draft_key()
+            .and_then(|k| self.drafts.remove(&k))
+            .unwrap_or_else(|| (prefill.to_string(), vec![]));
         let form = matches!(target, Target::NewRequest).then(work::OptionsForm::default);
-        self.composer = Some(Composer { target, input: TextInput::with(&text), chips, form });
+        self.composer = Some(Composer {
+            target,
+            input: TextInput::with(&text),
+            chips,
+            form,
+        });
         if self.composer.as_ref().is_some_and(|c| c.form.is_some()) {
             self.load_options(None);
         }
@@ -1496,45 +2321,76 @@ impl App {
     /// Asks alondrad for the open issues, which it keeps for ten minutes unless `refresh`.
     fn load_issues(&self, refresh: bool) {
         self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(40)).get::<Value>(ops::issues(refresh)).map_err(|e| format!("{e:#}")).and_then(|v| {
-                let issues = serde_json::from_value(v["issues"].clone()).map_err(|e| e.to_string())?;
-                Ok((issues, v["error"].as_str().map(str::to_string)))
-            });
+            let key = if refresh {
+                "issue_picker?refresh=1"
+            } else {
+                "issue_picker"
+            };
+            let result = Client::for_tui(Duration::from_secs(40))
+                .views(key, None)
+                .map_err(|e| format!("{e:#}"))
+                .map(|view| {
+                    let issues = view
+                        .sections
+                        .iter()
+                        .flat_map(|section| &section.items)
+                        .filter_map(|item| {
+                            let alondra_core::views::Item::Row(row) = item else {
+                                return None;
+                            };
+                            let (repo, number) = row.id.rsplit_once('#')?;
+                            let number = number.parse().ok()?;
+                            let updated_at = match &row.trailing {
+                                Some(alondra_core::views::Trailing::Time { at, .. }) => {
+                                    Some(at.clone())
+                                }
+                                _ => None,
+                            };
+                            Some(alondra_core::issues::Issue {
+                                repo: repo.to_owned(),
+                                number,
+                                title: row.subtitle.clone().unwrap_or_else(|| row.title.clone()),
+                                url: format!("https://github.com/{repo}/issues/{number}"),
+                                author: None,
+                                association: None,
+                                labels: row.badges.iter().map(|badge| badge.text.clone()).collect(),
+                                updated_at,
+                                comments: 0,
+                            })
+                        })
+                        .collect();
+                    (issues, view.empty.map(|notice| notice.text))
+                });
             let _ = tx.send(Msg::Issues(result));
         });
     }
 
-    /// Fetches the options for "New" once, when it opens or its project changes.
-    fn load_options(&self, project: Option<String>) {
-        self.spawn(move |tx| {
-            let client = Client::for_tui(Duration::from_secs(10));
-            let result = client.get::<Value>(&ops::options(project.as_deref())).map_err(|e| format!("{e:#}")).and_then(|o| {
-                let specs = serde_json::from_value(o["options"].clone()).map_err(|e| e.to_string())?;
-                let listed = client.get::<Value>(ops::PROJECTS).ok();
-                let projects = listed.as_ref().and_then(|p| p["projects"].as_array().cloned()).unwrap_or_default();
-                let names = projects.iter().filter_map(|p| p["name"].as_str().map(str::to_string)).collect();
-                let root = listed.as_ref().and_then(|p| p["root"].as_str().map(std::path::PathBuf::from));
-                let here = std::env::current_dir().ok();
-                let suggested = root.zip(here).and_then(|(root, here)| alondra_core::options::project_of(&root, &here));
-                Ok((names, suggested, specs, o["error"].as_str().map(str::to_string)))
-            });
-            let _ = tx.send(Msg::Options { project, result });
-        });
+    /// New work is a server-owned form, including its project and option fields.
+    fn load_options(&mut self, _project: Option<String>) {
+        self.composer = None;
+        self.navigate_view("new_request");
     }
 
     fn cancel_composer(&mut self) {
-        let Some(c) = self.composer.take() else { return };
+        let Some(c) = self.composer.take() else {
+            return;
+        };
         let text = c.input.text();
         if let Some(k) = c.target.draft_key()
             && (!text.trim().is_empty() || !c.chips.is_empty())
         {
             self.drafts.insert(k, (text, c.chips));
-            self.flash(tr!("Draft saved: open it again to pick up where you left off", "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"));
+            self.flash(tr!(
+                "Draft saved: open it again to pick up where you left off",
+                "Borrador guardado: vuelve a abrirlo y sigue donde lo dejaste"
+            ));
         }
     }
 
     fn composer_key(&mut self, k: KeyEvent) {
-        let Some(c) = self.composer.as_mut() else { return };
+        let Some(c) = self.composer.as_mut() else {
+            return;
+        };
         if let Some(form) = c.form.as_mut() {
             match form.key(k) {
                 work::FormKey::Handled => return,
@@ -1545,7 +2401,10 @@ impl App {
         }
         match k.code {
             KeyCode::Esc => self.cancel_composer(),
-            KeyCode::Enter if k.modifiers.intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) => {
+            KeyCode::Enter
+                if k.modifiers
+                    .intersects(KeyModifiers::ALT | KeyModifiers::SHIFT) =>
+            {
                 c.input.handle(k);
             }
             KeyCode::Enter => self.submit(),
@@ -1561,12 +2420,18 @@ impl App {
     }
 
     fn submit(&mut self) {
-        let Some(c) = self.composer.take() else { return };
+        let Some(c) = self.composer.take() else {
+            return;
+        };
         let text = c.input.text().trim().to_string();
         let needs_text = match &c.target {
-            Target::Answer { required, .. } => *required,
-            Target::Message { message, .. } if message.kind == ops::MessageKind::MoreContext => false,
-            Target::Feedback { .. } | Target::NewRequest | Target::Message { .. } => c.chips.is_empty(),
+            Target::Answer { required, .. } | Target::ViewAction { required, .. } => *required,
+            Target::Message { message, .. } if message.kind == ops::MessageKind::MoreContext => {
+                false
+            }
+            Target::Feedback { .. } | Target::NewRequest | Target::Message { .. } => {
+                c.chips.is_empty()
+            }
             Target::Comment { .. } | Target::General { .. } => false,
         };
         if needs_text && text.is_empty() {
@@ -1575,7 +2440,10 @@ impl App {
         }
         if c.chips.iter().any(|c| c.upload == Upload::Sending) {
             self.composer = Some(c);
-            self.flash(tr!("Still copying the attachments: ⏎ again in a moment", "Aún se están copiando los adjuntos: ⏎ otra vez en un momento"));
+            self.flash(tr!(
+                "Still copying the attachments: ⏎ again in a moment",
+                "Aún se están copiando los adjuntos: ⏎ otra vez en un momento"
+            ));
             return;
         }
         let attachments = dropped::stored(&c.chips);
@@ -1586,27 +2454,125 @@ impl App {
         }
         let draft = c.target.draft_key().map(|k| (k, text.clone()));
         match c.target {
-            Target::Answer { key, interaction, option, label, input, revision, .. } => {
-                let inputs = input.filter(|_| !text.is_empty()).map(|id| (id, alondra_core::domain_v2::InputValue::Text(text.clone()))).into_iter().collect();
-                self.answer(key, interaction, option, label, inputs, attachments, revision, draft);
+            Target::Answer {
+                key,
+                interaction,
+                option,
+                label,
+                input,
+                revision,
+                ..
+            } => {
+                let inputs = input
+                    .filter(|_| !text.is_empty())
+                    .map(|id| (id, alondra_core::domain_v2::InputValue::Text(text.clone())))
+                    .into_iter()
+                    .collect();
+                self.answer(
+                    key,
+                    interaction,
+                    option,
+                    label,
+                    inputs,
+                    attachments,
+                    revision,
+                    draft,
+                );
             }
-            Target::Feedback { key, presentation, targets, revision, .. } => self.feedback(key, presentation, targets, text, attachments, revision, draft),
-            Target::Message { key, mut message, name, .. } => {
+            Target::ViewAction {
+                action_id,
+                data_epoch,
+                option_id,
+                allow_attachments,
+                form_fields,
+                attachment_field,
+                ..
+            } => {
+                let mut input = if let Some(fields) = form_fields {
+                    json!({"fields": fields})
+                } else {
+                    json!({})
+                };
+                if !text.trim().is_empty() {
+                    input["text"] = Value::String(text);
+                }
+                if allow_attachments && !attachments.is_empty() {
+                    let ids = attachments
+                        .iter()
+                        .map(|attachment| attachment.id.clone())
+                        .collect::<Vec<_>>();
+                    if let Some(field) = attachment_field {
+                        input["fields"][field] = json!(ids);
+                    } else {
+                        input["attachments"] = json!(ids);
+                    }
+                }
+                let request =
+                    Client::action_body(&data_epoch, &action_id, option_id.as_deref(), input);
+                #[cfg(test)]
+                self.posted
+                    .borrow_mut()
+                    .push(("/actions".into(), request.clone()));
+                self.spawn(move |tx| {
+                    let result = Client::for_tui(Duration::from_secs(20))
+                        .post("/actions", &request)
+                        .map_err(|error| format!("{error:#}"))
+                        .and_then(view_action_result);
+                    let _ = tx.send(Msg::ViewAction(result));
+                });
+            }
+            Target::Feedback {
+                key,
+                presentation,
+                targets,
+                revision,
+                ..
+            } => self.feedback(
+                key,
+                presentation,
+                targets,
+                text,
+                attachments,
+                revision,
+                draft,
+            ),
+            Target::Message {
+                key,
+                mut message,
+                name,
+                ..
+            } => {
                 message.text = text;
                 message.attachments = attachments;
-                let ok = if message.mark_read { trf!("Sent to {name} and marked read", "Enviado a {name} y marcado leído") } else { trf!("Sent to {name}", "Enviado a {name}") };
+                let ok = if message.mark_read {
+                    trf!(
+                        "Sent to {name} and marked read",
+                        "Enviado a {name} y marcado leído"
+                    )
+                } else {
+                    trf!("Sent to {name}", "Enviado a {name}")
+                };
                 self.message(key, message, ok);
             }
             Target::NewRequest => {
                 let request_id = crate::client::new_id("request");
                 let body = match c.form.as_ref() {
                     Some(form) => form.request(&request_id, &text, &attachments),
-                    None => ops::new_request(&request_id, &text, None, &json!({}), None, &attachments),
+                    None => {
+                        ops::new_request(&request_id, &text, None, &json!({}), None, &attachments)
+                    }
                 };
-                self.op(None, ops::REQUESTS.into(), body, tr!("Sent to the orchestrator", "Enviado al orquestador").into());
+                self.op(
+                    None,
+                    ops::REQUESTS.into(),
+                    body,
+                    tr!("Sent to the orchestrator", "Enviado al orquestador").into(),
+                );
             }
             Target::Comment { block, quote } => {
-                let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else { return };
+                let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
+                    return;
+                };
                 let review = self.reviews.entry(key).or_default();
                 review.chips.extend(c.chips);
                 review.comments.retain(|c| c.block != block);
@@ -1616,7 +2582,9 @@ impl App {
                 }
             }
             Target::General { send } => {
-                let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else { return };
+                let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
+                    return;
+                };
                 let review = self.reviews.entry(key).or_default();
                 review.general = text;
                 review.chips.extend(c.chips);
@@ -1628,8 +2596,153 @@ impl App {
     }
 
     fn open_reader(&mut self) {
+        if let Some(view) = self
+            .card_view
+            .as_ref()
+            .filter(|view| self.selected_view_key().as_deref() == Some(view.key.as_str()))
+            .cloned()
+        {
+            let title = view.title.clone().unwrap_or_else(|| view.key.clone());
+            let mut text = format!("# {title}");
+            let mut parts = Vec::new();
+            for section in &view.sections {
+                for item in &section.items {
+                    match item {
+                        alondra_core::views::Item::Markdown(markdown) => {
+                            if !markdown.text.is_empty() {
+                                text.push_str(&format!("\n\n{}", markdown.text));
+                            }
+                        }
+                        alondra_core::views::Item::ContentRef(content) => parts.push(Part::File {
+                            name: content.title.clone(),
+                            route: content.fetch.clone(),
+                        }),
+                        alondra_core::views::Item::Card(card) => {
+                            text.push_str(&format!("\n\n## {}", card.title));
+                            for context in &card.context {
+                                text.push_str(&format!("\n\n{}", context.text));
+                            }
+                            if let Some(body) = &card.body {
+                                text.push_str(&format!("\n\n{}", body.text));
+                            }
+                            for quote in &card.quotes {
+                                text.push_str(&format!("\n\n> {}: {}", quote.label, quote.text));
+                            }
+                            if let Some(facts) = &card.facts {
+                                for fact in &facts.items {
+                                    text.push_str(&format!("\n\n{}: {}", fact.label, fact.value));
+                                }
+                            }
+                            if let Some(checks) = &card.checks {
+                                for check in &checks.items {
+                                    text.push_str(&format!(
+                                        "\n\n- {}: {:?}",
+                                        check.name, check.state
+                                    ));
+                                }
+                            }
+                            parts.extend(card.attachments.iter().map(|attachment| Part::File {
+                                name: attachment.name.clone(),
+                                route: attachment.fetch.clone(),
+                            }));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            parts.insert(0, Part::Text(text));
+            for part in &parts {
+                if let Part::File { route, .. } = part {
+                    self.fetch(route);
+                }
+            }
+            let (glyph, kind, color) = view
+                .sections
+                .iter()
+                .flat_map(|section| section.items.iter())
+                .find_map(|item| match item {
+                    alondra_core::views::Item::Card(card) => Some((
+                        view_render::icon(card.icon),
+                        "item",
+                        view_render::icon_color(card.icon),
+                    )),
+                    _ => None,
+                })
+                .unwrap_or(("▤", "document", ratatui::style::Color::Cyan));
+            self.reader = Some(Reader {
+                key: Key(view.key),
+                agent: String::new(),
+                title,
+                kind,
+                glyph,
+                color,
+                parts,
+                blocks: vec![],
+                cursor: 0,
+                scroll: 0,
+                ranges: vec![],
+                view_h: 0,
+                total: 0,
+                find: None,
+            });
+            self.rebuild_reader();
+            return;
+        }
+        if let Some(card) = self
+            .card_view
+            .as_ref()
+            .and_then(view_render::detail_card)
+            .cloned()
+        {
+            let key = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
+            let (glyph, kind, color) = (
+                view_render::icon(card.icon),
+                "item",
+                view_render::icon_color(card.icon),
+            );
+            let mut text = format!("# {}", card.title);
+            for context in &card.context {
+                text.push_str(&format!("\n\n{}", context.text));
+            }
+            if let Some(body) = &card.body {
+                text.push_str(&format!("\n\n{}", body.text));
+            }
+            for quote in &card.quotes {
+                text.push_str(&format!("\n\n> {}: {}", quote.label, quote.text));
+            }
+            let mut parts = vec![Part::Text(text)];
+            parts.extend(card.attachments.iter().map(|attachment| Part::File {
+                name: attachment.name.clone(),
+                route: attachment.fetch.clone(),
+            }));
+            for part in &parts {
+                if let Part::File { route, .. } = part {
+                    self.fetch(route);
+                }
+            }
+            self.reader = Some(Reader {
+                key,
+                agent: String::new(),
+                title: card.title,
+                kind,
+                glyph,
+                color,
+                parts,
+                blocks: vec![],
+                cursor: 0,
+                scroll: 0,
+                ranges: vec![],
+                view_h: 0,
+                total: 0,
+                find: None,
+            });
+            self.rebuild_reader();
+            return;
+        }
         let Some(key) = self.sel.clone() else { return };
-        let Some(item) = self.item(&key).cloned() else { return };
+        let Some(item) = self.item(&key).cloned() else {
+            return;
+        };
         let (glyph, kind, color) = draw::kind_glyph(&item.kind);
         let parts = self.item_parts(&item);
         for p in &parts {
@@ -1657,7 +2770,9 @@ impl App {
     }
 
     fn rebuild_reader(&mut self) {
-        let Some(r) = self.reader.as_mut() else { return };
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
         let mut blocks = vec![];
         for part in &r.parts {
             match part {
@@ -1667,7 +2782,10 @@ impl App {
                     match self.files.get(route) {
                         Some(Ok(files::FileBody::Text(text))) => blocks.extend(md::parse(text)),
                         Some(Ok(body)) => blocks.push(Block::para(&files::not_text(body))),
-                        Some(Err(e)) => blocks.push(Block::para(&trf!("Could not load the file: {e}", "No he podido cargar el fichero: {e}"))),
+                        Some(Err(e)) => blocks.push(Block::para(&trf!(
+                            "Could not load the file: {e}",
+                            "No he podido cargar el fichero: {e}"
+                        ))),
                         None => blocks.push(Block::para(tr!("Loading…", "Cargando…"))),
                     }
                 }
@@ -1678,7 +2796,9 @@ impl App {
     }
 
     fn reader_cmd(&mut self, cmd: Cmd) {
-        let Some(r) = self.reader.as_mut() else { return };
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
         match cmd {
             Cmd::Move(keys::Motion::Down) => r.down(),
             Cmd::Move(keys::Motion::Up) => r.up(),
@@ -1696,7 +2816,9 @@ impl App {
     }
 
     fn find_key(&mut self, k: KeyEvent) {
-        let Some(r) = self.reader.as_mut() else { return };
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
         let Some(f) = r.find.as_mut() else { return };
         match k.code {
             KeyCode::Esc => r.find = None,
@@ -1716,22 +2838,40 @@ impl App {
     }
 
     fn reader_key(&mut self, k: KeyEvent) {
-        let Some(r) = self.reader.as_mut() else { return };
+        let Some(r) = self.reader.as_mut() else {
+            return;
+        };
         let key = r.key.clone();
         match k.code {
             KeyCode::Char('q') => self.reader = None,
-            KeyCode::Char('/') => r.find = Some(Find { input: TextInput::default(), editing: true }),
+            KeyCode::Char('/') => {
+                r.find = Some(Find {
+                    input: TextInput::default(),
+                    editing: true,
+                })
+            }
             KeyCode::Char(c @ ('n' | 'N')) if r.find.is_some() => {
                 r.jump(c == 'n', false);
             }
             KeyCode::Char('c') | KeyCode::Enter => {
-                let Some(b) = r.blocks.get(r.cursor).filter(|b| b.commentable()) else { return };
+                let Some(b) = r.blocks.get(r.cursor).filter(|b| b.commentable()) else {
+                    return;
+                };
                 let (block, quote) = (r.cursor, b.quote());
-                let prefill = self.reviews.get(&key).and_then(|rv| rv.comments.iter().find(|c| c.block == block)).map(|c| c.text.clone()).unwrap_or_default();
+                let prefill = self
+                    .reviews
+                    .get(&key)
+                    .and_then(|rv| rv.comments.iter().find(|c| c.block == block))
+                    .map(|c| c.text.clone())
+                    .unwrap_or_default();
                 self.compose(Target::Comment { block, quote }, &prefill);
             }
             KeyCode::Char('C') => {
-                let prefill = self.reviews.get(&key).map(|rv| rv.general.clone()).unwrap_or_default();
+                let prefill = self
+                    .reviews
+                    .get(&key)
+                    .map(|rv| rv.general.clone())
+                    .unwrap_or_default();
                 self.compose(Target::General { send: false }, &prefill);
             }
             KeyCode::Char('d') => {
@@ -1750,7 +2890,11 @@ impl App {
             KeyCode::Char(c @ '1'..='9') => {
                 self.settle_until = 0;
                 let i = c as usize - '1' as usize;
-                if self.reviews.get(&key).is_some_and(|rv| !rv.is_empty()) && self.item(&key).is_some_and(|i| matches!(i.kind.as_str(), "question" | "action_request")) {
+                if self.reviews.get(&key).is_some_and(|rv| !rv.is_empty())
+                    && self
+                        .item(&key)
+                        .is_some_and(|i| matches!(i.kind.as_str(), "question" | "action_request"))
+                {
                     self.answer_with_review(&key, i);
                 } else {
                     self.choose(&key, i);
@@ -1763,33 +2907,61 @@ impl App {
     /// The reader's comments go back to whoever the reading is about: feedback on a delivery, a
     /// reply to information, and on a question the option the user picks carries them.
     fn send_review(&mut self) {
-        let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else { return };
+        let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
+            return;
+        };
         let Some(review) = self.reviews.get(&key).filter(|rv| !rv.is_empty()) else {
             self.compose(Target::General { send: true }, "");
             return;
         };
         let (text, attachments) = (review.feedback(), dropped::stored(&review.chips));
-        let Some(item) = self.item(&key).cloned() else { return };
+        let Some(item) = self.item(&key).cloned() else {
+            return;
+        };
         match item.kind.as_str() {
             "question" | "action_request" => {
-                self.fail(tr!("Press the number of the option your comments go with", "Pulsa el número de la opción con la que van tus comentarios"));
+                self.fail(tr!(
+                    "Press the number of the option your comments go with",
+                    "Pulsa el número de la opción con la que van tus comentarios"
+                ));
                 return;
             }
             "information" => {
-                let Some(mut message) = self.reply_to(&item, ops::MessageKind::Reply) else { return };
+                let Some(mut message) = self.reply_to(&item, ops::MessageKind::Reply) else {
+                    return;
+                };
                 message.text = text;
                 message.attachments = attachments;
                 let name = self.agent_name(item.agent_id.as_ref());
                 let n = i18n::comments(self.reviews.get(&key).map_or(0, Review::count));
-                self.message(Some(key), message, trf!("{n} sent to {name}; marked read", "{n} enviados a {name}; marcado leído"));
+                self.message(
+                    Some(key),
+                    message,
+                    trf!(
+                        "{n} sent to {name}; marked read",
+                        "{n} enviados a {name}; marcado leído"
+                    ),
+                );
             }
             "pull_request" => {
-                let Some(pr) = self.item_pr(&item).map(|p| p.id.clone()) else { return };
+                let Some(pr) = self.item_pr(&item).map(|p| p.id.clone()) else {
+                    return;
+                };
                 self.pr_feedback(&key, &pr, text, attachments);
             }
             _ => {
-                let Some((presentation, targets, revision)) = self.feedback_subject(&key) else { return };
-                self.feedback(key, presentation, targets, text, attachments, revision, None);
+                let Some((presentation, targets, revision)) = self.feedback_subject(&key) else {
+                    return;
+                };
+                self.feedback(
+                    key,
+                    presentation,
+                    targets,
+                    text,
+                    attachments,
+                    revision,
+                    None,
+                );
             }
         }
         self.reader = None;
@@ -1797,31 +2969,66 @@ impl App {
 
     /// The comments written on a question go as the text of the option picked, when it takes one.
     fn answer_with_review(&mut self, key: &Key, i: usize) {
-        let Some(item) = self.item(key).cloned() else { return };
-        let Some(options) = self.options(&item) else { return };
-        let Some(option) = options.get(i) else {
-            let n = i + 1;
-            self.fail(trf!("This question has no option {n}", "Esta pregunta no tiene opción {n}"));
+        let Some(item) = self.item(key).cloned() else {
             return;
         };
-        let Some(input) = option.inputs.iter().find(|s| s.kind == alondra_core::domain_v2::InputKind::Text) else {
+        let Some(options) = self.options(&item) else {
+            return;
+        };
+        let Some(option) = options.get(i) else {
+            let n = i + 1;
+            self.fail(trf!(
+                "This question has no option {n}",
+                "Esta pregunta no tiene opción {n}"
+            ));
+            return;
+        };
+        let Some(input) = option
+            .inputs
+            .iter()
+            .find(|s| s.kind == alondra_core::domain_v2::InputKind::Text)
+        else {
             self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.", "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
             return;
         };
-        let Some(a) = inbox::action(&item, "answer_question").filter(|a| a.enabled).cloned() else {
-            let why = inbox::action(&item, "answer_question").map(unavailable).unwrap_or_default();
+        let Some(a) = inbox::action(&item, "answer_question")
+            .filter(|a| a.enabled)
+            .cloned()
+        else {
+            let why = inbox::action(&item, "answer_question")
+                .map(unavailable)
+                .unwrap_or_default();
             self.fail(why);
             return;
         };
-        let Some(interaction) = inbox::interaction_of(&item).cloned() else { return };
-        let Some(review) = self.reviews.get(key) else { return };
+        let Some(interaction) = inbox::interaction_of(&item).cloned() else {
+            return;
+        };
+        let Some(review) = self.reviews.get(key) else {
+            return;
+        };
         let (text, attachments) = (review.feedback(), dropped::stored(&review.chips));
-        let inputs = std::iter::once((input.id.clone(), alondra_core::domain_v2::InputValue::Text(text))).collect();
-        self.answer(key.clone(), interaction, option.id.clone(), option.label.clone(), inputs, attachments, a.expected_revision, None);
+        let inputs = std::iter::once((
+            input.id.clone(),
+            alondra_core::domain_v2::InputValue::Text(text),
+        ))
+        .collect();
+        self.answer(
+            key.clone(),
+            interaction,
+            option.id.clone(),
+            option.label.clone(),
+            inputs,
+            attachments,
+            a.expected_revision,
+            None,
+        );
     }
 
     pub fn search_key(&mut self, k: KeyEvent) {
-        let Some(s) = self.search.as_mut() else { return };
+        let Some(s) = self.search.as_mut() else {
+            return;
+        };
         match k.code {
             KeyCode::Esc => self.search = None,
             KeyCode::Enter | KeyCode::Down | KeyCode::Up | KeyCode::Tab => {
@@ -1844,13 +3051,21 @@ impl App {
     }
 
     pub fn agent_name(&self, id: Option<&AgentId>) -> String {
-        let Some(id) = id else { return tr!("orchestrator", "orquestador").into() };
-        self.domain.as_ref().and_then(|d| d.agents.iter().find(|a| &a.id == id)).map_or_else(|| id.0.chars().take(8).collect(), |a| a.name.clone())
+        let Some(id) = id else {
+            return tr!("orchestrator", "orquestador").into();
+        };
+        self.domain
+            .as_ref()
+            .and_then(|d| d.agents.iter().find(|a| &a.id == id))
+            .map_or_else(|| id.0.chars().take(8).collect(), |a| a.name.clone())
     }
 
     /// The id `claude attach` takes for an agent: its short id when the runtime knows it.
     pub fn attach_id(&self, id: &AgentId) -> String {
-        self.runtime.as_ref().and_then(|r| r.node(id)).map_or_else(|| id.0.clone(), |n| n.short_id.clone())
+        self.runtime
+            .as_ref()
+            .and_then(|r| r.node(id))
+            .map_or_else(|| id.0.clone(), |n| n.short_id.clone())
     }
 }
 
@@ -1859,7 +3074,9 @@ pub fn unavailable(action: &AvailableAction) -> String {
     let reason = action.disabled_reason.clone().unwrap_or_default();
     match reason.as_str() {
         "already_read" => tr!("It is already read", "Ya está leído").into(),
-        "task_not_active" => tr!("The task is no longer active", "La tarea ya no está activa").into(),
+        "task_not_active" => {
+            tr!("The task is no longer active", "La tarea ya no está activa").into()
+        }
         "invalid_action_for_kind" => tr!("It is already answered", "Ya está contestada").into(),
         "forbidden" => tr!("It is not addressed to you", "No va dirigida a ti").into(),
         _ => reason,

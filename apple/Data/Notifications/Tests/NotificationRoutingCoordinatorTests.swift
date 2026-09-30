@@ -1,4 +1,5 @@
 import AlondraAPIClient
+import AlondraViews
 import AlondraNotificationActions
 import AlondraNotificationPayload
 import CryptoKit
@@ -26,25 +27,25 @@ import Testing
     @Test func commandCapturedOnAStaysOnAWhileSelectionChangesToB() async throws {
         let a = try Fixture(1), b = try Fixture(2), gate = Gate()
         var destinations: [String] = []
-        let entryA = a.entry { _, item in
-            await MainActor.run { destinations.append("A:\(item.itemID)") }
+        let entryA = a.entry { request in
+            await MainActor.run { destinations.append("A:\(request.actionId)") }
             await gate.pause()
             return .noLongerPending
         }
-        let entryB = b.entry { _, item in
-            await MainActor.run { destinations.append("B:\(item.itemID)") }
+        let entryB = b.entry { request in
+            await MainActor.run { destinations.append("B:\(request.actionId)") }
             return .noLongerPending
         }
         let router = NotificationRoutingCoordinator()
         try router.install([entryA, entryB], selected: a.binding)
         let approved = try router.authorize(a.wire())
-        let task = Task { await router.submit(approved, actionID: NotificationPayload.Action.moreContext, text: nil) }
+        let task = Task { await router.submit(approved, actionID: "A0", text: nil) }
         await gate.waitForPause()
         try router.install([entryA, entryB], selected: b.binding)
         await gate.resume()
         let result = await task.value
         guard case .noLongerPending? = result else { Issue.record("A lost its result"); return }
-        #expect(destinations == ["A:interaction:q-42"])
+        #expect(destinations == ["A:ctx:q-42@1"])
         #expect(router.selected == b.binding)
     }
 
@@ -65,7 +66,7 @@ import Testing
         await gate.resume()
         await task.value
         #expect(!router.isValid(approved))
-        #expect(await router.submit(approved, actionID: NotificationPayload.Action.moreContext, text: nil) == nil)
+        #expect(await router.submit(approved, actionID: "A0", text: nil) == nil)
     }
 
     @Test func revokedBindingAndOtherAccountAreRejectedWithoutLosingCurrentSnapshot() throws {
@@ -92,7 +93,7 @@ import Testing
                 .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "")))
             mac = "mac-\(n)"; self.owner = owner
         }
-        func entry(submit: @escaping @Sendable (NotificationAction, NotificationPayload.Item) async -> NotificationActionResult = { _, _ in .noLongerPending }) -> NotificationRoutingCoordinator.Entry {
+        func entry(submit: @escaping @Sendable (ActionRequest) async -> NotificationActionResult = { _ in .noLongerPending }) -> NotificationRoutingCoordinator.Entry {
             let scope = NotificationBindingScope(relayURL: URL(string: "https://relay.example")!, ownerSub: owner,
                 macID: mac, deviceID: "phone", credentialRevision: mac)
             return .init(client: ServiceNotificationClient(identity: mac, binding: binding, register: { _, _, _, _, _ in }, submit: submit),
@@ -101,7 +102,7 @@ import Testing
         }
         func wire(hint: NotificationPayload.Binding? = nil, inner: NotificationPayload.Binding? = nil) throws -> Data {
             let payload = try JSONSerialization.data(withJSONObject: ["push_binding": (inner ?? binding).value, "with_sound": false,
-                "payload": ["aps": ["alert": "Synthetic"], "alondra": ["protocol_version": 2, "kind": "question", "item_id": "interaction:q-42", "interaction_id": "q-42", "data_epoch": "e", "expected_revision": 7]]])
+                "payload": ["aps": ["alert": "Synthetic"], "alondra": ["protocol": 1, "kind": "question", "card": "q-42", "data_epoch": "e", "actions": [["id": "ctx:q-42@1", "label": "Need context"]]]]])
             let envelope = try EnvelopeV1.seal(route: mac, sender: mac, recipient: "phone", requestID: UUID().uuidString,
                 kind: "push", expiresAtMilliseconds: 2000, plaintext: payload, senderKey: signer, recipientKey: recipient.publicKey)
             return try JSONSerialization.data(withJSONObject: ["alondra": ["push_binding": (hint ?? binding).value,

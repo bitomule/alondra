@@ -16,7 +16,6 @@ struct ServiceTriageCard: View {
     let isFront: Bool
     let zoom: Namespace.ID
     let onReview: () -> Void
-    let onSkip: () -> Void
     let onHide: () -> Void
 
     @Environment(\.dynamicTypeSize) private var typeSize
@@ -80,7 +79,6 @@ struct ServiceTriageCard: View {
                 Text("The node will explain and ask again.")
             }
             .onChange(of: store.question?.replyFocusRequest) { _, _ in replyFocused = true }
-            .accessibilityAction(named: "Leave for Later", onSkip)
             .task { await store.send(.appeared).finish() }
 
     }
@@ -175,15 +173,6 @@ struct ServiceTriageCard: View {
                     .lineLimit(1)
                     .fixedSize()
             }
-            Button(action: onSkip) {
-                Image(systemName: "arrow.uturn.forward")
-                    .font(.footnote.weight(.semibold))
-                    .frame(width: 30, height: 30)
-                    .background(Palette.hairline, in: .circle)
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .accessibilityLabel("Leave for Later")
         }
     }
 

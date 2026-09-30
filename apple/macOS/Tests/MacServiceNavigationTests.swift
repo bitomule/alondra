@@ -1,5 +1,6 @@
+import AlondraViews
+import AlondraViewsDependency
 import AlondraWorkspaceFeature
-import AlondraShared
 import Foundation
 import ComposableArchitecture
 import Testing
@@ -7,64 +8,49 @@ import Testing
 @MainActor
 struct MacServiceNavigationTests {
     @Test
-    func changingSearchCancelsTheConversationFallbackBeforeDispatch() async throws {
+    func changingSearchCancelsThePreviousViewsRequest() async throws {
         let clock = TestClock()
         let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
             $0.continuousClock = clock
-            $0.macConversationSearch = MacConversationSearch(run: { query in
-                #expect(query == "new query")
-                return try JSONDecoder().decode(SearchResult.self, from: Data(#"{"via":"conversation","sessions":["new-node"]}"#.utf8))
-            })
+            $0.viewsClient.load = { key, _ in
+                #expect(key.rawValue == "search?q=new+query")
+                let data = Data(#"{"protocol":1,"view":"search","key":"search?q=new+query","client":"mac","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"1 result","badge":1,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"results","collapsed":false,"items":[{"type":"row","id":"new-node","icon":"node","title":"New node","depth":0,"struck":false,"children":[]}]}],"notices":[]}"#.utf8)
+                return .document(try JSONDecoder().decode(ViewDocument.self, from: data))
+            }
         }
         await store.send(.queryChanged("old query")) { $0.query = "old query"; $0.searchRevision = 1 }
-        await store.send(.searchRequested(inbox: [], board: .empty, fleet: nil))
+        await store.send(.searchRequested)
         await clock.advance(by: .milliseconds(600))
         await store.send(.queryChanged("new query")) { $0.query = "new query"; $0.searchRevision = 2 }
-        await store.send(.searchRequested(inbox: [], board: .empty, fleet: nil))
+        await store.send(.searchRequested)
         await clock.advance(by: .milliseconds(1200))
         await store.receive(\.searchStarted) { $0.smartStatus = String(localized: "Searching the conversations…") }
         await store.receive(\.searchFinished) {
             $0.smartMatches = ["new-node"]
-            $0.smartStatus = String(localized: "Found in the conversations")
+            $0.smartStatus = String(localized: "Search results")
         }
     }
 
     @Test
-    func sidebarSearchUsesDisplayedRequestFallbackAndWhitespaceDoesNotExpandGroups() async throws {
-        let suite = "MacSidebarParity-\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
-        let requests = [DomainV2.Request(id: "r1", body: "Release checklist\nDetails", closed: false),
-                        DomainV2.Request(id: "r2", body: "Finished work", closed: true)]
-        let board = TaskBoard(requests: requests, tasks: [])
-        let store = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
-            $0.defaultAppStorage = defaults
+    func sidebarQueryMatchesRowsAndExpandsProjectsWithoutReadingLegacyModels() async {
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        await store.send(.queryChanged("release checklist")) {
+            $0.query = "release checklist"
+            $0.searchRevision = 1
         }
-        await store.send(.queryChanged("release checklist")).finish()
-        #expect(store.withState { $0.groups(in: board) }.flatMap(\.requests).map(\.id) == ["r1"])
-        await store.send(.queryChanged("   ")).finish()
-        let finished = try #require(board.groups.first { $0.isFinished })
-        #expect(!store.withState { $0.groupExpanded(finished) })
-        #expect(store.withState { $0.groups(in: board) }.flatMap(\.requests).count == 2)
+        #expect(store.state.matches("Release checklist for Mac"))
+        #expect(store.state.projectExpanded("Alondra"))
+        await store.send(.queryChanged("   ")) { $0.query = "   "; $0.smartMatches = nil; $0.smartStatus = ""; $0.searchRevision = 2 }
+        await store.send(.sidebarSectionExpanded("tasks", false)) { $0.tasksExpanded = false }
     }
 
     @Test
-    func resolvingMiddleCardFollowsItsNeighbourWithoutStealingAnotherWindowsSelection() {
+    func eachWindowKeepsItsOwnViewsSelection() {
         let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
         let second = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
-        for store in [first, second] { store.send(.inboxChanged(["q1", "q2", "q3"])) }
-        first.send(.select(.item("q2")))
-        second.send(.select(.node("worker")))
-
-        for store in [first, second] { store.send(.inboxChanged(["q1", "q3"])) }
-        #expect(first.selection == .item("q3"))
-        #expect(second.selection == .node("worker"))
-
-        first.send(.inboxChanged(["q1"]))
-        #expect(first.selection == .item("q1"))
-        first.send(.inboxChanged([]))
-        #expect(first.selection == nil)
-        first.send(.inboxChanged(["q4"]))
-        #expect(first.selection == nil, "Once triage ends, arriving work must not steal focus from the home screen")
+        first.send(.select(.viewKey("pull_request:p2")))
+        second.send(.select(.viewKey("node:worker")))
+        #expect(first.selection == .viewKey("pull_request:p2"))
+        #expect(second.selection == .viewKey("node:worker"))
     }
 }

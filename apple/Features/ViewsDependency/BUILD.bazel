@@ -1,0 +1,19 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+
+swift_library(
+    name = "AlondraViewsDependency",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraViewsDependency",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Data/Views:AlondraViewsData",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraViewsDependencyTests",
+    srcs = glob(["Tests/*.swift"]),
+    deps = [":AlondraViewsDependency", "//apple/Views:AlondraViews"],
+)

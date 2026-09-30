@@ -59,13 +59,10 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route("/schedules/{id}", get(schedule_detail::<H>).put(schedule_mutation::<H>).delete(schedule_mutation::<H>))
         .route("/schedules/{id}/runs", post(schedule_mutation::<H>))
         .route("/capabilities", get(capabilities::<H>))
-        .route("/delivery-attempts", get(delivery_evidence::<H>))
-        .route("/merge-authorizations/{id}", get(merge_authorization::<H>))
         .route("/changes", get(changes::<H>))
         .route("/pull-requests/{id}/diff", get(pull_request_diff::<H>))
-        .route("/tasks/{id}/actions", get(task_actions::<H>))
-        .route("/requests", get(sectioned_read::<H>).post(request_resource::<H>))
-        .route("/tasks/{id}", get(sectioned_read::<H>).patch(resource_command::<H>))
+        .route("/requests", post(request_resource::<H>))
+        .route("/tasks/{id}", patch(resource_command::<H>))
         .route("/questions", post(resource_command::<H>))
         .route("/action-requests", post(resource_command::<H>))
         .route("/messages", post(resource_command::<H>))
@@ -98,15 +95,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         router.route(path, endpoint
             .layer(axum::extract::DefaultBodyLimit::max(LOCAL_COMMAND_BYTES)))
     });
-    let sectioned = [
-        "/summary", "/inbox", "/inbox/{id}", "/tasks",
-        "/tasks/{id}/interactions", "/interactions", "/interactions/{id}",
-        "/interactions/{id}/body", "/requests/{id}",
-        "/requests/{id}/body", "/agents", "/pull-requests", "/pull-requests/{id}",
-        "/documents", "/documents/{id}", "/merge-authorizations",
-        "/stack-readiness", "/superseded-acceptances",
-    ];
-    sectioned.into_iter().fold(router, |router, path| router.route(path, get(sectioned_read::<H>)))
+    router
 }
 
 /// Every sectioned read goes through the same grammar as the relay allowlist.
@@ -541,7 +530,13 @@ async fn changes<H: DomainHost>(
     if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
-    let response = changes_inner(host.domain(), query).await;
+    let response = if host.cutover_committed() {
+        match (host.new_work_client(), signed_device(&*host, &signed)) {
+            (Some(client), Some(device)) => crate::views::feed::handle(client, &device.device_id,
+                query.as_deref().unwrap_or(""), alondra_core::views::Transport::Loopback).await,
+            _ => domain_error(DomainError::new("forbidden", "signed user device required")),
+        }
+    } else { domain_error(DomainError::new("incompatible_protocol", "Views protocol requires a committed daemon")) };
     if !signed_read(&*host, &signed) {
         return unsigned_read();
     }
@@ -626,21 +621,12 @@ pub(crate) async fn encrypted_read_runtime(
         crate::domain_schedule_api::response(crate::domain_schedule_api::read(domain, path))
     } else if path == "/capabilities" {
         capabilities_inner(domain)
-    } else if let Some(query) = path.strip_prefix("/delivery-attempts?") {
-        delivery_evidence_inner(domain, query)
-    } else if let Some(query) = path.strip_prefix("/changes?") {
-        changes_inner(domain, Some(query.to_owned())).await
     } else if let Some(id) = path.strip_prefix("/pull-requests/")
         .and_then(|suffix| suffix.strip_suffix("/diff")) {
         pull_request_diff_inner(domain, id.to_owned()).await
-    } else if let Some(id) = path.strip_prefix("/tasks/")
-        .and_then(|suffix| suffix.strip_suffix("/actions")) {
-        task_actions_inner(domain, id.to_owned())
     } else if let Some((id, query)) = path.strip_prefix("/document-revisions/")
         .and_then(|suffix| suffix.split_once("/content?")) {
         document_content_inner(domain, home, id.to_owned(), Some(query.to_owned())).await
-    } else if let Some(route) = crate::domain_reads::parse(path) {
-        crate::domain_reads::respond(domain, &route)
     } else {
         anyhow::bail!("unapproved encrypted domain read path")
     };
@@ -963,13 +949,8 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
 
 pub(crate) fn approved_resource_read_path(path: &str) -> bool {
     crate::domain_schedule_api::approved_read_path(path)
-        || crate::domain_reads::approved_read_path(path)
         || path == "/capabilities"
-        || path.strip_prefix("/merge-authorizations/").is_some_and(valid_resource_id)
-        || path.strip_prefix("/delivery-attempts?").is_some_and(|q| delivery_evidence_query(q).is_some())
-        || path.strip_prefix("/changes?").is_some_and(|q| changes_query(q).is_some())
         || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(crate::domain_reads::encoded_pull_request_id)
-        || path.strip_prefix("/tasks/").and_then(|s| s.strip_suffix("/actions")).is_some_and(valid_resource_id)
         || path.strip_prefix("/document-revisions/").and_then(|s| s.split_once("/content?"))
             .is_some_and(|(id, query)| valid_resource_id(id) && document_content_query(query).is_some())
 }
@@ -1196,6 +1177,43 @@ mod tests {
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use sha2::{Digest as _, Sha256};
     use std::collections::BTreeSet;
+
+    #[tokio::test]
+    async fn committed_local_changes_accepts_only_views_queries() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-changes-dispatch-{}",
+            crate::auth::random_hex(8)
+        ));
+        std::fs::create_dir(&home).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        let auth = crate::auth::Auth::open(&home).unwrap();
+        let key = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let device = auth.pair(&auth.new_pairing_code(), "test-device",
+            &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
+        let signed = Some(Extension(Signed { device_id: device.id,
+            name: device.name, public_key: device.public_key }));
+        let host = crate::domain_bootstrap::V2Only::open(&home).unwrap();
+        let epoch = host.domain().state().unwrap().data_epoch.0;
+
+        let legacy = changes::<crate::domain_bootstrap::V2Only>(State(host.clone()), signed.clone(),
+            RawQuery(Some(format!("data_epoch={epoch}&after=0&wait=0")))).await;
+        assert_eq!(legacy.status(), StatusCode::UNPROCESSABLE_ENTITY);
+
+        let views = changes::<crate::domain_bootstrap::V2Only>(State(host.clone()), signed,
+            RawQuery(Some("protocol=1&client=tui&lang=en&wait=0".into()))).await;
+        assert_eq!(views.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(views.into_body(), 1024 * 1024).await.unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["protocol"], 1);
+        assert_eq!(body["superseded"], false);
+
+        let unsigned = changes::<crate::domain_bootstrap::V2Only>(State(host.clone()), None,
+            RawQuery(Some("protocol=1&client=tui&lang=en&wait=0".into()))).await;
+        assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
+        drop(host);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
     #[test]
     fn delivery_recovery_routes_accept_only_bounded_exact_ids_and_cursors() {
         assert_eq!(delivery_evidence_query("after=0"), Some(0));
@@ -1347,9 +1365,9 @@ mod tests {
         }
         assert!(!is_resource_mutation_path("POST", "/tasks/t-1/unknown"));
         assert!(!approved_resource_read_path("/"));
-        assert!(approved_resource_read_path("/tasks?limit=20"));
+        assert!(!approved_resource_read_path("/tasks?limit=20"));
         assert!(!approved_resource_read_path("/tasks?unknown=1"));
-        assert!(approved_resource_read_path("/merge-authorizations/auth-1"));
+        assert!(!approved_resource_read_path("/merge-authorizations/auth-1"));
         assert!(approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%23154/diff"));
         assert!(!approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%3F154/diff"));
         assert!(!approved_resource_read_path("/merge-authorizations/../auth-1"));
@@ -1531,7 +1549,7 @@ mod tests {
             )
     }
     #[tokio::test]
-    async fn local_user_write_waits_for_cutover_while_encrypted_receipts_and_reads_work() {
+    async fn local_user_write_waits_for_cutover_while_encrypted_receipts_and_capabilities_work() {
         let (home, hub) = fixture();
         let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
@@ -1630,40 +1648,26 @@ mod tests {
         );
         assert_eq!(
             client
-                .get(format!("{base}/summary"))
+                .get(format!("{base}/capabilities"))
                 .send()
                 .await
                 .unwrap()
                 .status(),
             reqwest::StatusCode::FORBIDDEN
         );
-        let summary: reads::Summary = signed_get(&client, &base, &key, &device_id, "/summary")
+        let capabilities: Value = signed_get(&client, &base, &key, &device_id, "/capabilities")
             .send().await.unwrap().json().await.unwrap();
-        let expected = hub.domain.reads.snapshot(&hub.domain).unwrap();
-        assert_eq!(summary.revision, expected.envelope_ids().1);
-        assert_eq!(
-            client.get(format!("{base}/summary?include=inbox")).send().await.unwrap().status(),
-            reqwest::StatusCode::FORBIDDEN
-        );
-        let summary: reads::Summary = signed_get(&client, &base, &key, &device_id, "/summary?include=inbox")
-            .send().await.unwrap().json().await.unwrap();
-        assert!(summary.sections.contains_key("inbox"));
-        assert_eq!(summary.expansions["inbox"].items.len(), summary.sections["inbox"].count as usize);
-        let changes: reads::Changes = signed_get(&client, &base, &key, &device_id,
-            &format!("/changes?data_epoch={}&after={}&wait=0", summary.data_epoch, summary.revision))
-            .send().await.unwrap().json().await.unwrap();
-        assert!(!changes.changed);
-        assert_eq!(changes.sections, summary.sections.iter().map(|(k, v)| (k.clone(), v.revision.clone())).collect());
+        assert_eq!(capabilities["data_epoch"], hub.domain.state().unwrap().data_epoch.0);
         assert_eq!(
             signed_get(&client, &base, &key, &device_id, "/inbox?filter=all").send().await.unwrap().status(),
-            reqwest::StatusCode::UNPROCESSABLE_ENTITY
+            reqwest::StatusCode::NOT_FOUND
         );
         crate::auth::Auth::open(&home)
             .unwrap()
             .revoke(&device_id)
             .unwrap();
         assert_eq!(
-            signed_get(&client, &base, &key, &device_id, "/summary")
+            signed_get(&client, &base, &key, &device_id, "/capabilities")
                 .send()
                 .await
                 .unwrap()
@@ -1757,7 +1761,7 @@ mod tests {
         std::fs::remove_dir_all(home).unwrap();
     }
     #[tokio::test]
-    async fn task_actions_and_document_chunks_use_registered_domain_identity() {
+    async fn document_chunks_use_registered_domain_identity() {
         let (home, hub) = fixture();
         let data = b"# Synthetic design\n";
         std::fs::write(home.join("files/design.md"), data).unwrap();
@@ -1814,24 +1818,8 @@ mod tests {
         let (base, server, key, device_id) = server(hub.clone()).await;
         let client = reqwest::Client::new();
         let actions_path = "/tasks/task-a/actions";
-        assert_eq!(
-            client
-                .get(format!("{base}{actions_path}"))
-                .send()
-                .await
-                .unwrap()
-                .status(),
-            reqwest::StatusCode::FORBIDDEN
-        );
-        let actions: Value = signed_get(&client, &base, &key, &device_id, actions_path)
-            .send()
-            .await
-            .unwrap()
-            .json()
-            .await
-            .unwrap();
-        assert_eq!(actions["protocol_version"], 2);
-        assert_eq!(actions["actions"].as_array().unwrap().len(), 3);
+        assert_eq!(signed_get(&client, &base, &key, &device_id, actions_path)
+            .send().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
         hub.domain.execute(
             &Actor::User { user_id: format!("device:{device_id}") },
             &envelope(&hub, "approve-document", Command::DecideDocumentReview {

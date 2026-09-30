@@ -148,7 +148,7 @@ private struct ServiceCardStack: View {
         let context = store.withState { $0.context(for: item) }
         return ServiceTriageCard(store: child, node: context.node, agent: context.agent, task: context.task,
             date: context.date, mission: context.mission,
-            isFront: isFront, zoom: zoom, onReview: { onReview(item) }, onSkip: { skip(item) },
+            isFront: isFront, zoom: zoom, onReview: { onReview(item) },
             onHide: { _ = store.send(.triage(.hide(item.id))) })
     }
 
@@ -179,10 +179,6 @@ private struct ServiceCardStack: View {
             withTransaction(instant) { _ = store.send(.cardStack(.resetDrag(departure))) }
             withAnimation(.spring(duration: 0.5, bounce: 0.2)) { _ = store.send(.cardStack(.animationCompleted(departure))) }
         }
-    }
-
-    private func skip(_ item: DomainV2.InboxItem) {
-        store.send(.cardStack(.skipTapped(item.id)))
     }
 
 }
