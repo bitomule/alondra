@@ -9,6 +9,15 @@ swift_library(
     deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Contracts:AlondraContracts", "//apple/Domain:AlondraDomain", "//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Views:AlondraViews"],
 )
 
+swift_library(
+    name = "AlondraViewsNotificationActions",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraNotificationActions",
+    features = ["swift.enable_testing"],
+    visibility = ["//visibility:public"],
+    deps = ["//apple/APIClient:AlondraViewsAPIClient", "//apple/Contracts:AlondraViewsContracts", "//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Views:AlondraViews"],
+)
+
 swift_test(
     name = "AlondraNotificationActionsTests",
     srcs = glob(["Tests/**/*.swift"]),

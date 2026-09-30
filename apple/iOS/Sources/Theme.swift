@@ -69,6 +69,7 @@ struct Kind {
     let tint: Color
 
     /// The server's inbox kind picks the badge; the card never guesses it from text.
+    #if !VIEWS_ONLY
     init(_ item: DomainV2.InboxItem) {
         switch item.kind {
         case "action_request": self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
@@ -79,6 +80,7 @@ struct Kind {
         default: self.init(String(localized: "Notice"), "bell", Palette.slate)
         }
     }
+    #endif
 
     init(_ card: AlondraViews.Card) {
         switch card.icon {
@@ -98,6 +100,7 @@ struct Kind {
     }
 }
 
+#if !VIEWS_ONLY
 extension NodeState {
     var tint: Color {
         switch self {
@@ -184,6 +187,7 @@ extension Node {
     var glyphSymbol: String { isOrchestrator ? (orchestratorRuntime?.activityState ?? state).symbol : occupancy.symbol }
     var glyphPulses: Bool { isOrchestrator ? (orchestratorRuntime?.activityState ?? state) == .working : occupancy == .busy }
 }
+#endif
 
 /// A state's symbol in a tinted circle, at the sizes the lists and cards use.
 struct Glyph: View {
@@ -223,11 +227,13 @@ struct Glyph: View {
     }
 }
 
+#if !VIEWS_ONLY
 extension Glyph {
     init(task: DomainV2.Task, size: Size = .regular) {
         self.init(symbol: task.symbol, tint: task.tint, size: size, pulse: task.state == .running && size == .regular)
     }
 }
+#endif
 
 struct KindBadge: View {
     let kind: Kind

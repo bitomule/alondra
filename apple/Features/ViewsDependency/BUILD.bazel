@@ -12,6 +12,18 @@ swift_library(
     ],
 )
 
+swift_library(
+    name = "AlondraViewsOnlyDependency",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraViewsDependency",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Data/Views:AlondraViewsOnlyData",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
 swift_test(
     name = "AlondraViewsDependencyTests",
     srcs = glob(["Tests/*.swift"]),

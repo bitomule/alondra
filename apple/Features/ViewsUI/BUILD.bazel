@@ -14,6 +14,20 @@ swift_library(
     ],
 )
 
+swift_library(
+    name = "AlondraViewsOnlyUI",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraViewsUI",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Features/Attachments:AlondraViewsAttachmentsFeature",
+        "//apple:AlondraViewsShared",
+        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
 swift_test(
     name = "AlondraViewsUITests",
     srcs = glob(["Tests/**/*.swift"]),

@@ -3,7 +3,7 @@ load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 swift_library(
     name = "AlondraWorkspace",
     module_name = "AlondraWorkspace",
-    srcs = glob(["Sources/*.swift"]),
+    srcs = glob(["Sources/*.swift"], exclude = ["Sources/ViewsCloudAppServices.swift"]),
     visibility = ["//visibility:public"],
     deps = [
         "//apple:AlondraShared",
@@ -21,6 +21,27 @@ swift_library(
         "//apple/Data/Views:AlondraViewsData",
         "//apple/Data/Notifications:AlondraNotificationActions",
         "//apple/NotificationPayload:AlondraNotificationPayload",
+    ],
+)
+
+swift_library(
+    name = "AlondraViewsWorkspaceServices",
+    module_name = "AlondraViewsWorkspaceServices",
+    srcs = ["Sources/ViewsCloudAppServices.swift", "Sources/ConnectionClassifier.swift"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/APIClient:AlondraViewsAPIClient",
+        "//apple/Auth:AlondraAuth",
+        "//apple/Contracts:AlondraViewsContracts",
+        "//apple/Data/LoopbackSession:AlondraViewsLoopbackSession",
+        "//apple/Data/Notifications:AlondraViewsNotificationActions",
+        "//apple/Data/RelayOutbox:AlondraViewsRelayOutbox",
+        "//apple/Data/RelaySession:AlondraViewsRelaySession",
+        "//apple/Data/Sync:AlondraNetworkReachability",
+        "//apple/Data/Views:AlondraViewsOnlyData",
+        "//apple/NotificationPayload:AlondraNotificationPayload",
+        "//apple/ServicePairing:AlondraViewsServicePairing",
+        "//apple/Views:AlondraViews",
     ],
 )
 

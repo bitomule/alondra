@@ -1,4 +1,3 @@
-import AlondraDomain
 import AlondraNotificationPayload
 import Foundation
 

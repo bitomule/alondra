@@ -12,6 +12,13 @@ swift_library(
     ],
 )
 
+swift_library(
+    name = "AlondraNetworkReachability",
+    srcs = ["Sources/NetworkReachability.swift"],
+    module_name = "AlondraNetworkReachability",
+    visibility = ["//visibility:public"],
+)
+
 swift_test(
     name = "AlondraSyncTests",
     srcs = glob(["Tests/**/*.swift"]),

@@ -173,8 +173,10 @@ struct ServiceHomeCard: View {
         }
         .padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .contentShape(.rect)
-        .onTapGesture { openReview("card:\(card.id)") }
+        .background {
+            Color.clear.contentShape(.rect)
+                .onTapGesture { openReview("card:\(card.id)") }
+        }
         .accessibilityAction(named: "Open") { openReview("card:\(card.id)") }
     }
 
@@ -284,7 +286,8 @@ struct ServiceHomeCard: View {
     private func actionButton(_ action: AlondraViews.Action) -> some View {
         Button {
             if action.comments != nil {
-                openReview("card:\(card.id)")
+                if case let .view(key) = action.link { openReview(key) }
+                else { openReview("card:\(card.id)") }
                 return
             }
             if let link = action.link {

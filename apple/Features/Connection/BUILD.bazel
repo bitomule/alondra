@@ -7,3 +7,11 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = ["//apple/Contracts:AlondraContracts"],
 )
+
+swift_library(
+    name = "AlondraViewsConnectionFeature",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraConnectionFeature",
+    visibility = ["//visibility:public"],
+    deps = ["//apple/Contracts:AlondraViewsContracts"],
+)

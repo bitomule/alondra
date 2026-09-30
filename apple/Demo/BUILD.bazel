@@ -23,6 +23,21 @@ swift_library(
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
+
+swift_library(
+    name = "AlondraViewsDemoWorkspace",
+    srcs = ["Sources/DemoViews.swift", "ViewsSources/ViewsDemoWorkspace.swift"],
+    copts = ["-DVIEWS_ONLY"],
+    module_name = "AlondraViewsDemoWorkspace",
+    visibility = ["//visibility:public"],
+    deps = ["//apple/Views:AlondraViews", "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency"],
+)
+
+swift_test(
+    name = "AlondraViewsDemoWorkspaceTests",
+    srcs = ["ViewsTests/ViewsDemoWorkspaceTests.swift"],
+    deps = [":AlondraViewsDemoWorkspace", "//apple/Views:AlondraViews"],
+)
 swift_test(
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],

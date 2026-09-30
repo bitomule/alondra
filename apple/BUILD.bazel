@@ -161,7 +161,35 @@ macos_application(
     resources = glob(["macOS/Resources/*.xcstrings"]),
     version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
     visibility = ["//visibility:public"],
-    deps = [":AlondraMacEntry"],
+    deps = [":AlondraMacViewsEntry"],
+)
+
+swift_library(
+    name = "AlondraMacViewsEntry",
+    srcs = glob(["macOS/ViewsShipping/*.swift"]) + [
+        "macOS/Sources/SidebarCountHeader.swift",
+    ],
+    module_name = "AlondraMac",
+    deps = [
+        ":AlondraViewsShared",
+        "//apple/APIClient:AlondraViewsAPIClient",
+        "//apple/Auth:AlondraAuth",
+        "//apple/AuthPresentation:AlondraAuthPresentation",
+        "//apple/Contracts:AlondraViewsContracts",
+        "//apple/Data/Sync:AlondraNetworkReachability",
+        "//apple/AppComposition:AlondraViewsAppComposition",
+        "//apple/Data/Workspace:AlondraViewsWorkspaceServices",
+        "//apple/Features/Attachments:AlondraViewsAttachmentsFeature",
+        "//apple/Features/CloudPairing:AlondraViewsCloudPairingFeature",
+        "//apple/Features/Connection:AlondraViewsConnectionFeature",
+        "//apple/Features/Settings:AlondraViewsSettingsFeature",
+        "//apple/Features/Workspace:AlondraViewsWorkspaceFeature",
+        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
+        "//apple/Features/ViewsUI:AlondraViewsOnlyUI",
+        "//apple/ViewsDiff:AlondraViewsDiff",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
 )
 
 apple_bundle_version(
@@ -222,14 +250,58 @@ ios_application(
     version = select({":distribution": ":DistributionVersion", "//conditions:default": ":Version"}),
     extensions = [":AlondraNotificationService"],
     visibility = ["//visibility:public"],
-    deps = [":AlondraiOSEntry"],
+    deps = [":AlondraiOSViewsEntry"],
+)
+
+swift_library(
+    name = "AlondraiOSViewsEntry",
+    srcs = glob(["iOS/ViewsShipping/*.swift"]) + [
+        "iOS/Sources/CameraPicker.swift",
+        "iOS/Sources/MarkdownBlockView.swift",
+        "iOS/Sources/Presentation/PressStyle.swift",
+        "iOS/Sources/ServiceAttachButton.swift",
+        "iOS/Sources/ServiceAttachmentStrip.swift",
+        "iOS/Sources/TableRowCardView.swift",
+        "iOS/Sources/ServiceTriage/ServiceHomeCard.swift",
+        "iOS/Sources/ServiceTriage/ServiceHomeView.swift",
+        "iOS/Sources/ServiceTriage/ServiceWireDocumentView.swift",
+        "iOS/Sources/Theme.swift",
+    ],
+    module_name = "AlondraiOS",
+    copts = ["-D", "VIEWS_ONLY"],
+    deps = [
+        ":AlondraViewsShared",
+        "//apple/APIClient:AlondraViewsAPIClient",
+        "//apple/Auth:AlondraAuth",
+        "//apple/AuthPresentation:AlondraAuthPresentation",
+        "//apple/Contracts:AlondraViewsContracts",
+        "//apple/Data/Notifications:AlondraViewsNotificationActions",
+        "//apple/Data/PushBinding:AlondraPushBinding",
+        "//apple/Data/Sync:AlondraNetworkReachability",
+        "//apple/Demo:AlondraViewsDemoWorkspace",
+        "//apple/NotificationPayload:AlondraNotificationPayload",
+        "//apple/AppComposition:AlondraViewsAppComposition",
+        "//apple/Data/Workspace:AlondraViewsWorkspaceServices",
+        "//apple/Features/Attachments:AlondraViewsAttachmentsFeature",
+        "//apple/Features/CloudPairing:AlondraViewsCloudPairingFeature",
+        "//apple/Features/Connection:AlondraViewsConnectionFeature",
+        "//apple/Features/Home:AlondraViewsHomeFeature",
+        "//apple/Features/Settings:AlondraViewsSettingsFeature",
+        "//apple/Features/Workspace:AlondraViewsWorkspaceFeature",
+        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
+        "//apple/Features/ViewsUI:AlondraViewsOnlyUI",
+        "//apple/ViewsDiff:AlondraViewsDiff",
+        "//apple/ServicePairing:AlondraViewsServicePairing",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
 )
 
 swift_library(
     name = "AlondraNotificationServiceLib",
     srcs = glob(["iOSNotificationService/Sources/**/*.swift"]),
     module_name = "AlondraNotificationService",
-    deps = ["//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Data/Notifications:AlondraNotificationActions"],
+    deps = ["//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Data/Notifications:AlondraViewsNotificationActions"],
 )
 
 ios_extension(

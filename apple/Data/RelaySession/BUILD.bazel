@@ -5,7 +5,7 @@ swift_library(
     module_name = "AlondraRelaySession",
     features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
-    deps = ["//apple/Contracts:AlondraContracts", "//apple/APIClient:AlondraAPIClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox", "//apple/Data/Sync:AlondraSync"],
+    deps = ["//apple/Contracts:AlondraContracts", "//apple/APIClient:AlondraAPIClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox"],
 )
 swift_library(
     name = "AlondraViewsRelaySession",

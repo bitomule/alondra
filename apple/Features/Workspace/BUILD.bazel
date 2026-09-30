@@ -2,7 +2,7 @@ load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
 swift_library(
     name = "AlondraWorkspaceFeature",
-    srcs = glob(["Sources/*.swift"]),
+    srcs = glob(["Sources/*.swift"], exclude = ["Sources/ViewsServiceRootFeature.swift"]),
     module_name = "AlondraWorkspaceFeature",
     visibility = ["//visibility:public"],
     deps = [
@@ -22,6 +22,25 @@ swift_library(
         "//apple/Features/PullRequests:AlondraPullRequestsFeature",
         "//apple/Features/ViewsDependency:AlondraViewsDependency",
         "//apple/Features/ViewsUI:AlondraViewsUI",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_library(
+    name = "AlondraViewsWorkspaceFeature",
+    srcs = [
+        "Sources/MacPresentationFeature.swift",
+        "Sources/ViewsScreenFeature.swift",
+        "Sources/ViewsServiceRootFeature.swift",
+    ],
+    module_name = "AlondraViewsWorkspaceFeature",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Contracts:AlondraViewsContracts",
+        "//apple/Features/Home:AlondraViewsHomeFeature",
+        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
+        "//apple/Features/ViewsUI:AlondraViewsOnlyUI",
         "//apple/Views:AlondraViews",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],

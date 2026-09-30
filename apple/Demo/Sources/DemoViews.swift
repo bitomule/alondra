@@ -124,7 +124,7 @@ enum DemoViews {
               "input": {
                 "kind": "text",
                 "placeholder": "What is missing?",
-                "required": true,
+                "required": false,
                 "multiline": true
               },
               "attachments": false,
@@ -421,7 +421,7 @@ enum DemoViews {
               "input": {
                 "kind": "text",
                 "placeholder": "What is missing?",
-                "required": true,
+                "required": false,
                 "multiline": true
               },
               "attachments": false,
@@ -573,7 +573,7 @@ enum DemoViews {
               "input": {
                 "kind": "text",
                 "placeholder": "What is missing?",
-                "required": true,
+                "required": false,
                 "multiline": true
               },
               "attachments": false,
@@ -861,7 +861,7 @@ enum DemoViews {
                   "input": {
                     "kind": "text",
                     "placeholder": "What is missing?",
-                    "required": true,
+                    "required": false,
                     "multiline": true
                   },
                   "attachments": false,
@@ -1009,7 +1009,23 @@ enum DemoViews {
             closeScreen: { _ in },
             feed: { AsyncStream { $0.finish() } },
             perform: { _ in try response() },
-            fetchContent: { _ in DemoFixture.document },
+            fetchContent: { reference in
+#if VIEWS_ONLY
+                if reference.kind == .diff {
+                    return """
+                    diff --git a/Welcome.swift b/Welcome.swift
+                    --- a/Welcome.swift
+                    +++ b/Welcome.swift
+                    @@ -1 +1 @@
+                    -let greeting = "Welcome to the dashboard"
+                    +let greeting = "What needs your attention?"
+                    """
+                }
+                return "# Sample document\n\nThis document exists only in the demo."
+#else
+                DemoFixture.document
+#endif
+            },
             fetchAttachment: { _ in Data("Demo attachment".utf8) }
         )
     }
@@ -1021,6 +1037,14 @@ enum DemoViews {
         else if rawKey == "card:i-1" { template = questionCard }
         else if rawKey == "card:i-3" { template = deliveryCard }
         else if rawKey == "card:pr-1" { template = pullRequestCard }
+        else if rawKey == "card:i-2" { template = questionCard.replacingOccurrences(of: "i-1", with: "i-2") }
+        else if rawKey == "tasks" || rawKey.hasPrefix("tasks?") { template = screen("Tasks", id: "tasks") }
+        else if rawKey == "fleet" || rawKey.hasPrefix("fleet?") { template = screen("Fleet", id: "fleet") }
+        else if rawKey == "machine" { template = screen("Machine", id: "machine") }
+        else if rawKey.hasPrefix("node:") { template = screen("Node One", id: "node") }
+        else if rawKey.hasPrefix("task:") { template = screen("Build a feature", id: "task") }
+        else if rawKey.hasPrefix("request:") { template = screen("Build a feature", id: "request") }
+        else if rawKey.hasPrefix("pull_request:") { template = try pullRequestDetail() }
         else if rawKey.hasPrefix("card:") {
             let id = String(rawKey.dropFirst("card:".count))
             template = questionCard.replacingOccurrences(of: "i-1", with: id)
@@ -1032,6 +1056,10 @@ enum DemoViews {
 
         let data = Data(template.utf8)
         var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        if rawKey == "home", var sections = object["sections"] as? [[String: Any]], !sections.isEmpty {
+            sections[0]["items"] = [] // The current home contract loads cards through card_ids.
+            object["sections"] = sections
+        }
         object["key"] = rawKey
         object["view"] = rawKey.split(separator: "?", maxSplits: 1).first.map(String.init) ?? rawKey
         object["client"] = rawKey == "sidebar" ? "mac" : "ios"
@@ -1062,6 +1090,40 @@ enum DemoViews {
             ]]
         ] as [String: Any]]
         return String(data: try JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
+    }
+
+    private static func pullRequestDetail() throws -> String {
+        var document = try JSONSerialization.jsonObject(with: Data(screen("example/repo #12", id: "pull_request").utf8)) as! [String: Any]
+        let cardView = try JSONSerialization.jsonObject(with: Data(pullRequestCard.utf8)) as! [String: Any]
+        let card = ((cardView["sections"] as? [[String: Any]])?.first?["items"] as? [[String: Any]])?.first ?? [:]
+        let detailActions = (card["actions"] as? [[String: Any]] ?? []).map { action in
+            var action = action
+            action.removeValue(forKey: "link") // A card navigates here; actions in the detail execute here.
+            return action
+        }
+        document["sections"] = [
+            ["id": "summary", "title": "example/repo #12", "collapsed": false,
+             "items": [["type": "facts", "items": [["label": "Repository", "value": "example/repo"], ["label": "Base", "value": "main"]]]]],
+            ["id": "actions", "collapsed": false,
+             "items": [["type": "actions", "actions": detailActions]]],
+            ["id": "diff", "title": "Diff", "collapsed": false,
+             "items": [["type": "content_ref", "kind": "diff", "title": "Diff", "size": 0,
+                         "digest": "demo-head-1", "fetch": "/pull-requests/pr-1/diff", "commentable": true]]]
+        ] as [[String: Any]]
+        return String(data: try JSONSerialization.data(withJSONObject: document), encoding: .utf8)!
+    }
+
+    private static func screen(_ title: String, id: String) -> String {
+        let items: String
+        switch id {
+        case "tasks":
+            items = #"{"type":"row","id":"t-1","link":{"kind":"view","key":"task:t-1"},"icon":"task","title":"Build a feature","subtitle":"Demo Garden","depth":0,"struck":false},{"type":"row","id":"r-1","link":{"kind":"view","key":"request:r-1"},"icon":"request","title":"Welcome experience","depth":0,"struck":false}"#
+        case "fleet":
+            items = #"{"type":"row","id":"a-1","link":{"kind":"view","key":"node:a-1"},"icon":"node","title":"Node One","subtitle":"Working on a sample task","depth":0,"struck":false},{"type":"row","id":"machine","link":{"kind":"view","key":"machine"},"icon":"machine","title":"Demo Mac","depth":0,"struck":false}"#
+        default:
+            items = #"{"type":"facts","items":[{"label":"Workspace","value":"Demo Garden"},{"label":"Source","value":"Sample data"}]}"#
+        }
+        return #"{"protocol":1,"data_epoch":"demo-views","view":"\#(id)","key":"\#(id)","client":"ios","version":"demo-1","cursor":"demo-views-cursor","status":{"version":"demo-1","summary":"Sample data","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[{"id":"\#(id)","title":"\#(title)","collapsed":false,"items":[\#(items)]}]}"#
     }
 
     private static func response() throws -> ActionOutcome {

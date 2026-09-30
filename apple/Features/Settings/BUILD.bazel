@@ -8,6 +8,14 @@ swift_library(
     deps = ["//apple/Contracts:AlondraContracts", "//apple/Features/Connection:AlondraConnectionFeature", "//apple/Features/CloudPairing:AlondraCloudPairingFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
 )
 
+swift_library(
+    name = "AlondraViewsSettingsFeature",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraSettingsFeature",
+    visibility = ["//visibility:public"],
+    deps = ["//apple/Contracts:AlondraViewsContracts", "//apple/Features/Connection:AlondraViewsConnectionFeature", "//apple/Features/CloudPairing:AlondraViewsCloudPairingFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
+)
+
 swift_test(
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],

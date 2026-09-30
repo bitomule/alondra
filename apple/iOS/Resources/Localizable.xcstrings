@@ -1,6 +1,9 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Service is no longer active": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El servicio ya no está activo"}}}},
+    "Choose a non-empty file no larger than 20 MiB.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige un archivo que no esté vacío y no supere los 20 MiB."}}}},
+    "The attachment could not be loaded.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el adjunto."}}}},
     "Open attachment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abrir adjunto"}}}},
     "Content is truncated.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El contenido está recortado."}}}},
     "Preview unavailable": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vista previa no disponible"}}}},
