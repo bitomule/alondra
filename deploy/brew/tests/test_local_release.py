@@ -7,10 +7,12 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
 SCRIPT = pathlib.Path(__file__).parents[1] / 'local-release.py'
+REPO_ROOT = SCRIPT.parents[2]
 sys.path.insert(0, str(SCRIPT.parent))
 SPEC = importlib.util.spec_from_file_location('local_release', SCRIPT)
 l = importlib.util.module_from_spec(SPEC)
@@ -27,6 +29,24 @@ def archives(directory, ver='0.1.2'):
 
 
 class LocalReleaseTests(unittest.TestCase):
+    def test_workspace_crate_versions_match_lockfile(self):
+        workspace = tomllib.loads((REPO_ROOT / 'Cargo.toml').read_text())['workspace']
+        expected_version = workspace['package']['version']
+        package_versions = {}
+        for member in workspace['members']:
+            manifest = tomllib.loads((REPO_ROOT / member / 'Cargo.toml').read_text())
+            package = manifest['package']
+            self.assertEqual(package['version'], {'workspace': True}, package['name'])
+            package_versions[package['name']] = expected_version
+
+        lockfile = tomllib.loads((REPO_ROOT / 'Cargo.lock').read_text())
+        locked_versions = {
+            package['name']: package['version']
+            for package in lockfile['package']
+            if package['name'] in package_versions
+        }
+        self.assertEqual(locked_versions, package_versions)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
