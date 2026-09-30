@@ -230,10 +230,32 @@ def group_id(raw: bytes, name: str) -> str:
 
 
 def group_ids(raw: bytes) -> set[str]:
-    data = json_data(raw, "ASC build-group verification").get("data")
-    if not isinstance(data, list):
+    response = json_data(raw, "ASC build-group verification")
+    # Current `asc testflight groups list --build-id ... --output json` returns
+    # a summarized response with a top-level `groups` array. Keep accepting
+    # the older JSON:API `data` shape for callers and saved fixtures.
+    if "groups" in response:
+        rows = response.get("groups")
+        if response.get("complete") is not True:
+            raise ReleaseError("ASC build-group verification is incomplete")
+        count = response.get("groupCount")
+        if not isinstance(count, int) or isinstance(count, bool):
+            raise ReleaseError("ASC build-group verification returned an invalid group count")
+    else:
+        rows = response.get("data")
+        count = len(rows) if isinstance(rows, list) else None
+    if not isinstance(rows, list):
         raise ReleaseError("ASC build-group verification returned no group list")
-    return {row["id"] for row in data if isinstance(row, dict) and isinstance(row.get("id"), str)}
+    if count != len(rows):
+        raise ReleaseError("ASC build-group verification group count does not match its list")
+    ids = []
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("id"), str) or not row["id"]:
+            raise ReleaseError("ASC build-group verification returned a malformed group")
+        ids.append(row["id"])
+    if len(set(ids)) != len(ids):
+        raise ReleaseError("ASC build-group verification returned duplicate group ids")
+    return set(ids)
 
 
 def validate_notes_response(raw: bytes, expected: dict[str, str]) -> None:

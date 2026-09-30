@@ -116,8 +116,26 @@ class BetaAdapterTests(unittest.TestCase):
 
     def test_group_membership_is_checked_by_group_id(self):
         self.assertEqual(beta.group_ids(b'{"data":[{"id":"group-one"}]}'), {"group-one"})
+        current_cli_response = {
+            "buildId": "build-12",
+            "appId": "6816262826",
+            "complete": True,
+            "groupCount": 1,
+            "groups": [{"id": "group-one", "name": "External QA", "type": "EXTERNAL",
+                        "membership": "INVITED"}],
+        }
+        self.assertEqual(beta.group_ids(json.dumps(current_cli_response).encode()), {"group-one"})
         with self.assertRaises(beta.ReleaseError):
             beta.group_ids(b'{"data":null}')
+        for response in (
+            {**current_cli_response, "complete": False},
+            {**current_cli_response, "groupCount": 2},
+            {**current_cli_response, "groups": [{"name": "Missing ID"}]},
+            {**current_cli_response, "groups": [current_cli_response["groups"][0]] * 2,
+             "groupCount": 2},
+        ):
+            with self.subTest(response=response), self.assertRaises(beta.ReleaseError):
+                beta.group_ids(json.dumps(response).encode())
 
 
 if __name__ == "__main__":
