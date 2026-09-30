@@ -1,6 +1,14 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Filter issues": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Filtrar incidencias"}}}},
+    "Action completed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acción completada"}}}},
+    "Action failed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo completar la acción"}}}},
+    "Choose an option": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una opción"}}}},
+    "Enter a response": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Escribe una respuesta"}}}},
+    "Couldn’t send. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo enviar. Vuelve a intentarlo."}}}},
+    "Diff": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cambios"}}}},
+    "This screen is no longer available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta pantalla ya no está disponible"}}}},
     "Your Mac didn’t answer. It may be off, or Alondra may not be running on it. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no respondió. Puede estar apagado o Alondra puede no estar en marcha. Vuelve a intentarlo en un momento."}}}},
     "Couldn’t reach Alondra. Check your connection and try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo conectar con Alondra. Revisa tu conexión y vuelve a intentarlo."}}}},
     "Couldn’t load this from your Mac. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar desde tu Mac. Vuelve a intentarlo."}}}},
@@ -2442,7 +2450,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Issues"
+            "value": "Incidencias"
           }
         }
       }
@@ -2462,7 +2470,7 @@
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Elegir una issue"
+            "value": "Elegir una incidencia"
           }
         }
       }

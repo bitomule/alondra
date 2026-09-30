@@ -12,18 +12,28 @@ public struct ViewsScreenFeature {
         public var key: ViewKey
         public let owner: String
         public var document: ViewDocument?
-        public var parentKey: ViewKey?
+        public var history: [ViewKey] = []
+        public var parentKey: ViewKey? { history.last }
         public var loading = false
         public var isPresented = false
         public var error: String?
         public var content: String?
+        public var contentReference: ContentRef?
+        public var form: WireForm?
+        public var pickerFieldID: String?
+        public var pickerDocument: ViewDocument?
+        public var pickerQuery = ""
+        public var pickerLoading = false
+        public var pickerError: String?
         public var attachmentPreview: ViewsAttachmentPreview?
         public var action: ActionFeature.State
 
         public init(key: ViewKey, owner: String) {
             self.key = key
             self.owner = owner
-            self.action = ActionFeature.State(dataEpoch: "", client: .ios, lang: "en")
+            let preferred = Locale.preferredLanguages.first?.split(separator: "-").first
+            self.action = ActionFeature.State(dataEpoch: "", client: .ios,
+                                              lang: preferred == "es" ? "es" : "en")
         }
     }
 
@@ -31,14 +41,19 @@ public struct ViewsScreenFeature {
         case appeared, disappeared, back, refresh
         case stale([String]), reset
         case open(ViewKey)
-        case loaded(ViewFetch), failed(String)
+        case loaded(ViewFetch), failed(String), missing
         case fetchContent(ContentRef), contentLoaded(String), contentFailed(String)
         case fetchAttachment(AlondraViews.Attachment), attachmentLoaded(AlondraViews.Attachment, Data), closeAttachment, dismissError
+        case reloadForm(String, JSONValue)
+        case presentForm(WireForm)
+        case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
+        case pickerSelected(String), pickerClosed
         case action(ActionFeature.Action)
     }
 
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID { case load }
+    @Dependency(\.continuousClock) var clock
+    private enum CancelID { case load, picker }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.action, action: \.action) { ActionFeature() }
@@ -59,21 +74,87 @@ public struct ViewsScreenFeature {
                     await viewsClient.closeScreen(owner)
                 })
             case .back:
-                guard let parentKey = state.parentKey else { return .none }
+                guard let parentKey = state.history.popLast() else { return .none }
                 state.key = parentKey
-                state.parentKey = nil
+                state.document = nil
+                state.content = nil
+                state.contentReference = nil
                 state.loading = true
                 return load(state)
             case .open(let key):
                 guard state.isPresented else { return .none }
                 guard key != state.key else { return .none }
-                state.parentKey = state.key
+                state.history.append(state.key)
                 state.key = key
                 state.document = nil
                 state.content = nil
+                state.contentReference = nil
                 state.loading = true
                 state.error = nil
                 return load(state)
+            case .reloadForm(let fieldID, let value):
+                guard fieldID == "project", case let .string(project) = value else { return .none }
+                let next: ViewKey
+                if state.key.rawValue.hasPrefix("new_request") { next = .newRequest(project: project) }
+                else if state.key.rawValue.hasPrefix("schedule:new") { next = .newSchedule(project: project) }
+                else { return .none }
+                guard next != state.key else { return .none }
+                state.key = next
+                state.document = nil
+                state.loading = true
+                return load(state, known: nil)
+            case .presentForm(let form):
+                state.form = form
+                let fields = Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) })
+                let attachments = form.fields.contains {
+                    if case .attachments = $0.kind { true } else { false }
+                }
+                return .send(.action(.presentForm(form.submit, fields, requiresAttachments: attachments)))
+            case .pickerOpened(let fieldID, let source):
+                guard source == "issue_picker" else { return .none }
+                state.pickerFieldID = fieldID
+                state.pickerDocument = nil
+                state.pickerQuery = ""
+                state.pickerLoading = true
+                state.pickerError = nil
+                return loadPicker(query: "")
+            case .pickerQueryChanged(let query):
+                guard state.pickerFieldID != nil else { return .none }
+                state.pickerQuery = query
+                state.pickerLoading = true
+                return .run { [clock, viewsClient] send in
+                    do {
+                        try await clock.sleep(for: .milliseconds(250))
+                        await send(.pickerLoaded(try await viewsClient.load(.issuePicker(query: query), nil)))
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        await send(.pickerFailed(String(localized: "Couldn’t load this from your Mac. Try again.")))
+                    }
+                }.cancellable(id: CancelID.picker, cancelInFlight: true)
+            case .pickerLoaded(.document(let document)):
+                guard state.pickerFieldID != nil else { return .none }
+                state.pickerDocument = document
+                state.pickerLoading = false
+                state.pickerError = nil
+                return .none
+            case .pickerLoaded(.unchanged):
+                state.pickerLoading = false
+                return .none
+            case .pickerFailed(let message):
+                state.pickerLoading = false
+                state.pickerError = message
+                return .none
+            case .pickerSelected(let value):
+                guard let fieldID = state.pickerFieldID else { return .none }
+                state.action.fields[fieldID] = .string(value)
+                state.pickerFieldID = nil
+                state.pickerDocument = nil
+                return .cancel(id: CancelID.picker)
+            case .pickerClosed:
+                state.pickerFieldID = nil
+                state.pickerDocument = nil
+                return .cancel(id: CancelID.picker)
             case .stale(let keys):
                 guard state.isPresented, keys.contains(state.key.rawValue) else { return .none }
                 state.loading = true
@@ -87,6 +168,16 @@ public struct ViewsScreenFeature {
                 guard document.key == state.key.rawValue else { return .none }
                 state.document = document
                 state.action.dataEpoch = document.dataEpoch
+                if state.form != nil,
+                   let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> WireForm? in
+                       if case let .form(form) = item { form } else { nil }
+                   }).first {
+                    state.form = updated
+                    state.action.action = updated.submit
+                    state.action.fields = Dictionary(uniqueKeysWithValues: updated.fields.map {
+                        ($0.id, state.action.fields[$0.id] ?? $0.value)
+                    })
+                }
                 state.loading = false
                 state.error = nil
                 return .none
@@ -97,10 +188,19 @@ public struct ViewsScreenFeature {
                 state.loading = false
                 state.error = message
                 return .none
+            case .missing:
+                state.loading = false
+                state.document = nil
+                state.content = nil
+                state.contentReference = nil
+                state.error = String(localized: "This screen is no longer available")
+                return .none
             case .fetchContent(let reference):
+                state.content = nil
+                state.contentReference = reference
                 return .run { [viewsClient] send in
                     do { await send(.contentLoaded(try await viewsClient.fetchContent(reference))) }
-                    catch { await send(.contentFailed(String(describing: error))) }
+                    catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
                 }
             case .contentLoaded(let value):
                 state.content = value
@@ -111,7 +211,7 @@ public struct ViewsScreenFeature {
             case .fetchAttachment(let attachment):
                 return .run { [viewsClient] send in
                     do { await send(.attachmentLoaded(attachment, try await viewsClient.fetchAttachment(attachment))) }
-                    catch { await send(.contentFailed(String(describing: error))) }
+                    catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
                 }
             case .attachmentLoaded(let attachment, let data):
                 state.attachmentPreview = ViewsAttachmentPreview(attachment: attachment, data: data)
@@ -125,6 +225,12 @@ public struct ViewsScreenFeature {
             case .action(.response(let response)) where response.outcome == .applied:
                 state.loading = true
                 return .merge(load(state), .send(.action(.dismiss)))
+            case .action(.present):
+                state.form = nil
+                return .none
+            case .action(.dismiss):
+                state.form = nil
+                return .none
             case .action:
                 return .none
             }
@@ -138,8 +244,16 @@ public struct ViewsScreenFeature {
         return .run { [viewsClient] send in
             await viewsClient.openScreen(owner, [key])
             do { await send(.loaded(try await viewsClient.load(key, version))) }
-            catch { await send(.failed(String(describing: error))) }
+            catch ViewsClientError.missingView { await send(.missing) }
+            catch { await send(.failed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }.cancellable(id: CancelID.load, cancelInFlight: true)
+    }
+
+    private func loadPicker(query: String) -> Effect<Action> {
+        .run { [viewsClient] send in
+            do { await send(.pickerLoaded(try await viewsClient.load(.issuePicker(query: query), nil))) }
+            catch { await send(.pickerFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
+        }.cancellable(id: CancelID.picker, cancelInFlight: true)
     }
 }
 

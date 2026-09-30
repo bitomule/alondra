@@ -22,7 +22,8 @@ public struct HomeFeature {
         public var index = 0
         public var loading = false
         public var error: String?
-        public var actions = ActionFeature.State(dataEpoch: "", client: .ios, lang: "en")
+        public var actions = ActionFeature.State(dataEpoch: "", client: .ios,
+            lang: Locale.preferredLanguages.first?.split(separator: "-").first == "es" ? "es" : "en")
         public var attachments = AttachmentFeature.State()
         public var awaitingAttachments = false
 
@@ -180,7 +181,7 @@ public struct HomeFeature {
         .run { [viewsClient] send in
             await viewsClient.openScreen("ios.home", [key])
             do { await send(.loaded(try await viewsClient.load(key, known))) }
-            catch { await send(.loadFailed(String(describing: error))) }
+            catch { await send(.loadFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }.cancellable(id: CancelID.home, cancelInFlight: true)
     }
 
@@ -195,7 +196,7 @@ public struct HomeFeature {
     private func loadCard(_ id: String) -> Effect<Action> {
         .run { [viewsClient] send in
             do { await send(.cardLoaded(id, try await viewsClient.load(.card(id), nil))) }
-            catch { await send(.cardFailed(id, String(describing: error))) }
+            catch { await send(.cardFailed(id, String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }.cancellable(id: CancelID.card, cancelInFlight: true)
     }
 

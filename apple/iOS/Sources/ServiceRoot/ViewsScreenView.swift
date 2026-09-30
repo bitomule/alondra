@@ -10,6 +10,7 @@ import UIKit
 struct ViewsScreenView: View {
     @Bindable var store: StoreOf<ViewsScreenFeature>
     @Environment(\.openURL) private var openURL
+    @State private var diffComments: [String: ActionComment] = [:]
 
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
     private var isNewRequestScreen: Bool { store.key.rawValue == "new_request" || store.key.rawValue.hasPrefix("new_request?") }
@@ -19,8 +20,13 @@ struct ViewsScreenView: View {
             if case let .card(card) = item { card } else { nil }
         }.first
     }
+    private var pickerRows: [AlondraViews.Row] {
+        store.pickerDocument?.sections.flatMap(\.items).compactMap { item in
+            if case let .row(row) = item { row } else { nil }
+        } ?? []
+    }
     private var screenGlow: Color {
-        if store.key.rawValue == "fleet" { Palette.sky }
+        if store.key.rawValue == "fleet" || store.key.rawValue.hasPrefix("node:") { Palette.sky }
         else if isNewRequestScreen { Palette.ember }
         else { Palette.dawn }
     }
@@ -50,9 +56,14 @@ struct ViewsScreenView: View {
                             sectionContent(section)
                         }
                         if let content = store.content {
-                            Text(content).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                                .padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                                .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 12))
+                            if store.contentReference?.kind == .diff {
+                                ViewsPRDiff(text: content, comments: $diffComments)
+                                    .id(store.contentReference?.digest)
+                            } else {
+                                Text(content).font(.system(.body, design: .monospaced)).textSelection(.enabled)
+                                    .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 12))
+                            }
                         }
                         if let empty = document.empty { NoticeView(notice: empty) }
                         if store.loading { ProgressView().frame(maxWidth: .infinity).padding() }
@@ -86,6 +97,16 @@ struct ViewsScreenView: View {
             }
         }
         .task { await store.send(.appeared).finish() }
+        .task(id: store.document?.version) {
+            guard store.key.rawValue.hasPrefix("pull_request:"), let document = store.document else { return }
+            guard let diff = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
+                if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
+            }).first else { return }
+            if store.contentReference?.digest != diff.digest {
+                diffComments = [:]
+                store.send(.fetchContent(diff))
+            }
+        }
         .onDisappear { store.send(.disappeared) }
         .sheet(item: Binding(get: { store.attachmentPreview }, set: { if $0 == nil { store.send(.closeAttachment) } })) { preview in
             ViewsAttachmentPreviewView(preview: preview)
@@ -99,10 +120,39 @@ struct ViewsScreenView: View {
             Text(store.error ?? "")
         }
         .sheet(isPresented: Binding(get: { store.action.action != nil }, set: { if !$0 { store.send(.action(.dismiss)) } })) {
-            ActionInputView(store: store.scope(state: \.action, action: \.action),
-                            showCommentEditor: documentCard == nil)
+            ActionInputView(store: store.scope(state: \.action, action: \.action), form: store.form,
+                            showCommentEditor: documentCard == nil && !store.key.rawValue.hasPrefix("pull_request:"),
+                            onReload: { field, value in store.send(.reloadForm(field.id, value)) },
+                            onPicker: { field, source in store.send(.pickerOpened(field.id, source)) })
                 .padding()
                 .presentationDetents([.medium, .large])
+                .sheet(isPresented: Binding(get: { store.pickerFieldID != nil }, set: { if !$0 { store.send(.pickerClosed) } })) {
+                    NavigationStack {
+                        List {
+                            if let error = store.pickerError {
+                                Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                            }
+                            ForEach(pickerRows, id: \.id) { row in
+                                Button { store.send(.pickerSelected(row.id)) } label: {
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(row.title).foregroundStyle(.primary)
+                                        if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                                    }
+                                }
+                            }
+                            if pickerRows.isEmpty, let empty = store.pickerDocument?.empty {
+                                Text(empty.text).foregroundStyle(.secondary)
+                            }
+                        }
+                        .overlay { if store.pickerLoading && pickerRows.isEmpty { ProgressView() } }
+                        .searchable(text: Binding(get: { store.pickerQuery }, set: { store.send(.pickerQueryChanged($0)) }),
+                                    prompt: Text("Filter issues"))
+                        .navigationTitle(store.pickerDocument?.title ?? String(localized: "Issues"))
+                        .toolbar { ToolbarItem(placement: .cancellationAction) {
+                            Button("Cancel") { store.send(.pickerClosed) }
+                        } }
+                    }
+                }
                 .safeAreaInset(edge: .bottom) {
                     Button("Continue") { store.send(.action(.submit)) }
                         .buttonStyle(.borderedProminent).tint(Palette.dawn).padding()
@@ -126,8 +176,19 @@ struct ViewsScreenView: View {
     private func follow(_ link: AlondraViews.Link) {
         switch link {
         case .view(let key): store.send(.open(ViewKey(rawValue: key)))
-        case .url(let url): if let parsed = URL(string: url) { openURL(parsed) }
-        case .local: break
+        case .url(let raw):
+            guard let url = URL(string: raw), url.scheme?.lowercased() == "https",
+                  let host = url.host?.lowercased(), host == "github.com" || host.hasSuffix(".github.com") else { return }
+            openURL(url)
+        case .local(let local):
+            if case let .attach(session) = local { store.send(.open(.card(session))) }
+        }
+    }
+
+    private func present(_ action: AlondraViews.Action) {
+        store.send(.action(.present(action)))
+        if action.comments?.kind == .diffLines {
+            store.send(.action(.commentsChanged(diffComments.values.sorted { $0.anchor < $1.anchor })))
         }
     }
 
@@ -161,7 +222,8 @@ struct ViewsScreenView: View {
                 .padding(.horizontal, 16)
                 .padding(.top, 24)
             }
-        } else if store.key.rawValue == "fleet", section.id == "nodes" || section.id == "orchestrator" {
+        } else if store.key.rawValue == "fleet",
+                  section.id == "nodes" || section.id == "orchestrator" || section.id.hasPrefix("project:") {
             VStack(alignment: .leading, spacing: 8) {
                 if let title = section.title {
                     Text(title).font(.display(.title3, weight: .bold)).foregroundStyle(Palette.ink)
@@ -172,16 +234,15 @@ struct ViewsScreenView: View {
                 ForEach(rows, id: \.id) { row in FleetWireRow(row: row, onLink: follow) }
             }
         } else {
-            SectionView(section: section, onAction: { store.send(.action(.present($0))) },
+            SectionView(section: section, onAction: present,
                         onLink: follow, onMore: { store.send(.open(ViewKey(rawValue: $0))) },
-                        onForm: presentForm, onContent: { store.send(.fetchContent($0)) })
+                        onForm: presentForm, onContent: { store.send(.fetchContent($0)) },
+                        onAttachment: { store.send(.fetchAttachment($0)) })
         }
     }
 
     private func presentForm(_ form: WireForm) {
-        let fields = Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) })
-        let requiresAttachments = form.fields.contains { if case .attachments = $0.kind { true } else { false } }
-        store.send(.action(.presentForm(form.submit, fields, requiresAttachments: requiresAttachments)))
+        store.send(.presentForm(form))
     }
 }
 
@@ -248,9 +309,9 @@ private struct FleetWireRow: View {
     }
 
     private var fleetTint: Color {
-        switch row.subtitle?.lowercased() {
-        case let value? where value.contains("work") || value.contains("trabaj") || value.contains("busy"): Palette.sky
-        case let value? where value.contains("offline") || value.contains("desconect"): Palette.rose
+        switch row.stateKey {
+        case "working", "running": Palette.sky
+        case "offline", "disconnected": Palette.rose
         default: row.icon == .orchestrator ? Palette.ember : Palette.sage
         }
     }
@@ -274,7 +335,7 @@ private struct TaskRequestRow: View {
                         if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
                     }
                     Spacer(minLength: 0)
-                    if case let .time(at, _) = row.trailing { Text(at).font(.caption).foregroundStyle(.tertiary) }
+                    if case let .time(at, format) = row.trailing { Text(ViewsDate.display(at, format: format)).font(.caption).foregroundStyle(.tertiary) }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.horizontal, 16).padding(.top, 16).padding(.bottom, row.children.isEmpty ? 16 : 8)

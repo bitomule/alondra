@@ -31,7 +31,10 @@ struct ServiceNoticeToast: View {
         .padding(.bottom, 92)
         .animation(.spring(duration: 0.45, bounce: 0.3), value: store.notice)
         .sensoryFeedback(trigger: store.notice) { _, new in
-            new?.failure == true ? .error : nil
+            guard let new else { return nil }
+            if new.failure { return .error }
+            if case .actionCompleted = new.event { return .success }
+            return nil
         }
     }
 
@@ -40,6 +43,7 @@ struct ServiceNoticeToast: View {
         case .sentToOrchestrator: Text("Sent to the orchestrator")
         case .messageSent(let name): Text("Message sent to \(name)")
         case .closed(let name): Text("\(name) closed")
+        case .actionCompleted(let message): Text(verbatim: message)
         case .failure(let message), .closeRefused(let message): Text(verbatim: message)
         }
     }

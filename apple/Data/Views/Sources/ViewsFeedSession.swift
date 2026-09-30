@@ -1,3 +1,4 @@
+import AlondraAPIClient
 import AlondraViews
 import Foundation
 
@@ -66,7 +67,18 @@ public actor ViewsFeedSession {
 
     public func load(_ key: String, known: String? = nil) async throws -> ViewFetch {
         guard active, Self.validViewKey(key) else { throw ViewsDataError.invalidKey }
-        let result = try await transport.fetchView(key: key, client: client, lang: lang, known: known)
+        let result: ViewFetch
+        do {
+            result = try await transport.fetchView(key: key, client: client, lang: lang, known: known)
+        } catch let error where Self.isMissingView(error) {
+            guard active else { throw CancellationError() }
+            if versions.removeValue(forKey: key) != nil {
+                documents.removeValue(forKey: key)
+                emit(.stale([key]))
+                publish(reset: false)
+            }
+            throw ViewsDataError.missingView
+        }
         guard active else { throw CancellationError() }
         switch result {
         case let .document(document):
@@ -93,7 +105,7 @@ public actor ViewsFeedSession {
     }
 
     @discardableResult
-    public func open(_ key: String) async throws -> (lease: ViewLease, document: ViewDocument) {
+    public func open(_ key: String) async throws -> (lease: ViewLease, document: ViewDocument?) {
         guard Self.validViewKey(key) else { throw ViewsDataError.invalidKey }
         let lease = ViewLease(key: key)
         let wasOpen = openKeys.contains(key)
@@ -111,6 +123,13 @@ public actor ViewsFeedSession {
             publish(reset: false)
             restartFeed()
             return (lease, document)
+        } catch ViewsDataError.missingView {
+            // Keep the lease. The other open keys continue polling, and this key is retried
+            // after a later feed response in case it becomes available again.
+            versions.removeValue(forKey: key)
+            documents.removeValue(forKey: key)
+            restartFeed()
+            return (lease, nil)
         } catch {
             leases.removeValue(forKey: lease.id)
             restartFeed()
@@ -200,6 +219,8 @@ public actor ViewsFeedSession {
                 } else {
                     publish(reset: false)
                 }
+                let missing = openKeys.filter { versions[$0] == nil }.sorted()
+                if !missing.isEmpty { try await refresh(missing, generation: current) }
             } catch is CancellationError { return }
             catch {
                 guard !Task.isCancelled, generation == current else { return }
@@ -213,7 +234,20 @@ public actor ViewsFeedSession {
     private func refresh(_ keys: [String], generation current: UInt64) async throws {
         for key in keys {
             guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
-            let result = try await transport.fetchView(key: key, client: client, lang: lang, known: versions[key])
+            let wasMissing = versions[key] == nil
+            let result: ViewFetch
+            do {
+                result = try await transport.fetchView(key: key, client: client, lang: lang, known: versions[key])
+            } catch let error where Self.isMissingView(error) {
+                guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
+                if !wasMissing {
+                    versions.removeValue(forKey: key)
+                    documents.removeValue(forKey: key)
+                    emit(.stale([key]))
+                    publish(reset: false)
+                }
+                continue
+            }
             guard !Task.isCancelled, generation == current, openKeys.contains(key) else { return }
             switch result {
             case let .document(document):
@@ -224,6 +258,18 @@ public actor ViewsFeedSession {
                 cursor = newCursor
             }
             publish(reset: false)
+            if wasMissing { emit(.stale([key])) }
+        }
+    }
+
+    private static func isMissingView(_ error: any Error) -> Bool {
+        switch error {
+        case APIError.unexpected(status: 404), APIError.server(status: 404, kind: _, detail: _, reasons: _):
+            return true
+        case ViewsDataError.missingView:
+            return true
+        default:
+            return false
         }
     }
 

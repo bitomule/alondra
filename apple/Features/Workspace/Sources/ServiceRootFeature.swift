@@ -10,6 +10,7 @@ import AlondraQuestionsFeature
 import AlondraShared
 import AlondraTasksFeature
 import AlondraViewsDependency
+import AlondraViewsUI
 import AlondraViews
 import ComposableArchitecture
 import Foundation
@@ -212,7 +213,7 @@ public struct ServiceRootFeature {
                 return .merge(routePending(&state), .send(.home(.focus(publicHomeID(id)))))
             case .openLegacyReview(let publicID):
                 if state.usesViews {
-                    state.serverReview.key = .pullRequest(publicID)
+                    state.serverReview = ViewsScreenFeature.State(key: .pullRequest(publicID), owner: "ios.detail")
                     state.serverDetailPresented = true
                     return .none
                 }
@@ -222,7 +223,7 @@ public struct ServiceRootFeature {
                 })?.id ?? "pr:\(publicID)"
                 return routePending(&state)
             case .openServerView(let key):
-                state.serverReview.key = ViewKey(rawValue: key)
+                state.serverReview = ViewsScreenFeature.State(key: ViewKey(rawValue: key), owner: "ios.detail")
                 state.serverDetailPresented = true
                 return .none
             case .serverDetailDismissed:
@@ -355,6 +356,9 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
+        case .serverTasks(.action(let event)), .serverFleet(.action(let event)),
+             .serverNewRequest(.action(let event)), .serverReview(.action(let event)):
+            return viewsNotice(event)
         case .triage(.question(.presented(let action))):
             return state.triage.question.flatMap { questionNotice($0, action: action) }
         case .pullRequests(.element(let id, .diff(.attachmentPicker(let action)))):
@@ -420,6 +424,19 @@ public struct ServiceRootFeature {
             }
         case .fleet(.nodes(.element(let id, let action))):
             return state.fleet.nodes[id: id].flatMap { nodeNotice($0, action: action) }
+        default: return nil
+        }
+    }
+
+    private func viewsNotice(_ action: ActionFeature.Action) -> WorkspaceNotice.Event? {
+        switch action {
+        case .response(let response):
+            switch response.outcome {
+            case .applied: return .actionCompleted(response.message ?? String(localized: "Action completed"))
+            case .rejected, .noLongerAvailable: return .failure(response.message ?? String(localized: "Action failed"))
+            case .changed: return nil
+            }
+        case .failed(let message): return .failure(message)
         default: return nil
         }
     }
@@ -512,7 +529,7 @@ public struct ServiceRootFeature {
 
 public struct WorkspaceNotice: Equatable, Sendable, Identifiable {
     public enum Event: Equatable, Sendable {
-        case sentToOrchestrator, messageSent(String), closed(String), failure(String), closeRefused(String)
+        case sentToOrchestrator, messageSent(String), closed(String), actionCompleted(String), failure(String), closeRefused(String)
     }
     public let id = UUID()
     public let event: Event

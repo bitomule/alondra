@@ -112,12 +112,12 @@ public struct ActionFeature {
             case .submit:
                 guard let selected = state.action, selected.enabled, selected.id != nil, !state.inFlight else { return .none }
                 if selected.presentation == .options && state.selectedOptionID == nil {
-                    state.error = "Choose an option"
+                    state.error = String(localized: "Choose an option")
                     return .none
                 }
                 let input = state.selectedOptionID.flatMap { id in selected.options.first { $0.id == id }?.input } ?? selected.input
                 if case let .text(_, required, _) = input, required && state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    state.error = "Enter a response"
+                    state.error = String(localized: "Enter a response")
                     return .none
                 }
                 if let confirm = selected.confirm {
@@ -192,7 +192,7 @@ public struct ActionFeature {
         state.error = nil
         return .run { send in
             do { await send(.response(try await viewsClient.perform(request))) }
-            catch { await send(.failed(String(describing: error))) }
+            catch { await send(.failed(String(localized: "Couldn’t send. Try again."))) }
         }
     }
 

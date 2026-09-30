@@ -25,7 +25,10 @@ public struct ViewsClient: Sendable {
     public static func live(session: ViewsFeedSession, sender: ViewActionSender) -> Self {
         let openSet = ViewOpenSet(session: session)
         return Self(
-            load: { key, known in try await session.load(key.rawValue, known: known) },
+            load: { key, known in
+                do { return try await session.load(key.rawValue, known: known) }
+                catch ViewsDataError.missingView { throw ViewsClientError.missingView }
+            },
             open: { keys in await openSet.replace(with: keys) },
             openScreen: { owner, keys in await openSet.replace(owner: owner, with: keys) },
             closeScreen: { owner in await openSet.remove(owner: owner) },
@@ -90,7 +93,7 @@ private enum ViewsClientKey: DependencyKey {
     static let testValue = liveValue
 }
 
-public enum ViewsClientError: Error, Equatable, Sendable { case notInstalled }
+public enum ViewsClientError: Error, Equatable, Sendable { case notInstalled, missingView }
 
 public extension DependencyValues {
     var viewsClient: ViewsClient {

@@ -1,5 +1,6 @@
 import AlondraShared
 import AlondraViews
+import Foundation
 import SwiftUI
 #if canImport(UIKit)
 import UIKit
@@ -11,6 +12,24 @@ public typealias WireLabel = AlondraViews.Label
 public typealias WireForm = AlondraViews.Form
 public typealias WireGauge = AlondraViews.Gauge
 public typealias Link = AlondraViews.Link
+
+public enum ViewsDate {
+    public static func display(_ raw: String, format: TimeFormat = .relative) -> String {
+        let fractional = ISO8601DateFormatter()
+        fractional.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        guard let date = fractional.date(from: raw) ?? ISO8601DateFormatter().date(from: raw) else {
+            return raw
+        }
+        switch format {
+        case .relative:
+            return abs(date.timeIntervalSinceNow) < 7 * 24 * 60 * 60
+                ? date.formatted(.relative(presentation: .named))
+                : date.formatted(date: .abbreviated, time: .shortened)
+        case .absolute: return date.formatted(date: .abbreviated, time: .shortened)
+        case .time: return date.formatted(date: .omitted, time: .shortened)
+        }
+    }
+}
 
 /// The view palette mirrors the app's existing Palette values and adapts them to the same
 /// light/dark colors. These components deliberately leave screen layout to their callers.
@@ -104,7 +123,7 @@ public struct ViewItemRenderer: View {
         case let .timeline(value): TimelineView(timeline: value)
         case let .form(value): FormView(form: value, onSubmit: onAction, onOpenForm: onForm)
         case let .notice(value): NoticeView(notice: value, onAction: onAction)
-        case let .actions(value): ActionBarView(bar: value, onAction: onAction)
+        case let .actions(value): ActionBarView(bar: value, onAction: onAction, onLink: onLink)
         }
     }
 }
@@ -163,7 +182,7 @@ public struct CardView: View {
                 HStack(spacing: 6) { Image(systemName: iconName(line.icon)).foregroundStyle(.secondary); Text(line.text).font(.footnote); if let chip = line.chip { LabelPill(label: chip) } }
                     .onTapGesture { if let link = line.link { onLink(link) } }
             }
-            ForEach(Array(card.timestamps.enumerated()), id: \.offset) { _, stamp in Label(stamp.at, systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
+            ForEach(Array(card.timestamps.enumerated()), id: \.offset) { _, stamp in Label(ViewsDate.display(stamp.at, format: stamp.format), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
             ForEach(Array(card.quotes.enumerated()), id: \.offset) { _, quote in VStack(alignment: .leading, spacing: 4) { Text(quote.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary); Text(quote.text).font(.callout).italic() }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(ViewPalette.night.opacity(0.6), in: .rect(cornerRadius: 10)) }
             if let body = card.body { MarkdownView(markdown: body) }
             if !card.attachments.isEmpty {
@@ -184,7 +203,7 @@ public struct CardView: View {
             if let facts = card.facts { FactsView(facts: facts, onLink: onLink) }
             if let checks = card.checks { ChecksView(checks: checks, onLink: onLink) }
             ForEach(Array(card.children.enumerated()), id: \.offset) { _, child in CardView(card: child, onAction: onAction, onLink: onLink, onAttachment: onAttachment) }
-            if !card.actions.isEmpty { ActionButtons(actions: card.actions, onAction: onAction) }
+            if !card.actions.isEmpty { ActionButtons(actions: card.actions, onAction: onAction, onLink: onLink) }
         }
         .padding(16).frame(maxWidth: .infinity, alignment: .leading)
         .background(ViewPalette.card, in: .rect(cornerRadius: 20, style: .continuous))
@@ -207,7 +226,7 @@ public struct RowView: View {
             }
             if !row.badges.isEmpty { LabelList(labels: row.badges) }
             ForEach(Array(row.children.enumerated()), id: \.offset) { _, child in RowView(row: child, onAction: onAction, onLink: onLink).padding(.leading, 18) }
-            if !row.actions.isEmpty { ActionButtons(actions: row.actions, onAction: onAction) }
+            if !row.actions.isEmpty { ActionButtons(actions: row.actions, onAction: onAction, onLink: onLink) }
         }
         .padding(12).frame(maxWidth: .infinity, alignment: .leading)
         .background(ViewPalette.night.opacity(0.5), in: .rect(cornerRadius: 12))
@@ -225,7 +244,7 @@ private struct LabelList: View {
 }
 private struct TrailingView: View {
     let trailing: Trailing
-    var body: some View { Group { switch trailing { case let .count(value): Text("\(value)"); case let .time(at, _): Text(at); case let .text(text): Text(text) } }.font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+    var body: some View { Group { switch trailing { case let .count(value): Text("\(value)"); case let .time(at, format): Text(ViewsDate.display(at, format: format)); case let .text(text): Text(text) } }.font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
 }
 
 public struct MarkdownView: View {
@@ -320,7 +339,7 @@ public struct ChecksView: View {
 public struct TimelineView: View {
     public let timeline: Timeline
     public init(timeline: Timeline) { self.timeline = timeline }
-    public var body: some View { VStack(alignment: .leading, spacing: 0) { ForEach(Array(timeline.entries.enumerated()), id: \.offset) { index, entry in HStack(alignment: .top, spacing: 10) { VStack(spacing: 0) { Circle().fill(entry.tone.map(toneColor) ?? ViewPalette.dawn).frame(width: 8, height: 8); if index < timeline.entries.count - 1 { Rectangle().fill(ViewPalette.hairline).frame(width: 2).frame(minHeight: 30) } }; VStack(alignment: .leading, spacing: 3) { Text(entry.title).font(.subheadline.weight(.semibold)); if let text = entry.text { Text(text).font(.footnote).foregroundStyle(.secondary) }; Text(entry.at).font(.caption2).foregroundStyle(.tertiary) }.padding(.bottom, 12) } } }.frame(maxWidth: .infinity, alignment: .leading) }
+    public var body: some View { VStack(alignment: .leading, spacing: 0) { ForEach(Array(timeline.entries.enumerated()), id: \.offset) { index, entry in HStack(alignment: .top, spacing: 10) { VStack(spacing: 0) { Circle().fill(entry.tone.map(toneColor) ?? ViewPalette.dawn).frame(width: 8, height: 8); if index < timeline.entries.count - 1 { Rectangle().fill(ViewPalette.hairline).frame(width: 2).frame(minHeight: 30) } }; VStack(alignment: .leading, spacing: 3) { Text(entry.title).font(.subheadline.weight(.semibold)); if let text = entry.text { Text(text).font(.footnote).foregroundStyle(.secondary) }; Text(ViewsDate.display(entry.at)).font(.caption2).foregroundStyle(.tertiary) }.padding(.bottom, 12) } } }.frame(maxWidth: .infinity, alignment: .leading) }
 }
 
 public struct NoticeView: View {
@@ -333,15 +352,34 @@ public struct NoticeView: View {
 public struct ActionBarView: View {
     public let bar: ActionBar
     public var onAction: (Action) -> Void
-    public init(bar: ActionBar, onAction: @escaping (Action) -> Void = { _ in }) { self.bar = bar; self.onAction = onAction }
-    public var body: some View { ActionButtons(actions: bar.actions, onAction: onAction) }
+    public var onLink: (Link) -> Void
+    public init(bar: ActionBar, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }) {
+        self.bar = bar; self.onAction = onAction; self.onLink = onLink
+    }
+    public var body: some View { ActionButtons(actions: bar.actions, onAction: onAction, onLink: onLink) }
 }
 
 private struct ActionButtons: View {
     let actions: [Action]
     let onAction: (Action) -> Void
+    let onLink: (Link) -> Void
     var body: some View { ViewThatFits(in: .horizontal) { HStack(spacing: 8) { buttons }; VStack(alignment: .leading, spacing: 8) { buttons } } }
-    private var buttons: some View { ForEach(Array(actions.enumerated()), id: \.offset) { _, action in Button { onAction(action) } label: { Text(action.label).font(.subheadline.weight(.semibold)).frame(maxWidth: .infinity).padding(.vertical, 10).padding(.horizontal, 12) }.buttonStyle(.borderedProminent).tint(action.style == .destructive ? ViewPalette.rose : action.style == .primary ? ViewPalette.dawn : ViewPalette.slate).disabled(!action.enabled).help(action.disabledReason ?? "") } }
+    private var buttons: some View { ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
+        VStack(alignment: .leading, spacing: 4) {
+            Button {
+                if let link = action.link { onLink(link) } else { onAction(action) }
+            } label: {
+                Text(action.label).font(.subheadline.weight(.semibold))
+                    .frame(maxWidth: .infinity).padding(.vertical, 10).padding(.horizontal, 12)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(action.style == .destructive ? ViewPalette.rose : action.style == .primary ? ViewPalette.dawn : ViewPalette.slate)
+            .disabled(!action.enabled)
+            if !action.enabled, let reason = action.disabledReason {
+                Text(reason).font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    } }
 }
 
 public struct OptionGrid: View {

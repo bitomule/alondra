@@ -106,7 +106,7 @@ public struct MacPresentationFeature {
                 state.contentImageData = nil
                 return .run { [viewsClient] send in
                     do { await send(.contentLoaded(content, try await viewsClient.fetchContent(content))) }
-                    catch { await send(.contentFailed(String(describing: error))) }
+                    catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
                 }
             case .attachmentRequested(let attachment):
                 state.contentTitle = attachment.name
@@ -118,7 +118,7 @@ public struct MacPresentationFeature {
                 state.contentImageData = nil
                 return .run { [viewsClient] send in
                     do { await send(.attachmentLoaded(attachment, try await viewsClient.fetchAttachment(attachment))) }
-                    catch { await send(.contentFailed(String(describing: error))) }
+                    catch { await send(.contentFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
                 }
             case let .contentLoaded(content, body):
                 state.contentTitle = content.title
@@ -267,7 +267,7 @@ public struct MacPresentationFeature {
         .run { [viewsClient] send in
             do {
                 await send(.viewLoaded(key, try await viewsClient.load(ViewKey(rawValue: key), known)))
-            } catch { await send(.viewFailed(key, String(describing: error))) }
+            } catch { await send(.viewFailed(key, String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }
     }
 
@@ -277,7 +277,7 @@ public struct MacPresentationFeature {
                 let result = try await viewsClient.load(ViewKey(rawValue: key), nil)
                 await viewsClient.openScreen("mac-presentation", visibleKeys)
                 await send(.viewLoaded(key, result))
-            } catch { await send(.viewFailed(key, String(describing: error))) }
+            } catch { await send(.viewFailed(key, String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }
     }
 

@@ -174,7 +174,7 @@ extension AlondraAPIClient: ViewsTransport {
 }
 
 public enum ViewsDataError: Error, Equatable, Sendable {
-    case invalidKey, invalidLanguage, unexpectedUnchanged, commandIdentityConflict, unknownCommand, unsupportedContent, invalidContent
+    case invalidKey, invalidLanguage, missingView, unexpectedUnchanged, commandIdentityConflict, unknownCommand, unsupportedContent, invalidContent
 }
 
 struct ViewRoute {

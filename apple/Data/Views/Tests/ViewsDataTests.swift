@@ -25,4 +25,66 @@ final class ViewsDataTests: XCTestCase {
         let bytes = Data(#"{"protocol":2,"unchanged":true,"cursor":"c1.next"}"#.utf8)
         XCTAssertThrowsError(try ViewsCodec.decode(ViewFetch.self, from: bytes))
     }
+
+    func testMissingOpenViewKeepsOtherViewsUpdating() async throws {
+        let transport = MissingViewTransport()
+        let session = ViewsFeedSession(transport: transport, client: .ios, lang: "en")
+        let events = await session.events()
+        let watcher = Task { for await _ in events { } }
+        defer { watcher.cancel(); Task { await session.stop() } }
+
+        let home = try await session.open("home")
+        XCTAssertEqual(home.document?.version, "v1")
+        let missing = try await session.open("tasks")
+        XCTAssertNil(missing.document)
+        let openKeys = await session.openViewKeys
+        XCTAssertEqual(openKeys, ["home", "tasks"])
+
+        var updated = false
+        for _ in 0..<100 {
+            try await Task.sleep(for: .milliseconds(20))
+            let snapshot = await session.currentSnapshot()
+            let polls = await transport.polls
+            if snapshot.documents["home"]?.version == "v2", polls >= 2 {
+                updated = true
+                XCTAssertNil(snapshot.documents["tasks"])
+                break
+            }
+        }
+        XCTAssertTrue(updated, "a missing view must not end the feed for another open view")
+    }
+}
+
+private actor MissingViewTransport: ViewsTransport {
+    private(set) var polls = 0
+    private var homeLoads = 0
+
+    func fetchView(key: String, client: ViewClient, lang: String, known: String?) async throws -> ViewFetch {
+        if key == "tasks" { throw ViewsDataError.missingView }
+        homeLoads += 1
+        let version = homeLoads == 1 ? "v1" : "v2"
+        let json = """
+        {"protocol":1,"view":"home","key":"home","client":"ios","version":"\(version)",
+        "cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready",
+        "badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},
+        "sections":[]}
+        """
+        return try ViewsCodec.decode(ViewFetch.self, from: Data(json.utf8))
+    }
+
+    func fetchChanges(client: ViewClient, lang: String, wait: UInt, cursor: String?, views: [OpenViewVersion]) async throws -> ViewFeed {
+        polls += 1
+        try await Task.sleep(for: .milliseconds(20))
+        let json = """
+        {"protocol":1,"cursor":"c\(polls)","data_epoch":"epoch","status":{"version":"s1",
+        "summary":"Ready","badge":0,"counts":[],"gauges":[],
+        "orchestrator":{"text":"idle","tone":"neutral"}},
+        "stale":["home"],"reset":false,"superseded":false}
+        """
+        return try ViewsCodec.decode(ViewFeed.self, from: Data(json.utf8))
+    }
+
+    func submitAction(_ request: ActionRequest, body: Data) async throws -> ActionResponse {
+        throw ViewsDataError.unknownCommand
+    }
 }

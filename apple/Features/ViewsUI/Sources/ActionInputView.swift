@@ -8,11 +8,17 @@ public struct ActionInputView: View {
     @Bindable public var store: StoreOf<ActionFeature>
     public let form: WireForm?
     public let showCommentEditor: Bool
+    public var onReload: ((Field, JSONValue) -> Void)?
+    public var onPicker: ((Field, String) -> Void)?
 
-    public init(store: StoreOf<ActionFeature>, form: WireForm? = nil, showCommentEditor: Bool = true) {
+    public init(store: StoreOf<ActionFeature>, form: WireForm? = nil, showCommentEditor: Bool = true,
+                onReload: ((Field, JSONValue) -> Void)? = nil,
+                onPicker: ((Field, String) -> Void)? = nil) {
         self.store = store
         self.form = form
         self.showCommentEditor = showCommentEditor
+        self.onReload = onReload
+        self.onPicker = onPicker
     }
 
     public var body: some View {
@@ -93,7 +99,21 @@ public struct ActionInputView: View {
                 ForEach(items, id: \.id) { item in Text(item.label).tag(item.id) }
             }.labelsHidden()
         case let .picker(source):
-            TextField(source, text: stringBinding(field, value: value)).textFieldStyle(.roundedBorder)
+            if let onPicker {
+                Button {
+                    onPicker(field, source)
+                } label: {
+                    HStack {
+                        if case let .string(selected) = value, !selected.isEmpty { Text(selected) }
+                        else { Text("Choose an issue") }
+                        Spacer()
+                        Image(systemName: "chevron.right").foregroundStyle(.secondary)
+                    }
+                }
+                .buttonStyle(.bordered)
+            } else {
+                TextField(source, text: stringBinding(field, value: value)).textFieldStyle(.roundedBorder)
+            }
         case .date, .time:
             TextField(field.kind == .date ? "YYYY-MM-DD" : "HH:MM", text: stringBinding(field, value: value))
                 .textFieldStyle(.roundedBorder)
@@ -130,6 +150,7 @@ public struct ActionInputView: View {
         var fields = store.fields
         fields[field.id] = value
         store.send(.fieldsChanged(fields))
+        if field.reloadOnChange { onReload?(field, value) }
     }
 }
 
