@@ -1,7 +1,6 @@
 import AlondraContracts
 import AlondraAPIClient
 import AlondraRelayOutbox
-import AlondraSync
 import CryptoKit
 import Foundation
 
@@ -108,6 +107,13 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     public func execute(requestID: String, method: String, path: String, body: Data? = nil,
                         statusPolls: Int = 10) async throws -> RelayOperationResult {
         guard active else { throw CancellationError() }
+        #if VIEWS_ONLY
+        guard ["GET", "POST"].contains(method),
+              Self.validViewsPath(method: method, path: path, hasBody: body != nil),
+              !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
+            throw RelaySessionError.invalidRequest
+        }
+        #else
         guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
               ((method == "GET" && path == "/capabilities")
                || (method == "GET" && body == nil && DomainReadPath.isValid(path))
@@ -121,6 +127,7 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
               !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
             throw RelaySessionError.invalidRequest
         }
+        #endif
         if method == "GET" {
             // Read identities are private and never share the durable mutation namespace.
             guard body == nil else { throw RelaySessionError.invalidRequest }
@@ -164,11 +171,45 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     }
 
     static func validClientContractPath(method: String, path: String) -> Bool {
-        guard let method = HTTPMethod(rawValue: method), path.hasPrefix("/") else { return false }
-        let route = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
-        let segments = route.split(separator: "/", omittingEmptySubsequences: false).dropFirst().map(String.init)
-        return ServiceRequest.validClientContractRoute(method: method, path: segments)
+        guard let method = HTTPMethod(rawValue: method), path.hasPrefix("/"),
+              let components = URLComponents(string: "alondra://relay" + path) else { return false }
+        let encoded = components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false).dropFirst()
+        guard let segments = encoded.map({ String($0).removingPercentEncoding }) as? [String],
+              segments.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+              ServiceRequest.validClientContractRoute(method: method, path: segments) else { return false }
+        let query = components.queryItems?.compactMap { item -> (String, String)? in
+            guard let value = item.value else { return nil }
+            return (item.name, value)
+        } ?? []
+        guard query.count == (components.queryItems?.count ?? 0) else { return false }
+        return ServiceRequest.validClientQuery(method: method, path: segments, query: query)
     }
+
+    #if VIEWS_ONLY
+    private static func validViewsPath(method: String, path: String, hasBody: Bool) -> Bool {
+        if method == "GET", !hasBody, validClientContractPath(method: method, path: path) { return true }
+        if method == "POST", hasBody, validClientContractPath(method: method, path: path) { return true }
+        guard method == "GET", !hasBody, path.hasPrefix("/"),
+              let components = URLComponents(string: "alondra://relay" + path),
+              components.fragment == nil else { return false }
+        let encoded = components.percentEncodedPath.split(separator: "/", omittingEmptySubsequences: false)
+        guard encoded.count == 4, encoded[0].isEmpty,
+              let id = String(encoded[2]).removingPercentEncoding,
+              ServiceRequest.validViewID(id) else { return false }
+        if encoded[1] == "pull-requests", encoded[3] == "diff" {
+            return components.queryItems == nil
+        }
+        if encoded[1] == "document-revisions", encoded[3] == "content",
+           let query = components.queryItems {
+            let names = query.map(\.name)
+            guard Set(names).count == names.count, Set(names).isSubset(of: ["offset", "version"]),
+                  let offset = query.first(where: { $0.name == "offset" })?.value.flatMap(UInt64.init),
+                  offset <= 32 * 1024 * 1024 else { return false }
+            return query.first(where: { $0.name == "version" })?.value.map { !$0.isEmpty && $0.utf8.count <= 128 } ?? true
+        }
+        return false
+    }
+    #endif
 
     static func viewsChangeWait(_ path: String) -> Int? {
         guard path.hasPrefix("/changes?"), let components = URLComponents(string: path),

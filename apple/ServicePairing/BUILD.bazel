@@ -9,6 +9,16 @@ swift_library(
     deps = ["//apple/APIClient:AlondraAPIClient"],
 )
 
+# Shipping Views variant; legacy target remains for domain fixture tests.
+swift_library(
+    name = "AlondraViewsServicePairing",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraServicePairing",
+    visibility = ["//visibility:public"],
+    deps = ["//apple/APIClient:AlondraViewsAPIClient"],
+    features = ["swift.enable_testing"],
+)
+
 swift_test(
     name = "AlondraServicePairingTests",
     srcs = glob(["Tests/**/*.swift"]),

@@ -1,4 +1,5 @@
 import Foundation
+import AlondraContracts
 
 public enum SchedulePresentation {
     public static var bundle: Bundle { #bundle }

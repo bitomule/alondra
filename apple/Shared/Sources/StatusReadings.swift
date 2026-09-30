@@ -1,4 +1,5 @@
 import Foundation
+import AlondraContracts
 
 /// One of the small bars next to the Mac status: the week's Claude usage, today against its
 /// share, memory and CPU. The bar and the value are shown; `help` says what it is in words.

@@ -23,6 +23,17 @@ public struct ServiceRequest: Sendable, Equatable {
     public let body: Data?
 
     init<Response>(endpoint: Endpoint<Response>, operationID: String) throws {
+        #if VIEWS_ONLY
+        let resourceRead = endpoint.path == ["capabilities"] && endpoint.method == .get
+            || endpoint.path == ["changes"] && endpoint.method == .get
+        let domainDetail = endpoint.method == .get && endpoint.path.count == 3
+            && ((endpoint.path[0] == "pull-requests" && endpoint.path[2] == "diff")
+                || (endpoint.path[0] == "document-revisions" && endpoint.path[2] == "content"))
+            && Self.validViewID(endpoint.path[1])
+        let domainDelivery = false
+        let domainMutation = false
+        let domainSchedule = false
+        #else
         let resourceRead = endpoint.path == ["capabilities"] && endpoint.method == .get
             || endpoint.path == ["changes"] && endpoint.method == .get
         let domainDetail = endpoint.method == .get && endpoint.path.count == 3
@@ -36,7 +47,9 @@ public struct ServiceRequest: Sendable, Equatable {
         let domainMutation = endpoint.query.isEmpty && Self.validResourceMutationRoute(method: endpoint.method, path: endpoint.path)
         let domainSchedule = endpoint.query.isEmpty && Self.validDomainScheduleRoute(method: endpoint.method,
             path: endpoint.path, hasBody: endpoint.body != nil)
+        #endif
         let clientContract = Self.validClientContractRoute(method: endpoint.method, path: endpoint.path)
+            && Self.validClientQuery(method: endpoint.method, path: endpoint.path, query: endpoint.query)
         // A logical executor path, never a QR-provided URL or bearer destination.
         let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         let segments = endpoint.path.map { $0.addingPercentEncoding(withAllowedCharacters: unreserved)! }
@@ -45,7 +58,11 @@ public struct ServiceRequest: Sendable, Equatable {
             $0.1.addingPercentEncoding(withAllowedCharacters: unreserved)!
         }.joined(separator: "&")
         let path = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
+        #if VIEWS_ONLY
+        let domainRead = false
+        #else
         let domainRead = endpoint.method == .get && endpoint.body == nil && DomainReadPath.isValid(path)
+        #endif
         guard !operationID.isEmpty, (resourceRead || domainRead || domainDetail || domainDelivery || domainMutation || domainSchedule || clientContract),
               endpoint.path.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else {
             throw ServiceAPIError.invalidEndpoint
@@ -58,6 +75,19 @@ public struct ServiceRequest: Sendable, Equatable {
 
     /// The daemon's runtime and file routes beyond domain resources.
     public static func validClientContractRoute(method: HTTPMethod, path: [String]) -> Bool {
+        #if VIEWS_ONLY
+        if method == .post, path.count == 2, path[0] == "uploads",
+           ["start", "chunk", "finish", "cancel"].contains(path[1]) { return true }
+        switch (method, path) {
+        case (.get, ["capabilities"]), (.get, ["changes"]), (.get, ["files", "chunk"]),
+             (.post, ["actions"]), (.post, ["activity"]), (.post, ["device", "push-binding"]):
+            return true
+        case (.get, let rest) where rest.count == 2 && rest[0] == "views":
+            return validViewKey(rest[1])
+        default:
+            return false
+        }
+        #else
         if method == .post, path.count == 2, path[0] == "uploads",
            ["start", "chunk", "finish", "cancel"].contains(path[1]) { return true }
         switch (method, path) {
@@ -81,9 +111,21 @@ public struct ServiceRequest: Sendable, Equatable {
         default:
             return false
         }
+        #endif
     }
 
     private static func validViewKey(_ key: String) -> Bool {
+        #if VIEWS_ONLY
+        guard key.utf8.count <= 261 else { return false }
+        if ["home", "sidebar", "tasks", "fleet", "schedules", "new_request", "issue_picker", "search", "machine"].contains(key) {
+            return true
+        }
+        guard let colon = key.firstIndex(of: ":"),
+              ["card", "document", "pull_request", "task", "request", "node", "schedule"].contains(String(key[..<colon])) else {
+            return false
+        }
+        return validViewID(String(key[key.index(after: colon)...]))
+        #else
         if key == "home" { return true }
         guard key.hasPrefix("card:"), key.utf8.count <= 261 else { return false }
         let id = String(key.dropFirst("card:".count))
@@ -104,21 +146,87 @@ public struct ServiceRequest: Sendable, Equatable {
         let number = id[id.index(after: hash)...]
         return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
             && (UInt64(number).map { $0 > 0 } ?? false)
+        #endif
     }
 
+    #if VIEWS_ONLY
+    public static func validViewID(_ id: String) -> Bool {
+        guard !id.isEmpty, id.utf8.count <= 256 else { return false }
+        if id.utf8.allSatisfy({ byte in
+            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+                || byte == 45 || byte == 95
+        }) { return true }
+        guard id.hasPrefix("github.com/"), let hash = id.firstIndex(of: "#") else { return false }
+        let repo = id[id.index(id.startIndex, offsetBy: "github.com/".count)..<hash]
+        let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, parts.allSatisfy({ part in
+            !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
+                (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+                    || byte == 45 || byte == 95 || byte == 46
+            }
+        }) else { return false }
+        let number = id[id.index(after: hash)...]
+        return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
+            && (UInt64(number).map { $0 > 0 } ?? false)
+    }
+
+    public static func validClientQuery(method: HTTPMethod, path: [String], query: [(String, String)]) -> Bool {
+        guard path.count == 2, path[0] == "views", method == .get else { return true }
+        let names = query.map(\.0)
+        guard Set(names).count == names.count,
+              let protocolVersion = query.first(where: { $0.0 == "protocol" })?.1, protocolVersion == "1",
+              let client = query.first(where: { $0.0 == "client" })?.1, ["ios", "mac", "tui"].contains(client),
+              let lang = query.first(where: { $0.0 == "lang" })?.1, ["en", "es"].contains(lang),
+              query.allSatisfy({ $0.1.utf8.count <= 256 && !$0.1.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) })
+        else { return false }
+        let extra = Dictionary(uniqueKeysWithValues: query.filter { !["protocol", "client", "lang", "known"].contains($0.0) })
+        if let known = query.first(where: { $0.0 == "known" })?.1, known.isEmpty { return false }
+        switch path[1] {
+        case "home":
+            return extra.isEmpty || (extra.count == 1 && extra["focus"].map(validViewID) == true)
+        case "tasks":
+            if extra.isEmpty { return true }
+            guard extra.count == 2, let section = extra["section"], ["active", "finished", "archived"].contains(section),
+                  let after = extra["after"], UInt(after) != nil else { return false }
+            return true
+        case "new_request", "schedule:new":
+            return extra.isEmpty || (extra.count == 1 && extra["project"] != nil)
+        case "issue_picker":
+            return extra.isEmpty || extra == ["refresh": "1"] || (extra.count == 1 && extra["q"] != nil)
+        case "search":
+            return extra.isEmpty || (extra.count == 1 && extra["q"] != nil)
+        default:
+            return extra.isEmpty
+        }
+    }
+    #else
+    public static func validClientQuery(method: HTTPMethod, path: [String], query: [(String, String)]) -> Bool { true }
+    #endif
+
     public static func validResourceMutationPath(method: HTTPMethod, path: String) -> Bool {
+        #if VIEWS_ONLY
+        return false
+        #else
         let route = path.split(separator: "?", maxSplits: 1).first.map(String.init) ?? path
         let segments = route.split(separator: "/", omittingEmptySubsequences: false).dropFirst().map(String.init)
         guard !path.contains("?") else { return false }
         return validResourceMutationRoute(method: method, path: segments)
+        #endif
     }
 
     public static func isDomainMutationRoute(method: HTTPMethod, path: [String], hasBody: Bool) -> Bool {
+        #if VIEWS_ONLY
+        false
+        #else
         validResourceMutationRoute(method: method, path: path)
             || validDomainScheduleRoute(method: method, path: path, hasBody: hasBody)
+        #endif
     }
 
     public static func isDomainReadRoute(method: HTTPMethod, path: [String], query: [(String, String)], hasBody: Bool) -> Bool {
+        #if VIEWS_ONLY
+        false
+        #else
         guard method == .get, !hasBody else { return false }
         let unreserved = CharacterSet(charactersIn: "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~")
         let segments = path.map { $0.addingPercentEncoding(withAllowedCharacters: unreserved)! }
@@ -128,10 +236,14 @@ public struct ServiceRequest: Sendable, Equatable {
         }.joined(separator: "&")
         let target = "/" + segments.joined(separator: "/") + (query.isEmpty ? "" : "?" + query)
         return DomainReadPath.isValid(target)
+        #endif
     }
 
     /// Exact resource mutations admitted by the daemon's resource router.
     public static func validResourceMutationRoute(method: HTTPMethod, path: [String]) -> Bool {
+        #if VIEWS_ONLY
+        false
+        #else
         guard let resource = path.first else { return false }
         switch method {
         case .post:
@@ -168,8 +280,10 @@ public struct ServiceRequest: Sendable, Equatable {
         default:
             return false
         }
+        #endif
     }
 
+    #if !VIEWS_ONLY
     private static func validResourceID(_ value: String) -> Bool {
         (1...256).contains(value.utf8.count) && value.utf8.allSatisfy { byte in
             (48...57).contains(byte) || (65...90).contains(byte) || (97...122).contains(byte) || byte == 45 || byte == 95
@@ -193,4 +307,5 @@ public struct ServiceRequest: Sendable, Equatable {
         return (method == .get && !hasBody) || (method == .put && hasBody)
             || (method == .delete && !hasBody)
     }
+    #endif
 }

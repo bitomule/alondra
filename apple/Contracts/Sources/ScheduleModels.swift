@@ -23,6 +23,7 @@ public struct ScheduledTask: Identifiable, Equatable, Sendable {
     public let status: String
     public let revision: Int
 
+    #if !VIEWS_ONLY
     public init(_ schedule: DomainV2.Schedule) {
         id = schedule.id.rawValue
         title = schedule.title
@@ -44,6 +45,7 @@ public struct ScheduledTask: Identifiable, Equatable, Sendable {
         status = schedule.status.rawValue
         revision = Int(schedule.revision)
     }
+    #endif
 }
 
 public struct ScheduledTaskDraft: Equatable, Sendable {
@@ -78,6 +80,7 @@ public struct ScheduledTaskDraft: Equatable, Sendable {
     }
 }
 
+#if !VIEWS_ONLY
 extension DomainV2.ScheduleDraft {
     /// The same fields the editor always sent; the server validates them for the frequency.
     public init?(_ draft: ScheduledTaskDraft) {
@@ -90,3 +93,4 @@ extension DomainV2.ScheduleDraft {
                   enabled: draft.enabled, revision: Int64(draft.revision))
     }
 }
+#endif

@@ -7,6 +7,19 @@ swift_library(
     visibility = ["//visibility:public"],
     deps = ["//apple/Contracts:AlondraContracts", "//apple/APIClient:AlondraAPIClient", "//apple/Data/RelayOutbox:AlondraRelayOutbox", "//apple/Data/Sync:AlondraSync"],
 )
+swift_library(
+    name = "AlondraViewsRelaySession",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraRelaySession",
+    features = ["swift.enable_testing"],
+    visibility = ["//visibility:public"],
+    copts = ["-D", "VIEWS_ONLY"],
+    deps = [
+        "//apple/Contracts:AlondraViewsContracts",
+        "//apple/APIClient:AlondraViewsAPIClient",
+        "//apple/Data/RelayOutbox:AlondraViewsRelayOutbox",
+    ],
+)
 swift_test(
     name = "AlondraRelaySessionTests",
     srcs = glob(["Tests/**/*.swift"]),

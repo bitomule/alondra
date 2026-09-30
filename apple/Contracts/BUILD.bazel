@@ -6,3 +6,11 @@ swift_library(
     module_name = "AlondraContracts",
     visibility = ["//visibility:public"],
 )
+
+swift_library(
+    name = "AlondraViewsContracts",
+    srcs = glob(["Sources/*.swift"]),
+    module_name = "AlondraContracts",
+    copts = ["-D", "VIEWS_ONLY"],
+    visibility = ["//visibility:public"],
+)

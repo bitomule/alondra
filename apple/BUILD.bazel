@@ -34,6 +34,31 @@ swift_library(
     ],
 )
 
+# Shipping Views UI utilities exclude legacy Domain presentation and DiffFile models.
+swift_library(
+    name = "AlondraViewsShared",
+    srcs = [
+        "Shared/Sources/AlondraError.swift",
+        "Shared/Sources/AttachmentFile.swift",
+        "Shared/Sources/CloseNode.swift",
+        "Shared/Sources/Diff/DiffHighlighter.swift",
+        "Shared/Sources/MarkdownBlocks.swift",
+        "Shared/Sources/SchedulePresentation.swift",
+        "Shared/Sources/SendFailurePresentation.swift",
+        "Shared/Sources/StatusReadings.swift",
+        "Shared/Sources/TableRowCard.swift",
+    ] + glob(["Shared/Sources/Code/*.swift"]),
+    data = ["Shared/Resources/AlondraShared.xcstrings"],
+    module_name = "AlondraShared",
+    visibility = ["//visibility:public"],
+    copts = ["-D", "VIEWS_ONLY"],
+    deps = [
+        "//apple/APIClient:AlondraViewsAPIClient",
+        "//apple/Contracts:AlondraViewsContracts",
+        "@swiftpkg_highlightswift//:HighlightSwift",
+    ],
+)
+
 swift_test(
     name = "AlondraSharedTests",
     srcs = glob(["Shared/Tests/**/*.swift"]),

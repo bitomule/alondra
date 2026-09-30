@@ -9,6 +9,16 @@ swift_library(
     deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Contracts:AlondraContracts", "//apple/Views:AlondraViews"],
 )
 
+# Shipping Views variant; legacy target remains for domain fixture tests.
+swift_library(
+    name = "AlondraViewsOnlyData",
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraViewsData",
+    visibility = ["//visibility:public"],
+    deps = ["//apple/APIClient:AlondraViewsAPIClient", "//apple/Contracts:AlondraViewsContracts", "//apple/Views:AlondraViews"],
+    features = ["swift.enable_testing"],
+)
+
 swift_test(
     name = "AlondraViewsDataTests",
     srcs = glob(["Tests/**/*.swift"]),
