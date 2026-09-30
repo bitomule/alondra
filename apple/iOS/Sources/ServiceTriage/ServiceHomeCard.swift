@@ -91,6 +91,7 @@ struct ServiceHomeCard: View {
                 .fixedSize(horizontal: false, vertical: true)
             if let subtitle = card.subtitle { Text(subtitle).font(.subheadline).foregroundStyle(.secondary) }
             if let node = card.context.first(where: { $0.icon == .node }) {
+                contextNavigation(node) {
                 HStack(spacing: 8) {
                     Image(systemName: "circle.fill")
                         .font(.caption2.weight(.bold)).foregroundStyle(tint)
@@ -104,18 +105,25 @@ struct ServiceHomeCard: View {
                     }
                 }
                 .lineLimit(1)
+                }
             }
             if let task = card.context.first(where: { $0.icon == .task }) {
+                contextNavigation(task) {
                 Label(task.text, systemImage: "checklist")
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(1)
                     .accessibilityLabel(Text("Task: \(task.text)"))
+                }
             }
             if let mission = card.context.first(where: { $0.icon == .mission }) {
+                contextNavigation(mission) {
                 Text(mission.text).font(.footnote).foregroundStyle(.secondary).lineLimit(3)
+                }
             }
             ForEach(card.context.filter { ![Icon.node, .task, .mission].contains($0.icon) }, id: \.text) { line in
+                contextNavigation(line) {
                 Label(line.text, systemImage: contextSymbol(line.icon))
                     .font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                }
             }
             if let body = card.body {
                 if body.truncated || body.more != nil || body.text.count > 600 {
@@ -219,6 +227,18 @@ struct ServiceHomeCard: View {
         }
     }
 
+    @ViewBuilder private func contextNavigation<Content: View>(
+        _ line: ContextLine, @ViewBuilder content: () -> Content
+    ) -> some View {
+        if let link = line.link {
+            Button { handleLink(link) } label: { content() }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(.isButton)
+        } else {
+            content()
+        }
+    }
+
     private var controls: some View {
         VStack(spacing: 8) {
             ForEach(card.actions, id: \.label) { action in
@@ -270,10 +290,8 @@ struct ServiceHomeCard: View {
             if let link = action.link {
                 switch link {
                 case let .view(key):
-                    if key.hasPrefix("pull_request:") {
-                        openReview(key)
-                        return
-                    }
+                    openReview(key)
+                    return
                 case let .url(url):
                     if let url = URL(string: url) { openURL(url) }
                     return

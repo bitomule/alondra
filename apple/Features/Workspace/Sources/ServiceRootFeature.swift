@@ -356,7 +356,7 @@ public struct ServiceRootFeature {
 
     private func noticeEvent(state: State, action: Action) -> WorkspaceNotice.Event? {
         switch action {
-        case .serverTasks(.action(let event)), .serverFleet(.action(let event)),
+        case .home(.actions(let event)), .serverTasks(.action(let event)), .serverFleet(.action(let event)),
              .serverNewRequest(.action(let event)), .serverReview(.action(let event)):
             return viewsNotice(event)
         case .triage(.question(.presented(let action))):

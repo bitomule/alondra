@@ -31,6 +31,11 @@ public struct MacPresentationFeature {
         public var actionFeature = ActionFeature.State(dataEpoch: "", client: .mac, lang: "en")
         public var actionPresented = false
         public var activeForm: AlondraViews.Form?
+        public var pickerFieldID: String?
+        public var pickerDocument: ViewDocument?
+        public var pickerQuery = ""
+        public var pickerLoading = false
+        public var pickerError: String?
         public var contentTitle = ""
         public var contentBody = ""
         public var contentIsDiff = false
@@ -38,6 +43,8 @@ public struct MacPresentationFeature {
         public var contentError: String?
         public var contentPresented = false
         public var contentImageData: Data?
+        public var contentDigest: String?
+        public var diffComments: [String: ActionComment] = [:]
 
         private var terms: [Substring] { query.lowercased().split(separator: " ") }
         public func projectExpanded(_ name: String) -> Bool { !query.isEmpty || !collapsedProjects.contains(name) }
@@ -66,6 +73,10 @@ public struct MacPresentationFeature {
         case viewFailed(String, String)
         case beginViewAction(AlondraViews.Action)
         case beginViewForm(AlondraViews.Form)
+        case reloadForm(String, JSONValue)
+        case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
+        case pickerSelected(String), pickerClosed
+        case diffCommentsChanged([String: ActionComment])
         case contentRequested(AlondraViews.ContentRef)
         case attachmentRequested(AlondraViews.Attachment)
         case contentLoaded(AlondraViews.ContentRef, String)
@@ -77,7 +88,7 @@ public struct MacPresentationFeature {
     }
     @Dependency(\.continuousClock) var clock
     @Dependency(\.viewsClient) var viewsClient
-    private enum CancelID { case search }
+    private enum CancelID { case search, picker }
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
@@ -87,6 +98,10 @@ public struct MacPresentationFeature {
                 state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
                 state.activeForm = nil
                 state.actionPresented = true
+                if action.comments?.kind == .diffLines {
+                    let comments = state.diffComments.values.sorted { $0.anchor < $1.anchor }
+                    return .concatenate(.send(.action(.present(action))), .send(.action(.commentsChanged(comments))))
+                }
                 return .send(.action(.present(action)))
             case .beginViewForm(let form):
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
@@ -96,7 +111,59 @@ public struct MacPresentationFeature {
                 state.actionPresented = true
                 let requiresAttachments = form.fields.contains { if case .attachments = $0.kind { true } else { false } }
                 return .send(.action(.presentForm(form.submit, Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) }), requiresAttachments: requiresAttachments)))
+            case .reloadForm(let fieldID, let value):
+                guard fieldID == "project", case let .string(project) = value,
+                      let key = state.selectedViewKey else { return .none }
+                let next: ViewKey
+                if key.hasPrefix("new_request") { next = .newRequest(project: project) }
+                else if key.hasPrefix("schedule:new") { next = .newSchedule(project: project) }
+                else { return .none }
+                guard next.rawValue != key else { return .none }
+                state.selectedViewKey = next.rawValue
+                return loadAndOpenView(next.rawValue, visibleKeys: visibleViewKeys(state))
+            case .pickerOpened(let fieldID, let source):
+                guard source == "issue_picker" else { return .none }
+                state.pickerFieldID = fieldID
+                state.pickerDocument = nil
+                state.pickerQuery = ""
+                state.pickerLoading = true
+                state.pickerError = nil
+                return loadPicker(query: "")
+            case .pickerQueryChanged(let query):
+                guard state.pickerFieldID != nil else { return .none }
+                state.pickerQuery = query
+                state.pickerLoading = true
+                return .run { [clock, viewsClient] send in
+                    do {
+                        try await clock.sleep(for: .milliseconds(250))
+                        await send(.pickerLoaded(try await viewsClient.load(.issuePicker(query: query), nil)))
+                    } catch is CancellationError { return }
+                    catch { await send(.pickerFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
+                }.cancellable(id: CancelID.picker, cancelInFlight: true)
+            case .pickerLoaded(.document(let document)):
+                guard state.pickerFieldID != nil else { return .none }
+                state.pickerDocument = document
+                state.pickerLoading = false
+                state.pickerError = nil
+            case .pickerLoaded(.unchanged): state.pickerLoading = false
+            case .pickerFailed(let message):
+                state.pickerLoading = false
+                state.pickerError = message
+            case .pickerSelected(let value):
+                guard let fieldID = state.pickerFieldID else { return .none }
+                state.actionFeature.fields[fieldID] = .string(value)
+                state.pickerFieldID = nil
+                state.pickerDocument = nil
+                return .cancel(id: CancelID.picker)
+            case .pickerClosed:
+                state.pickerFieldID = nil
+                state.pickerDocument = nil
+                return .cancel(id: CancelID.picker)
+            case .diffCommentsChanged(let comments): state.diffComments = comments
             case .contentRequested(let content):
+                let identity = content.digest ?? content.fetch
+                if state.contentDigest != identity { state.diffComments = [:] }
+                state.contentDigest = identity
                 state.contentTitle = content.title
                 state.contentIsDiff = content.kind == .diff
                 state.contentBody = ""
@@ -204,7 +271,20 @@ public struct MacPresentationFeature {
                             return loadAndOpenView(first, visibleKeys: visibleViewKeys(state))
                         }
                     }
-                    if key == state.selectedViewKey { state.detailDocument = document }
+                    if key == state.selectedViewKey {
+                        state.detailDocument = document
+                        state.actionFeature.dataEpoch = document.dataEpoch
+                        if state.activeForm != nil,
+                           let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> AlondraViews.Form? in
+                               if case let .form(form) = item { form } else { nil }
+                           }).first {
+                            state.activeForm = updated
+                            state.actionFeature.action = updated.submit
+                            state.actionFeature.fields = Dictionary(uniqueKeysWithValues: updated.fields.map {
+                                ($0.id, state.actionFeature.fields[$0.id] ?? $0.value)
+                            })
+                        }
+                    }
                 }
             case let .viewFailed(_, message): state.viewError = message
             case .queryChanged(let query):
@@ -269,6 +349,13 @@ public struct MacPresentationFeature {
                 await send(.viewLoaded(key, try await viewsClient.load(ViewKey(rawValue: key), known)))
             } catch { await send(.viewFailed(key, String(localized: "Couldn’t load this from your Mac. Try again."))) }
         }
+    }
+
+    private func loadPicker(query: String) -> Effect<Action> {
+        .run { [viewsClient] send in
+            do { await send(.pickerLoaded(try await viewsClient.load(.issuePicker(query: query), nil))) }
+            catch { await send(.pickerFailed(String(localized: "Couldn’t load this from your Mac. Try again."))) }
+        }.cancellable(id: CancelID.picker, cancelInFlight: true)
     }
 
     private func loadAndOpenView(_ key: String, visibleKeys: Set<ViewKey>) -> Effect<Action> {

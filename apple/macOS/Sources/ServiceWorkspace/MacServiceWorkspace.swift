@@ -192,14 +192,17 @@ private struct MacServiceDetail: View {
                     }.accessibilityHidden(true)
                 }
                 .sheet(isPresented: Binding(get: { presentation.actionPresented }, set: { presentation.send(.actionPresented($0)) })) {
-                    MacViewActionSheet(store: actionStore, form: presentation.activeForm,
+                    MacViewActionSheet(presentation: presentation, form: presentation.activeForm,
                                        onDismiss: { presentation.send(.actionPresented(false)) })
                         .frame(minWidth: 420, minHeight: 240)
                 }
                 .sheet(isPresented: Binding(get: { presentation.contentPresented }, set: { presentation.send(.contentPresented($0)) })) {
                     MacContentViewer(title: presentation.contentTitle, contentText: presentation.contentBody,
                                      isDiff: presentation.contentIsDiff, loading: presentation.contentLoading,
-                                     error: presentation.contentError, imageData: presentation.contentImageData)
+                                     error: presentation.contentError, imageData: presentation.contentImageData,
+                                     comments: Binding(get: { presentation.diffComments },
+                                                       set: { presentation.send(.diffCommentsChanged($0)) }))
+                        .id(presentation.contentDigest)
                         .frame(minWidth: 620, minHeight: 420)
                 }
             } else if let error = presentation.viewError {
@@ -227,10 +230,6 @@ private struct MacServiceDetail: View {
         }
     }
 
-    private var actionStore: StoreOf<ActionFeature> {
-        presentation.scope(state: \.actionFeature, action: \.action)
-    }
-
     private func keyedActions(_ document: ViewDocument) -> [AlondraViews.Action] {
         document.sections.flatMap(\.items).flatMap(keyedActions)
     }
@@ -253,6 +252,7 @@ private struct MacContentViewer: View {
     let loading: Bool
     let error: String?
     let imageData: Data?
+    @Binding var comments: [String: ActionComment]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -262,9 +262,14 @@ private struct MacContentViewer: View {
             else if let imageData, let image = NSImage(data: imageData) {
                 Image(nsImage: image).resizable().scaledToFit().frame(maxWidth: .infinity, maxHeight: .infinity)
             }
-            else {
+            else if isDiff {
                 ScrollView([.vertical, .horizontal]) {
-                    Text(contentText).font(isDiff ? .system(.body, design: .monospaced) : .body)
+                    MacViewsPRDiff(text: contentText, comments: $comments)
+                        .padding(12)
+                }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
+            } else {
+                ScrollView([.vertical, .horizontal]) {
+                    Text(contentText).font(.body)
                         .frame(maxWidth: .infinity, alignment: .leading).textSelection(.enabled).padding(12)
                 }.background(.quaternary.opacity(0.25), in: .rect(cornerRadius: 8))
             }
@@ -273,15 +278,21 @@ private struct MacContentViewer: View {
 }
 
 private struct MacViewActionSheet: View {
-    @Bindable var store: StoreOf<ActionFeature>
+    let presentation: StoreOf<MacPresentationFeature>
     let form: AlondraViews.Form?
     let onDismiss: () -> Void
+    private var store: StoreOf<ActionFeature> {
+        presentation.scope(state: \.actionFeature, action: \.action)
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             if let action = store.action {
                 Text(action.label).font(.title3.weight(.semibold))
-                ActionInputView(store: store, form: form)
+                ActionInputView(store: store, form: form,
+                                showCommentEditor: store.action?.comments?.kind != .diffLines,
+                                onReload: { field, value in presentation.send(.reloadForm(field.id, value)) },
+                                onPicker: { field, source in presentation.send(.pickerOpened(field.id, source)) })
                 HStack {
                     Spacer()
                     Button(store.stamp == nil ? "Cancel" : "Done") { store.send(.dismiss); onDismiss() }.keyboardShortcut(.cancelAction)
@@ -292,6 +303,11 @@ private struct MacViewActionSheet: View {
             }
         }
         .padding(24)
+        .sheet(isPresented: Binding(get: { presentation.pickerFieldID != nil },
+                                    set: { if !$0 { presentation.send(.pickerClosed) } })) {
+            MacViewIssuePicker(presentation: presentation)
+                .frame(minWidth: 440, minHeight: 360)
+        }
         .confirmationDialog(store.confirmation?.title ?? "", isPresented: Binding(get: { store.confirmation != nil }, set: { if !$0 { store.send(.cancelConfirmation) } })) {
             if let confirmation = store.confirmation {
                 Button(confirmation.button, role: .destructive) { store.send(.confirm) }
@@ -305,6 +321,43 @@ private struct MacViewActionSheet: View {
             Button("Cancel", role: .cancel) { store.send(.dismiss); onDismiss() }
         } message: {
             if let changed = store.changed { Text(changed.button) }
+        }
+    }
+}
+
+private struct MacViewIssuePicker: View {
+    let presentation: StoreOf<MacPresentationFeature>
+    private var rows: [Row] {
+        presentation.pickerDocument?.sections.flatMap(\.items).compactMap { item in
+            if case let .row(row) = item { row } else { nil }
+        } ?? []
+    }
+    var body: some View {
+        NavigationStack {
+            List {
+                if let error = presentation.pickerError {
+                    Label(error, systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                }
+                ForEach(rows, id: \.id) { row in
+                    Button { presentation.send(.pickerSelected(row.id)) } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(row.title)
+                            if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary) }
+                        }.frame(maxWidth: .infinity, alignment: .leading)
+                    }.buttonStyle(.plain)
+                }
+                if rows.isEmpty, let empty = presentation.pickerDocument?.empty {
+                    Text(empty.text).foregroundStyle(.secondary)
+                }
+            }
+            .overlay { if presentation.pickerLoading && rows.isEmpty { ProgressView() } }
+            .searchable(text: Binding(get: { presentation.pickerQuery },
+                                      set: { presentation.send(.pickerQueryChanged($0)) }),
+                        prompt: Text("Filter issues"))
+            .navigationTitle(presentation.pickerDocument?.title ?? String(localized: "Issues"))
+            .toolbar { ToolbarItem(placement: .cancellationAction) {
+                Button("Cancel") { presentation.send(.pickerClosed) }
+            } }
         }
     }
 }
@@ -358,9 +411,7 @@ private struct MacViewSidebarRow: View {
                 StatusDot(color: taskTint(row))
                 Text(row.title).fontWeight(.semibold)
                 Spacer(minLength: 4)
-                if case let .count(count)? = row.trailing {
-                    Text(count, format: .number).font(.caption).monospacedDigit().foregroundStyle(.secondary)
-                }
+                trailingLabel
             }.font(.callout)
         } else if row.icon == .node || row.icon == .orchestrator {
             HStack(spacing: 8) {
@@ -376,7 +427,7 @@ private struct MacViewSidebarRow: View {
                         .foregroundStyle(badge.tone == .warning || badge.tone == .critical ? .orange : .secondary)
                         .lineLimit(1)
                 }
-                if case let .count(count)? = row.trailing { Text(count, format: .number).font(.caption).monospacedDigit().foregroundStyle(.secondary) }
+                trailingLabel
             }
             .help(row.tooltip ?? [row.title, row.subtitle ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
             .accessibilityElement(children: .combine)
@@ -386,7 +437,7 @@ private struct MacViewSidebarRow: View {
                 Image(systemName: symbol).foregroundStyle(tint).frame(width: 16)
                 Text(row.title).fontWeight(.medium).strikethrough(row.struck).lineLimit(2)
                 Spacer(minLength: 4)
-                if case let .count(value)? = row.trailing { Text("\(value)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                trailingLabel
             }
             if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).padding(.leading, 24) }
             if !row.badges.isEmpty { Text(row.badges.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).padding(.leading, 24).lineLimit(1) }
@@ -398,6 +449,17 @@ private struct MacViewSidebarRow: View {
     private var selectionTag: MacPresentationFeature.Selection? {
         guard case let .view(key)? = row.link else { return nil }
         return .viewKey(key)
+    }
+    @ViewBuilder private var trailingLabel: some View {
+        if let trailing = row.trailing {
+            Group {
+                switch trailing {
+                case let .count(value): Text(value, format: .number)
+                case let .time(at, format): Text(ViewsDate.display(at, format: format))
+                case let .text(value): Text(value)
+                }
+            }.font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+        }
     }
     private var visibleChildren: [Row] {
         guard !filterText.isEmpty else { return row.children }
