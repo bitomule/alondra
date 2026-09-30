@@ -32,7 +32,6 @@ mod http;
 mod hub;
 mod issues;
 mod keeper;
-mod legacy;
 mod machine;
 mod managed_orchestrator;
 mod markdown;
