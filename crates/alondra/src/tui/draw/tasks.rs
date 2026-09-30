@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style, Stylize};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block as Panel, BorderType, Paragraph};
 
-use super::super::agents::{AgentRow, said};
+use super::super::agents::AgentRow;
 use super::super::inbox::{authorization_state, pr_line};
 use super::super::tasks::{TaskKey, TaskListRow, TreeRow, state_label};
 use super::super::{App, Pane, Remote, View, unavailable};
@@ -15,7 +15,7 @@ use super::{
     more_hint, node_color, panel, scrollbar, since_phrase, state_color, state_glyph,
 };
 use crate::i18n;
-use crate::runtime::{Activity, FleetNode};
+use crate::runtime::FleetNode;
 use crate::tui::md::{self, str_width, truncate, wrap};
 
 pub fn draw_tasks(f: &mut Frame, app: &mut App, area: Rect) {
@@ -815,30 +815,6 @@ fn task_lines(app: &App, t: &Task, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// "principal  Bash bazel build //ios:App · 1m": one thread of a session and what it does.
-fn activity_line(a: &Activity, width: usize) -> Line<'static> {
-    let mut spans = vec![Span::styled(
-        format!("{:<11}", truncate(&a.thread(), 10)),
-        Style::new().fg(SOFT),
-    )];
-    match (&a.tool, &a.summary) {
-        (Some(tool), summary) => {
-            spans.push(Span::styled(format!("{tool} "), Style::new().fg(ACCENT)));
-            spans.push(Span::raw(md::one_line(
-                summary.as_deref().unwrap_or_default(),
-            )));
-        }
-        (None, summary) => spans.push(Span::raw(md::one_line(
-            summary.as_deref().unwrap_or(tr!("thinking", "pensando")),
-        ))),
-    }
-    spans.push(Span::styled(
-        format!(" · {}", ago(a.since)),
-        Style::new().fg(DIM),
-    ));
-    fit(spans, width)
-}
-
 /// "2 subagentes · 1 shell", in the warning colour and marked when one may be hung.
 fn background_badge(n: &FleetNode) -> Option<(String, Style)> {
     let text = i18n::background_badge(&n.background)?;
@@ -850,43 +826,6 @@ fn background_badge(n: &FleetNode) -> Option<(String, Style)> {
     } else {
         Some((text, Style::new().fg(DIM)))
     }
-}
-
-fn background_lines(n: &FleetNode, width: usize) -> Vec<Line<'static>> {
-    if n.background.is_empty() {
-        return vec![];
-    }
-    let mut lines = vec![
-        Line::default(),
-        Line::from(
-            tr!("Running in the background", "En marcha en segundo plano")
-                .fg(DIM)
-                .bold(),
-        ),
-    ];
-    for b in &n.background {
-        let color = if b.suspect { Color::LightRed } else { ACCENT };
-        let mut spans = vec![
-            Span::raw(md::one_line(&b.label)),
-            Span::styled(format!(" · {}", ago(b.started_at)), Style::new().fg(DIM)),
-        ];
-        if b.suspect {
-            spans.push(Span::styled(
-                format!(" · {}", i18n::possibly_hung()),
-                Style::new().fg(Color::LightRed),
-            ));
-        }
-        lines.extend(wrap(
-            spans,
-            width,
-            vec![Span::styled(
-                format!("{} ", i18n::background_kind(b.kind)),
-                Style::new().fg(color),
-            )],
-            vec![],
-        ));
-    }
-    lines
 }
 
 /// An agent's row: the runtime's state, badge and age when alondrad reports its session,
@@ -1044,10 +983,6 @@ pub fn draw_compact_agents(f: &mut Frame, app: &App, area: Rect) {
 }
 
 pub fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
-    if app.agent_zoom && (app.selected_agent().is_some() || app.orchestrator_selected()) {
-        draw_agent_detail(f, app, area);
-        return;
-    }
     let area = match app.orchestrator().cloned() {
         Some(o) => draw_orchestrator_strip(f, area, &o, app.orchestrator_selected()),
         None => area,
@@ -1190,224 +1125,6 @@ pub fn draw_agents(f: &mut Frame, app: &mut App, area: Rect) {
         scrollbar(f, body, total, app.agent_scroll);
     }
     if let Some(d) = detail {
-        draw_agent_detail(f, app, d);
+        f.render_widget(panel(Line::from(tr!(" Agent ", " Agente ").fg(DIM)), false), d);
     }
-}
-
-fn draw_agent_detail(f: &mut Frame, app: &mut App, area: Rect) {
-    if app
-        .card_view
-        .as_ref()
-        .is_some_and(|view| app.selected_view_key().as_deref() == Some(view.key.as_str()))
-        && super::super::view_render::detail_card(app.card_view.as_ref().unwrap()).is_some()
-    {
-        super::draw_views_card(f, app, area);
-        return;
-    }
-    let Some(id) = app
-        .agent_sel
-        .clone()
-        .filter(|_| app.selected_agent().is_some() || app.orchestrator_selected())
-    else {
-        app.agent_view.total = 0;
-        f.render_widget(
-            panel(Line::from(tr!(" Agent ", " Agente ").fg(DIM)), false),
-            area,
-        );
-        return;
-    };
-    let orchestrator = app.orchestrator_selected();
-    let name = if orchestrator {
-        tr!("Orchestrator", "Orquestador").to_string()
-    } else {
-        app.agent_name(Some(&id))
-    };
-    let connected = app.selected_agent().is_some_and(|a| a.connected);
-    let focused = app.agent_zoom || app.focus == Pane::Detail;
-    let mut block = panel(
-        Line::from(vec![
-            Span::raw(" "),
-            Span::styled(md::one_line(&name), Style::new().bold()),
-            Span::raw(" "),
-        ]),
-        focused,
-    );
-    let inner = block.clone().inner(area);
-    let text = Rect {
-        x: inner.x + 1,
-        width: inner.width.saturating_sub(2),
-        ..inner
-    };
-    let width = text.width as usize;
-    let node = app.node(&id).cloned();
-    let mut lines = match &node {
-        Some(n) => {
-            let mut lines = vec![fit(
-                vec![
-                    Span::styled(
-                        format!("● {}", n.status_label()),
-                        Style::new().fg(node_color(n)).bold(),
-                    ),
-                    Span::styled(
-                        format!(" · {}", since_phrase(n.state_since)),
-                        Style::new().fg(DIM),
-                    ),
-                ],
-                width,
-            )];
-            let short = &n.short_id;
-            lines.push(Line::from(
-                match &n.project {
-                    Some(p) => trf!("project {p} · {short}", "proyecto {p} · {short}"),
-                    None => short.clone(),
-                }
-                .fg(DIM),
-            ));
-            if let Some(cwd) = n.cwd.as_ref().filter(|_| !n.is_orchestrator) {
-                lines.push(fit(
-                    vec![Span::styled(cwd.clone(), Style::new().fg(DIM))],
-                    width,
-                ));
-            }
-            lines
-        }
-        None => {
-            let state = if connected {
-                tr!("● connected", "● conectado")
-            } else {
-                tr!("○ not connected", "○ no conectado")
-            };
-            vec![
-                Line::from(Span::styled(
-                    state,
-                    Style::new()
-                        .fg(if connected { Color::Green } else { DIM })
-                        .bold(),
-                )),
-                fit(
-                    vec![Span::styled(id.0.clone(), Style::new().fg(DIM))],
-                    width,
-                ),
-            ]
-        }
-    };
-    if orchestrator && let Some(runtime) = app.runtime.as_ref().and_then(|r| r.orchestrator_state())
-    {
-        let queued = runtime.queue_depth;
-        lines.push(Line::from(
-            trf!("Queued messages: {queued}", "Mensajes en cola: {queued}").fg(DIM),
-        ));
-        if let Some(run) = &runtime.active_run_id {
-            lines.push(Line::from(
-                trf!("Execution {run}", "Ejecución {run}").fg(DIM),
-            ));
-        }
-        if let Some(error) = &runtime.last_error {
-            lines.extend(wrap(
-                vec![Span::styled(error.clone(), Style::new().fg(Color::Yellow))],
-                width,
-                vec![],
-                vec![],
-            ));
-        }
-    }
-    let tasks = app.agent_tasks(&id);
-    if !tasks.is_empty() {
-        section(&mut lines, tr!(" Tasks", " Tareas"), width);
-        for t in tasks {
-            let (g, c) = state_glyph(t.state);
-            lines.push(fit(
-                vec![
-                    Span::styled(format!(" {g} "), Style::new().fg(c).bold()),
-                    Span::raw(md::one_line(&t.title)),
-                    Span::styled(format!(" · {}", state_label(t.state)), Style::new().fg(c)),
-                ],
-                width,
-            ));
-        }
-    }
-    let waiting: Vec<_> = app
-        .inbox_rows()
-        .into_iter()
-        .filter(|(i, _)| i.agent_id.as_ref() == Some(&id) && i.children.is_empty())
-        .map(|(i, _)| i.clone())
-        .collect();
-    if !waiting.is_empty() {
-        section(&mut lines, tr!(" In the inbox", " En la bandeja"), width);
-        for item in waiting {
-            let (g, k, c) = kind_glyph(&item.kind);
-            let text = item.body.clone().unwrap_or_else(|| item.title.clone());
-            lines.push(fit(
-                vec![
-                    Span::styled(format!(" {g} {k} "), Style::new().fg(c).bold()),
-                    Span::raw(md::one_line(&text)),
-                ],
-                width,
-            ));
-        }
-    }
-    let threads = app.agent_activity(&id);
-    if !threads.is_empty() {
-        section(&mut lines, tr!(" Now", " Ahora"), width);
-        for a in &threads {
-            lines.push(activity_line(a, width));
-            if let Some(task) = a
-                .task
-                .as_deref()
-                .and_then(|t| app.task(&t.into()))
-                .filter(|_| !a.is_main())
-            {
-                let title = md::one_line(&task.title);
-                lines.push(fit(
-                    vec![
-                        Span::raw(" ".repeat(11)),
-                        Span::styled(
-                            trf!("subagent of “{title}”", "subagente de «{title}»"),
-                            Style::new().fg(DIM),
-                        ),
-                    ],
-                    width,
-                ));
-            }
-        }
-    }
-    if let Some(n) = &node {
-        lines.extend(background_lines(n, width));
-        if let Some(needs) = &n.daemon_needs {
-            lines.push(Line::default());
-            lines.extend(wrap(
-                vec![Span::styled(needs.clone(), Style::new().fg(Color::Yellow))],
-                width,
-                vec![Span::styled(
-                    tr!("Needs: ", "Necesita: "),
-                    Style::new().fg(DIM),
-                )],
-                vec![],
-            ));
-        }
-        let said = said(n);
-        if !said.trim().is_empty() {
-            lines.push(Line::default());
-            lines.push(Line::from(
-                tr!("The last thing it said", "Lo último que dijo")
-                    .fg(DIM)
-                    .bold(),
-            ));
-            lines.extend(md::render(&md::parse(&said), width).lines);
-        }
-    }
-    let total = lines.len();
-    let h = inner.height as usize;
-    app.agent_detail_scroll = app.agent_detail_scroll.min(total.saturating_sub(h));
-    app.agent_view.h = h;
-    app.agent_view.total = total;
-    if let Some(hint) = more_hint(app.agent_detail_scroll, h, total) {
-        block = block.title_bottom(hint);
-    }
-    f.render_widget(block, area);
-    f.render_widget(
-        Paragraph::new(lines).scroll((app.agent_detail_scroll as u16, 0)),
-        text,
-    );
-    scrollbar(f, inner, total, app.agent_detail_scroll);
 }

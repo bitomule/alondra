@@ -73,6 +73,82 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
 }
 
 #[test]
+fn fleet_node_view_renders_facts_activity_and_actions() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Fleet;
+    let id = "550e8400-e29b-41d4-a716-446655440000";
+    let mut fleet = view_fixture("home-tui.json");
+    fleet["view"] = serde_json::json!("fleet");
+    fleet["key"] = serde_json::json!("fleet");
+    fleet["sections"] = serde_json::json!([{
+        "id": "nodes", "title": "App", "collapsed": false, "items": [{
+            "type": "row", "id": id, "icon": "node", "title": "Instance A",
+            "subtitle": "Working", "depth": 0, "struck": false,
+            "link": {"kind": "view", "key": format!("node:{id}")}
+        }]
+    }]);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(fleet).unwrap())));
+    app.sel = Some(Key(id.into()));
+    let mut node = view_fixture("card-question.json");
+    node["view"] = serde_json::json!("node");
+    node["key"] = serde_json::json!(format!("node:{id}"));
+    node["title"] = serde_json::json!("Instance A");
+    node["sections"] = serde_json::json!([
+        {"id": "header", "collapsed": false, "items": [{
+            "type": "facts", "items": [
+                {"label": "State", "value": "Working"},
+                {"label": "Tasks", "value": "2"}
+            ]
+        }]},
+        {"id": "activity", "title": "Activity", "collapsed": false, "items": [{
+            "type": "row", "id": "activity-1", "icon": "history",
+            "title": "Running the suite", "depth": 0, "struck": false
+        }]},
+        {"id": "actions", "collapsed": false, "items": [{
+            "type": "actions", "actions": [{
+                "id": format!("msg:{id}@1"), "label": "Message",
+                "style": "primary", "presentation": "button",
+                "input": {"kind": "text", "placeholder": "Write to Instance A…", "required": true, "multiline": true},
+                "attachments": true, "enabled": true, "key": "m"
+            }]
+        }]}
+    ]);
+    app.on_msg(Msg::ViewCard {
+        key: format!("node:{id}"),
+        result: Ok(serde_json::from_value(node).unwrap()),
+    });
+
+    let shown = screen(&mut app, 150, 35);
+    for text in ["Instance A", "State: Working", "Tasks: 2", "Running the suite", "Message"] {
+        assert!(shown.contains(text), "{text}: {shown}");
+    }
+    press(&mut app, KeyCode::Char('m'));
+    typed(&mut app, "Status?");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(posted(&app)[0].0, "/actions");
+    assert_eq!(posted(&app)[0].1["action_id"], format!("msg:{id}@1"));
+    assert_eq!(posted(&app)[0].1["input"]["text"], "Status?");
+}
+
+#[test]
+fn fleet_search_key_opens_the_server_search_view() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Fleet;
+    let mut fleet = view_fixture("home-tui.json");
+    fleet["view"] = serde_json::json!("fleet");
+    fleet["key"] = serde_json::json!("fleet");
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(fleet).unwrap())));
+
+    press(&mut app, KeyCode::Char('/'));
+
+    assert_eq!(app.view_navigation.last().map(String::as_str), Some("search"));
+    assert_eq!(app.card_view_asked.as_deref(), Some("search"));
+}
+
+#[test]
 fn views_mode_schedules_loads_the_server_screen() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
@@ -961,53 +1037,6 @@ fn the_task_detail_shows_its_brief_history_dependents_stack_and_options() {
     }
 }
 
-#[test]
-fn an_agents_threads_and_local_details_come_from_the_runtime() {
-    let world = World::base(false);
-    let mut app = app_on(&world);
-    with_runtime(&mut app, runtime());
-    app.show(Screen::Fleet);
-    typed(&mut app, "ggj");
-    let activity = fixture("requests.json")["activity"]["response"]["activity"].clone();
-    app.on_msg(Msg::Threads {
-        agent: "agent-a".into(),
-        threads: serde_json::from_value(activity).ok(),
-    });
-    let shown = screen(&mut app, 160, 40);
-    for text in [
-        "project App · a1b2c3",
-        "/Users/me/Projects/repo",
-        "NOW",
-        "bazel test",
-        "subagent of “Synthetic task”",
-        "Explore the parser",
-        "A decision on the flag",
-        "Running the suite",
-    ] {
-        assert!(shown.contains(text), "{text}: {shown}");
-    }
-    press(&mut app, KeyCode::Char('/'));
-    typed(&mut app, "projects/repo");
-    assert_eq!(
-        app.agent_list().len(),
-        1,
-        "the session's directory matches locally"
-    );
-    press(&mut app, KeyCode::Esc);
-    press(&mut app, KeyCode::Char('/'));
-    typed(&mut app, "parser");
-    assert!(app.agent_list().is_empty());
-    app.on_msg(Msg::Found {
-        query: "parser".into(),
-        result: Ok(("session transcripts".into(), vec!["agent-a".into()])),
-    });
-    assert_eq!(
-        app.agent_list().len(),
-        1,
-        "the daemon's search fills in what nothing local matched"
-    );
-    assert!(screen(&mut app, 160, 40).contains("1 according to session transcripts"));
-}
 
 #[test]
 fn a_on_an_orchestrator_item_opens_its_activity() {

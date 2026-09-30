@@ -564,11 +564,7 @@ impl App {
         }
         let input = option.map_or(&action.input, |option| &option.input);
         match input {
-            alondra_core::views::Input::Text {
-                placeholder,
-                required,
-                ..
-            } => {
+            alondra_core::views::Input::Text { required, .. } => {
                 self.compose(
                     super::Target::ViewAction {
                         action_id: action.id.clone(),
@@ -580,7 +576,7 @@ impl App {
                         form_fields: None,
                         attachment_field: None,
                     },
-                    placeholder,
+                    "",
                 );
             }
             alondra_core::views::Input::None => {
