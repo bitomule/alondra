@@ -270,11 +270,6 @@ impl OptionsForm {
         crate::ops::new_request(request_id, text, self.project.as_deref(), &json!(self.chosen), issue.as_deref(), attachments)
     }
 
-    /// Nothing chosen here that the plain `create_request` command cannot carry.
-    pub fn is_plain(&self) -> bool {
-        self.project.is_none() && self.chosen.is_empty() && self.issue.is_none()
-    }
-
     /// `(label, value, focused)` for each row: project, issue, then every option.
     pub fn rows_shown(&self) -> Vec<(String, String, bool)> {
         let project = self.project.clone().unwrap_or_else(|| tr!("the orchestrator decides", "lo decide el orquestador").into());
@@ -379,7 +374,6 @@ mod tests {
         assert!(f.popup.is_none() && f.focus == Some(5), "Esc closes only the list");
         let body = f.request("request-1", "hola", &[]);
         assert_eq!(body, json!({"request_id": "request-1", "text": "hola", "attachments": [], "project": null, "options": {"effort": "normal"}}));
-        assert!(!f.is_plain());
     }
 
     #[test]

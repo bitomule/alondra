@@ -1599,21 +1599,11 @@ impl App {
             }
             Target::NewRequest => {
                 let request_id = crate::client::new_id("request");
-                match c.form.as_ref().filter(|f| !f.is_plain() || !attachments.is_empty()) {
-                    Some(form) => {
-                        let body = form.request(&request_id, &text, &attachments);
-                        self.op(None, ops::REQUESTS.into(), body, tr!("Sent to the orchestrator", "Enviado al orquestador").into());
-                    }
-                    None if attachments.is_empty() => {
-                        let Some(revision) = self.domain.as_ref().map(|d| d.revision) else { return };
-                        let command = Command::CreateRequest { request_id: request_id.into(), body: text.clone(), auto_merge: false };
-                        self.send(format!("request:{text}"), None, revision, command, tr!("Sent to the orchestrator", "Enviado al orquestador").into(), draft);
-                    }
-                    None => {
-                        let body = ops::new_request(&request_id, &text, None, &json!({}), None, &attachments);
-                        self.op(None, ops::REQUESTS.into(), body, tr!("Sent to the orchestrator", "Enviado al orquestador").into());
-                    }
-                }
+                let body = match c.form.as_ref() {
+                    Some(form) => form.request(&request_id, &text, &attachments),
+                    None => ops::new_request(&request_id, &text, None, &json!({}), None, &attachments),
+                };
+                self.op(None, ops::REQUESTS.into(), body, tr!("Sent to the orchestrator", "Enviado al orquestador").into());
             }
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else { return };

@@ -215,7 +215,7 @@ fn a_dropped_file_waits_for_its_copy_and_goes_with_the_feedback() {
 }
 
 #[test]
-fn new_work_with_a_project_goes_to_the_request_route_and_plain_text_stays_a_command() {
+fn new_work_goes_to_the_request_launch_route_with_or_without_a_project() {
     let world = World::base(false);
     let mut app = app_on(&world);
     press(&mut app, KeyCode::Char('n'));
@@ -230,6 +230,18 @@ fn new_work_with_a_project_goes_to_the_request_route_and_plain_text_stays_a_comm
     let (path, body) = posted(&app).remove(0);
     assert_eq!((path.as_str(), &body["project"], &body["text"], &body["options"]), ("/requests", &serde_json::json!("App"), &serde_json::json!("Ship it"), &serde_json::json!({})));
     assert!(body["request_id"].as_str().is_some_and(|id| id.starts_with("request-")));
+    assert!(sent(&app).is_empty());
+}
+
+#[test]
+fn a_new_request_without_choices_is_submitted_through_the_launch_form() {
+    let world = World::base(false);
+    let mut app = app_on(&world);
+    press(&mut app, KeyCode::Char('n'));
+    typed(&mut app, "Ship it");
+    press(&mut app, KeyCode::Enter);
+    let (path, body) = posted(&app).remove(0);
+    assert_eq!((path.as_str(), &body["text"], &body["project"]), ("/requests", &serde_json::json!("Ship it"), &serde_json::Value::Null));
     assert!(sent(&app).is_empty());
 }
 

@@ -341,18 +341,6 @@ fn cancel_asks_twice_and_sends_the_typed_command() {
 }
 
 #[test]
-fn a_new_request_is_a_create_request_command() {
-    let mut world = World::base(false);
-    let mut app = app_on(&world);
-    press(&mut app, KeyCode::Char('n'));
-    typed(&mut app, "Ship it");
-    press(&mut app, KeyCode::Enter);
-    assert!(matches!(&sent(&app)[0].command, Command::CreateRequest { body, .. } if body == "Ship it"));
-    deliver(&mut app, &mut world).unwrap();
-    assert_eq!(world.state.requests.len(), 2);
-}
-
-#[test]
 fn a_schedule_write_carries_only_the_draft_fields() {
     let listed = serde_json::json!({"id": "s", "title": "T", "text": "x", "project": null, "options": {}, "disallowed_tools": [], "frequency": "daily",
         "hour": 9, "minute": 0, "weekday": null, "interval": null, "start_at": null, "enabled": true, "revision": 2, "next_run": 5, "deleted_at": null,
