@@ -1,6 +1,7 @@
-import AlondraAppComposition
+import AlondraViewsAppComposition
 import AlondraAuth
 import AlondraLoopbackSession
+import AlondraViewsWorkspaceServices
 import Foundation
 import Testing
 

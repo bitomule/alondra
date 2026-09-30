@@ -2,6 +2,7 @@ load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
 swift_library(
     name = "AlondraWorkspace",
+    testonly = True,
     module_name = "AlondraWorkspace",
     srcs = glob(["Sources/*.swift"], exclude = ["Sources/ViewsCloudAppServices.swift"]),
     visibility = ["//visibility:public"],
