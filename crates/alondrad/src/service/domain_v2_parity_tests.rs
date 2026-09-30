@@ -250,11 +250,8 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     }
 
-    let app = crate::http::router(
-        hub.clone(),
-        auth.clone(),
-        Arc::new(crate::push::Push::open(&home).unwrap()),
-    )
+    let app = crate::domain_api::routes::<crate::hub::Hub>()
+    .with_state(hub.clone())
     .layer(axum::middleware::from_fn_with_state(
         auth.clone(),
         crate::auth::guard,

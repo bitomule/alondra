@@ -6,146 +6,22 @@ use alondra_core::{
     Answer, Attachment, Event, HookEvent, Link, Message, MessageAbout, MessageFrom, Question, QuestionOption,
     QuestionOrigin, QuestionStatus, Report, ReportKind, ReviewVerdict, View, answer_option, now_millis, states, upkeep,
 };
-use axum::extract::{ConnectInfo, Path, Query, State};
-use axum::body::Bytes;
+use axum::extract::{Path, Query, State};
 use axum::Extension;
-use std::net::SocketAddr;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
-use axum::{Json, Router};
+use axum::Json;
 use serde::Deserialize;
 use serde_json::{Value, json};
 
 use alondra_core::tasks::CardTask;
 
-use crate::auth::{Auth, is_local};
-use crate::push::{Push, Registration, valid_push_binding};
 use crate::hub::Hub;
 use crate::uploads;
 
-const MAX_WAIT: Duration = Duration::from_secs(55);
 const MAX_ATTACHMENT_BYTES: u64 = 5 * 1024 * 1024;
 
 type AppState = Arc<Hub>;
-
-pub fn router(hub: Arc<Hub>, auth: Arc<Auth>, push: Arc<Push>) -> Router {
-    Router::new()
-        .merge(crate::domain_api::routes())
-        .route("/v1/push/register", post(push_register))
-        .route("/v1/push/check", post(push_check))
-        .route("/v1/pairing", post(new_pairing))
-        .route("/v1/pair", post(pair))
-        .route("/v1/service/approve-device", post(service_approve_device))
-        .route("/v1/service/bootstrap", get(service_bootstrap))
-        .route("/v1/devices", get(devices))
-        .route("/v1/devices/{id}", axum::routing::delete(revoke_device))
-        .route("/v1/changes", get(changes))
-        .route("/v1/delivery-attempts",get(delivery_attempts))
-        .route("/v1/delivery-attempts/{id}/retry",post(retry_delivery))
-        .route("/v1/delivery-attempts/{id}/discard",post(discard_delivery))
-        .route("/v1/nodes/{key}", get(node_detail).delete(forget_node))
-        .route("/v1/nodes/{key}/activity", get(node_activity))
-        .route("/v1/nodes/{key}/close", post(close_node))
-        .route("/v1/nodes/{key}/messages", post(send_message))
-        .route("/v1/nodes/{key}/interrupt", post(interrupt))
-        .route("/v1/nodes/{key}/ack", post(acknowledge))
-        .route("/v1/questions", post(ask))
-        .route("/v1/actions", post(request_action))
-        .route("/v1/questions/{id}", get(question_detail))
-        .route("/v1/questions/{id}/answer", post(answer))
-        .route("/v1/questions/{id}/withdraw", post(withdraw))
-        .route("/v1/questions/{id}/more-context", post(more_context))
-        .route("/v1/reports", post(report))
-        .route("/v1/reports/{id}/read", post(report_read))
-        .route("/v1/reports/{id}/review", post(review_artifact))
-        .route("/v1/waiting-machine", post(waiting_machine))
-        .route("/v1/orchestrator", post(mark_orchestrator))
-        .route("/v1/orchestrator/retry", post(retry_orchestrator))
-        .route("/v1/orchestrator/cancel", post(cancel_orchestrator))
-        .route("/v1/orchestrator/acknowledge", post(acknowledge_orchestrator))
-        .route("/v1/launch", post(launch))
-        .route("/v1/requests", post(new_request))
-        .route("/v1/schedules", get(crate::schedules::list).post(crate::schedules::create))
-        .route("/v1/schedules/{id}", axum::routing::put(crate::schedules::update).delete(crate::schedules::delete))
-        .route("/v1/schedules/{id}/run", post(crate::schedules::run_now))
-        .route("/v1/requests/{id}/close", post(close_request))
-        .route("/v1/options", get(options_catalog))
-        .route("/v1/projects", get(projects))
-        .route("/v1/issues", get(open_issues))
-        .route("/v1/search", get(search))
-        .route("/v1/health", get(health))
-        .route("/v1/activity", post(activity))
-        .route("/v1/context", post(context_measured))
-        .route("/v1/prs/{id}/merge", post(merge_pr))
-        .route("/v1/prs/{id}/changes", post(request_pr_changes))
-        .route("/v1/prs/{id}/ask", post(ask_about_pr))
-        .route("/v1/prs/{id}/resolve-conflicts", post(resolve_pr_conflicts))
-        .route("/v1/prs/{id}/dismiss", post(dismiss_pr))
-        .route("/v1/prs/{id}/task", post(reassign_pr))
-        .route("/v1/prs/{id}/diff", get(pr_diff))
-        .route("/v1/prs/{id}/diff-snapshot", get(pr_diff_snapshot))
-        .route("/v1/tasks", post(define_tasks))
-        .route("/v1/tasks/archive", post(archive_tasks))
-        .route("/v1/tasks/new", post(new_task))
-        .route("/v1/tasks/claim", post(claim_task))
-        .route("/v1/focus", post(focus))
-        .route("/v1/candidates", get(task_candidates))
-        .route("/v1/tasks/{id}", get(task_detail))
-        .route("/v1/tasks/{id}/cancel", post(cancel_task))
-        .route("/v1/tasks/{id}/reopen", post(reopen_task))
-        .route("/v1/tasks/{id}/title", post(title_task))
-        .route("/v1/file", get(file))
-        .route("/v1/uploads", post(upload).layer(axum::extract::DefaultBodyLimit::max(uploads::MAX_UPLOAD_BYTES + 64 * 1024)))
-        .layer(axum::middleware::from_fn_with_state(hub.clone(), orchestrator_authority))
-        .layer(Extension(auth))
-        .layer(Extension(push))
-        .with_state(hub)
-}
-
-/// A lease spans awaits and external action bookkeeping, so cancellation cannot revoke
-/// a command halfway through launching a node and then lose the launch's durable record.
-async fn orchestrator_authority(State(hub): State<AppState>, request: axum::extract::Request, next: axum::middleware::Next) -> Response {
-    let run = request.headers().get("x-alondra-orchestrator-execution").and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let session = request.headers().get("x-alondra-session").and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let marked = run.is_some() || session.as_deref().is_some_and(|sid| hub.read(|v| sid == alondra_core::orchestrator::NODE_ID
-        || v.nodes.get(sid).is_some_and(|n| n.is_orchestrator)
-        || v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == sid)
-        || v.orchestrator.as_ref().is_some_and(|r| r.session_id.as_deref() == Some(sid))));
-    if !marked {
-        // Lifecycle endpoints acquire a write lease themselves. Other mutations take the
-        // read lease BEFORE observing migration state, closing the upgrade TOCTOU window.
-        if request.method() == axum::http::Method::GET || matches!(request.uri().path(),
-            "/v1/orchestrator/cancel" | "/v1/orchestrator/retry" | "/v1/orchestrator/acknowledge") {
-            return next.run(request).await;
-        }
-        let _lease = hub.orchestrator_commands.read().await;
-        let state = hub.read(|v| (v.orchestrator.is_some(), v.orchestrator_migration.is_some()));
-        if state.1 { return err(StatusCode::CONFLICT, "orchestrator migration is in progress; refresh and retry"); }
-        if state.0 && orchestrator_mutation_path(request.uri().path()) && request.extensions().get::<crate::auth::Signed>().is_none() {
-            return err(StatusCode::UNAUTHORIZED, "This operation requires the current orchestrator execution or a signed user request");
-        }
-        return next.run(request).await;
-    }
-    if matches!(request.uri().path(), "/v1/orchestrator/cancel" | "/v1/orchestrator/retry" | "/v1/orchestrator/acknowledge") {
-        return err(StatusCode::FORBIDDEN, "Only the user can resolve or cancel an orchestrator execution");
-    }
-    let _lease = hub.orchestrator_commands.read().await;
-    let valid = hub.read(|v| match run.as_deref() {
-        Some(run) => session.as_deref() == Some(alondra_core::orchestrator::NODE_ID) && managed_execution(v, run, None),
-        None => v.orchestrator.is_none() && v.orchestrator_migration.is_none(),
-    });
-    if !valid { return err(StatusCode::CONFLICT, "stale orchestrator execution"); }
-    next.run(request).await
-}
-
-fn orchestrator_mutation_path(path: &str) -> bool {
-    matches!(path, "/v1/tasks" | "/v1/launch")
-        || [ ("/v1/nodes/", "/messages"), ("/v1/nodes/", "/interrupt"),
-             ("/v1/requests/", "/close"), ("/v1/tasks/", "/cancel"),
-             ("/v1/tasks/", "/reopen"), ("/v1/tasks/", "/title") ]
-            .iter().any(|(prefix, suffix)| path.strip_prefix(prefix).and_then(|p| p.strip_suffix(suffix)).is_some_and(|id| !id.is_empty() && !id.contains('/')))
-}
 
 fn err(status: StatusCode, msg: impl Into<String>) -> Response {
     (status, Json(json!({ "error": msg.into() }))).into_response()
@@ -1049,158 +925,6 @@ fn elicitation_content(schema: &Value, said: &str) -> Value {
     Value::Object(content)
 }
 
-#[derive(Deserialize)]
-struct FileQuery {
-    path: String,
-}
-
-async fn file(State(hub): State<AppState>, Query(q): Query<FileQuery>) -> Response {
-    let root = hub.home.join("files");
-    let Ok(path) = std::fs::canonicalize(&q.path) else {
-        return err(StatusCode::NOT_FOUND, "not found");
-    };
-    let Ok(root) = std::fs::canonicalize(&root) else {
-        return err(StatusCode::NOT_FOUND, "not found");
-    };
-    if !path.starts_with(&root) {
-        return err(StatusCode::FORBIDDEN, "only copies stored by Alondra are served");
-    }
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], bytes).into_response(),
-        Err(e) => err(StatusCode::NOT_FOUND, e.to_string()),
-    }
-}
-
-fn local_only(peer: &SocketAddr, headers: &axum::http::HeaderMap) -> Option<Response> {
-    (!is_local(peer, headers)).then(|| err(StatusCode::FORBIDDEN, "only from this Mac"))
-}
-
-async fn new_pairing(State(hub): State<AppState>, Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
-    if let Some(r) = local_only(&peer, &headers) {
-        return r;
-    }
-    let url = hub.config.public_url.clone();
-    Json(json!({"code": auth.new_pairing_code(), "expires_in": 600, "url": url})).into_response()
-}
-
-#[derive(Deserialize)]
-struct PairBody {
-    code: String,
-    device_name: String,
-    public_key: String,
-}
-
-async fn pair(Extension(auth): Extension<Arc<Auth>>, Json(b): Json<PairBody>) -> Response {
-    match auth.pair(&b.code, &b.device_name, &b.public_key) {
-        Ok(d) => Json(json!({"device_id": d.id})).into_response(),
-        Err(e) => err(StatusCode::UNAUTHORIZED, e),
-    }
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ServiceApproveBody { device_id: String, name: String, signing_key: String }
-
-async fn service_approve_device(
-    Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap, body: Bytes,
-) -> Response {
-    if let Some(response) = local_only(&peer, &headers) { return response; }
-    if body.len() > 2048 { return err(StatusCode::PAYLOAD_TOO_LARGE, "service approval too large"); }
-    if let Err(error) = auth.verify_service_approval(&headers, &body) {
-        return err(StatusCode::UNAUTHORIZED, error);
-    }
-    let Ok(body) = serde_json::from_slice::<ServiceApproveBody>(&body) else {
-        return err(StatusCode::BAD_REQUEST, "invalid service approval");
-    };
-    match auth.approve_service(&body.device_id, &body.name, &body.signing_key) {
-        Ok(()) => StatusCode::NO_CONTENT.into_response(),
-        Err(error) => err(StatusCode::CONFLICT, error),
-    }
-}
-
-async fn service_bootstrap(
-    Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
-) -> Response {
-    if let Some(response) = local_only(&peer, &headers) { return response; }
-    Json(json!({"epoch": base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD,
-        auth.service_epoch())})).into_response()
-}
-
-async fn devices(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
-    if let Some(r) = local_only(&peer, &headers) {
-        return r;
-    }
-    let list: Vec<Value> = auth
-        .list()
-        .into_iter()
-        .map(|d| json!({"id": d.id, "name": d.name, "created_at": d.created_at, "last_seen": d.last_seen}))
-        .collect();
-    Json(json!({"devices": list})).into_response()
-}
-
-async fn revoke_device(Extension(auth): Extension<Arc<Auth>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap, Path(id): Path<String>) -> Response {
-    if let Some(r) = local_only(&peer, &headers) {
-        return r;
-    }
-    match auth.revoke(&id) {
-        Ok(true) => Json(json!({"ok": true})).into_response(),
-        Ok(false) => err(StatusCode::NOT_FOUND, "not found"),
-        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("could not persist revocation: {e}")),
-    }
-}
-
-#[derive(Deserialize)]
-struct PushRegisterBody {
-    token: String,
-    environment: Option<String>,
-    quiet_start: Option<String>,
-    quiet_end: Option<String>,
-    push_binding: Option<String>,
-}
-
-async fn push_register(
-    Extension(push): Extension<Arc<Push>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: axum::http::HeaderMap,
-    Json(b): Json<PushRegisterBody>,
-) -> Response {
-    let device = if is_local(&peer, &headers) {
-        headers.get("x-alondra-device").and_then(|v| v.to_str().ok()).unwrap_or("local").to_string()
-    } else {
-        headers.get("x-alondra-device").and_then(|v| v.to_str().ok()).unwrap_or_default().to_string()
-    };
-    if b.token.is_empty() || !b.token.chars().all(|c| c.is_ascii_hexdigit()) {
-        return err(StatusCode::BAD_REQUEST, "invalid token");
-    }
-    if b.push_binding.as_deref().is_some_and(|binding| !valid_push_binding(binding)) {
-        return err(StatusCode::BAD_REQUEST, "invalid push binding");
-    }
-    let reg = Registration {
-        token: b.token.to_lowercase(),
-        environment: b.environment.unwrap_or_else(|| "sandbox".into()),
-        push_binding: b.push_binding,
-        quiet_start: b.quiet_start,
-        quiet_end: b.quiet_end,
-        updated_at: now_millis(),
-    };
-    match push.register(&device, reg) {
-        Ok(()) => Json(json!({"ok": true, "push_enabled": push.enabled()})).into_response(),
-        Err(e) => internal(e),
-    }
-}
-
-async fn push_check(Extension(push): Extension<Arc<Push>>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: axum::http::HeaderMap) -> Response {
-    if let Some(r) = local_only(&peer, &headers) {
-        return r;
-    }
-    match push.check().await {
-        Ok((status, body)) => Json(json!({"status": status, "body": body})).into_response(),
-        Err(e) => err(StatusCode::SERVICE_UNAVAILABLE, e.to_string()),
-    }
-}
-
 /// Every pull request a node mentions and GitHub confirms gets its card, once, for the task of
 /// the card that mentions it. Awaited, so a question or report about a new PR is filed inside its
 /// card instead of loose in the inbox.
@@ -1613,95 +1337,9 @@ pub(crate) fn tell_about_pr(hub: &Hub, pr: &alondra_core::pr::PullRequest, text:
     }
 }
 
-#[derive(Deserialize)]
-struct UploadQuery {
-    name: String,
-}
-
-/// The file itself is the body; `name` is its original file name. The copy is Alondra's from
-/// here on: the original can be deleted.
-async fn upload(State(hub): State<AppState>, Query(q): Query<UploadQuery>, body: axum::body::Bytes) -> Response {
-    let home = hub.home.clone();
-    match tokio::task::spawn_blocking(move || uploads::store(&home, &q.name, &body)).await {
-        Ok(Ok((id, a))) => {
-            let kind = if uploads::is_image(&a.name) { "image" } else { "file" };
-            Json(json!({"id": id, "name": a.name, "bytes": a.bytes, "kind": kind, "path": a.stored_path})).into_response()
-        }
-        Ok(Err(e)) => err(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
-        Err(e) => internal(e.into()),
-    }
-}
-
 /// The uploads a send refers to; a missing one refuses the send.
 fn attached(hub: &Hub, ids: &[String]) -> Result<Vec<Attachment>, Response> {
     uploads::resolve(&hub.home, ids).map_err(|e| err(StatusCode::UNPROCESSABLE_ENTITY, e))
-}
-
-/// Large enough for any PR a person reviews on a phone; beyond it the diff is cut, and says so.
-const MAX_DIFF_BYTES: usize = 2 * 1024 * 1024;
-
-async fn pr_diff_snapshot(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    let Some(pr) = hub.read(|view| view.prs.get(&id).cloned()) else {
-        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
-    };
-    if pr.state != alondra_core::pr::PrState::Open {
-        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
-    }
-    let (before, open) = match live_pr_head(&pr.url).await {
-        Ok(head) => head,
-        Err(response) => return response,
-    };
-    if !open {
-        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
-    }
-    let result = tokio::time::timeout(
-        Duration::from_secs(60),
-        tokio::process::Command::new("gh").args(["pr", "diff", &pr.url]).kill_on_drop(true).output(),
-    ).await;
-    let output = match result {
-        Ok(Ok(output)) if output.status.success() => output,
-        Ok(Ok(output)) => return err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&output.stderr).trim().to_string()),
-        Ok(Err(error)) => return err(StatusCode::BAD_GATEWAY, error.to_string()),
-        Err(_) => return err(StatusCode::GATEWAY_TIMEOUT, "gh pr diff did not finish within 60 s"),
-    };
-    let (after, still_open) = match live_pr_head(&pr.url).await {
-        Ok(head) => head,
-        Err(response) => return response,
-    };
-    if !still_open {
-        return refused(StatusCode::CONFLICT, "pr_not_open", format!("{} is no longer open", pr.url));
-    }
-    if before != after {
-        return refused(StatusCode::CONFLICT, "head_changed", "The PR changed while its diff was loaded; retry");
-    }
-    let mut diff = String::from_utf8_lossy(&output.stdout).into_owned();
-    let truncated = diff.len() > MAX_DIFF_BYTES;
-    if truncated {
-        let cut = (0..=MAX_DIFF_BYTES).rev().find(|index| diff.is_char_boundary(*index)).unwrap_or(0);
-        diff.truncate(cut);
-    }
-    Json(json!({"diff": diff, "head_sha": before, "truncated": truncated})).into_response()
-}
-
-async fn pr_diff(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    let Some(url) = hub.read(|v| v.prs.get(&id).map(|p| p.url.clone())) else {
-        return err(StatusCode::NOT_FOUND, format!("PR card #{id} does not exist"));
-    };
-    let out = tokio::time::timeout(Duration::from_secs(60), tokio::process::Command::new("gh").args(["pr", "diff", &url]).kill_on_drop(true).output()).await;
-    match out {
-        Ok(Ok(o)) if o.status.success() => {
-            let mut text = String::from_utf8_lossy(&o.stdout).into_owned();
-            if text.len() > MAX_DIFF_BYTES {
-                let cut = (0..=MAX_DIFF_BYTES).rev().find(|i| text.is_char_boundary(*i)).unwrap_or(0);
-                text.truncate(cut);
-                text.push_str("\n\\ Alondra: the diff was cut here; open the PR on GitHub for the rest\n");
-            }
-            ([(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response()
-        }
-        Ok(Ok(o)) => err(StatusCode::BAD_GATEWAY, String::from_utf8_lossy(&o.stderr).trim().to_string()),
-        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e.to_string()),
-        Err(_) => err(StatusCode::GATEWAY_TIMEOUT, "gh pr diff did not finish within 60 s"),
-    }
 }
 
 /// Mutations wholly represented by events. Local HTTP and the encrypted service
@@ -1956,20 +1594,6 @@ fn delivery_target(path:&str)->Option<(bool,&str)> {
     if id.is_empty() || !id.bytes().all(|b|b.is_ascii_digit()) { return None; }
     match action { "retry"=>Some((true,id)),"discard"=>Some((false,id)),_=>None }
 }
-async fn delivery_attempts(State(hub):State<AppState>)->Json<Value> {
-    Json(hub.read(|v|json!({"attempts":v.delivery_attempts.values().collect::<Vec<_>>()})))
-}
-async fn retry_delivery(State(hub):State<AppState>,Path(id):Path<u64>,Json(body):Json<crate::delivery::Resolution>)->Response {
-    local_mutation_response(crate::delivery::resolve(&hub,None,id,true,body))
-}
-async fn discard_delivery(State(hub):State<AppState>,Path(id):Path<u64>,Json(body):Json<crate::delivery::Resolution>)->Response {
-    local_mutation_response(crate::delivery::resolve(&hub,None,id,false,body))
-}
-
-async fn dismiss_pr(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    local_mutation_response(local_mutation(&hub, None, LocalMutation::DismissPr(id)))
-}
-
 #[derive(Deserialize)]
 struct ReassignBody {
     task: String,
@@ -2000,44 +1624,6 @@ async fn reassign_pr(State(hub): State<AppState>, Path(id): Path<u64>, Json(b): 
         Ok(Err(refusal)) => refusal,
         Err(e) => internal(e),
     }
-}
-
-#[derive(Deserialize)]
-struct ActivityBody {
-    client: String,
-}
-
-async fn activity(State(hub): State<AppState>, Json(b): Json<ActivityBody>) -> Json<Value> {
-    hub.touch(&b.client);
-    Json(json!({"ok": true}))
-}
-
-/// A node's status line reporting how full its context is (`alondra statusline`). Recorded when
-/// the whole percentage or the window changes, and only for a node Alondra follows.
-async fn context_measured(State(hub): State<AppState>, Json(p): Json<Value>) -> Json<Value> {
-    let (Some(session_id), Some(percent), Some(window)) = (str_field(&p, "session_id"), p.get("percent").and_then(Value::as_f64), p.get("window").and_then(Value::as_u64)) else {
-        return Json(json!({}));
-    };
-    let changed = hub.read(|v| v.nodes.get(&session_id).is_some_and(|n| n.context.is_none_or(|c| c.percent.round() != percent.round() || c.window != window)));
-    if changed && let Err(e) = hub.append(Event::ContextMeasured { session_id, percent, window }) {
-        log!("could not record a context measure: {e}");
-    }
-    Json(json!({}))
-}
-
-async fn health(State(hub): State<AppState>) -> Json<Value> {
-    let c = &hub.config;
-    let integrity = hub.read(View::integrity_issues);
-    Json(json!({"ok": integrity.is_empty(), "integrity_issues": integrity, "tick": hub.tick(), "holds": hub.holds_count(), "version": env!("CARGO_PKG_VERSION"),
-                "update": crate::updates::status(&hub.home),
-                "preflight_rejected": crate::relaunch::rejected(),
-                "config": {"name": c.name, "port": c.port, "listen": c.listen.to_string(), "public_url": c.public_url,
-                           "legacy_bridge": c.legacy_bridge, "wake": c.wake, "retention_hours": c.retention_hours,
-                           "resume_dead_nodes": c.resume_dead_nodes,
-                           "close_free_nodes_after_secs": c.close_free_nodes_after.map(|d| d.as_secs()),
-                           "compact_idle_nodes_at": c.compact_idle_nodes_at,
-                           "archived_tasks_days": c.archived_tasks_days,
-                           "home": c.home.display().to_string()}}))
 }
 
 /// Oldest node first, state does not drive the order: a state change must not move a node's
@@ -2147,73 +1733,6 @@ fn pr_card(v: &View, p: &alondra_core::pr::PullRequest) -> Value {
     value["stack_opened_at"] = json!(place.bottom.opened_at);
     value["stack_position"] = json!(place.position);
     value["task"] = json!(v.pr_task_of(p).map(|t| t.id.as_str()));
-    value
-}
-
-#[derive(Deserialize)]
-struct ChangesQuery {
-    after: Option<u64>,
-    wait: Option<u64>,
-}
-
-async fn changes(State(hub): State<AppState>, Query(q): Query<ChangesQuery>) -> Json<Value> {
-    let wait = Duration::from_secs(q.wait.unwrap_or(50)).min(MAX_WAIT);
-    let tick = hub.wait_change(q.after.unwrap_or(0), wait).await;
-    Json(json!({ "tick": tick }))
-}
-
-#[derive(Deserialize)]
-struct TimelineQuery {
-    limit: Option<usize>,
-    before: Option<u64>,
-}
-
-const TIMELINE_DEFAULT: usize = 40;
-const TIMELINE_MAX: usize = 2000;
-
-async fn node_detail(State(hub): State<AppState>, Path(key): Path<String>, Query(q): Query<TimelineQuery>) -> Response {
-    let found = hub.read(|v| {
-        let n = v.resolve_node(&key)?.clone();
-        let sid = n.session_id.clone();
-        let questions: Vec<Question> = v.questions.values().filter(|q| q.session_id == sid).cloned().collect();
-        let reports: Vec<Report> = v.reports.values().filter(|r| r.session_id == sid).cloned().collect();
-        let messages: Vec<Value> = v.messages.values().filter(|m| m.session_id == sid).map(|m|crate::delivery::message_value(v,m)).collect();
-        let mut node = client_node(v, &n);
-        node["background"] = json!(states::background(&n, now_millis()));
-        node["activity"] = json!(v.activity(&n, now_millis()));
-        node["delivery_attempts"]=json!(v.delivery_attempts.values().filter(|a|a.session_id==sid).collect::<Vec<_>>());
-        Some((node, n.session_id, questions, reports, messages, v.held_for_turn_end(&sid)))
-    });
-    let Some((node, session_id, questions, reports, messages, held)) = found else {
-        return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
-    };
-    let timeline: Vec<Value> = hub
-        .timeline(&session_id, q.limit.unwrap_or(TIMELINE_DEFAULT).min(TIMELINE_MAX), q.before)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|(seq, at, body)| json!({"seq": seq, "at": at, "event": serde_json::from_str::<Value>(&body).unwrap_or(Value::Null)}))
-        .collect();
-    Json(json!({"node": node, "questions": questions, "reports": reports, "messages": messages, "messages_held_for_turn_end": held, "timeline": timeline})).into_response()
-}
-
-/// What each thread of the node does now, and nothing else of its detail: an open detail asks it
-/// every few seconds.
-async fn node_activity(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    match hub.read(|v| v.resolve_node(&key).map(|n| json!(v.activity(n, now_millis())))) {
-        Some(activity) => Json(json!({"activity": activity})).into_response(),
-        None => err(StatusCode::NOT_FOUND, format!("unknown node {key}")),
-    }
-}
-
-/// A node as clients see it: whether its session is attached is the daemon's business, and its
-/// ledger reaches them as `activity`.
-fn client_node(v: &View, n: &alondra_core::Node) -> Value {
-    let mut value = serde_json::to_value(n).unwrap_or(Value::Null);
-    if n.is_orchestrator { value["orchestrator_runtime"] = public_orchestrator(v); }
-    if let Some(o) = value.as_object_mut() {
-        o.remove("alive");
-        o.remove("ledger");
-    }
     value
 }
 
@@ -2685,13 +2204,6 @@ async fn record_question(hub: AppState, mut b: AskBody, action: bool) -> Respons
     Json(json!({"id": q.id, "to_orchestrator": q.to_orchestrator, "task": task})).into_response()
 }
 
-async fn question_detail(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    match hub.read(|v| v.questions.get(&id).cloned().map(|q| (q.clone(), v.nodes.get(&q.session_id).map(|n| client_node(v, n))))) {
-        Some((q, node)) => Json(json!({"question": q, "node": node})).into_response(),
-        None => err(StatusCode::NOT_FOUND, format!("question #{id} does not exist")),
-    }
-}
-
 #[derive(Deserialize)]
 struct AnswerBody {
     text: String,
@@ -2712,6 +2224,13 @@ async fn answer(state: State<AppState>, signed: Option<Extension<crate::auth::Si
     answer_with_discard(state, signed, path, body, |hub, session| async move {
         close_discarding(&hub, &session, &ClaudeAgents).await
     }).await
+}
+
+#[cfg(test)]
+pub(crate) async fn answer_held_for_test(hub: Arc<Hub>, id: u64) -> Response {
+    answer(State(hub), None, Path(id), Json(AnswerBody {
+        text: "Allow".into(), option: Some("Allow".into()), by: None, attachments: vec![],
+    })).await
 }
 
 async fn answer_with_discard<F, Fut>(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(mut b): Json<AnswerBody>, discard: F) -> Response
@@ -2945,52 +2464,6 @@ async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: O
     Json(response).into_response()
 }
 
-#[derive(Deserialize)]
-struct MoreContextBody {
-    note: Option<String>,
-    #[serde(default)]
-    attachments: Vec<String>,
-}
-
-async fn more_context(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(b): Json<MoreContextBody>) -> Response {
-    let note = b.note.filter(|n| !n.trim().is_empty()).map(|n| format!(" What is missing: {n}.")).unwrap_or_default();
-    let user = hub.config.name.clone();
-    let text = format!(
-        "{user} needs more context before deciding.{note} Explain what is at stake, the options with their consequences and your recommendation, and ask again."
-    );
-    answer(State(hub), signed, Path(id), Json(AnswerBody { text, option: Some(answer_option::MORE_CONTEXT.into()), by: None, attachments: b.attachments })).await
-}
-
-#[derive(Deserialize)]
-struct WithdrawBody {
-    #[serde(flatten)]
-    caller: Caller,
-    #[serde(default)]
-    task: Option<String>,
-}
-
-/// With a caller (a node's `withdraw` tool), only that node's own open questions can be withdrawn,
-/// and only from the task it names, when it names one.
-async fn withdraw(State(hub): State<AppState>, Path(id): Path<u64>, body: Option<Json<WithdrawBody>>) -> Response {
-    if let Some(r) = body.as_ref().and_then(|Json(b)| outside_caller(&hub, &b.caller)) {
-        return r;
-    }
-    let (question, caller) = hub.read(|v| (v.questions.get(&id).cloned(), body.as_ref().and_then(|Json(b)| resolve_caller(v, &b.caller))));
-    let asker = body.is_some().then(|| caller.map(|(sid, _)| sid));
-    if let Some((status, why)) = withdraw_refusal(id, question.as_ref(), asker.as_ref().map(Option::as_deref)) {
-        return err(status, why);
-    }
-    let named = body.as_ref().and_then(|Json(b)| b.task.clone()).filter(|t| !t.trim().is_empty());
-    let of = hub.read(|v| question.as_ref().and_then(|q| v.question_task(q)).map(|t| t.id.clone()));
-    if let Some(task) = named.filter(|t| of.as_ref() != Some(t)) {
-        return err(StatusCode::CONFLICT, format!("question #{id} is not of task {task}"));
-    }
-    match hub.append(Event::QuestionClosed { id, status: QuestionStatus::Withdrawn, note: None }) {
-        Ok(_) => Json(json!({"id": id})).into_response(),
-        Err(e) => internal(e),
-    }
-}
-
 /// `asker` is `None` for a client acting as the user, `Some(None)` for a node Alondra cannot place.
 fn withdraw_refusal(id: u64, question: Option<&Question>, asker: Option<Option<&str>>) -> Option<(StatusCode, String)> {
     let Some(q) = question else { return Some((StatusCode::NOT_FOUND, format!("question #{id} does not exist"))) };
@@ -3136,32 +2609,6 @@ async fn report(State(hub): State<AppState>, Json(b): Json<ReportBody>) -> Respo
         Ok(_) => err(StatusCode::BAD_REQUEST, "unknown reporting node"),
         Err(e) => internal(e),
     }
-}
-
-#[derive(Deserialize)]
-struct WaitingMachineBody {
-    #[serde(flatten)]
-    caller: Caller,
-    reason: String,
-}
-
-async fn waiting_machine(State(hub): State<AppState>, Json(b): Json<WaitingMachineBody>) -> Response {
-    if let Some(r) = outside_caller(&hub, &b.caller) {
-        return r;
-    }
-    let res = hub.append_with(|v| {
-        let (session_id, _) = resolve_caller(v, &b.caller)?;
-        Some(Event::WaitingMachine { session_id, reason: b.reason.clone() })
-    });
-    match res {
-        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::BAD_REQUEST, "unknown node waiting for the machine"),
-        Err(e) => internal(e),
-    }
-}
-
-async fn report_read(State(hub): State<AppState>, Path(id): Path<u64>) -> Response {
-    local_mutation_response(local_mutation(&hub, None, LocalMutation::ReadReport(id)))
 }
 
 #[derive(Deserialize)]
@@ -3488,27 +2935,6 @@ async fn cancel_orchestrator(State(hub): State<AppState>, Json(body): Json<Retry
         alondra_core::orchestrator::Transition::CancelRequested { run_id: body.run_id })))
 }
 
-async fn acknowledge_orchestrator(State(hub): State<AppState>, Json(body): Json<RetryOrchestratorBody>) -> Response {
-    let _lease = hub.orchestrator_commands.write().await;
-    local_mutation_response(local_mutation(&hub, None, LocalMutation::Orchestrator(
-        alondra_core::orchestrator::Transition::Acknowledged { run_id: body.run_id })))
-}
-
-async fn mark_orchestrator(State(hub): State<AppState>, Json(c): Json<Caller>) -> Response {
-    if let Some(r) = outside_caller(&hub, &c) {
-        return r;
-    }
-    let res = hub.append_with(|v| resolve_caller(v, &c)
-        .filter(|(sid, _)| v.orchestrator.is_none() || sid == alondra_core::orchestrator::NODE_ID)
-        .map(|(sid, _)| Event::MarkedOrchestrator { session_id: sid }));
-    match res {
-        Ok(Some(_)) => Json(json!({"ok": true})).into_response(),
-        Ok(None) => err(StatusCode::BAD_REQUEST, "unknown orchestrator session"),
-        Err(e) => internal(e),
-    }
-}
-
-#[derive(Deserialize)]
 struct OptionsQuery {
     project: Option<String>,
 }
@@ -6437,13 +5863,11 @@ mod tests {
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
         let original = hub.home.join("Captura 2026-09-24.png");
         std::fs::write(&original, b"pixels").unwrap();
-        let bytes = axum::body::Bytes::from(std::fs::read(&original).unwrap());
-        let (status, up) = status_and_body(upload(State(hub.clone()), Query(UploadQuery { name: "Captura 2026-09-24.png".into() }), bytes).await).await;
-        assert_eq!(status, StatusCode::OK, "{up}");
-        assert_eq!((up["kind"].as_str(), up["bytes"].as_u64()), (Some("image"), Some(6)));
+        let bytes = std::fs::read(&original).unwrap();
+        let (id, stored) = uploads::store(&hub.home, "Captura 2026-09-24.png", &bytes).unwrap();
+        assert!(uploads::is_image(&stored.name));
+        assert_eq!(stored.bytes, Some(6));
         std::fs::remove_file(&original).unwrap();
-
-        let id = up["id"].as_str().unwrap().to_string();
         let body = MessageBody { text: "Mira esto".into(), from: None, attachments: vec![id], task: None };
         let (status, sent) = status_and_body(send_message(State(hub.clone()), Path("job".into()), Json(body)).await).await;
         assert_eq!(status, StatusCode::OK, "{sent}");
@@ -7020,8 +6444,6 @@ mod archive_tests {
     use super::*;
     use super::tests::{status_and_body, temp_hub};
     use alondra_core::tasks::{NewTask, TaskEvent, TaskOptions};
-    use base64::Engine as _;
-    use p256::ecdsa::signature::Signer;
 
     /// r-1 holds t-done (done) and t-gone (cancelled); r-2 holds t-run, still running.
     fn with_tasks(tag: &str) -> Arc<Hub> {
@@ -7065,82 +6487,6 @@ mod archive_tests {
         assert_eq!(archived(&reopened), ["t-done"]);
     }
 
-    /// Mounted as alondrad mounts it: every route behind `auth::guard`.
-    #[tokio::test]
-    async fn archiving_needs_a_paired_device_from_outside_the_mac() {
-        let hub = with_tasks("archive-auth");
-        let auth = Arc::new(Auth::open(&hub.home).unwrap());
-        let push = Arc::new(Push::open(&hub.home).unwrap());
-        let signing = p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap();
-        let b64 = base64::engine::general_purpose::STANDARD;
-        let device = auth.pair(&auth.new_pairing_code(), "iPhone", &b64.encode(signing.verifying_key().to_sec1_bytes())).unwrap();
-        let app = router(hub.clone(), auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await });
-        let client = reqwest::Client::new();
-        let url = format!("http://{addr}/v1/tasks/archive");
-        let body = r#"{"ids":["t-done"]}"#;
-        let remote = || client.post(&url).header("x-forwarded-for", "203.0.113.9").header("content-type", "application/json").body(body);
-
-        let unsigned = remote().send().await.unwrap();
-        assert_eq!(unsigned.status(), reqwest::StatusCode::UNAUTHORIZED);
-        let ts = now_millis().to_string();
-        let signature: p256::ecdsa::Signature = signing.sign(crate::auth::signed_message("POST", "/v1/tasks/archive", &ts, body.as_bytes()).as_bytes());
-        let stranger = remote().header("x-alondra-device", "nobody").header("x-alondra-timestamp", &ts).header("x-alondra-signature", b64.encode(signature.to_der().as_bytes()));
-        assert_eq!(stranger.send().await.unwrap().status(), reqwest::StatusCode::UNAUTHORIZED);
-        assert!(archived(&hub).is_empty(), "nothing archived without a paired device");
-
-        let signed = remote().header("x-alondra-device", &device.id).header("x-alondra-timestamp", &ts).header("x-alondra-signature", b64.encode(signature.to_der().as_bytes()));
-        assert_eq!(signed.send().await.unwrap().status(), reqwest::StatusCode::OK);
-        assert_eq!(archived(&hub), ["t-done"]);
-        let local = client.post(&url).header("content-type", "application/json").body("{}").send().await.unwrap();
-        assert_eq!(local.status(), reqwest::StatusCode::OK, "the Mac itself, like every other route");
-        assert_eq!(archived(&hub), ["t-done", "t-gone"]);
-    }
-
-    /// Round 3: an open node's “Right now” asked its whole detail every 10 s (53–350 KB of
-    /// timeline, messages, questions and reports, on the iPhone too) to read only its threads.
-    #[tokio::test]
-    async fn an_open_nodes_threads_have_a_light_route_behind_the_same_guard() {
-        let hub = temp_hub("node-activity");
-        let payloads = [
-            json!({"session_id": "s", "hook_event_name": "UserPromptSubmit", "prompt": "go"}),
-            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Check the tests"}}),
-            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"}),
-            json!({"session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1", "agent_type": "Explore", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}}),
-        ];
-        for p in payloads {
-            hook(State(hub.clone()), super::tests::launched(), Json(p)).await;
-        }
-        for id in 1..=30 {
-            let text = format!("{id} ").repeat(1000);
-            hub.append(Event::MessageQueued(Message {
-                id, session_id: "s".into(), from: MessageFrom::User, text, answers_question: None, created_at: id as i64, handed_at: None, delivered_at: None, attachments: vec![], about: None,
-            }))
-            .unwrap();
-        }
-        let auth = Arc::new(Auth::open(&hub.home).unwrap());
-        let push = Arc::new(Push::open(&hub.home).unwrap());
-        let app = router(hub.clone(), auth.clone(), push).layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>()).await });
-        let client = reqwest::Client::new();
-        let get = |path: &str| client.get(format!("http://{addr}{path}"));
-
-        let light = get("/v1/nodes/s/activity").send().await.unwrap();
-        assert_eq!(light.status(), reqwest::StatusCode::OK);
-        let light = light.text().await.unwrap();
-        let full = get("/v1/nodes/s").send().await.unwrap().text().await.unwrap();
-        let (light_json, full_json): (Value, Value) = (serde_json::from_str(&light).unwrap(), serde_json::from_str(&full).unwrap());
-        assert_eq!(light_json, json!({"activity": full_json["node"]["activity"]}), "the threads and nothing else of the detail");
-        assert_eq!(light_json["activity"].as_array().map(Vec::len), Some(2), "{light}");
-        assert!(light.len() * 50 < full.len(), "{} bytes against the detail's {}", light.len(), full.len());
-        assert_eq!(get("/v1/nodes/nobody/activity").send().await.unwrap().status(), reqwest::StatusCode::NOT_FOUND);
-        let remote = get("/v1/nodes/s/activity").header("x-forwarded-for", "203.0.113.9").send().await.unwrap();
-        assert_eq!(remote.status(), reqwest::StatusCode::UNAUTHORIZED, "paired devices only, like the node's detail");
-    }
 }
 
 #[cfg(test)]
@@ -7361,62 +6707,6 @@ mod managed_orchestrator_tests {
         let again = atomic_local_request(&reopened, "phone", "retry-command", &[7;32], "/v1/orchestrator/retry", Some(&body), ||Ok(())).await.unwrap();
         assert_eq!(again, first); assert_eq!(reopened.read(|v| v.seq), seq);
         assert_eq!(retry_orchestrator(State(hub), Json(RetryOrchestratorBody {run_id:"run-1".into()})).await.status(), StatusCode::CONFLICT);
-    }
-    struct BlockingGithub { entered: Arc<tokio::sync::Notify>, release: Arc<tokio::sync::Notify> }
-    impl crate::prs::FindsPrs for BlockingGithub {
-        fn finds<'a>(&'a self, _: &'a str) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
-            Box::pin(async move { self.entered.notify_one(); self.release.notified().await; true })
-        }
-    }
-    async fn server(hub: Arc<Hub>) -> (String, tokio::task::JoinHandle<()>) {
-        let app = router(hub.clone(), Arc::new(Auth::open(&hub.home).unwrap()), Arc::new(Push::open(&hub.home).unwrap()));
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let task = tokio::spawn(async move { axum::serve(listener, app).await.unwrap(); });
-        (format!("http://{address}"), task)
-    }
-    #[tokio::test]
-    async fn all_managed_mutations_reject_stale_authority_before_decoding_or_external_work() {
-        let hub = enabled("managed-routes"); start(&hub);
-        let (url, task) = server(hub.clone()).await;
-        let client = reqwest::Client::new();
-        let seq = hub.read(|v|v.seq);
-        for path in ["/v1/tasks", "/v1/launch", "/v1/nodes/worker/messages", "/v1/nodes/worker/interrupt", "/v1/requests/r/close", "/v1/tasks/t/cancel", "/v1/tasks/t/reopen", "/v1/tasks/t/title", "/v1/questions", "/v1/reports"] {
-            let response = client.post(format!("{url}{path}")).header("x-alondra-orchestrator-execution", "stale")
-                .header("x-alondra-session", NODE_ID).json(&json!({})).send().await.unwrap();
-            assert_eq!(response.status().as_u16(), 409, "{path}");
-        }
-        let response = tokio::time::timeout(Duration::from_secs(2), client.post(format!("{url}/v1/orchestrator/cancel"))
-            .header("x-alondra-orchestrator-execution", "run-1").header("x-alondra-session", NODE_ID).json(&json!({"run_id":"run-1"})).send()).await.unwrap().unwrap();
-        assert_eq!(response.status().as_u16(), 403, "agent lifecycle call must reject instead of upgrading its own lease");
-        for path in ["/v1/tasks", "/v1/launch", "/v1/nodes/worker/messages", "/v1/nodes/worker/interrupt", "/v1/requests/r/close", "/v1/tasks/t/cancel", "/v1/tasks/t/reopen", "/v1/tasks/t/title"] {
-            let response = client.post(format!("{url}{path}")).json(&json!({})).send().await.unwrap();
-            assert_eq!(response.status().as_u16(), 401, "untagged pre-upgrade MCP: {path}");
-        }
-        assert_eq!(hub.read(|v|v.seq),seq);
-        task.abort();
-    }
-    #[tokio::test]
-    async fn cancellation_linearizes_after_accepted_rpc_finishes_its_bookkeeping() {
-        let entered = Arc::new(tokio::sync::Notify::new());
-        let release = Arc::new(tokio::sync::Notify::new());
-        let hub = Arc::new(Arc::try_unwrap(enabled("managed-barrier")).ok().unwrap().with_github(BlockingGithub {entered:entered.clone(),release:release.clone()}));
-        start(&hub);
-        let (url, server) = server(hub.clone()).await;
-        let post_url = url.clone();
-        let posting = tokio::spawn(async move { reqwest::Client::new().post(format!("{post_url}/v1/reports"))
-            .header("x-alondra-orchestrator-execution", "run-1").header("x-alondra-session", NODE_ID)
-            .json(&json!({"session_id":NODE_ID,"orchestrator_run":"run-1","launched":true,"title":"Result","body":"Completed the analysis","kind":"notice","links":[{"url":"https://github.com/a/b/pull/7"}]})).send().await.unwrap().status() });
-        tokio::time::timeout(Duration::from_secs(5), entered.notified()).await.unwrap();
-        let cancelling = tokio::spawn(async move { reqwest::Client::new().post(format!("{url}/v1/orchestrator/cancel")).json(&json!({"run_id":"run-1"})).send().await.unwrap().status() });
-        tokio::task::yield_now().await;
-        assert!(!cancelling.is_finished());
-        assert!(!hub.read(|v|v.orchestrator.as_ref().unwrap().cancel_requested));
-        release.notify_one();
-        assert_eq!(posting.await.unwrap().as_u16(), 200);
-        assert_eq!(cancelling.await.unwrap().as_u16(), 200);
-        assert!(hub.read(|v|v.orchestrator.as_ref().unwrap().cancel_requested && v.reports.len() == 1));
-        server.abort();
     }
 
 }

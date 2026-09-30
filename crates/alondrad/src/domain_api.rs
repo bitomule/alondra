@@ -1509,11 +1509,8 @@ mod tests {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let app = crate::http::router(
-            hub.clone(),
-            auth.clone(),
-            Arc::new(crate::push::Push::open(&hub.home).unwrap()),
-        )
+        let app = crate::domain_api::routes::<Hub>()
+        .with_state(hub.clone())
         .layer(axum::middleware::from_fn_with_state(
             auth,
             crate::auth::guard,

@@ -229,10 +229,6 @@ mod tests {
             std::fs::write(job.join("state.json"), format!("{{\"sessionId\":\"{sid}\"}}")).unwrap();
             let config = Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
             let hub = Arc::new(Hub::open(config, true).unwrap().with_claude_home(home.join("claude")));
-            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            let address = listener.local_addr().unwrap();
-            let app = crate::http::router(hub.clone(), Arc::new(crate::auth::Auth::open(&home).unwrap()), Arc::new(crate::push::Push::open(&home).unwrap()));
-            let server = tokio::spawn(async move { axum::serve(listener, app.into_make_service_with_connect_info::<std::net::SocketAddr>()).await.unwrap(); });
             let (mut client, socket) = UnixStream::pair().unwrap();
             let handler = tokio::spawn(handle(socket, hub.clone()));
             let payload = serde_json::json!({"launched":true,"payload":{"session_id":sid,"hook_event_name":"PermissionRequest","tool_name":"Bash","tool_use_id":"held-ack","tool_input":{"command":"echo synthetic"}}});
@@ -243,8 +239,9 @@ mod tests {
                 while hub.holds_count() == 0 { tokio::task::yield_now().await; }
             }).await.unwrap();
             let id = hub.read(|v| *v.questions.keys().next().unwrap());
-            let response = reqwest::Client::new().post(format!("http://{address}/v1/questions/{id}/answer"))
-                .json(&serde_json::json!({"text":"Allow","option":"Allow"})).send().await.unwrap();
+            // The v2 resource endpoint writes DomainRuntime and cannot settle this Hub hold.
+            // Exercise the legacy hook decision transition directly, without mounting /v1/*.
+            let response = crate::http::answer_held_for_test(hub.clone(), id).await;
             assert!(response.status().is_success());
             let mut received = vec![];
             client.read_to_end(&mut received).await.unwrap();
@@ -260,8 +257,6 @@ mod tests {
             assert_eq!(hub.read(|v| v.delivery_attempts[&attempt].state), expected);
             assert_eq!(hub.read(|v| v.questions[&id].status), if acknowledged { QuestionStatus::Delivered } else { QuestionStatus::Answered });
             assert_eq!(hub.read(|v| v.delivery_blocked(sid)), !acknowledged);
-            server.abort();
-            let _ = server.await;
             drop(hub);
             std::fs::remove_dir_all(home).unwrap();
         }
