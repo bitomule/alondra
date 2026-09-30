@@ -48,7 +48,7 @@ pub(crate) async fn relay(client: &v2_client_routes::Client, path_and_query: &st
         return error("invalid_input", "invalid view path");
     };
     let Some(key) = normalize_key(raw_key) else {
-        return error("invalid_input", "invalid view key");
+        return error_lang(requested_lang(query), "invalid_input", "invalid view key");
     };
     respond(client, &key, query, Transport::Relay).await
 }
@@ -70,6 +70,7 @@ async fn respond(
     query: &str,
     transport: Transport,
 ) -> Response {
+    let requested_language = requested_lang(query);
     let mut protocol = None;
     let mut kind = None;
     let mut lang = None;
@@ -87,14 +88,24 @@ async fn respond(
             "project" => &mut options.project,
             "q" => &mut options.q,
             "refresh" => &mut options.refresh,
-            _ => return error("invalid_input", "unsupported view parameter"),
+            _ => {
+                return error_lang(
+                    requested_language,
+                    "invalid_input",
+                    "unsupported view parameter",
+                );
+            }
         };
         if slot.replace(value.into_owned()).is_some() {
-            return error("invalid_input", "duplicate view parameter");
+            return error_lang(
+                requested_language,
+                "invalid_input",
+                "duplicate view parameter",
+            );
         }
     }
     let Some(protocol) = protocol.as_deref().and_then(|s| s.parse::<u32>().ok()) else {
-        return error("invalid_input", "protocol is required");
+        return error_lang(requested_language, "invalid_input", "protocol is required");
     };
     if protocol != VIEWS_PROTOCOL {
         return error(
@@ -110,12 +121,12 @@ async fn respond(
         Some("ios") => Client::Ios,
         Some("mac") => Client::Mac,
         Some("tui") => Client::Tui,
-        _ => return error("invalid_input", "invalid client"),
+        _ => return error_lang(requested_language, "invalid_input", "invalid client"),
     };
     let language = match lang.as_deref() {
         Some("en") => Lang::En,
         Some("es") => Lang::Es,
-        _ => return error("invalid_input", "invalid language"),
+        _ => return error_lang(requested_language, "invalid_input", "invalid language"),
     };
     if known.as_deref().is_some_and(|version| {
         version.len() != 17
@@ -420,10 +431,26 @@ fn error(code: &str, message: &str) -> Response {
     crate::domain_api::domain_error(DomainError::new(code, message))
 }
 
+fn requested_lang(query: &str) -> Lang {
+    let mut values = url::form_urlencoded::parse(query.as_bytes())
+        .filter(|(name, _)| name == "lang")
+        .map(|(_, value)| value.into_owned());
+    if values.next().as_deref() == Some("es") && values.next().is_none() {
+        Lang::Es
+    } else {
+        Lang::En
+    }
+}
+
 fn error_lang(lang: Lang, code: &str, message: &'static str) -> Response {
     let translated = if lang == Lang::Es {
         match message {
             "invalid known version" => "Versión conocida no válida",
+            "unsupported view parameter" => "Parámetro de vista no admitido",
+            "duplicate view parameter" => "Parámetro de vista duplicado",
+            "protocol is required" => "Falta el protocolo",
+            "invalid client" => "Cliente no válido",
+            "invalid language" => "Idioma no válido",
             "invalid view key" => "Vista no válida",
             "invalid view parameter" => "Parámetro de vista no válido",
             "domain state unavailable" => "El estado no está disponible",
@@ -494,6 +521,34 @@ mod tests {
         assert!(!approved_read_path(
             "/views/home?protocol=1&client=ios&lang=en&future=1"
         ));
+    }
+
+    #[tokio::test]
+    async fn malformed_view_queries_answer_in_the_requested_language() {
+        let (home, state) = fixture();
+        let client = state.client();
+        for (query, expected) in [
+            (
+                "protocol=1&client=ios&future=1&lang=es",
+                "Parámetro de vista no admitido",
+            ),
+            (
+                "protocol=1&client=ios&lang=es&client=mac",
+                "Parámetro de vista duplicado",
+            ),
+            ("client=ios&lang=es", "Falta el protocolo"),
+            ("protocol=1&client=unknown&lang=es", "Cliente no válido"),
+        ] {
+            let response = respond(&client, "home", query, Transport::Loopback).await;
+            let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+                .await
+                .unwrap();
+            let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+            assert_eq!(value["message"], expected, "{query}");
+        }
+        drop(client);
+        drop(state);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[tokio::test]
