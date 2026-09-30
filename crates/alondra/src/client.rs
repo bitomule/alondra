@@ -41,6 +41,11 @@ pub struct ViewsFeed {
     pub superseded: bool,
 }
 
+pub struct PullRequestDiff {
+    pub text: String,
+    pub truncated: bool,
+}
+
 struct Signer {
     device: String,
     key: p256::ecdsa::SigningKey,
@@ -310,6 +315,11 @@ impl Client {
         }
     }
 
+    /// A PR diff has a JSON text contract, unlike chunked attachment content.
+    pub fn pull_request_diff(&self, id: &str, expected_head: &str) -> Result<PullRequestDiff> {
+        pull_request_diff_via(id, expected_head, |path| self.get::<Value>(path))
+    }
+
     /// Copies a file into the daemon's storage and returns the reference commands attach:
     /// in one request on this Mac, in chunks through the service.
     pub fn upload(&self, name: &str, bytes: &[u8]) -> Result<AttachmentRef> {
@@ -355,6 +365,24 @@ pub fn attachment_content(a: &AttachmentRef) -> String {
 
 pub fn document_content(revision: &str) -> String {
     format!("/document-revisions/{}/content", crate::mcp::urlencode(revision))
+}
+
+fn pull_request_diff_via(id: &str, expected_head: &str, mut get: impl FnMut(&str) -> Result<Value>) -> Result<PullRequestDiff> {
+    if !alondra_core::views::id::valid(id) {
+        return Err(anyhow!("invalid pull request ID"));
+    }
+    let route = format!("/pull-requests/{}/diff", alondra_core::views::id::path_segment(id));
+    let response = get(&route)?;
+    if response["pr_id"].as_str() != Some(id) {
+        return Err(anyhow!("the pull request diff response has the wrong PR ID"));
+    }
+    if expected_head.is_empty() || response["head"].as_str() != Some(expected_head) {
+        return Err(anyhow!("the pull request diff head changed"));
+    }
+    Ok(PullRequestDiff {
+        text: response["diff"].as_str().context("the pull request diff response has no diff text")?.to_owned(),
+        truncated: response["truncated"].as_bool().context("the pull request diff response has no truncation flag")?,
+    })
 }
 
 /// Reads `route` from offset 0 to the end, refusing a file that changes between chunks.
@@ -524,6 +552,24 @@ mod tests {
         assert!(changed.unwrap_err().to_string().contains("changed"));
         let contract = crate::runtime::fixture("requests.json")["attachment_content"]["response"].clone();
         assert_eq!(content_via("/attachments/att-1/content", |_| Ok(contract.clone())).unwrap(), b"abc");
+    }
+
+    #[test]
+    fn a_canonical_pr_diff_uses_the_json_contract_and_one_encoded_path_segment() {
+        let mut paths = Vec::new();
+        let diff = pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |path| {
+            paths.push(path.to_owned());
+            Ok(json!({"pr_id":"github.com/bitomule/alondra#154", "head":"abc", "diff":"diff --git a/a b/a\n+x", "truncated":false}))
+        }).unwrap();
+        assert_eq!(diff.text, "diff --git a/a b/a\n+x");
+        assert!(!diff.truncated);
+        assert_eq!(paths, ["/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff"]);
+        assert!(pull_request_diff_via("../secret", "abc", |_| panic!("invalid ID reached transport")).is_err());
+        assert!(pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |_| Ok(json!({"pr_id":"github.com/bitomule/alondra#154", "version":"v1","data":"abc"}))).is_err());
+        assert!(pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |_| Ok(json!({"pr_id":"github.com/else/repo#154", "head":"abc", "diff":"wrong PR", "truncated":false}))).is_err());
+        assert!(pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |_| Ok(json!({"pr_id":"github.com/bitomule/alondra#154", "head":"changed", "diff":"stale", "truncated":false}))).is_err());
+        let cut = pull_request_diff_via("github.com/bitomule/alondra#154", "abc", |_| Ok(json!({"pr_id":"github.com/bitomule/alondra#154", "head":"abc", "diff":"partial", "truncated":true}))).unwrap();
+        assert!(cut.truncated);
     }
 
     #[test]

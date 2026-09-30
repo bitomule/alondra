@@ -22,6 +22,14 @@ fn view_action_result(value: serde_json::Value) -> std::result::Result<String, S
     }
 }
 
+fn diff_reader_text(diff: crate::client::PullRequestDiff, truncated_notice: &str) -> String {
+    if diff.truncated {
+        format!("{}\n\n{truncated_notice}", diff.text)
+    } else {
+        diff.text
+    }
+}
+
 use std::collections::{HashMap, HashSet};
 use std::io::stdout;
 use std::sync::mpsc::{self, Receiver, SyncSender};
@@ -508,7 +516,6 @@ pub enum Flow {
         number: u64,
         dir: std::path::PathBuf,
     },
-    EditSchedule(Option<Value>),
     EditViewForm {
         action_id: String,
         label: String,
@@ -541,10 +548,6 @@ pub struct App {
     pub offline: bool,
     pub screen: Screen,
     pub schedules_open: bool,
-    pub schedules: Vec<Value>,
-    pub schedule_idx: usize,
-    pub schedule_scroll: usize,
-    schedule_delete: Option<(String, i64)>,
     pub sel: Option<Key>,
     sel_idx: usize,
     pub list_scroll: usize,
@@ -729,24 +732,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                                 repaint(terminal, &mut app)?;
                                 break;
                             }
-                            Flow::EditSchedule(existing) => {
-                                let _ = execute!(stdout(), DisableBracketedPaste);
-                                ratatui::restore();
-                                let result = edit_schedule(existing);
-                                *terminal = ratatui::init();
-                                let _ = execute!(stdout(), EnableBracketedPaste);
-                                match result {
-                                    Ok(Some(())) => {
-                                        app.flash(tr!("Schedule saved", "Programación guardada"));
-                                        app.reload_schedules();
-                                    }
-                                    Ok(None) => app
-                                        .flash(tr!("No changes saved", "No se guardaron cambios")),
-                                    Err(e) => app.fail(e.to_string()),
-                                }
-                                repaint(terminal, &mut app)?;
-                                break;
-                            }
                             Flow::EditViewForm {
                                 action_id,
                                 label,
@@ -804,80 +789,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
         }
         dirty |= app.on_timers();
     }
-}
-
-const SCHEDULES: &str = "/schedules";
-
-/// The fields a schedule write accepts; what the daemon adds when it lists one stays out.
-fn schedule_draft(value: &Value) -> Value {
-    let fields = [
-        "title",
-        "text",
-        "project",
-        "options",
-        "disallowed_tools",
-        "frequency",
-        "hour",
-        "minute",
-        "weekday",
-        "interval",
-        "start_at",
-        "enabled",
-        "revision",
-    ];
-    Value::Object(
-        fields
-            .iter()
-            .filter_map(|f| value.get(*f).map(|v| (f.to_string(), v.clone())))
-            .collect(),
-    )
-}
-
-fn edit_schedule(existing: Option<Value>) -> Result<Option<()>> {
-    let path = std::env::temp_dir().join(format!(
-        "alondra-schedule-{}-{}.json",
-        std::process::id(),
-        now_millis()
-    ));
-    let body = existing.as_ref().map(schedule_draft).unwrap_or_else(|| {
-        json!({
-            "title": "", "text": "", "project": null, "options": {}, "disallowed_tools": [],
-            "frequency": "daily", "hour": 9, "minute": 0, "weekday": 1,
-            "interval": 1, "start_at": now_millis() + 3_600_000, "enabled": true
-        })
-    });
-    let before = serde_json::to_vec_pretty(&body)?;
-    use std::io::Write;
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new();
-    file.write(true).create_new(true);
-    #[cfg(unix)]
-    file.mode(0o600);
-    file.open(&path)?.write_all(&before)?;
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-    let status = std::process::Command::new(editor).arg(&path).status();
-    let edited = std::fs::read(&path);
-    let _ = std::fs::remove_file(&path);
-    if !status?.success() {
-        anyhow::bail!("editor exited without saving");
-    }
-    let edited = edited?;
-    if edited == before {
-        return Ok(None);
-    }
-    let body: Value = serde_json::from_slice(&edited)
-        .map_err(|e| anyhow::anyhow!("Invalid schedule JSON: {e}"))?;
-    let client = Client::for_tui(Duration::from_secs(15));
-    if let Some(id) = existing.as_ref().and_then(|v| v["id"].as_str()) {
-        client.put(
-            &format!("{SCHEDULES}/{}", urlencode(id)),
-            &schedule_draft(&body),
-        )?;
-    } else {
-        client.post(SCHEDULES, &schedule_draft(&body))?;
-    }
-    Ok(Some(()))
 }
 
 fn edit_view_fields(fields: &[alondra_core::views::Field]) -> Result<Option<Value>> {
@@ -1004,10 +915,6 @@ impl App {
             offline: false,
             screen: Screen::Inbox,
             schedules_open: false,
-            schedules: vec![],
-            schedule_idx: 0,
-            schedule_scroll: 0,
-            schedule_delete: None,
             sel: None,
             sel_idx: 0,
             list_scroll: 0,
@@ -1299,6 +1206,26 @@ impl App {
             let result = Client::for_tui(Duration::from_secs(30))
                 .content(&route)
                 .map(files::FileBody::classify)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::File { route, result });
+        });
+    }
+
+    fn fetch_diff(&mut self, route: &str, id: &str, expected_head: &str) {
+        if self.files.contains_key(route) || !self.loading.insert(route.to_string()) {
+            return;
+        }
+        let route = route.to_string();
+        let id = id.to_string();
+        let expected_head = expected_head.to_string();
+        let truncated_notice = tr!(
+            "Diff truncated. Open the PR on GitHub to read the rest.",
+            "Diferencias incompletas. Abre la PR en GitHub para leer el resto."
+        ).to_string();
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(30))
+                .pull_request_diff(&id, &expected_head)
+                .map(|diff| files::FileBody::Text(diff_reader_text(diff, &truncated_notice)))
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::File { route, result });
         });
@@ -2646,6 +2573,7 @@ impl App {
             let title = view.title.clone().unwrap_or_else(|| view.key.clone());
             let mut text = format!("# {title}");
             let mut parts = Vec::new();
+            let mut diffs = HashMap::new();
             for section in &view.sections {
                 for item in &section.items {
                     match item {
@@ -2654,10 +2582,22 @@ impl App {
                                 text.push_str(&format!("\n\n{}", markdown.text));
                             }
                         }
-                        alondra_core::views::Item::ContentRef(content) => parts.push(Part::File {
-                            name: content.title.clone(),
-                            route: content.fetch.clone(),
-                        }),
+                        alondra_core::views::Item::ContentRef(content) => {
+                            if content.kind == alondra_core::views::ContentKind::Diff {
+                                let Some(id) = view.key.strip_prefix("pull_request:") else { continue };
+                                if !alondra_core::views::id::valid(id)
+                                    || content.fetch != format!("/pull-requests/{}/diff", alondra_core::views::id::path_segment(id))
+                                {
+                                    continue;
+                                }
+                                let Some(head) = content.digest.as_ref() else { continue };
+                                diffs.insert(content.fetch.clone(), (id.to_string(), head.clone()));
+                            }
+                            parts.push(Part::File {
+                                name: content.title.clone(),
+                                route: content.fetch.clone(),
+                            });
+                        }
                         alondra_core::views::Item::Card(card) => {
                             text.push_str(&format!("\n\n## {}", card.title));
                             for context in &card.context {
@@ -2694,7 +2634,11 @@ impl App {
             parts.insert(0, Part::Text(text));
             for part in &parts {
                 if let Part::File { route, .. } = part {
-                    self.fetch(route);
+                    if let Some((id, head)) = diffs.get(route) {
+                        self.fetch_diff(route, id, head);
+                    } else {
+                        self.fetch(route);
+                    }
                 }
             }
             let (glyph, kind, color) = view

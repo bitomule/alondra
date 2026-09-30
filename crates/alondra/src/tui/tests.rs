@@ -668,25 +668,6 @@ fn cancel_asks_twice_and_sends_the_typed_command() {
 }
 
 #[test]
-fn a_schedule_write_carries_only_the_draft_fields() {
-    let listed = serde_json::json!({"id": "s", "title": "T", "text": "x", "project": null, "options": {}, "disallowed_tools": [], "frequency": "daily",
-        "hour": 9, "minute": 0, "weekday": null, "interval": null, "start_at": null, "enabled": true, "revision": 2, "next_run": 5, "deleted_at": null,
-        "status": "sent", "last_run": 1, "last_request": null, "last_error": null, "last_run_id": "r"});
-    let draft = schedule_draft(&listed);
-    for gone in [
-        "id",
-        "next_run",
-        "deleted_at",
-        "status",
-        "last_run",
-        "last_run_id",
-    ] {
-        assert!(draft.get(gone).is_none(), "{gone}");
-    }
-    assert_eq!(draft["revision"], 2);
-}
-
-#[test]
 fn background_contention_retries_but_real_errors_remain_visible() {
     let busy =
         anyhow::Error::new(crate::account::AccountBusy).context("request submission uncertain");

@@ -83,7 +83,7 @@ fn views_mode_schedules_loads_the_server_screen() {
 
     assert!(app.schedules_open);
     assert_eq!(app.screen_view_asked.as_deref(), Some("schedules"));
-    assert!(app.schedules.is_empty());
+    assert!(app.home_view.is_none());
 }
 
 #[test]
@@ -107,6 +107,8 @@ fn schedule_row_keys_post_the_selected_views_action() {
         }]
     }]);
     app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view).unwrap())));
+    let rendered = screen(&mut app, 100, 24);
+    assert!(rendered.contains("Weekly") && rendered.contains("Run Now"), "{rendered}");
     press(&mut app, KeyCode::Enter);
     let requests = posted(&app);
     assert_eq!(requests.len(), 1);
@@ -167,6 +169,36 @@ fn reader_review_and_read_keys_use_views_actions() {
     app.composer = None;
     press(&mut app, KeyCode::Char('x'));
     assert_eq!(posted(&app)[0].1["action_id"], "read:i-1@1");
+}
+
+#[test]
+fn canonical_pr_diff_content_ref_opens_in_the_views_reader() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let key = "pull_request:github.com/bitomule/alondra#154";
+    let route = "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff";
+    let mut view = view_fixture("card-question.json");
+    view["key"] = serde_json::json!(key);
+    view["sections"] = serde_json::json!([{
+        "id":"diff", "collapsed":false, "items":[{
+            "type":"content_ref", "kind":"diff", "title":"Diff", "size":0,
+            "digest":"head-154", "fetch":route, "commentable":true
+        }]
+    }]);
+    app.view_navigation.push(key.into());
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    app.open_reader();
+    assert!(app.loading.contains(route));
+    app.on_msg(Msg::File {
+        route: route.into(),
+        result: Ok(files::FileBody::Text("diff --git a/a b/a\n+fixed".into())),
+    });
+    let shown = screen(&mut app, 120, 30);
+    assert!(shown.contains("fixed"), "{shown}");
+    let cut = diff_reader_text(crate::client::PullRequestDiff {
+        text: "partial diff".into(), truncated: true,
+    }, "Diff truncated");
+    assert!(cut.contains("partial diff\n\nDiff truncated"));
 }
 
 #[test]
@@ -293,6 +325,20 @@ fn view_form_opens_editor_with_its_bound_action_and_epoch() {
                 && fields.len() == 2
                 && attachment_field.as_deref() == Some("uploads")
     ));
+}
+
+#[test]
+fn schedule_view_submission_sends_only_form_fields() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let fields = serde_json::json!({"title": "Daily check", "hour": 9});
+    app.submit_view_fields("sched_save:hf-weekly-2026-09-30@2", "test-epoch", fields.clone());
+    let requests = posted(&app);
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].0, "/actions");
+    assert_eq!(requests[0].1["action_id"], "sched_save:hf-weekly-2026-09-30@2");
+    assert_eq!(requests[0].1["data_epoch"], "test-epoch");
+    assert_eq!(requests[0].1["input"], serde_json::json!({"fields": fields}));
 }
 
 #[test]
