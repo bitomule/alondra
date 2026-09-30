@@ -1,6 +1,9 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Your Mac didn’t answer. It may be off, or Alondra may not be running on it. Try again in a moment.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tu Mac no respondió. Puede estar apagado o Alondra puede no estar en marcha. Vuelve a intentarlo en un momento."}}}},
+    "Couldn’t reach Alondra. Check your connection and try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo conectar con Alondra. Revisa tu conexión y vuelve a intentarlo."}}}},
+    "Couldn’t load this from your Mac. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar desde tu Mac. Vuelve a intentarlo."}}}},
     "Add a note or line comment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Añade una nota o un comentario en una línea"}}}},
     "Choose a valid time.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una hora válida."}}}},
     "Could not verify the latest diff; review was not sent: %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo comprobar el último diff; la revisión no se envió: %@"}}}},

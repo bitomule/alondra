@@ -1,6 +1,7 @@
 import AlondraAPIClient
 import AlondraContracts
 import AlondraDomain
+import AlondraRelaySession
 import AlondraSync
 import Foundation
 
@@ -19,7 +20,12 @@ extension CloudAppServices {
             },
             pullRequestDiff: { id, head in
                 try await self.checkActive()
-                let diff = try await self.api.domainPullRequestDiff(id, expectedHead: head)
+                let diff: DomainV2.PullRequestDiff
+                do {
+                    diff = try await self.api.domainPullRequestDiff(id, expectedHead: head)
+                } catch {
+                    throw ReadFailure.describing(error)
+                }
                 try await self.checkActive()
                 return diff
             },
@@ -136,6 +142,27 @@ extension DomainIntentError {
         case .unavailable(let reason): reason
         case .notFound: DomainV2.ErrorCode.notFound.rawValue
         default: DomainV2.ErrorCode.invalidInput.rawValue
+        }
+    }
+}
+
+/// What a failed read tells the person, instead of the bare case name of the transport error.
+public struct ReadFailure: LocalizedError {
+    let problem: ConnectionProblem
+
+    public static func describing(_ error: any Error) -> any Error {
+        guard error is ServiceAPIError || error is RelaySessionError || error is RelayWireError else { return error }
+        return ReadFailure(problem: ConnectionClassifier.problem(for: error, local: false, networkOffline: false))
+    }
+
+    public var errorDescription: String? {
+        switch problem {
+        case .macNotAnswering:
+            String(localized: "Your Mac didn’t answer. It may be off, or Alondra may not be running on it. Try again in a moment.")
+        case .noInternet, .serverUnreachable:
+            String(localized: "Couldn’t reach Alondra. Check your connection and try again.")
+        default:
+            String(localized: "Couldn’t load this from your Mac. Try again.")
         }
     }
 }

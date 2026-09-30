@@ -968,7 +968,7 @@ pub(crate) fn approved_resource_read_path(path: &str) -> bool {
         || path.strip_prefix("/merge-authorizations/").is_some_and(valid_resource_id)
         || path.strip_prefix("/delivery-attempts?").is_some_and(|q| delivery_evidence_query(q).is_some())
         || path.strip_prefix("/changes?").is_some_and(|q| changes_query(q).is_some())
-        || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(valid_resource_id)
+        || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(crate::domain_reads::encoded_pull_request_id)
         || path.strip_prefix("/tasks/").and_then(|s| s.strip_suffix("/actions")).is_some_and(valid_resource_id)
         || path.strip_prefix("/document-revisions/").and_then(|s| s.split_once("/content?"))
             .is_some_and(|(id, query)| valid_resource_id(id) && document_content_query(query).is_some())
@@ -1350,6 +1350,8 @@ mod tests {
         assert!(approved_resource_read_path("/tasks?limit=20"));
         assert!(!approved_resource_read_path("/tasks?unknown=1"));
         assert!(approved_resource_read_path("/merge-authorizations/auth-1"));
+        assert!(approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%23154/diff"));
+        assert!(!approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%3F154/diff"));
         assert!(!approved_resource_read_path("/merge-authorizations/../auth-1"));
         assert!(!is_resource_mutation_path("POST", "/tasks//start"));
         assert!(!is_resource_mutation_path("POST", "/tasks/../start"));

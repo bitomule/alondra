@@ -181,6 +181,16 @@ pub(crate) struct Query {
 fn is_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 256 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
 }
+/// A PR id is the registered `host/owner/repo#number`, so it travels percent-encoded.
+pub(crate) fn is_pull_request_id(id: &str) -> bool {
+    !id.is_empty() && id.len() <= 256
+        && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'/' | b'#'))
+}
+
+pub(crate) fn encoded_pull_request_id(raw: &str) -> bool {
+    decode_segment(raw).is_some_and(|id| is_pull_request_id(&id))
+}
+
 fn is_inbox_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 512 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b':'))
 }
@@ -320,7 +330,7 @@ pub(crate) fn parse(path: &str) -> Option<Route> {
         ("requests", Some(id), Some("body")) if is_id(id) => Route::RequestBody(id.to_owned(), body_offset(query)?),
         ("agents", None, None) => Route::Agents(parse_query(query, PAGE)?),
         ("pull-requests", None, None) => Route::PullRequests(parse_query(query, PAGE)?),
-        ("pull-requests", Some(id), None) if is_id(id) && query.is_none() => Route::PullRequest(id.to_owned()),
+        ("pull-requests", Some(id), None) if is_pull_request_id(id) && query.is_none() => Route::PullRequest(id.to_owned()),
         ("documents", None, None) => Route::Documents(parse_query(query, PAGE)?),
         ("documents", Some(id), None) if is_id(id) && query.is_none() => Route::Document(id.to_owned()),
         ("merge-authorizations", None, None) => Route::MergeAuthorizations(parse_query(query, PAGE)?),
