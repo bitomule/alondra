@@ -14,6 +14,12 @@ public struct ViewsClient: Sendable {
     public var openScreen: @Sendable (String, Set<ViewKey>) async -> Void
     public var closeScreen: @Sendable (String) async -> Void
     public var feed: @Sendable () async -> AsyncStream<FeedEvent> = { AsyncStream { $0.finish() } }
+    /// One screen's view: the first document, then a newer one each time the daemon says it changed.
+    /// The key stays open while the stream is consumed and is released when the consumer stops.
+    /// Throws `ViewsClientError.missingView` when the daemon no longer serves the key.
+    public var observe: @Sendable (ViewKey) -> AsyncThrowingStream<ViewFetch, any Error> = { _ in
+        AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) }
+    }
     public var perform: @Sendable (ActionRequest) async throws -> ActionOutcome
     public var fetchContent: @Sendable (ContentRef) async throws -> String
     public var fetchAttachment: @Sendable (Attachment) async throws -> Data
@@ -31,6 +37,7 @@ public struct ViewsClient: Sendable {
             openScreen: { owner, keys in await openSet.replace(owner: owner, with: keys) },
             closeScreen: { owner in await openSet.remove(owner: owner) },
             feed: { await session.events() },
+            observe: { key in ViewObservation.stream(session: session, key: key) },
             perform: { request in try await sender.send(request) },
             fetchContent: { content in try await session.fetchContent(content) },
             fetchAttachment: { attachment in try await session.fetchAttachment(attachment) }
@@ -84,6 +91,7 @@ private enum ViewsClientKey: DependencyKey {
         openScreen: { _, _ in },
         closeScreen: { _ in },
         feed: { AsyncStream { $0.finish() } },
+        observe: { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.notInstalled) } },
         perform: { _ in throw ViewsClientError.notInstalled },
         fetchContent: { _ in throw ViewsClientError.notInstalled },
         fetchAttachment: { _ in throw ViewsClientError.notInstalled }

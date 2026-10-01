@@ -6,13 +6,13 @@ import AlondraContract
 import AppKit
 
 struct MacServiceWorkspace<AccountContent: View>: View {
-    @Bindable var store: StoreOf<AppFeature>
+    @Bindable var store: StoreOf<MacAppFeature>
     let accountContent: AccountContent
     var isActive = true
     private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
     @FocusState private var searchFocused: Bool
 
-    init(store: StoreOf<AppFeature>, accountContent: AccountContent, isActive: Bool = true) {
+    init(store: StoreOf<MacAppFeature>, accountContent: AccountContent, isActive: Bool = true) {
         self.store = store
         self.accountContent = accountContent
         self.isActive = isActive

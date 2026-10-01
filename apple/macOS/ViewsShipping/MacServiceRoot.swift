@@ -63,8 +63,8 @@ struct MacServiceRoot: View {
 private struct MacViewsDemoScene: View {
     let reset: () -> Void
     let exit: () -> Void
-    @State private var store = Store(initialState: AppFeature.State()) {
-        AppFeature()
+    @State private var store = Store(initialState: MacAppFeature.State()) {
+        MacAppFeature()
     } withDependencies: {
         $0.viewsClient = ViewsClient.demo()
     }
@@ -94,13 +94,13 @@ private struct DemoAccountView: View {
 /// Scene dependency assembly; authentication and I/O are process-owned by the account.
 @MainActor @Observable
 private final class MacServiceWindowContext {
-    private(set) var store: StoreOf<AppFeature>?
+    private(set) var store: StoreOf<MacAppFeature>?
     func connect(_ services: Connection) async {
         guard store == nil else { return }
         let viewsFeed = await services.viewsFeed
         let viewActionSender = await services.viewActionSender
         guard !Task.isCancelled else { return }
-        store = Store(initialState: AppFeature.State()) { AppFeature() } withDependencies: {
+        store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
             $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: viewActionSender)
             $0.attachmentImport = Connection.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in

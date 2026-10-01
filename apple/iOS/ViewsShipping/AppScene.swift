@@ -1,3 +1,4 @@
+import AlondraContract
 import AlondraAttachments
 import AlondraFeatures
 import AlondraNetworkReachability
@@ -86,7 +87,7 @@ private struct DemoAccountView: View {
 
     func consumeNotification(_ notifications: NotificationRuntime, services: Connection, active: Bool) {
         guard active, let store, let route = notifications.consumeRoute(for: services) else { return }
-        store.send(.focusInbox(route.itemID))
+        store.send(.notificationOpened(cardID: route.itemID))
     }
 
     func connect(_ services: Connection) async {
@@ -152,41 +153,41 @@ struct RootView<AccountContent: View>: View {
     var body: some View {
         TabView(selection: Binding<AppFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: .inbox) {
-                NavigationStack(path: $store.scope(state: \.serverReviewPath, action: \.serverReviewPath)) {
+                NavigationStack(path: $store.scope(state: \.inboxPath, action: \.inboxPath)) {
                     TriageView(store: store.scope(state: \.home, action: \.home), zoom: triageZoom,
-                        openReview: { store.send(.openServerView($0)) })
+                        openReview: { store.send(.openFromTriage(ViewKey(rawValue: $0))) })
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
-                } destination: { child in
-                    ViewsScreenView(store: child, openView: { store.send(.openReviewView($0)) })
+                } destination: { route in
+                    detail(route, tab: .inbox)
                 }
             }.badge(store.home.badge)
             Tab("Tasks", systemImage: "checklist", value: .tasks) {
-                NavigationStack(path: $store.scope(state: \.serverTasksPath, action: \.serverTasksPath)) {
-                    ViewsScreenView(store: store.scope(state: \.serverTasks, action: \.serverTasks),
-                                    openView: { store.send(.openTasksView($0)) })
+                NavigationStack(path: $store.scope(state: \.tasksPath, action: \.tasksPath)) {
+                    ViewsScreenView(store: store.scope(state: \.tasks, action: \.tasks),
+                                    openView: { store.send(.open(.tasks, $0)) })
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
-                } destination: { child in
-                    ViewsScreenView(store: child, openView: { store.send(.openTasksView($0)) })
+                } destination: { route in
+                    detail(route, tab: .tasks)
                 }
             }
             Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
-                NavigationStack(path: $store.scope(state: \.serverFleetPath, action: \.serverFleetPath)) {
-                    ViewsScreenView(store: store.scope(state: \.serverFleet, action: \.serverFleet),
-                                    openView: { store.send(.openFleetView($0)) })
-                } destination: { child in
-                    ViewsScreenView(store: child, openView: { store.send(.openFleetView($0)) })
+                NavigationStack(path: $store.scope(state: \.fleetPath, action: \.fleetPath)) {
+                    ViewsScreenView(store: store.scope(state: \.fleet, action: \.fleet),
+                                    openView: { store.send(.open(.fleet, $0)) })
+                } destination: { route in
+                    detail(route, tab: .fleet)
                 }
             }
             Tab("New", systemImage: "plus.bubble", value: .newRequest) {
-                NavigationStack(path: $store.scope(state: \.serverNewRequestPath, action: \.serverNewRequestPath)) {
-                    ViewsScreenView(store: store.scope(state: \.serverNewRequest, action: \.serverNewRequest),
-                                    openView: { store.send(.openNewRequestView($0)) })
-                } destination: { child in
-                    ViewsScreenView(store: child, openView: { store.send(.openNewRequestView($0)) })
+                NavigationStack(path: $store.scope(state: \.newRequestPath, action: \.newRequestPath)) {
+                    ViewsScreenView(store: store.scope(state: \.newRequest, action: \.newRequest),
+                                    openView: { store.send(.open(.newRequest, $0)) })
+                } destination: { route in
+                    detail(route, tab: .newRequest)
                 }
             }
         }
@@ -204,5 +205,12 @@ struct RootView<AccountContent: View>: View {
         }
         .task { await store.send(.appeared).finish() }
         .onDisappear { store.send(.disappeared) }
+    }
+
+    @ViewBuilder private func detail(_ route: Store<DetailRoute.State, DetailRoute.Action>, tab: AppFeature.State.Tab) -> some View {
+        switch route.case {
+        case .legacy(let screen):
+            ViewsScreenView(store: screen, openView: { store.send(.open(tab, $0)) })
+        }
     }
 }

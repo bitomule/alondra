@@ -7,11 +7,11 @@ extension EnvironmentValues {
 }
 
 private struct WorkspaceSettingsStoreKey: FocusedValueKey {
-    typealias Value = StoreOf<AppFeature>
+    typealias Value = StoreOf<MacAppFeature>
 }
 
 extension FocusedValues {
-    var workspaceSettingsStore: StoreOf<AppFeature>? {
+    var workspaceSettingsStore: StoreOf<MacAppFeature>? {
         get { self[WorkspaceSettingsStoreKey.self] }
         set { self[WorkspaceSettingsStoreKey.self] = newValue }
     }

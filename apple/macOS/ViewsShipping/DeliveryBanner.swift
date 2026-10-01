@@ -3,7 +3,7 @@ import ComposableArchitecture
 import SwiftUI
 
 struct DeliveryBanner: View {
-    let store: StoreOf<AppFeature>
+    let store: StoreOf<MacAppFeature>
     var body: some View {
         ZStack {
             if let notice = store.macError, case .failure(let message) = notice.event {
