@@ -97,6 +97,9 @@ impl App {
 
     fn view_inbox_key(&mut self, key: KeyEvent) -> Flow {
         if key.code == KeyCode::Enter {
+            if self.screen != Screen::Inbox && !self.schedules_open {
+                return self.open_terminal();
+            }
             self.open_reader();
             return Flow::Go;
         }
@@ -129,6 +132,26 @@ impl App {
         }
 
         self.view_action_key(key).unwrap_or(Flow::Go)
+    }
+
+    /// Enter on a task or a node opens its session's terminal.
+    fn open_terminal(&mut self) -> Flow {
+        let selected = self.selected_view_key();
+        let session = self
+            .card_view
+            .as_ref()
+            .filter(|view| selected.as_deref() == Some(view.key.as_str()))
+            .and_then(super::view_render::attach_session);
+        match session {
+            Some(session) => Flow::Attach(session),
+            None => {
+                self.flash(tr!(
+                    "It has no terminal to open",
+                    "No tiene terminal que abrir"
+                ));
+                Flow::Go
+            }
+        }
     }
 
     pub(super) fn view_action_key(&mut self, key: KeyEvent) -> Option<Flow> {

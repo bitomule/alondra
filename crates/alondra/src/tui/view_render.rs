@@ -91,23 +91,62 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     lines
 }
 
+/// The agent a card came from, the way its header names it.
+pub fn card_agent(card: &Card) -> Option<&alondra_core::views::ContextLine> {
+    card.context.iter().find(|line| line.icon == Icon::Node)
+}
+
+fn age(at: &str) -> String {
+    let age = format_time(at, alondra_core::views::TimeFormat::Relative);
+    if age == tr!("now", "ahora") {
+        age
+    } else {
+        trf!("{age} ago", "hace {age}")
+    }
+}
+
+/// `? Question · Alondra · iOS · Demo Garden · 3d ago`: what it is, who it came from, how old.
+fn card_header(card: &Card) -> Line<'static> {
+    let style = Style::new().fg(icon_color(card.icon)).add_modifier(Modifier::BOLD);
+    let mut spans = vec![Span::styled(
+        match &card.eyebrow {
+            Some(eyebrow) => format!("{} {}", icon(card.icon), eyebrow.text),
+            None => icon(card.icon).to_owned(),
+        },
+        style,
+    )];
+    let mut rest = Vec::new();
+    if let Some(agent) = card_agent(card) {
+        rest.push(agent.text.clone());
+        rest.extend(agent.chip.as_ref().map(|chip| chip.text.clone()));
+    }
+    if let Some(stamp) = card.timestamps.first() {
+        rest.push(age(&stamp.at));
+    }
+    for part in rest {
+        spans.push(Span::styled(format!(" · {part}"), Style::new().fg(DIM)));
+    }
+    Line::from(spans)
+}
+
 pub fn card_lines(card: &Card, width: usize, depth: usize) -> Vec<Line<'static>> {
     let mut out = Vec::new();
     let indent = "  ".repeat(depth);
-    if let Some(eyebrow) = &card.eyebrow {
-        out.push(Line::from(Span::styled(
-            format!("{indent}{}", eyebrow.text),
-            label_style(eyebrow),
-        )));
-    }
+    let mut header = card_header(card);
+    header.spans.insert(0, Span::raw(indent.clone()));
+    out.push(header);
     out.push(Line::from(Span::styled(
-        format!("{indent}{} {}", icon(card.icon), card.title),
+        format!("{indent}{}", card.title),
         Style::new().add_modifier(Modifier::BOLD),
     )));
     if let Some(subtitle) = &card.subtitle {
         out.push(Line::from(format!("{indent}{subtitle}").fg(DIM)));
     }
-    for context in &card.context {
+    for context in card
+        .context
+        .iter()
+        .filter(|line| line.icon != Icon::Node && line.text != card.title)
+    {
         out.push(Line::from(format!("{indent}{}", context.text).fg(DIM)));
     }
     for badge in &card.badges {
@@ -159,7 +198,13 @@ pub fn card_lines(card: &Card, width: usize, depth: usize) -> Vec<Line<'static>>
 
 pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    if let Some(title) = &view.title {
+    let cards_title = |title: &String| {
+        view.sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .any(|item| matches!(item, Item::Card(card) if card.title == *title))
+    };
+    if let Some(title) = view.title.as_ref().filter(|title| !cards_title(title)) {
         lines.push(Line::from(Span::styled(
             title.clone(),
             Style::new().add_modifier(Modifier::BOLD),
@@ -604,4 +649,38 @@ mod action_tests {
         let ids: Vec<String> = actions(&view).into_iter().map(|action| action.id).collect();
         assert_eq!(ids, ["cancel:task-a@1", "cancel:task-b@1"]);
     }
+}
+
+/// What the detail pane and the reader call the open document: its card's kind, else its title.
+pub fn document_kind(view: &View) -> Option<String> {
+    view.sections
+        .iter()
+        .flat_map(|section| &section.items)
+        .find_map(|item| match item {
+            Item::Card(card) => card.eyebrow.as_ref().map(|eyebrow| eyebrow.text.to_lowercase()),
+            _ => None,
+        })
+}
+
+/// The terminal a document offers: an action or a row that attaches to its node's session.
+pub fn attach_session(view: &View) -> Option<String> {
+    use alondra_core::views::{Link, LocalLink};
+    let session = |link: &Option<Link>| match link {
+        Some(Link::Local {
+            local: LocalLink::Attach { session },
+        }) => Some(session.clone()),
+        _ => None,
+    };
+    actions(view)
+        .iter()
+        .find_map(|action| session(&action.link))
+        .or_else(|| {
+            view.sections
+                .iter()
+                .flat_map(|section| &section.items)
+                .find_map(|item| match item {
+                    Item::Row(row) => session(&row.link),
+                    _ => None,
+                })
+        })
 }

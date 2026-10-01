@@ -205,7 +205,7 @@ pub struct Reader {
     pub key: Key,
     pub agent: String,
     pub title: String,
-    pub kind: &'static str,
+    pub kind: String,
     pub glyph: &'static str,
     pub color: ratatui::style::Color,
     parts: Vec<Part>,
@@ -2328,22 +2328,33 @@ impl App {
                     }
                 }
             }
-            let (glyph, kind, color) = view
+            let first_card = view
                 .sections
                 .iter()
                 .flat_map(|section| section.items.iter())
                 .find_map(|item| match item {
-                    alondra_core::views::Item::Card(card) => Some((
-                        view_render::icon(card.icon),
-                        "item",
-                        view_render::icon_color(card.icon),
-                    )),
+                    alondra_core::views::Item::Card(card) => Some(card),
                     _ => None,
-                })
-                .unwrap_or(("▤", "document", ratatui::style::Color::Cyan));
+                });
+            let (glyph, kind, color) = match first_card {
+                Some(card) => (
+                    view_render::icon(card.icon),
+                    view_render::document_kind(&view).unwrap_or_default(),
+                    view_render::icon_color(card.icon),
+                ),
+                None => (
+                    "▤",
+                    tr!("document", "documento").to_owned(),
+                    ratatui::style::Color::Cyan,
+                ),
+            };
+            let agent = first_card
+                .and_then(view_render::card_agent)
+                .map(|line| line.text.clone())
+                .unwrap_or_default();
             self.reader = Some(Reader {
                 key: Key(view.key),
-                agent: String::new(),
+                agent,
                 title,
                 kind,
                 glyph,
@@ -2367,11 +2378,15 @@ impl App {
             .cloned()
         {
             let key = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
-            let (glyph, kind, color) = (
-                view_render::icon(card.icon),
-                "item",
-                view_render::icon_color(card.icon),
-            );
+            let kind = card
+                .eyebrow
+                .as_ref()
+                .map(|eyebrow| eyebrow.text.to_lowercase())
+                .unwrap_or_default();
+            let agent = view_render::card_agent(&card)
+                .map(|line| line.text.clone())
+                .unwrap_or_default();
+            let (glyph, color) = (view_render::icon(card.icon), view_render::icon_color(card.icon));
             let mut text = format!("# {}", card.title);
             for context in &card.context {
                 text.push_str(&format!("\n\n{}", context.text));
@@ -2394,7 +2409,7 @@ impl App {
             }
             self.reader = Some(Reader {
                 key,
-                agent: String::new(),
+                agent,
                 title: card.title,
                 kind,
                 glyph,

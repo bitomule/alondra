@@ -61,7 +61,7 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     } else if let Some(view) = app.home_view.clone() {
         draw_views_inbox(f, app, &view, body);
     } else {
-        f.render_widget(Paragraph::new(tr!("Loading…", "Cargando…")), body);
+        draw_waiting(f, app, body);
     }
     if let Some(form) = app.composer.as_ref().and_then(|c| c.form.as_ref()) {
         draw_form_popup(f, form, body);
@@ -589,6 +589,81 @@ fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::Vi
     }
 }
 
+fn list_title(app: &App) -> &'static str {
+    match app.screen {
+        Screen::Inbox => tr!(" Inbox ", " Bandeja "),
+        Screen::Tasks if app.schedules_open => tr!(" Schedules ", " Programaciones "),
+        Screen::Tasks => tr!(" Tasks ", " Tareas "),
+        Screen::Fleet => tr!(" Fleet ", " Flota "),
+    }
+}
+
+/// Before the first answer of alondrad: connecting, or not answering.
+fn draw_waiting(f: &mut Frame, app: &App, area: Rect) {
+    let block = panel(Line::from(list_title(app).bold()), true);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
+    let message = if app.offline {
+        tr!(
+            "alondrad is not responding · retrying…",
+            "alondrad no responde · reintentando…"
+        )
+    } else if app.loaded {
+        tr!("Loading…", "Cargando…")
+    } else {
+        tr!("Connecting to alondrad…", "Conectando con alondrad…")
+    };
+    centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
+}
+
+fn empty_list(app: &App) -> Vec<Line<'static>> {
+    let hint = |key: &'static str, text: &'static str| {
+        Line::from(vec![
+            Span::styled(key, Style::new().fg(ACCENT).bold()),
+            Span::styled(text, Style::new().fg(DIM)),
+        ])
+    };
+    match app.screen {
+        Screen::Inbox => vec![
+            Line::from(
+                tr!("✓ All caught up", "✓ Todo al día")
+                    .fg(Color::LightGreen)
+                    .bold(),
+            ),
+            Line::from(
+                tr!(
+                    "Nobody is waiting for you and there is nothing to read.",
+                    "Nadie te espera y no hay nada por leer."
+                )
+                .fg(DIM),
+            ),
+            Line::default(),
+            hint("n", tr!(" order new work", " encarga trabajo nuevo")),
+            hint("Tab", tr!(" see the tasks", " mira las tareas")),
+        ],
+        Screen::Tasks if app.schedules_open => vec![
+            Line::from(tr!("No scheduled tasks", "No hay tareas programadas").fg(DIM).bold()),
+            Line::default(),
+            hint("n", tr!(" create one", " crea una")),
+        ],
+        Screen::Tasks => vec![
+            Line::from(tr!("No tasks yet", "Aún no hay tareas").fg(DIM).bold()),
+            Line::from(
+                tr!(
+                    "What you ask for shows up here at once, and the orchestrator splits it into tasks.",
+                    "Lo que pidas sale aquí al momento y el orquestador lo reparte en tareas."
+                )
+                .fg(DIM),
+            ),
+            Line::default(),
+            hint("n", tr!(" order new work", " encarga trabajo nuevo")),
+        ],
+        Screen::Fleet => vec![Line::from(
+            tr!("No nodes yet.", "Todavía no hay nodos.").fg(DIM),
+        )],
+    }
+}
+
 fn draw_views_inbox_list(
     f: &mut Frame,
     app: &mut App,
@@ -596,13 +671,7 @@ fn draw_views_inbox_list(
     area: Rect,
 ) {
     let focused = app.focus == Pane::List || !app.detail_view.shown;
-    let title = match app.screen {
-        Screen::Inbox => tr!(" Inbox ", " Bandeja "),
-        Screen::Tasks if app.schedules_open => tr!(" Schedules ", " Programaciones "),
-        Screen::Tasks => tr!(" Tasks ", " Tareas "),
-        Screen::Fleet => tr!(" Agents ", " Agentes "),
-    };
-    let block = panel(Line::from(title.bold()), focused);
+    let block = panel(Line::from(list_title(app).bold()), focused);
     let inner = block.inner(area);
     f.render_widget(block, area);
     let mut lines: Vec<Line> = Vec::new();
@@ -652,19 +721,7 @@ fn draw_views_inbox_list(
         }
     }
     if lines.is_empty() {
-        centered_lines(
-            f,
-            inner,
-            vec![Line::from(
-                home.empty
-                    .as_ref()
-                    .map_or_else(
-                        || tr!("Nothing is waiting for you", "Nada espera tu respuesta").to_owned(),
-                        |empty| empty.text.clone(),
-                    )
-                    .fg(DIM),
-            )],
-        );
+        centered_lines(f, inner, empty_list(app));
         return;
     }
     if let Some(range) = selected_range {
@@ -695,17 +752,20 @@ fn draw_views_inbox_list(
 }
 
 fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
-    let block = panel(
-        Line::from(tr!(" Detail ", " Detalle ").bold()),
-        app.focus == Pane::Detail,
-    );
-    let inner = block.inner(area);
-    f.render_widget(block, area);
     let selected = app.selected_view_key();
     let document = app
         .card_view
         .as_ref()
         .filter(|view| selected.as_deref() == Some(view.key.as_str()));
+    let title = document
+        .and_then(super::view_render::document_kind)
+        .map_or_else(
+            || tr!(" Detail ", " Detalle ").to_owned(),
+            |kind| format!(" {kind} "),
+        );
+    let block = panel(Line::from(title.bold()), app.focus == Pane::Detail);
+    let inner = block.inner(area);
+    f.render_widget(block, area);
     let Some(document) = document else {
         let message = if app.card_view_asked.is_some() {
             if selected
@@ -814,10 +874,15 @@ fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
     let Some(r) = app.reader.as_mut() else { return };
     let review = app.reviews.get(&r.key);
     let (glyph, color) = (r.glyph, r.color);
+    let who = if r.agent.is_empty() {
+        " · ".to_owned()
+    } else {
+        format!(" · {} · ", r.agent)
+    };
     let mut title = vec![
         Span::raw(" "),
         Span::styled(format!("{glyph} {}", r.kind), Style::new().fg(color).bold()),
-        Span::styled(format!(" · {} · ", r.agent), Style::new().fg(SOFT)),
+        Span::styled(who, Style::new().fg(SOFT)),
         Span::styled(
             truncate(
                 &md::one_line(&r.title),
@@ -1529,16 +1594,25 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
             return keys;
         }
         if let Some(home) = app.home_view.as_ref() {
-            let mut keys = if app.schedules_open {
-                vec![k("j/k", tr!("move", "mover"))]
-            } else {
-                vec![
+            let mut keys = match app.screen {
+                Screen::Inbox if app.focus == Pane::Detail => {
+                    vec![k("j/k", tr!("scroll", "desplazar"))]
+                }
+                Screen::Inbox => vec![k("j/k", tr!("move", "mover"))],
+                Screen::Tasks | Screen::Fleet if app.schedules_open => {
+                    vec![k("j/k", tr!("move", "mover"))]
+                }
+                Screen::Tasks | Screen::Fleet => vec![
                     k("j/k", tr!("move", "mover")),
-                    k("⏎/o", tr!("detail", "detalle")),
-                ]
+                    k("h/l", tr!("pane", "panel")),
+                ],
             };
+            if !app.schedules_open {
+                keys.push(k("o", tr!("expand", "expandir")));
+            }
+            let mut from_server = Vec::new();
             if let Some(card) = app.card_view.as_ref() {
-                keys.extend(view_footer_actions(card));
+                from_server.extend(view_footer_actions(card));
             } else if let Some(selected) = app.sel.as_ref()
                 && let Some(row) = super::view_render::rows(home)
                     .into_iter()
@@ -1547,11 +1621,16 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
                 for action in row.actions.iter().filter(|action| action.enabled) {
                     let hint = super::view_render::action_hint(action);
                     if !hint.is_empty() {
-                        keys.push((
+                        from_server.push((
                             if hint == "enter" { "⏎" } else { hint }.into(),
                             action.label.clone(),
                         ));
                     }
+                }
+            }
+            for entry in from_server {
+                if !keys.contains(&entry) {
+                    keys.push(entry);
                 }
             }
             if app.schedules_open {
@@ -1561,33 +1640,40 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
                 ]);
                 return keys;
             }
+            let mut shortcuts = Vec::new();
             match app.screen {
-                Screen::Tasks => {
-                    for shortcut in [
-                        k("r", tr!("message", "mensaje")),
-                        k("x", tr!("cancel / withdraw", "descartar / retirar")),
-                        k("Shift+A", tr!("archive finished", "archivar terminadas")),
-                    ] {
-                        if !keys.iter().any(|(key, _)| key == &shortcut.0) {
-                            keys.push(shortcut);
-                        }
-                    }
-                }
-                Screen::Fleet => {
-                    for shortcut in [
-                        k("/", tr!("search", "buscar")),
-                        k("r", tr!("message", "mensaje")),
-                        k("x", tr!("close the session", "cerrar la sesión")),
-                    ] {
-                        if !keys.iter().any(|(key, _)| key == &shortcut.0) {
-                            keys.push(shortcut);
-                        }
-                    }
-                }
                 Screen::Inbox => {}
+                Screen::Tasks => shortcuts.extend([
+                    k("r", tr!("message", "mensaje")),
+                    k("⏎", tr!("its terminal", "su terminal")),
+                    k("x", tr!("cancel / withdraw", "descartar / retirar")),
+                    k("Shift+A", tr!("archive finished", "archivar terminadas")),
+                    k("s", tr!("scheduled", "programadas")),
+                ]),
+                Screen::Fleet => shortcuts.extend([
+                    k("/", tr!("search", "buscar")),
+                    k("r", tr!("message", "mensaje")),
+                    k("⏎", tr!("its terminal (← returns)", "su terminal (← vuelve)")),
+                    k("x", tr!("close node", "cerrar nodo")),
+                ]),
+            }
+            for shortcut in shortcuts {
+                if !keys.iter().any(|(key, _)| key == &shortcut.0) {
+                    keys.push(shortcut);
+                }
+            }
+            if app.screen == Screen::Inbox {
+                keys.push(k("^d/^u", tr!("scroll detail", "desplazar detalle")));
             }
             keys.extend([
-                k("Tab", tr!("next", "siguiente")),
+                k(
+                    "Tab",
+                    match app.screen {
+                        Screen::Inbox => tr!("tasks", "tareas"),
+                        Screen::Tasks => tr!("fleet", "flota"),
+                        Screen::Fleet => tr!("inbox", "bandeja"),
+                    },
+                ),
                 k("n", tr!("new", "nuevo")),
                 k("q", tr!("quit", "salir")),
             ]);
@@ -1787,16 +1873,34 @@ fn draw_foot(f: &mut Frame, app: &App, area: Rect) {
     let help_w: usize = help.iter().map(Span::width).sum();
     let mut spans = vec![Span::raw(" ")];
     let mut w = 1;
-    for (key, desc) in footer_keys(app) {
-        let piece = vec![
-            Span::styled(key, Style::new().fg(ACCENT).bold()),
-            Span::styled(format!(" {desc}   "), Style::new().fg(DIM)),
-        ];
-        let pw: usize = piece.iter().map(Span::width).sum();
-        if w + pw + help_w > width {
+    let pieces: Vec<Vec<Span<'static>>> = footer_keys(app)
+        .into_iter()
+        .map(|(key, desc)| {
+            vec![
+                Span::styled(key, Style::new().fg(ACCENT).bold()),
+                Span::styled(format!(" {desc}   "), Style::new().fg(DIM)),
+            ]
+        })
+        .collect();
+    let widths: Vec<usize> = pieces
+        .iter()
+        .map(|piece| piece.iter().map(Span::width).sum())
+        .collect();
+    let tail = if app.composer.is_none() && app.reader.is_none() {
+        pieces.len().saturating_sub(3)
+    } else {
+        pieces.len()
+    };
+    let tail_w: usize = widths[tail..].iter().sum();
+    for (at, piece) in pieces.into_iter().enumerate() {
+        let reserved = if at < tail { tail_w } else { 0 };
+        if w + widths[at] + reserved + help_w > width {
+            if at < tail {
+                continue;
+            }
             break;
         }
-        w += pw;
+        w += widths[at];
         spans.extend(piece);
     }
     if app.composer.is_none() {
