@@ -159,12 +159,12 @@ impl Executor {
 
     fn prompt(&self, runtime: &Runtime, resume: bool, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
-        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator-domain-v2 skill. Process this durable inbox batch with typed domain commands; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
+        let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
         if !runtime.pending_resolutions.is_empty() {
             text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded.\n");
         }
         if !resume {
-            text.push_str("This is a new conversation. Read the durable domain before acting; do not infer that existing Tasks need to be started again.\n");
+            text.push_str("This is a new conversation. Call fleet before acting; do not infer that existing tasks need to be started again.\n");
         }
         let user = crate::domain_messages::user_name();
         text.push_str(&summary(&state, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
