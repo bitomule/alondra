@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraDesign
 import SwiftUI
 
 /// The one screen both apps show while the fleet is out of reach. It says what is wrong in
@@ -21,16 +22,10 @@ public struct ConnectionLostView: View {
     public var body: some View {
         Group {
             if let problem {
-                ContentUnavailableView {
-                    Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
-                } description: {
-                    Text(problem.detail)
-                } actions: {
-                    actions(for: problem)
-                }
+                notice(problem)
             } else {
                 VStack(spacing: 16) {
-                    ProgressView().controlSize(.large)
+                    ProgressView().controlSize(.large).tint(Palette.dawn)
                     Text("Connecting to the fleet…").font(.subheadline).foregroundStyle(.secondary)
                 }
             }
@@ -40,15 +35,51 @@ public struct ConnectionLostView: View {
         .accessibilityIdentifier("connection.lost")
     }
 
+    private func notice(_ problem: ConnectionProblem) -> some View {
+        VStack(spacing: 18) {
+            Spacer()
+            Image(systemName: problem.systemImage)
+                .font(.system(size: 54, weight: .light))
+                .foregroundStyle(problem.needsAction ? Palette.rose : Palette.slate)
+                .symbolEffect(.pulse, options: .repeating, isActive: !problem.needsAction)
+                .accessibilityHidden(true)
+            VStack(spacing: 8) {
+                Text(problem.title)
+                    .font(.display(.title2, weight: .bold))
+                    .foregroundStyle(Palette.ink)
+                    .multilineTextAlignment(.center)
+                Text(problem.detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+            }
+            actions(for: problem)
+                .padding(.top, 6)
+            Spacer()
+            Spacer()
+        }
+        .padding(.horizontal, 32)
+        .frame(maxWidth: .infinity)
+    }
+
     @ViewBuilder
     private func actions(for problem: ConnectionProblem) -> some View {
         VStack(spacing: 12) {
             if problem == .sessionExpired, let signIn {
-                Button("Sign In Again", action: signIn).buttonStyle(.glassProminent)
+                Button("Sign In Again", systemImage: "person.crop.circle", action: signIn)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .tint(Palette.dawn)
             } else if problem == .deviceRevoked, let settings {
-                Button("Open Settings", action: settings).buttonStyle(.glassProminent)
+                Button("Open Settings", systemImage: "gearshape", action: settings)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .tint(Palette.dawn)
             } else {
-                Button("Try Again", action: retry).buttonStyle(.glassProminent)
+                Button("Try Again", systemImage: "arrow.clockwise", action: retry)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .tint(Palette.dawn)
             }
             if !problem.needsAction {
                 Label { Text("Trying again automatically…") } icon: { ProgressView().controlSize(.small) }

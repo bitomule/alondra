@@ -1,0 +1,29 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "issue_picker",
+  "key": "issue_picker",
+  "client": "ios",
+  "version": "v1",
+  "cursor": "cursor-1",
+  "title": "Issues",
+  "status": {
+    "version": "v47edd097e99cb5fc",
+    "summary": "0 nodes working",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": { "text": "idle", "tone": "neutral" }
+  },
+  "sections": [
+    {
+      "id": "issues",
+      "collapsed": false,
+      "items": [
+        { "type": "row", "id": "me/Other#3", "icon": "mission", "title": "Use https://github.com/me/Other/issues/3", "subtitle": "me/Other#3", "depth": 0, "struck": false },
+        { "type": "row", "id": "me/Garden#12", "icon": "mission", "title": "me/Garden#12", "subtitle": "Seedlings wilt when the watering schedule changes", "badges": [{ "text": "bug", "tone": "critical" }], "depth": 0, "struck": false },
+        { "type": "row", "id": "me/Garden#9", "icon": "mission", "title": "me/Garden#9", "subtitle": "Add a compost tracker", "badges": [{ "text": "enhancement", "tone": "info" }], "depth": 0, "struck": false }
+      ]
+    }
+  ]
+}

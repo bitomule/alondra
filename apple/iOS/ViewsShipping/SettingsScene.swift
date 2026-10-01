@@ -1,4 +1,4 @@
-import AlondraDesign
+import AlondraiOSUI
 import AlondraAccount
 import AlondraFeatures
 import ComposableArchitecture
@@ -12,9 +12,7 @@ struct SettingsScene: View {
     let context: SettingsContext
     var body: some View {
         Group {
-            if let store = context.store { SettingsView(store: store, ink: Palette.ink, success: Palette.sage, failure: Palette.rose) { pairing in
-                SignInView(store: pairing)
-            } }
+            if let store = context.store { SettingsView(store: store) }
             else { ProgressView("Loading settings…") }
         }.task { await context.connect(services: services, owner: owner, notifications: notifications) }
     }
