@@ -1122,3 +1122,114 @@ fn enter_on_a_task_or_node_opens_its_terminal() {
     assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Flow::Go));
     assert!(flash(&app).contains("no terminal"), "{}", flash(&app));
 }
+
+fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
+    serde_json::from_value(serde_json::json!({
+        "version": "1", "summary": "", "badge": 0,
+        "counts": [
+            {"id": "inbox", "label": "Inbox", "value": 4}, {"id": "tasks", "label": "Tasks", "value": 1},
+            {"id": "agents", "label": "Agents", "value": 1}, {"id": "working", "label": "working", "value": 2},
+            {"id": "waiting", "label": "waiting", "value": 1}
+        ],
+        "gauges": gauges,
+        "orchestrator": {"text": "idle", "tone": "neutral"}
+    }))
+    .unwrap()
+}
+
+fn production_gauges() -> serde_json::Value {
+    serde_json::json!([
+        {"id": "memory", "label": "RAM", "value": 0.42, "text": "42%", "level": "calm"},
+        {"id": "disk", "label": "Disk", "value": 0.72, "text": "120 GB free", "level": "calm"}
+    ])
+}
+
+#[test]
+fn header_has_the_alondra_badge_the_bars_and_how_many_are_working() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    app.view_status = Some(status_with(production_gauges()));
+    let shown = screen(&mut app, 140, 6);
+    for expected in [" Alondra ", "Fleet 1", "2 working", "RAM ▰▰▱▱ 42%", "Disk ▰▰▰▱ 120 GB free"] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+    assert!(shown.contains("42%  Disk"), "the gauges are separated: {shown}");
+    assert!(!shown.contains("Local"));
+}
+
+#[test]
+fn header_gauges_come_in_the_servers_language() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    app.view_status = Some(status_with(serde_json::json!([
+        {"id": "disk", "label": "Disco", "value": 0.72, "text": "120 GB libres", "level": "calm"}
+    ])));
+    let shown = screen(&mut app, 140, 6);
+    assert!(shown.contains("Flota 1") && shown.contains("Disco ▰▰▰▱ 120 GB libres"), "{shown}");
+}
+
+#[test]
+fn header_drops_the_gauge_names_before_it_overflows() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    app.view_status = Some(status_with(production_gauges()));
+    let shown = screen(&mut app, 80, 6);
+    assert!(shown.contains("▰▰▱▱ 42%") && !shown.contains("RAM"), "{shown}");
+    let shown = screen(&mut app, 50, 6);
+    assert!(!shown.contains("▰"), "{shown}");
+}
+
+#[test]
+fn tasks_open_on_the_first_task_and_leave_scheduled_to_the_s_key() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    assert_eq!(
+        app.sel.as_ref().map(|key| key.0.as_str()),
+        Some("r-9f2156b5a8894e53901f0af576dff6a2")
+    );
+    let shown = screen(&mut app, 120, 20);
+    assert!(shown.contains("Polish the Alondra beta") && shown.contains("Scheduled [s]"), "{shown}");
+    assert!(!shown.contains("Scheduled Tasks"), "{shown}");
+}
+
+#[test]
+fn an_empty_fleet_detail_summarises_the_fleet_from_the_servers_counts() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Fleet;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap())));
+    app.sel = None;
+    app.card_view_asked = None;
+    let shown = screen(&mut app, 120, 20);
+    for expected in ["The fleet right now", "0 working", "1 waiting"] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+}
+
+#[test]
+fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Es] {
+        crate::i18n::set_for_this_thread(lang);
+        let help: String = crate::tui::draw::help_lines()
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(help.contains("RAM") && !help.contains("CPU"), "{help}");
+        assert!(!help.to_lowercase().contains("agent"), "{help}");
+        assert!(!help.contains("sesión") && !help.contains("session"), "{help}");
+    }
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let help: String = crate::tui::draw::help_lines().iter().map(|line| line.to_string()).collect();
+    assert!(help.contains("scheduled tasks: n creates one") && help.contains(":fleet"));
+}
