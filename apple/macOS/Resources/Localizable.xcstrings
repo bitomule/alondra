@@ -5,7 +5,7 @@
     "Anchor": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ancla"}}}},
     "Ask for new work (⌘N)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir trabajo nuevo (⌘N)"}}}},
     "Cancelling connection…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cancelando la conexión…"}}}},
-    "Choose an issue": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige un issue"}}}},
+    "Choose an issue": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una incidencia"}}}},
     "Everything here is sample data. Actions stay in memory and never reach a real account.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Todo lo de aquí son datos de ejemplo. Las acciones se quedan en memoria y nunca llegan a una cuenta real."}}}},
     "Opening workspace…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abriendo el espacio de trabajo…"}}}},
     "Remove": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Quitar"}}}},

@@ -19,6 +19,17 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    func testDocumentReviewOpenedFromTheCardPathOffersApproveAndRequestChanges() throws {
+        let approve = #"{"id":"accept:revision-1@1","label":"Approve","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"stamp":"Approved"}"#
+        let changes = #"{"id":"changes:revision-1@1","label":"Request changes","style":"secondary","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":true,"enabled":true}"#
+        let json = #"{"protocol":1,"view":"card","key":"card:revision-1","client":"ios","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"1 question","badge":1,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"card","collapsed":false,"items":[{"type":"card","id":"revision-1","icon":"document","title":"Plan","detail":"included","actions":[\#(approve),\#(changes)]},{"type":"actions","actions":[\#(approve)]}]}],"notices":[]}"#
+        let document = try ViewsCodec.decode(ViewDocument.self, from: Data(json.utf8))
+        XCTAssertEqual(document.reviewActions(forKey: "card:revision-1").map(\.label), ["Approve", "Request changes"])
+        XCTAssertEqual(document.reviewActions(forKey: "card:revision-1").map(\.id), ["accept:revision-1@1", "changes:revision-1@1"])
+        XCTAssertNil(document.documentCard(forKey: "document:revision-1"))
+        XCTAssertEqual(document.reviewActions(forKey: "document:revision-1").map(\.label), ["Approve"])
+    }
+
     func testDecodesAndReencodesViewWithInternallyTaggedItems() throws {
         let json = #"{"protocol":1,"view":"home","key":"home","client":"ios","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"1 question","badge":1,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"queue","collapsed":false,"card_ids":["i-42","i-43"],"items":[{"type":"card","id":"i-42","icon":"question","title":"Review this","badges":[],"context":[],"timestamps":[],"detail":"included","attachments":[],"quotes":[],"children":[],"actions":[]},{"type":"markdown","text":"Hello","truncated":false,"commentable":true}]}],"notices":[]}"#.data(using: .utf8)!
         let document = try ViewsCodec.decode(ViewDocument.self, from: json)
