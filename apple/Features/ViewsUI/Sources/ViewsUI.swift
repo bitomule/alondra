@@ -66,6 +66,34 @@ enum ViewPalette {
     }
 }
 
+public enum SidebarTint {
+    public static func node(_ tone: Tone?) -> Color {
+        switch tone {
+        case nil, .neutral: .gray
+        case .info: .indigo
+        case .accent: .orange
+        case .success: .green
+        case .warning: .yellow
+        case .critical: .red
+        case .yourTurn: .pink
+        case .unclear: .purple
+        }
+    }
+
+    public static func task(_ tone: Tone?) -> Color {
+        switch tone {
+        case nil, .neutral: .gray
+        case .info: .indigo
+        case .accent: .orange
+        case .success: .green
+        case .warning: .orange
+        case .critical: .red
+        case .yourTurn: .pink
+        case .unclear: .purple
+        }
+    }
+}
+
 private func toneColor(_ tone: Tone) -> Color {
     switch tone {
     case .neutral: .secondary
@@ -74,6 +102,8 @@ private func toneColor(_ tone: Tone) -> Color {
     case .success: ViewPalette.sage
     case .warning: ViewPalette.ember
     case .critical: ViewPalette.rose
+    case .yourTurn: ViewPalette.ember
+    case .unclear: ViewPalette.rose
     }
 }
 

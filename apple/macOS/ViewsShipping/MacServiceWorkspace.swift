@@ -506,17 +506,7 @@ private struct MacViewSidebarRow: View {
         default: .secondary
         }
     }
-    private var nodeTint: Color {
-        guard let tone = row.badges.first?.tone else { return .gray }
-        return switch tone {
-        case .neutral: .gray
-        case .info: .indigo
-        case .accent: .orange
-        case .success: .green
-        case .warning: .yellow
-        case .critical: .red
-        }
-    }
+    private var nodeTint: Color { SidebarTint.node(row.badges.first?.tone) }
     private func taskTint(_ row: Row) -> Color {
         color(forTaskRow: row)
     }
@@ -568,15 +558,7 @@ private func color(forTaskRow row: Row) -> Color {
         case .warning: return .gray
         default: break
         }
-        guard let tone = row.badges.first?.tone else { return .gray }
-        switch tone {
-        case .neutral: return .gray
-        case .info: return .indigo
-        case .accent: return .orange
-        case .success: return .green
-        case .warning: return .orange
-        case .critical: return .red
-        }
+        return SidebarTint.task(row.badges.first?.tone)
 }
 
 private struct MacViewStatusGauges: View {

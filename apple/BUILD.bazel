@@ -11,6 +11,32 @@ sh_test(
     data = [":localization_catalogs"],
 )
 
+sh_test(
+    name = "spanish_catalog_test",
+    srcs = ["spanish_catalog_test.py"],
+    args = [
+        "$(rootpath Shared/Resources/AlondraShared.xcstrings)",
+        "$(rootpath iOS/Resources/Localizable.xcstrings)",
+        "$(rootpath macOS/Resources/Localizable.xcstrings)",
+        "$(rootpaths :view_sources)",
+    ],
+    data = [
+        "Shared/Resources/AlondraShared.xcstrings",
+        "iOS/Resources/Localizable.xcstrings",
+        "macOS/Resources/Localizable.xcstrings",
+        ":view_sources",
+    ],
+)
+
+filegroup(
+    name = "view_sources",
+    srcs = glob([
+        "iOS/ViewsShipping/*.swift",
+        "iOS/Sources/ServiceTriage/*.swift",
+        "macOS/ViewsShipping/*.swift",
+    ]) + ["//apple/Features/ViewsUI:sources"],
+)
+
 filegroup(
     name = "localization_catalogs",
     srcs = [

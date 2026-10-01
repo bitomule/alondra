@@ -39,6 +39,7 @@ checks:
       targets:
         - //crates/...
         - //apple:no_sleep_wording_test
+        - //apple:spanish_catalog_test
 
   apple-tests:
     uses: bazel/test

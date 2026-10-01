@@ -738,6 +738,8 @@ private struct TaskWireRow: View {
         case .success: Palette.sage
         case .warning: Palette.dawn
         case .critical: Palette.rose
+        case .yourTurn: Palette.ember
+        case .unclear: Palette.rose
         }
     }
 
@@ -780,7 +782,7 @@ private struct TaskWireRow: View {
         default:
             switch row.badges.first?.tone {
             case .success: "checkmark"
-            case .warning, .critical: "hand.raised.fill"
+            case .warning, .critical, .yourTurn, .unclear: "hand.raised.fill"
             default: "circle.dashed"
             }
         }
