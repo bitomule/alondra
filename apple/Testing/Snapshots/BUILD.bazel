@@ -46,7 +46,7 @@ swift_library(
     srcs = glob([
         "Support/*.swift",
         "Tests/*.swift",
-    ]),
+    ]) + ["//apple/Testing/Fixtures:sources"],
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     module_name = "AlondraSnapshotTestsLib",
     deps = [

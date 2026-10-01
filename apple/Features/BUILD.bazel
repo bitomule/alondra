@@ -20,7 +20,7 @@ swift_library(
 swift_test(
     name = "AlondraFeaturesTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
-    srcs = glob(["Tests/**/*.swift"]),
+    srcs = glob(["Tests/**/*.swift"]) + ["//apple/Testing/Fixtures:sources"],
     data = [
         "//apple/Testing/Samples:all",
         "//fixtures/views:all",
@@ -30,7 +30,9 @@ swift_test(
     deps = [
         ":AlondraFeatures",
         "//apple/Contract:AlondraContract",
+        "//apple/Data/Attachments:AlondraAttachments",
         "//apple/Data/Feed:AlondraFeed",
+        "//apple/Design:AlondraDesign",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],

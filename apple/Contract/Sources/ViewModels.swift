@@ -222,7 +222,7 @@ public struct Timeline: Codable, Equatable, Sendable { public let entries: [Time
 public struct TimelineEntry: Codable, Equatable, Sendable { public let at: String; public let title: String; public let text: String?; public let tone: Tone? }
 public struct Notice: Codable, Equatable, Sendable { public let text: String; public let tone: Tone; public let action: Action? }
 public struct ActionBar: Codable, Equatable, Sendable { public let actions: [Action] }
-public struct ContextLine: Codable, Equatable, Sendable { public let icon: Icon; public let text: String; public let link: Link?; public let chip: Label? }
+public struct ContextLine: Codable, Equatable, Sendable { public let icon: Icon; public let text: String; public let link: Link?; public let chip: Label?; public let state: Label? }
 public struct Stamp: Codable, Equatable, Sendable { public let role: String; public let at: String; public let format: TimeFormat }
 public struct Quote: Codable, Equatable, Sendable { public let label: String; public let text: String; public let at: String? }
 

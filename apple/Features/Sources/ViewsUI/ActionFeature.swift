@@ -130,7 +130,8 @@ public struct ActionFeature: Sendable {
                     return .none
                 }
                 let input = state.selectedOptionID.flatMap { id in selected.options.first { $0.id == id }?.input } ?? selected.input
-                if case let .text(_, required, _) = input, required && state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if case let .text(_, required, _) = input, required, state.comments.isEmpty,
+                   state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     state.error = String(localized: "Enter a response")
                     return .none
                 }
@@ -224,5 +225,13 @@ public struct ActionFeature: Sendable {
                 comments: state.comments.isEmpty ? nil : state.comments,
                 fields: state.fields.isEmpty ? nil : state.fields)
         )
+    }
+}
+
+public extension ActionFeature.State {
+    /// An action state for this device: the iPhone client, in the language the server should answer in.
+    static func device(dataEpoch: String = "") -> Self {
+        let language = Locale.preferredLanguages.first?.split(separator: "-").first
+        return Self(dataEpoch: dataEpoch, client: .ios, lang: language == "es" ? "es" : "en")
     }
 }

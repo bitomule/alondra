@@ -92,8 +92,10 @@ public struct Kind {
     public let symbol: String
     public let tint: Color
 
-    public init(_ card: AlondraContract.Card) {
-        switch card.icon {
+    public init(_ card: AlondraContract.Card) { self.init(icon: card.icon) }
+
+    public init(icon: AlondraContract.Icon) {
+        switch icon {
         case .action: self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
         case .question: self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
         case .pullRequest: self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
@@ -178,8 +180,17 @@ extension Date {
     }
 }
 
+/// The instant "2 hr. ago" is measured from. Snapshot tests pin it so a baseline does not age.
+public enum RelativeClock {
+    public nonisolated(unsafe) static var now: @Sendable () -> Date = { Date() }
+}
+
 public func relative(_ millis: Int64) -> String {
     let date = Date(millis: millis)
-    if abs(date.timeIntervalSinceNow) < 45 { return String(localized: "now") }
-    return date.formatted(.relative(presentation: .named, unitsStyle: .abbreviated))
+    let now = RelativeClock.now()
+    if abs(date.timeIntervalSince(now)) < 45 { return String(localized: "now") }
+    let formatter = RelativeDateTimeFormatter()
+    formatter.dateTimeStyle = .named
+    formatter.unitsStyle = .abbreviated
+    return formatter.localizedString(for: date, relativeTo: now)
 }

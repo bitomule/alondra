@@ -12,6 +12,7 @@ public enum DetailRoute {
     case requestDetail(RequestDetailFeature)
     case schedules(SchedulesFeature)
     case scheduleEditor(ScheduleEditorFeature)
+    case review(ReviewFeature)
 }
 
 public extension DetailRoute {
@@ -46,6 +47,7 @@ public extension DetailRoute.State {
 
     init?(key: ViewKey, owner: String) {
         switch DetailRoute.Kind(key: key) {
+        case .card, .document: self = .review(ReviewFeature.State(key: key))
         case .task: self = .taskDetail(TaskDetailFeature.State(key: key))
         case .request: self = .requestDetail(RequestDetailFeature.State(key: key))
         case .schedules: self = .schedules(SchedulesFeature.State())
@@ -58,6 +60,7 @@ public extension DetailRoute.State {
     var key: ViewKey {
         switch self {
         case .legacy(let state): state.key
+        case .review(let state): state.screen.key
         case .taskDetail(let state): state.screen.key
         case .requestDetail(let state): state.screen.key
         case .schedules(let state): state.screen.key
@@ -71,6 +74,8 @@ public extension DetailRoute.Action {
     var delegate: ScreenDelegate? {
         switch self {
         case .legacy(.action(.delegate(let outcome))): ScreenDelegate(outcome)
+        case .review(.delegate(.open(let key))): .open(key)
+        case .review(.actions(.delegate(let outcome))): ScreenDelegate(outcome)
         case .taskDetail(.delegate(let delegate)),
              .requestDetail(.delegate(let delegate)),
              .schedules(.delegate(let delegate)),

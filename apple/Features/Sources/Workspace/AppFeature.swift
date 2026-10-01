@@ -19,7 +19,7 @@ public struct AppFeature: Sendable {
         public var settingsPresented = false
         public var notice: WorkspaceNotice?
         public var closeRefusal: String?
-        public var home = HomeFeature.State()
+        public var triage = TriageFeature.State()
         public var tasks = TasksFeature.State()
         public var fleet = ViewsScreenFeature.State(key: .fleet, owner: "ios.fleet")
         public var newRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
@@ -40,7 +40,7 @@ public struct AppFeature: Sendable {
         case notificationOpened(cardID: String)
         case dismissNotice(UUID)
         case dismissCloseRefusal
-        case home(HomeFeature.Action)
+        case triage(TriageFeature.Action)
         case tasks(TasksFeature.Action)
         case fleet(ViewsScreenFeature.Action)
         case newRequest(ViewsScreenFeature.Action)
@@ -56,7 +56,7 @@ public struct AppFeature: Sendable {
     private enum CancelID { case feed, notice }
 
     public var body: some ReducerOf<Self> {
-        Scope(state: \.home, action: \.home) { HomeFeature() }
+        Scope(state: \.triage, action: \.triage) { TriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { TasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { ViewsScreenFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { ViewsScreenFeature() }
@@ -75,7 +75,7 @@ public struct AppFeature: Sendable {
                     for await event in await viewsClient.feed() { await send(.viewsFeed(event)) }
                 }.cancellable(id: CancelID.feed, cancelInFlight: true)
             case .disappeared:
-                return .merge(.send(.home(.disappeared)), .cancel(id: CancelID.feed))
+                return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed))
             case .tabSelected(let tab):
                 state.tab = tab
                 return .none
@@ -91,8 +91,12 @@ public struct AppFeature: Sendable {
                 return .none
             case .notificationOpened(let cardID):
                 state.tab = .inbox
+                state.settingsPresented = false
+                state.inboxPath.removeAll()
                 let publicID = String(cardID.split(separator: ":").last ?? Substring(cardID))
-                return .send(.home(.focus(publicID)))
+                return .send(.triage(.focus(publicID)))
+            case .triage(.delegate(.open(let key))):
+                return .send(.openFromTriage(key))
             case .openFromTriage(let key):
                 state.inboxPath.removeAll()
                 Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
@@ -111,16 +115,16 @@ public struct AppFeature: Sendable {
                 state.closeRefusal = response.message ?? String(localized: "Couldn’t close the node")
                 return .none
             case .viewsFeed(.stale(let keys)):
-                return .merge(.send(.home(.stale(keys))),
+                return .merge(
                     .send(.fleet(.stale(keys))), .send(.newRequest(.stale(keys))),
                     Self.refreshPaths(state, .stale(keys)))
             case .viewsFeed(.reset):
-                return .merge(.send(.home(.reset)),
+                return .merge(
                     .send(.fleet(.reset)), .send(.newRequest(.reset)),
                     Self.refreshPaths(state, .reset))
             case .viewsFeed(.snapshot(let snapshot)):
                 if snapshot.reset { return .send(.viewsFeed(.reset)) }
-                if let status = snapshot.status { return .send(.home(.feedStatus(status))) }
+                if let status = snapshot.status { return .send(.triage(.feedStatus(status))) }
                 return .none
             case .tasks(.delegate(.open(let key))):
                 Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
@@ -137,7 +141,7 @@ public struct AppFeature: Sendable {
             case .newRequestPath(.element(id: _, action: let route)):
                 if case .open(let key)? = route.delegate { Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request") }
                 return .none
-            case .home, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
+            case .triage, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
                 return .none
             }
         }
@@ -154,6 +158,8 @@ public struct AppFeature: Sendable {
         path.append(route)
     }
 
+    /// The screens still on the generic renderer refresh through the root; every rebuilt screen
+    /// observes its own key.
     private static func refreshPaths(_ state: State, _ action: ViewsScreenFeature.Action) -> Effect<Action> {
         func legacyIDs(_ path: StackState<DetailRoute.State>) -> [StackElementID] {
             path.ids.filter { if case .legacy = path[id: $0] { true } else { false } }
@@ -169,12 +175,14 @@ public struct AppFeature: Sendable {
     private static func toast(for action: Action) -> WorkspaceNotice.Event? {
         let delegate: ActionFeature.Action.Delegate
         switch action {
-        case .home(.actions(.delegate(let value))),
+        case .triage(.cards(.element(id: _, action: .actions(.delegate(let value))))),
              .fleet(.action(.delegate(let value))),
              .newRequest(.action(.delegate(let value))):
             delegate = value
         case .tasks(.delegate(let value)):
             return value.event
+        case .triage(.delegate(.noLongerPending)):
+            return .actionCompleted(String(localized: "That’s no longer pending"))
         case .inboxPath(.element(id: _, action: let route)),
              .tasksPath(.element(id: _, action: let route)),
              .fleetPath(.element(id: _, action: let route)),
