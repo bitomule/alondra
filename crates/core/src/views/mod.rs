@@ -152,6 +152,12 @@ fn held_push_actions(hold: crate::domain_v2::Hold, card: &Card, lang: Lang) -> V
             .chain([PushAction { id: format!("open:{}", card.id), option: None,
                 label: text::t!(lang, "Review", "Revisar").into(), text: false, placeholder: None, open: true }])
             .collect(),
+        crate::domain_v2::Hold::Question => answer.options.iter().take(4).map(button).collect(),
+        crate::domain_v2::Hold::Elicitation => answer.options.iter().map(|option| match &option.input {
+            Input::Text { placeholder, .. } if option.description.is_some() =>
+                PushAction { text: true, placeholder: Some(placeholder.clone()), ..button(option) },
+            _ => button(option),
+        }).collect(),
     }
 }
 

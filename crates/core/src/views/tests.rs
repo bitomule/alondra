@@ -1932,6 +1932,45 @@ fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes_and_a_review
 }
 
 #[test]
+fn a_held_ask_user_question_card_shows_the_question_and_its_options_as_8ccd131() {
+    use crate::domain_v2::Hold;
+    let mut state = held_fixture(Hold::Question, "Which database?\n\n- Also migrate the old rows?");
+    let options = ["Postgres", "SQLite"].iter().enumerate().map(|(index, label)| QuestionOption {
+        id: format!("o{index}"), label: (*label).into(), description: None, inputs: vec![] }).collect();
+    state.interactions.get_mut(&"i-1".into()).unwrap().payload = InteractionPayload::Question { options, answer: None };
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str()), (Icon::Question, "Pregunta"));
+    assert_eq!(card.title, "Which database?");
+    assert_eq!(card.body.as_ref().unwrap().text, "- Also migrate the old rows?");
+    assert_eq!(answer_action(card).options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("o0", "Postgres", Some("1")), ("o1", "SQLite", Some("2"))]);
+    assert!(card.actions.iter().all(|action| !action.id.starts_with("ctx:")), "the hook waits for an answer");
+    let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text)).collect::<Vec<_>>(),
+        [(Some("o0"), "Postgres", false), (Some("o1"), "SQLite", false)]);
+}
+
+#[test]
+fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
+    use crate::domain_v2::Hold;
+    let mut state = held_fixture(Hold::Elicitation, "Which repository?\n\nMCP server “github” requests your input.");
+    if let InteractionPayload::Question { options, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
+        options[0].description = Some("Write the Repository".into());
+    }
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!(card.title, "Which repository?");
+    let options = &answer_action(card).options;
+    assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("accept", "Aceptar", Some("1")), ("decline", "Rechazar", Some("2"))]);
+    assert!(matches!(&options[0].input, Input::Text { placeholder, .. } if placeholder == "Write the Repository"));
+    let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text)).collect::<Vec<_>>(),
+        [(Some("accept"), "Accept", true), (Some("decline"), "Decline", false)]);
+}
+
+#[test]
 fn status_names_the_node_count_fleet() {
     for (lang, label) in [(Lang::En, "Fleet"), (Lang::Es, "Flota")] {
         let view = render(&fixture(), &LiveSnapshot::default(), Client::Tui, lang, "home", "");

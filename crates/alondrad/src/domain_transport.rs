@@ -1007,11 +1007,64 @@ mod tests {
         command(&domain, Actor::System, "register-idle", Command::RegisterAgent { agent_id: "idle".into(), name: "idle".into() });
         let mut subagent_plan = plan("agent-a");
         subagent_plan["agent_id"] = json!("sub-1");
-        for (payload, background) in [(permission("agent-a"), false), (subagent_plan, true), (permission("idle"), true),
-            (permission("stranger"), true)] {
+        let mut subagent_question = ask("agent-a");
+        subagent_question["agent_id"] = json!("sub-1");
+        for (payload, background) in [(permission("agent-a"), false), (subagent_plan, true), (subagent_question, true),
+            (elicitation("agent-a"), false), (permission("idle"), true), (permission("stranger"), true)] {
             assert!(matches!(respond(&domain, &payload, |_| background).unwrap(), Reply::Plain(body) if body == json!({})), "{payload}");
         }
         assert!(domain.state().unwrap().holds.is_empty());
+    }
+
+    fn ask(agent: &str) -> Value {
+        json!({"session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion",
+            "tool_input": {"questions": [
+                {"question": "Which database?", "options": [{"label": "Postgres", "description": "Shared server"}, {"label": "SQLite"}]},
+                {"question": "Also migrate the old rows?"}]}})
+    }
+
+    fn elicitation(agent: &str) -> Value {
+        json!({"session_id": agent, "hook_event_name": "Elicitation", "mcp_server_name": "github", "message": "Which repository?",
+            "requested_schema": {"type": "object", "properties": {"repo": {"type": "string", "title": "Repository"}}}})
+    }
+
+    #[tokio::test]
+    async fn ask_user_question_waits_and_answers_every_question_with_the_choice_or_the_users_words() {
+        for (option, note, said) in [("o1", None, "SQLite"), ("", Some("MySQL"), "MySQL")] {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            working_agent(&domain, "agent-a");
+            let (reply, id) = held_hook(&domain, ask("agent-a"), option, note).await;
+            let output = &reply["hookSpecificOutput"];
+            assert_eq!((output["hookEventName"].as_str(), output["permissionDecision"].as_str()), (Some("PreToolUse"), Some("allow")));
+            assert_eq!(output["updatedInput"]["questions"], ask("agent-a")["tool_input"]["questions"]);
+            assert_eq!(output["updatedInput"]["answers"], json!({"Which database?": said, "Also migrate the old rows?": said}));
+            let state = domain.state().unwrap();
+            assert_eq!(state.holds[&id], Hold::Question);
+            let InteractionPayload::Question { options, .. } = &state.interactions[&id].payload else { panic!("question") };
+            assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(), [("o0", "Postgres"), ("o1", "SQLite")]);
+            assert_eq!(state.interactions[&id].body, "Which database?\n\n- Also migrate the old rows?");
+            assert!(agent_outbox(&domain, "agent-a").is_empty());
+        }
+    }
+
+    #[tokio::test]
+    async fn an_mcp_elicitation_waits_for_accept_with_the_form_values_or_decline() {
+        for (option, note, expected) in [
+            (Hold::ACCEPT, Some("bitomule/alondra"), json!({"hookEventName": "Elicitation", "action": "accept", "content": {"repo": "bitomule/alondra"}})),
+            (Hold::DECLINE, None, json!({"hookEventName": "Elicitation", "action": "decline"})),
+        ] {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            working_agent(&domain, "agent-a");
+            let (reply, id) = held_hook(&domain, elicitation("agent-a"), option, note).await;
+            assert_eq!(reply["hookSpecificOutput"], expected);
+            let state = domain.state().unwrap();
+            assert_eq!(state.holds[&id], Hold::Elicitation);
+            assert!(state.interactions[&id].body.starts_with("Which repository?\n\nMCP server “github” requests your input."));
+            let InteractionPayload::Question { options, .. } = &state.interactions[&id].payload else { panic!("question") };
+            assert_eq!(options[0].description.as_deref(), Some("Write the Repository"));
+        }
     }
 
     #[tokio::test]

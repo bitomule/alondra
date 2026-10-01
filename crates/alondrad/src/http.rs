@@ -867,7 +867,7 @@ fn elicitation_fields(schema: &Value) -> Vec<(String, String, String)> {
         .unwrap_or_default()
 }
 
-fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
+pub(crate) fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
     let server = str_field(p, "mcp_server_name").unwrap_or_else(|| "An MCP server".into());
     let message = str_field(p, "message").unwrap_or_default();
     let title = message.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("{server} requests your input"), |l| l.chars().take(120).collect());
@@ -893,7 +893,7 @@ fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) 
 
 /// The form values for an accepted elicitation: a JSON object as written, the whole answer for a
 /// one-field form, or `name: value` lines, each typed as the form's schema says.
-fn elicitation_content(schema: &Value, said: &str) -> Value {
+pub(crate) fn elicitation_content(schema: &Value, said: &str) -> Value {
     if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(said) {
         return Value::Object(o);
     }

@@ -132,27 +132,27 @@ fn eyebrow(item: &InboxItem, lang: super::Lang) -> (&'static str, Icon) {
         _ => (t!(lang, "Notice", "Aviso"), Icon::Notice),
     }
 }
-fn is_held(item: &InboxItem) -> bool {
-    matches!(item.kind.as_str(), "permission" | "plan")
+fn hold_of(item: &InboxItem, domain: &DomainState) -> Option<Hold> {
+    let InboxSubject::Interaction { interaction_id } = &item.subject else { return None };
+    domain.holds.get(interaction_id).copied()
 }
-/// A held card's own title and text, as 8ccd131 showed them: the permission's one-line
-/// summary over what it would run, and the plan's first heading over the whole plan.
-fn held_text(item: &InboxItem) -> Option<(String, Option<String>)> {
+/// A held card's own title and text, as 8ccd131 showed them: the plan's first heading over the
+/// whole plan; otherwise the first line (the permission's summary, the question, the request)
+/// over the rest.
+fn held_text(item: &InboxItem, hold: Option<Hold>) -> Option<(String, Option<String>)> {
+    let hold = hold?;
     let body = item.body.as_deref()?;
     let first = body.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty())?;
     let title: String = first.chars().take(120).collect();
-    match item.kind.as_str() {
-        "permission" => {
-            let rest = body.trim_start().split_once('\n').map(|(_, rest)| rest.trim()).filter(|rest| !rest.is_empty());
-            Some((title, rest.map(str::to_owned)))
-        }
-        "plan" => Some((title, Some(body.to_owned()))),
-        _ => None,
+    if hold == Hold::Plan {
+        return Some((title, Some(body.to_owned())));
     }
+    let rest = body.trim_start().split_once('\n').map(|(_, rest)| rest.trim()).filter(|rest| !rest.is_empty());
+    Some((title, rest.map(str::to_owned)))
 }
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let (label, icon) = eyebrow(item, context.lang);
-    let held = held_text(item);
+    let held = held_text(item, hold_of(item, context.domain));
     let mut context_lines = vec![];
     if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
@@ -692,7 +692,7 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
         if let Some(interaction) = context.domain.interactions.get(interaction_id) {
             let (verb, label, placeholder, key) = match &interaction.payload {
                 InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. }
-                    if item.pending && !is_held(item) =>
+                    if item.pending && hold_of(item, context.domain).is_none() =>
                 {
                     (
                         Verb::Ctx,
@@ -946,7 +946,7 @@ fn question_options(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action
         | InteractionPayload::ActionRequest { options, .. } => options,
         _ => return vec![],
     };
-    if let Some(hold) = context.domain.holds.get(interaction_id) {
+    if let Some(hold) = context.domain.holds.get(interaction_id).filter(|hold| **hold != Hold::Question) {
         return held_options(*hold, options, context);
     }
     options
@@ -989,11 +989,14 @@ fn held_options(hold: Hold, options: &[crate::domain_v2::QuestionOption], contex
                 (Hold::Permission, false) => (t!(lang, "Deny", "Denegar"), t!(lang, "Write the reason", "Escribe el motivo"), "2"),
                 (Hold::Plan, true) => (t!(lang, "Approve", "Aprobar"), "", "a"),
                 (Hold::Plan, false) => (t!(lang, "Request changes", "Pedir cambios"), t!(lang, "Write what to change", "Escribe qué cambiar"), "p"),
+                (_, true) => (t!(lang, "Accept", "Aceptar"),
+                    option.description.as_deref().unwrap_or(t!(lang, "Write your answer", "Escribe tu respuesta")), "1"),
+                (_, false) => (t!(lang, "Decline", "Rechazar"), "", "2"),
             };
             ActionOption {
                 id: option.id.clone(),
                 label: label.into(),
-                description: None,
+                description: option.description.clone().filter(|_| hold == Hold::Elicitation),
                 style: match (index, yes) {
                     (_, true) => Style::Primary,
                     (_, false) if hold == Hold::Permission => Style::Destructive,

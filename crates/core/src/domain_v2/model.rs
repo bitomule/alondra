@@ -327,41 +327,49 @@ pub struct Interaction {
     #[serde(default)]
     pub withdrawn: bool,
 }
-/// What a held question stands for: a tool permission prompt or a plan to approve.
+/// What a held question stands for: a tool permission prompt, a plan to approve, Claude's
+/// AskUserQuestion, or an MCP server asking for input.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Hold {
     Permission,
     Plan,
+    Question,
+    Elicitation,
 }
 impl Hold {
     pub const ALLOW: &'static str = "allow";
     pub const DENY: &'static str = "deny";
     pub const APPROVE: &'static str = "approve";
     pub const REQUEST_CHANGES: &'static str = "request_changes";
+    pub const ACCEPT: &'static str = "accept";
+    pub const DECLINE: &'static str = "decline";
     pub const NOTE: &'static str = "text";
 
-    /// The yes option first; the no option takes an optional note for the node.
+    /// The fixed yes/no options of a permission, plan or elicitation; a question brings its own.
+    /// A permission's or plan's no, and an elicitation's accept, take optional text.
     pub fn options(self) -> Vec<QuestionOption> {
-        let (yes, yes_label, no, no_label, hint) = match self {
-            Hold::Permission => (Self::ALLOW, "Allow", Self::DENY, "Deny", "Write the reason"),
-            Hold::Plan => (Self::APPROVE, "Approve", Self::REQUEST_CHANGES, "Request changes", "Write what to change"),
+        let note = || vec![InputSpec { id: Self::NOTE.into(), kind: InputKind::Text, required: false }];
+        let option = |id: &str, label: &str, description: Option<&str>, inputs: Vec<InputSpec>| QuestionOption {
+            id: id.into(), label: label.into(), description: description.map(Into::into), inputs,
         };
-        vec![
-            QuestionOption { id: yes.into(), label: yes_label.into(), description: None, inputs: vec![] },
-            QuestionOption {
-                id: no.into(),
-                label: no_label.into(),
-                description: Some(hint.into()),
-                inputs: vec![InputSpec { id: Self::NOTE.into(), kind: InputKind::Text, required: false }],
-            },
-        ]
+        match self {
+            Hold::Permission => vec![option(Self::ALLOW, "Allow", None, vec![]),
+                option(Self::DENY, "Deny", Some("Write the reason"), note())],
+            Hold::Plan => vec![option(Self::APPROVE, "Approve", None, vec![]),
+                option(Self::REQUEST_CHANGES, "Request changes", Some("Write what to change"), note())],
+            Hold::Elicitation => vec![option(Self::ACCEPT, "Accept", None, note()),
+                option(Self::DECLINE, "Decline", None, vec![])],
+            Hold::Question => vec![],
+        }
     }
 
     pub fn approves(self, option_id: &str) -> bool {
         option_id == match self {
             Hold::Permission => Self::ALLOW,
             Hold::Plan => Self::APPROVE,
+            Hold::Elicitation => Self::ACCEPT,
+            Hold::Question => return false,
         }
     }
 }
