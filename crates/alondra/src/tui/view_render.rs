@@ -10,10 +10,20 @@ use ratatui::{
 const DIM: Color = Color::DarkGray;
 const ACCENT: Color = Color::LightYellow;
 
+/// The row that opens the schedules: `s` and the header's `Scheduled` tab do that in the TUI, so
+/// the list of tasks starts at the first task.
+fn opens_schedules(view: &View, id: &str) -> bool {
+    view.key == "tasks" && id == "schedules"
+}
+
 pub fn sections(view: &View) -> impl Iterator<Item = &Section> {
-    view.sections
-        .iter()
-        .filter(|section| !section.id.eq("detail"))
+    view.sections.iter().filter(|section| {
+        !section.id.eq("detail")
+            && !(view.key == "tasks"
+                && section.items.iter().all(
+                    |item| matches!(item, Item::Row(row) if opens_schedules(view, &row.id)),
+                ))
+    })
 }
 
 pub fn rows(view: &View) -> Vec<(&Row, bool)> {
@@ -21,6 +31,7 @@ pub fn rows(view: &View) -> Vec<(&Row, bool)> {
     for section in &view.sections {
         for item in &section.items {
             match item {
+                Item::Row(row) if opens_schedules(view, &row.id) => {}
                 Item::Row(row) => {
                     result.push((row, false));
                     result.extend(row.children.iter().map(|child| (child, true)));

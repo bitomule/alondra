@@ -276,7 +276,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     };
     let mut left = vec![
         Span::styled(
-            format!(" {} ", crate::service_client::target().unwrap_or("Local")),
+            format!(" {} ", crate::service_client::target().unwrap_or("Alondra")),
             Style::new()
                 .fg(Color::Black)
                 .bg(ACCENT)
@@ -310,7 +310,7 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
         ));
     }
     left.push(tab(
-        trf!("Agents {agents}", "Agentes {agents}"),
+        trf!("Fleet {agents}", "Flota {agents}"),
         app.screen == Screen::Fleet,
     ));
     if app.offline {
@@ -353,54 +353,26 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     if !app.loaded {
         return;
     }
-    let machine = reading(|r| r.machine.is_some()).and_then(|r| r.machine.as_ref());
-    let usage = reading(|r| r.usage.is_some()).and_then(|r| r.usage.as_ref());
-    if let Some(status) = &app.view_status {
-        let right = view_gauges(&status.gauges);
-        if !right.is_empty()
-            && lw + right.iter().map(Span::width).sum::<usize>() + 2 <= area.width as usize
-        {
-            f.render_widget(Paragraph::new(Line::from(right).right_aligned()), area);
-        }
+    let Some(status) = &app.view_status else {
         return;
-    }
-    if machine.is_none() && usage.is_none() {
-        return;
-    }
-    let reads = readings(machine, usage);
-    let working = app
-        .runtime
-        .as_ref()
-        .map_or(0, crate::runtime::Runtime::working);
+    };
+    let working = status
+        .counts
+        .iter()
+        .find(|count| count.id == "working")
+        .map(|count| (count.value, count.label.clone()));
     let fits = |spans: &[Span]| {
         lw + spans.iter().map(Span::width).sum::<usize>() + 2 <= area.width as usize
     };
     let right = [
-        gauges(&reads, working, true),
-        gauges(&reads, working, false),
+        bars(&status.gauges, working.as_ref(), true),
+        bars(&status.gauges, working.as_ref(), false),
     ]
     .into_iter()
     .find(|r| fits(r));
     if let Some(right) = right {
         f.render_widget(Paragraph::new(Line::from(right).right_aligned()), area);
     }
-}
-
-fn view_gauges(gauges: &[alondra_core::views::Gauge]) -> Vec<Span<'static>> {
-    gauges
-        .iter()
-        .flat_map(|gauge| {
-            let color = match gauge.level {
-                alondra_core::views::Level::Calm => ACCENT,
-                alondra_core::views::Level::Warm => Color::Yellow,
-                alondra_core::views::Level::Hot => Color::LightRed,
-            };
-            [
-                Span::styled(format!("{} ", gauge.label), Style::new().fg(SOFT)),
-                Span::styled(gauge.text.clone(), Style::new().fg(color)),
-            ]
-        })
-        .collect()
 }
 
 /// A newer release, or one that was installed but refused to start: one quiet mark in the header.
@@ -423,51 +395,44 @@ fn update_notice(update: &alondra_core::update::Status) -> Option<Span<'static>>
 }
 
 /// The header bars, named when there is room (`Claude week ▰▰▱▱ 53%`) and bare when not.
-fn gauges(reads: &[Reading], working: usize, named: bool) -> Vec<Span<'static>> {
-    let mut out = vec![Span::styled(
-        trf!("{working} working ", "{working} trabajando "),
-        Style::new().fg(DIM),
-    )];
-    let mut group = None;
-    for r in reads {
-        let color = match r.level {
-            Level::Calm => ACCENT,
-            Level::Warm => Color::Yellow,
-            Level::Hot => Color::LightRed,
+fn bars(
+    gauges: &[alondra_core::views::Gauge],
+    working: Option<&(u32, String)>,
+    named: bool,
+) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    if let Some((value, label)) = working {
+        out.push(Span::styled(format!("{value} {label}"), Style::new().fg(DIM)));
+    }
+    for gauge in gauges {
+        let hot = gauge.level == alondra_core::views::Level::Hot;
+        let color = match gauge.level {
+            alondra_core::views::Level::Calm => ACCENT,
+            alondra_core::views::Level::Warm => Color::Yellow,
+            alondra_core::views::Level::Hot => Color::LightRed,
         };
-        let new_group = group != Some(r.group);
-        let gap = match (named, group.is_some() && new_group) {
-            (false, _) => " ",
-            (true, true) => " │ ",
-            (true, false) => "  ",
-        };
-        out.push(Span::styled(gap, Style::new().fg(DIM)));
+        out.push(Span::raw(if named { "  " } else { " " }));
         if named {
-            if new_group {
-                out.push(Span::styled(
-                    format!("{} ", r.group),
-                    Style::new().fg(SOFT).add_modifier(Modifier::BOLD),
-                ));
-            }
-            out.push(Span::styled(format!("{} ", r.name), Style::new().fg(SOFT)));
+            out.push(Span::styled(
+                format!("{} ", gauge.label),
+                Style::new().fg(SOFT),
+            ));
         }
-        group = Some(r.group);
-        let filled = ((r.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize).max(1);
+        let filled = ((gauge.value.clamp(0.0, 1.0) * BAR_CELLS as f64).round() as usize).max(1);
         out.push(Span::styled("▰".repeat(filled), Style::new().fg(color)));
         out.push(Span::styled(
             "▱".repeat(BAR_CELLS - filled),
             Style::new().fg(DIM),
         ));
-        let label_style = if r.level == Level::Hot {
-            Style::new()
-                .fg(Color::LightRed)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::new().fg(DIM)
-        };
         out.push(Span::styled(
-            format!(" {}", if named { &r.label } else { &r.short }),
-            label_style,
+            format!(" {}", gauge.text),
+            if hot {
+                Style::new()
+                    .fg(Color::LightRed)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::new().fg(DIM)
+            },
         ));
     }
     out.push(Span::raw(" "));
@@ -475,101 +440,6 @@ fn gauges(reads: &[Reading], working: usize, named: bool) -> Vec<Span<'static>> 
 }
 
 const BAR_CELLS: usize = 4;
-
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub(super) enum Level {
-    Calm,
-    Warm,
-    Hot,
-}
-
-#[derive(Debug, PartialEq)]
-pub(super) struct Reading {
-    pub group: &'static str,
-    pub name: &'static str,
-    pub value: f64,
-    pub label: String,
-    pub short: String,
-    pub level: Level,
-}
-
-/// The header bars, always in this order: the week's Claude usage, today against its share of
-/// the week, memory in use and CPU in use. `?` explains them.
-pub(super) fn readings(
-    m: Option<&alondra_core::Machine>,
-    u: Option<&alondra_core::usage::Usage>,
-) -> Vec<Reading> {
-    let mut out = vec![];
-    if let Some(u) = u {
-        let week = format!("{}%", u.week_percent.round());
-        out.push(Reading {
-            group: "Claude",
-            name: tr!("week", "semana"),
-            value: u.week_percent / 100.0,
-            short: week.clone(),
-            label: week,
-            level: if u.week_percent >= 85.0 {
-                Level::Hot
-            } else {
-                Level::Calm
-            },
-        });
-        if let Some((spent, share)) = u.today_spent.zip(u.today_share) {
-            let level = if u.over_pace {
-                Level::Hot
-            } else if spent >= share * 0.75 {
-                Level::Warm
-            } else {
-                Level::Calm
-            };
-            let (spent, share) = (spent.round(), share.round());
-            out.push(Reading {
-                group: "Claude",
-                name: tr!("today", "hoy"),
-                value: spent / share.max(0.1),
-                label: trf!("{spent}% of {share}%", "{spent}% de {share}%"),
-                short: format!("{spent}/{share}%"),
-                level,
-            });
-        }
-    }
-    let Some(m) = m else { return out };
-    if let Some(free) = m.memory_free_percent {
-        let used = 100 - free.min(100);
-        let level = if free < 15 {
-            Level::Hot
-        } else if free < 30 {
-            Level::Warm
-        } else {
-            Level::Calm
-        };
-        out.push(Reading {
-            group: "Mac",
-            name: "RAM",
-            value: used as f64 / 100.0,
-            label: format!("{used}%"),
-            short: format!("{used}%"),
-            level,
-        });
-    }
-    let cpu = m.cpu_usage as f64;
-    let level = if m.unreliable {
-        Level::Hot
-    } else if cpu >= 85.0 {
-        Level::Warm
-    } else {
-        Level::Calm
-    };
-    out.push(Reading {
-        group: "Mac",
-        name: "CPU",
-        value: cpu / 100.0,
-        label: format!("{}%", cpu.round()),
-        short: format!("{}%", cpu.round()),
-        level,
-    });
-    out
-}
 
 fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::View, area: Rect) {
     let w = area.width;
@@ -779,7 +649,16 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         } else {
             tr!("Select an item", "Elige un elemento")
         };
-        centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
+        let summary = if app.card_view_asked.is_none() && app.screen == Screen::Fleet {
+            fleet_summary(app)
+        } else {
+            vec![]
+        };
+        if summary.is_empty() {
+            centered_lines(f, inner, vec![Line::from(message.fg(DIM))]);
+        } else {
+            f.render_widget(Paragraph::new(summary), inner);
+        }
         return;
     };
     let mut lines = super::view_render::document_lines(document, inner.width as usize);
@@ -1475,37 +1354,22 @@ fn composer_action(t: &Target) -> &'static str {
     }
 }
 
-/// The fleet in one glance for an empty detail pane: how many sessions are busy, waiting or free.
+/// The fleet in one glance for an empty detail pane, from the counts the server sends.
 fn fleet_summary(app: &App) -> Vec<Line<'static>> {
-    let Some(runtime) = app.runtime.as_ref() else {
+    let Some(status) = app.view_status.as_ref() else {
         return vec![];
     };
-    let nodes: Vec<&FleetNode> = runtime
-        .nodes
-        .iter()
-        .filter(|n| !n.is_orchestrator)
-        .collect();
     let mut lines = vec![
         Line::from(tr!("The fleet right now", "La flota ahora").fg(DIM).bold()),
         Line::default(),
     ];
-    if nodes.is_empty() {
-        lines.push(Line::from(
-            tr!("No sessions yet.", "Todavía no hay sesiones.").fg(DIM),
-        ));
-    }
-    for occupancy in [Occupancy::Busy, Occupancy::WaitingMachine, Occupancy::Free] {
-        let Some(n) = nodes.iter().find(|n| Occupancy::of(n) == occupancy) else {
-            continue;
-        };
-        let c = nodes
-            .iter()
-            .filter(|n| Occupancy::of(n) == occupancy)
-            .count();
-        lines.push(Line::from(vec![
-            Span::styled("● ", Style::new().fg(node_color(n))),
-            Span::raw(format!("{c} {}", occupancy.label())),
-        ]));
+    for id in ["working", "waiting"] {
+        if let Some(count) = status.counts.iter().find(|count| count.id == id) {
+            lines.push(Line::from(vec![
+                Span::styled("● ", Style::new().fg(ACCENT)),
+                Span::raw(format!("{} {}", count.value, count.label)),
+            ]));
+        }
     }
     lines
 }
@@ -1767,7 +1631,7 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
             keys.extend([
                 k("Shift+A", tr!("archive finished", "archivar terminadas")),
                 k("s", tr!("scheduled", "programadas")),
-                k("Tab", tr!("agents", "agentes")),
+                k("Tab", tr!("fleet", "flota")),
                 k("n", tr!("new", "nuevo")),
                 k("q", tr!("quit", "salir")),
             ]);
@@ -1795,7 +1659,7 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
             k("o", tr!("expand", "expandir")),
             k("r", tr!("message", "mensaje")),
             k("⏎", tr!("its terminal", "su terminal")),
-            k("x", tr!("close the session", "cerrar la sesión")),
+            k("x", tr!("close node", "cerrar nodo")),
             k("n", tr!("new", "nuevo")),
             k("Tab", tr!("inbox", "bandeja")),
             k("q", tr!("quit", "salir")),
@@ -1973,8 +1837,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             ":",
             tr!(
-                "command line: :q  :help  :inbox  :tasks  :agents  :<number>",
-                "línea de órdenes: :q  :help  :inbox  :tasks  :agents  :<número>"
+                "command line: :q  :help  :inbox  :tasks  :fleet  :<number>",
+                "línea de órdenes: :q  :help  :inbox  :tasks  :fleet  :<número>"
             ),
         ),
         Line::default(),
@@ -1997,14 +1861,14 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
             ),
         ),
         row(
-            tr!("memory", "memoria"),
+            "RAM",
             tr!("the Mac's memory in use", "memoria del Mac en uso"),
         ),
         row(
-            "CPU",
+            tr!("disk", "disco"),
             tr!(
-                "the Mac's CPU in use; red when the load is too high to trust the readings",
-                "CPU del Mac en uso; en rojo si la carga es tan alta que las lecturas no son fiables"
+                "free space on the Mac's disk; red when it is nearly full",
+                "espacio libre en el disco del Mac; en rojo si casi está lleno"
             ),
         ),
         Line::default(),
@@ -2019,15 +1883,15 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "1",
             tr!(
-                "on a PR in conflict: its agent resolves the conflicts",
-                "en un PR con conflictos: su agente los resuelve"
+                "on a PR in conflict: its node resolves the conflicts",
+                "en un PR con conflictos: su nodo los resuelve"
             ),
         ),
         row(
             "r",
             tr!(
-                "question: write the answer or reply to its agent · delivery or PR: feedback · information: reply",
-                "pregunta: escribir la respuesta o responder a su agente · entrega o PR: feedback · información: responder"
+                "question: write the answer or reply to its node · delivery or PR: feedback · information: reply",
+                "pregunta: escribir la respuesta o responder a su nodo · entrega o PR: feedback · información: responder"
             ),
         ),
         row(
@@ -2039,20 +1903,20 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         ),
         row(
             "p",
-            tr!("ask the PR's agent about it", "preguntar al agente del PR"),
+            tr!("ask the PR's node about it", "preguntar al nodo del PR"),
         ),
         row(
             "v",
             tr!(
-                "accept a delivery (the agent still finishes the task) · elsewhere: open its images and files",
-                "aceptar una entrega (el agente sigue siendo quien termina la tarea) · en lo demás: abrir sus imágenes y ficheros"
+                "accept a delivery (the node still finishes the task) · elsewhere: open its images and files",
+                "aceptar una entrega (el nodo sigue siendo quien termina la tarea) · en lo demás: abrir sus imágenes y ficheros"
             ),
         ),
         row(
             "x",
             tr!(
-                "mark information read; nothing is sent to the agent",
-                "marcar información leída; no se envía nada al agente"
+                "mark information read; nothing is sent to the node",
+                "marcar información leída; no se envía nada al nodo"
             ),
         ),
         row(
@@ -2069,8 +1933,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "a",
             tr!(
-                "open the agent's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)",
-                "abrir el terminal del agente (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)"
+                "open the node's terminal (← on an empty line, Ctrl+Z or /exit returns to Alondra)",
+                "abrir el terminal del nodo (← con la línea vacía, Ctrl+Z o /exit vuelven a Alondra)"
             ),
         ),
         Line::default(),
@@ -2099,8 +1963,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "s · v · x",
             tr!(
-                "send comments as feedback (or to the agent) · accept · mark read",
-                "enviar comentarios como feedback (o al agente) · aceptar · leído"
+                "send comments as feedback (or to the node) · accept · mark read",
+                "enviar comentarios como feedback (o al nodo) · aceptar · leído"
             ),
         ),
         row(
@@ -2123,8 +1987,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "r · ⏎",
             tr!(
-                "message its agent · its agent's terminal",
-                "mensaje a su agente · el terminal de su agente"
+                "message its node · its node's terminal",
+                "mensaje a su nodo · el terminal de su nodo"
             ),
         ),
         row(
@@ -2155,34 +2019,41 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
                 "en Terminadas o Archivadas: mostrar u ocultar"
             ),
         ),
+        row(
+            "s",
+            tr!(
+                "scheduled tasks: n creates one, e edits it, Esc goes back",
+                "tareas programadas: n crea una, e la edita, Esc vuelve"
+            ),
+        ),
         Line::default(),
-        section(tr!("Agents", "Agentes")),
+        section(tr!("Fleet", "Flota")),
         row(
             "/",
             tr!(
-                "search names and local session details",
-                "buscar nombres y detalles locales de la sesión"
+                "search names and local node details",
+                "buscar nombres y detalles locales del nodo"
             ),
         ),
         row(
             "r · ⏎ · a",
             tr!(
-                "message the agent · its terminal",
-                "mensaje al agente · su terminal"
+                "message the node · its terminal",
+                "mensaje al nodo · su terminal"
             ),
         ),
         row(
             "o",
             tr!(
-                "expand the agent's detail to full screen",
-                "expandir el detalle del agente a pantalla completa"
+                "expand the node's detail to full screen",
+                "expandir el detalle del nodo a pantalla completa"
             ),
         ),
         row(
             "x",
             tr!(
-                "close the session (twice to confirm; never discards work)",
-                "cerrar la sesión (dos veces para confirmar; nunca descarta trabajo)"
+                "close the node (twice to confirm; never discards work)",
+                "cerrar el nodo (dos veces para confirmar; nunca descarta trabajo)"
             ),
         ),
         row(
@@ -2197,8 +2068,8 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
         row(
             "Tab",
             tr!(
-                "inbox → tasks → agents (Shift+Tab goes back)",
-                "bandeja → tareas → agentes (Shift+Tab vuelve)"
+                "inbox → tasks → fleet (Shift+Tab goes back)",
+                "bandeja → tareas → flota (Shift+Tab vuelve)"
             ),
         ),
         row(
