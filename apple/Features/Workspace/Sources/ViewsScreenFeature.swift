@@ -28,6 +28,7 @@ public struct ViewsScreenFeature {
         public var searchQuery = ""
         public var searchDocument: ViewDocument?
         public var searchLoading = false
+        public var searchError: String?
         public var attachmentPreview: ViewsAttachmentPreview?
         public var action: ActionFeature.State
 
@@ -147,6 +148,7 @@ public struct ViewsScreenFeature {
                 guard state.key.rawValue == "fleet" else { return .none }
                 state.searchQuery = query
                 state.searchLoading = !query.isEmpty
+                state.searchError = nil
                 state.searchDocument = nil
                 if query.isEmpty {
                     state.searchDocument = nil
@@ -174,14 +176,16 @@ public struct ViewsScreenFeature {
                 guard query == state.searchQuery else { return .none }
                 state.searchDocument = document
                 state.searchLoading = false
+                state.searchError = nil
                 return .none
             case .searchLoaded(let query, .unchanged):
                 guard query == state.searchQuery else { return .none }
                 state.searchLoading = false
                 return .none
-            case .searchFailed(let query, _):
+            case .searchFailed(let query, let message):
                 guard query == state.searchQuery else { return .none }
                 state.searchLoading = false
+                state.searchError = message
                 return .none
             case .stale(let keys):
                 guard state.isPresented else { return .none }

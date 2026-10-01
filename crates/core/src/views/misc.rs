@@ -185,21 +185,20 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
 
 pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Field {
     let builtin_label = |id: &str, value: Option<&str>, fallback: &str| -> String {
-        if !spec.builtin || client != Client::Ios { return fallback.into(); }
+        if !spec.builtin { return fallback.into(); }
+        if id == "effort" {
+            return match value {
+                None => t!(lang, "Effort", "Esfuerzo").into(),
+                Some(value) => common::effort_label(value, lang).unwrap_or(fallback).into(),
+            };
+        }
+        if client != Client::Ios { return fallback.into(); }
         match (id, value, lang) {
             ("pr", None, _) => "PRs",
             ("pr", Some("review"), super::Lang::En) => "Review each one",
             ("pr", Some("review"), super::Lang::Es) => "Revisar cada una",
             ("pr", Some("auto_merge"), super::Lang::En) => "Auto-merge",
             ("pr", Some("auto_merge"), super::Lang::Es) => "Merge automático",
-            ("effort", None, super::Lang::En) => "Effort",
-            ("effort", None, super::Lang::Es) => "Esfuerzo",
-            ("effort", Some("auto"), _) => "Auto",
-            ("effort", Some("light"), super::Lang::En) => "Light",
-            ("effort", Some("light"), super::Lang::Es) => "Ligero",
-            ("effort", Some("normal"), _) => "Normal",
-            ("effort", Some("hard"), super::Lang::En) => "Hard",
-            ("effort", Some("hard"), super::Lang::Es) => "A fondo",
             _ => fallback,
         }.into()
     };

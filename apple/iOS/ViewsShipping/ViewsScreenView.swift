@@ -18,12 +18,7 @@ struct ViewsScreenView: View {
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
     private var isNewRequestScreen: Bool { store.key.rawValue == "new_request" || store.key.rawValue.hasPrefix("new_request?") }
     private var isInlineForm: Bool { isNewRequestScreen || store.key.rawValue.hasPrefix("schedule:") }
-    private var documentCard: AlondraViews.Card? {
-        guard store.key.rawValue.hasPrefix("card:") else { return nil }
-        return store.document?.sections.lazy.flatMap(\.items).compactMap { item in
-            if case let .card(card) = item, card.icon == .document { card } else { nil }
-        }.first
-    }
+    private var documentCard: AlondraViews.Card? { store.document?.documentCard(forKey: store.key.rawValue) }
     private var routeCard: AlondraViews.Card? {
         guard store.key.rawValue.hasPrefix("card:") else { return nil }
         return store.document?.sections.lazy.flatMap(\.items).compactMap { item in
@@ -43,7 +38,7 @@ struct ViewsScreenView: View {
     }
     private var documentReviewCard: AlondraViews.Card? {
         guard isDocumentRoute || documentCard != nil, let document = store.document, let content = store.content,
-              let actionData = try? ViewsCodec.encode(reviewActions(in: document)),
+              let actionData = try? ViewsCodec.encode(document.reviewActions(forKey: store.key.rawValue)),
               let actions = try? JSONSerialization.jsonObject(with: actionData),
               let data = try? JSONSerialization.data(withJSONObject: [
                   "id": "document-review", "icon": "document", "title": document.title ?? "Document",
@@ -51,16 +46,6 @@ struct ViewsScreenView: View {
                   "actions": actions,
               ] as [String: Any]) else { return nil }
         return try? ViewsCodec.decode(AlondraViews.Card.self, from: data)
-    }
-    private func reviewActions(in document: ViewDocument) -> [AlondraViews.Action] {
-        let actions = (documentCard?.actions ?? []) + document.sections.flatMap(\.items).flatMap { item -> [AlondraViews.Action] in
-            if case let .actions(bar) = item { bar.actions } else { [] }
-        }
-        var seen = Set<String>()
-        return actions.filter { action in
-            guard let id = action.id, !id.isEmpty else { return true }
-            return seen.insert(id).inserted
-        }
     }
     private func presentReview(_ action: AlondraViews.Action, comments: [ActionComment], text: String) {
         store.send(.action(.present(action)))
@@ -270,7 +255,11 @@ struct ViewsScreenView: View {
                         }
                         if store.key.rawValue == "fleet", !store.searchQuery.isEmpty {
                             if store.searchLoading { ProgressView().frame(maxWidth: .infinity).padding() }
-                            else if let empty = store.searchDocument?.empty {
+                            else if let error = store.searchError {
+                                ContentUnavailableView(error, systemImage: "exclamationmark.triangle")
+                                    .font(.callout)
+                                    .accessibilityIdentifier("fleet.searchFailed")
+                            } else if let empty = store.searchDocument?.empty {
                                 ContentUnavailableView(empty.text, systemImage: "magnifyingglass")
                             }
                         }
@@ -784,6 +773,8 @@ private struct TaskWireRow: View {
         case .success: Palette.sage
         case .warning: Palette.dawn
         case .critical: Palette.rose
+        case .yourTurn: Palette.ember
+        case .unclear: Palette.rose
         }
     }
 
@@ -826,7 +817,7 @@ private struct TaskWireRow: View {
         default:
             switch row.badges.first?.tone {
             case .success: "checkmark"
-            case .warning, .critical: "hand.raised.fill"
+            case .warning, .critical, .yourTurn, .unclear: "hand.raised.fill"
             default: "circle.dashed"
             }
         }

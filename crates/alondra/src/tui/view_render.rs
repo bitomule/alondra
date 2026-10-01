@@ -278,7 +278,19 @@ pub fn format_time(at: &str, format: alondra_core::views::TimeFormat) -> String 
     let Some(millis) = parse_utc(at) else {
         return at.to_owned();
     };
-    let Some((date, time)) = local_date_time(millis) else {
+    let Some(offset) = local_utc_offset(millis) else {
+        return at.to_owned();
+    };
+    format_time_at(at, millis, offset, format)
+}
+
+fn format_time_at(
+    at: &str,
+    millis: i64,
+    utc_offset_seconds: i64,
+    format: alondra_core::views::TimeFormat,
+) -> String {
+    let Some((date, time)) = date_time_at_offset(millis, utc_offset_seconds) else {
         return at.to_owned();
     };
     match format {
@@ -326,7 +338,7 @@ fn parse_utc(value: &str) -> Option<i64> {
     Some(millis)
 }
 
-fn local_date_time(millis: i64) -> Option<(String, String)> {
+fn local_utc_offset(millis: i64) -> Option<i64> {
     let seconds = millis.div_euclid(1_000);
     let timestamp = libc::time_t::try_from(seconds).ok()?;
     // SAFETY: localtime_r writes to the supplied `tm` and does not retain either pointer.
@@ -335,9 +347,25 @@ fn local_date_time(millis: i64) -> Option<(String, String)> {
         libc::localtime_r(&timestamp, tm.as_mut_ptr()).as_ref()?;
         tm.assume_init()
     };
+    Some(i64::from(tm.tm_gmtoff))
+}
+
+fn date_time_at_offset(millis: i64, utc_offset_seconds: i64) -> Option<(String, String)> {
+    let seconds = millis.div_euclid(1_000) + utc_offset_seconds;
+    let days = seconds.div_euclid(86_400);
+    let second_of_day = seconds.rem_euclid(86_400);
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era = (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let month_adj = (5 * day_of_year + 2) / 153;
+    let day = day_of_year - (153 * month_adj + 2) / 5 + 1;
+    let month = if month_adj < 10 { month_adj + 3 } else { month_adj - 9 };
+    let year = year_of_era + era * 400 + i64::from(month <= 2);
     Some((
-        format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday),
-        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min),
+        format!("{year:04}-{month:02}-{day:02}"),
+        format!("{:02}:{:02}", second_of_day / 3_600, second_of_day % 3_600 / 60),
     ))
 }
 
@@ -362,36 +390,8 @@ pub fn actions(view: &View) -> Vec<Action> {
         }
     }
     let mut seen = std::collections::HashSet::new();
-    out.retain(|action| {
-        let identity = if action.id.is_empty() {
-            format!(
-                "{}\0{}\0{}",
-                action.label,
-                action.key.as_deref().unwrap_or(""),
-                presentation_key(action.presentation)
-            )
-        } else {
-            action.id.clone()
-        };
-        seen.insert(identity)
-    });
-    let mut labels = std::collections::HashSet::new();
-    out.retain(|action| {
-        labels.insert((
-            action.label.clone(),
-            action.key.clone(),
-            presentation_key(action.presentation),
-        ))
-    });
+    out.retain(|action| seen.insert(action.id.clone()));
     out
-}
-
-fn presentation_key(presentation: alondra_core::views::Presentation) -> &'static str {
-    match presentation {
-        alondra_core::views::Presentation::Button => "button",
-        alondra_core::views::Presentation::Options => "options",
-        alondra_core::views::Presentation::Menu => "menu",
-    }
 }
 
 pub fn detail_card(view: &View) -> Option<&Card> {
@@ -408,15 +408,12 @@ pub fn detail_card(view: &View) -> Option<&Card> {
 
 pub fn action_hint(action: &Action) -> &str {
     action.key.as_deref().unwrap_or_else(|| {
-        let label = action.label.to_ascii_lowercase();
-        if label.contains("merge") {
-            "m"
-        } else if label.contains("conflict") {
-            "1"
-        } else if label.contains("withdraw") || label.contains("retirar") {
-            "x"
-        } else {
-            ""
+        use alondra_core::views::action_id::{ActionId, Verb};
+        match ActionId::parse(&action.id).map(|id| id.verb) {
+            Ok(Verb::Merge) => "m",
+            Ok(Verb::Conflicts) => "1",
+            Ok(Verb::Withdraw) => "x",
+            _ => "",
         }
     })
 }
@@ -461,7 +458,7 @@ fn label_style(label: &Label) -> Style {
         alondra_core::views::Tone::Info => Color::Cyan,
         alondra_core::views::Tone::Accent => ACCENT,
         alondra_core::views::Tone::Success => Color::LightGreen,
-        alondra_core::views::Tone::Warning => Color::Yellow,
+        alondra_core::views::Tone::Warning | alondra_core::views::Tone::YourTurn | alondra_core::views::Tone::Unclear => Color::Yellow,
         alondra_core::views::Tone::Critical => Color::LightRed,
     })
 }
@@ -497,15 +494,14 @@ mod tests {
 
     #[test]
     fn view_times_are_formatted_for_people_instead_of_showing_wire_timestamps() {
-        let expected = local_date_time(parse_utc("2026-10-01T09:55:00Z").unwrap()).unwrap();
-        let absolute = format_time(
-            "2026-10-01T09:55:00Z",
-            alondra_core::views::TimeFormat::Absolute,
-        );
-        let time = format_time("2026-10-01T09:55:00.000Z", alondra_core::views::TimeFormat::Time);
-        assert_eq!(absolute, format!("{} {}", expected.0, expected.1));
-        assert_eq!(time, expected.1);
-        assert_eq!(format_time("not-a-date", alondra_core::views::TimeFormat::Absolute), "not-a-date");
+        use alondra_core::views::TimeFormat;
+        let at = "2026-10-01T23:55:00.000Z";
+        let instant = parse_utc(at).unwrap();
+        assert_eq!(format_time_at(at, instant, 2 * 3_600, TimeFormat::Absolute), "2026-10-02 01:55");
+        assert_eq!(format_time_at(at, instant, 2 * 3_600, TimeFormat::Time), "01:55");
+        assert_eq!(format_time_at(at, instant, -(5 * 3_600 + 30 * 60), TimeFormat::Absolute), "2026-10-01 18:25");
+        assert_eq!(format_time_at(at, instant, 0, TimeFormat::Time), "23:55");
+        assert_eq!(format_time("not-a-date", TimeFormat::Absolute), "not-a-date");
     }
 
     #[test]
@@ -530,11 +526,12 @@ mod tests {
         };
         assert_eq!(action_line(&action), "Message");
         let withdraw = Action {
-            label: "Withdraw Request".into(),
+            id: "withdraw:request-1@1".into(),
+            label: "Cancel this request".into(),
             ..action
         };
         assert_eq!(action_hint(&withdraw), "x");
-        assert_eq!(action_line(&withdraw), "[x] Withdraw Request");
+        assert_eq!(action_line(&withdraw), "[x] Cancel this request");
     }
 
     #[test]
@@ -557,5 +554,51 @@ mod tests {
         let actions = actions(&view);
         assert_eq!(actions.len(), 1);
         assert_eq!(actions[0].label, "Attach to node");
+    }
+}
+
+#[cfg(test)]
+mod action_tests {
+    use super::*;
+    use alondra_core::views::{Input, Presentation, Style};
+
+    fn action(id: &str, label: &str) -> Action {
+        Action {
+            id: id.into(), label: label.into(), style: Style::Plain,
+            presentation: Presentation::Button, options: vec![], input: Input::None,
+            attachments: false, comments: None, confirm: None, enabled: true,
+            disabled_reason: None, stamp: None, key: None, link: None,
+        }
+    }
+
+    fn bar(actions: Vec<Action>) -> View {
+        serde_json::from_value(serde_json::json!({
+            "protocol":1, "data_epoch":"test", "view":"card", "key":"card:pr",
+            "client":"tui", "version":"v1", "cursor":"c",
+            "status":{"version":"v1", "summary":"", "badge":0, "counts":[],
+                "gauges":[], "orchestrator":{"text":"idle", "tone":"neutral"}},
+            "sections":[{"id":"card", "collapsed":false, "items":[{
+                "type":"actions", "id":"bar", "actions": actions
+            }]}]
+        })).unwrap()
+    }
+
+    #[test]
+    fn hints_follow_the_action_verb_whatever_the_label_says() {
+        assert_eq!(action_hint(&action("merge:pr-1@1", "Fusionar")), "m");
+        assert_eq!(action_hint(&action("conflicts:pr-1@1", "Resolver")), "1");
+        assert_eq!(action_hint(&action("withdraw:request-1@1", "Retirar")), "x");
+        assert_eq!(action_hint(&action("reply:i-1@1", "Withdraw the merge button")), "");
+    }
+
+    #[test]
+    fn distinct_actions_sharing_a_label_are_all_shown() {
+        let view = bar(vec![
+            action("cancel:task-a@1", "Cancel"),
+            action("cancel:task-b@1", "Cancel"),
+            action("cancel:task-a@1", "Cancel"),
+        ]);
+        let ids: Vec<String> = actions(&view).into_iter().map(|action| action.id).collect();
+        assert_eq!(ids, ["cancel:task-a@1", "cancel:task-b@1"]);
     }
 }

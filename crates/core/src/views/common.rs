@@ -2,6 +2,7 @@ use super::{
     Action, BuildError, Input, Item, Link, Presentation, RenderContext, Row, Section, Style,
     VIEWS_PROTOCOL, View,
     action_id::{ActionId, Verb},
+    text::t,
 };
 
 pub(super) fn view(
@@ -65,15 +66,33 @@ pub(super) fn row(
 pub(super) fn state_tone(state: &str) -> super::Tone {
     use super::Tone;
     match state {
-        "needs_you" | "your_turn" | "unclear" | "stalled" => Tone::Warning,
-        "in_review" | "waiting_answer" | "waiting_merge" | "waiting_machine"
+        "needs_you" | "stalled" => Tone::Warning,
+        "your_turn" => Tone::YourTurn,
+        "unclear" => Tone::Unclear,
+        "in_review" | "waiting_merge" | "waiting_machine"
         | "waiting_dependency" | "closing" | "defining" => Tone::Info,
-        "running" | "working" | "busy" | "free" => Tone::Accent,
+        "running" | "working" | "busy" | "free" | "waiting_answer" => Tone::Accent,
         "done" | "delivered" => Tone::Success,
         "cancelled" | "archived" | "not_started" | "connected" | "idle" => Tone::Neutral,
         "offline" => Tone::Critical,
         _ => Tone::Neutral,
     }
+}
+
+pub(super) fn effort_label(effort: &str, lang: super::Lang) -> Option<&'static str> {
+    Some(match effort {
+        "auto" => t!(lang, "Auto", "Automático"),
+        "light" => t!(lang, "Light", "Ligero"),
+        "normal" => t!(lang, "Normal", "Normal"),
+        "hard" => t!(lang, "Hard", "A fondo"),
+        "low" => t!(lang, "Low", "Bajo"),
+        "medium" => t!(lang, "Medium", "Medio"),
+        "high" => t!(lang, "High", "Alto"),
+        "xhigh" => t!(lang, "Extra high", "Muy alto"),
+        "max" => t!(lang, "Maximum", "Máximo"),
+        "ultra" => t!(lang, "Ultra", "Ultra"),
+        _ => return None,
+    })
 }
 
 pub(super) fn task_presentation(state: crate::domain_v2::TaskState) -> (super::Icon, super::Tone) {
@@ -95,10 +114,10 @@ pub(super) fn node_presentation(state: Option<&str>) -> (super::Icon, super::Ton
     match state.unwrap_or("free") {
         "working" | "busy" => (Icon::Node, Tone::Success),
         "waiting_machine" => (Icon::Machine, Tone::Info),
-        "waiting_answer" => (Icon::Question, Tone::Info),
-        "your_turn" => (Icon::Action, Tone::Warning),
+        "waiting_answer" => (Icon::Question, Tone::Accent),
+        "your_turn" => (Icon::Action, Tone::YourTurn),
         "waiting_merge" => (Icon::Merge, Tone::Info),
-        "unclear" => (Icon::Notice, Tone::Warning),
+        "unclear" => (Icon::Notice, Tone::Unclear),
         "stalled" => (Icon::Warning, Tone::Critical),
         _ => (Icon::Node, Tone::Neutral),
     }
@@ -221,4 +240,25 @@ pub(super) fn decode_component(value: &str) -> Result<String, BuildError> {
         return Err(BuildError::InvalidKey);
     }
     String::from_utf8(decoded).map_err(|_| BuildError::InvalidKey)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::views::Tone;
+
+    #[test]
+    fn node_states_keep_their_0_2_9_tones() {
+        let tones: Vec<Tone> = ["waiting_answer", "your_turn", "unclear", "done"]
+            .iter().map(|state| node_presentation(Some(state)).1).collect();
+        assert_eq!(tones, [Tone::Accent, Tone::YourTurn, Tone::Unclear, Tone::Neutral]);
+    }
+
+    #[test]
+    fn your_turn_and_unclear_are_told_apart_in_every_tone_mapping() {
+        assert_ne!(node_presentation(Some("your_turn")).1, node_presentation(Some("unclear")).1);
+        assert_ne!(state_tone("your_turn"), state_tone("unclear"));
+        assert_eq!(state_tone("your_turn"), node_presentation(Some("your_turn")).1);
+        assert_eq!(state_tone("unclear"), node_presentation(Some("unclear")).1);
+    }
 }

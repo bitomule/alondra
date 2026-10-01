@@ -1,5 +1,11 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)
+
 swift_library(
     name = "AlondraViewsOnlyUI",
     srcs = glob(["Sources/**/*.swift"]),

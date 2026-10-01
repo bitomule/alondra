@@ -22,6 +22,8 @@ pub enum Tone {
     Success,
     Warning,
     Critical,
+    YourTurn,
+    Unclear,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

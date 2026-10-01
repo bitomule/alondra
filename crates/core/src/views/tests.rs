@@ -650,17 +650,6 @@ fn view_keys_are_addressable_and_bound_to_epoch() {
 }
 
 #[test]
-fn issue_picker_offers_a_pasted_link_even_when_search_has_no_open_match() {
-    let state = fixture();
-    let live = LiveSnapshot::default();
-    let view = render(&state, &live, Client::Tui, Lang::En,
-        "issue_picker?q=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fissues%2F154", "");
-    let Item::Row(row) = &view.sections[0].items[0] else { panic!("pasted issue option") };
-    assert_eq!(row.id, "owner/repo#154");
-    assert!(row.title.contains("Use https://github.com/owner/repo/issues/154"));
-}
-
-#[test]
 fn search_view_counts_found_agents_and_reports_empty_results() {
     let state = fixture();
     let live = LiveSnapshot::default();
@@ -1444,4 +1433,189 @@ fn information_reply_accepts_block_comments() {
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("card") };
     let reply = card.actions.iter().find(|action| action.id.starts_with("reply:")).expect("reply action");
     assert!(matches!(&reply.comments, Some(CommentSpec { kind: CommentKind::Blocks })));
+}
+
+#[test]
+fn effort_labels_are_the_same_on_every_client_and_spanish_everywhere() {
+    let effort = || crate::options::Spec {
+        id: "effort".into(), label: "Effort".into(), kind: crate::options::Kind::Choice,
+        values: ["auto", "light", "normal", "hard"].iter()
+            .map(|id| crate::options::SpecValue { id: (*id).into(), label: (*id).into(), description: None }).collect(),
+        default: crate::options::Choice::Value("auto".into()), builtin: true,
+    };
+    let labels = |client: Client, lang: Lang| {
+        let mut live = LiveSnapshot::default();
+        live.project_options.insert("App".into(), vec![effort()]);
+        let view = render(&fixture(), &live, client, lang, "schedule:new?project=App", "");
+        let form = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            if let Item::Form(form) = item { Some(form) } else { None }
+        }).unwrap();
+        let field = form.fields.iter().find(|field| field.id == "effort").unwrap();
+        let FieldKind::Choice { items } = &field.kind else { panic!("effort is a choice") };
+        (field.label.clone(), items.iter().map(|item| item.label.clone()).collect::<Vec<_>>())
+    };
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert_eq!(labels(client, Lang::En),
+            ("Effort".into(), vec!["Auto".into(), "Light".into(), "Normal".into(), "Hard".into()]));
+        assert_eq!(labels(client, Lang::Es),
+            ("Esfuerzo".into(), vec!["Automático".into(), "Ligero".into(), "Normal".into(), "A fondo".into()]));
+    }
+}
+
+#[test]
+fn focus_puts_the_card_first_with_its_detail() {
+    let state = fixture();
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En,
+        "home?focus=i-3", "2026-09-30T10:00:00Z");
+    let waiting: Vec<&str> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| {
+        if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }
+    }).collect();
+    assert_eq!(waiting.first(), Some(&"i-3"));
+    let detail = view.sections.iter().find(|section| section.id == "detail").unwrap();
+    let Item::Card(card) = &detail.items[0] else { panic!("detail card") };
+    assert_eq!(card.id, "i-3");
+}
+
+#[test]
+fn a_pasted_issue_link_becomes_a_choice() {
+    let state = fixture();
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En,
+        "issue_picker?q=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fissues%2F154", "");
+    let Item::Row(row) = &view.sections[0].items[0] else { panic!("pasted issue option") };
+    assert_eq!(row.id, "owner/repo#154");
+    assert!(row.title.contains("Use https://github.com/owner/repo/issues/154"));
+}
+
+fn new_request_form(view: &View) -> &Form {
+    view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Form(form) = item { Some(form) } else { None }
+    }).unwrap()
+}
+
+#[test]
+fn changing_project_reloads_its_options() {
+    let mut live = LiveSnapshot::default();
+    let option = |id: &str| crate::options::Spec {
+        id: id.into(), label: id.into(), kind: crate::options::Kind::Toggle, values: vec![],
+        default: crate::options::Choice::Toggle(true), builtin: false,
+    };
+    live.options = vec![option("default_option")];
+    live.project_options.insert("App".into(), vec![option("app_option")]);
+    let state = fixture();
+    let initial = render(&state, &live, Client::Ios, Lang::En, "new_request", "");
+    let form = new_request_form(&initial);
+    for field in &form.fields {
+        assert_eq!(field.reload_on_change, field.id == "project", "{}", field.id);
+    }
+    assert!(form.fields.iter().any(|field| field.id == "default_option"));
+    let reloaded = render(&state, &live, Client::Ios, Lang::En, "new_request?project=App", "");
+    let form = new_request_form(&reloaded);
+    assert!(form.fields.iter().any(|field| field.id == "app_option"));
+    assert!(!form.fields.iter().any(|field| field.id == "default_option"));
+}
+
+#[test]
+fn the_sent_history_strips_the_prefix() {
+    let mut state = fixture();
+    state.requests.insert("r-2".into(), Request::new("r-2".into(), "[Alondra] Fix the login bug\nwith details".into()));
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "new_request", "");
+    let sent = view.sections.iter().find(|section| section.id == "sent").unwrap();
+    let titles: Vec<&str> = sent.items.iter().filter_map(|item| {
+        if let Item::Row(row) = item { Some(row.title.as_str()) } else { None }
+    }).collect();
+    assert!(titles.contains(&"Fix the login bug"), "{titles:?}");
+    assert!(!titles.iter().any(|title| title.contains("[Alondra]")));
+}
+
+#[test]
+fn more_loads_the_next_finished_page() {
+    let mut state = DomainState::new("test-epoch");
+    for index in 0..25 {
+        let id = format!("r-{index:02}");
+        let mut request = Request::new(id.clone().into(), format!("Request {index:02}"));
+        request.closed = true;
+        state.requests.insert(id.into(), request);
+    }
+    let live = LiveSnapshot::default();
+    let first = render(&state, &live, Client::Ios, Lang::En, "tasks", "");
+    let finished = first.sections.iter().find(|section| section.id == "finished").unwrap();
+    assert_eq!(finished.items.len(), 20);
+    let more = finished.more.as_ref().unwrap();
+    assert_eq!((more.key.as_str(), more.remaining), ("tasks?section=finished&after=20", 5));
+    let second = render(&state, &live, Client::Ios, Lang::En, &more.key, "");
+    let finished = second.sections.iter().find(|section| section.id == "finished").unwrap();
+    let ids: Vec<&str> = finished.items.iter().filter_map(|item| {
+        if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }
+    }).collect();
+    assert_eq!(ids, ["r-20", "r-21", "r-22", "r-23", "r-24"]);
+    assert!(finished.more.is_none());
+}
+
+fn string_leaves(value: &serde_json::Value, path: &str, out: &mut Vec<(String, String)>) {
+    match value {
+        serde_json::Value::String(text) => out.push((path.to_owned(), text.clone())),
+        serde_json::Value::Array(items) => {
+            for (index, item) in items.iter().enumerate() {
+                string_leaves(item, &format!("{path}/{index}"), out);
+            }
+        }
+        serde_json::Value::Object(map) => {
+            for (key, item) in map {
+                string_leaves(item, &format!("{path}/{key}"), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+#[test]
+fn every_builder_string_has_spanish() {
+    const NAMES_AND_DATA: &[&str] = &[
+        "Alondra · iOS", "Demo Garden", "PRs", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
+        "Memory", "Disk available", "6.1 GB of 16 GB", "120 GB", "Waiting for you",
+        "Keep the warmer copy", "Ship the concise copy", "Normal",
+        "A decision on the welcome copy", "Reviewing the native beta experience",
+        "The simulator pass completed successfully.",
+    ];
+    const FIXTURE_TEXT_PREFIXES: &[&str] = &[
+        "## Beta candidate ready", "All required checks passed", "Prepare the next Alondra beta",
+        "The iPhone simulator pass", "The new empty state is ready", "The pull request is ready",
+    ];
+    let state = golden_fixture();
+    let live = golden_live();
+    let keys = [
+        ("home", Client::Ios), ("home", Client::Tui),
+        ("card:a98d034b-249e-4487-a89b-57de38c26372", Client::Ios),
+        ("card:f12d034b-249e-4487-a89b-57de38c26372", Client::Ios),
+        ("card:github.com/example/repo#12", Client::Ios),
+        ("card:hf-weekly-2026-09-30", Client::Ios),
+        ("tasks", Client::Ios), ("fleet", Client::Ios), ("new_request", Client::Ios),
+        ("node:d887a34b-249e-4487-a89b-57de38c26372", Client::Ios),
+        ("task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios),
+        ("request:r-9f2156b5a8894e53901f0af576dff6a2", Client::Ios),
+        ("pull_request:github.com/example/repo#12", Client::Ios),
+        ("machine", Client::Ios), ("schedules", Client::Ios), ("schedule:new", Client::Ios),
+        ("sidebar", Client::Mac),
+    ];
+    let mut untranslated = BTreeMap::new();
+    for (key, client) in keys {
+        let leaves = |lang| {
+            let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
+            let mut out = vec![];
+            string_leaves(&serde_json::to_value(view).unwrap(), "", &mut out);
+            out
+        };
+        let (english, spanish) = (leaves(Lang::En), leaves(Lang::Es));
+        assert_eq!(english.len(), spanish.len(), "{key}");
+        for ((path, en), (_, es)) in english.iter().zip(&spanish) {
+            let last = path.rsplit('/').next().unwrap();
+            let is_text = matches!(last, "title" | "label" | "text" | "subtitle" | "summary" | "help"
+                | "message" | "button" | "reason" | "disabled_reason" | "prompt");
+            if is_text && en == es && en.chars().any(char::is_alphabetic) && !NAMES_AND_DATA.contains(&en.as_str())
+                && !FIXTURE_TEXT_PREFIXES.iter().any(|prefix| en.starts_with(prefix)) {
+                untranslated.insert(en.clone(), format!("{key} {path}"));
+            }
+        }
+    }
+    assert!(untranslated.is_empty(), "strings identical in Spanish: {untranslated:#?}");
 }
