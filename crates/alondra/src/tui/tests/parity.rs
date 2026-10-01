@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn view_fixture(name: &str) -> serde_json::Value {
+pub(in crate::tui) fn view_fixture(name: &str) -> serde_json::Value {
     let path = match std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR")) {
         Ok(root) => std::path::PathBuf::from(root)
             .join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into()))
@@ -726,66 +726,138 @@ fn task_detail_view_is_loaded_and_its_action_posts_with_the_document_epoch() {
     assert_eq!(requests[0].1["data_epoch"], "test-epoch");
 }
 
+fn form_msg(view: &str, fixture: &str) -> Msg {
+    Msg::FormView {
+        view: view.into(),
+        project: None,
+        result: Ok(serde_json::from_value(view_fixture(fixture)).unwrap()),
+    }
+}
+
 #[test]
-fn view_form_opens_editor_with_its_bound_action_and_epoch() {
+fn n_opens_the_new_work_composer_with_the_servers_rows() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    press(&mut app, KeyCode::Char('n'));
+    assert!(matches!(
+        app.composer.as_ref().map(|c| &c.target),
+        Some(Target::Form { view }) if view == "new_request"
+    ));
+    assert!(app.view_navigation.is_empty(), "the form is the composer, not a view to edit elsewhere");
+    assert!(screen(&mut app, 100, 24).contains("Loading the form…"));
+
+    app.on_msg(form_msg("new_request", "new-request-ios.json"));
+    let shown = screen(&mut app, 100, 24);
+    for expected in [
+        "New work", "Project", "The orchestrator picks the project", "Issue", "none", "PRs",
+        "Review each one", "Effort", "Auto", "Tab",
+    ] {
+        assert!(shown.contains(expected), "{expected} missing from {shown}");
+    }
+}
+
+#[test]
+fn new_work_sends_the_typed_text_and_the_chosen_rows_by_action_id() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    press(&mut app, KeyCode::Char('n'));
+    app.on_msg(form_msg("new_request", "new-request-ios.json"));
+    typed(&mut app, "Fix the crash");
+    for code in [
+        KeyCode::Tab, KeyCode::Down, KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Enter,
+        KeyCode::Esc,
+    ] {
+        press(&mut app, code);
+    }
+    assert!(screen(&mut app, 100, 24).contains("Auto-merge"));
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "/actions");
+    assert_eq!(sent[0].1["action_id"], "new_request:view@0");
+    assert_eq!(sent[0].1["data_epoch"], "test-epoch");
+    assert_eq!(
+        sent[0].1["input"],
+        serde_json::json!({"fields": {
+            "text": "Fix the crash", "project": "", "issue": "", "pr": "auto_merge", "effort": "auto"
+        }})
+    );
+}
+
+#[test]
+fn new_work_without_text_stays_open_and_says_what_is_missing() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    press(&mut app, KeyCode::Char('n'));
+    app.on_msg(form_msg("new_request", "new-request-ios.json"));
+    press(&mut app, KeyCode::Enter);
+    assert!(posted(&app).is_empty());
+    assert!(app.composer.is_some());
+    assert!(flash(&app).contains("What do you want done?"), "{}", flash(&app));
+}
+
+#[test]
+fn schedule_create_is_a_composer_whose_rows_follow_the_repeat() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.schedules_open = true;
+    app.home_view = Some(serde_json::from_value(view_fixture("schedules-ios.json")).unwrap());
+    press(&mut app, KeyCode::Char('n'));
+    assert!(matches!(
+        app.composer.as_ref().map(|c| &c.target),
+        Some(Target::Form { view }) if view == "schedule:new"
+    ));
+    app.on_msg(form_msg("schedule:new", "schedule-new-ios.json"));
+    let shown = screen(&mut app, 100, 30);
+    for expected in ["Save Schedule", "Name", "Repeat", "Daily", "Time", "09:00", "Active", "yes"] {
+        assert!(shown.contains(expected), "{expected} missing from {shown}");
+    }
+    assert!(!shown.contains("Weekday"));
+
+    typed(&mut app, "Check the beta");
+    press(&mut app, KeyCode::Enter);
+    assert!(posted(&app).is_empty());
+    assert!(flash(&app).contains("Name"), "{}", flash(&app));
+
+    for code in [KeyCode::Tab, KeyCode::Down, KeyCode::Enter] {
+        press(&mut app, code);
+    }
+    typed(&mut app, "Beta check");
+    for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Enter] {
+        press(&mut app, code);
+    }
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1["input"]["fields"]["name"], "Beta check");
+    assert_eq!(sent[0].1["input"]["fields"]["mission"], "Check the beta");
+    assert_eq!(sent[0].1["input"]["fields"]["time"], "09:00");
+    assert_eq!(sent[0].1["input"]["fields"]["active"], true);
+    assert!(sent[0].1["input"]["fields"].get("weekday").is_none());
+}
+
+#[test]
+fn enter_on_a_form_view_opens_it_as_a_composer_not_an_external_editor() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
     app.task_sel = Some(tasks::TaskKey::Task(TaskId("t-1".into())));
-    let mut card = view_fixture("card-question.json");
+    let mut card = view_fixture("new-request-ios.json");
     card["key"] = serde_json::json!("task:t-1");
-    let mut submit = card["sections"][0]["items"][0]["actions"][0].clone();
-    submit["id"] = serde_json::json!("sched_save:s-new@1");
-    submit["label"] = serde_json::json!("Save schedule");
-    submit["key"] = serde_json::json!("e");
-    submit["attachments"] = serde_json::json!(true);
-    card["sections"][0]["items"].as_array_mut().unwrap().push(serde_json::json!({
-        "type": "form",
-        "id": "schedule",
-        "fields": [
-            {"id": "title", "label": "Title", "kind": {"kind": "text", "placeholder": null}, "value": "Daily check", "required": true, "reload_on_change": false},
-            {"id": "uploads", "label": "Attachments", "kind": {"kind": "attachments"}, "value": [], "required": false, "reload_on_change": false}
-        ],
-        "submit": submit
-    }));
     app.on_msg(Msg::ViewCard {
         key: "task:t-1".into(),
         result: Ok(serde_json::from_value(card).unwrap()),
     });
-
+    assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)), Flow::Go));
     assert!(matches!(
-        app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
-        Flow::EditViewForm { action_id, data_epoch, fields, attachment_field, .. }
-            if action_id == "sched_save:s-new@1"
-                && data_epoch == "test-epoch"
-                && fields.len() == 2
-                && attachment_field.as_deref() == Some("uploads")
+        app.composer.as_ref().map(|c| &c.target),
+        Some(Target::Form { view }) if view == "task:t-1"
     ));
-}
-
-#[test]
-fn schedule_view_submission_sends_only_form_fields() {
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let fields = serde_json::json!({"title": "Daily check", "hour": 9});
-    app.submit_view_fields(
-        "sched_save:hf-weekly-2026-09-30@2",
-        "test-epoch",
-        fields.clone(),
-    );
-    let requests = posted(&app);
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].0, "/actions");
-    assert_eq!(
-        requests[0].1["action_id"],
-        "sched_save:hf-weekly-2026-09-30@2"
-    );
-    assert_eq!(requests[0].1["data_epoch"], "test-epoch");
-    assert_eq!(
-        requests[0].1["input"],
-        serde_json::json!({"fields": fields})
-    );
 }
 
 #[test]
