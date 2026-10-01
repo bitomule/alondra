@@ -134,22 +134,23 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     let (label, icon) = eyebrow(item, context.lang);
     let mut context_lines = vec![];
     if let Some(agent_id) = &item.agent_id {
+        let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
         context_lines.push(ContextLine {
             icon: Icon::Node,
             text: super::common::agent_label(agent_id, context),
             link: Some(Link::View {
                 key: format!("node:{agent_id}"),
             }),
-            chip: context
-                .live
-                .nodes
-                .iter()
-                .find(|node| node.agent_id == agent_id.0)
-                .and_then(|node| node.project.as_ref())
-                .map(|project| Label {
-                    text: project.clone(),
-                    tone: Tone::Neutral,
-                }),
+            chip: node.and_then(|node| node.project.as_ref()).map(|project| Label {
+                text: project.clone(),
+                tone: Tone::Neutral,
+            }),
+            state: node.and_then(|node| {
+                node.state_label.as_ref().map(|text| Label {
+                    text: text.clone(),
+                    tone: super::common::node_presentation(node.state_key.as_deref()).1,
+                })
+            }),
         });
     }
     if let Some(task_id) = &item.task_id {
@@ -161,6 +162,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                     key: format!("task:{task_id}"),
                 }),
                 chip: None,
+                state: None,
             });
         }
     }
@@ -178,6 +180,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                     key: format!("request:{request_id}"),
                 }),
                 chip: None,
+                state: None,
             });
         }
     }
@@ -192,14 +195,22 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             }]
         })
         .unwrap_or_default();
+    let live_pr = match &item.subject {
+        InboxSubject::PullRequest { pr_id } => context.live.pull_requests.iter().find(|detail| detail.id == pr_id.0),
+        _ => None,
+    };
     let body = included
         .then(|| {
-            item.body.as_ref().map(|text| Markdown {
-                text: text.clone(),
-                truncated: false,
-                more: None,
-                commentable: false,
-            })
+            live_pr
+                .and_then(|detail| detail.body.as_ref())
+                .filter(|text| !text.trim().is_empty())
+                .or(item.body.as_ref())
+                .map(|text| Markdown {
+                    text: if item.kind == "action_request" { fenced(text) } else { text.clone() },
+                    truncated: false,
+                    more: None,
+                    commentable: false,
+                })
         })
         .flatten();
     let attachments = if included {
@@ -286,7 +297,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                 Tone::Neutral
             },
         }),
-        title: item.title.clone(),
+        title: live_pr.and_then(|detail| detail.title.clone()).unwrap_or_else(|| item.title.clone()),
         subtitle: None,
         badges,
         context: context_lines,
@@ -307,6 +318,20 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     })
 }
 
+fn fenced(text: &str) -> String {
+    let longest_run = text.split(|c| c != '`').map(str::len).max().unwrap_or(0);
+    let fence = "`".repeat((longest_run + 1).max(3));
+    format!("{fence}\n{}\n{fence}", text.trim_end())
+}
+pub(super) fn changes_summary(detail: &super::LivePullRequest, lang: super::Lang) -> String {
+    let files = if detail.changed_files == 1 {
+        t!(lang, "1 file", "1 archivo").to_owned()
+    } else {
+        tf!(lang, "{count} files", "{count} archivos", count = detail.changed_files)
+    };
+    tf!(lang, "+{added} −{removed} in {files}", "+{added} −{removed} en {files}",
+        added = detail.additions, removed = detail.deletions, files = files)
+}
 fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
     Action {
         id: String::new(), label: label.into(), style: Style::Plain,
@@ -350,6 +375,22 @@ fn pr_detail(
             link: None,
         },
     ];
+    if let Some(head) = live.and_then(|detail| detail.head_ref.clone()) {
+        facts.push(Fact {
+            label: t!(context.lang, "Head", "Rama").into(),
+            value: head,
+            tone: None,
+            link: None,
+        });
+    }
+    if let Some(detail) = live.filter(|detail| detail.changed_files > 0) {
+        facts.push(Fact {
+            label: t!(context.lang, "Changes", "Cambios").into(),
+            value: changes_summary(detail, context.lang),
+            tone: None,
+            link: None,
+        });
+    }
     if let Some(stacked) = live.and_then(|detail| detail.stacked_on.as_deref()) {
         facts.push(Fact {
             label: t!(context.lang, "Stacked on", "Depende de").into(),
@@ -362,8 +403,19 @@ fn pr_detail(
         });
     }
     let checks = live
-        .and_then(|detail| detail.checks_passed)
-        .map(|passed| Checks {
+        .filter(|detail| !detail.checks.is_empty())
+        .map(|detail| Checks {
+            items: detail
+                .checks
+                .iter()
+                .map(|check| Check {
+                    name: check.name.clone(),
+                    state: check.state,
+                })
+                .collect(),
+            link: None,
+        })
+        .or_else(|| live.and_then(|detail| detail.checks_passed).map(|passed| Checks {
             items: vec![Check {
                 name: t!(context.lang, "Checks", "Comprobaciones").into(),
                 state: if passed {
@@ -373,7 +425,7 @@ fn pr_detail(
                 },
             }],
             link: None,
-        });
+        }));
     let mut badges = vec![];
     if live.is_some_and(|detail| detail.conflicts) {
         badges.push(Label {

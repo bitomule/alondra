@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v78894bd64191c4f9",
+  "version": "vee07c93064a741da",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -72,6 +72,10 @@
               "value": "Waiting for you"
             },
             {
+              "label": "Folder",
+              "value": "/demo/Demo Garden/ios"
+            },
+            {
               "label": "Tasks",
               "value": "0"
             }
@@ -108,6 +112,10 @@
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for you",
+                "tone": "accent"
               }
             },
             {
@@ -169,6 +177,27 @@
           "trailing": {
             "kind": "time",
             "at": "2026-09-30T09:58:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "now",
+      "title": "Right now",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T09:55:00Z",
+          "icon": "history",
+          "title": "Reading the localization catalog",
+          "subtitle": "Task Check the Spanish strings",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:55:00Z",
             "format": "relative"
           },
           "depth": 0,

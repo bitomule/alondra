@@ -351,6 +351,12 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
+    if let Some(step) = context.live.task_history.get(id).and_then(|history| history.last()) {
+        let mut row = common::row("since", "task", Icon::History, t!(context.lang, "Since", "Desde").into(), None);
+        row.link = None;
+        row.trailing = Some(Trailing::Time { at: step.at.clone(), format: super::TimeFormat::Relative });
+        view.sections.push(common::section("since", None, vec![Item::Row(row)]));
+    }
     if let Some(now) = now_line(task, context) {
         view.sections.push(common::section("now", None, vec![Item::Row(now)]));
     }

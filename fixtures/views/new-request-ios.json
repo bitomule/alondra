@@ -4,7 +4,7 @@
   "view": "new_request",
   "key": "new_request",
   "client": "ios",
-  "version": "vcafb244ac013be49",
+  "version": "vf30d529cea0d357f",
   "cursor": "cursor-1",
   "title": "Ask for Something New",
   "status": {
@@ -117,11 +117,13 @@
                 "items": [
                   {
                     "id": "review",
-                    "label": "Review each one"
+                    "label": "Review each one",
+                    "description": "Each PR the node opens is a card for you; the node waits for your merge"
                   },
                   {
                     "id": "auto_merge",
-                    "label": "Auto-merge"
+                    "label": "Auto-merge",
+                    "description": "The node merges its own PR once its checks pass"
                   }
                 ]
               },
@@ -137,19 +139,23 @@
                 "items": [
                   {
                     "id": "auto",
-                    "label": "Auto"
+                    "label": "Auto",
+                    "description": "The orchestrator picks the model and effort from the task"
                   },
                   {
                     "id": "light",
-                    "label": "Light"
+                    "label": "Light",
+                    "description": "A quick, cheaper model for small, clear work"
                   },
                   {
                     "id": "normal",
-                    "label": "Normal"
+                    "label": "Normal",
+                    "description": "Claude's default model and effort"
                   },
                   {
                     "id": "hard",
-                    "label": "Hard"
+                    "label": "Hard",
+                    "description": "The strongest model and the most effort"
                   }
                 ]
               },

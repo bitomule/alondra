@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "vea352765f455f73e",
+  "version": "vfdfa7f6bfd0cf255",
   "cursor": "cursor-1",
   "status": {
     "version": "v164538ff023163dd",
@@ -103,7 +103,7 @@
             "key": "card:github.com/example/repo#12"
           },
           "icon": "pull_request",
-          "title": "example/repo #12",
+          "title": "Add the compact schedule editor",
           "depth": 0,
           "struck": false,
           "children": [
@@ -180,6 +180,10 @@
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for you",
+                "tone": "accent"
               }
             },
             {

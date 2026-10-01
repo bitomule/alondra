@@ -157,6 +157,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
     let mut projects = vec![ChoiceItem {
         id: "".into(),
         label: t!(context.lang, "Projects folder", "Carpeta de proyectos").into(),
+        description: None,
     }];
     for name in context
         .live
@@ -176,6 +177,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
             projects.push(ChoiceItem {
                 id: name.clone(),
                 label: name.clone(),
+                description: None,
             });
         }
     }
@@ -183,6 +185,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
         projects.push(ChoiceItem {
             id: selected_project.into(),
             label: selected_project.into(),
+            description: None,
         });
     }
     let mut fields = vec![
@@ -234,6 +237,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
                         context.lang,
                     )
                     .into(),
+                    description: None,
                 })
                 .collect(),
             },
@@ -257,6 +261,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
                             _ => t!(context.lang, "Saturday", "Sábado"),
                         }
                         .into(),
+                        description: None,
                     })
                     .collect(),
             },

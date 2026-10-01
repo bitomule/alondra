@@ -4,9 +4,9 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "v23a924c26057404a",
+  "version": "vd83ed7d9ec1b78af",
   "cursor": "cursor-1",
-  "title": "example/repo #12",
+  "title": "Add the compact schedule editor",
   "status": {
     "version": "v164538ff023163dd",
     "summary": "1 question · 3 to read · 0 nodes working",
@@ -76,7 +76,7 @@
             "text": "Pull request",
             "tone": "accent"
           },
-          "title": "example/repo #12",
+          "title": "Add the compact schedule editor",
           "context": [
             {
               "icon": "task",
@@ -96,6 +96,11 @@
             }
           ],
           "detail": "included",
+          "body": {
+            "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
+            "truncated": false,
+            "commentable": false
+          },
           "children": [
             {
               "id": "8fa4034b-249e-4487-a89b-57de38c26372",
@@ -188,6 +193,10 @@
                   "chip": {
                     "text": "Demo Garden",
                     "tone": "neutral"
+                  },
+                  "state": {
+                    "text": "Waiting for you",
+                    "tone": "accent"
                   }
                 },
                 {
@@ -256,10 +265,49 @@
               {
                 "label": "Base",
                 "value": "main"
+              },
+              {
+                "label": "Head",
+                "value": "feature/compact-schedule-editor"
+              },
+              {
+                "label": "Changes",
+                "value": "+120 −30 in 4 files"
+              }
+            ]
+          },
+          "checks": {
+            "items": [
+              {
+                "name": "Build",
+                "state": "pass"
+              },
+              {
+                "name": "Unit tests",
+                "state": "pass"
+              },
+              {
+                "name": "Lint",
+                "state": "pending"
               }
             ]
           },
           "actions": [
+            {
+              "id": "",
+              "label": "Open on GitHub",
+              "style": "plain",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "url",
+                "url": "https://github.com/example/repo/pull/12"
+              }
+            },
             {
               "id": "ask_pr:github.com/example/repo#12@0",
               "label": "Ask about the PR",
