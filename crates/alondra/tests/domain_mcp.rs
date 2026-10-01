@@ -21,28 +21,38 @@ fn request_body(mut stream: &std::net::TcpStream) -> (String, Value) {
     };
     let headers = String::from_utf8_lossy(&bytes[..header_end]).to_ascii_lowercase();
     let request_line = headers.lines().next().unwrap().to_owned();
-    assert!(headers.starts_with("post /"), "{headers}");
     assert!(headers.contains(&format!("authorization: bearer {BEARER}\r\n")));
     let length: usize = headers.lines().find_map(|line| line.strip_prefix("content-length: "))
-        .unwrap().trim().parse().unwrap();
+        .map(|value| value.trim().parse().unwrap()).unwrap_or(0);
     while bytes.len() - header_end < length {
         let mut chunk = [0; 4096];
         let n = stream.read(&mut chunk).unwrap();
         assert!(n > 0, "HTTP request ended before its body");
         bytes.extend_from_slice(&chunk[..n]);
     }
-    (request_line, serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap())
+    let body = if length == 0 { Value::Null } else {
+        serde_json::from_slice(&bytes[header_end..header_end + length]).unwrap()
+    };
+    (request_line, body)
+}
+
+fn respond(mut stream: std::net::TcpStream, body: &[u8]) {
+    write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len()).unwrap();
+    stream.write_all(body).unwrap();
 }
 
 fn mcp_exchange(entrypoint: &str, tool: &str, arguments: Value) -> (Vec<Value>, (String, Value)) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let server = std::thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let (stream, _) = listener.accept().unwrap();
+        let capabilities = request_body(&stream);
+        assert_eq!(capabilities.0, "get /capabilities http/1.1");
+        respond(stream, br#"{"data_epoch":"epoch"}"#);
+        let (stream, _) = listener.accept().unwrap();
         let request = request_body(&stream);
         let response = br#"{"revision":2,"changed":true,"effects":[],"created_ids":[]}"#;
-        write!(stream, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", response.len()).unwrap();
-        stream.write_all(response).unwrap();
+        respond(stream, response);
         request
     });
     let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
@@ -72,7 +82,6 @@ fn distinct_mcp_servers_forward_named_commands_with_the_existing_capability() {
         "mcp-node",
         "register_pr",
         json!({
-            "data_epoch":"epoch", "command_id":"register-one", "expected_revision":1,
             "task_id":"task-one", "pr_id":"pr-one", "host":"github.com",
             "repository":"example/project", "number":7, "head":"abc123", "base":"main",
             "allowed_methods":["squash"]
@@ -88,13 +97,16 @@ fn distinct_mcp_servers_forward_named_commands_with_the_existing_capability() {
     );
     assert_eq!(node_command.1["task_id"], "task-one");
     assert_eq!(node_command.0, "post /tasks/task-one/pull-requests http/1.1");
-        assert_eq!(node_command.1["expected_revision"], 1);
+    assert_eq!(node_command.1["data_epoch"], "epoch");
+    assert_eq!(node_command.1["expected_revision"], 0);
+    assert!(node_command.1["command_id"].as_str().unwrap().starts_with("mcp-"));
+    assert_eq!(node[2]["result"]["content"][0]["text"], "Recorded.");
+    assert!(!node[2].to_string().contains("revision"));
 
     let (orchestrator, manager_command) = mcp_exchange(
         "mcp-orchestrator",
         "create_request",
         json!({
-            "data_epoch":"epoch", "command_id":"request-one", "expected_revision":1,
             "request_id":"request-one", "body":"Investigate"
         }),
     );
@@ -111,7 +123,7 @@ fn distinct_mcp_servers_forward_named_commands_with_the_existing_capability() {
     );
     assert_eq!(manager_command.0, "post /requests http/1.1");
     assert_eq!(manager_command.1["body"], "Investigate");
-    assert_eq!(manager_command.1["command_id"], "request-one");
+    assert!(manager_command.1["command_id"].as_str().unwrap().starts_with("mcp-"));
 }
 
 #[test]
@@ -120,20 +132,18 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "mcp-orchestrator",
         "create_task",
         json!({
-            "data_epoch":"epoch", "command_id":"task-one", "expected_revision":2,
             "task_id":"task-one", "request_id":"request-one", "title":"Prepare result",
             "agent_id":"agent-one", "review_prs":false, "dependencies":[], "stack":null
         }),
     );
     assert_eq!(forwarded.0, "post /requests/request-one/tasks http/1.1");
-    assert_eq!(forwarded.1["command_id"], "task-one");
+    assert!(forwarded.1["command_id"].as_str().unwrap().starts_with("mcp-"));
     assert_eq!(forwarded.1["title"], "Prepare result");
 
     let (node, forwarded) = mcp_exchange(
         "mcp-node",
         "create_document",
         json!({
-            "data_epoch":"epoch", "command_id":"document-one", "expected_revision":4,
             "task_id":"task-one", "document_id":"document-one", "title":"Design",
             "revision_id":"revision-one", "content_digest":"a".repeat(64),
             "content_reference":"files/source", "role":"result"
@@ -154,14 +164,13 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "mcp-node",
         "ask",
         json!({
-            "data_epoch":"epoch", "command_id":"question-one", "expected_revision":5,
             "interaction_id":"question-one", "scope":{"kind":"task", "task_id":"task-one"},
             "recipient":{"kind":"user"}, "body":"Which answer?", "blocking":true,
             "options":[{"id":"yes", "label":"Yes", "inputs":[]}]
         }),
     );
     assert_eq!(forwarded.0, "post /questions http/1.1");
-    assert_eq!(forwarded.1["command_id"], "question-one");
+    assert!(forwarded.1["command_id"].as_str().unwrap().starts_with("mcp-"));
     assert_eq!(forwarded.1["interaction_id"], "question-one");
     assert!(forwarded.1.get("kind").is_none() && forwarded.1.get("protocol_version").is_none());
 
@@ -169,15 +178,27 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "mcp-node",
         "present_result",
         json!({
-            "data_epoch":"epoch", "command_id":"answer-one", "expected_revision":7,
             "task_id":"task-one", "interaction_id":"answer-delivery", "body":"The requested answer",
             "targets":[{"kind":"text", "text":"The requested answer"}], "is_final":true
         }),
     );
     assert_eq!(forwarded.0, "post /tasks/task-one/results http/1.1");
-    assert_eq!(forwarded.1["command_id"], "answer-one");
+    assert!(forwarded.1["command_id"].as_str().unwrap().starts_with("mcp-"));
     assert_eq!(forwarded.1["body"], "The requested answer");
     assert!(forwarded.1.get("kind").is_none() && forwarded.1.get("protocol_version").is_none());
+
+    let (node, forwarded) = mcp_exchange(
+        "mcp-node",
+        "claim_merge_authorization",
+        json!({"remote_head":"abc123", "remote_base":"main", "base_verified":true}),
+    );
+    let claim = node[1]["result"]["tools"].as_array().unwrap().iter()
+        .find(|tool| tool["name"] == "claim_merge_authorization").unwrap();
+    assert!(claim["inputSchema"]["properties"].get("authorization_id").is_none());
+    assert_eq!(forwarded.0, "post /merge-authorizations/claim http/1.1");
+    assert_eq!(forwarded.1["remote_head"], "abc123");
+    assert!(forwarded.1.get("authorization_id").is_none());
+    assert_eq!(node[2]["result"]["content"][0]["text"], "Merge confirmed.");
 }
 
 #[test]

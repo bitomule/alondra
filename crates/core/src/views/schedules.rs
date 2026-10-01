@@ -311,11 +311,23 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
             false,
         ),
     ];
+    let option_specs = context.live.project_options.get(selected_project)
+        .unwrap_or(&context.live.options);
+    fields.extend(option_specs.iter().map(|spec| {
+        let mut field = super::misc::option_field(spec);
+        if let Some(value) = schedule
+            .filter(|schedule| schedule.project.as_deref().unwrap_or("") == selected_project)
+            .and_then(|schedule| schedule.options.get(&spec.id)) {
+            field.value = json!(value);
+        }
+        field
+    }));
     fields[2].reload_on_change = true;
     fields[4].visible_when = Some(super::Condition {
         field: "repeat".into(),
         equals: json!("weekly"),
     });
+    fields[4].required = true;
     fields[5].visible_when = Some(super::Condition {
         field: "repeat".into(),
         equals: json!("every_days"),

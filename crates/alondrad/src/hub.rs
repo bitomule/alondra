@@ -488,7 +488,7 @@ fn released_splits(v: &View) -> Vec<Event> {
     events.push(Event::SplitsReleased);
     if !ids.is_empty() {
         log!("{} tasks new_task gave their opener untouched go back to no node: {}", ids.len(), ids.join(", "));
-        events.extend(crate::orchestrate::orchestrator_message(v, crate::orchestrate::unstarted_notice(&ids)));
+        events.extend(crate::orchestrate::orchestrator_message(v, crate::orchestrate::unstarted_notice(v, &ids)));
     }
     events
 }

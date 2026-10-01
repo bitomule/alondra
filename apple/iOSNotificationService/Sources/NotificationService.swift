@@ -49,7 +49,7 @@ final class NotificationService: UNNotificationServiceExtension {
         delivery.update { content in
             let alert = aps["alert"] as? [String: Any]
             content.title = alert?["title"] as? String ?? "Alondra"
-            content.body = alert?["body"] as? String ?? ""
+            content.body = String(localized: "New activity in Alondra")
             content.categoryIdentifier = aps["category"] as? String ?? ""
             content.badge = aps["badge"] as? NSNumber
             content.sound = aps["sound"] as? String == "default" ? .default : nil

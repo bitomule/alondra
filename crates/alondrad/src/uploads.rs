@@ -136,9 +136,8 @@ fn human_size(bytes: u64) -> String {
     }
 }
 
-/// What the node reads after the user's text: every attachment as a path it can open, in
-/// backticks because file names carry spaces.
-pub fn delivery_note(user: &str, attachments: &[Attachment]) -> String {
+/// The paths of attached files, included with the user's message.
+pub fn delivery_note(_user: &str, attachments: &[Attachment]) -> String {
     let files: Vec<String> = attachments
         .iter()
         .filter_map(|a| {
@@ -150,7 +149,7 @@ pub fn delivery_note(user: &str, attachments: &[Attachment]) -> String {
     if files.is_empty() {
         return String::new();
     }
-    format!("\n\n{user} attached {} (open with the Read tool): {}", if files.len() == 1 { "a file" } else { "files" }, files.join("; "))
+    format!("\n\nAttached files: {}", files.join("; "))
 }
 
 /// Removes attachment directories nothing refers to any more: an item's files stay while the
@@ -231,12 +230,12 @@ mod tests {
     }
 
     #[test]
-    fn the_node_reads_each_path_with_its_kind_and_size() {
+    fn the_node_receives_plain_paths_for_attached_files() {
         let a = |name: &str, bytes| Attachment { name: name.into(), source_path: String::new(), stored_path: Some(format!("/h/files/uploads/x/{name}")), bytes: Some(bytes) };
         assert_eq!(delivery_note("David", &[]), "");
         assert_eq!(
             delivery_note("David", &[a("foto.jpg", 1_300_000), a("notas.txt", 900)]),
-            "\n\nDavid attached files (open with the Read tool): `/h/files/uploads/x/foto.jpg` (image, 1.2 MB); `/h/files/uploads/x/notas.txt` (file, 900 B)"
+            "\n\nAttached files: `/h/files/uploads/x/foto.jpg` (image, 1.2 MB); `/h/files/uploads/x/notas.txt` (file, 900 B)"
         );
     }
 

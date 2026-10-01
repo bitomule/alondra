@@ -19,6 +19,7 @@ use tokio::sync::{oneshot, watch};
 
 pub(crate) struct Feeds {
     waiters: Mutex<HashMap<String, (u64, oneshot::Sender<()>)>>,
+    cache: Mutex<HashMap<String, Current>>,
     next: AtomicU64,
     clock: watch::Sender<u64>,
 }
@@ -26,7 +27,7 @@ pub(crate) struct Feeds {
 impl Default for Feeds {
     fn default() -> Self {
         let (clock, _) = watch::channel(0);
-        Self { waiters: Mutex::default(), next: AtomicU64::new(0), clock }
+        Self { waiters: Mutex::default(), cache: Mutex::default(), next: AtomicU64::new(0), clock }
     }
 }
 
@@ -94,6 +95,7 @@ struct Current {
     epoch: String,
     // Rendering is needed only when domain or displayed live data changed.
     clock: (String, u64, String),
+    wake: u64,
 }
 
 pub(crate) async fn handle(
@@ -102,9 +104,15 @@ pub(crate) async fn handle(
     query: &str,
     transport: Transport,
 ) -> Response {
-    let Some((kind, lang, wait, cursor, views)) = parse(query) else {
-        return error("invalid_input", "invalid changes query", "consulta de cambios no válida",
-            if query.split('&').any(|part| part == "lang=es") { Lang::Es } else { Lang::En });
+    let (kind, lang, wait, cursor, views) = match parse(query) {
+        Ok(parsed) => parsed,
+        Err(parse_error) => {
+            let lang = query_language(query);
+            return match parse_error {
+                QueryError::Invalid => error("invalid_input", "invalid changes query", "consulta de cambios no válida", lang),
+                QueryError::IncompatibleProtocol => error("incompatible_protocol", "incompatible views protocol", "protocolo de vistas incompatible", lang),
+            };
+        }
     };
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let generation = client.feeds.next.fetch_add(1, Ordering::Relaxed);
@@ -173,7 +181,7 @@ pub(crate) fn approved_path(path: &str) -> bool {
     let Some(query) = path.strip_prefix("/changes?") else {
         return false;
     };
-    parse(query).is_some()
+    parse(query).is_ok()
 }
 
 async fn current(
@@ -189,6 +197,17 @@ async fn current(
         .state()
         .map_err(|_| error("storage_unavailable", "domain state unavailable",
             "estado de datos no disponible", lang))?;
+    let wake = *client.feeds.clock.borrow();
+    let cache_key = format!("{kind:?}/{lang:?}/{transport:?}/{views:?}");
+    let cached = client.feeds.cache.lock().expect("feed cache poisoned")
+        .get(&cache_key).cloned();
+    let previous = previous.or(cached.as_ref());
+    if let Some(previous) = previous.filter(|previous| same_input_revision(
+        &previous.epoch, previous.clock.1, previous.wake,
+        &state.data_epoch.0, state.revision, wake,
+    )) {
+        return Ok(previous.clone());
+    }
     let status_key = status_view_key(kind);
     let mut keys = Vec::with_capacity(views.len() + 1);
     keys.push(status_key.to_owned());
@@ -196,7 +215,10 @@ async fn current(
     let live = super::live::gather(client, &state, lang, &keys, false, false).await;
     let clock = (state.data_epoch.0.clone(), state.revision, live_revision(&live));
     if let Some(previous) = previous.filter(|previous| previous.clock == clock) {
-        return Ok(previous.clone());
+        let mut current = previous.clone();
+        current.wake = wake;
+        cache_current(client, cache_key, &current);
+        return Ok(current);
     }
     let status_view = client
         .views
@@ -223,7 +245,28 @@ async fn current(
     );
     let bytes = serde_json::to_vec(&tuple).expect("feed cursor serialization");
     let cursor = format!("c1.{}", URL_SAFE_NO_PAD.encode(bytes));
-    Ok(Current { cursor, status: status_view.status, stale, epoch: clock.0.clone(), clock })
+    let current = Current { cursor, status: status_view.status, stale, epoch: clock.0.clone(), clock, wake };
+    cache_current(client, cache_key, &current);
+    Ok(current)
+}
+
+fn cache_current(client: &crate::v2_client_routes::Client, key: String, current: &Current) {
+    let mut cache = client.feeds.cache.lock().expect("feed cache poisoned");
+    if cache.len() >= 64 && !cache.contains_key(&key) {
+        cache.clear();
+    }
+    cache.insert(key, current.clone());
+}
+
+fn same_input_revision(
+    previous_epoch: &str,
+    previous_revision: u64,
+    previous_wake: u64,
+    epoch: &str,
+    revision: u64,
+    wake: u64,
+) -> bool {
+    previous_epoch == epoch && previous_revision == revision && previous_wake == wake
 }
 
 fn status_view_key(kind: Client) -> &'static str {
@@ -244,7 +287,20 @@ fn decode_cursor(value: &str) -> Option<(String, u64, String, String)> {
     serde_json::from_slice(&bytes).ok()
 }
 
-fn parse(query: &str) -> Option<(Client, Lang, u64, Option<String>, Vec<(String, String)>)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum QueryError {
+    Invalid,
+    IncompatibleProtocol,
+}
+
+fn query_language(query: &str) -> Lang {
+    url::form_urlencoded::parse(query.as_bytes())
+        .any(|(key, value)| key == "lang" && value == "es")
+        .then_some(Lang::Es)
+        .unwrap_or(Lang::En)
+}
+
+fn parse(query: &str) -> Result<(Client, Lang, u64, Option<String>, Vec<(String, String)>), QueryError> {
     let mut protocol = None;
     let mut client = None;
     let mut lang = None;
@@ -260,53 +316,57 @@ fn parse(query: &str) -> Option<(Client, Lang, u64, Option<String>, Vec<(String,
             "wait" => &mut wait,
             "cursor" => &mut cursor,
             "views" => &mut views,
-            _ => return None,
+            _ => return Err(QueryError::Invalid),
         };
         if slot.replace(value).is_some() {
-            return None;
+            return Err(QueryError::Invalid);
         }
     }
-    if protocol?.parse::<u32>().ok()? != VIEWS_PROTOCOL {
-        return None;
-    }
-    let kind = match client?.as_str() {
+    let protocol = protocol.ok_or(QueryError::Invalid)?
+        .parse::<u32>().map_err(|_| QueryError::Invalid)?;
+    let incompatible_protocol = protocol != VIEWS_PROTOCOL;
+    let kind = match client.ok_or(QueryError::Invalid)?.as_str() {
         "ios" => Client::Ios,
         "mac" => Client::Mac,
         "tui" => Client::Tui,
-        _ => return None,
+        _ => return Err(QueryError::Invalid),
     };
-    let lang = match lang?.as_str() {
+    let lang = match lang.ok_or(QueryError::Invalid)?.as_str() {
         "en" => Lang::En,
         "es" => Lang::Es,
-        _ => return None,
+        _ => return Err(QueryError::Invalid),
     };
-    let wait = wait?.parse::<u64>().ok()?;
+    let wait = wait.ok_or(QueryError::Invalid)?.parse::<u64>().map_err(|_| QueryError::Invalid)?;
     if wait > 50 {
-        return None;
+        return Err(QueryError::Invalid);
     }
     if cursor.as_ref().is_some_and(|c| decode_cursor(c).is_none()) {
-        return None;
+        return Err(QueryError::Invalid);
     }
     let mut parsed = Vec::new();
     if let Some(value) = views {
         if !value.is_empty() {
             for item in value.split(',') {
-                let (key, version) = item.rsplit_once('@')?;
+                let (key, version) = item.rsplit_once('@').ok_or(QueryError::Invalid)?;
                 if !valid_key(key)
                     || version.len() != 17
                     || !version.starts_with('v')
                     || !version[1..].bytes().all(|b| b.is_ascii_hexdigit())
                 {
-                    return None;
+                    return Err(QueryError::Invalid);
                 }
                 parsed.push((key.to_owned(), version.to_owned()));
                 if parsed.len() > 16 {
-                    return None;
+                    return Err(QueryError::Invalid);
                 }
             }
         }
     }
-    Some((kind, lang, wait, cursor, parsed))
+    if incompatible_protocol {
+        Err(QueryError::IncompatibleProtocol)
+    } else {
+        Ok((kind, lang, wait, cursor, parsed))
+    }
 }
 
 fn error(code: &str, english: &str, spanish: &str, lang: Lang) -> Response {
@@ -346,15 +406,23 @@ mod tests {
 
     #[test]
     fn feed_query_is_bounded_and_rejects_ambiguous_fields() {
-        assert!(parse("protocol=1&client=ios&lang=es&wait=50").is_some());
+        assert!(parse("protocol=1&client=ios&lang=es&wait=50").is_ok());
         assert!(
-            parse("protocol=1&client=ios&lang=es&wait=0&views=home%40v0123456789abcdef").is_some()
+            parse("protocol=1&client=ios&lang=es&wait=0&views=home%40v0123456789abcdef").is_ok()
         );
-        assert!(parse("protocol=1&client=ios&lang=es&wait=51").is_none());
-        assert!(parse("protocol=1&client=ios&lang=es&wait=1&wait=2").is_none());
-        assert!(parse("protocol=2&client=ios&lang=es&wait=1").is_none());
-        assert!(parse("protocol=1&client=ios&lang=es&wait=1&views=card%3A%2F@v0123456789abcdef").is_some());
-        assert!(parse("protocol=1&client=ios&lang=es&wait=1&views=card%3A%0A@v0123456789abcdef").is_none());
+        assert!(parse("protocol=1&client=ios&lang=es&wait=51").is_err());
+        assert!(parse("protocol=1&client=ios&lang=es&wait=1&wait=2").is_err());
+        assert_eq!(parse("protocol=2&client=ios&lang=es&wait=1"), Err(QueryError::IncompatibleProtocol));
+        assert!(parse("protocol=1&client=ios&lang=es&wait=1&views=card%3A%2F@v0123456789abcdef").is_ok());
+        assert!(parse("protocol=1&client=ios&lang=es&wait=1&views=card%3A%0A@v0123456789abcdef").is_err());
+    }
+
+    #[test]
+    fn cached_feed_input_is_invalidated_by_domain_or_live_changes() {
+        assert!(same_input_revision("epoch", 4, 8, "epoch", 4, 8));
+        assert!(!same_input_revision("epoch", 4, 8, "epoch", 5, 8));
+        assert!(!same_input_revision("epoch", 4, 8, "epoch", 4, 9));
+        assert!(!same_input_revision("epoch", 4, 8, "new-epoch", 4, 8));
     }
 
     #[tokio::test]

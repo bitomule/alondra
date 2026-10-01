@@ -185,10 +185,11 @@ fn deliver_producer(
     let Some(destination) = destination else {
         return Err((State::Retryable, "producer_unavailable"));
     };
-    let text = format!(
-        "[Alondra domain v2 message {}] {}\nRefresh the v2 Task and respond with a v2 command.",
-        message.id, message.message
-    );
+    let state = hub
+        .domain
+        .state()
+        .map_err(|_| (State::Retryable, "domain_unavailable"))?;
+    let text = crate::domain_transport::render(&state, message);
     match hub.append_with(|view| {
         view.alondra_message(&destination, text, alondra_core::now_millis())
             .map(Event::MessageQueued)
@@ -244,7 +245,7 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
     let mut alondra = json!({"protocol": views::VIEWS_PROTOCOL, "data_epoch": state.data_epoch,
         "actions": []});
     let mut aps = json!({"alert": {"title": "Alondra", "body": "New activity in Alondra"},
-        "sound": "default"});
+        "sound": "default", "mutable-content": 1});
     if let Some(id) = interaction_id {
         alondra["card"] = json!(id);
         if let Some(interaction) = state.interactions.get(&InteractionId::from(id)) {
@@ -255,10 +256,16 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
                 InteractionPayload::Delivery { .. } => "delivery",
             };
             alondra["kind"] = json!(kind);
-            let actions = views::push_actions(state, id, lang);
+            let actions = views::push_actions(state, id, lang).unwrap_or_else(|error| {
+                log!("could not render push actions for card {id}: {error:?}");
+                vec![]
+            });
             if !actions.is_empty() {
                 alondra["actions"] = json!(actions);
-                let spanish = views::push_actions(state, id, Lang::Es);
+                let spanish = views::push_actions(state, id, Lang::Es).unwrap_or_else(|error| {
+                    log!("could not render Spanish push actions for card {id}: {error:?}");
+                    vec![]
+                });
                 if spanish != actions {
                     // The extension selects this localized copy on the device before
                     // handing the authenticated payload to the app.
@@ -267,7 +274,6 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
                 // The extension replaces this bootstrap category with a per-card
                 // category after authenticating the encrypted payload.
                 aps["category"] = json!("ALONDRA_PUSH");
-                aps["mutable-content"] = json!(1);
             }
         }
     }

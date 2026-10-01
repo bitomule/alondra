@@ -14,7 +14,8 @@ final class ViewsOnlyServiceRequestTests: XCTestCase {
         for key in ["home", "sidebar", "tasks", "fleet", "schedules", "machine", "new_request",
                     "issue_picker", "search", "card:i-1", "task:hf-weekly-2026-09-30",
                     "request:r-1", "document:rev-1", "node:550e8400-e29b-41d4-a716-446655440000",
-                    "schedule:hf-weekly-2026-09-30", "pull_request:github.com/bitomule/alondra#154"] {
+                    "schedule:hf-weekly-2026-09-30", "pull_request:github.com/bitomule/alondra#154",
+                    "pull_request:gitlab.example.com/bitomule/alondra#154"] {
             XCTAssertTrue(try request(key).path.hasPrefix("/views/"), key)
         }
         XCTAssertNoThrow(try request("tasks", extra: [("section", "active"), ("after", "20")]))
@@ -25,6 +26,7 @@ final class ViewsOnlyServiceRequestTests: XCTestCase {
 
     func testUnsafeViewKeysAndQueriesAreRejected() {
         for key in ["card:../secret", "node:", "pull_request:github.com/owner/repo#0",
+                    "pull_request:github.com/Owner/repo#154",
                     "pull_request:github.com/owner/repo#154/extra", "unknown:thing"] {
             XCTAssertThrowsError(try request(key), key)
         }

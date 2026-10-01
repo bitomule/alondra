@@ -386,7 +386,10 @@ fn gauges(
             .into(),
             value: usage.week_percent / 100.0,
             text: format!("{}%", usage.week_percent.round()),
-            detail: None,
+            detail: Some(match lang {
+                Lang::En => format!("Weekly limit resets {}", timestamp(usage.week_resets_at)),
+                Lang::Es => format!("El límite semanal se reinicia {}", timestamp(usage.week_resets_at)),
+            }),
             level: if usage.week_percent >= 85.0 {
                 Level::Hot
             } else {
@@ -404,13 +407,25 @@ fn gauges(
             out.push(Gauge {
                 id: "claude_today".into(),
                 label: match lang {
+                    Lang::En if usage.over_pace => "Claude today !",
+                    Lang::Es if usage.over_pace => "Claude hoy !",
                     Lang::En => "Claude today",
                     Lang::Es => "Claude hoy",
                 }
                 .into(),
                 value: spent / share.max(0.1),
                 text: format!("{}/{}%", spent.round(), share.round()),
-                detail: None,
+                detail: Some(if usage.over_pace {
+                    match lang {
+                        Lang::En => "Spending faster than today's share; confirm new launches".into(),
+                        Lang::Es => "Ritmo superior a la cuota diaria; confirma nuevos lanzamientos".into(),
+                    }
+                } else {
+                    match lang {
+                        Lang::En => format!("{}% spent of today's {}% share", spent.round(), share.round()),
+                        Lang::Es => format!("Gastado {}% de la cuota diaria del {}%", spent.round(), share.round()),
+                    }
+                }),
                 level,
             });
         }
@@ -532,5 +547,19 @@ mod tests {
             disk_total: 100, disk_available: 50, unreliable: false };
         let ids = gauges(&machine, None, Lang::En).into_iter().map(|gauge| gauge.id).collect::<Vec<_>>();
         assert_eq!(ids, ["memory", "disk"]);
+    }
+
+    #[test]
+    fn usage_gauges_keep_reset_daily_share_and_over_pace_warning() {
+        let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
+            memory_free_percent: Some(50), load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
+            disk_total: 100, disk_available: 50, unreliable: false };
+        let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
+            today_spent: Some(41.0), today_share: Some(18.0), over_pace: true, ..Default::default() };
+        let result = gauges(&machine, Some(&usage), Lang::En);
+        assert!(result[0].detail.as_deref().unwrap().contains("resets"));
+        assert_eq!(result[1].text, "41/18%");
+        assert!(result[1].label.contains('!'));
+        assert!(result[1].detail.as_deref().unwrap().contains("faster"));
     }
 }

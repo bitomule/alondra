@@ -11,7 +11,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{DeliveryClaim, OutboxMessage};
 use crate::wake::WriteFailure;
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{AgentId, DomainState, InteractionId, InteractionPayload, MergeAttemptState, ScheduleLaunchState};
+use alondra_core::domain_v2::{AgentId, DomainState, InputValue, InteractionId, InteractionPayload, ScheduleLaunchState};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -148,7 +148,6 @@ fn claim_batch(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<Batc
     if pending.is_empty() {
         return Ok(None);
     }
-    let state = store.load()?;
     let mut claims = vec![];
     for message in pending {
         if let Some(claim) = store.claim_message(message.id)? {
@@ -158,63 +157,62 @@ fn claim_batch(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<Batc
     if claims.is_empty() {
         return Ok(None);
     }
+    let state = store.load()?;
     Ok(Some(Batch { text: batch_text(&state, &claims), claims }))
 }
 
-pub(crate) fn cursor(state: &DomainState) -> String {
-    format!("[Alondra domain v2] data_epoch={} revision={}", state.data_epoch.0, state.revision)
-}
-
-const FOOTER: &str = "Refresh the v2 Task with this cursor and respond with a v2 command.";
-
-/// A message names its interaction; the recorded answer or feedback the
-/// Agent must act on is rendered with it, since producers have no read API.
+/// Producer-facing delivery contains only the message written for the Agent.
+/// Delivery identity, interaction data and authorization remain in Alondra.
 pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
-    let mut text = format!("[Alondra domain v2 message {}] {}", message.id, message.message);
-    if let Some(task) = &message.task_id {
-        text.push_str(&format!(" task_id={task}"));
+    let interaction = message.interaction_id.as_ref()
+        .and_then(|id| state.interactions.get(&InteractionId(id.clone())));
+    let Some(interaction) = interaction else { return message.message.clone() };
+    let (options, answer) = match &interaction.payload {
+        InteractionPayload::Question { options, answer } | InteractionPayload::ActionRequest { options, answer } => (options, answer),
+        InteractionPayload::Delivery { .. } => {
+            let mut text = message.message.clone();
+            if state.merge_authorizations.values().any(|authorization| {
+                authorization.presentation_id == interaction.id && authorization.valid
+                    && authorization.attempt == alondra_core::domain_v2::MergeAttemptState::Unclaimed
+            }) && !text.contains("The user authorized merging the presented pull request.") {
+                text.push_str("\n\nThe user authorized merging the presented pull request.");
+            }
+            return text;
+        }
+        InteractionPayload::Information { .. } => return message.message.clone(),
+    };
+    let Some(answer) = answer else {
+        let mut text = interaction.body.clone();
+        let labels: Vec<&str> = options.iter().map(|option| option.label.as_str()).collect();
+        if !labels.is_empty() {
+            text.push_str(&format!("\nOptions: {}.", labels.join(", ")));
+        }
+        return text;
+    };
+    let option = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.as_str());
+    let values: Vec<String> = answer.inputs.values().map(|value| match value {
+        InputValue::Text(value) => value.clone(),
+        InputValue::Boolean(value) => value.to_string(),
+        InputValue::Integer(value) => value.to_string(),
+    }).filter(|value| !value.trim().is_empty()).collect();
+    let mut text = match option {
+        Some(option) => format!("The user answered: {option}."),
+        None if !values.is_empty() => format!("The user answered: {}.", values.join("; ")),
+        None => "The user answered the question.".into(),
+    };
+    if !values.is_empty() && option.is_some() {
+        text.push_str(&format!(" Additional details: {}.", values.join("; ")));
     }
-    if let Some(interaction) = message.interaction_id.as_ref()
-        .and_then(|id| state.interactions.get(&InteractionId(id.clone())))
-    {
-        text.push_str(&format!(" interaction_id={}", interaction.id));
-        match &interaction.payload {
-            InteractionPayload::Question { answer: Some(answer), .. }
-            | InteractionPayload::ActionRequest { answer: Some(answer), .. } => {
-                text.push_str(&format!(" answer={}", serde_json::to_string(answer).unwrap_or_default()));
-            }
-            InteractionPayload::Delivery { feedback, .. } => {
-                if let Some(latest) = feedback.last() {
-                    text.push_str(&format!(" feedback={}", serde_json::to_string(latest).unwrap_or_default()));
-                }
-                // A merge authorization is the exact claim the Agent may make:
-                // its id, the PR, the head and the method the user chose.
-                for authorization in state.merge_authorizations.values().filter(|authorization| {
-                    authorization.presentation_id == interaction.id && authorization.valid
-                        && authorization.attempt == MergeAttemptState::Unclaimed
-                }) {
-                    text.push_str(&format!(" merge_authorization={}", serde_json::to_string(&serde_json::json!({
-                        "authorization_id": authorization.id, "pr_id": authorization.pr_id,
-                        "head": authorization.head, "method": authorization.method,
-                    })).unwrap_or_default()));
-                }
-            }
-            _ => (),
+    if !answer.attachments.is_empty() {
+        for attachment in &answer.attachments {
+            text.push_str(&format!(" Open the attached file “{}” at {}.", attachment.name, attachment.content_reference));
         }
     }
     text
 }
 
-/// The cursor a producer needs for its next command travels with every batch.
 fn batch_text(state: &DomainState, claims: &[DeliveryClaim]) -> String {
-    let mut text = cursor(state);
-    for claim in claims {
-        text.push('\n');
-        text.push_str(&render(state, &claim.message));
-    }
-    text.push('\n');
-    text.push_str(FOOTER);
-    text
+    claims.iter().map(|claim| render(state, &claim.message)).collect::<Vec<_>>().join("\n\n")
 }
 
 fn finish_all(domain: &DomainRuntime, claims: &[DeliveryClaim], state: State,
@@ -291,7 +289,6 @@ pub(crate) async fn deliver_terminals(domain: &DomainRuntime, home: &Path,
                 (State::Retryable, Some("prepare_failed"))
             }
             Ok(text) => {
-                let text = format!("{} {text} {FOOTER}", cursor(&state));
                 let terminal = terminal.clone();
                 let target = short.clone();
                 match tokio::task::spawn_blocking(move || terminal.write(&target, &text)).await {
@@ -413,13 +410,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_hook_hands_the_agent_its_answer_once_with_the_cursor_and_no_ack_is_uncertain() {
+    async fn stop_hook_hands_only_the_message_once_and_no_ack_is_uncertain() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         answered_question(&domain, "session-a");
         let pending = agent_outbox(&domain, "session-a");
         assert_eq!(pending.len(), 1);
-        let epoch = domain.state().unwrap().data_epoch.0.clone();
 
         let (reply, result) = hook(&domain, json!({"session_id": "stranger", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
@@ -430,10 +426,10 @@ mod tests {
         result.unwrap();
         let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
         assert_eq!(reply["hookSpecificOutput"]["hookEventName"], "Stop");
-        assert!(context.contains(&format!("data_epoch={epoch}")), "{context}");
-        assert!(context.contains(&format!("message {}]", pending[0].0)), "{context}");
-        assert!(context.contains("task_id=task-session-a") && context.contains("interaction_id=question-session-a")
-            && context.contains("\"option_id\":\"yes\""), "{context}");
+        assert_eq!(context, "The user answered: Yes.");
+        assert!(!context.contains("data_epoch") && !context.contains("revision=")
+            && !context.contains("task_id=") && !context.contains("interaction_id=")
+            && !context.contains("option_id"), "{context}");
         assert!(agent_outbox(&domain, "session-a").is_empty());
         assert_eq!(attempts(&domain), vec![(pending[0].0, "handed".into(), None)]);
 
@@ -444,7 +440,9 @@ mod tests {
         let id = agent_outbox(&domain, "session-b")[0].0;
         let (reply, result) = hook(&domain, json!({"session_id": "session-b", "hook_event_name": "Stop"}), None).await;
         assert!(result.is_err());
-        assert!(reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap().contains("question-session-b"));
+        let uncertain_context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert_eq!(uncertain_context, "The user answered: Yes.");
+        assert!(!uncertain_context.contains("question-session-b"));
         assert!(attempts(&domain).contains(&(id, "uncertain".into(), Some("hook_ack_missing".into()))));
         assert!(agent_outbox(&domain, "session-b").is_empty(), "an uncertain handoff is not retried blindly");
         drop(domain);
@@ -463,7 +461,7 @@ mod tests {
         let (body, result) = hook(&domain, stop.clone(), Some(6)).await;
         result.unwrap();
         let context = body["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert!(context.starts_with("Use the new API\n\n[Alondra domain v2]"), "{context}");
+        assert_eq!(context, "Use the new API\n\nThe user answered: Yes.");
         assert!(agent_outbox(&domain, "session-a").is_empty());
         domain.held.lock().unwrap().entry("session-a".into()).or_default().push("Only this".into());
         let (body, _) = hook(&domain, stop.clone(), Some(6)).await;
@@ -473,7 +471,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_merge_authorization_travels_with_its_message() {
+    async fn a_merge_authorization_stays_internal_to_alondra() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         answered_question(&domain, "session-a");
@@ -495,7 +493,9 @@ mod tests {
         let (reply, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
         let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert!(context.contains(&format!("merge_authorization={{\"authorization_id\":\"auth\",\"head\":\"{head}\",\"method\":\"squash\",\"pr_id\":\"pr\"}}")), "{context}");
+        assert_eq!(context, "The user answered: Yes.\n\nThe user authorized merging the presented pull request.");
+        assert!(!context.contains("authorization_id") && !context.contains("pr_id")
+            && !context.contains("head") && !context.contains("auth-"), "{context}");
     }
 
     #[tokio::test]
@@ -598,7 +598,9 @@ mod tests {
         let writes = terminal.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].0, "ab1234");
-        assert!(writes[0].1.contains("data_epoch=") && writes[0].1.contains("question-session-a"), "{}", writes[0].1);
+        assert_eq!(writes[0].1, "The user answered: Yes.");
+        assert!(!writes[0].1.contains("data_epoch") && !writes[0].1.contains("revision=")
+            && !writes[0].1.contains("interaction_id="), "{}", writes[0].1);
         assert!(agent_outbox(&domain, "session-a").is_empty());
         assert!(attempts(&domain).contains(&(id, "handed".into(), None)));
         deliver_terminals(&domain, &fixture.0, &terminal, &mut backoff).await.unwrap();

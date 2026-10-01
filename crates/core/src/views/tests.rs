@@ -394,6 +394,46 @@ fn pr_fixture() -> DomainState {
     state
 }
 
+fn golden_fixture() -> DomainState {
+    let mut state = pr_fixture();
+    let interaction_ids = [
+        ("i-1", "a98d034b-249e-4487-a89b-57de38c26372"),
+        ("i-2", "f12d034b-249e-4487-a89b-57de38c26372"),
+        ("i-3", "hf-weekly-2026-09-30"),
+        ("i-5", "8fa4034b-249e-4487-a89b-57de38c26372"),
+        ("i-6", "cc2d034b-249e-4487-a89b-57de38c26372"),
+    ];
+    let agent_id = "d887a34b-249e-4487-a89b-57de38c26372";
+    let pr_id = "github.com/example/repo#12";
+    let old_interactions = std::mem::take(&mut state.interactions);
+    state.interactions = old_interactions.into_values().map(|mut interaction| {
+        if let Some((_, replacement)) = interaction_ids.iter().find(|(old, _)| *old == interaction.id.0) {
+            interaction.id = (*replacement).into();
+        }
+        if let Author::Agent { agent_id: id } = &mut interaction.author {
+            if id.0 == "a-1" { *id = agent_id.into(); }
+        }
+        if let Some(InteractionSubject::PullRequest { pr_id: id }) = &mut interaction.subject {
+            if id.0 == "pr-1" { *id = pr_id.into(); }
+        }
+        (interaction.id.clone(), interaction)
+    }).collect();
+    let old_prs = std::mem::take(&mut state.pull_requests);
+    state.pull_requests = old_prs.into_values().map(|mut pr| {
+        if pr.id.0 == "pr-1" { pr.id = pr_id.into(); }
+        (pr.id.clone(), pr)
+    }).collect();
+    let old_agents = std::mem::take(&mut state.agents);
+    state.agents = old_agents.into_values().map(|mut agent| {
+        if agent.id.0 == "a-1" { agent.id = agent_id.into(); }
+        (agent.id.clone(), agent)
+    }).collect();
+    if let Some(task) = state.tasks.get_mut(&"t-1".into()) {
+        task.final_presentation = Some("hf-weekly-2026-09-30".into());
+    }
+    state
+}
+
 #[test]
 fn real_pr_id_opens_detail_diff_and_actions() {
     let mut state = pr_fixture();
@@ -411,7 +451,7 @@ fn real_pr_id_opens_detail_diff_and_actions() {
     let Item::Card(card) = &card.sections[0].items[0] else { panic!("PR card") };
     assert!(card.actions.iter().any(|action| action.label == "Ask about the PR" &&
         action_id::ActionId::parse(&action.id).is_ok()));
-    assert!(push_actions(&state, id, Lang::En).iter().any(|action|
+    assert!(push_actions(&state, id, Lang::En).unwrap().iter().any(|action|
         action.id.starts_with("ask_pr:github.com/bitomule/alondra#154@")));
     let detail = render(&state, &live, Client::Mac, Lang::En, &format!("pull_request:{id}"), "");
     assert!(detail.sections.iter().flat_map(|section| &section.items).any(|item|
@@ -421,6 +461,24 @@ fn real_pr_id_opens_detail_diff_and_actions() {
     let Item::Card(tui_card) = &tui.sections[0].items[0] else { panic!("PR card") };
     assert!(tui_card.actions.iter().any(|action| action.key.as_deref() == Some("d") &&
         matches!(&action.link, Some(Link::Local { local: LocalLink::ReviewClone { pr_id, pr: 12, .. } }) if pr_id == id)));
+}
+
+#[test]
+fn invalid_generated_pr_action_id_fails_the_view() {
+    let mut state = golden_fixture();
+    let pr_id = "github.com/example/repo#12";
+    state.pull_requests.get_mut(&pr_id.into()).unwrap().head = "bad/head123".into();
+    let live = LiveSnapshot::default();
+    let result = build(&format!("card:{pr_id}"), RenderContext {
+        domain: &state,
+        live: &live,
+        client: Client::Ios,
+        lang: Lang::En,
+        transport: Transport::Loopback,
+        cursor: "test",
+        rendered_at: "",
+    });
+    assert_eq!(result, Err(BuildError::InvalidActionId));
 }
 
 #[test]
@@ -482,6 +540,67 @@ fn view_keys_are_addressable_and_bound_to_epoch() {
         ),
         Err(BuildError::UnsupportedClient)
     );
+}
+
+#[test]
+fn issue_picker_offers_a_pasted_link_even_when_search_has_no_open_match() {
+    let state = fixture();
+    let live = LiveSnapshot::default();
+    let view = render(&state, &live, Client::Tui, Lang::En,
+        "issue_picker?q=https%3A%2F%2Fgithub.com%2Fowner%2Frepo%2Fissues%2F154", "");
+    let Item::Row(row) = &view.sections[0].items[0] else { panic!("pasted issue option") };
+    assert_eq!(row.id, "owner/repo#154");
+    assert!(row.title.contains("Use https://github.com/owner/repo/issues/154"));
+}
+
+#[test]
+fn search_view_counts_found_agents_and_reports_empty_results() {
+    let state = fixture();
+    let live = LiveSnapshot::default();
+    let found = render(&state, &live, Client::Tui, Lang::En, "search?q=Node", "");
+    assert_eq!(found.sections[0].title.as_deref(), Some("1 result found"));
+    let missing = render(&state, &live, Client::Tui, Lang::En, "search?q=NoSuchNode", "");
+    assert_eq!(missing.empty.as_ref().map(|notice| notice.text.as_str()), Some("No results found"));
+}
+
+#[test]
+fn schedule_editor_includes_selected_projects_launch_options() {
+    let state = fixture();
+    let mut live = LiveSnapshot::default();
+    live.project_options.insert("App".into(), vec![crate::options::Spec {
+        id: "run_checks".into(), label: "Run checks".into(),
+        kind: crate::options::Kind::Toggle, values: vec![],
+        default: crate::options::Choice::Toggle(true), builtin: false,
+    }]);
+    let view = render(&state, &live, Client::Tui, Lang::En,
+        "schedule:new?project=App", "");
+    let Item::Form(form) = &view.sections[0].items[0] else { panic!("schedule form") };
+    let option = form.fields.iter().find(|field| field.id == "run_checks").unwrap();
+    assert_eq!(option.value, serde_json::json!(true));
+}
+
+#[test]
+fn schedule_editor_resets_old_options_when_project_changes() {
+    let mut state = fixture();
+    let schedule: crate::domain_v2::Schedule = serde_json::from_value(serde_json::json!({
+        "id":"schedule-1", "title":"Morning", "text":"Review work",
+        "project":"Old", "options":{"run_checks":false},
+        "disallowed_tools":[], "frequency":"daily", "hour":9, "minute":0,
+        "weekday":null, "interval":null, "start_at":null, "enabled":true,
+        "next_run":null, "revision":1, "deleted_at":null
+    })).unwrap();
+    state.schedule.schedules.insert(schedule.id.clone(), schedule);
+    let mut live = LiveSnapshot::default();
+    live.project_options.insert("New".into(), vec![crate::options::Spec {
+        id: "run_checks".into(), label: "Run checks".into(),
+        kind: crate::options::Kind::Toggle, values: vec![],
+        default: crate::options::Choice::Toggle(true), builtin: false,
+    }]);
+    let view = render(&state, &live, Client::Tui, Lang::En,
+        "schedule:schedule-1?project=New", "");
+    let Item::Form(form) = &view.sections[0].items[0] else { panic!("schedule form") };
+    let option = form.fields.iter().find(|field| field.id == "run_checks").unwrap();
+    assert_eq!(option.value, serde_json::json!(true));
 }
 
 #[test]
@@ -548,7 +667,7 @@ fn query_keys_decode_percent_encoding_and_reject_malformed_values() {
 
 #[test]
 fn home_ios_matches_golden() {
-    let state = pr_fixture();
+    let state = golden_fixture();
     let live = LiveSnapshot::default();
     let actual = render(
         &state,
@@ -567,7 +686,7 @@ fn home_ios_matches_golden() {
 
 #[test]
 fn home_tui_matches_golden() {
-    let state = pr_fixture();
+    let state = golden_fixture();
     let live = LiveSnapshot::default();
     let actual = render(
         &state,
@@ -586,22 +705,22 @@ fn home_tui_matches_golden() {
 
 #[test]
 fn card_variants_match_goldens() {
-    let state = pr_fixture();
+    let state = golden_fixture();
     let live = LiveSnapshot::default();
     for (filename, key, expected) in [
         (
             "card-question.json",
-            "card:i-1",
+            "card:a98d034b-249e-4487-a89b-57de38c26372",
             include_str!("../../../../fixtures/views/card-question.json"),
         ),
         (
             "card-pr.json",
-            "card:pr-1",
+            "card:github.com/example/repo#12",
             include_str!("../../../../fixtures/views/card-pr.json"),
         ),
         (
             "card-delivery.json",
-            "card:i-3",
+            "card:hf-weekly-2026-09-30",
             include_str!("../../../../fixtures/views/card-delivery.json"),
         ),
     ] {
@@ -619,7 +738,7 @@ fn card_variants_match_goldens() {
 
 #[test]
 fn home_ios_es_matches_golden() {
-    let state = pr_fixture();
+    let state = golden_fixture();
     let live = LiveSnapshot::default();
     let actual = render(
         &state,
@@ -640,14 +759,14 @@ fn home_ios_es_matches_golden() {
 #[ignore = "explicit fixture generation after Bazel authorization"]
 fn generate_goldens() {
     let dir = std::env::var("ALONDRA_GOLDEN_OUT").expect("ALONDRA_GOLDEN_OUT required");
-    let state = pr_fixture();
+    let state = golden_fixture();
     let live = LiveSnapshot::default();
     let cases = [
         ("home-ios.json", "home", Client::Ios, Lang::En),
         ("home-tui.json", "home", Client::Tui, Lang::En),
-        ("card-question.json", "card:i-1", Client::Ios, Lang::En),
-        ("card-pr.json", "card:pr-1", Client::Ios, Lang::En),
-        ("card-delivery.json", "card:i-3", Client::Ios, Lang::En),
+        ("card-question.json", "card:a98d034b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
+        ("card-pr.json", "card:github.com/example/repo#12", Client::Ios, Lang::En),
+        ("card-delivery.json", "card:hf-weekly-2026-09-30", Client::Ios, Lang::En),
         ("home-ios-es.json", "home", Client::Ios, Lang::Es),
     ];
     for (filename, key, client, lang) in cases {

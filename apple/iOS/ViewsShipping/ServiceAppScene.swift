@@ -156,32 +156,42 @@ struct ServiceRootView<AccountContent: View>: View {
     var body: some View {
         TabView(selection: Binding<ViewsServiceRootFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: .inbox) {
-                NavigationStack {
+                NavigationStack(path: $store.scope(state: \.serverReviewPath, action: \.serverReviewPath)) {
                     ServiceHomeView(store: store.scope(state: \.home, action: \.home), zoom: triageZoom,
                         openReview: { store.send(.openServerView($0)) })
-                        .navigationDestination(isPresented: Binding(get: { store.serverDetailPresented }, set: {
-                            if !$0 { store.send(.serverDetailDismissed) }
-                        })) {
-                            ViewsScreenView(store: store.scope(state: \.serverReview, action: \.serverReview))
-                        }
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
+                } destination: { child in
+                    ViewsScreenView(store: child, openView: { store.send(.openReviewView($0)) })
                 }
             }.badge(store.home.badge)
             Tab("Tasks", systemImage: "checklist", value: .tasks) {
-                NavigationStack {
-                    ViewsScreenView(store: store.scope(state: \.serverTasks, action: \.serverTasks))
+                NavigationStack(path: $store.scope(state: \.serverTasksPath, action: \.serverTasksPath)) {
+                    ViewsScreenView(store: store.scope(state: \.serverTasks, action: \.serverTasks),
+                                    openView: { store.send(.openTasksView($0)) })
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
+                } destination: { child in
+                    ViewsScreenView(store: child, openView: { store.send(.openTasksView($0)) })
                 }
             }
             Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
-                NavigationStack { ViewsScreenView(store: store.scope(state: \.serverFleet, action: \.serverFleet)) }
+                NavigationStack(path: $store.scope(state: \.serverFleetPath, action: \.serverFleetPath)) {
+                    ViewsScreenView(store: store.scope(state: \.serverFleet, action: \.serverFleet),
+                                    openView: { store.send(.openFleetView($0)) })
+                } destination: { child in
+                    ViewsScreenView(store: child, openView: { store.send(.openFleetView($0)) })
+                }
             }
             Tab("New", systemImage: "plus.bubble", value: .newRequest) {
-                NavigationStack { ViewsScreenView(store: store.scope(state: \.serverNewRequest, action: \.serverNewRequest)) }
+                NavigationStack(path: $store.scope(state: \.serverNewRequestPath, action: \.serverNewRequestPath)) {
+                    ViewsScreenView(store: store.scope(state: \.serverNewRequest, action: \.serverNewRequest),
+                                    openView: { store.send(.openNewRequestView($0)) })
+                } destination: { child in
+                    ViewsScreenView(store: child, openView: { store.send(.openNewRequestView($0)) })
+                }
             }
         }
         .overlay(alignment: .bottom) { ServiceNoticeToast(store: store) }

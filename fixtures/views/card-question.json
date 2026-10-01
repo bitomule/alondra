@@ -2,9 +2,9 @@
   "protocol": 1,
   "data_epoch": "test-epoch",
   "view": "card",
-  "key": "card:i-1",
+  "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "veaa3b10ca1abca67",
+  "version": "v650adda59f327c79",
   "cursor": "cursor-1",
   "title": "Build a feature",
   "status": {
@@ -51,10 +51,10 @@
       "items": [
         {
           "type": "card",
-          "id": "i-1",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
           "link": {
             "kind": "view",
-            "key": "card:i-1"
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
           },
           "icon": "question",
           "eyebrow": {
@@ -68,7 +68,7 @@
               "text": "Node One",
               "link": {
                 "kind": "view",
-                "key": "node:a-1"
+                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
               }
             },
             {
@@ -96,7 +96,7 @@
           },
           "actions": [
             {
-              "id": "ans:i-1@1",
+              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
               "label": "Answer",
               "style": "primary",
               "presentation": "options",
@@ -108,7 +108,7 @@
               "stamp": "Answered"
             },
             {
-              "id": "ctx:i-1@1",
+              "id": "ctx:a98d034b-249e-4487-a89b-57de38c26372@1",
               "label": "Need more context",
               "style": "secondary",
               "presentation": "button",

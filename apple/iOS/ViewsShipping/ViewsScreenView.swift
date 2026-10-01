@@ -9,6 +9,7 @@ import UIKit
 
 struct ViewsScreenView: View {
     @Bindable var store: StoreOf<ViewsScreenFeature>
+    let openView: (ViewKey) -> Void
     @Environment(\.openURL) private var openURL
     @State private var diffComments: [String: ActionComment] = [:]
 
@@ -79,11 +80,6 @@ struct ViewsScreenView: View {
                 .navigationBarTitleDisplayMode(isTasksScreen || isNewRequestScreen ? .inline : .automatic)
                 .refreshable { await store.send(.refresh).finish() }
                 .toolbar {
-                    if store.parentKey != nil {
-                        ToolbarItem(placement: .topBarLeading) {
-                            Button("Back", systemImage: "chevron.left") { store.send(.back) }
-                        }
-                    }
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Refresh", systemImage: "arrow.clockwise") { store.send(.refresh) }
                     }
@@ -175,14 +171,18 @@ struct ViewsScreenView: View {
 
     private func follow(_ link: AlondraViews.Link) {
         switch link {
-        case .view(let key): store.send(.open(ViewKey(rawValue: key)))
+        case .view(let key): open(ViewKey(rawValue: key))
         case .url(let raw):
             guard let url = URL(string: raw), url.scheme?.lowercased() == "https",
                   let host = url.host?.lowercased(), host == "github.com" || host.hasSuffix(".github.com") else { return }
             openURL(url)
         case .local(let local):
-            if case let .attach(session) = local { store.send(.open(.card(session))) }
+            if case let .attach(session) = local { open(.card(session)) }
         }
+    }
+
+    private func open(_ key: ViewKey) {
+        openView(key)
     }
 
     private func present(_ action: AlondraViews.Action) {
@@ -215,7 +215,7 @@ struct ViewsScreenView: View {
                         .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 24, style: .continuous))
                     }
                     if let more = section.more {
-                        Button("Show \(more.remaining) more") { store.send(.open(ViewKey(rawValue: more.key))) }
+                        Button("Show \(more.remaining) more") { open(ViewKey(rawValue: more.key)) }
                             .font(.footnote.weight(.semibold)).foregroundStyle(Palette.dawn)
                     }
                 }
@@ -235,7 +235,7 @@ struct ViewsScreenView: View {
             }
         } else {
             SectionView(section: section, onAction: present,
-                        onLink: follow, onMore: { store.send(.open(ViewKey(rawValue: $0))) },
+                        onLink: follow, onMore: { open(ViewKey(rawValue: $0)) },
                         onForm: presentForm, onContent: { store.send(.fetchContent($0)) },
                         onAttachment: { store.send(.fetchAttachment($0)) })
         }

@@ -117,9 +117,10 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
         "an effort the user chose is binding: {args:?}");
     assert!(!args.iter().any(|arg| arg == "--session-id"));
     let prompt = args.last().unwrap();
-    for expected in ["Editor colours", "Make the editor readable", "Crash on launch", "shot.png", "Task t of Request r"] {
+    for expected in ["Editor colours", "Make the editor readable", "Crash on launch", "shot.png"] {
         assert!(prompt.contains(expected), "{expected} missing from {prompt}");
     }
+    assert!(!prompt.contains("Task t of Request r"), "internal domain IDs must stay out of the node prompt: {prompt}");
     assert!(prompt.contains(&f.home.join("files/att-1").display().to_string()), "{prompt}");
     let state = f.domain.state().unwrap();
     assert_eq!(state.tasks[&TaskId::from("t")].agent_id, Some(AgentId::from(SESSION)));

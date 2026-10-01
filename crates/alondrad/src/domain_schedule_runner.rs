@@ -5,7 +5,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain_v2::{
     Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
-    Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task, TaskId,
+    Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task,
     TaskState,
 };
 use alondra_core::domain_v2::{
@@ -85,42 +85,20 @@ pub(crate) fn prepare_intent(
     Ok(launch)
 }
 
-pub(crate) struct ProducerLaunch<'a> {
-    pub task_id: &'a TaskId,
-    pub request_id: &'a RequestId,
-    pub state: &'a DomainState,
-}
-
-/// The mission a scheduled v2 node starts with: the Schedule text, its identity and
-/// cursor in the domain, and the options the Request's policy picked.
+/// The mission a scheduled node starts with, followed by the choices made for it.
 pub(crate) fn producer_prompt(
     text: &str,
     resolved: &Resolved,
-    producer: &ProducerLaunch<'_>,
 ) -> String {
     let mut lines = vec![
         text.trim_end().to_owned(),
         String::new(),
-        "## Alondra domain v2".into(),
+        "## Choices for this work".into(),
         String::new(),
-        format!(
-            "Load the alondra-domain-v2 skill. This session is the Agent assigned to Task {} of Request {}.",
-            producer.task_id, producer.request_id
-        ),
-        format!(
-            "Cursor: data_epoch={} revision={}. Send an expected_revision of 0 when you hold no newer cursor; the daemon fills the current revision for a producer.",
-            producer.state.data_epoch.0, producer.state.revision
-        ),
-        String::new(),
-        "## Launch options".into(),
-        String::new(),
-        format!(
-            "The user chose these for this work (request {}):",
-            producer.request_id
-        ),
+        "The user chose these options for this work:".into(),
     ];
     if resolved.auto_merge {
-        lines.push("- PR handling: auto-merge. Register the PR and present it as your result. When its checks pass and it is mergeable (for a stacked PR, once the PR it is stacked on is merged), merge it yourself with `gh pr merge --<method> --match-head-commit <head>`, then report and complete the Task once the merge is observed.".into());
+        lines.push("- PR handling: auto-merge. Register the PR and present it as your result. Once its checks pass and it is mergeable, merge the pull request you registered using an allowed method, then report the result.".into());
     }
     for picked in resolved
         .picked
@@ -142,7 +120,6 @@ pub(crate) fn producer_prompt(
 /// records the result against that claim; this function never retries Claude.
 async fn invoke_claimed(
     launch: &ScheduleLaunchIntent,
-    producer: &ProducerLaunch<'_>,
     disallowed_tools: &[String],
     home: &Path,
     key: &str,
@@ -184,7 +161,7 @@ async fn invoke_claimed(
         args.extend(["--disallowedTools".into(), disallowed_tools.join(" ")]);
     }
     args.push("--".into());
-    args.push(producer_prompt(&launch.prompt, &resolved, producer));
+    args.push(producer_prompt(&launch.prompt, &resolved));
     match launcher.run(&launch.cwd, &args).await {
         Ok(output) => Ok((alondra_core::sessions::launched_short(&output), settings)),
         Err(refusal) => {
@@ -356,8 +333,7 @@ async fn dispatch_pending(
         }
     };
     let intent = launch.intent.clone();
-    let request_id = request_id.clone();
-    let task_id = run.task_id.clone().context("sent run has no Task")?;
+    run.task_id.as_ref().context("sent run has no Task")?;
     match execute_system(
         domain,
         Command::ClaimScheduleLaunch {
@@ -369,14 +345,8 @@ async fn dispatch_pending(
         Err(error) if ordinary_conflict(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    let state = domain.state()?;
-    let producer = ProducerLaunch {
-        task_id: &task_id,
-        request_id: &request_id,
-        state: &state,
-    };
     let (short, settings) =
-        match invoke_claimed(&intent, &producer, &policy, home, &run_id.0, launcher).await {
+        match invoke_claimed(&intent, &policy, home, &run_id.0, launcher).await {
             Ok(launched) => launched,
             Err((_, reason)) => {
                 fail_run(domain, run_id, reason)?;
@@ -682,13 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn an_auto_merge_request_tells_the_agent_to_merge_its_own_pr() {
-        let state = DomainState::new("epoch");
-        let producer = ProducerLaunch {
-            task_id: &"task-1".into(),
-            request_id: &"request-1".into(),
-            state: &state,
-        };
+    fn an_auto_merge_request_keeps_the_merge_with_alondra() {
         let file = OptionsFile::default();
         let chosen = |pr: &str| {
             file.resolve(
@@ -700,15 +664,10 @@ mod tests {
             )
             .unwrap()
         };
-        let auto = producer_prompt("Fix it", &chosen("auto_merge"), &producer);
-        assert!(auto.contains("PR handling: auto-merge. Register the PR and present it as your result. When its checks pass and it is mergeable"), "{auto}");
-        assert!(
-            auto.contains(
-                "merge it yourself with `gh pr merge --<method> --match-head-commit <head>`"
-            ),
-            "{auto}"
-        );
-        let review = producer_prompt("Fix it", &chosen("review"), &producer);
+        let auto = producer_prompt("Fix it", &chosen("auto_merge"));
+        assert!(auto.contains("Once its checks pass") && auto.contains("merge the pull request you registered"), "{auto}");
+        assert!(!auto.contains("gh pr merge") && !auto.contains("authorization"), "{auto}");
+        let review = producer_prompt("Fix it", &chosen("review"));
         assert!(!review.contains("auto-merge"), "{review}");
     }
 
@@ -836,16 +795,9 @@ mod tests {
         )
         .unwrap();
         let fake = FakeLauncher(Mutex::new(vec![]));
-        let state = DomainState::new("epoch");
-        let producer = ProducerLaunch {
-            task_id: &"task-1".into(),
-            request_id: &"request-1".into(),
-            state: &state,
-        };
         let home = root.join("home");
         let (short, settings) = invoke_claimed(
             &intent,
-            &producer,
             &definition.disallowed_tools,
             &home,
             "run-1",
@@ -880,9 +832,11 @@ mod tests {
         let prompt = args.last().unwrap();
         assert!(
             prompt.starts_with("Review project\n")
-                && prompt.contains("request-1")
-                && prompt.contains("task-1")
-                && prompt.contains("data_epoch=epoch"),
+                && prompt.contains("Choices for this work")
+                && !prompt.contains("request-1")
+                && !prompt.contains("task-1")
+                && !prompt.contains("data_epoch=")
+                && !prompt.contains("revision="),
             "{prompt}"
         );
         assert!(!prompt.contains("auto-merge"), "{prompt}");

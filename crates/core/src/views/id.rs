@@ -1,22 +1,28 @@
 /// Domain IDs are opaque, but view keys and action IDs need a bounded wire grammar.
-/// Slashes and a fragment marker are reserved for the canonical GitHub PR identity.
+/// Slashes and a fragment marker are reserved for canonical hosted PR identities.
 pub fn valid(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 256
         && (id
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            || github_pr(id))
+            || hosted_pr(id))
 }
 
-fn github_pr(id: &str) -> bool {
-    let Some(rest) = id.strip_prefix("github.com/") else {
+fn hosted_pr(id: &str) -> bool {
+    let Some((repo, number)) = id.split_once('#') else {
         return false;
     };
-    let Some((repo, number)) = rest.split_once('#') else {
+    let Some((host, path)) = repo.split_once('/') else { return false };
+    if host.is_empty()
+        || !host.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'-'))
+    {
         return false;
-    };
-    let mut parts = repo.split('/');
+    }
+    if path != path.to_ascii_lowercase() {
+        return false;
+    }
+    let mut parts = path.split('/');
     let (Some(owner), Some(name), None) = (parts.next(), parts.next(), parts.next()) else {
         return false;
     };
@@ -31,7 +37,7 @@ fn github_pr(id: &str) -> bool {
         && segment(name)
         && !number.is_empty()
         && number.bytes().all(|b| b.is_ascii_digit())
-        && number.parse::<u64>().is_ok_and(|number| number > 0)
+        && number.parse::<u64>().is_ok_and(|number| number > 0 && number <= crate::domain_v2::MAX_REVISION)
 }
 
 /// Encode an opaque ID as exactly one URL path segment.
@@ -57,6 +63,9 @@ mod tests {
             "hf-weekly-2026-09-30",
             "a98d034b-249e-4487-a89b-57de38c26372",
             "github.com/bitomule/alondra#154",
+            "gitlab.example.com/bitomule/alondra#154",
+            "gitlab/bitomule/alondra#154",
+            "gitlab./bitomule/alondra#154",
         ] {
             assert!(valid(id), "{id}");
         }
@@ -67,6 +76,10 @@ mod tests {
             "github.com/a/b#1/other",
             "github.com/a/b#0",
             "github.com/a/b#1?x=2",
+            "github.com/a/B#1",
+            "github.com/a/b#9007199254740992",
+            "GitLab.example.com/a/b#1",
+            "gitlab.example.com/a/b#1/extra",
             "%2F",
             "a:b",
             "a@b",
@@ -74,8 +87,8 @@ mod tests {
             assert!(!valid(id), "{id}");
         }
         assert_eq!(
-            path_segment("github.com/a/b#154"),
-            "github.com%2Fa%2Fb%23154"
+            path_segment("gitlab.example.com/a/b#154"),
+            "gitlab.example.com%2Fa%2Fb%23154"
         );
     }
 }

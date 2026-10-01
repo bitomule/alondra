@@ -113,7 +113,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         },
         value: json!(""),
         required: false,
-        help: None,
+        help: Some(t!(context.lang, "Choose an open issue or paste its GitHub link", "Elige una incidencia abierta o pega su enlace de GitHub").into()),
         visible_when: None,
         reload_on_change: false,
     });
@@ -183,7 +183,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
     Ok(view)
 }
 
-fn option_field(spec: &Spec) -> Field {
+pub(super) fn option_field(spec: &Spec) -> Field {
     let kind = match spec.kind {
         OptionKind::Toggle => FieldKind::Toggle,
         OptionKind::Choice => FieldKind::Choice {
@@ -222,7 +222,7 @@ pub(super) fn issue_picker(key: &str, context: &RenderContext<'_>) -> Result<Vie
         context,
         vec![common::section("issues", None, vec![])],
     );
-    let rows = context
+    let mut rows: Vec<Item> = context
         .live
         .issues
         .iter()
@@ -253,6 +253,16 @@ pub(super) fn issue_picker(key: &str, context: &RenderContext<'_>) -> Result<Vie
             Item::Row(row)
         })
         .collect::<Vec<_>>();
+    if let Some((repo, number)) = crate::issues::parse_ref(&query) {
+        let reference = format!("{repo}#{number}");
+        if !rows.iter().any(|item| matches!(item, Item::Row(row) if row.id == reference)) {
+            rows.insert(0, Item::Row(common::row(
+                &reference, "issue_picker", Icon::Mission,
+                format!("{} {}", t!(context.lang, "Use", "Usar"), query),
+                Some(reference.clone()),
+            )));
+        }
+    }
     view.sections[0].items = rows;
     if view.sections[0].items.is_empty() {
         let text = if context.live.issue_error.is_some() {
@@ -293,11 +303,12 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
     let mut view = common::view(
         "search",
         key,
-        Some(t!(context.lang, "Search", "Buscar").into()),
+        Some(if q.is_empty() { t!(context.lang, "Search", "Buscar").to_owned() }
+            else { format!("{}: {q}", t!(context.lang, "Search", "Buscar")) }),
         context,
         vec![],
     );
-    let rows = context
+    let rows: Vec<_> = context
         .domain
         .agents
         .values()
@@ -313,7 +324,15 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
             ))
         })
         .collect();
-    view.sections.push(common::section("results", None, rows));
+    let count = rows.len();
+    view.sections.push(common::section("results",
+        Some(if count == 1 { t!(context.lang, "1 result found", "1 resultado encontrado").into() }
+            else if context.lang == super::Lang::Es { format!("{count} resultados encontrados") }
+            else { format!("{count} results found") }), rows));
+    if count == 0 && !q.is_empty() {
+        view.empty = Some(Notice { text: t!(context.lang, "No results found", "No se encontraron resultados").into(),
+            tone: Tone::Neutral, action: None });
+    }
     Ok(view)
 }
 

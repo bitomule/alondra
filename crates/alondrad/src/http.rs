@@ -2022,7 +2022,7 @@ async fn new_task(State(hub): State<AppState>, Json(b): Json<NewTaskBody>) -> Re
             start: None,
         })];
         if !b.work_on_it {
-            events.extend(crate::orchestrate::orchestrator_message(v, crate::orchestrate::unstarted_notice(&[id])));
+            events.extend(crate::orchestrate::orchestrator_message(v, crate::orchestrate::unstarted_notice(v, &[id])));
         }
         Ok::<_, ()>(events)
     });
@@ -2973,13 +2973,21 @@ pub(crate) struct RequestBody {
     pub(crate) issue: Option<String>,
 }
 
-fn request_text(user: &str, text: &str, delivery: &str, attached: bool, request_id: &str, options: &alondra_core::options::Resolved, issue: Option<&str>) -> String {
-    let pass_on = if attached { " Put the attached files' paths in the brief of the task that needs them so its node can open them." } else { "" };
+fn request_text(user: &str, text: &str, delivery: &str, options: &alondra_core::options::Resolved, issue: Option<&str>) -> String {
     let issue = issue.map(|i| format!("\n\n{i}")).unwrap_or_default();
+    let attachment_guidance = if delivery.contains("Attached files:") {
+        " Include the attached file paths in the briefs of the tasks that need them."
+    } else {
+        ""
+    };
+    let effort = if options.effort == alondra_core::options::AUTO {
+        "Effort is automatic: choose light for bounded work with a known approach, normal for ordinary implementation or investigation, and hard only for a specific unresolved difficulty. Normal is the starting point."
+    } else {
+        "The chosen effort is binding for this request."
+    };
     format!(
-        "[Alondra] New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user} (request {request_id}): {}.\nAlondra keeps this request as {request_id} and gives its options to every task you define for it: it writes them into each node's mission and sets its model and effort, so do not restate them. {}\n\nTurn it into tasks with Alondra's define tool (request \"{request_id}\"): one task, or several with depends_on; each goes to a new node or, after checking candidates, to a live node that already has the context. Give the request and each task a short title. Use ask if something is missing. If it needs no work (a question or a status check), answer it and close it with close_request.{pass_on}",
+        "New request from {user}: {text}{delivery}{issue}\n\nOptions chosen by {user}: {}. {effort}\n\nBreak this request into one task or a few dependent tasks, and give each a short title. Ask the user if information is missing. If the request needs no work, answer it and close it.{attachment_guidance}",
         options.summary(),
-        options.effort_note(user)
     )
 }
 
@@ -3090,8 +3098,6 @@ async fn new_request_authorized(hub: AppState, b: RequestBody, gh: &impl crate::
         &hub.config.name,
         &b.text,
         &uploads::delivery_note(&hub.config.name, &attachments),
-        !attachments.is_empty(),
-        &request_id,
         &resolved,
         issue_text.as_deref(),
     );
@@ -3135,8 +3141,8 @@ fn withdrawn_notice(user: &str, r: &alondra_core::tasks::Request) -> String {
     let name = r.title.as_deref().or_else(|| r.text.as_deref().and_then(|t| t.lines().map(str::trim).find(|l| !l.is_empty())));
     let about = name.map(|n| if n.chars().count() > 80 { format!("{}…", n.chars().take(79).collect::<String>()) } else { n.to_string() });
     match about {
-        Some(n) => format!("[Alondra] {user} withdrew request {} (“{n}”).", r.id),
-        None => format!("[Alondra] {user} withdrew request {}.", r.id),
+        Some(n) => format!("{user} withdrew the request “{n}”."),
+        None => format!("{user} withdrew the request."),
     }
 }
 
@@ -4716,7 +4722,7 @@ mod tests {
         assert_eq!(task(&hub), Some((TaskState::NotStarted, None)), "not started, with no node");
         assert_eq!(task(&hub_at_home_of(&hub)), Some((TaskState::NotStarted, None)), "a replay keeps it so");
         let told = hub.read(|v| v.messages.values().filter(|m| m.session_id == "orch").map(|m| m.text.clone()).collect::<Vec<_>>());
-        assert!(told.iter().any(|t| t.contains(&id) && t.contains("not started")), "the orchestrator is told: {told:?}");
+        assert!(told.iter().any(|t| t == "Some newly defined work is waiting for an agent."), "the orchestrator is told: {told:?}");
 
         let (status, said) = status_and_body(ask(State(hub.clone()), Json(AskBody { task: Some(id.clone()), ..ask_body("s", "¿Lo quito?") })).await).await;
         assert_ne!(status, StatusCode::OK, "it is not the opener's to ask about: {said}");
@@ -4852,7 +4858,7 @@ mod tests {
         let told = || hub.read(|v| v.messages.values().filter(|m| m.session_id == "orch" && m.from == MessageFrom::Alondra).map(|m| m.text.clone()).collect::<Vec<_>>());
         assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::OK);
         assert_eq!(status_and_body(close("r-1", json!({"withdrawn": true})).await).await.0, StatusCode::CONFLICT);
-        assert_eq!(told(), vec!["[Alondra] Ana withdrew request r-1 (“Arregla el menú”).".to_string()], "told once");
+        assert_eq!(told(), vec!["Ana withdrew the request “Arregla el menú”.".to_string()], "told once");
         assert_eq!(status_and_body(close("r-2", json!({"withdrawn": true, "from": "orchestrator"})).await).await.0, StatusCode::OK);
         assert_eq!(told().len(), 1, "the orchestrator is not told what it closed itself");
 
@@ -6153,9 +6159,9 @@ defaults = { pr = "auto_merge" }
         assert_eq!(status, StatusCode::OK, "{said}");
         let id = said["request_id"].as_str().unwrap().to_string();
         let text = hub.read(|v| v.messages.values().last().unwrap().text.clone());
-        assert!(text.starts_with("[Alondra] New request from Ana: Fix the crash"), "{text}");
-        assert!(text.contains(&format!("(request {id}): project App · PR handling: auto-merge · Effort: light · How far: merge and install.")), "{text}");
-        assert!(text.contains(&format!("define tool (request \"{id}\")")), "{text}");
+        assert!(text.starts_with("New request from Ana: Fix the crash"), "{text}");
+        assert!(text.contains("Options chosen by Ana: project App · PR handling: auto-merge · Effort: light · How far: merge and install."), "{text}");
+        assert!(!text.contains(&id) && !text.contains("request \"") && !text.contains("define tool"), "{text}");
         let kept = hub.read(|v| v.requests.get(&id).cloned()).unwrap();
         assert!(kept.auto_merge);
         assert_eq!(kept.flags.model.as_deref(), Some("sonnet"));
@@ -6207,10 +6213,10 @@ defaults = { pr = "auto_merge" }
             let id = said["request_id"].as_str().unwrap().to_string();
             let text = hub.read(|v| v.messages.values().last().unwrap().text.clone());
             let automatic = expected != "light";
-            assert_eq!(text.contains("Effort is auto:"), automatic, "{what}: {text}");
-            assert_eq!(text.contains("choose per task after splitting"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("Effort is automatic:"), automatic, "{what}: {text}");
+            assert_eq!(text.contains("choose light for bounded work"), automatic, "{what}: {text}");
             assert_eq!(text.contains("Normal is the starting point"), automatic, "{what}: {text}");
-            assert_eq!(text.contains("was chosen by Ana and is binding: do not pass effort"), !automatic, "{what}: {text}");
+            assert_eq!(text.contains("The chosen effort is binding for this request."), !automatic, "{what}: {text}");
             let resolved = launch_options(&hub, &launch_body(Some(&id), "/tmp", orchestrator)).unwrap_or_else(|_| panic!("{what}"));
             assert_eq!(resolved.effort, expected, "{what}");
         }

@@ -155,6 +155,9 @@ async fn respond(
     {
         Ok(view) => view,
         Err(BuildError::NotFound) => return error_lang(language, "not_found", "view not found"),
+        Err(BuildError::InvalidActionId) => {
+            return error_lang(language, "internal_error", "could not render an action");
+        }
         Err(BuildError::InvalidKey | BuildError::UnsupportedClient) => {
             return error_lang(language, "invalid_input", "invalid view key");
         }

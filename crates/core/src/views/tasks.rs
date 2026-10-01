@@ -367,8 +367,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .inbox
         .into_iter()
         .filter(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
-        .map(|item| Item::Card(super::card::from_item(&item, context, false)))
-        .collect();
+        .map(|item| super::card::from_item(&item, context, false).map(Item::Card))
+        .collect::<Result<Vec<_>, BuildError>>()?;
     if !waiting.is_empty() {
         view.sections.push(common::section(
             "waiting",

@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "ve7c9ce32304d6569",
+  "version": "v0ec8d4222a2ddc53",
   "cursor": "cursor-1",
   "status": {
     "version": "v8721d9127b0633bd",
@@ -51,10 +51,10 @@
       "collapsed": false,
       "items": [],
       "card_ids": [
-        "i-1",
-        "i-2",
-        "i-3",
-        "pr-1"
+        "a98d034b-249e-4487-a89b-57de38c26372",
+        "f12d034b-249e-4487-a89b-57de38c26372",
+        "hf-weekly-2026-09-30",
+        "github.com/example/repo#12"
       ]
     }
   ]

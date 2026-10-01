@@ -389,7 +389,7 @@ mod tests {
         deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Look", "attachments": [attachment]})), &session("s", false), &terminal).await.unwrap();
         let typed = terminal.0.lock().unwrap()[0].1.clone();
-        assert!(typed.starts_with("Look\n\nAna attached a file"), "{typed}");
+        assert!(typed.starts_with("Look\n\nAttached files:"), "{typed}");
         assert!(typed.contains(&fixture.0.join("files/shot.png").display().to_string()), "{typed}");
         let forged = json!({"id": "att-1", "name": "shot.png", "content_digest": "0".repeat(64), "content_reference": "files/shot.png", "bytes": 3});
         let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),

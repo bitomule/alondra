@@ -560,7 +560,7 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
             if !alive {
                 return Err(format!("its node {name} is closed"));
             }
-            let text = format!("[Alondra] A new task for you, from the orchestrator: {} “{}”.\n\n{brief}\n\n{}", task.id, task.title, pr_handling(task.options.auto_merge, &hub.config.name));
+            let text = format!("A new task from the orchestrator: “{}”.\n\n{brief}\n\n{}", task.title, pr_handling(task.options.auto_merge, &hub.config.name));
             hand(hub, &task.id, session_id, text, MessageFrom::Orchestrator, vec![]).map(|_| format!("on node {name}")).map_err(|(_, e)| e)
         }
         None => Err("it has no start".into()),
@@ -585,10 +585,13 @@ pub(crate) fn orchestrator_message(v: &View, text: String) -> Option<Event> {
 }
 
 /// What the orchestrator is told of tasks nobody works on yet, which wait for it.
-pub(crate) fn unstarted_notice(ids: &[String]) -> String {
-    let list = ids.join(", ");
-    let (verb, pronoun) = if ids.len() == 1 { ("is", "it") } else { ("are", "each") };
-    format!("{list} {verb} not started and no node works on {}: launch {pronoun} or give {pronoun} to a node when it fits.", if ids.len() == 1 { "it" } else { "them" })
+pub(crate) fn unstarted_notice(view: &View, ids: &[String]) -> String {
+    let titles: Vec<&str> = ids.iter().filter_map(|id| view.board.tasks.get(id).map(|task| task.title.as_str())).collect();
+    match titles.as_slice() {
+        [] => "Some newly defined work is waiting for an agent.".into(),
+        [title] => format!("The task “{title}” is waiting for an agent."),
+        _ => format!("These tasks are waiting for agents: {}.", titles.iter().map(|title| format!("“{title}”")).collect::<Vec<_>>().join(", ")),
+    }
 }
 
 pub(crate) fn tell_orchestrator(hub: &Hub, text: String) {
@@ -601,14 +604,14 @@ pub(crate) fn tell_orchestrator(hub: &Hub, text: String) {
 /// Where a started task builds, for the orchestrator.
 fn built_on(v: &View, task: &Task, heads: &BTreeMap<u64, String>) -> String {
     let branch = |p: &alondra_core::pr::PullRequest| heads.get(&p.id).or(p.head.as_ref()).map(|h| format!(" (`{h}`)")).unwrap_or_default();
-    let below: Vec<String> = v.stacked_on(task).into_iter().map(|(d, p)| format!("PR #{} of {}{}", p.number, d.id, branch(p))).collect();
+    let below: Vec<String> = v.stacked_on(task).into_iter().map(|(d, p)| format!("PR #{} of {}{}", p.number, d.title, branch(p))).collect();
     if below.is_empty() { "on the default branch".into() } else { format!("on top of {}", below.join(", ")) }
 }
 
 /// The orchestrator heard that this start of the task failed: starting it again is its call.
 fn start_failure_told(v: &View, task: &Task) -> bool {
-    let about = format!("[Alondra] Task {} ", task.id);
-    v.messages.values().any(|m| m.from == MessageFrom::Alondra && m.created_at >= task.state_since && m.text.starts_with(&about) && m.text.contains(" could not start: "))
+    let about = format!("Could not start “{}”:", task.title);
+    v.messages.values().any(|m| m.from == MessageFrom::Alondra && m.created_at >= task.state_since && m.text.starts_with(&about))
 }
 
 /// Starts every task that can start and has not: the ones just defined with nothing to wait
@@ -634,7 +637,8 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
             Ok((how, place)) => {
                 log!("task {} started {how}, {place}", task.id);
                 if !task.depends_on.is_empty() {
-                    tell_orchestrator(hub, format!("[Alondra] Task {} “{}” started {how}, {place}: what it depended on ({}) has its PR open or is done.", task.id, task.title, task.depends_on.join(", ")));
+                    let dependencies = hub.read(|view| task.depends_on.iter().filter_map(|id| view.board.tasks.get(id).map(|dependency| format!("“{}”", dependency.title))).collect::<Vec<_>>().join(", "));
+                    tell_orchestrator(hub, format!("“{}” has started {how}, {place}; its dependencies ({dependencies}) now have an open PR or are done.", task.title));
                 }
                 started.push(task.id.clone());
             }
@@ -648,7 +652,7 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
                 } else {
                     tell_orchestrator(
                         hub,
-                        format!("[Alondra] Task {} “{}” could not start: {why}. Start it with launch or send with task \"{}\", or cancel it.", task.id, task.title, task.id),
+                        format!("Could not start “{}”: {why}.", task.title),
                     );
                 }
             }
@@ -657,10 +661,10 @@ pub async fn start_due(hub: &Hub, launcher: &impl Launcher, gh: &impl Gh, given_
     started
 }
 
-fn cancelled_with_text(task: &Task, dependency: &str) -> String {
+fn cancelled_with_text(task: &Task, dependency_title: &str) -> String {
     format!(
-        "[Alondra] Task {} “{}” was cancelled: it waited for {dependency}, which was cancelled. If the work is still wanted, reopen {dependency} and then {}, or define it anew.",
-        task.id, task.title, task.id
+        "The task “{}” was cancelled because it depended on “{dependency_title}”, which was also cancelled. If the work is still wanted, reopen the dependency and define the task again.",
+        task.title
     )
 }
 
@@ -681,7 +685,7 @@ fn cancelled_dependents_untold(v: &View, since: Millis) -> Vec<String> {
         .tasks
         .values()
         .filter(|t| t.state == TaskState::Cancelled && t.state_since >= since)
-        .filter_map(|t| cancelled_with(t).map(|d| (t, cancelled_with_text(t, d))))
+        .filter_map(|t| cancelled_with(t).and_then(|d| v.board.tasks.get(d).map(|dependency| (t, cancelled_with_text(t, &dependency.title)))) )
         .filter(|(t, text)| !v.messages.values().any(|m| m.session_id == o.session_id && m.created_at >= t.state_since && m.text == *text))
         .map(|(_, text)| text)
         .collect()
@@ -888,7 +892,7 @@ mod tests {
         let prompt = claude.prompt("app/menu-ui");
         assert!(prompt.contains("Base your work on its branch `feat/model`") && prompt.contains("gh pr create --base feat/model"), "{prompt}");
         let told = orchestrator_told(&hub);
-        assert!(told.iter().any(|t| t.starts_with(&format!("[Alondra] Task {} “Menu UI” started in a new node app/menu-ui, on top of PR #7 of {}", ids[1], ids[0]))), "{told:?}");
+        assert!(told.iter().any(|t| t.starts_with("“Menu UI” has started in a new node app/menu-ui, on top of PR #7 of Menu model")), "{told:?}");
     }
 
     #[tokio::test]
@@ -899,9 +903,9 @@ mod tests {
         let mut given_up = HashSet::new();
         assert!(start_due(&hub, &claude, &FakeGithub, &mut given_up).await.is_empty());
         assert!(start_due(&hub, &claude, &FakeGithub, &mut given_up).await.is_empty());
-        let told: Vec<String> = orchestrator_told(&hub).into_iter().filter(|t| t.contains("could not start")).collect();
+        let told: Vec<String> = orchestrator_told(&hub).into_iter().filter(|t| t.contains("Could not start")).collect();
         assert_eq!(told.len(), 1, "{told:?}");
-        assert!(told[0].contains("no such command") && told[0].contains("Start it with launch or send with task"), "{}", told[0]);
+        assert!(told[0].contains("no such command") && !told[0].contains("task_id") && !told[0].contains("launch or send"), "{}", told[0]);
     }
 
     #[tokio::test]
@@ -1084,7 +1088,7 @@ mod tests {
         drop(hub);
         let hub = hub_at(&home);
         assert!(start_due(&hub, &refusing, &FakeGithub, &mut HashSet::new()).await.is_empty());
-        let told = |hub: &Hub| orchestrator_told(hub).into_iter().filter(|t| t.contains("could not start")).count();
+        let told = |hub: &Hub| orchestrator_told(hub).into_iter().filter(|t| t.contains("Could not start")).count();
         assert_eq!(told(&hub), 1, "a restart does not tell it again");
 
         let mut given_up = HashSet::new();
@@ -1111,11 +1115,11 @@ mod tests {
         assert_eq!(hub.read(|v| v.board.tasks[&ui].state), TaskState::Cancelled);
         tell_cancelled_dependents(&hub);
         tell_cancelled_dependents(&hub);
-        let told: Vec<String> = orchestrator_told(&hub).into_iter().filter(|t| t.contains("was cancelled: it waited for")).collect();
-        assert_eq!(told, [format!("[Alondra] Task {ui} “UI” was cancelled: it waited for {model}, which was cancelled. If the work is still wanted, reopen {model} and then {ui}, or define it anew.")]);
+        let told: Vec<String> = orchestrator_told(&hub).into_iter().filter(|t| t.contains("was cancelled because it depended on")).collect();
+        assert_eq!(told, ["The task “UI” was cancelled because it depended on “Model”, which was also cancelled. If the work is still wanted, reopen the dependency and define the task again.".to_string()]);
         drop(hub);
         tell_cancelled_dependents(&hub_at(&home));
-        assert_eq!(orchestrator_told(&hub_at(&home)).into_iter().filter(|t| t.contains("was cancelled: it waited for")).count(), 1, "nor after a restart");
+        assert_eq!(orchestrator_told(&hub_at(&home)).into_iter().filter(|t| t.contains("was cancelled because it depended on")).count(), 1, "nor after a restart");
     }
 
     /// Round 2: the notice it was told with goes with the retention window, while the cancelled

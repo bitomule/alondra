@@ -1458,7 +1458,16 @@ impl DomainState {
                     self.decided(presentation);
                     self.settle(presentation, &u);
                 }
-                self.notify(task_id, None, "Document decision recorded", effects)?;
+                self.notify(
+                    task_id,
+                    None,
+                    if *accepted {
+                        "The user accepted the document."
+                    } else {
+                        "The user requested changes to the document."
+                    },
+                    effects,
+                )?;
             }
             Command::RegisterPr {
                 task_id,
@@ -1642,7 +1651,7 @@ impl DomainState {
                 self.notify(
                     &task,
                     Some(presentation_id.clone()),
-                    "Delivery accepted; completion still requires Agent declaration",
+                    "The user accepted your delivery.",
                     effects,
                 )?;
             }
@@ -1725,7 +1734,7 @@ impl DomainState {
                 self.notify(
                     &task,
                     Some(presentation_id.clone()),
-                    "Merge authorized for the presented head; not executed",
+                    "The user authorized merging the presented pull request.",
                     effects,
                 )?;
                 created.push(authorization_id.0.clone());

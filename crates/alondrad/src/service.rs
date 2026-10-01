@@ -38,7 +38,7 @@ const MAX_PUSH_BODY: usize = 3_000;
 const MAX_PUSH_PLAINTEXT: usize = 1_500;
 // The legacy changes route remains available until its final caller migrates.
 // The views feed supersedes its prior waiter independently of this limit.
-const MAX_CHANGES_PER_DEVICE: usize = 2;
+const MAX_CHANGES_PER_DEVICE: usize = 1;
 const MAX_CHANGES_TOTAL: usize = 16;
 
 type WorkKey = (String, String);
@@ -4753,7 +4753,7 @@ agreement_key = "{}"
             "/agents", "/pull-requests", "/pull-requests/pr-1", "/documents",
             "/documents/d-1", "/merge-authorizations", "/merge-authorizations/auth-1",
             "/stack-readiness", "/superseded-acceptances", "/tasks/t-1/actions",
-            "/delivery-attempts?after=0", "/runtime",
+            "/runtime",
             "/changes?data_epoch=epoch&after=0&wait=0",
         ] {
             assert!(approved_method(&LocalRequest {
@@ -4873,11 +4873,10 @@ agreement_key = "{}"
             )
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), entered.acquire())
-            .await
-            .unwrap()
-            .unwrap()
-            .forget();
+        assert_eq!(
+            opened_results(&service, &phone, &responses)[0],
+            json!({"status":429,"error":"changes_busy"})
+        );
         tokio::time::timeout(
             Duration::from_secs(2),
             service.schedule_work(
@@ -4911,7 +4910,7 @@ agreement_key = "{}"
         assert_eq!(
             writes.load(Ordering::SeqCst),
             1,
-            "both occupied read slots leave mutations available"
+            "the occupied read slot leaves mutations available"
         );
         service
             .schedule_work(
@@ -4929,8 +4928,8 @@ agreement_key = "{}"
             opened_results(&service, &phone, &responses)
                 .contains(&json!({"status":400,"error":"invalid_changes_query"}))
         );
-        assert_eq!(reads.load(Ordering::SeqCst), 2);
-        release.add_permits(2);
+        assert_eq!(reads.load(Ordering::SeqCst), 1);
+        release.add_permits(1);
         while let Some(result) = tasks.join_next().await {
             result.unwrap().unwrap();
         }
@@ -4941,7 +4940,7 @@ agreement_key = "{}"
                 .iter()
                 .filter(|value| value["body"]["tick"] == 42)
                 .count(),
-            2
+            1
         );
         assert!(!results.iter().any(|value| value["error"] == "uncertain"));
 
@@ -4976,7 +4975,7 @@ agreement_key = "{}"
         );
         assert_eq!(
             reads.load(Ordering::SeqCst),
-            3,
+            2,
             "restart preserves durable uncertainty without dispatch"
         );
         local_server.abort();
@@ -4988,6 +4987,22 @@ agreement_key = "{}"
     async fn changes_global_limit_releases_on_drop_and_does_not_limit_mutations() {
         let (service, _) = push_fixture();
         activate_push(&service);
+        let first = changes_work(
+            &service,
+            "first-device-waiter",
+            json!({"method":"GET","path":"/v1/changes"}),
+        );
+        let first = service.prepare_work(&first).unwrap().unwrap();
+        assert!(first.guard.changes);
+        let second = changes_work(
+            &service,
+            "second-device-waiter",
+            json!({"method":"GET","path":"/v1/changes"}),
+        );
+        let second = service.prepare_work(&second).unwrap().unwrap();
+        assert!(second.guard.saturated, "one device may keep only one legacy changes waiter");
+        drop(second);
+        drop(first);
         for n in 0..MAX_CHANGES_TOTAL {
             service
                 .inflight
@@ -5293,7 +5308,7 @@ agreement_key = "{}"
             assert!(accepts("GET", path, None), "{path}");
         }
         assert!(accepts("GET", "/views/home?protocol=1&client=ios&lang=en", None));
-        assert!(!accepts("GET", "/delivery-attempts?after=0", None));
+        assert!(accepts("GET", "/delivery-attempts?after=0", None));
         assert!(accepts(
             "POST",
             "/delivery-attempts/1/resolve",

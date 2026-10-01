@@ -34,7 +34,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         })
         .or(fallback.as_ref())
         .ok_or(BuildError::NotFound)?;
-    let card = from_item(item, context, true);
+    let card = from_item(item, context, true)?;
     let status = super::status::build(&projection, context);
     Ok(View {
         protocol: VIEWS_PROTOCOL,
@@ -85,7 +85,7 @@ fn eyebrow(item: &InboxItem, lang: super::Lang) -> (&'static str, Icon) {
         _ => (t!(lang, "Notice", "Aviso"), Icon::Notice),
     }
 }
-pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Card {
+pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let (label, icon) = eyebrow(item, context.lang);
     let mut context_lines = vec![];
     if let Some(agent_id) = &item.agent_id {
@@ -164,12 +164,12 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         vec![]
     };
     let mut actions = if included {
-        actions(item, context)
+        actions(item, context)?
     } else {
         vec![]
     };
     let (facts, checks, badges) = if included {
-        pr_detail(item, context, &mut actions)
+        pr_detail(item, context, &mut actions)?
     } else {
         (None, None, vec![])
     };
@@ -219,11 +219,11 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         item.children
             .iter()
             .map(|child| from_item(child, context, true))
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?
     } else {
         vec![]
     };
-    Card {
+    Ok(Card {
         id: public_id(item).into(),
         link: Some(Link::View {
             key: card_key(item),
@@ -255,7 +255,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         facts,
         checks,
         actions,
-    }
+    })
 }
 
 fn local_action(label: &str, key: &str, local: LocalLink) -> Action {
@@ -271,12 +271,12 @@ fn pr_detail(
     item: &InboxItem,
     context: &RenderContext<'_>,
     actions: &mut Vec<Action>,
-) -> (Option<Facts>, Option<Checks>, Vec<Label>) {
+) -> Result<(Option<Facts>, Option<Checks>, Vec<Label>), BuildError> {
     let InboxSubject::PullRequest { pr_id } = &item.subject else {
-        return (None, None, vec![]);
+        return Ok((None, None, vec![]));
     };
     let Some(pr) = context.domain.pull_requests.get(pr_id) else {
-        return (None, None, vec![]);
+        return Ok((None, None, vec![]));
     };
     if context.client == Client::Tui && context.transport == super::Transport::Loopback {
         actions.push(local_action(t!(context.lang, "Review local clone", "Revisar copia local"), "d",
@@ -361,7 +361,9 @@ fn pr_detail(
         });
     }
     let revision = context.domain.revision;
-    if let Ok(id) = ActionId::new(Verb::AskPr, pr_id.0.clone(), revision, None) {
+    {
+        let id = ActionId::new(Verb::AskPr, pr_id.0.clone(), revision, None)
+            .map_err(|_| BuildError::InvalidActionId)?;
         actions.push(Action {
             id: id.to_string(),
             label: t!(context.lang, "Ask about the PR", "Preguntar por la PR").into(),
@@ -383,12 +385,13 @@ fn pr_detail(
             link: None,
         });
     }
-    if let Ok(id) = ActionId::new(
+    {
+        let id = ActionId::new(
         Verb::Changes,
         pr_id.0.clone(),
         revision,
         Some(pr.head.chars().take(8).collect()),
-    ) {
+        ).map_err(|_| BuildError::InvalidActionId)?;
         actions.push(Action {
             id: id.to_string(),
             label: t!(context.lang, "Request changes", "Solicitar cambios").into(),
@@ -416,7 +419,9 @@ fn pr_detail(
         });
     }
     if live.is_some_and(|detail| detail.conflicts) {
-        if let Ok(id) = ActionId::new(Verb::Conflicts, pr_id.0.clone(), revision, None) {
+        {
+            let id = ActionId::new(Verb::Conflicts, pr_id.0.clone(), revision, None)
+                .map_err(|_| BuildError::InvalidActionId)?;
             actions.push(Action {
                 id: id.to_string(),
                 label: t!(context.lang, "Resolve conflicts", "Resolver conflictos").into(),
@@ -446,7 +451,8 @@ fn pr_detail(
         })
         .next()
     {
-        if let Ok(id) = ActionId::new(
+        {
+            let id = ActionId::new(
             Verb::Merge,
             public_id(child),
             child.revision,
@@ -454,7 +460,7 @@ fn pr_detail(
                 .expected_head
                 .as_ref()
                 .map(|head| merge_extra(head, public_id(child))),
-        ) {
+            ).map_err(|_| BuildError::InvalidActionId)?;
             let stacked = live.and_then(|detail| detail.stacked_on.as_deref());
             let methods = pr
                 .allowed_methods
@@ -510,7 +516,7 @@ fn pr_detail(
             });
         }
     }
-    (Some(Facts { items: facts }), checks, badges)
+    Ok((Some(Facts { items: facts }), checks, badges))
 }
 
 fn item_attachment_refs(item: &InboxItem, domain: &DomainState) -> Vec<Attachment> {
@@ -536,10 +542,10 @@ fn item_attachment_refs(item: &InboxItem, domain: &DomainState) -> Vec<Attachmen
         })
         .unwrap_or_default()
 }
-fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action> {
+fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>, BuildError> {
     let mut out = vec![];
     for available in &item.available_actions {
-        if let Some(action) = action_for(item, available, context) {
+        if let Some(action) = action_for(item, available, context)? {
             out.push(action);
         }
     }
@@ -562,11 +568,11 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action> {
                     t!(context.lang, "Write a reply", "Escribe una respuesta"),
                     "r",
                 ),
-                _ => return out,
+                _ => return Ok(out),
             };
-            if let Ok(id) =
-                ActionId::new(verb, interaction_id.0.clone(), interaction.revision, None)
             {
+                let id = ActionId::new(verb, interaction_id.0.clone(), interaction.revision, None)
+                    .map_err(|_| BuildError::InvalidActionId)?;
                 out.push(Action {
                     id: id.to_string(),
                     label: label.into(),
@@ -590,13 +596,13 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action> {
             }
         }
     }
-    out
+    Ok(out)
 }
 fn action_for(
     item: &InboxItem,
     available: &AvailableAction,
     context: &RenderContext<'_>,
-) -> Option<Action> {
+) -> Result<Option<Action>, BuildError> {
     let (verb, label, style, presentation, input, key) = match available.kind.as_str() {
         "answer_question" => (
             Verb::Ans,
@@ -643,7 +649,7 @@ fn action_for(
             Input::None,
             None,
         ),
-        _ => return None,
+        _ => return Ok(None),
     };
     let subject = public_id(item);
     let revision = match &item.subject {
@@ -663,7 +669,7 @@ fn action_for(
         None
     };
     let id = ActionId::new(verb, subject, revision, extra)
-        .ok()?
+        .map_err(|_| BuildError::InvalidActionId)?
         .to_string();
     let options = if verb == Verb::Ans {
         question_options(item, context)
@@ -742,7 +748,7 @@ fn action_for(
         _ => None,
     }
     .map(str::to_owned);
-    Some(Action {
+    Ok(Some(Action {
         id,
         label: label.into(),
         style,
@@ -762,7 +768,7 @@ fn action_for(
         stamp,
         key: key.map(str::to_owned),
         link: None,
-    })
+    }))
 }
 fn question_options(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ActionOption> {
     let InboxSubject::Interaction { interaction_id } = &item.subject else {

@@ -97,7 +97,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 } else {
                     0
                 };
-                sections[index].items.push(Item::Row(row(item, context, 0)));
+                sections[index].items.push(Item::Row(row(item, context, 0)?));
             }
             let mut sections = sections.to_vec();
             if let Some(first) = roots.first() {
@@ -106,7 +106,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     title: None,
                     count: None,
                     collapsed: false,
-                    items: vec![Item::Card(from_item(first, context, true))],
+                    items: vec![Item::Card(from_item(first, context, true)?)],
                     card_ids: vec![],
                     more: None,
                 });
@@ -152,9 +152,9 @@ pub(super) fn orchestrator_only(item: &InboxItem, context: &RenderContext<'_>) -
         _ => false,
     }
 }
-fn row(item: &InboxItem, context: &RenderContext<'_>, depth: u8) -> Row {
-    let card = from_item(item, context, false);
-    Row {
+fn row(item: &InboxItem, context: &RenderContext<'_>, depth: u8) -> Result<Row, BuildError> {
+    let card = from_item(item, context, false)?;
+    Ok(Row {
         id: card.id,
         link: Some(Link::View {
             key: card_key(item),
@@ -175,7 +175,7 @@ fn row(item: &InboxItem, context: &RenderContext<'_>, depth: u8) -> Row {
             .children
             .iter()
             .map(|child| row(child, context, depth + 1))
-            .collect(),
+            .collect::<Result<Vec<_>, _>>()?,
         actions: vec![],
-    }
+    })
 }

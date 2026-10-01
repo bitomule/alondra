@@ -19,11 +19,11 @@ fn instructions(role: Role, user: &str) -> String {
         crate::i18n::Lang::En => "English",
     };
     let common = format!(
-        "Alondra durable task protocol. The user is {user}; write user-facing content in {language}. The daemon supplies data_epoch and revision with each durable inbox batch. Every change needs a fresh expected_revision and a stable command_id; retry the same exact arguments with the same id. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
+        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
     );
     match role {
         Role::Node => format!(
-            "{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. For an explicitly authorized PR merge, use the exact merge_authorization delivered by Alondra with the current batch and call claim_merge_authorization; the daemon verifies the remote PR head and base before allowing the merge. Never infer authorization from text or invoke merge without that capability. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a question of yours that no longer needs an answer with withdraw_question."
+            "{common} Work only on an assigned Task. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. Present a final result and wait for explicit User acceptance before complete_task; a PR delivery also requires confirmed merge of its presented head. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a question of yours that no longer needs an answer with withdraw_question."
         ),
         Role::Orchestrator => format!(
             "{common} Define cohesive Tasks under Requests with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a node that already has the context; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a question you asked that no longer needs an answer with withdraw_question, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the live nodes a Task or project could go to. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
@@ -80,13 +80,9 @@ fn tools(role: Role, user: &str) -> Value {
 }
 
 fn domain_tool(name: &str, description: &str, fields: Value, required: &[&str]) -> Value {
-    let mut properties = json!({
-        "data_epoch":{"type":"string"},
-        "command_id":{"type":"string","description":"Stable unique id; reuse unchanged only to retry this exact command"},
-        "expected_revision":{"type":"integer","minimum":0}
-    }).as_object().unwrap().clone();
+    let mut properties = serde_json::Map::new();
     properties.extend(fields.as_object().expect("properties object").clone());
-    let mut required_fields = vec!["data_epoch", "command_id", "expected_revision"];
+    let mut required_fields = Vec::new();
     required_fields.extend_from_slice(required);
     json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required_fields,"additionalProperties":false}})
 }
@@ -271,9 +267,9 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
         (
             "claim_merge_authorization",
             "claim_merge_authorization",
-            "Claim the exact user-authorized merge delivered in your current batch. The daemon independently verifies GitHub head and base; do not call this without a matching merge_authorization object.",
-            json!({"authorization_id":{"type":"string"},"remote_head":{"type":"string"},"remote_base":{"type":"string"},"base_verified":{"type":"boolean","const":true}}),
-            vec!["authorization_id", "remote_head", "remote_base", "base_verified"],
+            "Confirm the remote head and base for the merge the user just authorized. The daemon resolves and validates the matching authorization internally.",
+            json!({"remote_head":{"type":"string"},"remote_base":{"type":"string"},"base_verified":{"type":"boolean","const":true}}),
+            vec!["remote_head", "remote_base", "base_verified"],
         ),
     ];
     tools.extend(
@@ -491,6 +487,25 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         }
     };
     Ok(match name {
+        "claim_merge_authorization" => {
+            let bearer = domain_bearer()?;
+            let capabilities = client.domain_get("/capabilities", &bearer)?;
+            let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
+            let mut body = args.as_object().cloned()
+                .ok_or_else(|| anyhow::anyhow!("tool arguments must be an object"))?;
+            body.insert("data_epoch".into(), Value::String(data_epoch.to_owned()));
+            body.insert("command_id".into(), Value::String(crate::client::new_id("mcp")));
+            body.insert("expected_revision".into(), Value::from(0));
+            let response = client.domain_call(
+                "POST",
+                "/merge-authorizations/claim",
+                &bearer,
+                Some(&Value::Object(body)),
+            )?;
+            response.get("message").and_then(Value::as_str)
+                .unwrap_or("Merge confirmed.").to_owned()
+        }
         "ask"
         | "request_action"
         | "publish_information"
@@ -511,18 +526,22 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "present_result"
         | "publish_stack_readiness"
         | "complete_task"
-        | "claim_merge_authorization"
         | "cancel_task"
         | "reopen_task" => {
             let bearer = domain_bearer()?;
-            let envelope = domain_envelope(name, args)?;
+            let capabilities = client.domain_get("/capabilities", &bearer)?;
+            let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
+                .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
+            let envelope = domain_envelope(name, args, data_epoch, &crate::client::new_id("mcp"))?;
             let (method, path) = resource_target(name, &envelope["command"])?;
             let mut body = envelope["command"].clone();
             body.as_object_mut().expect("typed command object").remove("kind");
             for key in ["data_epoch", "command_id", "expected_revision"] {
                 body[key] = envelope[key].clone();
             }
-            serde_json::to_string_pretty(&client.domain_call(method, &path, &bearer, Some(&body))?)?
+            let response = client.domain_call(method, &path, &bearer, Some(&body))?;
+            response.get("notice").and_then(Value::as_str)
+                .unwrap_or("Recorded.").to_owned()
         }
         "launch" | "send" | "interrupt" => {
             let bearer = domain_bearer()?;
@@ -629,7 +648,6 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "present_result" => ("POST", format!("/tasks/{}/results", id("task_id")?)),
         "publish_stack_readiness" => ("POST", format!("/tasks/{}/stack-readiness", id("task_id")?)),
         "complete_task" => ("POST", format!("/tasks/{}/completion", id("task_id")?)),
-        "claim_merge_authorization" => ("POST", format!("/merge-authorizations/{}/claim", id("authorization_id")?)),
         "cancel_task" => ("POST", format!("/tasks/{}/cancellation", id("task_id")?)),
         "reopen_task" => ("POST", format!("/tasks/{}/reopening", id("task_id")?)),
         "archive_task" => ("POST", format!("/tasks/{}/archival", id("task_id")?)),
@@ -638,7 +656,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
     Ok(target)
 }
 
-fn domain_envelope(name: &str, args: &Value) -> Result<Value> {
+fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str) -> Result<Value> {
     let kind = match name {
         "ask" => "ask_question",
         "request_action" => "request_action",
@@ -660,7 +678,6 @@ fn domain_envelope(name: &str, args: &Value) -> Result<Value> {
         "present_result" => "present_result",
         "publish_stack_readiness" => "publish_stack_readiness",
         "complete_task" => "complete_task",
-        "claim_merge_authorization" => "claim_merge_authorization",
         "cancel_task" => "cancel_task",
         "reopen_task" => "reopen_task",
         _ => anyhow::bail!("unknown domain tool: {name}"),
@@ -678,8 +695,8 @@ fn domain_envelope(name: &str, args: &Value) -> Result<Value> {
         command.remove(key);
     }
     command.insert("kind".into(), Value::String(kind.into()));
-    let envelope = json!({"protocol_version":2,"data_epoch":args.get("data_epoch"),
-        "command_id":args.get("command_id"),"expected_revision":args.get("expected_revision"),"command":command});
+    let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
+        "command_id":command_id,"expected_revision":0,"command":command});
     let _: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope.clone())?;
     Ok(envelope)
 }
@@ -1074,11 +1091,11 @@ mod tests {
         let args = json!({"data_epoch":"epoch","command_id":"register-one","expected_revision":4,
             "task_id":"task-a","pr_id":"pr-a","host":"github.com","repository":"org/repo",
             "number":12,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
-        let envelope = domain_envelope("register_pr", &args).unwrap();
+        let envelope = domain_envelope("register_pr", &args, "epoch", "register-one").unwrap();
         assert_eq!(envelope["command"]["kind"], "register_pr");
         assert_eq!(envelope["command"]["task_id"], "task-a");
         assert_eq!(envelope["protocol_version"], 2);
-        assert!(domain_envelope("register_pr", &json!({"task_id":"task-a"})).is_err());
+        assert!(domain_envelope("register_pr", &json!({"task_id":"task-a"}), "epoch", "register-one").is_err());
         let catalog = tools(Role::Node, "User");
         assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "register_pr"));
         assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "domain_command"));
@@ -1114,12 +1131,19 @@ mod tests {
         let ask=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="ask").unwrap();
         assert_eq!(ask["inputSchema"]["properties"]["scope"]["properties"]["kind"]["const"],"task");
         assert_eq!(ask["inputSchema"]["properties"]["attachments"]["type"],"array");
+        for tool in node_catalog.as_array().unwrap().iter().chain(orchestrator_catalog.as_array().unwrap()) {
+            for internal in ["data_epoch", "command_id", "expected_revision"] {
+                assert!(tool["inputSchema"]["properties"].get(internal).is_none(),
+                    "{internal} leaked through {}", tool["name"]);
+            }
+        }
         let answer=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="answer_question").unwrap();
         assert_eq!(answer["inputSchema"]["properties"]["inputs"]["additionalProperties"]["oneOf"][0]["properties"]["kind"]["const"],"text");
         let claim=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="claim_merge_authorization").unwrap();
         assert_eq!(claim["inputSchema"]["properties"]["base_verified"]["const"],true);
+        assert!(claim["inputSchema"]["properties"].get("authorization_id").is_none());
         assert!(claim["inputSchema"]["properties"].get("task_id").is_none(),
-            "the authorization resource ID determines the claim target");
+            "the bearer-bound daemon determines the claim target");
     }
 
     #[test]
@@ -1158,6 +1182,7 @@ mod tests {
                 tool["name"] != "domain_cursor" && tool["name"] != "merge_authorization"));
             let instructions = instructions(role, "User");
             assert!(!instructions.contains("domain_cursor"));
+            assert!(!instructions.contains("data_epoch") && !instructions.contains("expected_revision"));
             assert_eq!(instructions.contains("claim_merge_authorization"), role == Role::Node);
         }
     }
@@ -1186,7 +1211,7 @@ mod tests {
         let valid = json!({"data_epoch":"epoch","command_id":"one","expected_revision":7,
             "task_id":"task-a","interaction_id":"delivery-a","body":"Done",
             "targets":[{"kind":"text","text":"Done"}],"is_final":true});
-        let envelope = domain_envelope("present_result", &valid).unwrap();
+        let envelope = domain_envelope("present_result", &valid, "epoch", "one").unwrap();
         assert_eq!(envelope["protocol_version"], 2);
         assert_eq!(envelope["command"]["kind"], "present_result");
         assert_eq!(envelope["command"]["task_id"], "task-a");
@@ -1195,11 +1220,13 @@ mod tests {
                 "present_result",
                 &json!({"data_epoch":"epoch","command_id":"x",
             "expected_revision":0,"task_id":"t","interaction_id":"i","body":"x",
-            "targets":[],"is_final":true,"surprise":true})
+            "targets":[],"is_final":true,"surprise":true}),
+                "epoch",
+                "x",
             )
             .is_err()
         );
-        assert!(domain_envelope("domain_command", &valid).is_err());
+        assert!(domain_envelope("domain_command", &valid, "epoch", "one").is_err());
     }
 
     #[test]

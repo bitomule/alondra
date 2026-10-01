@@ -160,12 +160,8 @@ impl Executor {
     fn prompt(&self, runtime: &Runtime, resume: bool, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
         let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator-domain-v2 skill. Process this durable inbox batch with typed domain commands; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
-        text.push_str(&format!("{}\n", crate::domain_transport::cursor(&state)));
         if !runtime.pending_resolutions.is_empty() {
-            text.push_str("\nDURABLE RESOLUTION: the executions below were interrupted and their inbox batches are NOT replayed. Do not repeat or continue those batches unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded.\n");
-            for resolution in &runtime.pending_resolutions {
-                text.push_str(&format!("Resolved execution {}: do not replay inbox message IDs {:?}.\n", resolution.run_id, resolution.message_ids));
-            }
+            text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded.\n");
         }
         if !resume {
             text.push_str("This is a new conversation. Read the durable domain before acting; do not infer that existing Tasks need to be started again.\n");
@@ -174,7 +170,7 @@ impl Executor {
         text.push_str(&summary(&state, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
             .map(|choices| crate::domain_orchestrator_tools::choices_text(&user, &self.home, &choices))));
         for message in messages {
-            text.push_str(&format!("\n--- Alondra inbox message {} ---\n{}\n", message.id, crate::domain_transport::render(&state, message)));
+            text.push_str(&format!("\n{}\n", crate::domain_transport::render(&state, message)));
         }
         Ok(text)
     }
@@ -520,8 +516,9 @@ mod tests {
         let dir = f.executor.home.join("runtime/orchestrator");
         assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1);
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
-        assert!(prompt.contains("data_epoch=") && prompt.contains("inbox message 1") && prompt.contains("inbox message 2")
-            && prompt.contains("interaction_id=q2") && prompt.contains("new conversation"), "{prompt}");
+        assert!(!prompt.contains("data_epoch=") && prompt.contains("Where do I put change 1?")
+            && prompt.contains("Where do I put change 2?") && !prompt.contains("inbox message")
+            && !prompt.contains("interaction_id=") && prompt.contains("new conversation"), "{prompt}");
         assert!(prompt.contains("request r: Work\n") && prompt.contains("task t of request r: \"Task\" state=not_started agent=a\n"), "{prompt}");
         assert!(outbox(domain).is_empty());
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
@@ -535,7 +532,8 @@ mod tests {
         ask_orchestrator(domain, 3);
         f.executor.tick(&f.ownership).await.unwrap();
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
-        assert!(!prompt.contains("new conversation") && prompt.contains("inbox message 3") && !prompt.contains("inbox message 1"), "{prompt}");
+        assert!(!prompt.contains("new conversation") && prompt.contains("Where do I put change 3?")
+            && !prompt.contains("Where do I put change 1?") && !prompt.contains("inbox message"), "{prompt}");
         assert_eq!(load(&f.executor.home).unwrap().session_id, runtime.session_id, "the conversation is resumed");
     }
 
@@ -632,8 +630,10 @@ mod tests {
         ask_orchestrator(domain, 2);
         f.executor.tick(&f.ownership).await.unwrap();
         let prompt = std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/received-prompt")).unwrap();
-        assert!(prompt.contains(&format!("Resolved execution {}: do not replay inbox message IDs {:?}", run.id, run.message_ids)), "{prompt}");
-        assert!(prompt.contains("inbox message 2") && !prompt.contains("--- Alondra inbox message 1 ---"), "{prompt}");
+        assert!(prompt.contains("Previous interrupted inbox batches have already been resolved")
+            && !prompt.contains(&run.id) && !prompt.contains("inbox message IDs"), "{prompt}");
+        assert!(prompt.contains("Where do I put change 2?") && !prompt.contains("Where do I put change 1?")
+            && !prompt.contains("inbox message"), "{prompt}");
         assert!(load(&f.executor.home).unwrap().pending_resolutions.is_empty());
 
         // A daemon restart during an execution resolves it without the user.

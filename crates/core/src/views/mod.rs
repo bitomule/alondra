@@ -38,6 +38,7 @@ pub struct RenderContext<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BuildError {
     InvalidKey,
+    InvalidActionId,
     NotFound,
     UnsupportedClient,
 }
@@ -95,15 +96,19 @@ pub struct PushAction {
     pub placeholder: Option<String>,
 }
 
-pub fn push_actions(domain: &DomainState, card_id: &str, lang: Lang) -> Vec<PushAction> {
+pub fn push_actions(
+    domain: &DomainState,
+    card_id: &str,
+    lang: Lang,
+) -> Result<Vec<PushAction>, BuildError> {
     let live = LiveSnapshot::default();
-    let Ok(view) = build(&format!("card:{card_id}"), RenderContext {
+    let view = build(&format!("card:{card_id}"), RenderContext {
         domain, live: &live, client: Client::Ios, lang, transport: Transport::Relay,
         cursor: "push", rendered_at: "",
-    }) else { return vec![] };
+    })?;
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
-    }) else { return vec![] };
+    }) else { return Ok(vec![]) };
     let mut pushed = Vec::new();
     for action in &card.actions {
         if action.id.is_empty() || action.link.is_some() || !action.enabled ||
@@ -123,7 +128,7 @@ pub fn push_actions(domain: &DomainState, card_id: &str, lang: Lang) -> Vec<Push
         }
         if pushed.len() == 4 { break; }
     }
-    pushed
+    Ok(pushed)
 }
 
 fn push_supported_option(domain: &DomainState, action: &Action, option: &ActionOption) -> bool {

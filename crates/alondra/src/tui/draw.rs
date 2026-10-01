@@ -331,7 +331,14 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
     if app.offline {
         left.push(Span::raw(" "));
         left.push(Span::styled(
-            tr!(" no connection to alondrad ", " sin conexión con alondrad "),
+            if app.view_status.is_some() {
+                tr!(
+                    " saved data · connection lost ",
+                    " datos guardados · sin conexión "
+                )
+            } else {
+                tr!(" no connection to alondrad ", " sin conexión con alondrad ")
+            },
             Style::new()
                 .fg(Color::White)
                 .bg(Color::Red)
@@ -716,7 +723,14 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         .filter(|view| selected.as_deref() == Some(view.key.as_str()));
     let Some(document) = document else {
         let message = if app.card_view_asked.is_some() {
-            tr!("Loading…", "Cargando…")
+            if selected
+                .as_deref()
+                .is_some_and(|key| key.starts_with("search"))
+            {
+                tr!("Searching…", "Buscando…")
+            } else {
+                tr!("Loading…", "Cargando…")
+            }
         } else {
             tr!("Select an item", "Elige un elemento")
         };
@@ -787,10 +801,11 @@ fn image_rows(img: &image::DynamicImage, width: usize) -> usize {
 }
 
 fn draw_reader(f: &mut Frame, app: &mut App, area: Rect) {
-    let still_there = app
-        .reader
-        .as_ref()
-        .is_some_and(|r| app.card_view.as_ref().is_some_and(|view| view.key == r.key.0));
+    let still_there = app.reader.as_ref().is_some_and(|r| {
+        app.card_view
+            .as_ref()
+            .is_some_and(|view| view.key == r.key.0)
+    });
     let Some(r) = app.reader.as_mut() else { return };
     let review = app.reviews.get(&r.key);
     let (glyph, color) = (r.glyph, r.color);
@@ -980,10 +995,25 @@ fn draw_comments(f: &mut Frame, app: &App, area: Rect, cursor: usize) {
             lines.push(Line::from(tr!("None yet.", "Todavía ninguno.").fg(DIM)));
             lines.push(Line::default());
             for (hint, label) in [
-                ("j/k", tr!("move the cursor by blocks", "mueve el cursor por bloques")),
-                ("^d ^u", tr!("half a page down / up", "media página abajo / arriba")),
-                ("/", tr!("search the text; n/N next/prev", "busca en el texto; n/N sig./ant.")),
-                ("c", tr!("comment on the marked block", "comenta el bloque marcado")),
+                (
+                    "j/k",
+                    tr!("move the cursor by blocks", "mueve el cursor por bloques"),
+                ),
+                (
+                    "^d ^u",
+                    tr!("half a page down / up", "media página abajo / arriba"),
+                ),
+                (
+                    "/",
+                    tr!(
+                        "search the text; n/N next/prev",
+                        "busca en el texto; n/N sig./ant."
+                    ),
+                ),
+                (
+                    "c",
+                    tr!("comment on the marked block", "comenta el bloque marcado"),
+                ),
                 ("Shift+C", tr!("general comment", "comentario general")),
             ] {
                 lines.push(key(hint, label));
@@ -1265,38 +1295,10 @@ fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
     Line::from(spans)
 }
 
-/// Whether what the composer answers is still the one on screen: a text opened on something that
-/// changed stays, and says so, instead of going to something else.
-/// Whether a test fixture's composer still addresses an available legacy action.
-#[cfg(test)]
-fn composer_outdated(app: &App, target: &Target) -> bool {
-    let key = match target {
-        Target::Answer { key, .. } | Target::Feedback { key, .. } => key,
-        _ => return false,
-    };
-    let kind = if matches!(target, Target::Answer { .. }) {
-        "answer_question"
-    } else {
-        "submit_feedback"
-    };
-    !app.item(key)
-        .is_some_and(|i| action(i, kind).is_some_and(|a| a.enabled))
-}
-
 fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option<Rect> {
     let c = app.composer.as_ref()?;
     let mut title = match &c.target {
-        #[cfg(test)]
-        Target::Answer { title, label, .. } => {
-            let (t, o) = (md::one_line(title), i18n::option_label(label));
-            trf!("{t} · {o}", "{t} · {o}")
-        }
         Target::ViewAction { label, .. } => md::one_line(label),
-        #[cfg(test)]
-        Target::Feedback { title, .. } => {
-            let t = md::one_line(title);
-            trf!("Feedback on {t}", "Feedback sobre {t}")
-        }
         Target::Message {
             name,
             title,
@@ -1343,13 +1345,6 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
         .into(),
         Target::General { send: false } => tr!("General comment", "Comentario general").into(),
     };
-    #[cfg(test)]
-    if composer_outdated(app, &c.target) {
-        title.push_str(tr!(
-            " · changed since you opened it: your text is kept",
-            " · ha cambiado desde que lo abriste: tu texto se conserva"
-        ));
-    }
     let action = composer_action(&c.target);
     let title = truncate(&title, (area.width as usize).saturating_sub(6));
     let hint = trf!(
@@ -1456,13 +1451,22 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
 
 fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(String, String)> {
     let mut keys = Vec::new();
-    for action in super::view_render::actions(view).into_iter().filter(|action| action.enabled) {
+    for action in super::view_render::actions(view)
+        .into_iter()
+        .filter(|action| action.enabled)
+    {
         let hint = super::view_render::action_hint(&action);
         if !hint.is_empty() {
-            keys.push((if hint == "enter" { "⏎" } else { hint }.into(), action.label.clone()));
+            keys.push((
+                if hint == "enter" { "⏎" } else { hint }.into(),
+                action.label.clone(),
+            ));
         }
         for (index, option) in action.options.iter().enumerate() {
-            let hint = option.key.clone().unwrap_or_else(|| (index + 1).to_string());
+            let hint = option
+                .key
+                .clone()
+                .unwrap_or_else(|| (index + 1).to_string());
             keys.push((hint, option.label.clone()));
         }
     }
@@ -1475,34 +1479,55 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
     if app.composer.is_none() {
         if let Some(reader) = app.reader.as_ref() {
             if reader.find.as_ref().is_some_and(|find| find.editing) {
-                return vec![k("⏎", tr!("find", "buscar")), k("Esc", tr!("cancel", "cancela"))];
+                return vec![
+                    k("⏎", tr!("find", "buscar")),
+                    k("Esc", tr!("cancel", "cancela")),
+                ];
             }
-            let mut keys = vec![k("j/k", tr!("block", "bloque")),
-                k("/", tr!("search", "buscar")), k("c", tr!("comment", "comentar")),
-                k("Shift+C", tr!("general", "general")), k("d", tr!("delete", "borrar"))];
-            if let Some(view) = app.card_view.as_ref().filter(|view| view.key == reader.key.0) {
+            let mut keys = vec![
+                k("j/k", tr!("block", "bloque")),
+                k("/", tr!("search", "buscar")),
+                k("c", tr!("comment", "comentar")),
+                k("Shift+C", tr!("general", "general")),
+                k("d", tr!("delete", "borrar")),
+            ];
+            if let Some(view) = app
+                .card_view
+                .as_ref()
+                .filter(|view| view.key == reader.key.0)
+            {
                 keys.extend(view_footer_actions(view));
             }
             keys.push(k("Esc/o", tr!("back", "volver")));
             return keys;
         }
         if let Some(home) = app.home_view.as_ref() {
-            let mut keys = vec![k("j/k", tr!("move", "mover")), k("⏎/o", tr!("detail", "detalle"))];
+            let mut keys = vec![
+                k("j/k", tr!("move", "mover")),
+                k("⏎/o", tr!("detail", "detalle")),
+            ];
             if let Some(card) = app.card_view.as_ref() {
                 keys.extend(view_footer_actions(card));
             } else if let Some(selected) = app.sel.as_ref()
-                && let Some(row) = super::view_render::rows(home).into_iter()
+                && let Some(row) = super::view_render::rows(home)
+                    .into_iter()
                     .find_map(|(row, _)| (row.id == selected.0).then_some(row))
             {
                 for action in row.actions.iter().filter(|action| action.enabled) {
                     let hint = super::view_render::action_hint(action);
                     if !hint.is_empty() {
-                        keys.push((if hint == "enter" { "⏎" } else { hint }.into(), action.label.clone()));
+                        keys.push((
+                            if hint == "enter" { "⏎" } else { hint }.into(),
+                            action.label.clone(),
+                        ));
                     }
                 }
             }
-            keys.extend([k("Tab", tr!("next", "siguiente")), k("n", tr!("new", "nuevo")),
-                k("q", tr!("quit", "salir"))]);
+            keys.extend([
+                k("Tab", tr!("next", "siguiente")),
+                k("n", tr!("new", "nuevo")),
+                k("q", tr!("quit", "salir")),
+            ]);
             return keys;
         }
     }
@@ -1951,7 +1976,14 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
 
 fn draw_help(f: &mut Frame, app: &mut App) {
     let area = f.area();
-    let lines = help_lines();
+    let mut lines = help_lines();
+    if let Some(status) = &app.view_status {
+        for gauge in &status.gauges {
+            if let Some(detail) = &gauge.detail {
+                lines.push(Line::from(format!("{}: {detail}", gauge.label)).fg(DIM));
+            }
+        }
+    }
     let w = 96.min(area.width.saturating_sub(2));
     let h = (lines.len() as u16 + 2).min(area.height.saturating_sub(2));
     let r = Rect {

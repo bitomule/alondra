@@ -356,7 +356,7 @@ mod tests {
     }
 
     #[test]
-    fn the_notice_names_the_pr_the_method_the_head_and_the_stack_condition() {
+    fn the_auto_merge_notice_is_actionable_without_protocol_or_git_metadata() {
         let (_fixture, domain) = open("notice");
         presented(&domain, true);
         let register = Command::RegisterPr {
@@ -364,9 +364,10 @@ mod tests {
             number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
         };
         let notice = crate::domain_api::auto_merge_notice(&domain, &register).unwrap();
-        assert!(notice.contains("https://github.com/owner/repo/pull/7"), "{notice}");
-        assert!(notice.contains(&format!("gh pr merge --squash --match-head-commit {HEAD}")), "{notice}");
-        assert!(notice.contains("for a stacked PR, once the PR it is stacked on is merged"), "{notice}");
+        assert!(notice.contains("Once its checks pass") && notice.contains("merge the pull request"), "{notice}");
+        for internal in ["github.com", "owner/repo", HEAD, "task_id", "revision", "authorization"] {
+            assert!(!notice.contains(internal), "{internal} leaked in {notice}");
+        }
     }
 
     fn open(tag: &str) -> (Fixture, DomainRuntime) {

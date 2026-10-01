@@ -154,8 +154,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .inbox
         .into_iter()
         .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
-        .map(|item| Item::Card(super::card::from_item(&item, context, false)))
-        .collect();
+        .map(|item| super::card::from_item(&item, context, false).map(Item::Card))
+        .collect::<Result<Vec<_>, BuildError>>()?;
     view.sections.push(common::section(
         "waiting",
         Some(t!(context.lang, "Waiting for You", "Te espera").into()),

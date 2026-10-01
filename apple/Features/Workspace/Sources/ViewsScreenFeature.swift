@@ -14,8 +14,6 @@ public struct ViewsScreenFeature {
         public var key: ViewKey
         public let owner: String
         public var document: ViewDocument?
-        public var history: [ViewKey] = []
-        public var parentKey: ViewKey? { history.last }
         public var loading = false
         public var isPresented = false
         public var error: String?
@@ -40,9 +38,8 @@ public struct ViewsScreenFeature {
     }
 
     public enum Action {
-        case appeared, disappeared, back, refresh
+        case appeared, disappeared, refresh
         case stale([String]), reset
-        case open(ViewKey)
         case loaded(ViewFetch), failed(String), missing
         case fetchContent(ContentRef), contentLoaded(String), contentFailed(String)
         case fetchAttachment(AlondraViews.Attachment), attachmentLoaded(AlondraViews.Attachment, Data), closeAttachment, dismissError
@@ -75,25 +72,6 @@ public struct ViewsScreenFeature {
                 return .merge(.cancel(id: CancelID.load), .run { [viewsClient, owner = state.owner] _ in
                     await viewsClient.closeScreen(owner)
                 })
-            case .back:
-                guard let parentKey = state.history.popLast() else { return .none }
-                state.key = parentKey
-                state.document = nil
-                state.content = nil
-                state.contentReference = nil
-                state.loading = true
-                return load(state)
-            case .open(let key):
-                guard state.isPresented else { return .none }
-                guard key != state.key else { return .none }
-                state.history.append(state.key)
-                state.key = key
-                state.document = nil
-                state.content = nil
-                state.contentReference = nil
-                state.loading = true
-                state.error = nil
-                return load(state)
             case .reloadForm(let fieldID, let value):
                 guard fieldID == "project", case let .string(project) = value else { return .none }
                 let next: ViewKey

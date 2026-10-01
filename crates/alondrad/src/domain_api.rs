@@ -60,6 +60,8 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route("/schedules/{id}/runs", post(schedule_mutation::<H>))
         .route("/capabilities", get(capabilities::<H>))
         .route("/changes", get(changes::<H>))
+        .route("/delivery-attempts", get(delivery_evidence::<H>))
+        .route("/merge-authorizations/claim", post(claim_current_merge_authorization::<H>))
         .route("/pull-requests/{id}/diff", get(pull_request_diff::<H>))
         .route("/requests", post(request_resource::<H>))
         .route("/tasks/{id}", patch(resource_command::<H>))
@@ -79,7 +81,6 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/completion", "POST"), ("/tasks/{id}/cancellation", "POST"),
         ("/tasks/{id}/reopening", "POST"),
         ("/tasks/{id}/archival", "POST"),
-        ("/merge-authorizations/{id}/claim", "POST"),
         ("/interactions/{id}/answers", "POST"),
         ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/subject", "PUT"),
         ("/interactions/{id}/feedback", "POST"), ("/interactions/{id}/acceptance", "POST"),
@@ -96,6 +97,129 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
             .layer(axum::extract::DefaultBodyLimit::max(LOCAL_COMMAND_BYTES)))
     });
     router
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CurrentMergeClaim {
+    data_epoch: DataEpoch,
+    command_id: CommandId,
+    expected_revision: Revision,
+    remote_head: String,
+    remote_base: String,
+    base_verified: bool,
+}
+
+/// The producer names only the remote state it observed. The bearer-bound daemon resolves the
+/// opaque authorization ID and keeps it out of the node's prompt and tool arguments.
+async fn claim_current_merge_authorization<H: DomainHost>(
+    State(host): State<Arc<H>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    signed: Option<Extension<Signed>>,
+    headers: HeaderMap,
+    body: Result<Json<CurrentMergeClaim>, JsonRejection>,
+) -> Response {
+    if signed.is_some() || !is_local(&peer, &headers) {
+        return domain_error(DomainError::new("forbidden", "local Agent capability required"));
+    }
+    let Some(token) = headers.get("authorization").and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Bearer ")) else {
+        return domain_error(DomainError::new("forbidden", "Agent capability required"));
+    };
+    let Ok(Principal::Agent { session_id, task_binding, .. }) = host.domain().resolve_bearer(token) else {
+        return domain_error(DomainError::new("forbidden", "Agent capability required"));
+    };
+    let Ok(Json(body)) = body else {
+        return domain_error(DomainError::new("invalid_input", "invalid merge claim"));
+    };
+    let actor = Actor::Agent { agent_id: session_id.clone().into() };
+    let receipted = {
+        let store = host.domain().store.lock().expect("domain store poisoned");
+        store.receipted_command(&actor, &body.command_id, &body.data_epoch)
+    };
+    match receipted {
+        Ok(Some(command)) if matches!(&command, Command::ClaimMergeAuthorization {
+            remote_head: recorded_head,
+            remote_base: recorded_base,
+            base_verified: recorded_verified,
+            ..
+        } if recorded_head == &body.remote_head
+            && recorded_base == &body.remote_base
+            && *recorded_verified == body.base_verified) => {
+                let method = match &command {
+                    Command::ClaimMergeAuthorization { authorization_id, .. } => host.domain().state()
+                        .ok()
+                        .and_then(|state| state.merge_authorizations.get(authorization_id).map(|authorization| authorization.method)),
+                    _ => None,
+                };
+                let Some(method) = method else { return storage_error() };
+                let envelope = CommandEnvelope {
+                    protocol_version: PROTOCOL_VERSION,
+                    data_epoch: body.data_epoch,
+                    command_id: body.command_id,
+                    expected_revision: body.expected_revision,
+                    command,
+                };
+                let response = execute_command(host, peer, signed, headers, envelope).await;
+                if !response.status().is_success() {
+                    return response;
+                }
+                return merge_claim_success(method);
+            }
+        Ok(Some(_)) => {
+            return domain_error(DomainError::new(
+                "idempotency_conflict",
+                "command ID reused with different payload",
+            ));
+        }
+        Ok(None) => {}
+        Err(_) => return storage_error(),
+    }
+    let state = match host.domain().state() {
+        Ok(state) => state,
+        Err(_) => return storage_error(),
+    };
+    let mut matches = state.merge_authorizations.values().filter(|authorization| {
+        authorization.valid
+            && authorization.attempt == MergeAttemptState::Unclaimed
+            && authorization.head == body.remote_head
+            && task_binding.as_deref().is_none_or(|task| task == authorization.task_id.0.as_str())
+            && state.tasks.get(&authorization.task_id).and_then(|task| task.agent_id.as_ref())
+                .is_some_and(|agent| agent.0.as_str() == session_id.as_str())
+    });
+    let Some(authorization) = matches.next() else {
+        return domain_error(DomainError::new("not_found", "No matching merge authorization"));
+    };
+    if matches.next().is_some() {
+        return domain_error(DomainError::new("conflict", "More than one merge authorization matches"));
+    }
+    let method = authorization.method;
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION,
+        data_epoch: body.data_epoch,
+        command_id: body.command_id,
+        expected_revision: body.expected_revision,
+        command: Command::ClaimMergeAuthorization {
+            authorization_id: authorization.id.clone(),
+            remote_head: body.remote_head,
+            remote_base: body.remote_base,
+            base_verified: body.base_verified,
+        },
+    };
+    let response = execute_command(host, peer, signed, headers, envelope).await;
+    if !response.status().is_success() {
+        return response;
+    }
+    merge_claim_success(method)
+}
+
+fn merge_claim_success(method: MergeMethod) -> Response {
+    let method = match method {
+        MergeMethod::Merge => "merge",
+        MergeMethod::Squash => "squash",
+        MergeMethod::Rebase => "rebase",
+    };
+    Json(json!({"message":format!("Merge the pull request you presented using {method}.")})).into_response()
 }
 
 /// Every sectioned read goes through the same grammar as the relay allowlist.
@@ -165,48 +289,6 @@ async fn schedule_mutation<H: DomainHost>(
         host.domain(), host.home(), method.as_str(), uri.path(), body.as_ref(), None,
         || approved(&home, &device),
     ))
-}
-async fn merge_authorization<H: DomainHost>(
-    State(host): State<Arc<H>>,
-    ConnectInfo(peer): ConnectInfo<SocketAddr>,
-    headers: HeaderMap,
-    Path(id): Path<String>,
-) -> Response {
-    if !is_local(&peer, &headers) {
-        return domain_error(DomainError::new("forbidden", "local Agent capability required"));
-    }
-    let Some(token) = headers.get("authorization").and_then(|value| value.to_str().ok())
-        .and_then(|value| value.strip_prefix("Bearer ")) else {
-        return domain_error(DomainError::new("forbidden", "Agent capability required"));
-    };
-    merge_authorization_inner(host.domain(), token, id)
-}
-
-pub(crate) fn merge_authorization_inner(domain: &DomainRuntime, token: &str, id: String) -> Response {
-    let Ok(principal @ Principal::Agent { .. }) = domain.resolve_bearer(token) else {
-        return domain_error(DomainError::new("forbidden", "Agent capability required"));
-    };
-    let Principal::Agent { session_id, task_binding, .. } = &principal else { unreachable!() };
-    let state = match domain.state() { Ok(state) => state, Err(_) => return storage_error() };
-    let Some(authorization) = state.merge_authorizations.get(&AuthorizationId(id)) else {
-        return domain_error(DomainError::new("not_found", "Merge authorization missing"));
-    };
-    let Some(task) = state.tasks.get(&authorization.task_id) else { return storage_error() };
-    if task.agent_id.as_ref().map(|agent| agent.0.as_str()) != Some(session_id.as_str())
-        || task_binding.as_deref().is_some_and(|binding| binding != authorization.task_id.0.as_str()) {
-        return domain_error(DomainError::new("forbidden", "Authorization belongs to another Agent"));
-    }
-    let Some(pr) = state.pull_requests.get(&authorization.pr_id) else { return storage_error() };
-    if domain.resolve_bearer(token).ok().as_ref() != Some(&principal) {
-        return domain_error(DomainError::new("forbidden", "Agent capability was revoked"));
-    }
-    let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
-    Json(json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,
-        "revision":state.revision,"authorization_id":authorization.id,
-        "task_id":authorization.task_id,"pr_id":authorization.pr_id,"pr_url":url,
-        "head":authorization.head,"base":pr.base,"method":authorization.method,
-        "valid":authorization.valid,"attempt":authorization.attempt,
-        "at_revision":authorization.at_revision})).into_response()
 }
 async fn document_content<H: DomainHost>(
     State(host): State<Arc<H>>,
@@ -619,6 +701,8 @@ pub(crate) async fn encrypted_read_runtime(
     approved.recheck()?;
     let response = if crate::domain_schedule_api::approved_read_path(path) {
         crate::domain_schedule_api::response(crate::domain_schedule_api::read(domain, path))
+    } else if let Some(query) = path.strip_prefix("/delivery-attempts?") {
+        delivery_evidence_inner(domain, query)
     } else if path == "/capabilities" {
         capabilities_inner(domain)
     } else if let Some(id) = path.strip_prefix("/pull-requests/")
@@ -738,20 +822,13 @@ pub(crate) fn legacy_write_blocked() -> DomainError {
 }
 /// What the Agent of an auto-merge Task is reminded of when it registers its PR.
 pub(crate) fn auto_merge_notice(domain: &DomainRuntime, command: &Command) -> Option<String> {
-    let Command::RegisterPr { task_id, host, repository, number, head, allowed_methods, .. } = command else { return None };
+    let Command::RegisterPr { task_id, .. } = command else { return None };
     let state = domain.state().ok()?;
     let task = state.tasks.get(task_id)?;
     if !state.requests.get(&task.request_id)?.auto_merge {
         return None;
     }
-    let method = match allowed_methods.first().copied().unwrap_or(MergeMethod::Merge) {
-        MergeMethod::Merge => "merge",
-        MergeMethod::Squash => "squash",
-        MergeMethod::Rebase => "rebase",
-    };
-    Some(format!(
-        "This Task auto-merges: once the checks of https://{host}/{repository}/pull/{number} pass and it is mergeable (for a stacked PR, once the PR it is stacked on is merged), merge it yourself with `gh pr merge --{method} --match-head-commit {head}`, then report."
-    ))
+    Some("This task is configured for automatic merge. Once its checks pass and it is mergeable, merge the pull request you registered using an allowed method, then report the result.".into())
 }
 
 async fn resource_command<H: DomainHost>(
@@ -862,12 +939,6 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/cancellation") => ("cancel_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/reopening") => ("reopen_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/archival") => ("archive_task", Some(("task_id", task?))),
-        ("POST", p) if p.starts_with("/merge-authorizations/") && p.ends_with("/claim") => {
-            let authorization_id = params.get("id")?;
-            if body.get("authorization_id").is_some_and(|value| value.as_str() != Some(authorization_id)) { return None; }
-            body["authorization_id"] = json!(authorization_id);
-            ("claim_merge_authorization", None)
-        }
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw_question", Some(("interaction_id", interaction?))),
         ("PUT", p) if p.starts_with("/interactions/") && p.ends_with("/subject") => ("link_interaction_subject", Some(("interaction_id", interaction?))),
@@ -915,9 +986,6 @@ pub(crate) fn resource_envelope_from_path(method: &str, path: &str, body: Value)
             params.insert("id".into(), decode_path_id(id)?);
             params.insert("document_id".into(), decode_path_id(document_id)?);
         }
-        ["merge-authorizations", id, "claim"] => {
-            params.insert("id".into(), decode_path_id(id)?);
-        }
         ["tasks", id, ..] | ["interactions", id, ..] => { params.insert("id".into(), decode_path_id(id)?); }
         _ => {}
     }
@@ -933,8 +1001,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
             | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
             | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"]
             | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"]
-            | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"])
-        | ("POST", ["merge-authorizations", _, "claim"]) => true,
+            | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"]) => true,
         ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "dependencies"]
             | ["tasks", _, "documents", _] | ["tasks", _, "documents", _, "review"]
             | ["interactions", _, "subject"] | ["interactions", _, "read-state"]) => true,
@@ -944,7 +1011,6 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
     registered && match segments.as_slice() {
         ["requests"] | ["questions"] | ["action-requests"] | ["messages"] => true,
         ["requests", id, ..] => valid_resource_id(id),
-        ["merge-authorizations", id, "claim"] => valid_resource_id(id),
         ["tasks", id, ..] | ["interactions", id, ..] => valid_resource_id(id),
         _ => false,
     }
@@ -953,6 +1019,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
 pub(crate) fn approved_resource_read_path(path: &str) -> bool {
     crate::domain_schedule_api::approved_read_path(path)
         || path == "/capabilities"
+        || path.strip_prefix("/delivery-attempts?").is_some_and(|query| delivery_evidence_query(query).is_some())
         || path.strip_prefix("/pull-requests/").and_then(|s| s.strip_suffix("/diff")).is_some_and(crate::domain_reads::encoded_pull_request_id)
         || path.strip_prefix("/document-revisions/").and_then(|s| s.split_once("/content?"))
             .is_some_and(|(id, query)| valid_resource_id(id) && document_content_query(query).is_some())
@@ -1351,13 +1418,14 @@ mod tests {
             ("POST", "/questions"), ("POST", "/action-requests"), ("POST", "/messages"),
             ("PATCH", "/tasks/t-1"), ("PUT", "/tasks/t-1/assignee"),
             ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"),
-            ("POST", "/merge-authorizations/auth-1/claim"),
             ("POST", "/schedules"),
         ] {
             let schedule = crate::domain_schedule_api::approved_mutation_path(method, path, true);
             assert!(is_resource_mutation_path(method, path) || schedule, "{method} {path}");
         }
         assert!(!is_resource_mutation_path("POST", "/commands"));
+        assert!(!is_resource_mutation_path("POST", "/merge-authorizations/claim"),
+            "semantic merge resolution is local producer authority, never a relay route");
         assert!(!is_resource_mutation_path("POST", "/tasks/t-1/merge-authorizations/auth-1/claim"));
         for (method, path) in [
             ("GET", "/questions"), ("PUT", "/questions"),
@@ -1372,6 +1440,8 @@ mod tests {
         assert!(!approved_resource_read_path("/tasks?unknown=1"));
         assert!(!approved_resource_read_path("/merge-authorizations/auth-1"));
         assert!(approved_resource_read_path("/pull-requests/github.com%2Fowner%2Frepo%23154/diff"));
+        assert!(approved_resource_read_path("/delivery-attempts?after=0"));
+        assert!(!approved_resource_read_path("/delivery-attempts?after=0&all=1"));
         assert_eq!(
             crate::domain_reads::decoded_pull_request_id("github.com%2Fowner%2Frepo%23154")
                 .as_deref(),
@@ -1417,15 +1487,6 @@ mod tests {
         let mut legacy_shape = json!({"data_epoch":"epoch","command_id":"stable-1","expected_revision":7,
             "protocol_version":2,"request_id":"request-1","body":"Work","auto_merge":false});
         assert!(resource_envelope_from_path("POST", "/requests", legacy_shape.take()).is_none());
-        let mut claim = meta.clone();
-        claim["authorization_id"] = json!("auth-1");
-        claim["remote_head"] = json!("0123456789abcdef");
-        claim["remote_base"] = json!("main");
-        claim["base_verified"] = json!(true);
-        assert!(resource_envelope_from_path("POST", "/merge-authorizations/auth-1/claim", claim.clone()).is_some());
-        claim["authorization_id"] = json!("auth-other");
-        assert!(resource_envelope_from_path("POST", "/merge-authorizations/auth-1/claim", claim).is_none(),
-            "the capability ID in the body must match the resource URL");
     }
     fn seeded(hub: &Hub) {
         for (actor, id, command) in [

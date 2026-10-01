@@ -25,21 +25,26 @@ public struct ViewsServiceRootFeature {
         public var serverTasks = ViewsScreenFeature.State(key: .tasks, owner: "ios.tasks")
         public var serverFleet = ViewsScreenFeature.State(key: .fleet, owner: "ios.fleet")
         public var serverNewRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
-        public var serverReview = ViewsScreenFeature.State(key: .pullRequest("pending"), owner: "ios.detail")
-        public var serverDetailPresented = false
+        public var serverTasksPath = StackState<ViewsScreenFeature.State>()
+        public var serverFleetPath = StackState<ViewsScreenFeature.State>()
+        public var serverNewRequestPath = StackState<ViewsScreenFeature.State>()
+        public var serverReviewPath = StackState<ViewsScreenFeature.State>()
     }
 
     public enum Action {
         case appeared, disappeared
         case tabSelected(State.Tab), settingsPresented(Bool), focusInbox(String)
-        case openServerView(String), serverDetailDismissed
+        case openServerView(String), openTasksView(ViewKey), openFleetView(ViewKey), openNewRequestView(ViewKey), openReviewView(ViewKey)
         case dismissNotice(UUID), dismissMacError(UUID), dismissCloseRefusal
         case home(HomeFeature.Action)
         case macPresentation(MacPresentationFeature.Action)
         case serverTasks(ViewsScreenFeature.Action)
         case serverFleet(ViewsScreenFeature.Action)
         case serverNewRequest(ViewsScreenFeature.Action)
-        case serverReview(ViewsScreenFeature.Action)
+        case serverTasksPath(StackActionOf<ViewsScreenFeature>)
+        case serverFleetPath(StackActionOf<ViewsScreenFeature>)
+        case serverNewRequestPath(StackActionOf<ViewsScreenFeature>)
+        case serverReviewPath(StackActionOf<ViewsScreenFeature>)
         case viewsFeed(FeedEvent)
     }
 
@@ -53,7 +58,6 @@ public struct ViewsServiceRootFeature {
         Scope(state: \.serverTasks, action: \.serverTasks) { ViewsScreenFeature() }
         Scope(state: \.serverFleet, action: \.serverFleet) { ViewsScreenFeature() }
         Scope(state: \.serverNewRequest, action: \.serverNewRequest) { ViewsScreenFeature() }
-        Scope(state: \.serverReview, action: \.serverReview) { ViewsScreenFeature() }
         Reduce { state, action in
             if case .dismissNotice(let id) = action {
                 guard state.notice?.id == id else { return .none }
@@ -94,20 +98,29 @@ public struct ViewsServiceRootFeature {
                 let publicID = String(id.split(separator: ":").last ?? Substring(id))
                 return .send(.home(.focus(publicID)))
             case .openServerView(let key):
-                state.serverReview = ViewsScreenFeature.State(key: ViewKey(rawValue: key), owner: "ios.detail")
-                state.serverDetailPresented = true
+                state.serverReviewPath.removeAll()
+                append(ViewKey(rawValue: key), to: &state.serverReviewPath, owner: "ios.detail")
                 return .none
-            case .serverDetailDismissed:
-                state.serverDetailPresented = false
-                return .send(.serverReview(.disappeared))
+            case .openTasksView(let key):
+                append(key, to: &state.serverTasksPath, owner: "ios.tasks")
+                return .none
+            case .openFleetView(let key):
+                append(key, to: &state.serverFleetPath, owner: "ios.fleet")
+                return .none
+            case .openNewRequestView(let key):
+                append(key, to: &state.serverNewRequestPath, owner: "ios.new_request")
+                return .none
+            case .openReviewView(let key):
+                append(key, to: &state.serverReviewPath, owner: "ios.detail")
+                return .none
             case .viewsFeed(.stale(let keys)):
                 return .merge(.send(.home(.stale(keys))), .send(.macPresentation(.viewsStale(keys))),
                     .send(.serverTasks(.stale(keys))), .send(.serverFleet(.stale(keys))),
-                    .send(.serverNewRequest(.stale(keys))), .send(.serverReview(.stale(keys))))
+                    .send(.serverNewRequest(.stale(keys))), pathEffects(state, action: .stale(keys)))
             case .viewsFeed(.reset):
                 return .merge(.send(.home(.reset)), .send(.macPresentation(.viewsReset)),
                     .send(.serverTasks(.reset)), .send(.serverFleet(.reset)),
-                    .send(.serverNewRequest(.reset)), .send(.serverReview(.reset)))
+                    .send(.serverNewRequest(.reset)), pathEffects(state, action: .reset))
             case .viewsFeed(.snapshot(let snapshot)):
                 if snapshot.reset { return .send(.viewsFeed(.reset)) }
                 if let status = snapshot.status { return .send(.home(.feedStatus(status))) }
@@ -120,10 +133,37 @@ public struct ViewsServiceRootFeature {
                     await send(.dismissMacError(notice.id))
                 }.cancellable(id: CancelID.macError, cancelInFlight: true)
             case .home, .macPresentation, .serverTasks, .serverFleet, .serverNewRequest,
-                 .serverReview, .dismissNotice, .dismissMacError, .dismissCloseRefusal:
+                 .serverTasksPath, .serverFleetPath, .serverNewRequestPath, .serverReviewPath,
+                 .dismissNotice, .dismissMacError, .dismissCloseRefusal:
                 return .none
             }
         }
+        .forEach(\.serverTasksPath, action: \.serverTasksPath) { ViewsScreenFeature() }
+        .forEach(\.serverFleetPath, action: \.serverFleetPath) { ViewsScreenFeature() }
+        .forEach(\.serverNewRequestPath, action: \.serverNewRequestPath) { ViewsScreenFeature() }
+        .forEach(\.serverReviewPath, action: \.serverReviewPath) { ViewsScreenFeature() }
+    }
+
+    private func append(_ key: ViewKey, to path: inout StackState<ViewsScreenFeature.State>, owner: String) {
+        guard path.last?.key != key else { return }
+        path.append(ViewsScreenFeature.State(key: key, owner: "\(owner).\(path.count)"))
+    }
+
+    private func pathEffects(_ state: State, action: ViewsScreenFeature.Action) -> Effect<Action> {
+        let tasks: [Effect<Action>] = state.serverTasksPath.ids.map {
+            .send(.serverTasksPath(.element(id: $0, action: action)))
+        }
+        let fleet: [Effect<Action>] = state.serverFleetPath.ids.map {
+            .send(.serverFleetPath(.element(id: $0, action: action)))
+        }
+        let newRequest: [Effect<Action>] = state.serverNewRequestPath.ids.map {
+            .send(.serverNewRequestPath(.element(id: $0, action: action)))
+        }
+        let review: [Effect<Action>] = state.serverReviewPath.ids.map {
+            .send(.serverReviewPath(.element(id: $0, action: action)))
+        }
+        let effects = tasks + fleet + newRequest + review
+        return .merge(effects)
     }
 
     private func noticeEvent(_ action: Action) -> ViewsWorkspaceNotice.Event? {
@@ -131,7 +171,11 @@ public struct ViewsServiceRootFeature {
         switch action {
         case .home(.actions(let value)),
              .serverTasks(.action(let value)), .serverFleet(.action(let value)),
-             .serverNewRequest(.action(let value)), .serverReview(.action(let value)),
+             .serverNewRequest(.action(let value)),
+             .serverTasksPath(.element(id: _, action: .action(let value))),
+             .serverFleetPath(.element(id: _, action: .action(let value))),
+             .serverNewRequestPath(.element(id: _, action: .action(let value))),
+             .serverReviewPath(.element(id: _, action: .action(let value))),
              .macPresentation(.action(let value)):
             child = value
         default: return nil

@@ -11,14 +11,62 @@ mod view_feed;
 mod view_render;
 mod work;
 
-fn view_action_result(value: serde_json::Value) -> std::result::Result<String, String> {
+#[cfg(test)]
+#[path = "tui/tests/parity.rs"]
+mod parity;
+#[cfg(test)]
+mod views_tests;
+
+#[derive(Debug)]
+enum ViewActionReply {
+    Applied(String),
+    Changed {
+        message: String,
+        action_id: String,
+        button: String,
+    },
+}
+
+fn view_action_result(value: serde_json::Value) -> std::result::Result<ViewActionReply, String> {
     match value["outcome"].as_str() {
-        Some("applied") => Ok(value["stamp"].as_str().unwrap_or("Done").to_owned()),
-        Some("rejected" | "changed" | "no_longer_available") => Err(value["message"]
+        Some("applied") => Ok(ViewActionReply::Applied(
+            value["stamp"]
+                .as_str()
+                .unwrap_or(tr!("Done", "Hecho"))
+                .to_owned(),
+        )),
+        Some("changed") => {
+            let action_id = value["confirm"]["action_id"].as_str().ok_or_else(|| {
+                tr!(
+                    "The action changed; refresh the view",
+                    "La acción ha cambiado; actualiza la vista"
+                )
+                .to_owned()
+            })?;
+            let button = value["confirm"]["button"]
+                .as_str()
+                .unwrap_or(tr!("Send anyway", "Enviar igualmente"));
+            Ok(ViewActionReply::Changed {
+                message: value["message"]
+                    .as_str()
+                    .unwrap_or(tr!("The item changed", "El elemento ha cambiado"))
+                    .to_owned(),
+                action_id: action_id.to_owned(),
+                button: button.to_owned(),
+            })
+        }
+        Some("rejected" | "no_longer_available") => Err(value["message"]
             .as_str()
-            .unwrap_or("Action could not be completed")
+            .unwrap_or(tr!(
+                "Action could not be completed",
+                "No se pudo completar la acción"
+            ))
             .to_owned()),
-        _ => Err("Unexpected action response".to_owned()),
+        _ => Err(tr!(
+            "Unexpected action response",
+            "Respuesta de acción inesperada"
+        )
+        .to_owned()),
     }
 }
 
@@ -36,11 +84,9 @@ use std::sync::mpsc::{self, Receiver, SyncSender};
 use std::time::Duration;
 
 use alondra_core::domain_v2::{
-    AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction,
-    InteractionId, PrId, Revision, TaskId,
+    AgentId, AttachmentRef, AvailableAction, Command, DeliveryTarget, Interaction, InteractionId,
+    PrId, Revision, TaskId,
 };
-#[cfg(test)]
-use alondra_core::domain_v2::{CommandEnvelope, CommandOutcome, DomainProjection};
 use alondra_core::now_millis;
 use alondra_core::views::{Status as ViewStatus, View as ViewDocument};
 use anyhow::Result;
@@ -54,8 +100,6 @@ use ratatui::DefaultTerminal;
 use serde_json::{Value, json};
 
 use crate::client::Client;
-#[cfg(test)]
-use crate::client::CommandFailure;
 use crate::i18n;
 use crate::mcp::urlencode;
 use crate::ops;
@@ -72,7 +116,6 @@ const HIDE_GRACE_MS: i64 = 15_000;
 const CLOCK_MS: i64 = 20_000;
 const CONFIRM_MS: i64 = 4000;
 const IDLE_POLL: Duration = Duration::from_millis(250);
-const SEARCH_DEBOUNCE_MS: i64 = 1200;
 const ACTIVITY_EVERY_MS: i64 = 60_000;
 /// Threads move with every tool call, which does not move the domain: the open agent asks again this often.
 const THREADS_EVERY_MS: i64 = 10_000;
@@ -303,17 +346,6 @@ impl Reader {
 /// What the composer's text becomes. Each carries the subject and revision it was opened on, so a
 /// change elsewhere never sends the text to something else.
 pub enum Target {
-    #[cfg(test)]
-    Answer {
-        key: Key,
-        interaction: InteractionId,
-        option: String,
-        label: String,
-        input: Option<String>,
-        required: bool,
-        title: String,
-        revision: Revision,
-    },
     ViewAction {
         action_id: String,
         label: String,
@@ -323,14 +355,6 @@ pub enum Target {
         allow_attachments: bool,
         form_fields: Option<Value>,
         attachment_field: Option<String>,
-    },
-    #[cfg(test)]
-    Feedback {
-        key: Key,
-        presentation: InteractionId,
-        targets: Vec<DeliveryTarget>,
-        title: String,
-        revision: Revision,
     },
     /// A message to an agent or the orchestrator; the text is filled in when it is sent.
     Message {
@@ -359,12 +383,6 @@ pub struct Composer {
 impl Target {
     fn draft_key(&self) -> Option<String> {
         match self {
-            #[cfg(test)]
-            Target::Answer {
-                interaction,
-                option,
-                ..
-            } => Some(format!("answer:{interaction}:{option}")),
             Target::ViewAction {
                 action_id,
                 option_id,
@@ -373,8 +391,6 @@ impl Target {
                 "view-action:{action_id}:{}",
                 option_id.as_deref().unwrap_or("")
             )),
-            #[cfg(test)]
-            Target::Feedback { presentation, .. } => Some(format!("feedback:{presentation}")),
             Target::Message { message: m, .. } => {
                 let (agent, interaction, pr) = (
                     m.agent.as_ref().map_or("orchestrator", |a| a.0.as_str()),
@@ -415,31 +431,22 @@ impl Search {
 }
 
 enum Msg {
-    #[cfg(test)]
-    Data(Box<DomainProjection>),
     ViewHome(Result<ViewDocument, String>),
     ViewCard {
         key: String,
         result: Result<ViewDocument, String>,
     },
     ViewFeed(Result<crate::client::ViewsFeed, String>),
-    ViewAction(Result<String, String>),
+    ViewAction {
+        request: Value,
+        result: Result<ViewActionReply, String>,
+    },
     Offline,
     SyncError(String),
-    #[cfg(test)]
-    Command {
-        slot: String,
-        result: Result<CommandOutcome, CommandFailure>,
-    },
     TaskActions {
         task: TaskId,
         revision: Revision,
         result: Result<Vec<AvailableAction>, String>,
-    },
-    Interaction {
-        id: InteractionId,
-        asked_at: Revision,
-        result: Result<Interaction, String>,
     },
     /// The daemon's runtime readings; `None` from one that does not serve them.
     Runtime(Option<Box<Runtime>>),
@@ -487,10 +494,6 @@ enum Msg {
         task: TaskId,
         result: Result<TaskHistory, String>,
     },
-    Found {
-        query: String,
-        result: Result<(String, Vec<String>), String>,
-    },
 }
 
 /// How a close that alondrad accepted ended: a background job is gone; an interactive session
@@ -521,20 +524,7 @@ pub enum Flow {
     },
 }
 
-/// A command on its way, or one whose outcome is unknown: sending the same thing again repeats
-/// this envelope, so the daemon answers with the first receipt instead of doing it twice.
-#[cfg(test)]
-struct Sent {
-    envelope: CommandEnvelope,
-    key: Option<Key>,
-    ok: String,
-    draft: Option<(String, String)>,
-    waiting: bool,
-}
-
 pub struct App {
-    #[cfg(test)]
-    pub domain: Option<DomainProjection>,
     pub home_view: Option<ViewDocument>,
     pub card_view: Option<ViewDocument>,
     pub view_status: Option<ViewStatus>,
@@ -559,11 +549,8 @@ pub struct App {
     /// A step that takes a second press within a few seconds, until when, and the key that
     /// confirms it; any other key starts over.
     confirm: Option<(String, i64, KeyCode)>,
+    pending_changed_action: Option<(Value, String)>,
     pressed: KeyCode,
-    #[cfg(test)]
-    sending: HashMap<String, Sent>,
-    #[cfg(test)]
-    sent: std::cell::RefCell<Vec<CommandEnvelope>>,
     /// Every request that is not a domain command, as the tests read what it would have sent.
     #[cfg(test)]
     posted: std::cell::RefCell<Vec<(String, Value)>>,
@@ -611,11 +598,9 @@ pub struct App {
     task_actions_asked: HashSet<(TaskId, Revision)>,
     /// Interactions read one by one as the user opens them; the projection no longer carries them.
     pub interactions: HashMap<InteractionId, Interaction>,
-    interactions_asked: HashSet<(InteractionId, Revision)>,
     pub cmdline: Option<TextInput>,
     keymap: Keymap,
     last_clock: i64,
-    last_task_animation: i64,
     tx: SyncSender<Msg>,
     open_views: std::sync::Arc<std::sync::Mutex<HashMap<String, String>>>,
     card_view_asked: Option<String>,
@@ -684,93 +669,92 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
             app.note_activity();
             loop {
                 match event::read()? {
-                    Event::Key(k) if k.kind != KeyEventKind::Release => {
-                        match app.on_key(k) {
-                            Flow::Quit => return Ok(()),
-                            Flow::Attach(agent) => {
-                                if crate::service_client::target().is_some() {
-                                    app.fail(tr!("Remote terminal attachment is unavailable; open the terminal on the destination Mac", "El terminal remoto no está disponible; ábrelo en el Mac de destino"));
-                                    break;
-                                }
-                                let _ = execute!(stdout(), DisableBracketedPaste);
-                                let res = crate::attach::attach(&agent, crate::attach::Over::Tui);
-                                crossterm::terminal::enable_raw_mode()?;
-                                let _ = execute!(stdout(), EnableBracketedPaste);
-                                if let Err(e) = res {
-                                    app.fail(trf!(
-                                        "Could not open its terminal: {e}",
-                                        "No pude abrir su terminal: {e}"
-                                    ));
-                                }
-                                repaint(terminal, &mut app)?;
+                    Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
+                        Flow::Quit => return Ok(()),
+                        Flow::Attach(agent) => {
+                            if crate::service_client::target().is_some() {
+                                app.fail(tr!("Remote terminal attachment is unavailable; open the terminal on the destination Mac", "El terminal remoto no está disponible; ábrelo en el Mac de destino"));
                                 break;
                             }
-                            Flow::Review {
-                                key,
-                                pr,
-                                number,
-                                dir,
-                            } => {
-                                if crate::service_client::target().is_some() {
-                                    app.fail(tr!("tuicr runs on the destination Mac; the diff opens here instead", "tuicr funciona en el Mac de destino; aquí se abre el diff"));
-                                    break;
-                                }
-                                draw(terminal, &mut app)?;
-                                let _ = execute!(stdout(), DisableBracketedPaste);
-                                let res = crate::attach::run_tool(
-                                    "tuicr",
-                                    &["--stdout", "--no-update-check", "pr", &number.to_string()],
-                                    &dir,
-                                    crate::attach::Over::Tui,
-                                );
-                                crossterm::terminal::enable_raw_mode()?;
-                                let _ = execute!(stdout(), EnableBracketedPaste);
-                                app.reviewed(key, pr, number, res);
-                                repaint(terminal, &mut app)?;
-                                break;
+                            let _ = execute!(stdout(), DisableBracketedPaste);
+                            let res = crate::attach::attach(&agent, crate::attach::Over::Tui);
+                            crossterm::terminal::enable_raw_mode()?;
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            if let Err(e) = res {
+                                app.fail(trf!(
+                                    "Could not open its terminal: {e}",
+                                    "No pude abrir su terminal: {e}"
+                                ));
                             }
-                            Flow::EditViewForm {
-                                action_id,
-                                label,
-                                data_epoch,
-                                fields,
-                                attachment_field,
-                            } => {
-                                let _ = execute!(stdout(), DisableBracketedPaste);
-                                ratatui::restore();
-                                let result = edit_view_fields(&fields);
-                                *terminal = ratatui::init();
-                                let _ = execute!(stdout(), EnableBracketedPaste);
-                                match result {
-                                    Ok(Some(fields)) => {
-                                        if attachment_field.is_some() {
-                                            app.compose(
-                                                Target::ViewAction {
-                                                    action_id,
-                                                    label,
-                                                    data_epoch,
-                                                    option_id: None,
-                                                    required: false,
-                                                    allow_attachments: true,
-                                                    form_fields: Some(fields),
-                                                    attachment_field,
-                                                },
-                                                "",
-                                            );
-                                        } else {
-                                            app.submit_view_fields(&action_id, &data_epoch, fields)
-                                        }
-                                    }
-                                    Ok(None) => app
-                                        .flash(tr!("No changes saved", "No se guardaron cambios")),
-                                    Err(error) => app.fail(error.to_string()),
-                                }
-                                repaint(terminal, &mut app)?;
-                                break;
-                            }
-                            Flow::Go => {}
+                            repaint(terminal, &mut app)?;
+                            break;
                         }
-                    }
+                        Flow::Review {
+                            key,
+                            pr,
+                            number,
+                            dir,
+                        } => {
+                            if crate::service_client::target().is_some() {
+                                app.fail(tr!("tuicr runs on the destination Mac; the diff opens here instead", "tuicr funciona en el Mac de destino; aquí se abre el diff"));
+                                break;
+                            }
+                            draw(terminal, &mut app)?;
+                            let _ = execute!(stdout(), DisableBracketedPaste);
+                            let res = crate::attach::run_tool(
+                                "tuicr",
+                                &["--stdout", "--no-update-check", "pr", &number.to_string()],
+                                &dir,
+                                crate::attach::Over::Tui,
+                            );
+                            crossterm::terminal::enable_raw_mode()?;
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            app.reviewed(key, pr, number, res);
+                            repaint(terminal, &mut app)?;
+                            break;
+                        }
+                        Flow::EditViewForm {
+                            action_id,
+                            label,
+                            data_epoch,
+                            fields,
+                            attachment_field,
+                        } => {
+                            let _ = execute!(stdout(), DisableBracketedPaste);
+                            ratatui::restore();
+                            let result = edit_view_fields(&fields);
+                            *terminal = ratatui::init();
+                            let _ = execute!(stdout(), EnableBracketedPaste);
+                            match result {
+                                Ok(Some(fields)) => {
+                                    if attachment_field.is_some() {
+                                        app.compose(
+                                            Target::ViewAction {
+                                                action_id,
+                                                label,
+                                                data_epoch,
+                                                option_id: None,
+                                                required: false,
+                                                allow_attachments: true,
+                                                form_fields: Some(fields),
+                                                attachment_field,
+                                            },
+                                            "",
+                                        );
+                                    } else {
+                                        app.submit_view_fields(&action_id, &data_epoch, fields)
+                                    }
+                                }
+                                Ok(None) => {
+                                    app.flash(tr!("No changes saved", "No se guardaron cambios"))
+                                }
+                                Err(error) => app.fail(error.to_string()),
+                            }
+                            repaint(terminal, &mut app)?;
+                            break;
+                        }
+                        Flow::Go => {}
+                    },
                     Event::Paste(s) => app.on_paste(&s),
                     _ => {}
                 }
@@ -792,6 +776,7 @@ fn edit_view_fields(fields: &[alondra_core::views::Field]) -> Result<Option<Valu
     let values = Value::Object(
         fields
             .iter()
+            .filter(|field| !field.value.is_null())
             .map(|field| (field.id.clone(), field.value.clone()))
             .collect(),
     );
@@ -815,16 +800,37 @@ fn edit_view_fields(fields: &[alondra_core::views::Field]) -> Result<Option<Valu
     let edited = std::fs::read_to_string(&path);
     let _ = std::fs::remove_file(&path);
     if !status?.success() {
-        anyhow::bail!("editor exited without saving");
+        anyhow::bail!(tr!(
+            "Editor exited without saving",
+            "El editor salió sin guardar"
+        ));
     }
     let edited = edited?;
     if edited == before {
         return Ok(None);
     }
-    let parsed: toml::Value =
-        toml::from_str(&edited).map_err(|error| anyhow::anyhow!("Invalid form TOML: {error}"))?;
+    let parsed: toml::Value = toml::from_str(&edited).map_err(|error| {
+        anyhow::anyhow!(trf!(
+            "Invalid form TOML: {error}",
+            "TOML del formulario no válido: {error}"
+        ))
+    })?;
     let values: Value = serde_json::to_value(parsed)?;
-    for field in fields.iter().filter(|field| field.required) {
+    validate_view_fields(fields, &values)?;
+    Ok(Some(values))
+}
+
+fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -> Result<()> {
+    use alondra_core::views::FieldKind;
+    for field in fields {
+        let label = &field.label;
+        if field
+            .visible_when
+            .as_ref()
+            .is_some_and(|condition| values.get(&condition.field) != Some(&condition.equals))
+        {
+            continue;
+        }
         let value = values.get(&field.id);
         let missing = value.is_none_or(|value| match value {
             Value::Null => true,
@@ -832,11 +838,63 @@ fn edit_view_fields(fields: &[alondra_core::views::Field]) -> Result<Option<Valu
             Value::Array(items) => items.is_empty(),
             _ => false,
         });
+        if field.required && missing {
+            anyhow::bail!(trf!("{label} is required", "{label} es obligatorio"));
+        }
         if missing {
-            anyhow::bail!("{} is required", field.label);
+            continue;
+        }
+        let value = value.expect("nonmissing value");
+        match &field.kind {
+            FieldKind::Choice { items }
+                if !value
+                    .as_str()
+                    .is_some_and(|choice| items.iter().any(|item| item.id == choice)) =>
+            {
+                anyhow::bail!(trf!(
+                    "{label}: choose one of the listed values",
+                    "{label}: elige uno de los valores de la lista"
+                ))
+            }
+            FieldKind::Stepper { min, max }
+                if !value
+                    .as_i64()
+                    .is_some_and(|number| (*min..=*max).contains(&number)) =>
+            {
+                anyhow::bail!(trf!(
+                    "{label}: expected a number from {min} to {max}",
+                    "{label}: se espera un número entre {min} y {max}"
+                ))
+            }
+            FieldKind::Toggle if !value.is_boolean() => anyhow::bail!(trf!(
+                "{label}: expected true or false",
+                "{label}: se espera true o false"
+            )),
+            FieldKind::Time
+                if !value.as_str().is_some_and(|time| {
+                    time.split_once(':').is_some_and(|(hour, minute)| {
+                        hour.parse::<u8>().is_ok_and(|hour| hour <= 23)
+                            && minute.parse::<u8>().is_ok_and(|minute| minute <= 59)
+                    })
+                }) =>
+            {
+                anyhow::bail!(trf!("{label}: expected HH:MM", "{label}: se espera HH:MM"))
+            }
+            FieldKind::Picker { source }
+                if source == "issue_picker"
+                    && !value
+                        .as_str()
+                        .is_some_and(|issue| alondra_core::issues::parse_ref(issue).is_some()) =>
+            {
+                anyhow::bail!(trf!(
+                    "{label}: paste an issue link or owner/repo#number",
+                    "{label}: pega un enlace de incidencia o owner/repo#número"
+                ))
+            }
+            _ => {}
         }
     }
-    Ok(Some(values))
+    Ok(())
 }
 
 /// The Mac's default app for a URL or file, through `open`. Tests never open one.
@@ -901,8 +959,6 @@ fn has_comments(export: &str) -> bool {
 impl App {
     fn new(tx: SyncSender<Msg>) -> Self {
         App {
-            #[cfg(test)]
-            domain: None,
             home_view: None,
             card_view: None,
             view_status: None,
@@ -925,11 +981,8 @@ impl App {
             agent_view: View::default(),
             agent_zoom: false,
             confirm: None,
+            pending_changed_action: None,
             pressed: KeyCode::Null,
-            #[cfg(test)]
-            sending: HashMap::new(),
-            #[cfg(test)]
-            sent: Default::default(),
             #[cfg(test)]
             posted: Default::default(),
             search: None,
@@ -967,11 +1020,9 @@ impl App {
             task_actions: HashMap::new(),
             task_actions_asked: HashSet::new(),
             interactions: HashMap::new(),
-            interactions_asked: HashSet::new(),
             cmdline: None,
             keymap: Keymap::default(),
             last_clock: now_millis(),
-            last_task_animation: now_millis() / 500,
             tx,
             open_views: std::sync::Arc::new(std::sync::Mutex::new(HashMap::new())),
             card_view_asked: None,
@@ -1086,6 +1137,10 @@ impl App {
     fn submit_view_fields(&mut self, action_id: &str, data_epoch: &str, fields: Value) {
         let input = json!({"fields": fields});
         let request = Client::action_body(data_epoch, action_id, None, input);
+        self.submit_view_request(request);
+    }
+
+    fn submit_view_request(&mut self, request: Value) {
         #[cfg(test)]
         self.posted
             .borrow_mut()
@@ -1095,8 +1150,19 @@ impl App {
                 .post("/actions", &request)
                 .map_err(|error| format!("{error:#}"))
                 .and_then(view_action_result);
-            let _ = tx.send(Msg::ViewAction(result));
+            let _ = tx.send(Msg::ViewAction { request, result });
         });
+    }
+
+    fn confirm_changed_action(&mut self) {
+        let Some((request, action_id)) = self.pending_changed_action.take() else {
+            return;
+        };
+        let data_epoch = request["data_epoch"].as_str().unwrap_or_default();
+        let option_id = request["option_id"].as_str();
+        let input = request["input"].clone();
+        let fresh = Client::action_body(data_epoch, &action_id, option_id, input);
+        self.submit_view_request(fresh);
     }
 
     pub fn flash(&mut self, text: impl Into<String>) {
@@ -1220,7 +1286,8 @@ impl App {
         let truncated_notice = tr!(
             "Diff truncated. Open the PR on GitHub to read the rest.",
             "Diferencias incompletas. Abre la PR en GitHub para leer el resto."
-        ).to_string();
+        )
+        .to_string();
         self.spawn(move |tx| {
             let result = Client::for_tui(Duration::from_secs(30))
                 .pull_request_diff(&id, &expected_head)
@@ -1254,17 +1321,7 @@ impl App {
                             None,
                             json!({"text": text.trim()}),
                         );
-                        #[cfg(test)]
-                        self.posted
-                            .borrow_mut()
-                            .push(("/actions".into(), request.clone()));
-                        self.spawn(move |tx| {
-                            let result = Client::for_tui(Duration::from_secs(20))
-                                .post("/actions", &request)
-                                .map_err(|error| format!("{error:#}"))
-                                .and_then(view_action_result);
-                            let _ = tx.send(Msg::ViewAction(result));
-                        });
+                        self.submit_view_request(request);
                     } else {
                         self.fail(tr!(
                             "Request changes is unavailable for this PR",
@@ -1272,10 +1329,10 @@ impl App {
                         ));
                     }
                 } else {
-                    #[cfg(test)]
-                    self.pr_feedback(&key, &pr, text.trim().to_string(), vec![]);
-                    #[cfg(not(test))]
-                    self.fail(tr!("Request changes is unavailable for this PR", "No se pueden solicitar cambios para esta PR"));
+                    self.fail(tr!(
+                        "Request changes is unavailable for this PR",
+                        "No se pueden solicitar cambios para esta PR"
+                    ));
                 }
             }
             Ok(_) => self.flash(trf!(
@@ -1392,96 +1449,9 @@ impl App {
         }
     }
 
-    /// Sends a domain command. `slot` names what is being done; while one is on its way the same
-    /// slot is refused, and after an unknown outcome the same slot resends the same envelope.
-    #[cfg(test)]
-    fn send(
-        &mut self,
-        slot: String,
-        key: Option<Key>,
-        expected: Revision,
-        command: Command,
-        ok: String,
-        draft: Option<(String, String)>,
-    ) {
-        let Some(epoch) = self.domain.as_ref().map(|d| d.data_epoch.clone()) else {
-            return;
-        };
-        let envelope = match self.sending.get(&slot) {
-            Some(sent) if sent.waiting => {
-                self.fail(tr!(
-                    "Still sending the previous one: wait for its answer",
-                    "Aún se está enviando el anterior: espera a su respuesta"
-                ));
-                return;
-            }
-            Some(sent) => sent.envelope.clone(),
-            None => crate::client::envelope(&epoch, expected, command),
-        };
-        #[cfg(test)]
-        self.sent.borrow_mut().push(envelope.clone());
-        self.sending.insert(
-            slot.clone(),
-            Sent {
-                envelope: envelope.clone(),
-                key,
-                ok,
-                draft,
-                waiting: true,
-            },
-        );
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(15)).command(&envelope);
-            let _ = tx.send(Msg::Command { slot, result });
-        });
-    }
-
-    #[cfg(test)]
-    fn command_done(&mut self, slot: String, result: Result<CommandOutcome, CommandFailure>) {
-        let Some(mut sent) = self.sending.remove(&slot) else {
-            return;
-        };
-        match result {
-            Ok(_) => {
-                if let Some(k) = &sent.key {
-                    self.reviews.remove(k);
-                }
-                self.flash(sent.ok);
-            }
-            Err(failure) => {
-                if let Some(k) = &sent.key {
-                    self.hidden.remove(k);
-                }
-                if let Some((draft, text)) = sent.draft.take().filter(|(_, t)| !t.trim().is_empty())
-                {
-                    self.drafts.insert(draft, (text, vec![]));
-                }
-                match failure {
-                    CommandFailure::Rejected(error) => {
-                        let why = crate::client::refusal(&error);
-                        self.fail(trf!(
-                            "Not done: {why}. Your text is kept.",
-                            "No se hizo: {why}. Tu texto se conserva."
-                        ));
-                    }
-                    CommandFailure::Uncertain(why) => {
-                        sent.waiting = false;
-                        self.sending.insert(slot, sent);
-                        self.fail(trf!(
-                            "Not confirmed: {why}. Doing it again resends the same request, so it cannot happen twice.",
-                            "Sin confirmar: {why}. Si lo repites se reenvía la misma petición, así que no puede pasar dos veces."
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
     fn reconcile(&mut self) {
         if self.home_view.is_none() {
             self.load_screen_view();
-            #[cfg(test)]
-            self.reconcile_legacy_fixture();
             return;
         }
         let keys = self.inbox_keys();
@@ -1506,115 +1476,8 @@ impl App {
         self.sync_open_views();
     }
 
-    #[cfg(test)]
-    fn reconcile_legacy_fixture(&mut self) {
-        let now = now_millis();
-        let present: HashSet<Key> = self.all_keys().into_iter().collect();
-        self.hidden
-            .retain(|k, at| present.contains(k) && now - *at < HIDE_GRACE_MS);
-        let keys = self.inbox_keys();
-        let prev = self.sel.clone();
-        match self
-            .sel
-            .as_ref()
-            .and_then(|s| keys.iter().position(|k| k == s))
-        {
-            Some(i) => self.sel_idx = i,
-            None => {
-                self.sel_idx = self.sel_idx.min(keys.len().saturating_sub(1));
-                self.sel = keys.get(self.sel_idx).cloned();
-            }
-        }
-        if self.sel != prev {
-            self.detail_scroll = 0;
-            self.card_view = None;
-            self.card_view_asked = None;
-            if prev.is_some() {
-                self.settle_until = now + SETTLE_MS;
-            }
-        }
-        let files: Vec<String> = self
-            .sel
-            .as_ref()
-            .and_then(|k| self.item(k))
-            .map(|i| {
-                self.item_files(i)
-                    .into_iter()
-                    .map(|(_, route)| route)
-                    .take(2)
-                    .collect()
-            })
-            .unwrap_or_default();
-        for route in files {
-            self.fetch(&route);
-        }
-        self.reconcile_agents();
-        self.reconcile_tasks();
-        self.load_selected_view();
-        if self.screen != Screen::Inbox {
-            self.load_selected_interaction();
-        }
-        self.sync_open_views();
-    }
-
-    /// The selected item's interaction, read when it is first shown and again when it changes.
-    #[cfg(test)]
-    fn load_selected_interaction(&mut self) {
-        let Some((id, revision)) = self
-            .sel
-            .as_ref()
-            .and_then(|k| self.item(k))
-            .and_then(|i| Some((inbox::interaction_of(i)?.clone(), i.revision)))
-        else {
-            return;
-        };
-        self.load_interaction(id, revision);
-    }
-
-    #[cfg(test)]
-    pub(crate) fn load_interaction(&mut self, id: InteractionId, asked_at: Revision) {
-        if self
-            .interactions
-            .get(&id)
-            .is_some_and(|i| i.revision >= asked_at)
-            || !self.interactions_asked.insert((id.clone(), asked_at))
-        {
-            return;
-        }
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(10))
-                .interaction(&id)
-                .map_err(|e| e.to_string());
-            let _ = tx.send(Msg::Interaction {
-                id,
-                asked_at,
-                result,
-            });
-        });
-    }
-
     fn on_msg(&mut self, m: Msg) {
         match m {
-            #[cfg(test)]
-            Msg::Data(mut p) => {
-                self.interactions.extend(
-                    std::mem::take(&mut p.interactions)
-                        .into_iter()
-                        .map(|i| (i.id.clone(), i)),
-                );
-                let current: HashMap<&InteractionId, Revision> = p
-                    .inbox
-                    .iter()
-                    .flat_map(|r| std::iter::once(r).chain(&r.children))
-                    .filter_map(|i| Some((inbox::interaction_of(i)?, i.revision)))
-                    .collect();
-                self.interactions
-                    .retain(|id, i| current.get(id).is_none_or(|at| *at <= i.revision));
-                self.domain = Some(*p);
-                self.connected = true;
-                self.loaded = true;
-                self.offline = false;
-            }
             Msg::ViewHome(Ok(view)) => {
                 if view.key != self.screen_view_key() {
                     return;
@@ -1629,6 +1492,8 @@ impl App {
                 self.reconcile();
             }
             Msg::ViewHome(Err(error)) => {
+                self.connected = false;
+                self.offline = true;
                 if self.home_view.is_none() {
                     self.screen_view_asked = None;
                     self.fail(error);
@@ -1639,6 +1504,20 @@ impl App {
                 result: Ok(view),
             } => {
                 if self.selected_view_key().as_deref() == Some(&key) {
+                    if key.starts_with("search") {
+                        if let Some(search) = self.search.as_mut() {
+                            let query = search.query();
+                            let sessions = view_render::rows(&view)
+                                .into_iter()
+                                .map(|(row, _)| row.id.clone())
+                                .collect();
+                            search.remote = Remote::Done {
+                                query,
+                                via: "Views".into(),
+                                sessions,
+                            };
+                        }
+                    }
                     self.card_view_asked = None;
                     self.view_data_epoch = Some(view.data_epoch.clone());
                     self.card_view = Some(view);
@@ -1658,6 +1537,11 @@ impl App {
                 result: Err(error),
             } => {
                 if self.card_view_asked.as_deref() == Some(&key) {
+                    if key.starts_with("search") {
+                        if let Some(search) = self.search.as_mut() {
+                            search.remote = Remote::Failed(error.clone());
+                        }
+                    }
                     self.card_view_asked = None;
                     if self.reader_after_view.as_deref() == Some(&key) {
                         self.reader_after_view = None;
@@ -1682,34 +1566,46 @@ impl App {
                 self.offline = false;
             }
             Msg::ViewFeed(Err(error)) => {
+                self.connected = false;
+                self.offline = true;
                 if self.view_status.is_none() {
                     self.fail(error);
                 }
             }
-            Msg::ViewAction(Ok(message)) => {
+            Msg::ViewAction {
+                request: _,
+                result: Ok(ViewActionReply::Applied(message)),
+            } => {
+                self.pending_changed_action = None;
                 self.flash(message);
             }
-            Msg::ViewAction(Err(error)) => self.fail(error),
+            Msg::ViewAction {
+                request,
+                result:
+                    Ok(ViewActionReply::Changed {
+                        message,
+                        action_id,
+                        button,
+                    }),
+            } => {
+                self.pending_changed_action = Some((request, action_id));
+                self.flash(trf!(
+                    "{message} · press y to {button}",
+                    "{message} · pulsa y para {button}"
+                ));
+            }
+            Msg::ViewAction {
+                request: _,
+                result: Err(error),
+            } => {
+                self.pending_changed_action = None;
+                self.fail(error);
+            }
             Msg::SyncError(error) => self.fail(error),
             Msg::Offline => {
                 self.connected = false;
                 self.offline = true;
             }
-            #[cfg(test)]
-            Msg::Command { slot, result } => self.command_done(slot, result),
-            Msg::Interaction {
-                id,
-                asked_at,
-                result,
-            } => match result {
-                Ok(interaction) => {
-                    self.interactions.insert(id, interaction);
-                }
-                Err(error) => {
-                    self.interactions_asked.remove(&(id, asked_at));
-                    self.fail(error);
-                }
-            },
             Msg::TaskActions {
                 task,
                 revision,
@@ -1797,18 +1693,6 @@ impl App {
                 }
                 Err(e) => self.fail(trf!("Task history: {e}", "Historia de la tarea: {e}")),
             },
-            Msg::Found { query, result } => {
-                if let Some(s) = self.search.as_mut().filter(|s| s.query() == query) {
-                    s.remote = match result {
-                        Ok((via, sessions)) => Remote::Done {
-                            query,
-                            via,
-                            sessions,
-                        },
-                        Err(e) => Remote::Failed(e),
-                    };
-                }
-            }
         }
     }
 
@@ -1823,57 +1707,10 @@ impl App {
             self.last_clock = now;
             dirty = true;
         }
-        #[cfg(test)]
-        if self.screen == Screen::Tasks && now / 500 != self.last_task_animation {
-            self.last_task_animation = now / 500;
-            dirty |= self.running_tasks();
-        }
         if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
             dirty = true;
         }
         self.load_threads();
-        #[cfg(test)]
-        let wants_remote = self.search.as_ref().and_then(|s| {
-            let q = s.query();
-            (matches!(s.remote, Remote::Idle)
-                && !q.is_empty()
-                && now - s.typed_at >= SEARCH_DEBOUNCE_MS)
-                .then_some(q)
-        });
-        #[cfg(test)]
-        if let Some(q) = wants_remote
-            && self.local_agent_matches(&q).is_empty()
-        {
-            if let Some(s) = self.search.as_mut() {
-                s.remote = Remote::Pending;
-            }
-            self.spawn(move |tx| {
-                let query = url::form_urlencoded::Serializer::new(String::new())
-                    .append_pair("q", &q)
-                    .finish();
-                let key = format!("search?{query}");
-                let result = Client::for_tui(Duration::from_secs(120))
-                    .views(&key, None)
-                    .map(|view| {
-                        let sessions = view
-                            .sections
-                            .iter()
-                            .flat_map(|section| &section.items)
-                            .filter_map(|item| {
-                                if let alondra_core::views::Item::Row(row) = item {
-                                    Some(row.id.clone())
-                                } else {
-                                    None
-                                }
-                            })
-                            .collect();
-                        ("session transcripts".to_owned(), sessions)
-                    })
-                    .map_err(|e| format!("{e:#}"));
-                let _ = tx.send(Msg::Found { query: q, result });
-            });
-            dirty = true;
-        }
         dirty
     }
 
@@ -1889,7 +1726,33 @@ impl App {
         } else if let Some(search) = self.search.as_mut().filter(|s| s.editing) {
             search.input.insert_str(&md::one_line(s));
             search.typed_at = now_millis();
-            search.remote = Remote::Idle;
+            search.remote = Remote::Pending;
+            self.update_search_view();
+        }
+    }
+
+    fn update_search_view(&mut self) {
+        let Some(query) = self.search.as_ref().map(Search::query) else {
+            return;
+        };
+        self.agent_idx = 0;
+        self.agent_sel = None;
+        let key = if query.is_empty() {
+            "search".to_owned()
+        } else {
+            format!(
+                "search?{}",
+                url::form_urlencoded::Serializer::new(String::new())
+                    .append_pair("q", &query)
+                    .finish()
+            )
+        };
+        if let Some(current) = self.view_navigation.last_mut() {
+            *current = key;
+            self.card_view = None;
+            self.card_view_asked = None;
+            self.load_selected_view();
+            self.sync_open_views();
         }
     }
 
@@ -1905,15 +1768,16 @@ impl App {
         if k.modifiers.contains(KeyModifiers::CONTROL) && k.code == KeyCode::Char('c') {
             return Flow::Quit;
         }
+        if self.pending_changed_action.is_some() {
+            if k.code == KeyCode::Char('y') && k.modifiers.is_empty() {
+                self.confirm_changed_action();
+                return Flow::Go;
+            }
+            self.pending_changed_action = None;
+        }
         if self.help {
             self.help_key(k);
             return Flow::Go;
-        }
-        // Domain-only fixtures still exercise the retired command path. Shipping builds
-        // never compile this dispatch and always consume server Views.
-        #[cfg(test)]
-        if self.domain.is_some() && self.home_view.is_none() && self.card_view.is_none() {
-            return self.on_legacy_key(k);
         }
         if self.schedules_open {
             if let Some(flow) = self.schedule_row_key(k) {
@@ -2008,6 +1872,12 @@ impl App {
                     self.navigate_view("node:orchestrator");
                 }
                 KeyCode::Char('/') if self.screen == Screen::Fleet => {
+                    self.search = Some(Search {
+                        input: TextInput::default(),
+                        editing: true,
+                        typed_at: now_millis(),
+                        remote: Remote::Idle,
+                    });
                     self.navigate_view("search");
                 }
                 _ => {
@@ -2023,68 +1893,6 @@ impl App {
                 }
                 self.inbox_cmd(cmd);
             }
-        }
-        Flow::Go
-    }
-
-    #[cfg(test)]
-    fn on_legacy_key(&mut self, k: KeyEvent) -> Flow {
-        if self.schedules_open {
-            let flow = self.schedule_key(k);
-            return flow;
-        }
-        if self.composer.is_some() {
-            self.composer_key(k);
-            return Flow::Go;
-        }
-        if self.cmdline.is_some() {
-            return self.cmdline_key(k);
-        }
-        if self.reader.as_ref().is_some_and(|reader| reader.find.as_ref().is_some_and(|find| find.editing)) {
-            self.find_key(k);
-            return Flow::Go;
-        }
-        if self.screen == Screen::Fleet && self.reader.is_none()
-            && self.search.as_ref().is_some_and(|search| search.editing) {
-            self.search_key(k);
-            return Flow::Go;
-        }
-        let cmd = self.keymap.read(k);
-        if let Cmd::Other(k) = cmd && k.modifiers.is_empty() {
-            match k.code {
-                KeyCode::Char('?') => { self.help = true; self.help_scroll = 0; return Flow::Go; }
-                KeyCode::Char(':') => { self.cmdline = Some(TextInput::default()); return Flow::Go; }
-                _ => {}
-            }
-        }
-        if self.reader.is_some() {
-            self.reader_cmd(cmd);
-            return Flow::Go;
-        }
-        match cmd {
-            Cmd::Pending => {}
-            Cmd::Other(k) => match k.code {
-                KeyCode::Char('q') => return Flow::Quit,
-                KeyCode::Tab => self.switch_screen(),
-                KeyCode::BackTab => self.switch_screen_back(),
-                KeyCode::Char('f') => self.show(if self.screen == Screen::Fleet { Screen::Inbox } else { Screen::Fleet }),
-                KeyCode::Char('n') => self.compose(Target::NewRequest, ""),
-                KeyCode::Char('s') if self.screen == Screen::Tasks => {
-                    self.schedules_open = true;
-                    self.reload_schedules();
-                }
-                KeyCode::Char('M') => self.message_orchestrator(),
-                _ => return match self.screen {
-                    Screen::Inbox => self.legacy_inbox_key(k),
-                    Screen::Tasks => self.tasks_key(k),
-                    Screen::Fleet => self.agents_key(k),
-                },
-            },
-            _ => match self.screen {
-                Screen::Inbox => self.inbox_cmd(cmd),
-                Screen::Tasks => self.tasks_cmd(cmd),
-                Screen::Fleet => self.agents_cmd(cmd),
-            },
         }
         Flow::Go
     }
@@ -2226,15 +2034,6 @@ impl App {
             }
             n if n.parse::<usize>().is_ok_and(|n| n > 0) && self.reader.is_none() => {
                 let i = n.parse::<isize>().unwrap_or(1) - 1;
-                #[cfg(test)]
-                if self.domain.is_some() && self.home_view.is_none() {
-                    match self.screen {
-                        Screen::Inbox => self.move_inbox(i),
-                        Screen::Tasks => self.move_tasks(i),
-                        Screen::Fleet => self.move_agents(i),
-                    }
-                    return Flow::Go;
-                }
                 self.move_inbox(i);
             }
             other => self.fail(trf!(
@@ -2370,16 +2169,10 @@ impl App {
         let text = c.input.text().trim().to_string();
         let needs_text = match &c.target {
             Target::ViewAction { required, .. } => *required,
-            #[cfg(test)]
-            Target::Answer { required, .. } => *required,
             Target::Message { message, .. } if message.kind == ops::MessageKind::MoreContext => {
                 false
             }
-            Target::NewRequest | Target::Message { .. } => {
-                c.chips.is_empty()
-            }
-            #[cfg(test)]
-            Target::Feedback { .. } => c.chips.is_empty(),
+            Target::NewRequest | Target::Message { .. } => c.chips.is_empty(),
             Target::Comment { .. } | Target::General { .. } => false,
         };
         if needs_text && text.is_empty() {
@@ -2400,35 +2193,7 @@ impl App {
                 self.previews.remove(&chip.seq);
             }
         }
-        #[cfg(test)]
-        let draft = c.target.draft_key().map(|k| (k, text.clone()));
         match c.target {
-            #[cfg(test)]
-            Target::Answer {
-                key,
-                interaction,
-                option,
-                label,
-                input,
-                revision,
-                ..
-            } => {
-                let inputs = input
-                    .filter(|_| !text.is_empty())
-                    .map(|id| (id, alondra_core::domain_v2::InputValue::Text(text.clone())))
-                    .into_iter()
-                    .collect();
-                self.answer(
-                    key,
-                    interaction,
-                    option,
-                    label,
-                    inputs,
-                    attachments,
-                    revision,
-                    draft,
-                );
-            }
             Target::ViewAction {
                 action_id,
                 data_epoch,
@@ -2459,34 +2224,8 @@ impl App {
                 }
                 let request =
                     Client::action_body(&data_epoch, &action_id, option_id.as_deref(), input);
-                #[cfg(test)]
-                self.posted
-                    .borrow_mut()
-                    .push(("/actions".into(), request.clone()));
-                self.spawn(move |tx| {
-                    let result = Client::for_tui(Duration::from_secs(20))
-                        .post("/actions", &request)
-                        .map_err(|error| format!("{error:#}"))
-                        .and_then(view_action_result);
-                    let _ = tx.send(Msg::ViewAction(result));
-                });
+                self.submit_view_request(request);
             }
-            #[cfg(test)]
-            Target::Feedback {
-                key,
-                presentation,
-                targets,
-                revision,
-                ..
-            } => self.feedback(
-                key,
-                presentation,
-                targets,
-                text,
-                attachments,
-                revision,
-                draft,
-            ),
             Target::Message {
                 key,
                 mut message,
@@ -2567,13 +2306,21 @@ impl App {
                         }
                         alondra_core::views::Item::ContentRef(content) => {
                             if content.kind == alondra_core::views::ContentKind::Diff {
-                                let Some(id) = view.key.strip_prefix("pull_request:") else { continue };
+                                let Some(id) = view.key.strip_prefix("pull_request:") else {
+                                    continue;
+                                };
                                 if !alondra_core::views::id::valid(id)
-                                    || content.fetch != format!("/pull-requests/{}/diff", alondra_core::views::id::path_segment(id))
+                                    || content.fetch
+                                        != format!(
+                                            "/pull-requests/{}/diff",
+                                            alondra_core::views::id::path_segment(id)
+                                        )
                                 {
                                     continue;
                                 }
-                                let Some(head) = content.digest.as_ref() else { continue };
+                                let Some(head) = content.digest.as_ref() else {
+                                    continue;
+                                };
                                 diffs.insert(content.fetch.clone(), (id.to_string(), head.clone()));
                             }
                             parts.push(Part::File {
@@ -2707,40 +2454,6 @@ impl App {
             self.rebuild_reader();
             return;
         }
-        #[cfg(test)]
-        self.open_legacy_reader();
-    }
-
-    #[cfg(test)]
-    fn open_legacy_reader(&mut self) {
-        let Some(key) = self.sel.clone() else { return };
-        let Some(item) = self.item(&key).cloned() else {
-            return;
-        };
-        let (glyph, kind, color) = draw::kind_glyph(&item.kind);
-        let parts = self.item_parts(&item);
-        for p in &parts {
-            if let Part::File { route, .. } = p {
-                self.fetch(route);
-            }
-        }
-        self.reader = Some(Reader {
-            key,
-            agent: self.agent_name(item.agent_id.as_ref()),
-            title: item.title.clone(),
-            kind,
-            glyph,
-            color,
-            parts,
-            blocks: vec![],
-            cursor: 0,
-            scroll: 0,
-            ranges: vec![],
-            view_h: 0,
-            total: 0,
-            find: None,
-        });
-        self.rebuild_reader();
     }
 
     fn rebuild_reader(&mut self) {
@@ -2816,20 +2529,36 @@ impl App {
             return;
         };
         let key = r.key.clone();
-        if self.card_view.as_ref().is_some_and(|view| view.key == key.0) {
+        if self
+            .card_view
+            .as_ref()
+            .is_some_and(|view| view.key == key.0)
+        {
             match k.code {
-                KeyCode::Char('s') => { self.send_review(); return; }
+                KeyCode::Char('s') => {
+                    self.send_review();
+                    return;
+                }
                 KeyCode::Char('v') | KeyCode::Char('x') => {
                     let _ = self.view_action_key(k);
                     return;
                 }
                 KeyCode::Char(c @ '1'..='9') => {
-                    let has_review = self.reviews.get(&key).is_some_and(|review| !review.is_empty());
+                    let has_review = self
+                        .reviews
+                        .get(&key)
+                        .is_some_and(|review| !review.is_empty());
                     if has_review {
                         let index = c as usize - '1' as usize;
-                        let accepts_text = self.card_view.as_ref().is_some_and(|view|
-                            view_render::actions(view).iter().flat_map(|action| &action.options)
-                                .nth(index).is_some_and(|option| matches!(option.input, alondra_core::views::Input::Text { .. })));
+                        let accepts_text = self.card_view.as_ref().is_some_and(|view| {
+                            view_render::actions(view)
+                                .iter()
+                                .flat_map(|action| &action.options)
+                                .nth(index)
+                                .is_some_and(|option| {
+                                    matches!(option.input, alondra_core::views::Input::Text { .. })
+                                })
+                        });
                         if !accepts_text {
                             self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.",
                                 "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
@@ -2837,11 +2566,13 @@ impl App {
                         }
                     }
                     let _ = self.view_action_key(k);
-                    if has_review && let Some(review) = self.reviews.get(&key)
-                        && let Some(composer) = self.composer.as_mut() {
-                            composer.input = TextInput::with(&review.feedback());
-                            composer.chips.extend(review.chips.clone());
-                        }
+                    if has_review
+                        && let Some(review) = self.reviews.get(&key)
+                        && let Some(composer) = self.composer.as_mut()
+                    {
+                        composer.input = TextInput::with(&review.feedback());
+                        composer.chips.extend(review.chips.clone());
+                    }
                     return;
                 }
                 _ => {}
@@ -2890,24 +2621,6 @@ impl App {
                 }
             }
             KeyCode::Char('s') => self.send_review(),
-            #[cfg(test)]
-            KeyCode::Char('v') => self.accept_or_open(&key),
-            #[cfg(test)]
-            KeyCode::Char('x') => self.mark_read(&key),
-            #[cfg(test)]
-            KeyCode::Char(c @ '1'..='9') => {
-                self.settle_until = 0;
-                let i = c as usize - '1' as usize;
-                if self.reviews.get(&key).is_some_and(|rv| !rv.is_empty())
-                    && self
-                        .item(&key)
-                        .is_some_and(|i| matches!(i.kind.as_str(), "question" | "action_request"))
-                {
-                    self.answer_with_review(&key, i);
-                } else {
-                    self.choose(&key, i);
-                }
-            }
             _ => {}
         }
     }
@@ -2920,14 +2633,20 @@ impl App {
         };
         if let Some(view) = self.card_view.as_ref().filter(|view| view.key == key.0) {
             let action = view_render::actions(view).into_iter().find(|action| {
-                action.enabled && alondra_core::views::action_id::ActionId::parse(&action.id)
-                    .is_ok_and(|id| matches!(id.verb,
-                        alondra_core::views::action_id::Verb::Changes |
-                        alondra_core::views::action_id::Verb::Reply))
+                action.enabled
+                    && alondra_core::views::action_id::ActionId::parse(&action.id).is_ok_and(|id| {
+                        matches!(
+                            id.verb,
+                            alondra_core::views::action_id::Verb::Changes
+                                | alondra_core::views::action_id::Verb::Reply
+                        )
+                    })
             });
             let Some(action) = action else {
-                self.fail(tr!("Press the number of the option your comments go with",
-                    "Pulsa el número de la opción con la que van tus comentarios"));
+                self.fail(tr!(
+                    "Press the number of the option your comments go with",
+                    "Pulsa el número de la opción con la que van tus comentarios"
+                ));
                 return;
             };
             let required = match &action.input {
@@ -2936,141 +2655,31 @@ impl App {
             };
             let epoch = view.data_epoch.clone();
             let review = self.reviews.get(&key);
-            let text = review.filter(|review| !review.is_empty()).map(Review::feedback).unwrap_or_default();
-            let chips = review.map(|review| review.chips.clone()).unwrap_or_default();
-            self.compose(Target::ViewAction {
-                action_id: action.id,
-                label: action.label,
-                data_epoch: epoch,
-                option_id: None,
-                required,
-                allow_attachments: action.attachments,
-                form_fields: None,
-                attachment_field: None,
-            }, &text);
-            if let Some(composer) = self.composer.as_mut() { composer.chips.extend(chips); }
-            return;
-        }
-        #[cfg(test)]
-        self.send_legacy_review(key);
-    }
-
-    #[cfg(test)]
-    fn send_legacy_review(&mut self, key: Key) {
-        let Some(review) = self.reviews.get(&key).filter(|rv| !rv.is_empty()) else {
-            self.compose(Target::General { send: true }, "");
-            return;
-        };
-        let (text, attachments) = (review.feedback(), dropped::stored(&review.chips));
-        let Some(item) = self.item(&key).cloned() else {
-            return;
-        };
-        match item.kind.as_str() {
-            "question" | "action_request" => {
-                self.fail(tr!(
-                    "Press the number of the option your comments go with",
-                    "Pulsa el número de la opción con la que van tus comentarios"
-                ));
-                return;
-            }
-            "information" => {
-                let Some(mut message) = self.reply_to(&item, ops::MessageKind::Reply) else {
-                    return;
-                };
-                message.text = text;
-                message.attachments = attachments;
-                let name = self.agent_name(item.agent_id.as_ref());
-                let n = i18n::comments(self.reviews.get(&key).map_or(0, Review::count));
-                self.message(
-                    Some(key),
-                    message,
-                    trf!(
-                        "{n} sent to {name}; marked read",
-                        "{n} enviados a {name}; marcado leído"
-                    ),
-                );
-            }
-            "pull_request" => {
-                let Some(pr) = self.item_pr(&item).map(|p| p.id.clone()) else {
-                    return;
-                };
-                self.pr_feedback(&key, &pr, text, attachments);
-            }
-            _ => {
-                let Some((presentation, targets, revision)) = self.feedback_subject(&key) else {
-                    return;
-                };
-                self.feedback(
-                    key,
-                    presentation,
-                    targets,
-                    text,
-                    attachments,
-                    revision,
-                    None,
-                );
-            }
-        }
-        self.reader = None;
-    }
-
-    /// The comments written on a question go as the text of the option picked, when it takes one.
-    #[cfg(test)]
-    fn answer_with_review(&mut self, key: &Key, i: usize) {
-        let Some(item) = self.item(key).cloned() else {
-            return;
-        };
-        let Some(options) = self.options(&item) else {
-            return;
-        };
-        let Some(option) = options.get(i) else {
-            let n = i + 1;
-            self.fail(trf!(
-                "This question has no option {n}",
-                "Esta pregunta no tiene opción {n}"
-            ));
-            return;
-        };
-        let Some(input) = option
-            .inputs
-            .iter()
-            .find(|s| s.kind == alondra_core::domain_v2::InputKind::Text)
-        else {
-            self.fail(tr!("That option takes no text: your comments stay here. Pick one that asks you to write.", "Esa opción no admite texto: tus comentarios se quedan aquí. Elige una que pida escribir."));
-            return;
-        };
-        let Some(a) = inbox::action(&item, "answer_question")
-            .filter(|a| a.enabled)
-            .cloned()
-        else {
-            let why = inbox::action(&item, "answer_question")
-                .map(unavailable)
+            let text = review
+                .filter(|review| !review.is_empty())
+                .map(Review::feedback)
                 .unwrap_or_default();
-            self.fail(why);
+            let chips = review
+                .map(|review| review.chips.clone())
+                .unwrap_or_default();
+            self.compose(
+                Target::ViewAction {
+                    action_id: action.id,
+                    label: action.label,
+                    data_epoch: epoch,
+                    option_id: None,
+                    required,
+                    allow_attachments: action.attachments,
+                    form_fields: None,
+                    attachment_field: None,
+                },
+                &text,
+            );
+            if let Some(composer) = self.composer.as_mut() {
+                composer.chips.extend(chips);
+            }
             return;
-        };
-        let Some(interaction) = inbox::interaction_of(&item).cloned() else {
-            return;
-        };
-        let Some(review) = self.reviews.get(key) else {
-            return;
-        };
-        let (text, attachments) = (review.feedback(), dropped::stored(&review.chips));
-        let inputs = std::iter::once((
-            input.id.clone(),
-            alondra_core::domain_v2::InputValue::Text(text),
-        ))
-        .collect();
-        self.answer(
-            key.clone(),
-            interaction,
-            option.id.clone(),
-            option.label.clone(),
-            inputs,
-            attachments,
-            a.expected_revision,
-            None,
-        );
+        }
     }
 
     pub fn search_key(&mut self, k: KeyEvent) {
@@ -3078,7 +2687,20 @@ impl App {
             return;
         };
         match k.code {
-            KeyCode::Esc => self.search = None,
+            KeyCode::Esc => {
+                self.search = None;
+                if self
+                    .view_navigation
+                    .last()
+                    .is_some_and(|key| key.starts_with("search"))
+                {
+                    self.view_navigation.pop();
+                    self.card_view = None;
+                    self.card_view_asked = None;
+                    self.load_selected_view();
+                    self.sync_open_views();
+                }
+            }
             KeyCode::Enter | KeyCode::Down | KeyCode::Up | KeyCode::Tab => {
                 s.editing = false;
                 if s.query().is_empty() {
@@ -3090,23 +2712,11 @@ impl App {
                 s.input.handle(k);
                 if s.query() != before {
                     s.typed_at = now_millis();
-                    s.remote = Remote::Idle;
-                    self.agent_idx = 0;
-                    self.agent_sel = None;
+                    s.remote = Remote::Pending;
+                    self.update_search_view();
                 }
             }
         }
-    }
-
-    #[cfg(test)]
-    pub fn agent_name(&self, id: Option<&AgentId>) -> String {
-        let Some(id) = id else {
-            return tr!("orchestrator", "orquestador").into();
-        };
-        self.domain
-            .as_ref()
-            .and_then(|d| d.agents.iter().find(|a| &a.id == id))
-            .map_or_else(|| id.0.chars().take(8).collect(), |a| a.name.clone())
     }
 
     /// The id `claude attach` takes for an agent: its short id when the runtime knows it.

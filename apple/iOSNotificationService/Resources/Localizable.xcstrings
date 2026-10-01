@@ -1,6 +1,26 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "New activity in Alondra": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Nueva actividad en Alondra"
+          }
+        }
+      }
+    },
+    "Open Alondra to view activity": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abre Alondra para ver la actividad"
+          }
+        }
+      }
+    },
     "Allow": {
       "localizations": {
         "es": {

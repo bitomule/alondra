@@ -116,10 +116,7 @@ async fn execute_tick(hub: &Hub, claude_home: &Path, directory: &Path, ownership
     let prompt = if run.kind == RunKind::Compact { "/compact".into() } else {
         let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this durable inbox batch; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
         if !runtime.pending_resolutions.is_empty() {
-            text.push_str("\nDURABLE USER RESOLUTION: The user reviewed the interrupted executions below and chose to continue WITHOUT replaying their inbox batches. These resolutions override unfinished instructions in the older conversation. Do not repeat or continue those batches unless a NEW User message explicitly authorizes it. Automated Alondra updates are not user authorization. This does not mean their business actions succeeded or their underlying requests were cancelled. For unresolved work inspect fleet and ask the user instead of executing the previous intent.\n");
-            for resolution in &runtime.pending_resolutions {
-                text.push_str(&format!("Resolved execution {}: do not replay inbox message IDs {:?}.\n", resolution.run_id, resolution.message_ids));
-            }
+            text.push_str("\nDURABLE USER RESOLUTION: The user reviewed previous interrupted inbox batches and chose to continue WITHOUT replaying any of them. This overrides unfinished instructions in the older conversation. Do not repeat or continue those batches unless a NEW User message explicitly authorizes it. Automated Alondra updates are not user authorization. This does not mean their business actions succeeded or their underlying requests were cancelled. For unresolved work inspect fleet and ask the user instead of executing the previous intent.\n");
         }
         if !resume {
             text.push_str("This is a new conversation. Call fleet to inspect current operational state before acting. Do not infer that existing tasks need to be started again.\n");
@@ -294,7 +291,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         execute_tick(&restarted, &ch, &dir, &lock, &exe).await.unwrap();
         assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 2);
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
-        assert!(prompt.contains("do not replay inbox message IDs [1]"), "{prompt}");
+        assert!(prompt.contains("WITHOUT replaying any of them") && !prompt.contains("inbox message IDs"), "{prompt}");
         assert!(prompt.contains("inbox message 2") && !prompt.contains("--- Alondra inbox message 1 ---"), "{prompt}");
         restarted.read(|v| assert!(v.orchestrator.as_ref().unwrap().pending_resolutions.is_empty()));
         std::fs::remove_dir_all(&hub.home).unwrap();
@@ -462,7 +459,7 @@ exit 1
         execute_tick(&hub, &ch, &dir, &lock, &exe).await.unwrap();
         let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
         assert!(prompt.contains("WITHOUT replaying"));
-        assert!(prompt.contains("do not replay inbox message IDs [1]"));
+        assert!(prompt.contains("WITHOUT replaying any of them"));
         assert!(prompt.contains("inbox message 2"));
         assert!(!prompt.contains("--- Alondra inbox message 1 ---"));
         hub.read(|v| {

@@ -261,7 +261,8 @@ async fn execute_external(
             no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This action is no longer available"))
         } else {
             let message = body.get("message").and_then(Value::as_str).unwrap_or("Action was rejected");
-            json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":if lang == Lang::Es { "No se pudo completar la acción" } else { message },"code":body.get("code").cloned().unwrap_or(json!("action_rejected"))})
+            let code = body.get("code").and_then(Value::as_str).unwrap_or("action_rejected");
+            json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":rejection_message(lang, code, message),"code":code})
         }
     };
     match action.verb {
@@ -402,7 +403,8 @@ async fn schedule_action(
     use alondra_core::domain_v2::ScheduleId;
     let state = domain.state()?;
     if action.verb == Verb::SchedSave && action.subject == "view" {
-        let body = schedule_draft(&request.input.fields, None);
+        let options = schedule_option_specs(home, &request.input.fields, None);
+        let body = schedule_draft(&request.input.fields, None, &options);
         let result = crate::domain_schedule_api::mutation(domain, home, "POST", "/schedules", Some(&body), identity, authorize);
         return Ok(schedule_reply(result, lang, stamp, state.revision));
     }
@@ -420,11 +422,14 @@ async fn schedule_action(
         Verb::SchedRun => ("POST", format!("/schedules/{raw_id}/runs"), None),
         Verb::SchedDelete => ("DELETE", format!("/schedules/{raw_id}"), None),
         Verb::SchedToggle => {
-            let mut body = schedule_draft(&serde_json::Map::new(), Some(schedule));
+            let mut body = schedule_draft(&serde_json::Map::new(), Some(schedule), &[]);
             body["enabled"] = json!(!schedule.enabled);
             ("PUT", format!("/schedules/{raw_id}"), Some(body))
         }
-        Verb::SchedSave => ("PUT", format!("/schedules/{raw_id}"), Some(schedule_draft(&request.input.fields, Some(schedule)))),
+        Verb::SchedSave => {
+            let options = schedule_option_specs(home, &request.input.fields, Some(schedule));
+            ("PUT", format!("/schedules/{raw_id}"), Some(schedule_draft(&request.input.fields, Some(schedule), &options)))
+        },
         _ => return Ok(no_longer_available(lang, "This schedule action is unavailable")),
     };
     let result = crate::domain_schedule_api::mutation(domain, home, method, &path,
@@ -432,7 +437,17 @@ async fn schedule_action(
     Ok(schedule_reply(result, lang, stamp, state.revision))
 }
 
-fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_core::domain_v2::Schedule>) -> Value {
+fn schedule_option_specs(home: &std::path::Path, fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_core::domain_v2::Schedule>) -> Vec<alondra_core::options::Spec> {
+    let project = fields.get("project").and_then(Value::as_str)
+        .or_else(|| schedule.and_then(|schedule| schedule.project.as_deref()))
+        .filter(|project| !project.is_empty());
+    let file = std::fs::read_to_string(alondra_core::options::path_in(home)).ok()
+        .and_then(|contents| alondra_core::options::OptionsFile::parse(&contents).ok())
+        .unwrap_or_default();
+    file.catalog(project)
+}
+
+fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alondra_core::domain_v2::Schedule>, option_specs: &[alondra_core::options::Spec]) -> Value {
     let text = |key: &str, fallback: &str| -> String {
         fields.get(key).and_then(Value::as_str).unwrap_or(fallback).to_owned()
     };
@@ -452,11 +467,32 @@ fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alo
     let disallowed_tools = fields.get("disallowed_tools").and_then(Value::as_str)
         .map(|value| value.lines().map(str::trim).filter(|line| !line.is_empty()).collect::<Vec<_>>())
         .map(|lines| json!(lines)).unwrap_or_else(|| schedule.map(|schedule| json!(schedule.disallowed_tools)).unwrap_or(json!([])));
+    let previous_project = schedule.and_then(|schedule| schedule.project.as_deref()).unwrap_or("");
+    let selected_project = project.as_str().unwrap_or("");
+    let mut options = serde_json::Map::new();
+    if previous_project == selected_project {
+        for (id, choice) in schedule.into_iter().flat_map(|schedule| &schedule.options) {
+            let value = json!(choice);
+            if option_specs.is_empty() || option_specs.iter().find(|spec| spec.id == id.as_str())
+                .is_some_and(|spec| valid_schedule_option(spec, &value) && value != json!(spec.default))
+            {
+                options.insert(id.clone(), value);
+            }
+        }
+    }
+    for spec in option_specs {
+        if let Some(value) = fields.get(&spec.id) {
+            options.remove(&spec.id);
+            if valid_schedule_option(spec, value) && value != &json!(spec.default) {
+                options.insert(spec.id.clone(), value.clone());
+            }
+        }
+    }
     json!({
         "title":text("name", schedule.map_or("", |schedule| schedule.title.as_str())),
         "text":text("mission", schedule.map_or("", |schedule| schedule.text.as_str())),
         "project":project,
-        "options":schedule.map(|schedule| json!(schedule.options)).unwrap_or(json!({})),
+        "options":Value::Object(options),
         "disallowed_tools":disallowed_tools,
         "frequency":frequency,
         "hour":hour,
@@ -469,6 +505,15 @@ fn schedule_draft(fields: &serde_json::Map<String, Value>, schedule: Option<&alo
     })
 }
 
+fn valid_schedule_option(spec: &alondra_core::options::Spec, value: &Value) -> bool {
+    match spec.kind {
+        alondra_core::options::Kind::Toggle => value.is_boolean(),
+        alondra_core::options::Kind::Choice => value.as_str().is_some_and(|selected| {
+            spec.values.iter().any(|candidate| candidate.id == selected)
+        }),
+    }
+}
+
 fn schedule_reply(result: Value, lang: Lang, stamp: &str, revision: u64) -> Value {
     let status = result["status"].as_u64().unwrap_or(500) as u16;
     let body = result["body"].clone();
@@ -478,7 +523,8 @@ fn schedule_reply(result: Value, lang: Lang, stamp: &str, revision: u64) -> Valu
         no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This schedule changed"))
     } else {
         let message = body.get("message").and_then(Value::as_str).unwrap_or("Schedule action failed");
-        json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":body.get("code").cloned().unwrap_or(json!("schedule_rejected")),"message":if lang == Lang::Es { "No se pudo completar la acción de programación" } else { message }})
+        let code = body.get("code").and_then(Value::as_str).unwrap_or("schedule_rejected");
+        json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":code,"message":rejection_message(lang, code, message)})
     }
 }
 
@@ -805,6 +851,21 @@ fn rejected_field(lang: Lang, field: &str, message: &str) -> Value {
     json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","field":field,"message":localize(lang, message)})
 }
 
+fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
+    if lang != Lang::Es { return english.to_owned(); }
+    match code {
+        "incompatible_protocol" => "Actualiza Alondra para completar esta acción",
+        "forbidden" => "Este dispositivo ya no tiene permiso para completar la acción",
+        "invalid_input" => "Revisa los datos de la acción e inténtalo de nuevo",
+        "not_found" | "no_longer_available" => "Este elemento ya no está disponible",
+        "conflict" | "stale_head" | "stale_revision" | "revision_conflict" => "El elemento ha cambiado; actualiza la vista e inténtalo de nuevo",
+        "storage_unavailable" => "Los datos de Alondra no están disponibles ahora mismo",
+        "external_read_failed" | "github_unavailable" => "No se pudo comprobar el estado remoto",
+        "schedule_rejected" => "No se pudo completar la acción de programación",
+        _ => "No se pudo completar la acción",
+    }.to_owned()
+}
+
 fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
     if lang != Lang::Es { return message; }
     match message {
@@ -865,6 +926,45 @@ mod tests {
 
     use alondra_core::domain_v2::{RequestId, Task, TaskState};
 
+    fn choice_spec(id: &str, selected: &str, default: &str) -> alondra_core::options::Spec {
+        alondra_core::options::Spec {
+            id: id.into(), label: id.into(), kind: alondra_core::options::Kind::Choice,
+            values: vec![
+                alondra_core::options::SpecValue { id: selected.into(), label: selected.into(), description: None },
+                alondra_core::options::SpecValue { id: default.into(), label: default.into(), description: None },
+            ],
+            default: alondra_core::options::Choice::Value(default.into()), builtin: false,
+        }
+    }
+
+    #[test]
+    fn schedule_draft_accepts_only_options_in_the_selected_catalog() {
+        let fields = json!({"name":"Morning", "mission":"Review work", "project":"App",
+            "pr":"review", "effort":"high", "injected":"unexpected"});
+        let specs = [choice_spec("pr", "review", "auto"), choice_spec("effort", "high", "normal")];
+        let draft = schedule_draft(fields.as_object().unwrap(), None, &specs);
+        assert_eq!(draft["options"], json!({"pr":"review", "effort":"high"}));
+        assert_eq!(draft["project"], "App");
+    }
+
+    #[test]
+    fn schedule_draft_drops_old_project_options_when_project_changes() {
+        let schedule: alondra_core::domain_v2::Schedule = serde_json::from_value(json!({
+            "id":"schedule-1", "title":"Morning", "text":"Review work",
+            "project":"Old", "options":{"old_option":"old_value"},
+            "disallowed_tools":[], "frequency":"daily", "hour":9, "minute":0,
+            "weekday":null, "interval":null, "start_at":null, "enabled":true,
+            "next_run":null, "revision":1, "deleted_at":null
+        })).unwrap();
+        let fields = json!({"project":"New", "new_option":"new_value", "old_option":"stale"});
+        let specs = [choice_spec("new_option", "new_value", "default")];
+        let draft = schedule_draft(fields.as_object().unwrap(), Some(&schedule), &specs);
+        assert_eq!(draft["options"], json!({"new_option":"new_value"}));
+        let same_project = json!({"project":"Old"});
+        let draft = schedule_draft(same_project.as_object().unwrap(), Some(&schedule), &[]);
+        assert_eq!(draft["options"], json!({"old_option":"old_value"}));
+    }
+
     fn completed_task(id: &str, revision: u64) -> Task {
         Task {
             id: TaskId(id.into()), request_id: RequestId("request".into()), agent_id: None,
@@ -913,6 +1013,12 @@ mod tests {
             "Elige una opción");
         assert_eq!(no_longer_available(Lang::Es, "This pull request is no longer open")["message"],
             "Esta PR ya no está abierta");
+        assert_eq!(rejection_message(Lang::Es, "stale_head", "head changed"),
+            "El elemento ha cambiado; actualiza la vista e inténtalo de nuevo");
+        assert_eq!(rejection_message(Lang::Es, "storage_unavailable", "database unavailable"),
+            "Los datos de Alondra no están disponibles ahora mismo");
+        assert_eq!(rejection_message(Lang::En, "storage_unavailable", "database unavailable"),
+            "database unavailable");
     }
 
     #[test]

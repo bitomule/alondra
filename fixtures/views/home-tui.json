@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v1386702ccd6a2f62",
+  "version": "v848401d85cff1ee5",
   "cursor": "cursor-1",
   "status": {
     "version": "v2d6ccffc4668392a",
@@ -51,10 +51,10 @@
       "items": [
         {
           "type": "row",
-          "id": "i-1",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
           "link": {
             "kind": "view",
-            "key": "card:i-1"
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
           },
           "icon": "question",
           "title": "Build a feature",
@@ -63,10 +63,10 @@
         },
         {
           "type": "row",
-          "id": "i-3",
+          "id": "hf-weekly-2026-09-30",
           "link": {
             "kind": "view",
-            "key": "card:i-3"
+            "key": "card:hf-weekly-2026-09-30"
           },
           "icon": "delivery",
           "title": "Build a feature",
@@ -82,10 +82,10 @@
       "items": [
         {
           "type": "row",
-          "id": "pr-1",
+          "id": "github.com/example/repo#12",
           "link": {
             "kind": "view",
-            "key": "card:pr-1"
+            "key": "card:github.com/example/repo#12"
           },
           "icon": "pull_request",
           "title": "example/repo #12",
@@ -93,10 +93,10 @@
           "struck": false,
           "children": [
             {
-              "id": "i-5",
+              "id": "8fa4034b-249e-4487-a89b-57de38c26372",
               "link": {
                 "kind": "view",
-                "key": "card:i-5"
+                "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
               },
               "icon": "question",
               "title": "Build a feature",
@@ -104,10 +104,10 @@
               "struck": false
             },
             {
-              "id": "i-6",
+              "id": "cc2d034b-249e-4487-a89b-57de38c26372",
               "link": {
                 "kind": "view",
-                "key": "card:i-6"
+                "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
               },
               "icon": "notice",
               "title": "Build a feature",
@@ -125,10 +125,10 @@
       "items": [
         {
           "type": "row",
-          "id": "i-2",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
           "link": {
             "kind": "view",
-            "key": "card:i-2"
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
           },
           "icon": "notice",
           "title": "Build a feature",
@@ -143,10 +143,10 @@
       "items": [
         {
           "type": "card",
-          "id": "i-1",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
           "link": {
             "kind": "view",
-            "key": "card:i-1"
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
           },
           "icon": "question",
           "eyebrow": {
@@ -160,7 +160,7 @@
               "text": "Node One",
               "link": {
                 "kind": "view",
-                "key": "node:a-1"
+                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
               }
             },
             {
@@ -188,7 +188,7 @@
           },
           "actions": [
             {
-              "id": "ans:i-1@1",
+              "id": "ans:a98d034b-249e-4487-a89b-57de38c26372@1",
               "label": "Answer",
               "style": "primary",
               "presentation": "options",
@@ -200,7 +200,7 @@
               "stamp": "Answered"
             },
             {
-              "id": "ctx:i-1@1",
+              "id": "ctx:a98d034b-249e-4487-a89b-57de38c26372@1",
               "label": "Need more context",
               "style": "secondary",
               "presentation": "button",

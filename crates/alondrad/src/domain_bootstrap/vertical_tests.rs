@@ -153,7 +153,7 @@ impl Fixture {
             "accept_delivery" => ("POST", format!("/interactions/{}/acceptance", interaction.unwrap())),
             "create_document" => ("POST", format!("/tasks/{}/documents", task.unwrap())),
             "decide_document_review" => ("PUT", format!("/tasks/{}/documents/{}/review", task.unwrap(), command["document_id"].as_str().unwrap())),
-            "claim_merge_authorization" => ("POST", format!("/merge-authorizations/{}/claim", command["authorization_id"].as_str().unwrap())),
+            "claim_merge_authorization" => ("POST", "/merge-authorizations/claim".to_owned()),
             _ => panic!("vertical test command has no resource route: {kind}"),
         };
         let mut body = serde_json::Map::new();
@@ -162,7 +162,8 @@ impl Fixture {
         }
         for (key, value) in command {
             if key != "kind" && !(key == "request_id" && path != "/requests")
-                && !(key == "task_id" && (path.starts_with("/tasks/") || kind == "claim_merge_authorization")) {
+                && !(key == "task_id" && (path.starts_with("/tasks/") || kind == "claim_merge_authorization"))
+                && !(key == "authorization_id" && kind == "claim_merge_authorization") {
                 body.insert(key.clone(), value.clone());
             }
         }
@@ -440,8 +441,17 @@ async fn http_merge_claim_is_admitted_only_with_github_confirmation_and_the_merg
     assert_eq!(fixture.domain.state().unwrap().merge_authorizations[&"auth-7".into()].attempt,
         MergeAttemptState::Unclaimed);
     fixture.github.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Open, merged_head: None }));
+    let state = fixture.domain.state().unwrap();
+    let authorization = &state.merge_authorizations[&"auth-7".into()];
+    assert!(authorization.valid);
+    assert_eq!(authorization.head, head);
+    assert_eq!(state.tasks[&authorization.task_id].agent_id.as_ref().map(|agent| agent.0.as_str()), Some("agent-a"));
     let (status, body) = fixture.post(&fixture.agent, &envelope).await;
     assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body, json!({"message":"Merge the pull request you presented using squash."}));
+    for internal in ["data_epoch", "revision", "authorization_id", "task_id", "pr_id"] {
+        assert!(body.get(internal).is_none(), "{internal} leaked in {body}");
+    }
     assert_eq!(fixture.domain.state().unwrap().merge_authorizations[&"auth-7".into()].attempt,
         MergeAttemptState::Claimed);
     let (status, replay) = fixture.post(&fixture.agent, &envelope).await;

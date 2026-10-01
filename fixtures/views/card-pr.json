@@ -2,9 +2,9 @@
   "protocol": 1,
   "data_epoch": "test-epoch",
   "view": "card",
-  "key": "card:pr-1",
+  "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "v6cc8a3b16a8c55c9",
+  "version": "ved8243ef29e1e0f2",
   "cursor": "cursor-1",
   "title": "example/repo #12",
   "status": {
@@ -51,10 +51,10 @@
       "items": [
         {
           "type": "card",
-          "id": "pr-1",
+          "id": "github.com/example/repo#12",
           "link": {
             "kind": "view",
-            "key": "card:pr-1"
+            "key": "card:github.com/example/repo#12"
           },
           "icon": "pull_request",
           "eyebrow": {
@@ -83,10 +83,10 @@
           "detail": "included",
           "children": [
             {
-              "id": "i-5",
+              "id": "8fa4034b-249e-4487-a89b-57de38c26372",
               "link": {
                 "kind": "view",
-                "key": "card:i-5"
+                "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
               },
               "icon": "question",
               "eyebrow": {
@@ -120,7 +120,7 @@
               },
               "actions": [
                 {
-                  "id": "ans:i-5@1",
+                  "id": "ans:8fa4034b-249e-4487-a89b-57de38c26372@1",
                   "label": "Answer",
                   "style": "primary",
                   "presentation": "options",
@@ -132,7 +132,7 @@
                   "stamp": "Answered"
                 },
                 {
-                  "id": "ctx:i-5@1",
+                  "id": "ctx:8fa4034b-249e-4487-a89b-57de38c26372@1",
                   "label": "Need more context",
                   "style": "secondary",
                   "presentation": "button",
@@ -148,10 +148,10 @@
               ]
             },
             {
-              "id": "i-6",
+              "id": "cc2d034b-249e-4487-a89b-57de38c26372",
               "link": {
                 "kind": "view",
-                "key": "card:i-6"
+                "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
               },
               "icon": "notice",
               "eyebrow": {
@@ -165,7 +165,7 @@
                   "text": "Node One",
                   "link": {
                     "kind": "view",
-                    "key": "node:a-1"
+                    "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
                   }
                 },
                 {
@@ -193,7 +193,7 @@
               },
               "actions": [
                 {
-                  "id": "read:i-6@1",
+                  "id": "read:cc2d034b-249e-4487-a89b-57de38c26372@1",
                   "label": "Mark as read",
                   "style": "secondary",
                   "presentation": "button",
@@ -206,7 +206,7 @@
                   "key": "x"
                 },
                 {
-                  "id": "reply:i-6@1",
+                  "id": "reply:cc2d034b-249e-4487-a89b-57de38c26372@1",
                   "label": "Reply",
                   "style": "secondary",
                   "presentation": "button",
@@ -236,7 +236,7 @@
           },
           "actions": [
             {
-              "id": "ask_pr:pr-1@0",
+              "id": "ask_pr:github.com/example/repo#12@0",
               "label": "Ask about the PR",
               "style": "secondary",
               "presentation": "button",
@@ -250,7 +250,7 @@
               "enabled": true
             },
             {
-              "id": "changes:pr-1@0~abcdef12",
+              "id": "changes:github.com/example/repo#12@0~abcdef12",
               "label": "Request changes",
               "style": "secondary",
               "presentation": "button",
@@ -267,7 +267,7 @@
               "enabled": true,
               "link": {
                 "kind": "view",
-                "key": "pull_request:pr-1"
+                "key": "pull_request:github.com/example/repo#12"
               }
             }
           ]

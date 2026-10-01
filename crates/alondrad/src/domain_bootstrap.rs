@@ -1022,6 +1022,7 @@ mod tests {
             ("/schedules", StatusCode::OK),
             ("/schedules/missing", StatusCode::NOT_FOUND),
             ("/views/home?protocol=1&client=tui&lang=en", StatusCode::OK),
+            ("/delivery-attempts?after=0", StatusCode::OK),
             (
                 "/document-revisions/missing/content?offset=0",
                 StatusCode::NOT_FOUND,
@@ -1058,7 +1059,7 @@ mod tests {
                 assert_eq!(body["code"], "not_found", "handler must answer {path}");
             }
         }
-        for path in ["/delivery-attempts?after=0", "/tasks/missing/actions"] {
+        for path in ["/tasks/missing/actions"] {
             assert_eq!(client.get(format!("{base}{path}")).send().await.unwrap().status(),
                 StatusCode::NOT_FOUND, "retired {path}");
         }

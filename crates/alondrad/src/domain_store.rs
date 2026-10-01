@@ -103,6 +103,28 @@ pub(crate) struct Commit {
 }
 
 impl DomainStore {
+    /// Return only a command that already has a durable semantic receipt for this exact actor,
+    /// command id and epoch. Route adapters use this to recover opaque fields for an idempotent
+    /// retry without reopening a completed authorization to a new command.
+    pub(crate) fn receipted_command(
+        &self,
+        actor: &Actor,
+        command_id: &CommandId,
+        data_epoch: &DataEpoch,
+    ) -> std::result::Result<Option<Command>, StoreError> {
+        let actor_key = String::from_utf8(canonical::bytes(&match actor {
+            Actor::Orchestrator { .. } => serde_json::json!({"kind":"orchestrator"}),
+            _ => serde_json::to_value(actor)?,
+        })?)
+        .context("actor encoding")?;
+        let command: Option<String> = self.conn.query_row(
+            "SELECT a.command FROM command_audit a JOIN semantic_receipts r USING(actor,command_id,data_epoch) WHERE a.actor=?1 AND a.command_id=?2 AND a.data_epoch=?3",
+            params![actor_key, command_id.0, data_epoch.0],
+            |row| row.get(0),
+        ).optional()?;
+        command.map(|command| serde_json::from_str(&command).map_err(StoreError::from)).transpose()
+    }
+
     /// Schedule route adapters must check the transport receipt before parsing a
     /// draft or reading current options. A retry returns the original outcome.
     pub(crate) fn transport_receipt(

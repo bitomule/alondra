@@ -71,7 +71,7 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
     ));
     let projection = context.domain.projection();
     if let Some(item) = projection.inbox.iter().chain(projection.inbox.iter().flat_map(|root| root.children.iter())).find(|item| matches!(&item.subject, InboxSubject::DocumentReview { revision_id, .. } if revision_id == &revision.id)) {
-        let card = super::card::from_item(item, context, true);
+        let card = super::card::from_item(item, context, true)?;
         if !card.actions.is_empty() { view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions: card.actions })])); }
     }
     Ok(view)
@@ -120,7 +120,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
     if let Some(item) = projection.inbox.iter().find(
         |item| matches!(&item.subject, InboxSubject::PullRequest { pr_id } if pr_id == &pr.id),
     ) {
-        let card = super::card::from_item(item, context, true);
+        let card = super::card::from_item(item, context, true)?;
         if let Some(checks) = card.checks {
             view.sections
                 .push(common::section("checks", None, vec![Item::Checks(checks)]));

@@ -82,8 +82,14 @@ public struct ServiceRequest: Sendable, Equatable {
             (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
                 || byte == 45 || byte == 95
         }) { return true }
-        guard id.hasPrefix("github.com/"), let hash = id.firstIndex(of: "#") else { return false }
-        let repo = id[id.index(id.startIndex, offsetBy: "github.com/".count)..<hash]
+        guard let hash = id.firstIndex(of: "#"), id[id.index(after: hash)...].firstIndex(of: "#") == nil,
+              let slash = id[..<hash].firstIndex(of: "/") else { return false }
+        let host = id[..<slash]
+        guard !host.isEmpty, host == host.lowercased(), host.utf8.allSatisfy({ byte in
+            (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57) || byte == 45 || byte == 46
+        }) else { return false }
+        let repo = id[id.index(after: slash)..<hash]
+        guard repo == repo.lowercased() else { return false }
         let parts = repo.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 2, parts.allSatisfy({ part in
             !part.isEmpty && part != "." && part != ".." && part.utf8.allSatisfy { byte in
@@ -93,7 +99,7 @@ public struct ServiceRequest: Sendable, Equatable {
         }) else { return false }
         let number = id[id.index(after: hash)...]
         return !number.isEmpty && number.utf8.allSatisfy({ (48...57).contains($0) })
-            && (UInt64(number).map { $0 > 0 } ?? false)
+            && (UInt64(number).map { $0 > 0 && $0 <= 9_007_199_254_740_991 } ?? false)
     }
 
     public static func validClientQuery(method: HTTPMethod, path: [String], query: [(String, String)]) -> Bool {

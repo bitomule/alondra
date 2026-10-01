@@ -130,8 +130,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         }
         text
     });
-    let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved,
-        &crate::domain_schedule_runner::ProducerLaunch { task_id: &task.id, request_id: &task.request_id, state: &current });
+    let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved);
     let settings = crate::domain_sessions::prepare(home, &format!("launch-{}", crate::auth::random_hex(8)), &[plugin.as_path()])
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;
     let mut args: Vec<String> = ["--bg", "--name", &body.name, "--permission-mode", "auto"].map(String::from).into();

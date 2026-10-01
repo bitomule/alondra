@@ -166,16 +166,16 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
             cards
                 .iter()
                 .map(|item| {
-                    let card = super::card::from_item(item, context, false);
-                    Item::Row(common::row(
+                    let card = super::card::from_item(item, context, false)?;
+                    Ok(Item::Row(common::row(
                         &card.id,
                         &format!("card:{}", card.id),
                         card.icon,
                         card.title,
                         card.subtitle,
-                    ))
+                    )))
                 })
-                .collect(),
+                .collect::<Result<Vec<_>, BuildError>>()?,
         );
         section.count = Some(cards.len() as u32);
         view.sections.push(section);
