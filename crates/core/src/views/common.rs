@@ -262,3 +262,24 @@ mod tests {
         assert_eq!(state_tone("unclear"), node_presentation(Some("unclear")).1);
     }
 }
+
+pub(super) fn agent_label(agent_id: &crate::domain_v2::AgentId, context: &RenderContext<'_>) -> String {
+    let domain = context.domain;
+    let name = domain.agents.get(agent_id).map(|agent| agent.name.as_str());
+    if name.is_some_and(|name| !name.starts_with("scheduled/")) {
+        return name.unwrap_or_default().into();
+    }
+    let schedule_title = domain.schedule.runs.values().find(|run| {
+        run.launch.as_ref().is_some_and(|launch| {
+            launch.agent_id.as_ref() == Some(agent_id) || Some(launch.intent.name.as_str()) == name
+        })
+    }).and_then(|run| {
+        run.definition_snapshot.as_ref().map(|snapshot| snapshot.title.clone())
+            .or_else(|| domain.schedule.schedules.get(&run.schedule_id).map(|schedule| schedule.title.clone()))
+    });
+    schedule_title
+        .or_else(|| domain.tasks.values()
+            .find(|task| task.agent_id.as_ref() == Some(agent_id))
+            .map(|task| task.title.clone()))
+        .unwrap_or_else(|| t!(context.lang, "Node", "Nodo").into())
+}

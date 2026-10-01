@@ -16,7 +16,7 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
         &agent.id.0,
         &format!("node:{}", agent.id),
         icon,
-        agent.name.clone(),
+        common::agent_label(&agent.id, context),
         Some(
             if live.is_some_and(|node| node.working) {
                 t!(context.lang, "Working", "Trabajando")
@@ -146,7 +146,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut view = common::view(
         "node",
         &format!("node:{id}"),
-        Some(agent.name.clone()),
+        Some(common::agent_label(&agent.id, context)),
         context,
         vec![],
     );
@@ -307,7 +307,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             placeholder: format!(
                 "{} {}…",
                 t!(context.lang, "Write to", "Escribe a"),
-                agent.name
+                common::agent_label(&agent.id, context)
             ),
             required: true,
             multiline: true,

@@ -1619,3 +1619,47 @@ fn every_builder_string_has_spanish() {
     }
     assert!(untranslated.is_empty(), "strings identical in Spanish: {untranslated:#?}");
 }
+
+fn scheduled_run_fixture(with_run: bool) -> DomainState {
+    let mut state = fixture();
+    let raw = "scheduled/0789f185-run-7e2035e8e1d7c5e3f9431b9087d457e3";
+    state.agents.get_mut(&"a-1".into()).unwrap().name = raw.into();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    if with_run {
+        let run: crate::domain_v2::ScheduleRun = serde_json::from_value(serde_json::json!({
+            "id":"run-7e2035e8e1d7c5e3f9431b9087d457e3", "schedule_id":"0789f185-0000",
+            "origin":"due", "due_at":100, "claimed_at":105, "claim_revision":2,
+            "finished_at":110, "state":"sent", "request_id":"r-1", "task_id":"t-1",
+            "error":null,
+            "definition_snapshot":{"title":"Morning review","text":"Review","project":null,
+                "options":{},"disallowed_tools":[]},
+            "launch":{"intent":{"name":raw,"cwd":"/tmp","prompt":"Review","options_json":"{}"},
+                "state":"handed","claimed_at":105,"finished_at":110,"session_id":"abc",
+                "agent_id":"a-1","error":null}
+        })).unwrap();
+        state.schedule.runs.insert(run.id.clone(), run);
+    }
+    state
+}
+
+fn card_context_texts(state: &DomainState) -> Vec<String> {
+    let view = render(state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    view.sections.iter().flat_map(|section| &section.items).filter_map(|item| match item {
+        Item::Card(card) => Some(card.context.iter().map(|line| line.text.clone()).collect::<Vec<_>>()),
+        _ => None,
+    }).flatten().collect()
+}
+
+#[test]
+fn scheduled_run_agent_shows_the_schedule_title_never_the_raw_run_name() {
+    let texts = card_context_texts(&scheduled_run_fixture(true));
+    assert!(texts.iter().any(|text| text == "Morning review"), "{texts:?}");
+    assert!(!texts.iter().any(|text| text.contains("scheduled/")), "{texts:?}");
+}
+
+#[test]
+fn scheduled_run_agent_without_a_recorded_run_falls_back_to_the_task_title() {
+    let texts = card_context_texts(&scheduled_run_fixture(false));
+    assert!(texts.iter().any(|text| text == "Build a feature"), "{texts:?}");
+    assert!(!texts.iter().any(|text| text.contains("scheduled/")), "{texts:?}");
+}
