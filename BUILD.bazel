@@ -1,1 +1,14 @@
 exports_files(["Cargo.toml", "Cargo.lock"])
+
+filegroup(
+    name = "plugin_files",
+    srcs = glob(
+        [
+            ".claude-plugin/**",
+            "plugin/**",
+            "plugin-orchestrator/**",
+        ],
+        exclude = ["plugin-orchestrator/bin/**"],
+    ),
+    visibility = ["//deploy/brew:__pkg__"],
+)

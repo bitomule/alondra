@@ -1,0 +1,12 @@
+sh_test(
+    name = "plugin_payload_test",
+    srcs = ["plugin_payload_test.py"],
+    args = [
+        "$(rootpath release.py)",
+        "$(rootpaths //:plugin_files)",
+    ],
+    data = [
+        "release.py",
+        "//:plugin_files",
+    ],
+)
