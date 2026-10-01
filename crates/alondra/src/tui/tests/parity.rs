@@ -558,7 +558,7 @@ fn views_task_and_agent_footers_restore_reviewed_shortcuts() {
     let keys = crate::tui::draw::footer_keys(&app);
     assert!(keys.iter().any(|(key, label)| key == "/" && label == "search"));
     assert!(keys.iter().any(|(key, label)| key == "r" && label == "message"));
-    assert!(keys.iter().any(|(key, label)| key == "x" && label == "close the session"));
+    assert!(keys.iter().any(|(key, label)| key == "x" && label == "close node"));
 }
 
 #[test]
@@ -965,4 +965,160 @@ fn detail_hides_the_disabled_accept_action() {
 
     assert!(!visible.iter().any(|action| action.id.starts_with("accept:")));
     assert!(visible.iter().any(|action| action.id.starts_with("changes:")));
+}
+
+fn question_card() -> alondra_core::views::View {
+    let mut card = view_fixture("card-question.json");
+    card["sections"][0]["items"][0]["timestamps"] =
+        serde_json::json!([{"role": "created", "at": "2026-09-30T09:58:00Z", "format": "relative"}]);
+    serde_json::from_value(card).unwrap()
+}
+
+fn text_of(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
+
+#[test]
+fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let card = question_card();
+    let lines = text_of(&crate::tui::view_render::document_lines(&card, 80));
+    let header = &lines[0];
+    assert!(
+        header.starts_with("? Question · Alondra · iOS · Demo Garden · ") && header.ends_with(" ago"),
+        "{header}"
+    );
+    assert_eq!(lines[1], "Restore the native review experience");
+    assert_eq!(
+        lines.iter().filter(|line| line.contains("Restore the native review experience")).count(),
+        1,
+        "{lines:#?}"
+    );
+    assert!(lines.iter().any(|line| line == "Mission · Polish the Alondra beta"));
+}
+
+#[test]
+fn detail_pane_is_titled_with_the_kind_of_the_card() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{}", question_id()),
+        result: Ok(question_card()),
+    });
+    let shown = screen(&mut app, 120, 26);
+    assert!(shown.contains(" question "), "{shown}");
+    assert!(!shown.contains(" Detail "), "{shown}");
+}
+
+#[test]
+fn reader_header_names_the_real_kind_and_the_agent() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let id = question_id();
+    app.view_navigation.push(format!("card:{id}"));
+    app.card_view = Some(question_card());
+    app.open_reader();
+    let shown = screen(&mut app, 120, 20);
+    assert!(
+        shown.contains("? question · Alondra · iOS · Restore the native review experience"),
+        "{shown}"
+    );
+    assert!(!shown.contains("item"), "{shown}");
+}
+
+#[test]
+fn before_the_first_answer_the_screen_says_it_is_connecting_or_not_answering() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let shown = screen(&mut app, 100, 20);
+    assert!(shown.contains("Connecting to alondrad…") && shown.contains(" Inbox "), "{shown}");
+    app.offline = true;
+    assert!(screen(&mut app, 100, 20).contains("alondrad is not responding · retrying…"));
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    assert!(screen(&mut app, 100, 20).contains("alondrad no responde · reintentando…"));
+}
+
+#[test]
+fn an_empty_inbox_says_all_caught_up_and_offers_the_next_step() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let mut home = view_fixture("home-tui.json");
+    home["sections"] = serde_json::json!([]);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(home).unwrap())));
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let shown = screen(&mut app, 100, 20);
+    for expected in [
+        "✓ All caught up", "Nobody is waiting for you and there is",
+        "n order new work", "Tab see the tasks",
+    ] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let shown = screen(&mut app, 100, 20);
+    assert!(shown.contains("✓ Todo al día") && shown.contains("Tab mira las tareas"), "{shown}");
+}
+
+#[test]
+fn footers_name_the_next_screen_the_pane_key_and_the_terminal() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let has = |app: &App, key: &str, label: &str| {
+        crate::tui::draw::footer_keys(app).iter().any(|(k, l)| k == key && l == label)
+    };
+    app.home_view = Some(serde_json::from_value(view_fixture("home-tui.json")).unwrap());
+    assert!(has(&app, "Tab", "tasks") && has(&app, "^d/^u", "scroll detail") && has(&app, "o", "expand"));
+    app.screen = Screen::Tasks;
+    app.home_view = Some(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap());
+    assert!(has(&app, "h/l", "pane") && has(&app, "⏎", "its terminal") && has(&app, "Tab", "fleet"));
+    app.screen = Screen::Fleet;
+    app.home_view = Some(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap());
+    assert!(has(&app, "h/l", "pane") && has(&app, "⏎", "its terminal (← returns)") && has(&app, "Tab", "inbox"));
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    assert!(has(&app, "Tab", "bandeja") && has(&app, "⏎", "su terminal (← vuelve)"));
+}
+
+#[test]
+fn a_narrow_footer_keeps_tab_new_and_quit() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.home_view = Some(serde_json::from_value(view_fixture("home-tui.json")).unwrap());
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{}", question_id()),
+        result: Ok(question_card()),
+    });
+    app.sel = Some(Key(question_id()));
+    let shown = screen(&mut app, 70, 20);
+    let foot: String = shown.chars().rev().take(70 * 2).collect::<Vec<_>>().into_iter().rev().collect();
+    assert!(foot.contains("Tab tasks") && foot.contains("n new") && foot.contains("q quit"), "{foot}");
+}
+
+#[test]
+fn enter_on_a_task_or_node_opens_its_terminal() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.view_navigation.push("task:t-1".into());
+    let mut task = view_fixture("card-question.json");
+    task["view"] = serde_json::json!("task");
+    task["key"] = serde_json::json!("task:t-1");
+    task["sections"] = serde_json::json!([{"id": "attach", "collapsed": false, "items": [{
+        "type": "row", "id": "attach", "icon": "node", "title": "Attach", "depth": 0, "struck": false,
+        "link": {"kind": "local", "local": {"kind": "attach", "session": "short-a-1"}}
+    }]}]);
+    app.card_view = Some(serde_json::from_value(task).unwrap());
+    assert!(matches!(
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Flow::Attach(session) if session == "short-a-1"
+    ));
+    app.card_view = None;
+    assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Flow::Go));
+    assert!(flash(&app).contains("no terminal"), "{}", flash(&app));
 }
