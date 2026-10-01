@@ -63,5 +63,6 @@ checks:
         - //apple/Design:AlondraDesignTests
         - //apple/Features:AlondraFeaturesTests
         - //apple/Testing:IssueReportingIntegrationTests
+        - //apple/Testing/Snapshots:AlondraSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests

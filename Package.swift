@@ -18,6 +18,10 @@ let package = Package(
             exact: "1.26.2"
         ),
         .package(
+            url: "https://github.com/pointfreeco/swift-snapshot-testing",
+            exact: "1.19.6"
+        ),
+        .package(
             url: "https://github.com/pointfreeco/xctest-dynamic-overlay",
             exact: "1.13.1"
         ),

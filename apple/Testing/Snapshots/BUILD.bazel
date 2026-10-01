@@ -1,0 +1,69 @@
+load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application", "ios_unit_test")
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("@simpool//:simpool_ios_test_runner.bzl", "simpool_ios_test_runner")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+# One canonical simulator and OS, so a baseline is recorded and verified on the same renderer.
+# `-collect-test-diagnostics never`: a target with a `test_host` is driven through `xcodebuild`,
+# which afterwards runs `xcrun simctl diagnose --timeout=600` against the pool simulator; that
+# collection never completes and holds the pool slot for its whole timeout.
+simpool_ios_test_runner(
+    name = "iphone_17_pro_runner",
+    device_type = "iPhone 17 Pro",
+    os_version = "26.3",
+    xcodebuild_args = [
+        "-collect-test-diagnostics",
+        "never",
+    ],
+)
+
+# SwiftUI snapshot strategies render through a real UIWindowScene; in a bare logic test bundle the
+# iOS 26 simulator crashes while tearing the scene down. Hosting the bundle in this stub app gives
+# it the scene lifecycle.
+swift_library(
+    name = "SnapshotTestHostLib",
+    testonly = True,
+    srcs = ["TestHost/TestHostApp.swift"],
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    module_name = "SnapshotTestHost",
+)
+
+ios_application(
+    name = "SnapshotTestHost",
+    testonly = True,
+    bundle_id = "com.bitomule.alondra.snapshottesthost",
+    families = ["iphone"],
+    infoplists = ["TestHost/Info.plist"],
+    minimum_os_version = "26.0",
+    deps = [":SnapshotTestHostLib"],
+)
+
+swift_library(
+    name = "AlondraSnapshotTestsLib",
+    testonly = True,
+    srcs = glob([
+        "Support/*.swift",
+        "Tests/*.swift",
+    ]),
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    module_name = "AlondraSnapshotTestsLib",
+    deps = [
+        "//apple/Design:AlondraDesign",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+    ],
+)
+
+# `timeout = "long"`: the suite runs in seconds, but iOS 26 simulator teardown can exceed the
+# default budget on a busy host and kill the runner after every test has already passed.
+ios_unit_test(
+    name = "AlondraSnapshotTests",
+    timeout = "long",
+    bundle_id = "com.bitomule.alondra.snapshottests",
+    data = glob(["Tests/__Snapshots__/**"], allow_empty = True),
+    env = {"SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__"},
+    minimum_os_version = "26.0",
+    runner = ":iphone_17_pro_runner",
+    test_host = ":SnapshotTestHost",
+    visibility = ["//visibility:public"],
+    deps = [":AlondraSnapshotTestsLib"],
+)

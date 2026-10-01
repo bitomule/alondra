@@ -7,6 +7,16 @@ bazel_dep(name = "rules_swift", version = "4.0.0-rc3", repo_name = "build_bazel_
 bazel_dep(name = "rules_rust", version = "0.74.0")
 bazel_dep(name = "rules_swift_package_manager", version = "1.23.0")
 
+# simpool routes `ios_test_runner` through a shared, flock-guarded simulator pool, so concurrent
+# test actions never share one fixed-name simulator.
+bazel_dep(name = "simpool", version = "0.3.1")
+git_override(
+    module_name = "simpool",
+    remote = "https://github.com/bitomule/simpool.git",
+    commit = "6cc9ab608bff593eb558c454663361506855cdbb",
+    strip_prefix = "bazel",
+)
+
 swift_deps = use_extension("@rules_swift_package_manager//:extensions.bzl", "swift_deps")
 swift_deps.from_package(
     declare_swift_deps_info = True,
@@ -19,6 +29,7 @@ use_repo(
     "swift_package",
     "swiftpkg_highlightswift",
     "swiftpkg_swift_composable_architecture",
+    "swiftpkg_swift_snapshot_testing",
     "swiftpkg_xctest_dynamic_overlay",
 )
 
