@@ -28,6 +28,7 @@ public struct ScreenFeature: Sendable {
     public enum Action: Equatable {
         case task
         case retry
+        case stop
         case loaded(ViewDocument)
         case missing
         case failed(String)
@@ -55,6 +56,8 @@ public struct ScreenFeature: Sendable {
                     }
                 }
                 .cancellable(id: CancelID.observe, cancelInFlight: true)
+            case .stop:
+                return .cancel(id: CancelID.observe)
             case .loaded(let document):
                 guard document.key == state.key.rawValue else { return .none }
                 state.document = document

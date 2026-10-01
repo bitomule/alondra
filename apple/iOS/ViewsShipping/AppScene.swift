@@ -6,6 +6,7 @@ import AlondraDesign
 import AlondraAccount
 import AlondraFeed
 import AlondraDemo
+import AlondraiOSUI
 import ComposableArchitecture
 import Observation
 import SwiftUI
@@ -154,15 +155,14 @@ struct RootView<AccountContent: View>: View {
         TabView(selection: Binding<AppFeature.State.Tab>(get: { store.tab }, set: { store.send(.tabSelected($0)) })) {
             Tab("Waiting for You", systemImage: "tray.full", value: .inbox) {
                 NavigationStack(path: $store.scope(state: \.inboxPath, action: \.inboxPath)) {
-                    TriageView(store: store.scope(state: \.home, action: \.home), zoom: triageZoom,
-                        openReview: { store.send(.openFromTriage(ViewKey(rawValue: $0))) })
+                    TriageView(store: store.scope(state: \.triage, action: \.triage), zoom: triageZoom)
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
                 } destination: { route in
                     detail(route, tab: .inbox)
                 }
-            }.badge(store.home.badge)
+            }.badge(store.triage.badge)
             Tab("Tasks", systemImage: "checklist", value: .tasks) {
                 NavigationStack(path: $store.scope(state: \.tasksPath, action: \.tasksPath)) {
                     ViewsScreenView(store: store.scope(state: \.tasks, action: \.tasks),
@@ -211,6 +211,12 @@ struct RootView<AccountContent: View>: View {
         switch route.case {
         case .legacy(let screen):
             ViewsScreenView(store: screen, openView: { store.send(.open(tab, $0)) })
+        case .review(let review):
+            if tab == .inbox {
+                ReviewView(store: review).navigationTransition(.zoom(sourceID: String(review.screen.key.rawValue.dropFirst("card:".count)), in: triageZoom))
+            } else {
+                ReviewView(store: review)
+            }
         }
     }
 }

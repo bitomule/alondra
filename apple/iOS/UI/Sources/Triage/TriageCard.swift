@@ -5,50 +5,23 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// Home-specific presentation of a wire Card. It keeps the established 34 pt shell,
-/// scrolling body, pinned composer, spring and stamp treatment.
+/// One card of Waiting for You: the 34 pt shell, the scrolling body, the pinned controls and the
+/// stamp that covers it once the server has applied what was sent.
 struct TriageCard: View {
+    @Bindable var store: StoreOf<TriageCardFeature>
     let card: Card
-    @Bindable var actions: StoreOf<ActionFeature>
-    let attachments: StoreOf<AttachmentFeature>
     let isFront: Bool
     let zoom: Namespace.ID
-    let submit: () -> Void
-    let openReview: (String) -> Void
     @Environment(\.openURL) private var openURL
     @State private var contentHeight: CGFloat?
-    @State private var replyDraft = ""
-    @State private var contextAction: AlondraContract.Action?
-    @State private var contextNote = ""
     @FocusState private var replyFocused: Bool
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var kind: Kind { Kind(card) }
     private var tint: Color { kind.tint }
     private var actionTint: Color { kind.tint == Palette.slate ? Palette.dawn : kind.tint }
-    private var allActions: [AlondraContract.Action] {
-        card.actions + card.children.flatMap(\.actions)
-    }
-    private var selected: AlondraContract.Action? {
-        guard let action = actions.action, allActions.contains(where: { $0.id == action.id }) else { return nil }
-        return action
-    }
-    private var replyAction: AlondraContract.Action? {
-        let preferred: [String] = switch card.icon {
-        case .pullRequest, .document: ["changes", "reply", "ans", "ask_pr"]
-        default: ["ans", "reply", "changes", "ask_pr"]
-        }
-        for verb in preferred {
-            if let action = allActions.first(where: { isReplyAction($0, verb: verb) }) { return action }
-        }
-        return nil
-    }
-    private func isReplyAction(_ action: AlondraContract.Action, verb: String) -> Bool {
-        guard action.enabled, action.id?.hasPrefix(verb + ":") == true else { return false }
-        if action.presentation == .options { return true }
-        if case .text = action.input { return true }
-        return false
-    }
+    private var replyAction: AlondraContract.Action? { store.replyAction }
+    private var selected: AlondraContract.Action? { store.selected }
     private func inputPlaceholder(_ action: AlondraContract.Action) -> String {
         if card.icon == .pullRequest { return String(localized: "What should change?") }
         if case let .text(value, _, _) = action.input {
@@ -56,7 +29,7 @@ struct TriageCard: View {
         }
         return String(localized: "Write your answer")
     }
-    private var stamp: String? { selected == nil ? nil : actions.stamp }
+    private var stamp: String? { store.stamp }
     private var isQuestion: Bool { card.icon == .question || card.icon == .action }
     private var isDocumentReview: Bool { card.icon == .document || card.icon == .delivery }
     private func verb(_ action: AlondraContract.Action) -> String {
@@ -98,21 +71,26 @@ struct TriageCard: View {
             .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
             .scaleEffect(stamp == nil ? 1 : 1.02)
             .animation(.spring(duration: 0.35, bounce: 0.4), value: stamp)
-            .onChange(of: actions.stamp) { old, new in
-                if old == nil, new != nil { replyDraft = "" }
-            }
-            .alert("What do you need to decide?", isPresented: Binding(
-                get: { contextAction != nil }, set: { if !$0 { contextAction = nil } }
+            .alert(store.actions.confirmation?.title ?? "", isPresented: Binding(
+                get: { store.actions.confirmation != nil }, set: { if !$0 { store.send(.actions(.cancelConfirmation)) } }
             )) {
-                TextField("Optional", text: $contextNote)
-                Button("Cancel", role: .cancel) { contextAction = nil }
-                Button("Ask for Context") {
-                    guard let contextAction else { return }
-                    actions.send(.present(contextAction))
-                    actions.send(.textChanged(contextNote))
-                    submit()
-                    self.contextAction = nil
-                }
+                Button(store.actions.confirmation?.button ?? String(localized: "Continue")) { store.send(.actions(.confirm)) }
+                Button("Cancel", role: .cancel) { store.send(.actions(.cancelConfirmation)) }
+            } message: { Text(store.actions.confirmation?.message ?? "") }
+            .alert("This item changed", isPresented: Binding(
+                get: { store.actions.changed != nil }, set: { if !$0 { store.send(.actions(.dismiss)) } }
+            )) {
+                Button(store.actions.changed?.button ?? String(localized: "Continue")) { store.send(.actions(.sendChangedAction)) }
+                Button("Cancel", role: .cancel) { store.send(.actions(.dismiss)) }
+            } message: { Text(store.actions.error ?? "") }
+            .alert("What do you need to decide?", isPresented: Binding(
+                get: { store.contextRequest != nil }, set: { if !$0 { store.send(.contextCancelled) } }
+            )) {
+                TextField("Optional", text: Binding(
+                    get: { store.contextRequest?.note ?? "" }, set: { store.send(.contextNoteChanged($0)) }
+                ))
+                Button("Cancel", role: .cancel) { store.send(.contextCancelled) }
+                Button("Ask for Context") { store.send(.contextConfirmed) }
             } message: {
                 Text("The node will explain and ask again.")
             }
@@ -157,9 +135,10 @@ struct TriageCard: View {
                 contextNavigation(node) {
                 HStack(spacing: 8) {
                     Image(systemName: "circle.fill")
-                        .font(.caption2.weight(.bold)).foregroundStyle(tint)
+                        .font(.caption2.weight(.bold)).foregroundStyle(SidebarTint.node(node.state?.tone))
                         .frame(width: 22, height: 22)
-                        .background(tint.opacity(0.15), in: .circle)
+                        .background(SidebarTint.node(node.state?.tone).opacity(0.15), in: .circle)
+                        .accessibilityLabel(Text(node.state?.text ?? ""))
                     Text(node.text).font(.mono(.subheadline, weight: .medium)).foregroundStyle(Palette.ink.opacity(0.85))
                     if let chip = node.chip {
                         Text(chip.text).font(.caption.weight(.medium)).foregroundStyle(.secondary)
@@ -235,7 +214,7 @@ struct TriageCard: View {
                 .padding(14).frame(maxWidth: .infinity, alignment: .leading)
                 .background(Palette.cardRaised.opacity(0.6), in: .rect(cornerRadius: 20, style: .continuous))
             }
-            if let error = actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
+            if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
         }
         .padding(.horizontal, 22).padding(.top, 22).padding(.bottom, 16)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -288,7 +267,7 @@ struct TriageCard: View {
     private func handleLink(_ link: AlondraContract.Link) {
         switch link {
         case let .view(key):
-            openReview(key)
+            store.send(.opened(ViewKey(rawValue: key)))
         case let .url(url):
             if let url = URL(string: url) { openURL(url) }
         case .local: break
@@ -296,7 +275,7 @@ struct TriageCard: View {
     }
 
     private func openCardDetail() {
-        openReview(card.icon == .pullRequest ? "pull_request:\(card.id)" : "card:\(card.id)")
+        store.send(.opened(card.icon == .pullRequest ? .pullRequest(card.id) : .card(card.id)))
     }
 
     @ViewBuilder private func contextNavigation<Content: View>(
@@ -319,7 +298,7 @@ struct TriageCard: View {
                 }
             }
             if let replyAction {
-                AttachmentStrip(store: attachments)
+                AttachmentStrip(store: store.scope(state: \.attachments, action: \.attachments))
                 composer(placeholder: inputPlaceholder(replyAction), action: replyAction)
             }
             ForEach(controlActions, id: \.label) { action in actionControl(action) }
@@ -333,8 +312,7 @@ struct TriageCard: View {
             grid {
                 ForEach(action.options, id: \.id) { option in
                     Button {
-                        if selected?.id != action.id { actions.send(.present(action)) }
-                        actions.send(.chooseOption(option.id))
+                        store.send(.optionPicked(action, optionID: option.id))
                     } label: {
                         VStack(alignment: compact ? .center : .leading, spacing: 4) {
                             Text(option.label).font(.headline)
@@ -345,8 +323,8 @@ struct TriageCard: View {
                             .frame(maxWidth: .infinity, minHeight: 46, alignment: compact ? .center : .leading)
                             .padding(.horizontal, compact ? 0 : 6)
                     }
-                    .buttonStyle(HomeOptionStyle(tint: tint, picked: actions.selectedOptionID == option.id))
-                    .disabled(!action.enabled || actions.inFlight)
+                    .buttonStyle(OptionPillStyle(tint: tint, picked: store.actions.selectedOptionID == option.id))
+                    .disabled(!action.enabled || store.actions.inFlight)
                 }
             }
         } else { actionButton(action) }
@@ -357,9 +335,7 @@ struct TriageCard: View {
             Menu {
                 ForEach(action.options, id: \.id) { option in
                     Button(option.label) {
-                        actions.send(.present(action))
-                        actions.send(.chooseOption(option.id))
-                        submit()
+                        store.send(.menuOptionPicked(action, optionID: option.id))
                     }
                 }
             } label: {
@@ -367,39 +343,14 @@ struct TriageCard: View {
                     .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
             }
             .buttonStyle(FilledStyle(tint: actionTint))
-            .disabled(!action.enabled || actions.inFlight)
+            .disabled(!action.enabled || store.actions.inFlight)
         } else {
             Button {
-            if verb(action) == "ctx" {
-                contextNote = ""
-                contextAction = action
+            if case .url(let url) = action.link {
+                if let destination = URL(string: url) { openURL(destination) }
                 return
             }
-            if verb(action) == "ask_pr" {
-                actions.send(.present(action))
-                actions.send(.textChanged(replyDraft))
-                submit()
-                return
-            }
-            if action.comments != nil {
-                if case let .view(key) = action.link { openReview(key) }
-                else { openReview("card:\(card.id)") }
-                return
-            }
-            if let link = action.link {
-                switch link {
-                case let .view(key):
-                    openReview(key)
-                    return
-                case let .url(url):
-                    if let url = URL(string: url) { openURL(url) }
-                    return
-                case .local:
-                    return
-                }
-            }
-            actions.send(.present(action))
-            if case .none = action.input, action.presentation == .button { submit() }
+            store.send(.actionTapped(action))
             } label: {
                 let prominent = isDocumentReview ? verb(action) == "changes" : action.style == .primary
                 if verb(action) == "ctx" {
@@ -430,8 +381,8 @@ struct TriageCard: View {
                 }
             }
             .buttonStyle(AnyButtonStyle(tint: filledTint(for: action)))
-            .disabled(!action.enabled || actions.inFlight ||
-                (verb(action) == "ask_pr" && replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
+            .disabled(!action.enabled || store.actions.inFlight ||
+                (verb(action) == "ask_pr" && store.replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
         }
     }
 
@@ -443,31 +394,23 @@ struct TriageCard: View {
     private func composer(placeholder: String, action: AlondraContract.Action) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
             if action.attachments {
-                AttachButton(store: attachments).padding(.leading, 6).padding(.bottom, 4)
+                AttachButton(store: store.scope(state: \.attachments, action: \.attachments)).padding(.leading, 6).padding(.bottom, 4)
             }
-            TextField(placeholder, text: $replyDraft, axis: .vertical)
+            TextField(placeholder, text: Binding(
+                get: { store.replyDraft }, set: { store.send(.replyChanged($0)) }
+            ), axis: .vertical)
                 .lineLimit(1...5).focused($replyFocused)
                 .padding(.leading, 16).padding(.vertical, 12)
-                .onChange(of: replyDraft) { _, new in
-                    guard !new.isEmpty, selected?.id == action.id,
-                          let optionID = actions.selectedOptionID,
-                          let option = action.options.first(where: { $0.id == optionID }) else { return }
-                    if case .none = option.input { actions.send(.present(action)) }
-                }
             Button {
                 replyFocused = false
-                if selected?.id != action.id {
-                    actions.send(.present(action))
-                }
-                if !replyDraft.isEmpty { actions.send(.textChanged(replyDraft)) }
-                submit()
+                store.send(.replySent(action))
             } label: {
                 Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(Palette.onAccent)
                     .frame(width: 36, height: 36).background(tint, in: .circle)
             }
             .buttonStyle(PressStyle())
-            .disabled((replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !(selected?.id == action.id && actions.selectedOptionID != nil)) || actions.inFlight)
+            .disabled((store.replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !(selected?.id == action.id && store.actions.selectedOptionID != nil)) || store.actions.inFlight)
             .padding(4)
             .accessibilityLabel("Send")
         }
@@ -491,13 +434,7 @@ struct TriageCard: View {
         }
     }
 
-    private func relativeStamp(_ value: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        let date = formatter.date(from: value) ?? ISO8601DateFormatter().date(from: value)
-        guard let date else { return value }
-        return relative(Int64(date.timeIntervalSince1970 * 1_000))
-    }
+    private func relativeStamp(_ value: String) -> String { relativeSince(value) ?? value }
     private func contextSymbol(_ icon: Icon) -> String {
         switch icon {
         case .question: "questionmark.bubble"
@@ -548,7 +485,7 @@ struct ArtifactLinks: View {
     }
 }
 
-private struct HomeOptionStyle: ButtonStyle {
+struct OptionPillStyle: ButtonStyle {
     let tint: Color
     let picked: Bool
     func makeBody(configuration: Configuration) -> some View {

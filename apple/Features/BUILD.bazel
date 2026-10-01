@@ -20,14 +20,16 @@ swift_library(
 swift_test(
     name = "AlondraFeaturesTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
-    srcs = glob(["Tests/**/*.swift"]),
+    srcs = glob(["Tests/**/*.swift"]) + ["//apple/Testing/Fixtures:sources"],
     data = ["//fixtures/views:all"],
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
     deps = [
         ":AlondraFeatures",
         "//apple/Contract:AlondraContract",
+        "//apple/Data/Attachments:AlondraAttachments",
         "//apple/Data/Feed:AlondraFeed",
+        "//apple/Design:AlondraDesign",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],

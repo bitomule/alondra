@@ -10,8 +10,8 @@ extension View {
     func connectionLostOverlay(store: StoreOf<AppFeature>, retry: @escaping () -> Void,
                                signIn: (() -> Void)?) -> some View {
         overlay {
-            let problem: ConnectionProblem? = store.home.document == nil && store.home.error != nil ? .unexpected : nil
-            let hasSnapshot = store.home.document != nil
+            let problem: ConnectionProblem? = store.triage.loadError != nil ? .unexpected : nil
+            let hasSnapshot = store.triage.screen.document != nil
             if let problem, !hasSnapshot {
                 ConnectionLostView(problem: problem, retry: retry, signIn: signIn,
                                    settings: { store.send(.settingsPresented(true)) })

@@ -1,4 +1,6 @@
 import AlondraDesign
+import AlondraFeatures
+import ComposableArchitecture
 import SwiftUI
 
 struct BlockRow: View {
@@ -121,35 +123,36 @@ private struct BlockButtonStyle: ButtonStyle {
     }
 }
 
-struct CommentSheet: View {
-    let block: MarkdownBlock
-    let initial: String
-    let onSave: (String) -> Void
+public struct CommentSheet: View {
+    @Bindable var store: StoreOf<ReviewFeature>
+    let composing: ReviewFeature.Composing
 
     @Environment(\.dismiss) private var dismiss
-    @Binding var text: String
     @FocusState private var focused: Bool
 
-    init(block: MarkdownBlock, initial: String, text: Binding<String>, onSave: @escaping (String) -> Void) {
-        self.block = block
-        self.initial = initial
-        self._text = text
-        self.onSave = onSave
+    private var initial: String { store.comments[composing.anchor]?.text ?? "" }
+    private var text: Binding<String> {
+        Binding(get: { store.composing?.text ?? "" }, set: { store.send(.composingChanged($0)) })
     }
 
-    var body: some View {
+    public init(store: StoreOf<ReviewFeature>, composing: ReviewFeature.Composing) {
+        self.store = store
+        self.composing = composing
+    }
+
+    public var body: some View {
         NavigationStack {
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
                     HStack(alignment: .top, spacing: 12) {
                         Capsule().fill(Palette.dawn).frame(width: 3)
-                        Text(ReviewFeedback.quote(block.plainText))
+                        Text(ReviewFeedback.quote(composing.quote))
                             .font(.callout.italic())
                             .foregroundStyle(.secondary)
                             .lineLimit(6)
                     }
                     .fixedSize(horizontal: false, vertical: true)
-                    TextField("What would you change here?", text: $text, axis: .vertical)
+                    TextField("What would you change here?", text: text, axis: .vertical)
                         .font(.body)
                         .lineLimit(4...12)
                         .focused($focused)
@@ -164,37 +167,17 @@ struct CommentSheet: View {
                 }
                 if !initial.isEmpty {
                     ToolbarItem(placement: .destructiveAction) {
-                        Button("Delete", systemImage: "trash", role: .destructive) {
-                            onSave("")
-                            dismiss()
-                        }
+                        Button("Delete", systemImage: "trash", role: .destructive) { store.send(.commentDeleted) }
                     }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save", systemImage: "checkmark") {
-                        onSave(text.trimmingCharacters(in: .whitespacesAndNewlines))
-                        dismiss()
-                    }
-                    .disabled(text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    Button("Save", systemImage: "checkmark") { store.send(.commentSaved) }
+                        .disabled((store.composing?.text ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
         }
         .presentationDetents([.medium, .large])
         .presentationBackground(.regularMaterial)
-        .onAppear {
-            focused = true
-        }
-    }
-}
-
-private struct GlassEmphasis: ViewModifier {
-    let prominent: Bool
-
-    func body(content: Content) -> some View {
-        if prominent {
-            content.buttonStyle(.glassProminent)
-        } else {
-            content.buttonStyle(.glass)
-        }
+        .onAppear { focused = true }
     }
 }

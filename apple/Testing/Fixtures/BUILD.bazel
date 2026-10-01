@@ -1,0 +1,6 @@
+filegroup(
+    name = "sources",
+    testonly = True,
+    srcs = glob(["*.swift"]),
+    visibility = ["//apple:__subpackages__"],
+)
