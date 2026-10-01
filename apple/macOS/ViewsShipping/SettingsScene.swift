@@ -10,7 +10,7 @@ struct MacServiceSettingsScene: View {
     @State private var context = MacSettingsContext()
     var body: some View {
         Group {
-            if let store = context.store { SettingsView(store: store) { pairing in
+            if let store = context.store { MacSettingsView(store: store) { pairing in
                 MacServicePairingScreen(store: pairing).frame(minWidth: 600, minHeight: 600)
             } }
             else { ProgressView("Loading settings…") }

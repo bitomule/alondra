@@ -31,14 +31,7 @@ struct AppScene: View {
             RestoreConnectionView(store: owner.store, networkChanges: { NetworkReachability.shared.changes() })
                 .background(DawnBackground())
         } onboarding: {
-            NavigationStack { SignInView(store: owner.store) }
-                .safeAreaInset(edge: .bottom) {
-                    if owner.store.phase == .signedOut {
-                        Button("Explore the demo") { demoSession = UUID() }
-                            .accessibilityIdentifier("demo.enter")
-                            .padding()
-                    }
-                }
+            NavigationStack { SignInView(store: owner.store, demo: { demoSession = UUID() }) }
         }
         }
         }
@@ -182,8 +175,7 @@ struct RootView<AccountContent: View>: View {
             }
             Tab("New", systemImage: "plus.bubble", value: .newRequest) {
                 NavigationStack(path: $store.scope(state: \.newRequestPath, action: \.newRequestPath)) {
-                    ViewsScreenView(store: store.scope(state: \.newRequest, action: \.newRequest),
-                                    openView: { store.send(.open(.newRequest, $0)) })
+                    NewRequestView(store: store.scope(state: \.newRequest, action: \.newRequest))
                 } destination: { route in
                     detail(route, tab: .newRequest)
                 }

@@ -22,7 +22,7 @@ public struct AppFeature: Sendable {
         public var triage = TriageFeature.State()
         public var tasks = TasksFeature.State()
         public var fleet = FleetFeature.State()
-        public var newRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
+        public var newRequest = NewRequestFeature.State()
         public var inboxPath = StackState<DetailRoute.State>()
         public var tasksPath = StackState<DetailRoute.State>()
         public var fleetPath = StackState<DetailRoute.State>()
@@ -43,7 +43,7 @@ public struct AppFeature: Sendable {
         case triage(TriageFeature.Action)
         case tasks(TasksFeature.Action)
         case fleet(FleetFeature.Action)
-        case newRequest(ViewsScreenFeature.Action)
+        case newRequest(NewRequestFeature.Action)
         case inboxPath(StackActionOf<DetailRoute>)
         case tasksPath(StackActionOf<DetailRoute>)
         case fleetPath(StackActionOf<DetailRoute>)
@@ -59,7 +59,7 @@ public struct AppFeature: Sendable {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { TasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { FleetFeature() }
-        Scope(state: \.newRequest, action: \.newRequest) { ViewsScreenFeature() }
+        Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
             if let toast = Self.toast(for: action) {
                 let notice = WorkspaceNotice(event: toast)
@@ -116,16 +116,15 @@ public struct AppFeature: Sendable {
                 Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
                 return .none
             case .viewsFeed(.stale(let keys)):
-                return .merge(
-                    .send(.newRequest(.stale(keys))),
-                    Self.refreshPaths(state, .stale(keys)))
+                return Self.refreshPaths(state, .stale(keys))
             case .viewsFeed(.reset):
-                return .merge(
-                    .send(.newRequest(.reset)),
-                    Self.refreshPaths(state, .reset))
+                return Self.refreshPaths(state, .reset)
             case .viewsFeed(.snapshot(let snapshot)):
                 if snapshot.reset { return .send(.viewsFeed(.reset)) }
                 if let status = snapshot.status { return .send(.triage(.feedStatus(status))) }
+                return .none
+            case .newRequest(.delegate(.open(let key))):
+                Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
                 return .none
             case .tasks(.delegate(.open(let key))):
                 Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
@@ -176,10 +175,9 @@ public struct AppFeature: Sendable {
     private static func toast(for action: Action) -> WorkspaceNotice.Event? {
         let delegate: ActionFeature.Action.Delegate
         switch action {
-        case .triage(.cards(.element(id: _, action: .actions(.delegate(let value))))),
-             .newRequest(.action(.delegate(let value))):
+        case .triage(.cards(.element(id: _, action: .actions(.delegate(let value))))):
             delegate = value
-        case .tasks(.delegate(let value)), .fleet(.delegate(.screen(let value))):
+        case .tasks(.delegate(let value)), .fleet(.delegate(.screen(let value))), .newRequest(.delegate(let value)):
             return value.event
         case .triage(.delegate(.noLongerPending)):
             return .actionCompleted(String(localized: "That’s no longer pending"))

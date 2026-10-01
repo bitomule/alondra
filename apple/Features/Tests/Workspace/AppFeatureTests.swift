@@ -268,7 +268,6 @@ final class AppFeatureTests: XCTestCase {
         store.exhaustivity = .on
 
         await store.send(.viewsFeed(.stale(["node:a-1"])))
-        await store.receive(\.newRequest.stale)
         await store.receive(\.inboxPath.element)
         await store.receive(\.tasksPath.element)
         XCTAssertEqual(store.state.inboxPath.count, 2, "the review is not sent the change, it observes its own key")

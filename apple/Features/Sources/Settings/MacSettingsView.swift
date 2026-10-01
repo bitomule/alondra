@@ -1,7 +1,7 @@
 import ComposableArchitecture
 import SwiftUI
 
-public struct SettingsView<PairingContent: View>: View {
+public struct MacSettingsView<PairingContent: View>: View {
     @Environment(\.scenePhase) private var phase
     @Bindable var store: StoreOf<SettingsFeature>
     private let ink: Color

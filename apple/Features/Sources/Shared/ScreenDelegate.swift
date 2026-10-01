@@ -53,7 +53,7 @@ enum WireTimestamp {
 }
 
 extension Trailing {
-    var instant: Date? {
+    public var instant: Date? {
         guard case .time(let at, _) = self else { return nil }
         return WireTimestamp.date(at)
     }
