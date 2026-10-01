@@ -1465,10 +1465,13 @@ pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(Stri
     {
         let hint = super::view_render::action_hint(&action);
         if !hint.is_empty() && !(has_diff && hint.eq_ignore_ascii_case("d")) {
-            keys.push((
-                if hint == "enter" { "⏎" } else { hint }.into(),
+            let entry = (
+                if hint == "enter" { "⏎" } else { hint }.to_owned(),
                 action.label.clone(),
-            ));
+            );
+            if !keys.contains(&entry) {
+                keys.push(entry);
+            }
         }
         for (index, option) in action.options.iter().enumerate() {
             let hint = option
