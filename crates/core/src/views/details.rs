@@ -92,7 +92,7 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         context,
         vec![],
     );
-    let facts = vec![
+    let mut facts = vec![
         Fact {
             label: t!(context.lang, "Repository", "Repositorio").into(),
             value: pr.repository.clone(),
@@ -114,6 +114,14 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
             link: None,
         },
     ];
+    if let Some(live) = live.filter(|live| live.changed_files > 0) {
+        facts.push(Fact {
+            label: t!(context.lang, "Changes", "Cambios").into(),
+            value: super::card::changes_summary(live, context.lang),
+            tone: None,
+            link: None,
+        });
+    }
     view.sections.push(common::section(
         "facts",
         None,

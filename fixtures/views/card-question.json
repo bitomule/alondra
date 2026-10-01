@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vd4e8934b73350676",
+  "version": "vb3efdecdabf820e2",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -88,6 +88,10 @@
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for you",
+                "tone": "accent"
               }
             },
             {

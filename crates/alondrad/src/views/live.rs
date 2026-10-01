@@ -1,7 +1,7 @@
 use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
-    LivePullRequest, LiveSnapshot, Notice, Tone,
+    LiveCheck, LivePullRequest, LiveSnapshot, Notice, Tone,
 };
 use serde_json::Value;
 use sha2::Digest;
@@ -90,6 +90,7 @@ pub(crate) async fn gather(
             Some(LiveNode {
                 agent_id: node.session_id,
                 short_id: Some(node.short_id),
+                cwd: node.cwd.clone(),
                 name: agent.name.clone(),
                 project: Some(project),
                 state_key: Some(state_key),
@@ -125,6 +126,15 @@ pub(crate) async fn gather(
                 body: details.as_ref().and_then(|details| details.body.clone()),
                 head_ref: details.as_ref().and_then(|details| details.head_ref.clone()),
                 base_ref: details.as_ref().and_then(|details| details.base_ref.clone()),
+                checks: details.as_ref().map(|details| {
+                    details.checks.iter().map(|check| LiveCheck {
+                        name: check.name.clone(),
+                        state: check_state(check.state),
+                    }).collect()
+                }).unwrap_or_default(),
+                additions: details.as_ref().map_or(0, |details| details.additions),
+                deletions: details.as_ref().map_or(0, |details| details.deletions),
+                changed_files: details.as_ref().map_or(0, |details| details.changed_files),
                 checks_passed: details.as_ref().map(|details| {
                     details
                         .checks
@@ -351,6 +361,15 @@ pub(crate) async fn gather(
         task_history,
         task_options,
         search_matches,
+    }
+}
+
+fn check_state(state: alondra_core::pr::CheckState) -> alondra_core::views::CheckState {
+    use alondra_core::{pr::CheckState as Github, views::CheckState as View};
+    match state {
+        Github::Passed => View::Pass,
+        Github::Failed => View::Fail,
+        Github::Running | Github::Other => View::Pending,
     }
 }
 
@@ -723,5 +742,19 @@ mod tests {
         assert_eq!(result[1].text, "41/18%");
         assert!(result[1].label.contains('!'));
         assert!(result[1].detail.as_deref().unwrap().contains("faster"));
+    }
+}
+
+#[cfg(test)]
+mod check_state_tests {
+    use super::check_state;
+    use alondra_core::{pr::CheckState as Github, views::CheckState as View};
+
+    #[test]
+    fn a_check_that_has_not_finished_is_pending_and_only_a_pass_is_green() {
+        assert_eq!(
+            [Github::Passed, Github::Failed, Github::Running, Github::Other].map(check_state),
+            [View::Pass, View::Fail, View::Pending, View::Pending]
+        );
     }
 }

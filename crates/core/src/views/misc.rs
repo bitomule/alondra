@@ -22,12 +22,14 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
             "El orquestador elige el proyecto"
         )
         .into(),
+        description: None,
     }];
     for entry in &context.live.projects {
         if !projects.iter().any(|item| item.id == entry.name) {
             projects.push(ChoiceItem {
                 id: entry.name.clone(),
                 label: entry.name.clone(),
+                description: None,
             });
         }
     }
@@ -42,6 +44,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
             projects.push(ChoiceItem {
                 id: name.clone(),
                 label: name.clone(),
+                description: None,
             });
         }
     }
@@ -49,6 +52,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         projects.push(ChoiceItem {
             id: project.clone(),
             label: project.clone(),
+            description: None,
         });
     }
     let mut project_field = Field {
@@ -202,6 +206,21 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
             _ => fallback,
         }.into()
     };
+    let builtin_description = |value: &crate::options::SpecValue| -> Option<String> {
+        if !spec.builtin || lang == super::Lang::En {
+            return value.description.clone();
+        }
+        match (spec.id.as_str(), value.id.as_str()) {
+            ("pr", "review") => Some("Cada PR que abre el nodo es una tarjeta para ti; el nodo espera tu fusión"),
+            ("pr", "auto_merge") => Some("El nodo fusiona su propia PR cuando pasan las comprobaciones"),
+            ("effort", "auto") => Some("El orquestador elige el modelo y el esfuerzo según la tarea"),
+            ("effort", "light") => Some("Un modelo rápido y más barato para trabajo pequeño y claro"),
+            ("effort", "normal") => Some("El modelo y el esfuerzo por defecto de Claude"),
+            ("effort", "hard") => Some("El modelo más potente y el máximo esfuerzo"),
+            _ => return value.description.clone(),
+        }
+        .map(str::to_owned)
+    };
     let kind = match spec.kind {
         OptionKind::Toggle => FieldKind::Toggle,
         OptionKind::Choice => FieldKind::Choice {
@@ -211,6 +230,7 @@ pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Fi
                 .map(|value| ChoiceItem {
                     id: value.id.clone(),
                     label: builtin_label(&spec.id, Some(&value.id), &value.label),
+                    description: builtin_description(value),
                 })
                 .collect(),
         },

@@ -500,6 +500,7 @@ fn golden_live() -> LiveSnapshot {
     live.nodes.push(LiveNode {
         agent_id: "d887a34b-249e-4487-a89b-57de38c26372".into(),
         short_id: Some("alondra-ios".into()),
+        cwd: Some("/demo/Demo Garden/ios".into()),
         name: "Alondra · iOS".into(),
         project: Some("Demo Garden".into()),
         state_key: Some("waiting_answer".into()),
@@ -515,6 +516,36 @@ fn golden_live() -> LiveSnapshot {
         state_since: None,
         last_message_at: Some("2026-09-30T09:58:00Z".into()),
     });
+    live.pull_requests.push(LivePullRequest {
+        id: "github.com/example/repo#12".into(),
+        title: Some("Add the compact schedule editor".into()),
+        body: Some("Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet".into()),
+        head_ref: Some("feature/compact-schedule-editor".into()),
+        base_ref: Some("main".into()),
+        checks: vec![
+            LiveCheck { name: "Build".into(), state: CheckState::Pass },
+            LiveCheck { name: "Unit tests".into(), state: CheckState::Pass },
+            LiveCheck { name: "Lint".into(), state: CheckState::Pending },
+        ],
+        checks_passed: Some(true),
+        additions: 120,
+        deletions: 30,
+        changed_files: 4,
+        url: Some("https://github.com/example/repo/pull/12".into()),
+        ..Default::default()
+    });
+    live.activity.insert("d887a34b-249e-4487-a89b-57de38c26372".into(), vec![LiveActivity {
+        agent_id: Some("worker-1".into()),
+        agent_type: Some("general-purpose".into()),
+        task: Some("Check the Spanish strings".into()),
+        tool: Some("Read".into()),
+        summary: Some("Reading the localization catalog".into()),
+        since: "2026-09-30T09:55:00Z".into(),
+    }]);
+    live.task_history.insert("t-651c38484cd2f34e74d5107ba05f7f15".into(), vec![
+        LiveHistoryStep { at: "2026-09-30T08:00:00Z".into(), state: "running".into(), summary: "Started".into() },
+        LiveHistoryStep { at: "2026-09-30T09:30:00Z".into(), state: "needs_you".into(), summary: "Waiting for a decision".into() },
+    ]);
     live.projects.push(crate::options::ProjectEntry {
         name: "Demo Garden".into(),
         path: "/demo/Demo Garden".into(),
@@ -569,6 +600,7 @@ fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
     live.pull_requests.push(crate::views::live::LivePullRequest {
         id: pr_id.into(), title: None, body: None, head_ref: None, base_ref: None,
         checks_passed: Some(true), conflicts: true, stacked_on: None, url: None,
+        ..Default::default()
     });
     let view = render(&state, &live, Client::Ios, Lang::En, &format!("card:{pr_id}"), "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("the card remains visible") };
@@ -780,6 +812,7 @@ fn pull_request_detail_uses_live_title_body_and_branch_names() {
         body: Some("Why this change matters".into()), head_ref: Some("task/editor".into()),
         base_ref: Some("main".into()), checks_passed: None, conflicts: false,
         stacked_on: None, url: None,
+        ..Default::default()
     });
     let view = render(&state, &live, Client::Tui, Lang::En, "pull_request:pr-1", "");
     assert_eq!(view.title.as_deref(), Some("Readable task editor"));
@@ -909,7 +942,7 @@ fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
 
     let mut live = LiveSnapshot::default();
     live.nodes.push(live::LiveNode {
-        agent_id: "a-1".into(), short_id: Some("short-a-1".into()),
+        agent_id: "a-1".into(), short_id: Some("short-a-1".into()), cwd: None,
         name: "Node One".into(), project: None,
         state_key: None,
         state_label: None, summary: None, needs: None, background: vec![],
@@ -1127,6 +1160,7 @@ fn node_quote_filters_raw_tool_calls() {
         background_suspect: false,
         agent_id: "a-1".into(),
         short_id: Some("a-1".into()),
+        cwd: None,
         name: "Node One".into(),
         state_key: None,
         working: true,
@@ -1284,6 +1318,7 @@ fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
         conflicts: false,
         stacked_on: Some("github.com/bitomule/alondra#153".into()),
         url: None,
+        ..Default::default()
     });
     let view = render(&state, &live, Client::Ios, Lang::En, "card:pr-1", "");
     let Item::Card(card) = &view.sections[0].items[0] else {
@@ -1348,7 +1383,7 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
     let state = fixture();
     let mut live = LiveSnapshot::default();
     live.nodes.push(LiveNode {
-        agent_id: "a-1".into(), short_id: None, name: "Node One".into(),
+        agent_id: "a-1".into(), short_id: None, cwd: None, name: "Node One".into(),
         project: None, state_key: None, state_label: None, summary: None, needs: None,
         background: vec![], background_badge: None, background_suspect: false,
         working: false, waiting: false,
@@ -1408,6 +1443,7 @@ fn node_detail_names_the_occupancy_and_since_when() {
         background_suspect: false,
         agent_id: "a-1".into(),
         short_id: Some("a-1".into()),
+        cwd: None,
         name: "Node One".into(),
         state_key: Some("free".into()),
         working: false,
@@ -1586,11 +1622,14 @@ fn every_builder_string_has_spanish() {
         "Memory", "Disk available", "6.1 GB of 16 GB", "120 GB", "Waiting for you",
         "Keep the warmer copy", "Ship the concise copy", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",
-        "The simulator pass completed successfully.",
+        "The simulator pass completed successfully.", "Started", "Waiting for a decision",
+        "Reading the localization catalog",
     ];
     const FIXTURE_TEXT_PREFIXES: &[&str] = &[
         "## Beta candidate ready", "All required checks passed", "Prepare the next Alondra beta",
         "The iPhone simulator pass", "The new empty state is ready", "The pull request is ready",
+        "Add the compact schedule editor", "1 · Add the compact schedule editor",
+        "Replaces the long schedule form", "feature/compact-schedule-editor",
     ];
     let state = golden_fixture();
     let live = golden_live();
@@ -1673,4 +1712,165 @@ fn scheduled_run_agent_without_a_recorded_run_falls_back_to_the_task_title() {
     let texts = card_context_texts(&scheduled_run_fixture(false));
     assert!(texts.iter().any(|text| text == "Build a feature"), "{texts:?}");
     assert!(!texts.iter().any(|text| text.contains("scheduled/")), "{texts:?}");
+}
+
+fn card_of(view: &View) -> &Card {
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("card") };
+    card
+}
+
+fn header_facts(view: &View) -> &[Fact] {
+    let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
+        panic!("header facts")
+    };
+    &facts.items
+}
+
+#[test]
+fn pull_request_card_carries_title_checks_branch_and_change_size() {
+    let card_key = "card:github.com/example/repo#12";
+    let state = golden_fixture();
+    let view = render(&state, &golden_live(), Client::Ios, Lang::En, card_key, "");
+    let card = card_of(&view);
+    assert_eq!(card.title, "Add the compact schedule editor");
+    assert!(card.body.as_ref().is_some_and(|body| body.text.starts_with("Replaces the long schedule form")));
+    let facts = &card.facts.as_ref().unwrap().items;
+    let value = |label: &str| facts.iter().find(|fact| fact.label == label).map(|fact| fact.value.as_str());
+    assert_eq!(value("Repository"), Some("example/repo #12"));
+    assert_eq!(value("Head"), Some("feature/compact-schedule-editor"));
+    assert_eq!(value("Changes"), Some("+120 −30 in 4 files"));
+    let checks = card.checks.as_ref().unwrap();
+    assert_eq!(
+        checks.items.iter().map(|check| (check.name.as_str(), check.state)).collect::<Vec<_>>(),
+        [("Build", CheckState::Pass), ("Unit tests", CheckState::Pass), ("Lint", CheckState::Pending)]
+    );
+    let spanish = render(&state, &golden_live(), Client::Ios, Lang::Es, card_key, "");
+    let spanish_facts = &card_of(&spanish).facts.as_ref().unwrap().items;
+    assert!(spanish_facts.iter().any(|fact| fact.label == "Cambios" && fact.value == "+120 −30 en 4 archivos"));
+    let mut single = golden_live();
+    single.pull_requests[0].changed_files = 1;
+    let view = render(&state, &single, Client::Ios, Lang::En, card_key, "");
+    assert!(card_of(&view).facts.as_ref().unwrap().items.iter()
+        .any(|fact| fact.label == "Changes" && fact.value == "+120 −30 in 1 file"));
+}
+
+#[test]
+fn pull_request_without_github_details_keeps_the_aggregate_check_and_domain_title() {
+    let state = golden_fixture();
+    let mut live = golden_live();
+    live.pull_requests[0] = LivePullRequest {
+        id: "github.com/example/repo#12".into(),
+        checks_passed: Some(false),
+        ..Default::default()
+    };
+    let view = render(&state, &live, Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    let card = card_of(&view);
+    assert_eq!(card.title, "example/repo #12");
+    let checks = card.checks.as_ref().unwrap();
+    assert_eq!(checks.items.len(), 1);
+    assert_eq!(checks.items[0].state, CheckState::Fail);
+    let facts = &card.facts.as_ref().unwrap().items;
+    assert!(facts.iter().all(|fact| fact.label != "Changes" && fact.label != "Head"));
+}
+
+#[test]
+fn pull_request_detail_shows_the_change_size() {
+    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
+        "pull_request:github.com/example/repo#12", "");
+    let facts = view.sections.iter().find(|section| section.id == "facts").unwrap();
+    let Item::Facts(facts) = &facts.items[0] else { panic!("facts") };
+    assert!(facts.items.iter().any(|fact| fact.label == "Changes" && fact.value == "+120 −30 in 4 files"));
+}
+
+#[test]
+fn card_node_line_carries_the_node_state_next_to_the_project() {
+    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
+        "card:a98d034b-249e-4487-a89b-57de38c26372", "");
+    let node = card_of(&view).context.iter().find(|line| line.icon == Icon::Node).unwrap();
+    let state = node.state.as_ref().expect("node state");
+    assert_eq!((state.text.as_str(), state.tone), ("Waiting for you", Tone::Accent));
+    assert_eq!(node.chip.as_ref().map(|chip| chip.text.as_str()), Some("Demo Garden"));
+    let bare = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
+        "card:a98d034b-249e-4487-a89b-57de38c26372", "");
+    assert!(card_of(&bare).context.iter().all(|line| line.state.is_none()));
+}
+
+#[test]
+fn action_request_body_is_a_code_block_that_survives_backticks() {
+    let mut state = fixture();
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = InteractionPayload::ActionRequest { options: vec![], answer: None };
+    interaction.body = "git commit -m \"```fix```\"\n".into();
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    let body = card_of(&view).body.as_ref().expect("body");
+    assert_eq!(body.text, "````\ngit commit -m \"```fix```\"\n````");
+    let question = render(&fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert_eq!(card_of(&question).body.as_ref().unwrap().text, "Body 0");
+}
+
+#[test]
+fn node_detail_names_its_folder_and_what_it_is_doing_right_now() {
+    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
+        "node:d887a34b-249e-4487-a89b-57de38c26372", "");
+    assert!(header_facts(&view).iter().any(|fact| fact.label == "Folder" && fact.value == "/demo/Demo Garden/ios"));
+    let now = view.sections.iter().find(|section| section.id == "now").expect("right now section");
+    assert_eq!(now.title.as_deref(), Some("Right now"));
+    let Item::Row(row) = &now.items[0] else { panic!("thread row") };
+    assert_eq!(row.title, "Reading the localization catalog");
+    assert_eq!(row.subtitle.as_deref(), Some("Task Check the Spanish strings"));
+    let idle = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
+        "node:d887a34b-249e-4487-a89b-57de38c26372", "");
+    assert!(idle.sections.iter().all(|section| section.id != "now"));
+    assert!(header_facts(&idle).iter().all(|fact| fact.label != "Folder"));
+}
+
+#[test]
+fn task_detail_says_since_when_it_has_been_in_its_state() {
+    let id = "task:t-651c38484cd2f34e74d5107ba05f7f15";
+    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, id, "");
+    let since = view.sections.iter().find(|section| section.id == "since").expect("since section");
+    let Item::Row(row) = &since.items[0] else { panic!("since row") };
+    assert!(matches!(&row.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:30:00Z"));
+    let bare = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En, id, "");
+    assert!(bare.sections.iter().all(|section| section.id != "since"));
+}
+
+#[test]
+fn request_option_values_keep_their_description_in_both_languages() {
+    let mut live = LiveSnapshot::default();
+    live.options = crate::options::OptionsFile::default().catalog(None);
+    let descriptions = |lang| {
+        let view = render(&fixture(), &live, Client::Ios, lang, "new_request", "");
+        let Item::Form(form) = view.sections.iter().flat_map(|section| &section.items)
+            .find(|item| matches!(item, Item::Form(_))).unwrap() else { panic!("form") };
+        ["pr", "effort"].map(|id| {
+            let FieldKind::Choice { items } = &form.fields.iter().find(|field| field.id == id).unwrap().kind
+                else { panic!("choice") };
+            items.iter().map(|item| item.description.clone()).collect::<Vec<_>>()
+        })
+    };
+    let [pr, effort] = descriptions(Lang::En);
+    assert_eq!(pr[1].as_deref(), Some("The node merges its own PR once its checks pass"));
+    assert!(effort.iter().all(Option::is_some));
+    let [pr, effort] = descriptions(Lang::Es);
+    assert_eq!(pr[1].as_deref(), Some("El nodo fusiona su propia PR cuando pasan las comprobaciones"));
+    assert_eq!(effort[2].as_deref(), Some("El modelo y el esfuerzo por defecto de Claude"));
+}
+
+#[test]
+fn fleet_rows_offer_close_node_with_a_confirmation() {
+    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "fleet", "");
+    let row = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) if row.id == "d887a34b-249e-4487-a89b-57de38c26372" => Some(row),
+        _ => None,
+    }).expect("node row");
+    let close = row.actions.iter().find(|action| action.label == "Close Node").expect("close action");
+    assert_eq!(close.style, Style::Destructive);
+    assert!(close.id.starts_with("close:"));
+    assert_eq!(close.confirm.as_ref().map(|confirm| confirm.message.as_str()), Some("Close this node?"));
+    let detail = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En,
+        "node:d887a34b-249e-4487-a89b-57de38c26372", "");
+    let Item::Actions(bar) = &detail.sections.iter().find(|section| section.id == "actions").unwrap().items[0]
+        else { panic!("actions") };
+    assert_eq!(bar.actions.iter().find(|action| action.label == "Close Node").map(|action| &action.id), Some(&close.id));
 }

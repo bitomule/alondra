@@ -4,9 +4,9 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "ios",
-  "version": "v2fbcb6e32afe4cd0",
+  "version": "vf5e81964842ebf61",
   "cursor": "cursor-1",
-  "title": "PR #12",
+  "title": "Add the compact schedule editor",
   "status": {
     "version": "v164538ff023163dd",
     "summary": "1 question · 3 to read · 0 nodes working",
@@ -77,7 +77,34 @@
             },
             {
               "label": "Head",
-              "value": "Branch unavailable"
+              "value": "feature/compact-schedule-editor"
+            },
+            {
+              "label": "Changes",
+              "value": "+120 −30 in 4 files"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "checks",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "checks",
+          "items": [
+            {
+              "name": "Build",
+              "state": "pass"
+            },
+            {
+              "name": "Unit tests",
+              "state": "pass"
+            },
+            {
+              "name": "Lint",
+              "state": "pending"
             }
           ]
         }
@@ -180,6 +207,10 @@
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for you",
+                "tone": "accent"
               }
             },
             {
@@ -241,12 +272,39 @@
       ]
     },
     {
+      "id": "description",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
       "id": "actions",
       "collapsed": false,
       "items": [
         {
           "type": "actions",
           "actions": [
+            {
+              "id": "",
+              "label": "Open on GitHub",
+              "style": "plain",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "url",
+                "url": "https://github.com/example/repo/pull/12"
+              }
+            },
             {
               "id": "ask_pr:github.com/example/repo#12@0",
               "label": "Ask about the PR",

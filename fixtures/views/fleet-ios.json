@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vf9f5fdc3884fe2fd",
+  "version": "v3f98653f1cdd8327",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -107,7 +107,7 @@
           "badges": [
             {
               "text": "Waiting for you",
-              "tone": "info"
+              "tone": "accent"
             }
           ],
           "trailing": {
@@ -128,6 +128,24 @@
               },
               "depth": 0,
               "struck": false
+            }
+          ],
+          "actions": [
+            {
+              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@0",
+              "label": "Close Node",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close Node",
+                "message": "Close this node?",
+                "button": "Close Node"
+              },
+              "enabled": true
             }
           ]
         }

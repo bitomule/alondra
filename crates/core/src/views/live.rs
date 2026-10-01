@@ -41,11 +41,13 @@ pub struct LiveSnapshot {
     #[serde(default)]
     pub search_matches: Option<Vec<String>>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveNode {
     pub agent_id: String,
     #[serde(default)]
     pub short_id: Option<String>,
+    #[serde(default)]
+    pub cwd: Option<String>,
     pub name: String,
     #[serde(default)]
     pub project: Option<String>,
@@ -71,7 +73,7 @@ pub struct LiveNode {
     pub last_message: Option<String>,
     pub last_message_at: Option<String>,
 }
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePullRequest {
     pub id: String,
     #[serde(default)]
@@ -82,10 +84,23 @@ pub struct LivePullRequest {
     pub head_ref: Option<String>,
     #[serde(default)]
     pub base_ref: Option<String>,
+    #[serde(default)]
+    pub checks: Vec<LiveCheck>,
     pub checks_passed: Option<bool>,
+    #[serde(default)]
+    pub additions: u64,
+    #[serde(default)]
+    pub deletions: u64,
+    #[serde(default)]
+    pub changed_files: u64,
     pub conflicts: bool,
     pub stacked_on: Option<String>,
     pub url: Option<String>,
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveCheck {
+    pub name: String,
+    pub state: super::CheckState,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveOrchestrator {

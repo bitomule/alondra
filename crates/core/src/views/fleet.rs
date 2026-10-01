@@ -5,6 +5,22 @@ use super::{
 use crate::domain_v2::{AgentId, TaskState};
 use std::collections::BTreeMap;
 
+fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
+    let mut action = common::action(
+        Verb::Close,
+        id,
+        context.domain.revision,
+        t!(context.lang, "Close Node", "Cerrar nodo"),
+        Style::Destructive,
+    )?;
+    action.confirm = Some(Confirm {
+        title: action.label.clone(),
+        message: t!(context.lang, "Close this node?", "¿Cerrar este nodo?").into(),
+        button: action.label.clone(),
+    });
+    Some(action)
+}
+
 pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
     let live = context
         .live
@@ -44,6 +60,7 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
         });
         row.children.push(last);
     }
+    row.actions.extend(close_action(&agent.id.0, context));
     row.trailing = Some(Trailing::Count {
         value: context
             .domain
@@ -159,6 +176,14 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         tone: None,
         link: None,
     }];
+    if let Some(cwd) = live.and_then(|node| node.cwd.clone()) {
+        facts.push(Fact {
+            label: t!(context.lang, "Folder", "Carpeta").into(),
+            value: cwd,
+            tone: None,
+            link: None,
+        });
+    }
     let tasks: Vec<_> = context
         .domain
         .tasks
@@ -290,8 +315,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             })
             .collect();
         view.sections.push(common::section(
-            "activity",
-            Some(t!(context.lang, "Activity", "Actividad").into()),
+            "now",
+            Some(t!(context.lang, "Right now", "Ahora mismo").into()),
             rows,
         ));
     }
@@ -315,20 +340,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         action.attachments = true;
         actions.push(action);
     }
-    if let Some(mut action) = common::action(
-        Verb::Close,
-        id,
-        context.domain.revision,
-        t!(context.lang, "Close Node", "Cerrar nodo"),
-        Style::Destructive,
-    ) {
-        action.confirm = Some(Confirm {
-            title: action.label.clone(),
-            message: t!(context.lang, "Close this node?", "¿Cerrar este nodo?").into(),
-            button: action.label.clone(),
-        });
-        actions.push(action);
-    }
+    actions.extend(close_action(id, context));
     if !actions.is_empty() {
         view.sections.push(common::section(
             "actions",

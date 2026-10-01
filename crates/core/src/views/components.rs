@@ -232,6 +232,8 @@ pub struct ContextLine {
     pub link: Option<Link>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chip: Option<Label>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub state: Option<Label>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Stamp {
@@ -479,4 +481,6 @@ pub enum FieldKind {
 pub struct ChoiceItem {
     pub id: String,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }

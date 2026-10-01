@@ -32,6 +32,9 @@ pub(crate) struct Details {
     pub head_ref: Option<String>,
     pub base_ref: Option<String>,
     pub checks: Vec<Check>,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
     pub conflicts: bool,
     pub mergeability_unknown: bool,
 }
@@ -74,6 +77,28 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
         base_ref: card.base.clone(),
         conflicts: card.conflicts(),
         mergeability_unknown: card.mergeability_unknown(),
+        additions: card.additions,
+        deletions: card.deletions,
+        changed_files: card.changed_files,
         checks: card.checks,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+    use serde_json::json;
+
+    #[test]
+    fn details_keep_the_change_size_and_each_check_by_name() {
+        let details = parse("pr-1", 7, &json!({
+            "title": "Editor", "additions": 120, "deletions": 30, "changedFiles": 4,
+            "mergeable": "MERGEABLE", "state": "OPEN",
+            "statusCheckRollup": [
+                {"name": "build", "status": "COMPLETED", "conclusion": "SUCCESS"},
+                {"name": "ui tests", "status": "IN_PROGRESS"}]
+        }));
+        assert_eq!((details.additions, details.deletions, details.changed_files), (120, 30, 4));
+        assert_eq!(details.checks.iter().map(|check| check.name.as_str()).collect::<Vec<_>>(), ["build", "ui tests"]);
     }
 }

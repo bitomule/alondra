@@ -184,6 +184,6 @@ final class CardActionPresentationTests: XCTestCase {
         let github = try ContractCodec.decode(AlondraContract.Action.self, from: Data(#"{"id":"","label":"Open on GitHub","style":"plain","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"link":{"kind":"url","url":"https://github.com/o/r/pull/1"}}"#.utf8))
         XCTAssertTrue(CardActionPresentation.isOpenOnGitHub(github))
         let pullRequest = try card(named: "card-pr")
-        XCTAssertFalse(pullRequest.actions.contains(where: CardActionPresentation.isOpenOnGitHub))
+        XCTAssertTrue(pullRequest.actions.contains(where: CardActionPresentation.isOpenOnGitHub))
     }
 }

@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v44793cae749ac8e5",
+  "version": "v31db932d4f21ea3a",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -84,6 +84,25 @@
       ]
     },
     {
+      "id": "since",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "since",
+          "icon": "history",
+          "title": "Since",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:30:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
       "id": "now",
       "collapsed": false,
       "items": [
@@ -96,6 +115,41 @@
           },
           "icon": "history",
           "title": "question: Restore the native review experience",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "title": "History",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2026-09-30T08:00:00Z",
+          "icon": "history",
+          "title": "Working",
+          "subtitle": "Started",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T08:00:00Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "2026-09-30T09:30:00Z",
+          "icon": "history",
+          "title": "Needs you",
+          "subtitle": "Waiting for a decision",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:30:00Z",
+            "format": "relative"
+          },
           "depth": 0,
           "struck": false
         }
@@ -130,6 +184,10 @@
               "chip": {
                 "text": "Demo Garden",
                 "tone": "neutral"
+              },
+              "state": {
+                "text": "Waiting for you",
+                "tone": "accent"
               }
             },
             {
@@ -229,7 +287,7 @@
             "text": "Pull request",
             "tone": "accent"
           },
-          "title": "example/repo #12",
+          "title": "Add the compact schedule editor",
           "context": [
             {
               "icon": "task",
@@ -278,7 +336,8 @@
             "key": "pull_request:github.com/example/repo#12"
           },
           "icon": "pull_request",
-          "title": "1 · PR #12",
+          "title": "1 · Add the compact schedule editor",
+          "subtitle": "feature/compact-schedule-editor → main",
           "depth": 0,
           "struck": false
         }
