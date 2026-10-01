@@ -37,6 +37,9 @@ pub(crate) fn validate_preflight_source(home: &Path) -> Result<()> {
     let Some(marker) = read_marker(home)? else {
         return Ok(());
     };
+    if marker.phase == Phase::Committed {
+        return Ok(());
+    }
     let source = home.join(SOURCE);
     if path_exists(&source) {
         let (epoch, revision) = inspect_database(&source)?;
@@ -304,20 +307,7 @@ fn migrate_locked(
             write_marker(home, &marker)?;
             checkpoint(Checkpoint::Committed)?;
         }
-        Phase::Committed => {
-            let (target_epoch, target_revision) = inspect_database(&target)
-                .context("committed database migration target is unavailable or invalid")?;
-            ensure!(
-                target_epoch == marker.source_epoch && target_revision >= marker.source_revision,
-                "committed database does not match its migration marker; preserving source"
-            );
-            if path_exists(&source) {
-                ensure!(
-                    logical_database_digest(&source)? == marker.source_content_digest,
-                    "retained source database content changed after migration; preserving both files"
-                );
-            }
-        }
+        Phase::Committed => {}
     }
 
     // Keep the original database as a private recovery copy. The staging name
