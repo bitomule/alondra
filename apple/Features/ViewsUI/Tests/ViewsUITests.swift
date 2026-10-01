@@ -73,3 +73,82 @@ final class ViewsUITests: XCTestCase {
         }
     }
 }
+
+final class ScheduleEditorRulesTests: XCTestCase {
+    private func form() throws -> WireForm {
+        let root = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
+            .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/schedule-new-ios.json")
+        let document = try ViewsCodec.decode(ViewDocument.self, from: Data(contentsOf: root))
+        return try XCTUnwrap(document.sections.lazy.flatMap(\.items).compactMap { item -> WireForm? in
+            if case let .form(form) = item { form } else { nil }
+        }.first)
+    }
+
+    func testDailyScheduleShowsTimeButNotStartDate() throws {
+        let ids = ScheduleEditorRules.visibleTimingFieldIDs(in: try form(), values: ["repeat": .string("daily")])
+        XCTAssertEqual(ids, ["repeat", "time", "active"])
+    }
+
+    func testWeeklyScheduleAddsTheWeekday() throws {
+        let ids = ScheduleEditorRules.visibleTimingFieldIDs(in: try form(), values: ["repeat": .string("weekly")])
+        XCTAssertEqual(ids, ["repeat", "weekday", "time", "active"])
+    }
+
+    func testCustomScheduleShowsIntervalAndStartDateButNotTime() throws {
+        let ids = ScheduleEditorRules.visibleTimingFieldIDs(in: try form(), values: ["repeat": .string("every_days")])
+        XCTAssertEqual(ids, ["repeat", "interval", "start_at", "active"])
+    }
+
+    func testOnceScheduleShowsOnlyTheStartDate() throws {
+        let ids = ScheduleEditorRules.visibleTimingFieldIDs(in: try form(), values: ["repeat": .string("once")])
+        XCTAssertEqual(ids, ["repeat", "start_at", "active"])
+    }
+
+    func testRepeatModesCollapseTheCustomUnits() {
+        XCTAssertEqual(ScheduleEditorRules.repeatMode("every_months"), "custom")
+        XCTAssertEqual(ScheduleEditorRules.repeatMode("weekly"), "weekly")
+        XCTAssertEqual(ScheduleEditorRules.repeatValue(forMode: "custom"), "every_hours")
+        XCTAssertEqual(ScheduleEditorRules.repeatValue(forMode: "once"), "once")
+    }
+}
+
+final class CardActionPresentationTests: XCTestCase {
+    private func card(named name: String, replacingIcon icon: String? = nil) throws -> Card {
+        let root = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
+            .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/\(name).json")
+        var text = try String(contentsOf: root, encoding: .utf8)
+        if let icon { text = text.replacingOccurrences(of: "\"icon\": \"delivery\"", with: "\"icon\": \"\(icon)\"") }
+        let document = try ViewsCodec.decode(ViewDocument.self, from: Data(text.utf8))
+        return try XCTUnwrap(document.sections.lazy.flatMap(\.items).compactMap { item -> Card? in
+            if case let .card(card) = item { card } else { nil }
+        }.first)
+    }
+
+    func testDeliveryRequestChangesIsRescueComments() throws {
+        let delivery = try card(named: "card-delivery")
+        let changes = try XCTUnwrap(delivery.actions.first { $0.id?.hasPrefix("changes:") == true })
+        XCTAssertTrue(CardActionPresentation.isRescueComments(card: delivery, action: changes))
+        let accept = try XCTUnwrap(delivery.actions.first { $0.id?.hasPrefix("accept:") == true })
+        XCTAssertFalse(CardActionPresentation.isRescueComments(card: delivery, action: accept))
+    }
+
+    func testOtherDocumentsKeepTheirReviewActions() throws {
+        let document = try card(named: "card-delivery", replacingIcon: "document")
+        let changes = try XCTUnwrap(document.actions.first { $0.id?.hasPrefix("changes:") == true })
+        XCTAssertFalse(CardActionPresentation.isRescueComments(card: document, action: changes))
+    }
+
+    func testPullRequestCardsNeverRescueComments() throws {
+        let pullRequest = try card(named: "card-pr")
+        XCTAssertFalse(pullRequest.actions.contains { CardActionPresentation.isRescueComments(card: pullRequest, action: $0) })
+    }
+
+    func testOpenOnGitHubIsTheIdlessURLAction() throws {
+        let github = try ViewsCodec.decode(AlondraViews.Action.self, from: Data(#"{"id":"","label":"Open on GitHub","style":"plain","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"link":{"kind":"url","url":"https://github.com/o/r/pull/1"}}"#.utf8))
+        XCTAssertTrue(CardActionPresentation.isOpenOnGitHub(github))
+        let pullRequest = try card(named: "card-pr")
+        XCTAssertFalse(pullRequest.actions.contains(where: CardActionPresentation.isOpenOnGitHub))
+    }
+}

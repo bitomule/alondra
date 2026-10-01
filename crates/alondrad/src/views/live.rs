@@ -108,6 +108,7 @@ pub(crate) async fn gather(
                 waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
                     alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
                     alondra_core::NodeState::WaitingMachine),
+                state_since: Some(timestamp(node.state_since)),
                 last_message: node.last_message,
                 last_message_at: node.last_message_at.map(timestamp),
             })

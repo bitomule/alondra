@@ -1,6 +1,8 @@
+import AlondraAttachmentsFeature
 import AlondraShared
 import AlondraViews
 import AlondraViewsUI
+import ComposableArchitecture
 import SwiftUI
 
 /// The Views document uses the same reader and block-comment controls as the
@@ -8,6 +10,7 @@ import SwiftUI
 struct ServiceWireDocumentView: View {
     let card: AlondraViews.Card
     var markdownText: String? = nil
+    var attachments: StoreOf<AttachmentFeature>? = nil
     let onAction: (AlondraViews.Action, [ActionComment], String) -> Void
     let onLink: (AlondraViews.Link) -> Void
     let onAttachment: (AlondraViews.Attachment) -> Void
@@ -22,6 +25,7 @@ struct ServiceWireDocumentView: View {
     private var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: markdownText ?? card.body?.text ?? "") }
     private var canComment: Bool { card.actions.contains { $0.comments?.kind == .blocks } }
     private var canReply: Bool { card.actions.contains { $0.id?.hasPrefix("reply:") == true } }
+    private var acceptsFeedback: Bool { canComment || canReply }
     private var feedback: [ActionComment] {
         blocks.compactMap { comments[$0.draftKey] }
     }
@@ -47,7 +51,7 @@ struct ServiceWireDocumentView: View {
                 ServiceArtifactLinks(text: markdownText ?? card.body?.text ?? "", tint: kind.tint)
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(MarkdownParser.segments(blocks)) { segment in
-                        if canComment {
+                        if acceptsFeedback {
                             switch segment {
                             case .block(let block):
                                 ServiceBlockRow(block: block, comment: comments[block.draftKey]?.text,
@@ -76,8 +80,7 @@ struct ServiceWireDocumentView: View {
                     CardView(card: child, onAction: { onAction($0, feedback, general) },
                              onLink: onLink, onAttachment: onAttachment)
                 }
-                if canComment { commentsSummary.padding(.top, 32) }
-                else if canReply { generalReply.padding(.top, 32) }
+                if acceptsFeedback { commentsSummary.padding(.top, 32) }
             }
             .padding(.horizontal, 20).padding(.bottom, 24)
         }
@@ -112,7 +115,7 @@ struct ServiceWireDocumentView: View {
                 }
             }
             .font(.footnote).foregroundStyle(.secondary)
-            if canComment, !blocks.isEmpty {
+            if acceptsFeedback, !blocks.isEmpty {
                 Label("Tap a block to comment on it", systemImage: "hand.tap")
                     .font(.footnote.weight(.medium)).foregroundStyle(kind.tint).padding(.top, 4)
             }
@@ -151,17 +154,12 @@ struct ServiceWireDocumentView: View {
                 .background(Palette.card, in: .rect(cornerRadius: 14))
                 .overlay(RoundedRectangle(cornerRadius: 14)
                     .strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
-        }
-    }
-
-    private var generalReply: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Your comments").font(.display(.title3))
-            TextField("General comment (optional)", text: $general, axis: .vertical)
-                .lineLimit(2...8).focused($generalFocused).padding(14)
-                .background(Palette.card, in: .rect(cornerRadius: 14))
-                .overlay(RoundedRectangle(cornerRadius: 14)
-                    .strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
+            if let attachments {
+                HStack(alignment: .center, spacing: 8) {
+                    ServiceAttachButton(store: attachments)
+                    ServiceAttachmentStrip(store: attachments)
+                }
+            }
         }
     }
 

@@ -1,6 +1,6 @@
 use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Markdown, Notice, RenderContext, Style, Tone,
-    Trailing, View, action_id::Verb, common, text::t,
+    Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain_v2::{DomainState, Request, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
@@ -283,6 +283,39 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
     Ok(view)
 }
 
+fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
+    let line = |text: String, link: Option<super::Link>| {
+        let mut row = common::row("now", "task", Icon::History, text, None);
+        row.link = link;
+        row
+    };
+    match task.state {
+        TaskState::NeedsYou => context
+            .domain
+            .projection()
+            .inbox
+            .into_iter()
+            .find(|item| item.pending && item.task_id.as_ref() == Some(&task.id))
+            .map(|item| line(
+                tf!(context.lang, "question: {title}", "pregunta: {title}", title = item.title),
+                Some(super::Link::View { key: super::card::card_key(&item) }),
+            )),
+        TaskState::InReview => task.documents.keys().last()
+            .and_then(|id| context.domain.documents.get(id))
+            .map(|document| line(
+                tf!(context.lang, "document: {title}", "documento: {title}", title = document.title), None)),
+        TaskState::WaitingDependency => task.stack.as_ref()
+            .and_then(|stack| context.domain.pull_requests.get(&stack.pr_id))
+            .map(|pr| line(
+                tf!(context.lang, "waits for PR #{number} to be merged",
+                    "espera a que se fusione el PR #{number}", number = pr.number), None)),
+        TaskState::Closing => Some(line(t!(context.lang,
+            "merged; the node does what the merge unblocks",
+            "fusionada; el nodo hace lo que desbloquea la fusión").into(), None)),
+        TaskState::NotStarted | TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
+    }
+}
+
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     let task = context
@@ -335,6 +368,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
+    if let Some(now) = now_line(task, context) {
+        view.sections.push(common::section("now", None, vec![Item::Row(now)]));
+    }
     if let Some(history) = context
         .live
         .task_history

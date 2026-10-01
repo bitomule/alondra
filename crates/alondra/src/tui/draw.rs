@@ -723,7 +723,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let mut lines = super::view_render::document_lines(document, inner.width as usize);
-    let actions = super::view_render::actions(document);
+    let actions = visible_detail_actions(document);
     if !actions.is_empty() {
         lines.push(Line::default());
         for action in &actions {
@@ -1499,6 +1499,13 @@ fn merge_option_label(option: &alondra_core::views::ActionOption) -> String {
     }
 }
 
+pub(super) fn visible_detail_actions(document: &alondra_core::views::View) -> Vec<alondra_core::views::Action> {
+    super::view_render::actions(document)
+        .into_iter()
+        .filter(|action| action.enabled || !action.id.starts_with("accept:"))
+        .collect()
+}
+
 /// Only an uncertain handoff needs the user: a dispatching one settles by itself.
 pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
@@ -1528,10 +1535,14 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
             return keys;
         }
         if let Some(home) = app.home_view.as_ref() {
-            let mut keys = vec![
-                k("j/k", tr!("move", "mover")),
-                k("⏎/o", tr!("detail", "detalle")),
-            ];
+            let mut keys = if app.schedules_open {
+                vec![k("j/k", tr!("move", "mover"))]
+            } else {
+                vec![
+                    k("j/k", tr!("move", "mover")),
+                    k("⏎/o", tr!("detail", "detalle")),
+                ]
+            };
             if let Some(card) = app.card_view.as_ref() {
                 keys.extend(view_footer_actions(card));
             } else if let Some(selected) = app.sel.as_ref()
@@ -1548,6 +1559,13 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
                         ));
                     }
                 }
+            }
+            if app.schedules_open {
+                keys.extend([
+                    k("n", tr!("create", "crear")),
+                    k("Esc", tr!("back", "volver")),
+                ]);
+                return keys;
             }
             match app.screen {
                 Screen::Tasks => {

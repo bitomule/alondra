@@ -197,11 +197,13 @@ struct ViewsScreenView: View {
             if let card = documentReviewCard ?? documentCard {
                 ServiceWireDocumentView(card: card,
                                         markdownText: documentContentRef == nil ? nil : (store.content ?? ""),
+                                        attachments: store.scope(state: \.action.attachmentPicker, action: { .action(.attachmentPicker($0)) }),
                                         onAction: { presentReview($0, comments: $1, text: $2) },
                                         onLink: follow, onAttachment: { store.send(.fetchAttachment($0)) })
                 .id(card.id)
             } else if let card = readableCard {
                 ServiceWireDocumentView(card: card,
+                                        attachments: store.scope(state: \.action.attachmentPicker, action: { .action(.attachmentPicker($0)) }),
                                         onAction: { presentReview($0, comments: $1, text: $2) },
                                         onLink: follow, onAttachment: { store.send(.fetchAttachment($0)) })
                     .id(card.id)
@@ -217,6 +219,8 @@ struct ViewsScreenView: View {
                         ViewsPRDiff(text: content, comments: $diffComments)
                     }
                 }
+            } else if store.key.rawValue.hasPrefix("schedule:"), let form = store.form {
+                ServiceScheduleEditor(store: store, form: form)
             } else if let document = store.document, store.key.rawValue.hasPrefix("pull_request:") {
                 ServiceWirePullRequestView(document: document,
                                            diff: store.contentReference?.kind == .diff ? store.content : nil,
@@ -293,7 +297,8 @@ struct ViewsScreenView: View {
                 .navigationTitle(isTasksScreen || isNewRequestScreen ? "" : (document.title ?? document.status.summary))
                 .navigationBarTitleDisplayMode(isTasksScreen || isNewRequestScreen ? .inline : .automatic)
                 .refreshable { await store.send(.refresh).finish() }
-                .safeAreaBar(edge: .bottom) { documentBottomBar(document) }
+                .modifier(BottomBarModifier(enabled: hasBottomBar(document)) { documentBottomBar(document) })
+                .toolbar(hidesTabBar ? .hidden : .automatic, for: .tabBar)
                 .toolbar {
                     if store.key.rawValue == "schedules" {
                         ToolbarItem(placement: .topBarTrailing) {
@@ -306,6 +311,15 @@ struct ViewsScreenView: View {
                 }
                 .modifier(FleetSearchModifier(enabled: store.key.rawValue == "fleet",
                     text: Binding(get: { store.searchQuery }, set: { store.send(.searchQueryChanged($0)) })))
+    }
+
+    private var hidesTabBar: Bool {
+        store.key.rawValue.hasPrefix("task:") || store.key.rawValue.hasPrefix("node:")
+    }
+
+    private func hasBottomBar(_ document: ViewDocument) -> Bool {
+        if store.key.rawValue.hasPrefix("node:") { return nodeMessageAction(document) != nil }
+        return isInlineForm && store.form != nil
     }
 
     @ViewBuilder private func documentBottomBar(_ document: ViewDocument) -> some View {
@@ -386,8 +400,14 @@ struct ViewsScreenView: View {
                 .padding(4)
         } else if store.key.rawValue.hasPrefix("task:"), section.id == "header" {
             taskHeader(section)
+        } else if store.key.rawValue.hasPrefix("task:"), section.id == "now" {
+            taskNow(section)
         } else if store.key.rawValue.hasPrefix("task:"), section.id == "waiting" {
             taskWaiting(section)
+        } else if store.key.rawValue.hasPrefix("node:"), section.id == "waiting" {
+            if !section.items.isEmpty { taskWaiting(section) }
+        } else if store.key.rawValue.hasPrefix("node:"), section.id == "since" {
+            EmptyView()
         } else if store.key.rawValue.hasPrefix("node:"), section.id == "header" {
             nodeHeader(section)
         } else if store.key.rawValue.hasPrefix("node:"), section.id == "last_message" {
@@ -464,16 +484,17 @@ struct ViewsScreenView: View {
             if case let .facts(value) = item { value.items } else { nil }
         }.flatMap { $0 }
         let state = facts.first?.value ?? ""
-        let time = store.document?.sections.first(where: { $0.id == "history" })?.items.last.flatMap { item -> String? in
+        let since = store.document?.sections.first(where: { $0.id == "history" })?.items.last.flatMap { item -> String? in
             guard case let .row(row) = item, let trailing = row.trailing,
-                  case let .time(at, format) = trailing else { return nil }
-            return ViewsDate.display(at, format: format)
+                  case let .time(at, _) = trailing else { return nil }
+            return relativeSince(at)
         }
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Glyph(symbol: "circle.dashed", tint: Palette.dawn, size: .small)
-                Text(state).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.dawn)
-                if let time { Text(time).font(.subheadline).foregroundStyle(.secondary) }
+                Text(state.prefix(1).uppercased() + state.dropFirst())
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Palette.dawn)
+                if let since { Text("since \(since)").font(.subheadline).foregroundStyle(.secondary) }
             }
             Text(store.document?.title ?? "")
                 .font(.display(.largeTitle, weight: .bold)).foregroundStyle(Palette.ink)
@@ -481,7 +502,26 @@ struct ViewsScreenView: View {
             ForEach(Array(facts.indices.dropFirst()), id: \.self) { index in
                 let fact = facts[index]
                 Button { if let link = fact.link { follow(link) } } label: {
-                    Text(fact.value).font(.subheadline).foregroundStyle(.secondary)
+                    if case let .view(key) = fact.link, key.hasPrefix("node:") {
+                        Text(fact.value).font(.mono(.caption)).foregroundStyle(.secondary)
+                    } else {
+                        Text("from “\(fact.value)”").font(.subheadline).foregroundStyle(.secondary)
+                    }
+                }.buttonStyle(.plain)
+            }
+        }
+    }
+
+    private func taskNow(_ section: ViewSection) -> some View {
+        let row = section.items.compactMap { item -> AlondraViews.Row? in
+            if case let .row(row) = item { row } else { nil }
+        }.first
+        return Group {
+            if let row {
+                Button { if let link = row.link { follow(link) } } label: {
+                    Label(row.title, systemImage: "clock")
+                        .font(.mono(.footnote)).foregroundStyle(Palette.sky)
+                        .lineLimit(3).multilineTextAlignment(.leading)
                 }.buttonStyle(.plain)
             }
         }
@@ -498,8 +538,7 @@ struct ViewsScreenView: View {
                 ForEach(cards, id: \.id) { card in
                     Button { if let link = card.link { follow(link) } } label: {
                         HStack(spacing: 10) {
-                            Image(systemName: card.icon == .document ? "doc.text" : card.icon == .question ? "questionmark.circle" : "tray.full")
-                                .foregroundStyle(Palette.dawn)
+                            KindBadge(kind: Kind(card))
                             Text(card.title).font(.subheadline.weight(.medium)).foregroundStyle(Palette.ink)
                                 .lineLimit(2).multilineTextAlignment(.leading)
                             Spacer(minLength: 0)
@@ -518,10 +557,17 @@ struct ViewsScreenView: View {
             guard case let .facts(facts) = item else { return nil }
             return facts.items.first?.value
         }.first ?? ""
+        let since = store.document?.sections.first(where: { $0.id == "since" })?.items.compactMap { item -> String? in
+            guard case let .row(row) = item, let trailing = row.trailing,
+                  case let .time(at, _) = trailing else { return nil }
+            return relativeSince(at)
+        }.first
         return VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
                 Glyph(symbol: "desktopcomputer", tint: Palette.sky, size: .small)
-                Text(state).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.sky)
+                Text(state.prefix(1).uppercased() + state.dropFirst())
+                    .font(.subheadline.weight(.semibold)).foregroundStyle(Palette.sky)
+                if let since { Text("since \(since)").font(.subheadline).foregroundStyle(.secondary) }
             }
             Text(store.document?.title ?? "")
                 .font(.display(.largeTitle, weight: .bold)).foregroundStyle(Palette.ink)
@@ -801,6 +847,19 @@ private struct FleetSearchModifier: ViewModifier {
     @ViewBuilder func body(content: Content) -> some View {
         if enabled {
             content.searchable(text: $text, prompt: Text("Search fleet"))
+        } else {
+            content
+        }
+    }
+}
+
+private struct BottomBarModifier<Bar: View>: ViewModifier {
+    let enabled: Bool
+    @ViewBuilder let bar: () -> Bar
+
+    @ViewBuilder func body(content: Content) -> some View {
+        if enabled {
+            content.safeAreaBar(edge: .bottom) { bar() }
         } else {
             content
         }

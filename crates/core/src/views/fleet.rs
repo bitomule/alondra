@@ -123,6 +123,15 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     view
 }
 
+fn occupancy_label(node: &super::live::LiveNode, lang: super::Lang) -> Option<&'static str> {
+    match node.state_key.as_deref()? {
+        "free" => Some(t!(lang, "Free", "Libre")),
+        "busy" => Some(t!(lang, "Busy", "Ocupado")),
+        "waiting_machine" => Some(t!(lang, "Waiting for the machine", "Esperando máquina")),
+        _ => None,
+    }
+}
+
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     if id == "orchestrator" {
@@ -143,8 +152,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     );
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
-        value: live.and_then(|n| n.state_label.clone()).unwrap_or_else(||
-            if agent.connected { t!(context.lang, "Connected", "Conectado") } else { t!(context.lang, "Offline", "Desconectado") }.into()),
+        value: live.and_then(|node| occupancy_label(node, context.lang).map(str::to_owned))
+            .or_else(|| live.and_then(|node| node.state_label.clone()))
+            .unwrap_or_else(||
+                if agent.connected { t!(context.lang, "Connected", "Conectado") } else { t!(context.lang, "Offline", "Desconectado") }.into()),
         tone: None,
         link: None,
     }];
@@ -165,6 +176,12 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
+    if let Some(since) = live.and_then(|node| node.state_since.as_ref()) {
+        let mut row = common::row("since", "node", Icon::History, t!(context.lang, "Since", "Desde").into(), None);
+        row.link = None;
+        row.trailing = Some(Trailing::Time { at: since.clone(), format: super::TimeFormat::Relative });
+        view.sections.push(common::section("since", None, vec![Item::Row(row)]));
+    }
     if let Some(short_id) = live.and_then(|node| node.short_id.as_ref()).filter(|_| context.client == super::Client::Tui) {
         let mut attach = common::row("attach", "node", Icon::Node,
             t!(context.lang, "Attach", "Conectar").into(), None);
