@@ -3613,12 +3613,12 @@
         }
       }
     },
-    "Keep up with your agents, answer a question, and help your work move forward.": {
+    "Keep up with your fleet, answer a question, and help your work move forward.": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Sigue a tus agentes, responde preguntas y haz avanzar tu trabajo."
+            "value": "Sigue a tu flota, responde preguntas y haz avanzar tu trabajo."
           }
         }
       }
@@ -3853,12 +3853,12 @@
         }
       }
     },
-    "Connect your account and the Mac running your agents. Your questions, tasks and conversations come together here.": {
+    "Connect your account and the Mac running your fleet. Your questions, tasks and conversations come together here.": {
       "localizations": {
         "es": {
           "stringUnit": {
             "state": "translated",
-            "value": "Conecta tu cuenta y el Mac donde se ejecutan tus agentes. Aquí encontrarás tus preguntas, tareas y conversaciones."
+            "value": "Conecta tu cuenta y el Mac donde se ejecuta tu flota. Aquí encontrarás tus preguntas, tareas y conversaciones."
           }
         }
       }

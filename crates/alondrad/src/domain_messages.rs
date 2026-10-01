@@ -112,7 +112,7 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         Some(id) => {
             let task = state.tasks.get(id).ok_or_else(|| refused("not_found", "task does not exist"))?;
             if task.agent_id.as_ref() != Some(agent) {
-                return Err(refused("not_assigned", format!("{id} is not this agent's task")));
+                return Err(refused("not_assigned", format!("{id} is not this node's task")));
             }
             Some((id, task.title.as_str()))
         }

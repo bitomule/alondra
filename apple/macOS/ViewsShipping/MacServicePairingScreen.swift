@@ -40,7 +40,7 @@ private struct MacServicePairingHeader: View {
                 .font(.caption.weight(.bold)).tracking(3).foregroundStyle(.orange)
             Text("A home for your work.")
                 .font(.system(.largeTitle, design: .serif, weight: .semibold))
-            Text("Connect your account and the Mac running your agents. Your questions, tasks and conversations come together here.")
+            Text("Connect your account and the Mac running your fleet. Your questions, tasks and conversations come together here.")
                 .font(.title3).foregroundStyle(.secondary)
             Label("Encrypted between your devices", systemImage: "lock.shield")
                 .font(.callout).foregroundStyle(.secondary)
