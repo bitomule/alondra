@@ -1930,3 +1930,13 @@ fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes_and_a_review
     let ios = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     assert!(answer_action(card_of(&ios)).options.iter().all(|option| option.key.is_none()));
 }
+
+#[test]
+fn status_names_the_node_count_fleet() {
+    for (lang, label) in [(Lang::En, "Fleet"), (Lang::Es, "Flota")] {
+        let view = render(&fixture(), &LiveSnapshot::default(), Client::Tui, lang, "home", "");
+        let count = view.status.counts.iter().find(|count| count.id == "agents").unwrap();
+        assert_eq!(count.label, label);
+        assert!(view.status.counts.iter().all(|count| !count.label.to_lowercase().contains("agent")));
+    }
+}

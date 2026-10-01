@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vb3efdecdabf820e2",
+  "version": "ve69427081aa468c4",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "v164538ff023163dd",
+    "version": "v47edd097e99cb5fc",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Agents",
+        "label": "Fleet",
         "value": 1
       },
       {

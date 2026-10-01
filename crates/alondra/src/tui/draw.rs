@@ -1865,6 +1865,13 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
             tr!("the Mac's memory in use", "memoria del Mac en uso"),
         ),
         row(
+            "CPU",
+            tr!(
+                "the Mac's CPU in use; red when the load is too high to trust the readings",
+                "CPU del Mac en uso; en rojo si la carga es tan alta que las lecturas no son fiables"
+            ),
+        ),
+        row(
             tr!("disk", "disco"),
             tr!(
                 "free space on the Mac's disk; red when it is nearly full",

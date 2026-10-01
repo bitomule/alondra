@@ -68,7 +68,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             },
             Count {
                 id: "agents".into(),
-                label: t!(context.lang, "Agents", "Agentes").into(),
+                label: t!(context.lang, "Fleet", "Flota").into(),
                 value: context.live.nodes.len() as u32,
             },
             Count {

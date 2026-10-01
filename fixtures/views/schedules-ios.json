@@ -4,11 +4,11 @@
   "view": "schedules",
   "key": "schedules",
   "client": "ios",
-  "version": "v7b89f67e73ad0ce9",
+  "version": "v77fb13049755056d",
   "cursor": "cursor-1",
   "title": "Scheduled Tasks",
   "status": {
-    "version": "v164538ff023163dd",
+    "version": "v47edd097e99cb5fc",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Agents",
+        "label": "Fleet",
         "value": 1
       },
       {

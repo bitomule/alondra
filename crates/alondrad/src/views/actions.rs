@@ -277,13 +277,13 @@ async fn execute_external(
             let (agent, task_id) = match &interaction.scope {
                 Scope::Task { task_id } => {
                     let Some(agent) = state.tasks.get(task_id).and_then(|task| task.agent_id.clone()) else {
-                        return Ok(no_longer_available(lang, "This item has no active agent"));
+                        return Ok(no_longer_available(lang, "This item has no active node"));
                     };
                     (agent, Some(task_id.0.clone()))
                 }
-                Scope::Orchestrator { .. } => return Ok(no_longer_available(lang, "This item has no active agent")),
+                Scope::Orchestrator { .. } => return Ok(no_longer_available(lang, "This item has no active node")),
             };
-            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This agent is no longer available")); }
+            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
             let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
             let note = if action.verb == Verb::Reply {
                 alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default())
@@ -308,7 +308,7 @@ async fn execute_external(
             };
             let Some(task) = state.tasks.get(&pr.task_id) else { return Ok(no_longer_available(lang, "This pull request is no longer available")); };
             let Some(agent) = task.agent_id.as_ref().filter(|agent| state.agents.contains_key(*agent)) else {
-                return Ok(no_longer_available(lang, "This pull request has no active agent"));
+                return Ok(no_longer_available(lang, "This pull request has no active node"));
             };
             let text = request.input.text.as_deref().unwrap_or_default().trim();
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
@@ -334,7 +334,7 @@ async fn execute_external(
         }
         Verb::Msg => {
             let agent = AgentId(action.subject.clone());
-            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This agent is no longer available")); }
+            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
             let text = request.input.text.as_deref().unwrap_or_default().trim();
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let task_id = if let Some(id) = action.extra.as_deref() {
@@ -349,7 +349,7 @@ async fn execute_external(
         }
         Verb::Close => {
             let agent = AgentId(action.subject.clone());
-            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This agent is no longer available")); }
+            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
             let force = request.input.fields.get("force").and_then(Value::as_bool).unwrap_or(false);
             let reply = client.write(&user_id, Write::Close(agent.0), &json!({"force":force}), transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
@@ -971,17 +971,17 @@ fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
         "task_not_active" => "La tarea ya no está activa",
         "withdrawn" => "La persona autora retiró esta pregunta",
         "dependency_not_done" => "Completa primero la tarea dependiente",
-        "not_assigned" => "La tarea ya no está asignada a este agente",
+        "not_assigned" => "La tarea ya no está asignada a este nodo",
         "invalid_action_for_kind" => "Esta acción no se puede aplicar a este elemento",
         "acceptance_missing" => "Autoriza primero la fusión de la PR presentada",
         "subject_already_linked" => "Este elemento ya está vinculado a otra tarea",
-        "delivery_uncertain" => "No se pudo confirmar si el agente recibió el mensaje",
+        "delivery_uncertain" => "No se pudo confirmar si el nodo recibió el mensaje",
         "blocking_interaction" => "Responde primero a la interacción pendiente de la tarea",
         "merge_not_confirmed" => "No se pudo confirmar la fusión de la PR",
         "task_not_cancelled" => "La tarea todavía no está cancelada",
-        "interactive_session" => "La sesión del agente requiere interacción manual",
-        "launch_failed" => "No se pudo iniciar la sesión del agente",
-        "session_unreachable" => "No se puede acceder a la sesión del agente",
+        "interactive_session" => "La sesión del nodo requiere interacción manual",
+        "launch_failed" => "No se pudo iniciar la sesión del nodo",
+        "session_unreachable" => "No se puede acceder a la sesión del nodo",
         "unavailable" => "Esta acción no está disponible ahora mismo",
         "task_already_has_pr" => "Esta tarea ya tiene una PR asociada",
         "pr_owned_by_other_task" => "Esta PR ya pertenece a otra tarea",
@@ -1011,11 +1011,11 @@ fn localize<'a>(lang: Lang, message: &'a str) -> &'a str {
         "This item is no longer available" => "Este elemento ya no está disponible",
         "This item has changed" => "Este elemento ha cambiado",
         "This action is no longer available" => "Esta acción ya no está disponible",
-        "This item has no active agent" => "Este elemento no tiene un agente activo",
-        "This agent is no longer available" => "Este agente ya no está disponible",
+        "This item has no active node" => "Este elemento no tiene un nodo activo",
+        "This node is no longer available" => "Este nodo ya no está disponible",
         "This pull request is no longer open" => "Esta PR ya no está abierta",
         "This pull request is no longer available" => "Esta PR ya no está disponible",
-        "This pull request has no active agent" => "Esta PR no tiene un agente activo",
+        "This pull request has no active node" => "Esta PR no tiene un nodo activo",
         "This task is no longer assigned to the node" => "Esta tarea ya no está asignada al nodo",
         "This run is no longer active" => "Esta ejecución ya no está activa",
         "This schedule is no longer available" => "Esta programación ya no está disponible",
@@ -1215,14 +1215,14 @@ mod tests {
             ("withdrawn", "La persona autora retiró esta pregunta"),
             ("dependency_not_done", "Completa primero la tarea dependiente"),
             ("subject_already_linked", "Este elemento ya está vinculado a otra tarea"),
-            ("delivery_uncertain", "No se pudo confirmar si el agente recibió el mensaje"),
+            ("delivery_uncertain", "No se pudo confirmar si el nodo recibió el mensaje"),
             ("blocking_interaction", "Responde primero a la interacción pendiente de la tarea"),
             ("merge_not_confirmed", "No se pudo confirmar la fusión de la PR"),
             ("task_not_cancelled", "La tarea todavía no está cancelada"),
             ("incompatible_protocol", "Actualiza Alondra para completar esta acción"),
-            ("interactive_session", "La sesión del agente requiere interacción manual"),
-            ("launch_failed", "No se pudo iniciar la sesión del agente"),
-            ("session_unreachable", "No se puede acceder a la sesión del agente"),
+            ("interactive_session", "La sesión del nodo requiere interacción manual"),
+            ("launch_failed", "No se pudo iniciar la sesión del nodo"),
+            ("session_unreachable", "No se puede acceder a la sesión del nodo"),
             ("unavailable", "Esta acción no está disponible ahora mismo"),
         ] {
             assert_eq!(rejection_message(Lang::Es, code, "domain detail"), expected, "{code}");

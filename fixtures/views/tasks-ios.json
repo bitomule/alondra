@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "vd1b6fd8f4f5a752f",
+  "version": "v6bca1e4a61be20a3",
   "cursor": "cursor-1",
   "title": "Tasks",
   "status": {
-    "version": "v164538ff023163dd",
+    "version": "v47edd097e99cb5fc",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Agents",
+        "label": "Fleet",
         "value": 1
       },
       {

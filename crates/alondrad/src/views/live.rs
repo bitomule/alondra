@@ -544,10 +544,19 @@ mod cache_tests {
     }
 }
 
+/// CPU moves every sample, so it only counts as changed past `CPU_STEP` or on a new level;
+/// otherwise every minute would wake every client.
+const CPU_STEP: f64 = 0.10;
+
 fn same_visible_gauges(left: &[Gauge], right: &[Gauge]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(a, b)| {
-            a.id == b.id && a.text == b.text && a.level == b.level && a.detail == b.detail
+            let same_text = if a.id == "cpu" {
+                (a.value - b.value).abs() < CPU_STEP
+            } else {
+                a.text == b.text
+            };
+            a.id == b.id && same_text && a.level == b.level && a.detail == b.detail
         })
 }
 
@@ -628,6 +637,21 @@ fn gauges(
             },
         });
     }
+    let cpu = f64::from(machine.cpu_usage);
+    out.push(Gauge {
+        id: "cpu".into(),
+        label: "CPU".into(),
+        value: cpu / 100.0,
+        text: format!("{}%", cpu.round()),
+        detail: None,
+        level: if machine.unreliable {
+            Level::Hot
+        } else if cpu >= 85.0 {
+            Level::Warm
+        } else {
+            Level::Calm
+        },
+    });
     if machine.disk_total > 0 {
         let used = machine.disk_total.saturating_sub(machine.disk_available);
         let ratio = used as f64 / machine.disk_total as f64;
@@ -722,12 +746,28 @@ mod tests {
     }
 
     #[test]
-    fn machine_gauges_do_not_add_an_unrequested_cpu_indicator() {
-        let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
-            memory_free_percent: Some(50), load: [0.0; 3], cpus: 8, cpu_usage: 90.0,
+    fn machine_gauges_measure_cpu_after_memory_like_the_header_did() {
+        let mut machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
+            memory_free_percent: Some(50), load: [0.0; 3], cpus: 8, cpu_usage: 34.4,
             disk_total: 100, disk_available: 50, unreliable: false };
-        let ids = gauges(&machine, None, Lang::En).into_iter().map(|gauge| gauge.id).collect::<Vec<_>>();
-        assert_eq!(ids, ["memory", "disk"]);
+        let english = gauges(&machine, None, Lang::En);
+        assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["memory", "cpu", "disk"]);
+        let cpu = &english[1];
+        assert_eq!((cpu.label.as_str(), cpu.text.as_str(), cpu.level), ("CPU", "34%", Level::Calm));
+        machine.cpu_usage = 90.0;
+        assert_eq!(gauges(&machine, None, Lang::En)[1].level, Level::Warm);
+        machine.cpu_usage = 10.0;
+        machine.unreliable = true;
+        assert_eq!(gauges(&machine, None, Lang::En)[1].level, Level::Hot);
+    }
+
+    #[test]
+    fn cpu_wakes_clients_only_on_a_meaningful_change() {
+        let cpu = |value: f64, level: Level| Gauge { id: "cpu".into(), label: "CPU".into(), value,
+            text: format!("{}%", (value * 100.0).round()), detail: None, level };
+        assert!(same_visible_gauges(&[cpu(0.34, Level::Calm)], &[cpu(0.41, Level::Calm)]));
+        assert!(!same_visible_gauges(&[cpu(0.34, Level::Calm)], &[cpu(0.45, Level::Calm)]));
+        assert!(!same_visible_gauges(&[cpu(0.84, Level::Calm)], &[cpu(0.86, Level::Warm)]));
     }
 
     #[test]
