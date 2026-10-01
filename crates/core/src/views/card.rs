@@ -134,10 +134,9 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     let (label, icon) = eyebrow(item, context.lang);
     let mut context_lines = vec![];
     if let Some(agent_id) = &item.agent_id {
-        let agent = context.domain.agents.get(agent_id);
         context_lines.push(ContextLine {
             icon: Icon::Node,
-            text: agent.map_or_else(|| agent_id.0.clone(), |a| a.name.clone()),
+            text: super::common::agent_label(agent_id, context),
             link: Some(Link::View {
                 key: format!("node:{agent_id}"),
             }),

@@ -327,11 +327,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(agent_id) = &task.agent_id {
         facts.push(Fact {
             label: t!(context.lang, "Node", "Nodo").into(),
-            value: context
-                .domain
-                .agents
-                .get(agent_id)
-                .map_or_else(|| agent_id.0.clone(), |a| a.name.clone()),
+            value: common::agent_label(agent_id, context),
             tone: None,
             link: Some(super::Link::View {
                 key: format!("node:{agent_id}"),

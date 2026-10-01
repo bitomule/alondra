@@ -122,7 +122,7 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         let live_state = live.and_then(|node| node.state_key.as_deref());
         let (icon, state_tone) = common::node_presentation(live_state);
         let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), icon,
-            agent.name.clone(), None);
+            common::agent_label(&agent.id, context), None);
         if let Some(node) = live {
             let summary = node.summary.as_deref().unwrap_or("").lines().next().unwrap_or("");
             let label = node.state_label.as_deref().unwrap_or("");

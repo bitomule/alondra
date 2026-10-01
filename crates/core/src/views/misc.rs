@@ -337,7 +337,7 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
                     &agent.id.0,
                     &format!("node:{}", agent.id),
                     Icon::Node,
-                    agent.name.clone(),
+                    common::agent_label(&agent.id, context),
                     None,
                 ))
             }
