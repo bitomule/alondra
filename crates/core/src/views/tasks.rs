@@ -19,20 +19,7 @@ fn state(task: &Task, lang: super::Lang) -> &'static str {
 }
 
 fn effort_label(effort: &str, lang: super::Lang) -> String {
-    match effort {
-        "auto" => t!(lang, "Auto", "Automático"),
-        "light" => t!(lang, "Light", "Ligero"),
-        "normal" => t!(lang, "Normal", "Normal"),
-        "hard" => t!(lang, "Hard", "A fondo"),
-        "low" => t!(lang, "Low", "Bajo"),
-        "medium" => t!(lang, "Medium", "Medio"),
-        "high" => t!(lang, "High", "Alto"),
-        "xhigh" => t!(lang, "Extra high", "Muy alto"),
-        "max" => t!(lang, "Maximum", "Máximo"),
-        "ultra" => t!(lang, "Ultra", "Ultra"),
-        other => other,
-    }
-    .into()
+    common::effort_label(effort, lang).unwrap_or(effort).into()
 }
 
 pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {

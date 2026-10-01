@@ -1,9 +1,22 @@
 import AlondraViews
 import AlondraViewsUI
 import ComposableArchitecture
+import SwiftUI
 import XCTest
 
 final class ViewsUITests: XCTestCase {
+    func testSidebarNodeDotsKeepTheirReleaseColors() throws {
+        func tone(_ wire: String) throws -> Tone {
+            try ViewsCodec.decode(Tone.self, from: Data("\"\(wire)\"".utf8))
+        }
+        XCTAssertEqual(SidebarTint.node(try tone("accent")), .orange)
+        XCTAssertEqual(SidebarTint.node(try tone("your_turn")), .pink)
+        XCTAssertEqual(SidebarTint.node(try tone("unclear")), .purple)
+        XCTAssertEqual(SidebarTint.node(try tone("neutral")), .gray)
+        XCTAssertEqual(SidebarTint.task(try tone("your_turn")), .pink)
+        XCTAssertEqual(SidebarTint.task(try tone("unclear")), .purple)
+    }
+
     func testGoldenComponentDocumentsCanBeComposedBySharedRenderers() throws {
         let fixtureRoot = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
             .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")

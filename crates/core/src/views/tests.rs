@@ -1369,3 +1369,30 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
     let Item::Row(result) = &search.sections[0].items[0] else { panic!("search result") };
     assert!(result.children.iter().any(|child| child.id == "last_message"));
 }
+
+#[test]
+fn effort_labels_are_the_same_on_every_client_and_spanish_everywhere() {
+    let effort = || crate::options::Spec {
+        id: "effort".into(), label: "Effort".into(), kind: crate::options::Kind::Choice,
+        values: ["auto", "light", "normal", "hard"].iter()
+            .map(|id| crate::options::SpecValue { id: (*id).into(), label: (*id).into(), description: None }).collect(),
+        default: crate::options::Choice::Value("auto".into()), builtin: true,
+    };
+    let labels = |client: Client, lang: Lang| {
+        let mut live = LiveSnapshot::default();
+        live.project_options.insert("App".into(), vec![effort()]);
+        let view = render(&fixture(), &live, client, lang, "schedule:new?project=App", "");
+        let form = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            if let Item::Form(form) = item { Some(form) } else { None }
+        }).unwrap();
+        let field = form.fields.iter().find(|field| field.id == "effort").unwrap();
+        let FieldKind::Choice { items } = &field.kind else { panic!("effort is a choice") };
+        (field.label.clone(), items.iter().map(|item| item.label.clone()).collect::<Vec<_>>())
+    };
+    for client in [Client::Ios, Client::Mac, Client::Tui] {
+        assert_eq!(labels(client, Lang::En),
+            ("Effort".into(), vec!["Auto".into(), "Light".into(), "Normal".into(), "Hard".into()]));
+        assert_eq!(labels(client, Lang::Es),
+            ("Esfuerzo".into(), vec!["Automático".into(), "Ligero".into(), "Normal".into(), "A fondo".into()]));
+    }
+}

@@ -4119,6 +4119,126 @@
           }
         }
       }
+    },
+    "Advanced": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Avanzado"
+          }
+        }
+      }
+    },
+    "Anchor": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Ancla"
+          }
+        }
+      }
+    },
+    "Cancelling connection…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Cancelando la conexión…"
+          }
+        }
+      }
+    },
+    "Check Alondra": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Revisa Alondra"
+          }
+        }
+      }
+    },
+    "Could not connect to the fleet": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo conectar con la flota"
+          }
+        }
+      }
+    },
+    "Notifications: ": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Notificaciones: "
+          }
+        }
+      }
+    },
+    "Opening workspace…": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Abriendo el espacio de trabajo…"
+          }
+        }
+      }
+    },
+    "Pull Request": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Pull request"
+          }
+        }
+      }
+    },
+    "Save Schedule": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Guardar programación"
+          }
+        }
+      }
+    },
+    "The action may have completed. Check its current state before trying again.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Puede que la acción se haya completado. Comprueba su estado actual antes de volver a intentarlo."
+          }
+        }
+      }
+    },
+    "This action could not be completed.": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "No se pudo completar esta acción."
+          }
+        }
+      }
+    },
+    "Write a message": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Escribe un mensaje"
+          }
+        }
+      }
     }
   },
   "version": "1.0"

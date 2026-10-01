@@ -1,6 +1,15 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Advanced": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Avanzado"}}}},
+    "Anchor": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ancla"}}}},
+    "Ask for new work (⌘N)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir trabajo nuevo (⌘N)"}}}},
+    "Cancelling connection…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cancelando la conexión…"}}}},
+    "Choose an issue": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige un issue"}}}},
+    "Everything here is sample data. Actions stay in memory and never reach a real account.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Todo lo de aquí son datos de ejemplo. Las acciones se quedan en memoria y nunca llegan a una cuenta real."}}}},
+    "Opening workspace…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abriendo el espacio de trabajo…"}}}},
+    "Remove": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Quitar"}}}},
+    "Your comments": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Tus comentarios"}}}},
     "Service is no longer active": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El servicio ya no está activo"}}}},
     "Choose a non-empty file no larger than 20 MiB.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige un archivo que no esté vacío y no supere los 20 MiB."}}}},
     "The attachment could not be loaded.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el adjunto."}}}},

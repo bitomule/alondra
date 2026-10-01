@@ -38,7 +38,10 @@ public enum ViewFetch: Decodable, Equatable, Sendable {
     }
 }
 
-public enum Tone: String, Codable, Equatable, Sendable { case neutral, info, accent, success, warning, critical }
+public enum Tone: String, Codable, Equatable, Sendable {
+    case neutral, info, accent, success, warning, critical
+    case yourTurn = "your_turn", unclear
+}
 public enum Level: String, Codable, Equatable, Sendable { case calm, warm, hot }
 public enum Icon: String, Codable, Equatable, Sendable {
     case question, action, document, pullRequest = "pull_request", notice, delivery, task, request
