@@ -20,7 +20,7 @@ public struct AppFeature: Sendable {
         public var notice: WorkspaceNotice?
         public var closeRefusal: String?
         public var home = HomeFeature.State()
-        public var tasks = ViewsScreenFeature.State(key: .tasks, owner: "ios.tasks")
+        public var tasks = TasksFeature.State()
         public var fleet = ViewsScreenFeature.State(key: .fleet, owner: "ios.fleet")
         public var newRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
         public var inboxPath = StackState<DetailRoute.State>()
@@ -41,7 +41,7 @@ public struct AppFeature: Sendable {
         case dismissNotice(UUID)
         case dismissCloseRefusal
         case home(HomeFeature.Action)
-        case tasks(ViewsScreenFeature.Action)
+        case tasks(TasksFeature.Action)
         case fleet(ViewsScreenFeature.Action)
         case newRequest(ViewsScreenFeature.Action)
         case inboxPath(StackActionOf<DetailRoute>)
@@ -57,7 +57,7 @@ public struct AppFeature: Sendable {
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.home, action: \.home) { HomeFeature() }
-        Scope(state: \.tasks, action: \.tasks) { ViewsScreenFeature() }
+        Scope(state: \.tasks, action: \.tasks) { TasksFeature() }
         Scope(state: \.fleet, action: \.fleet) { ViewsScreenFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { ViewsScreenFeature() }
         Reduce { state, action in
@@ -112,15 +112,30 @@ public struct AppFeature: Sendable {
                 return .none
             case .viewsFeed(.stale(let keys)):
                 return .merge(.send(.home(.stale(keys))),
-                    .send(.tasks(.stale(keys))), .send(.fleet(.stale(keys))), .send(.newRequest(.stale(keys))),
+                    .send(.fleet(.stale(keys))), .send(.newRequest(.stale(keys))),
                     Self.refreshPaths(state, .stale(keys)))
             case .viewsFeed(.reset):
                 return .merge(.send(.home(.reset)),
-                    .send(.tasks(.reset)), .send(.fleet(.reset)), .send(.newRequest(.reset)),
+                    .send(.fleet(.reset)), .send(.newRequest(.reset)),
                     Self.refreshPaths(state, .reset))
             case .viewsFeed(.snapshot(let snapshot)):
                 if snapshot.reset { return .send(.viewsFeed(.reset)) }
                 if let status = snapshot.status { return .send(.home(.feedStatus(status))) }
+                return .none
+            case .tasks(.delegate(.open(let key))):
+                Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
+                return .none
+            case .inboxPath(.element(id: _, action: let route)):
+                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.inboxPath, owner: "ios.detail") }
+                return .none
+            case .tasksPath(.element(id: _, action: let route)):
+                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.tasksPath, owner: "ios.tasks") }
+                return .none
+            case .fleetPath(.element(id: _, action: let route)):
+                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.fleetPath, owner: "ios.fleet") }
+                return .none
+            case .newRequestPath(.element(id: _, action: let route)):
+                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request") }
                 return .none
             case .home, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
                 return .none
@@ -140,11 +155,14 @@ public struct AppFeature: Sendable {
     }
 
     private static func refreshPaths(_ state: State, _ action: ViewsScreenFeature.Action) -> Effect<Action> {
-        .merge(
-            state.inboxPath.ids.map { .send(.inboxPath(.element(id: $0, action: .legacy(action)))) }
-            + state.tasksPath.ids.map { .send(.tasksPath(.element(id: $0, action: .legacy(action)))) }
-            + state.fleetPath.ids.map { .send(.fleetPath(.element(id: $0, action: .legacy(action)))) }
-            + state.newRequestPath.ids.map { .send(.newRequestPath(.element(id: $0, action: .legacy(action)))) }
+        func legacyIDs(_ path: StackState<DetailRoute.State>) -> [StackElementID] {
+            path.ids.filter { if case .legacy = path[id: $0] { true } else { false } }
+        }
+        return .merge(
+            legacyIDs(state.inboxPath).map { .send(.inboxPath(.element(id: $0, action: .legacy(action)))) }
+            + legacyIDs(state.tasksPath).map { .send(.tasksPath(.element(id: $0, action: .legacy(action)))) }
+            + legacyIDs(state.fleetPath).map { .send(.fleetPath(.element(id: $0, action: .legacy(action)))) }
+            + legacyIDs(state.newRequestPath).map { .send(.newRequestPath(.element(id: $0, action: .legacy(action)))) }
         )
     }
 
@@ -152,18 +170,30 @@ public struct AppFeature: Sendable {
         let delegate: ActionFeature.Action.Delegate
         switch action {
         case .home(.actions(.delegate(let value))),
-             .tasks(.action(.delegate(let value))),
              .fleet(.action(.delegate(let value))),
-             .newRequest(.action(.delegate(let value))),
-             .inboxPath(.element(id: _, action: .legacy(.action(.delegate(let value))))),
-             .tasksPath(.element(id: _, action: .legacy(.action(.delegate(let value))))),
-             .fleetPath(.element(id: _, action: .legacy(.action(.delegate(let value))))),
-             .newRequestPath(.element(id: _, action: .legacy(.action(.delegate(let value))))):
+             .newRequest(.action(.delegate(let value))):
             delegate = value
+        case .tasks(.delegate(let value)):
+            return value.event
+        case .inboxPath(.element(id: _, action: let route)),
+             .tasksPath(.element(id: _, action: let route)),
+             .fleetPath(.element(id: _, action: let route)),
+             .newRequestPath(.element(id: _, action: let route)):
+            return route.delegate?.event
         default:
             return nil
         }
         return delegate.event
+    }
+}
+
+public extension ScreenDelegate {
+    var event: WorkspaceNotice.Event? {
+        switch self {
+        case .open: nil
+        case .completed(let message): .actionCompleted(message)
+        case .failed(let message): .failure(message)
+        }
     }
 }
 

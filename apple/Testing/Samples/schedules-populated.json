@@ -1,0 +1,230 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "schedules",
+  "key": "schedules",
+  "version": "vschedules-populated",
+  "title": "Scheduled Tasks",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "schedules",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "a1",
+          "icon": "schedule",
+          "title": "Morning digest",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Daily",
+          "link": {
+            "kind": "view",
+            "key": "schedule:a1"
+          },
+          "trailing": {
+            "kind": "time",
+            "at": "2026-01-01T07:00:00.000Z",
+            "format": "absolute"
+          },
+          "actions": [
+            {
+              "id": "sched_run:s-a1@3",
+              "label": "Run Now",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "sched_toggle:s-a1@3",
+              "label": "Pause",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "sched_delete:s-a1@3",
+              "label": "Delete",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "confirm": {
+                "title": "Delete",
+                "message": "Future runs will stop. Delete this schedule?",
+                "button": "Delete"
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "a2",
+          "icon": "schedule",
+          "title": "Dependency audit",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Weekly",
+          "link": {
+            "kind": "view",
+            "key": "schedule:a2"
+          },
+          "badges": [
+            {
+              "text": "Paused",
+              "tone": "warning"
+            }
+          ],
+          "actions": [
+            {
+              "id": "sched_run:s-a2@3",
+              "label": "Run Now",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "sched_toggle:s-a2@3",
+              "label": "Resume",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "sched_delete:s-a2@3",
+              "label": "Delete",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "confirm": {
+                "title": "Delete",
+                "message": "Future runs will stop. Delete this schedule?",
+                "button": "Delete"
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "a3",
+          "icon": "schedule",
+          "title": "Release checklist",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Once",
+          "link": {
+            "kind": "view",
+            "key": "schedule:a3"
+          },
+          "badges": [
+            {
+              "text": "Completed",
+              "tone": "neutral"
+            }
+          ],
+          "actions": [
+            {
+              "id": "sched_run:s-a3@3",
+              "label": "Run Now",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "sched_toggle:s-a3@3",
+              "label": "Pause",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            },
+            {
+              "id": "sched_delete:s-a3@3",
+              "label": "Delete",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "confirm": {
+                "title": "Delete",
+                "message": "Future runs will stop. Delete this schedule?",
+                "button": "Delete"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "label": "Add",
+              "style": "plain",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "schedule:new"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -203,8 +203,6 @@ struct ViewsScreenView: View {
                         DiffView(text: content, comments: $diffComments)
                     }
                 }
-            } else if store.key.rawValue.hasPrefix("schedule:"), let form = store.form {
-                ScheduleEditorView(store: store, form: form)
             } else if let document = store.document, store.key.rawValue.hasPrefix("pull_request:") {
                 PRReviewView(document: document,
                                            diff: store.contentReference?.kind == .diff ? store.content : nil,

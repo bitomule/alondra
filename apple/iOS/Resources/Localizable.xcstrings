@@ -3161,6 +3161,18 @@
         }
       }
     },
+    "Couldn’t load this": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar"}}}},
+    "Pull requests": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pull requests"}}}},
+    "One pattern per line": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Un patrón por línea"}}}},
+    "since": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "desde"}}}},
+    "Opens the request": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abre la solicitud"}}}},
+    "Scheduled tasks are unavailable": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las tareas programadas no están disponibles"}}}},
+    "Tasks are unavailable": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Las tareas no están disponibles"}}}},
+    "This request is gone": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta solicitud ya no está"}}}},
+    "This schedule is gone": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta programación ya no está"}}}},
+    "This changed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esto ha cambiado"}}}},
+    "Next run %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Próxima ejecución: %@"}}}},
+    "Show %lld more": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mostrar %lld más"}}}},
     "Edit Schedule": {
       "localizations": {
         "es": {

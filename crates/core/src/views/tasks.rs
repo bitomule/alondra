@@ -321,7 +321,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
         value: state(task, context.lang).into(),
-        tone: None,
+        tone: Some(common::task_presentation(task.state).1),
         link: None,
     }];
     if let Some(agent_id) = &task.agent_id {

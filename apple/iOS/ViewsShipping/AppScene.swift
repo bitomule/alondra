@@ -4,6 +4,7 @@ import AlondraFeatures
 import AlondraNetworkReachability
 import AlondraDesign
 import AlondraAccount
+import AlondraiOSUI
 import AlondraFeed
 import AlondraDemo
 import ComposableArchitecture
@@ -165,8 +166,7 @@ struct RootView<AccountContent: View>: View {
             }.badge(store.home.badge)
             Tab("Tasks", systemImage: "checklist", value: .tasks) {
                 NavigationStack(path: $store.scope(state: \.tasksPath, action: \.tasksPath)) {
-                    ViewsScreenView(store: store.scope(state: \.tasks, action: \.tasks),
-                                    openView: { store.send(.open(.tasks, $0)) })
+                    TasksView(store: store.scope(state: \.tasks, action: \.tasks))
                         .toolbar { ToolbarItem(placement: .topBarTrailing) {
                             Button("Settings", systemImage: "gearshape") { store.send(.settingsPresented(true)) }
                         } }
@@ -211,6 +211,14 @@ struct RootView<AccountContent: View>: View {
         switch route.case {
         case .legacy(let screen):
             ViewsScreenView(store: screen, openView: { store.send(.open(tab, $0)) })
+        case .taskDetail(let screen):
+            TaskDetailView(store: screen)
+        case .requestDetail(let screen):
+            RequestDetailView(store: screen)
+        case .schedules(let screen):
+            SchedulesView(store: screen)
+        case .scheduleEditor(let screen):
+            ScheduleEditorView(store: screen)
         }
     }
 }

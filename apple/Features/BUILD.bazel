@@ -21,7 +21,10 @@ swift_test(
     name = "AlondraFeaturesTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
-    data = ["//fixtures/views:all"],
+    data = [
+        "//apple/Testing/Samples:all",
+        "//fixtures/views:all",
+    ],
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
     deps = [

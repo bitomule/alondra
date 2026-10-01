@@ -1,0 +1,339 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "task",
+  "key": "task:t-1",
+  "version": "vtask-detail",
+  "title": "Restore the native review experience",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "State",
+              "value": "Needs you",
+              "tone": "warning"
+            },
+            {
+              "label": "Node",
+              "value": "Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "node:n-1"
+              }
+            },
+            {
+              "label": "Request",
+              "value": "Polish the Alondra beta",
+              "link": {
+                "kind": "view",
+                "key": "request:r-1"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "since",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "since",
+          "icon": "history",
+          "title": "Since",
+          "depth": 0,
+          "struck": false,
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T21:30:00Z",
+            "format": "relative"
+          }
+        }
+      ]
+    },
+    {
+      "id": "now",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "now",
+          "icon": "history",
+          "title": "question: Restore the native review experience",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "card:i-1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2025-12-31T20:00:00Z",
+          "icon": "history",
+          "title": "Working",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Started",
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T20:00:00Z",
+            "format": "relative"
+          }
+        },
+        {
+          "type": "row",
+          "id": "2025-12-31T21:30:00Z",
+          "icon": "history",
+          "title": "Needs you",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Waiting for a decision",
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T21:30:00Z",
+            "format": "relative"
+          }
+        }
+      ],
+      "title": "History"
+    },
+    {
+      "id": "waiting",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "i-1",
+          "link": {
+            "kind": "view",
+            "key": "card:i-1"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Question",
+            "tone": "accent"
+          },
+          "title": "Restore the native review experience",
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "i-2",
+          "link": {
+            "kind": "view",
+            "key": "card:i-2"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "Notice",
+            "tone": "accent"
+          },
+          "title": "Restore the native review experience",
+          "detail": "reference"
+        }
+      ],
+      "title": "Waiting for You"
+    },
+    {
+      "id": "request",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Prepare the next Alondra beta: restore the established review experience, verify the simulator build, and keep the release notes concise.",
+          "truncated": false,
+          "commentable": false
+        }
+      ],
+      "title": "Request"
+    },
+    {
+      "id": "pull_requests",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "github.com/example/repo#12",
+          "icon": "pull_request",
+          "title": "1 · Add the compact schedule editor",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "feature/compact-schedule-editor → main",
+          "link": {
+            "kind": "view",
+            "key": "pull_request:github.com/example/repo#12"
+          }
+        }
+      ],
+      "title": "Pull requests"
+    },
+    {
+      "id": "dependencies",
+      "collapsed": false,
+      "items": [
+        {
+          "id": "t-2",
+          "icon": "pull_request",
+          "title": "Verify the simulator build",
+          "subtitle": "In review",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "task:t-2"
+          },
+          "badges": [
+            {
+              "text": "In review",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 1
+          },
+          "type": "row"
+        },
+        {
+          "id": "t-3",
+          "icon": "task",
+          "title": "Write the release notes",
+          "subtitle": "Not started",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "task:t-3"
+          },
+          "badges": [
+            {
+              "text": "Not started",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Dependencies"
+    },
+    {
+      "id": "options",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "PR handling",
+              "value": "Review before merge"
+            },
+            {
+              "label": "Effort",
+              "value": "Normal"
+            }
+          ]
+        }
+      ],
+      "title": "Options"
+    },
+    {
+      "id": "documents",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "rev-1",
+          "icon": "document",
+          "title": "Design notes",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "document:rev-1"
+          }
+        }
+      ],
+      "title": "Documents"
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "cancel:t-1@4",
+              "label": "Cancel Task",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "confirm": {
+                "title": "Cancel Task",
+                "message": "Cancel this task?",
+                "button": "Cancel Task"
+              }
+            },
+            {
+              "id": "reopen:t-1@4",
+              "label": "Reopen",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false
+            },
+            {
+              "id": "archive:t-1@4",
+              "label": "Archive",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Only finished tasks can be archived"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

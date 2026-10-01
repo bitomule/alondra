@@ -69,7 +69,8 @@
           "items": [
             {
               "label": "State",
-              "value": "Needs you"
+              "value": "Needs you",
+              "tone": "warning"
             },
             {
               "label": "Request",
