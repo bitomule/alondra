@@ -183,10 +183,12 @@ impl DomainState {
                     None
                 };
                 (
-                    if matches!(i.payload, InteractionPayload::Question { .. }) {
-                        "question"
-                    } else {
-                        "action_request"
+                    match self.holds.get(&i.id) {
+                        Some(Hold::Permission) => "permission",
+                        Some(Hold::Plan) => "plan",
+                        Some(Hold::Question | Hold::Elicitation) => "question",
+                        None if matches!(i.payload, InteractionPayload::Question { .. }) => "question",
+                        None => "action_request",
                     },
                     answer.is_none() && !i.withdrawn,
                     vec![AvailableAction {

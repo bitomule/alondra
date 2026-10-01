@@ -1875,6 +1875,101 @@ fn fleet_rows_offer_close_node_with_a_confirmation() {
     assert_eq!(bar.actions.iter().find(|action| action.label == "Close Node").map(|action| &action.id), Some(&close.id));
 }
 
+fn held_fixture(hold: crate::domain_v2::Hold, body: &str) -> DomainState {
+    let mut state = fixture();
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = InteractionPayload::Question { options: hold.options(), answer: None };
+    interaction.body = body.into();
+    state.holds.insert("i-1".into(), hold);
+    state
+}
+
+fn answer_action(card: &Card) -> &Action {
+    card.actions.iter().find(|action| action.id.starts_with("ans:i-1@")).expect("answer action")
+}
+
+#[test]
+fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
+    use crate::domain_v2::Hold;
+    let state = held_fixture(Hold::Permission, "Bash: clean the build\n\n```\nrm -rf build\n```");
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str()), (Icon::Warning, "Permiso"));
+    assert_eq!(card.title, "Bash: clean the build");
+    assert_eq!(card.body.as_ref().unwrap().text, "```\nrm -rf build\n```");
+    let options = &answer_action(card).options;
+    assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("allow", "Permitir", Some("1")), ("deny", "Denegar", Some("2"))]);
+    assert_eq!(options[1].style, Style::Destructive);
+    assert!(matches!(&options[1].input, Input::Text { placeholder, required: false, .. } if placeholder == "Escribe el motivo"));
+    assert!(card.actions.iter().all(|action| !action.id.starts_with("ctx:")), "a held card is answered, not discussed");
+    assert_eq!(view.status.summary.split(" · ").next(), Some("1 pregunta"));
+    let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text, a.open)).collect::<Vec<_>>(),
+        [(Some("allow"), "Allow", false, false), (Some("deny"), "Deny", false, false)]);
+    assert!(pushed.iter().all(|action| action.id == answer_action(card).id));
+}
+
+#[test]
+fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes_and_a_review_button() {
+    use crate::domain_v2::Hold;
+    let plan = "# Ship the parser\n\n1. Split the lexer\n2. Add tests";
+    let state = held_fixture(Hold::Plan, plan);
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str()), (Icon::Document, "Plan"));
+    assert_eq!(card.title, "Ship the parser");
+    assert_eq!(card.body.as_ref().unwrap().text, plan);
+    let options = &answer_action(card).options;
+    assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("approve", "Approve", Some("a")), ("request_changes", "Request changes", Some("p"))]);
+    let pushed = push_actions(&state, "i-1", Lang::Es).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.open)).collect::<Vec<_>>(),
+        [(Some("approve"), "Aprobar", false), (None, "Revisar", true)]);
+    assert_eq!(pushed[1].id, "open:i-1");
+    let ios = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(answer_action(card_of(&ios)).options.iter().all(|option| option.key.is_none()));
+}
+
+#[test]
+fn a_held_ask_user_question_card_shows_the_question_and_its_options_as_8ccd131() {
+    use crate::domain_v2::Hold;
+    let mut state = held_fixture(Hold::Question, "Which database?\n\n- Also migrate the old rows?");
+    let options = ["Postgres", "SQLite"].iter().enumerate().map(|(index, label)| QuestionOption {
+        id: format!("o{index}"), label: (*label).into(), description: None, inputs: vec![] }).collect();
+    state.interactions.get_mut(&"i-1".into()).unwrap().payload = InteractionPayload::Question { options, answer: None };
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str()), (Icon::Question, "Pregunta"));
+    assert_eq!(card.title, "Which database?");
+    assert_eq!(card.body.as_ref().unwrap().text, "- Also migrate the old rows?");
+    assert_eq!(answer_action(card).options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("o0", "Postgres", Some("1")), ("o1", "SQLite", Some("2"))]);
+    assert!(card.actions.iter().all(|action| !action.id.starts_with("ctx:")), "the hook waits for an answer");
+    let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text)).collect::<Vec<_>>(),
+        [(Some("o0"), "Postgres", false), (Some("o1"), "SQLite", false)]);
+}
+
+#[test]
+fn a_held_elicitation_card_accepts_with_the_form_values_or_declines() {
+    use crate::domain_v2::Hold;
+    let mut state = held_fixture(Hold::Elicitation, "Which repository?\n\nMCP server “github” requests your input.");
+    if let InteractionPayload::Question { options, .. } = &mut state.interactions.get_mut(&"i-1".into()).unwrap().payload {
+        options[0].description = Some("Write the Repository".into());
+    }
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!(card.title, "Which repository?");
+    let options = &answer_action(card).options;
+    assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("accept", "Aceptar", Some("1")), ("decline", "Rechazar", Some("2"))]);
+    assert!(matches!(&options[0].input, Input::Text { placeholder, .. } if placeholder == "Write the Repository"));
+    let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text)).collect::<Vec<_>>(),
+        [(Some("accept"), "Accept", true), (Some("decline"), "Decline", false)]);
+}
+
 #[test]
 fn status_names_the_node_count_fleet() {
     for (lang, label) in [(Lang::En, "Fleet"), (Lang::Es, "Flota")] {

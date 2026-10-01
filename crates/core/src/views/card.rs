@@ -7,7 +7,7 @@ use super::{
     text::{t, tf},
 };
 use crate::domain_v2::{
-    AvailableAction, DomainState, InboxItem, InboxSubject, InteractionPayload, Recipient,
+    AvailableAction, DomainState, Hold, InboxItem, InboxSubject, InteractionPayload, Recipient,
 };
 
 pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
@@ -121,6 +121,8 @@ fn eyebrow(item: &InboxItem, lang: super::Lang) -> (&'static str, Icon) {
     match item.kind.as_str() {
         "action_request" => (t!(lang, "Your turn", "Te toca"), Icon::Action),
         "question" => (t!(lang, "Question", "Pregunta"), Icon::Question),
+        "permission" => (t!(lang, "Permission", "Permiso"), Icon::Warning),
+        "plan" => (t!(lang, "Plan", "Plan"), Icon::Document),
         "pull_request" => (
             t!(lang, "Pull request", "Solicitud de cambios"),
             Icon::PullRequest,
@@ -130,8 +132,27 @@ fn eyebrow(item: &InboxItem, lang: super::Lang) -> (&'static str, Icon) {
         _ => (t!(lang, "Notice", "Aviso"), Icon::Notice),
     }
 }
+fn hold_of(item: &InboxItem, domain: &DomainState) -> Option<Hold> {
+    let InboxSubject::Interaction { interaction_id } = &item.subject else { return None };
+    domain.holds.get(interaction_id).copied()
+}
+/// A held card's own title and text, as 8ccd131 showed them: the plan's first heading over the
+/// whole plan; otherwise the first line (the permission's summary, the question, the request)
+/// over the rest.
+fn held_text(item: &InboxItem, hold: Option<Hold>) -> Option<(String, Option<String>)> {
+    let hold = hold?;
+    let body = item.body.as_deref()?;
+    let first = body.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty())?;
+    let title: String = first.chars().take(120).collect();
+    if hold == Hold::Plan {
+        return Some((title, Some(body.to_owned())));
+    }
+    let rest = body.trim_start().split_once('\n').map(|(_, rest)| rest.trim()).filter(|rest| !rest.is_empty());
+    Some((title, rest.map(str::to_owned)))
+}
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let (label, icon) = eyebrow(item, context.lang);
+    let held = held_text(item, hold_of(item, context.domain));
     let mut context_lines = vec![];
     if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
@@ -199,12 +220,13 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         InboxSubject::PullRequest { pr_id } => context.live.pull_requests.iter().find(|detail| detail.id == pr_id.0),
         _ => None,
     };
+    let held_body = held.as_ref().map(|(_, body)| body.as_ref());
     let body = included
         .then(|| {
             live_pr
                 .and_then(|detail| detail.body.as_ref())
                 .filter(|text| !text.trim().is_empty())
-                .or(item.body.as_ref())
+                .or(held_body.unwrap_or(item.body.as_ref()))
                 .map(|text| Markdown {
                     text: if item.kind == "action_request" { fenced(text) } else { text.clone() },
                     truncated: false,
@@ -238,7 +260,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             }
         }
     }
-    let quotes = if included && matches!(item.kind.as_str(), "question" | "action_request") {
+    let quotes = if included && matches!(item.kind.as_str(), "question" | "action_request" | "plan") {
         item.agent_id
             .as_ref()
             .and_then(|agent_id| {
@@ -297,7 +319,10 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                 Tone::Neutral
             },
         }),
-        title: live_pr.and_then(|detail| detail.title.clone()).unwrap_or_else(|| item.title.clone()),
+        title: held
+            .map(|(title, _)| title)
+            .or_else(|| live_pr.and_then(|detail| detail.title.clone()))
+            .unwrap_or_else(|| item.title.clone()),
         subtitle: None,
         badges,
         context: context_lines,
@@ -667,7 +692,7 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
         if let Some(interaction) = context.domain.interactions.get(interaction_id) {
             let (verb, label, placeholder, key) = match &interaction.payload {
                 InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. }
-                    if item.pending =>
+                    if item.pending && hold_of(item, context.domain).is_none() =>
                 {
                     (
                         Verb::Ctx,
@@ -921,6 +946,9 @@ fn question_options(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action
         | InteractionPayload::ActionRequest { options, .. } => options,
         _ => return vec![],
     };
+    if let Some(hold) = context.domain.holds.get(interaction_id).filter(|hold| **hold != Hold::Question) {
+        return held_options(*hold, options, context);
+    }
     options
         .iter()
         .enumerate()
@@ -943,6 +971,44 @@ fn question_options(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action
                 }
             },
             key: (context.client != Client::Ios && index < 9).then(|| (index + 1).to_string()),
+        })
+        .collect()
+}
+
+/// Allow/Deny and Approve/Request changes in the reader's language; on a plan the terminal
+/// keeps 8ccd131's `a` approve and `p` request changes.
+fn held_options(hold: Hold, options: &[crate::domain_v2::QuestionOption], context: &RenderContext<'_>) -> Vec<ActionOption> {
+    let lang = context.lang;
+    options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            let yes = hold.approves(&option.id);
+            let (label, placeholder, key) = match (hold, yes) {
+                (Hold::Permission, true) => (t!(lang, "Allow", "Permitir"), "", "1"),
+                (Hold::Permission, false) => (t!(lang, "Deny", "Denegar"), t!(lang, "Write the reason", "Escribe el motivo"), "2"),
+                (Hold::Plan, true) => (t!(lang, "Approve", "Aprobar"), "", "a"),
+                (Hold::Plan, false) => (t!(lang, "Request changes", "Pedir cambios"), t!(lang, "Write what to change", "Escribe qué cambiar"), "p"),
+                (_, true) => (t!(lang, "Accept", "Aceptar"),
+                    option.description.as_deref().unwrap_or(t!(lang, "Write your answer", "Escribe tu respuesta")), "1"),
+                (_, false) => (t!(lang, "Decline", "Rechazar"), "", "2"),
+            };
+            ActionOption {
+                id: option.id.clone(),
+                label: label.into(),
+                description: option.description.clone().filter(|_| hold == Hold::Elicitation),
+                style: match (index, yes) {
+                    (_, true) => Style::Primary,
+                    (_, false) if hold == Hold::Permission => Style::Destructive,
+                    _ => Style::Secondary,
+                },
+                input: if option.inputs.is_empty() {
+                    Input::None
+                } else {
+                    Input::Text { placeholder: placeholder.into(), required: false, multiline: true }
+                },
+                key: (context.client != Client::Ios).then(|| key.into()),
+            }
         })
         .collect()
 }

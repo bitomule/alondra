@@ -154,7 +154,7 @@ enum QuestionCategories {
                 )
             }
             return UNNotificationAction(identifier: NotificationPayload.Action.indexed(index), title: action.label,
-                                        options: [.authenticationRequired])
+                                        options: action.opens ? [.foreground] : [.authenticationRequired])
         }
         return UNNotificationCategory(identifier: identifier, actions: actions, intentIdentifiers: [])
     }

@@ -618,7 +618,8 @@ impl DomainState {
             | Command::CompleteTask { task_id, .. }
             | Command::CancelTask { task_id }
             | Command::ReopenTask { task_id }
-            | Command::ArchiveTask { task_id, .. } => task(task_id),
+            | Command::ArchiveTask { task_id, .. }
+            | Command::HoldHook { task_id, .. } => task(task_id),
             Command::PublishInformation { scope, .. }
             | Command::AskQuestion { scope, .. }
             | Command::RequestAction { scope, .. } => match scope {
@@ -1188,11 +1189,45 @@ impl DomainState {
                     });
                 }
             }
+            Command::HoldHook {
+                interaction_id,
+                task_id,
+                agent_id,
+                hold,
+                body,
+                options,
+            } => {
+                if !matches!(actor, Actor::System) {
+                    return fail("forbidden", "Only Alondra holds a hook");
+                }
+                validate_options(options)?;
+                let scope = Scope::Task { task_id: task_id.clone() };
+                self.insert_interaction(
+                    &Actor::Agent { agent_id: agent_id.clone() },
+                    interaction_id,
+                    &scope,
+                    &Recipient::User,
+                    body,
+                    true,
+                    &[],
+                    InteractionPayload::Question {
+                        options: options.clone(),
+                        answer: None,
+                    },
+                )?;
+                self.holds.insert(interaction_id.clone(), *hold);
+                created.push(interaction_id.0.clone());
+                effects.push(DomainEffect::NotifyUser {
+                    task_id: Some(task_id.clone()),
+                    interaction_id: interaction_id.clone(),
+                });
+            }
             Command::WithdrawQuestion { interaction_id } => {
                 let i = self.interaction(interaction_id)?;
                 match (&i.author, actor) {
                     (Author::Agent { agent_id }, Actor::Agent { agent_id: a }) if agent_id == a => {}
                     (Author::Orchestrator { .. }, Actor::Orchestrator { .. }) => {}
+                    (_, Actor::System) if self.holds.contains_key(interaction_id) => {}
                     _ => return fail("forbidden", "Only the question's author can withdraw it"),
                 }
                 match &i.payload {
@@ -1283,6 +1318,7 @@ impl DomainState {
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
                 match (i.author.clone(), i.scope.clone()) {
+                    _ if self.holds.contains_key(interaction_id) => {}
                     (Author::Agent { .. }, Scope::Task { task_id }) => {
                         self.notify(&task_id, Some(interaction_id.clone()), "Question answered", effects)?;
                     }

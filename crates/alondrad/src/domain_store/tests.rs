@@ -484,13 +484,13 @@ fn a_legacy_writer_is_rejected_and_a_current_store_keeps_its_rows() {
     drop(store);
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     assert_eq!(store.load().unwrap(), expected);
-    assert_eq!(store.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 1);
+    assert_eq!(store.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
     assert!(!fixture.0.read_dir().unwrap().any(|e| e.unwrap().file_name().to_string_lossy().contains(".old-")));
 }
 
 #[test]
 fn a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_one() {
-    for other in [7, 8, SCHEMA_VERSION + 1] {
+    for other in [1, 7, 8, SCHEMA_VERSION + 1] {
         let fixture = Fixture::new();
         let mut store = DomainStore::open(&fixture.path()).unwrap();
         execute(&mut store, &user(), "old", Command::CreateRequest { request_id: "old".into(), body: "Made before".into(), auto_merge: false });
@@ -500,7 +500,7 @@ fn a_store_with_another_schema_version_is_moved_aside_and_replaced_by_an_empty_o
         let mut fresh = DomainStore::open(&fixture.path()).unwrap();
         let state = fresh.load().unwrap();
         assert!(state.requests.is_empty() && state.revision == 0 && state.data_epoch != old_epoch);
-        assert_eq!(fresh.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), 1);
+        assert_eq!(fresh.conn.pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0)).unwrap(), SCHEMA_VERSION);
         let kept: Vec<_> = fixture.0.read_dir().unwrap().map(|e| e.unwrap().path())
             .filter(|p| p.to_string_lossy().contains("domain.sqlite.old-")).collect();
         assert_eq!(kept.len(), 1, "one moved-aside database for schema {other}");

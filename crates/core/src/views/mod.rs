@@ -94,6 +94,9 @@ pub struct PushAction {
     pub text: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub placeholder: Option<String>,
+    /// Opens the card in the app instead of acting from the notification.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub open: bool,
 }
 
 pub fn push_actions(
@@ -109,6 +112,9 @@ pub fn push_actions(
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
     }) else { return Ok(vec![]) };
+    if let Some(hold) = domain.holds.get(&crate::domain_v2::InteractionId(card_id.into())) {
+        return Ok(held_push_actions(*hold, card, lang));
+    }
     let mut pushed = Vec::new();
     for action in &card.actions {
         if action.id.is_empty() || action.link.is_some() || !action.enabled ||
@@ -117,19 +123,42 @@ pub fn push_actions(
         if action.options.is_empty() {
             let (text, placeholder) = push_text(&action.input);
             pushed.push(PushAction { id: action.id.clone(), option: None,
-                label: action.label.clone(), text, placeholder });
+                label: action.label.clone(), text, placeholder, open: false });
         } else {
             for option in &action.options {
                 if !push_supported_option(domain, action, option) { continue; }
                 let (text, placeholder) = push_text(&option.input);
                 pushed.push(PushAction { id: action.id.clone(), option: Some(option.id.clone()),
-                    label: option.label.clone(), text, placeholder });
+                    label: option.label.clone(), text, placeholder, open: false });
                 if pushed.len() == 4 { break; }
             }
         }
         if pushed.len() == 4 { break; }
     }
     Ok(pushed)
+}
+
+/// 8ccd131's notification buttons: Allow and Deny answer a permission from the lock screen;
+/// a plan offers Approve and Review, which opens the plan in the app.
+fn held_push_actions(hold: crate::domain_v2::Hold, card: &Card, lang: Lang) -> Vec<PushAction> {
+    let Some(answer) = card.actions.iter().find(|action| action.id.starts_with("ans:") && action.enabled) else {
+        return vec![];
+    };
+    let button = |option: &ActionOption| PushAction { id: answer.id.clone(), option: Some(option.id.clone()),
+        label: option.label.clone(), text: false, placeholder: None, open: false };
+    match hold {
+        crate::domain_v2::Hold::Permission => answer.options.iter().map(button).collect(),
+        crate::domain_v2::Hold::Plan => answer.options.iter().filter(|option| hold.approves(&option.id)).map(button)
+            .chain([PushAction { id: format!("open:{}", card.id), option: None,
+                label: text::t!(lang, "Review", "Revisar").into(), text: false, placeholder: None, open: true }])
+            .collect(),
+        crate::domain_v2::Hold::Question => answer.options.iter().take(4).map(button).collect(),
+        crate::domain_v2::Hold::Elicitation => answer.options.iter().map(|option| match &option.input {
+            Input::Text { placeholder, .. } if option.description.is_some() =>
+                PushAction { text: true, placeholder: Some(placeholder.clone()), ..button(option) },
+            _ => button(option),
+        }).collect(),
+    }
 }
 
 fn push_supported_option(domain: &DomainState, action: &Action, option: &ActionOption) -> bool {

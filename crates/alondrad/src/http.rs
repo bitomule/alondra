@@ -709,7 +709,7 @@ fn risks(command: &str) -> Vec<&'static str> {
     found
 }
 
-fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
+pub(crate) fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
     let tool = tool.unwrap_or("?");
     let said = str_field(input, "description").map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).or_else(|| summary.map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")));
     let title = match said {
@@ -723,7 +723,7 @@ fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) ->
     }
 }
 
-fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
+pub(crate) fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
     if let Some(command) = str_field(input, "command") {
         let risks = risks(&command);
         if risks.is_empty() {
@@ -867,7 +867,7 @@ fn elicitation_fields(schema: &Value) -> Vec<(String, String, String)> {
         .unwrap_or_default()
 }
 
-fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
+pub(crate) fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) {
     let server = str_field(p, "mcp_server_name").unwrap_or_else(|| "An MCP server".into());
     let message = str_field(p, "message").unwrap_or_default();
     let title = message.lines().map(str::trim).find(|l| !l.is_empty()).map_or_else(|| format!("{server} requests your input"), |l| l.chars().take(120).collect());
@@ -893,7 +893,7 @@ fn elicitation_card(p: &Value) -> (String, Option<String>, Vec<QuestionOption>) 
 
 /// The form values for an accepted elicitation: a JSON object as written, the whole answer for a
 /// one-field form, or `name: value` lines, each typed as the form's schema says.
-fn elicitation_content(schema: &Value, said: &str) -> Value {
+pub(crate) fn elicitation_content(schema: &Value, said: &str) -> Value {
     if let Ok(Value::Object(o)) = serde_json::from_str::<Value>(said) {
         return Value::Object(o);
     }

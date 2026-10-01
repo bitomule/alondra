@@ -144,6 +144,16 @@ pub enum Command {
         blocking: bool,
         options: Vec<QuestionOption>,
     },
+    /// Alondra turns a Claude Code permission prompt or plan approval of an assigned Agent
+    /// into a blocking question for the User; the hook waits for the answer.
+    HoldHook {
+        interaction_id: InteractionId,
+        task_id: TaskId,
+        agent_id: AgentId,
+        hold: Hold,
+        body: String,
+        options: Vec<QuestionOption>,
+    },
     MarkRead {
         interaction_id: InteractionId,
     },
