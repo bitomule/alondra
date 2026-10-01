@@ -1,17 +1,28 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_library(
-    name = "AlondraViewsNotificationActions",
+    name = "AlondraNotifications",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Sources/**/*.swift"]),
-    module_name = "AlondraNotificationActions",
+    module_name = "AlondraNotifications",
     features = ["swift.enable_testing"],
     visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraViewsAPIClient", "//apple/Contracts:AlondraViewsContracts", "//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Views:AlondraViews"],
+    deps = [
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Contract:AlondraContract",
+    ],
 )
 
 swift_test(
-    name = "AlondraNotificationActionsTests",
+    name = "AlondraNotificationsTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
     data = ["//fixtures/views:all"],
-    deps = ["//apple/ServicePairing:AlondraViewsServicePairing", ":AlondraViewsNotificationActions", "//apple/APIClient:AlondraViewsAPIClient", "//apple/Contracts:AlondraViewsContracts", "//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Views:AlondraViews"],
+    deps = [
+        ":AlondraNotifications",
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Pairing:AlondraPairing",
+    ],
 )

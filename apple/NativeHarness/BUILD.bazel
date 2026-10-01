@@ -1,23 +1,23 @@
 load("@build_bazel_rules_apple//apple:ios.bzl", "ios_application")
 load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_library(
     name = "AlondraNativeScenarios",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     testonly = True,
     srcs = glob(["Sources/*.swift"]),
     module_name = "AlondraNativeScenarios",
-    copts = ["-swift-version", "6", "-strict-concurrency=complete"],
     deps = [
-        "//apple/APIClient:AlondraViewsAPIClient",
-        "//apple/Auth:AlondraAuth",
-        "//apple/Data/RelayOutbox:AlondraViewsRelayOutbox",
-        "//apple/Data/RelaySession:AlondraViewsRelaySession",
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Data/Account:AlondraAccount",
     ],
 )
 
 swift_library(
     name = "iOSEntry",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     testonly = True,
     srcs = ["iOS/Main.swift"],
     deps = [":AlondraNativeScenarios"],
@@ -25,6 +25,7 @@ swift_library(
 
 swift_library(
     name = "MacEntry",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     testonly = True,
     srcs = ["macOS/Main.swift"],
     deps = [":AlondraNativeScenarios"],

@@ -1,9 +1,8 @@
-import AlondraShared
-import AlondraAPIClient
-import AlondraContracts
-import AlondraViewsAppComposition
-import AlondraNotificationActions
-import AlondraNotificationPayload
+import AlondraDesign
+import AlondraTransport
+import AlondraContract
+import AlondraAccount
+import AlondraNotifications
 import Foundation
 import Observation
 import UIKit
@@ -32,7 +31,7 @@ struct NotificationResponse: Sendable {
     }
 }
 
-struct QuietHours: Equatable {
+struct StoredQuietHours: Equatable {
     var enabled: Bool
     var start: Int
     var end: Int
@@ -57,7 +56,7 @@ final class PushCenter {
     private(set) var registration = Registration.idle
     private(set) var token: String?
     var route: NotificationRoute?
-    var quietHours: QuietHours {
+    var quietHours: StoredQuietHours {
         didSet {
             guard quietHours != oldValue else { return }
             let defaults = UserDefaults.standard
@@ -68,10 +67,10 @@ final class PushCenter {
         }
     }
 
-    private var client: ServiceNotificationClient?
+    private var client: NotificationClient?
     private let routing = NotificationRoutingCoordinator()
     var selectBinding: (@MainActor (NotificationPayload.Binding) async throws -> Void)?
-    private var clients: [ServiceNotificationClient] = []
+    private var clients: [NotificationClient] = []
     private let registrations: PushRegistrationCoordinator
 
     private enum Keys {
@@ -86,7 +85,7 @@ final class PushCenter {
         registrations = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra")
             .appendingPathComponent("push-preferences.json")))
         let defaults = UserDefaults.standard
-        quietHours = QuietHours(
+        quietHours = StoredQuietHours(
             enabled: defaults.bool(forKey: Keys.quietEnabled),
             start: defaults.object(forKey: Keys.quietStart) as? Int ?? 23 * 60,
             end: defaults.object(forKey: Keys.quietEnd) as? Int ?? 8 * 60
@@ -149,8 +148,8 @@ final class PushCenter {
     }
 
     func scheduleSync() {
-        let quietStart = quietHours.enabled ? QuietHours.clock(quietHours.start) : nil
-        let quietEnd = quietHours.enabled ? QuietHours.clock(quietHours.end) : nil
+        let quietStart = quietHours.enabled ? StoredQuietHours.clock(quietHours.start) : nil
+        let quietEnd = quietHours.enabled ? StoredQuietHours.clock(quietHours.end) : nil
         do {
             try registrations.update(clients: clients, token: token, environment: Self.environment.rawValue,
                 quietStart: quietStart, quietEnd: quietEnd)

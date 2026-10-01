@@ -1,7 +1,5 @@
-import AlondraViewsAppComposition
-import AlondraAuth
-import AlondraLoopbackSession
-import AlondraViewsWorkspaceServices
+import AlondraAccount
+import AlondraTransport
 import Foundation
 import Testing
 
@@ -52,12 +50,12 @@ struct MacWorkspaceOwnerTests {
 
     private func makeOwner(probes: [Bool], remoteStarts: Recorder) throws -> MacWorkspaceOwner {
         let directory = FileManager.default.temporaryDirectory.appending(path: "mac-owner-\(UUID().uuidString)")
-        let account = CloudPairingOwner(auth: AuthSession(browser: UnusedBrowser()), displayName: "Mac", storageDirectory: directory)
+        let account = AccountSession(auth: AuthSession(browser: UnusedBrowser()), displayName: "Mac", storageDirectory: directory)
         let identity = LoopbackIdentityStore(directory: directory.appending(path: "identity"), makeKey: { .software(.init()) })
         let answers = ProbeAnswers(probes)
         return MacWorkspaceOwner(account: account, isDaemonRunning: { answers.next() },
             openLocal: {
-                try await CloudAppServices.local(LoopbackSession(identity: identity, deviceName: "Mac"), identity: identity)
+                try await Connection.local(LoopbackSession(identity: identity, deviceName: "Mac"), identity: identity)
             },
             startRemote: { remoteStarts.record() }, reprobeInterval: .milliseconds(5))
     }

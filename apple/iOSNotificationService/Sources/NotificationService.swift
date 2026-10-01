@@ -1,5 +1,4 @@
-import AlondraNotificationPayload
-import AlondraNotificationActions
+import AlondraNotifications
 import Foundation
 import Darwin
 import os
@@ -19,9 +18,9 @@ final class NotificationService: UNNotificationServiceExtension {
         // current binding have all been verified. No plaintext push may create actions.
         guard let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String,
               let raw = try? JSONSerialization.data(withJSONObject: content.userInfo),
-              let hint = try? ServiceNotificationDecoder.bindingHint(raw),
+              let hint = try? NotificationDecoder.bindingHint(raw),
               let context = try? NotificationDecryptionStore(accessGroup: group).load(binding: hint),
-              let decrypted = try? ServiceNotificationDecoder.decrypt(raw, context: context),
+              let decrypted = try? NotificationDecoder.decrypt(raw, context: context),
               var payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [String: Any],
               let binding = NotificationPayload.Binding(userInfo: payload),
               let aps = payload["aps"] as? [String: Any] else {

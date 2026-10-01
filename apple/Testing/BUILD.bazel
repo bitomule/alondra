@@ -1,7 +1,9 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_test(
     name = "IssueReportingIntegrationTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["IssueReportingIntegrationTests.swift"],
     deps = [
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",

@@ -1,7 +1,7 @@
-import AlondraNotificationPayload
+import AlondraNotifications
 import Foundation
 import Testing
-@testable import AlondraNotificationActions
+@testable import AlondraNotifications
 
 private actor RegistrationRecorder {
     struct Call: Sendable { let mac: String; let token: String; let revision: UInt64; let quiet: String? }
@@ -26,10 +26,10 @@ private actor RegistrationRecorder {
     enum Failure: Error { case offline }
 }
 
-private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> ServiceNotificationClient {
+private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> NotificationClient {
     let binding = NotificationPayload.Binding(Data(repeating: n, count: 32).base64EncodedString()
         .replacingOccurrences(of: "+", with: "-").replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: ""))!
-    return ServiceNotificationClient(identity: "mac-\(n)", binding: binding, register: { token, _, start, _, revision in
+    return NotificationClient(identity: "mac-\(n)", binding: binding, register: { token, _, start, _, revision in
         try await recorder.register(mac: "mac-\(n)", token: token, revision: revision, quiet: start)
     }, submit: { _ in .uncertain })
 }

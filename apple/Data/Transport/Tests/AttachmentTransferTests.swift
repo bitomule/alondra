@@ -1,0 +1,69 @@
+import AlondraTransport
+import AlondraContract
+import CryptoKit
+import Foundation
+import XCTest
+
+final class AttachmentTransferTests: XCTestCase {
+    func testLostFinishReceiptResumesSameTransferWithoutFinalizingTwice() async throws {
+        let data = Data((0..<150_000).map { UInt8($0 % 251) })
+        let transport = AttachmentServiceFixture()
+        let api = AlondraAPIClient(serviceURL: URL(string: "https://service.example")!, deviceID: "client-test", operations: transport)
+        let id = UUID()
+        do {
+            _ = try await api.uploadViewAttachment(data, name: "a b&c.txt", transferID: id)
+            XCTFail("Lost finish receipt must not report success")
+        } catch { XCTAssertEqual(error as? OperationError, .outcomeUnknown) }
+        let stored = try await api.uploadViewAttachment(data, name: "a b&c.txt", transferID: id)
+        XCTAssertEqual(stored.id, "stored-evidence")
+        XCTAssertEqual(stored.contentDigest, SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined())
+        let result = await transport.result()
+        XCTAssertEqual(result.bytes, data)
+        XCTAssertEqual(result.name, "a b&c.txt")
+        XCTAssertEqual(result.finishCount, 1)
+        XCTAssertEqual(result.maxChunk, 65_536)
+        XCTAssertEqual(result.transferIDs, [id.uuidString.lowercased()])
+    }
+
+}
+
+private actor AttachmentServiceFixture: OperationAPI {
+    var bytes = Data()
+    var name: String?
+    var maxChunk = 0
+    var finishCount = 0
+    var transfers: Set<String> = []
+    var cache: [String: APIResponse] = [:]
+    func perform(_ request: APIRequest) async throws -> APIResponse {
+        if let cached = cache[request.operationID] { return cached }
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: request.body ?? Data()) as? [String: Any])
+        transfers.insert(try XCTUnwrap(object["transfer_id"] as? String))
+        let response: [String: Any]
+        switch request.path {
+        case "/uploads/start":
+            name = try XCTUnwrap(object["name"] as? String)
+            response = ["offset": bytes.count, "chunk_bytes": 65_536, "completed": false]
+        case "/uploads/chunk":
+            let encoded = try XCTUnwrap(object["data"] as? String)
+            XCTAssertFalse(encoded.contains("="))
+            let base = encoded.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            let chunk = try XCTUnwrap(Data(base64Encoded: base + String(repeating: "=", count: (4 - base.count % 4) % 4)))
+            XCTAssertEqual(object["offset"] as? Int, bytes.count)
+            maxChunk = max(maxChunk, chunk.count)
+            bytes.append(chunk)
+            response = ["offset": bytes.count]
+        case "/uploads/finish":
+            finishCount += 1
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            let stored: [String: Any] = ["id": "stored-evidence", "name": name ?? "", "content_digest": digest,
+                                         "content_reference": "files/stored-evidence", "bytes": bytes.count]
+            cache[request.operationID] = .completed(status: 200, body: try JSONSerialization.data(withJSONObject: ["attachment": stored]))
+            return .unknown
+        default: XCTFail("Unexpected path"); return .unknown
+        }
+        let result = APIResponse.completed(status: 200, body: try JSONSerialization.data(withJSONObject: response))
+        cache[request.operationID] = result
+        return result
+    }
+    func result() -> (bytes: Data, name: String?, finishCount: Int, maxChunk: Int, transferIDs: Set<String>) { (bytes, name, finishCount, maxChunk, transfers) }
+}
