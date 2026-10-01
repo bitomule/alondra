@@ -142,7 +142,7 @@ final class AppFeatureTests: XCTestCase {
         await clock.advance(by: .seconds(3))
         XCTAssertNotNil(store.state.notice)
 
-        await store.send(.fleet(.action(.delegate(.completed("Done")))))
+        await store.send(.fleet(.delegate(.screen(.completed("Done")))))
         XCTAssertEqual(store.state.notice?.event, .actionCompleted("Done"))
         await clock.advance(by: .seconds(2.2))
         await store.receive(\.dismissNotice)
@@ -154,7 +154,7 @@ final class AppFeatureTests: XCTestCase {
         let delegate = ViewsScreenFeature.Action.action(.delegate(.failed("No")))
         for tab in AppFeature.State.Tab.allCases {
             let store = makeStore()
-            await store.send(.open(tab, key("node:a-1")))
+            await store.send(.open(tab, key("tasks?section=finished&after=20")))
             switch tab {
             case .inbox:
                 let id = try XCTUnwrap(store.state.inboxPath.ids.first)
@@ -180,6 +180,8 @@ final class AppFeatureTests: XCTestCase {
             ("request:r-1", .requestDetail(.delegate(.failed("No")))),
             ("schedules", .schedules(.delegate(.failed("No")))),
             ("schedule:new", .scheduleEditor(.delegate(.failed("No")))),
+            ("pull_request:github.com/o/r#1", .prReview(.delegate(.failed("No")))),
+            ("node:a-1", .nodeDetail(.delegate(.failed("No")))),
         ]
         for tab in AppFeature.State.Tab.allCases {
             for (screen, action) in routes {
@@ -232,21 +234,25 @@ final class AppFeatureTests: XCTestCase {
     // MARK: Close refusal
 
     @MainActor
-    func testARefusedCloseFromTheFleetOpensTheRefusalAlert() async throws {
-        var state = AppFeature.State()
-        state.fleet.action.action = try ContractCodec.decode(
-            AlondraContract.Action.self,
-            from: Data(#"{"id":"close:n-1@1","label":"Close Node","style":"destructive","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#.utf8)
-        )
-        let store = makeStore(state)
-        let refused = try ContractCodec.decode(
-            ActionResponse.self, from: Data(#"{"protocol":1,"outcome":"rejected","message":"It is working"}"#.utf8)
-        )
+    func testARefusedCloseFromTheFleetOpensTheRefusalAlert() async {
+        let store = makeStore()
 
-        await store.send(.fleet(.action(.response(refused))))
+        await store.send(.fleet(.delegate(.closeRefused("It is working"))))
         XCTAssertEqual(store.state.closeRefusal, "It is working")
         await store.send(.dismissCloseRefusal)
         XCTAssertNil(store.state.closeRefusal)
+    }
+
+    @MainActor
+    func testTheFleetOpensANodeAndTheNodeOpensItsTaskInTheFleetStack() async throws {
+        let store = makeStore()
+
+        await store.send(.fleet(.delegate(.screen(.open(key("node:a-1"))))))
+        let id = try XCTUnwrap(store.state.fleetPath.ids.first)
+        await store.send(.fleetPath(.element(id: id, action: .nodeDetail(.delegate(.open(key("task:t-1")))))))
+
+        XCTAssertEqual(store.state.fleetPath.map(\.key), [key("node:a-1"), key("task:t-1")])
+        XCTAssertTrue(store.state.inboxPath.isEmpty)
     }
 
     // MARK: Feed
@@ -254,13 +260,14 @@ final class AppFeatureTests: XCTestCase {
     @MainActor
     func testAChangeReachesTheRootScreensAndOnlyTheScreensStillOnTheLegacyRenderer() async {
         let store = makeStore()
-        await store.send(.open(.tasks, key("node:a-1")))
-        await store.send(.open(.inbox, key("node:a-2")))
+        await store.send(.open(.tasks, key("tasks?section=finished&after=20")))
+        await store.send(.open(.inbox, key("tasks?section=archived&after=20")))
         await store.send(.open(.inbox, key("card:i-9")))
+        await store.send(.open(.fleet, key("node:a-1")))
+        await store.send(.open(.fleet, key("pull_request:github.com/o/r#1")))
         store.exhaustivity = .on
 
         await store.send(.viewsFeed(.stale(["node:a-1"])))
-        await store.receive(\.fleet.stale)
         await store.receive(\.newRequest.stale)
         await store.receive(\.inboxPath.element)
         await store.receive(\.tasksPath.element)

@@ -1,0 +1,98 @@
+import AlondraContract
+import AlondraDesign
+import AlondraFeatures
+import AlondraiOSUI
+import ComposableArchitecture
+import SwiftUI
+import XCTest
+
+/// The PR screen as the daemon's `pull_request:` view fills it.
+@MainActor
+final class PRReviewSnapshotTests: XCTestCase {
+    private static let diff = """
+    diff --git a/Sources/ScheduleEditor.swift b/Sources/ScheduleEditor.swift
+    --- a/Sources/ScheduleEditor.swift
+    +++ b/Sources/ScheduleEditor.swift
+    @@ -10,6 +10,7 @@ struct ScheduleEditor: View {
+         var body: some View {
+    -        Form { longForm }
+    +        Form { compactRow }
+    +        Button("Launch options") { showOptions = true }
+         }
+     }
+    diff --git a/Cargo.lock b/Cargo.lock
+    --- a/Cargo.lock
+    +++ b/Cargo.lock
+    @@ -1,2 +1,2 @@
+    -version = 3
+    +version = 4
+    """
+
+    private static let merge = """
+    {"id":"merge:github.com/example/repo#12@3~abcdef12","label":"Merge","style":"primary","presentation":"menu",
+     "options":[{"id":"merge","label":"Merge commit","style":"secondary","input":{"kind":"none"}},
+                {"id":"squash","label":"squash","style":"secondary","input":{"kind":"none"}}],
+     "input":{"kind":"none"},"attachments":false,
+     "confirm":{"title":"Merge pull request?","message":"Merge PR #12?","button":"Merge"},"enabled":true}
+    """
+
+    private static let conflicts = """
+    {"id":"conflicts:github.com/example/repo#12@3","label":"Resolve conflicts","style":"primary","presentation":"button",
+     "input":{"kind":"none"},"attachments":false,"enabled":true}
+    """
+
+    private func screen(
+        adding action: String,
+        comments: [String: ActionComment] = [:],
+        collapsed: Set<String> = []
+    ) throws -> some View {
+        let document = try ScreenFixtures.document("pull-request-ios") { object in
+            var sections = object["sections"] as? [[String: Any]] ?? []
+            for index in sections.indices where sections[index]["id"] as? String == "actions" {
+                var bar = sections[index]["items"] as? [[String: Any]] ?? []
+                var actions = bar[0]["actions"] as? [[String: Any]] ?? []
+                actions.append((try? JSONSerialization.jsonObject(with: Data(action.utf8)) as? [String: Any]) ?? [:])
+                bar[0]["actions"] = actions
+                sections[index]["items"] = bar
+            }
+            object["sections"] = sections
+        }
+        var state = PRReviewFeature.State(key: .pullRequest("github.com/example/repo#12"))
+        state.screen.document = document
+        state.screen.phase = .loaded
+        state.diffDigest = "abcdef12"
+        state.diff = .loaded(UnifiedDiff.parse(Self.diff))
+        state.comments = comments
+        state.collapsed = collapsed
+        return PRReviewView(store: store(state))
+            .environment(\.highlightsDiffs, false)
+    }
+
+    private func store(_ state: PRReviewFeature.State) -> StoreOf<PRReviewFeature> {
+        Store(initialState: state) { PRReviewFeature() } withDependencies: {
+            idleViewsClient(&$0.viewsClient)
+        }
+    }
+
+    func test_prReview_readyToMerge() throws {
+        let view = try screen(adding: Self.merge)
+        assertScreenVariants { view }
+    }
+
+    func test_prReview_conflictsWithCommentsAndAFoldedFile() throws {
+        let anchor = UnifiedDiff.parse(Self.diff).first?.lines.compactMap(\.anchor).first ?? ""
+        let view = try screen(
+            adding: Self.conflicts,
+            comments: [anchor: ActionComment(anchor: anchor, text: "Does this keep the weekday picker?")],
+            collapsed: ["Cargo.lock"]
+        )
+        assertScreenVariants { view }
+    }
+
+    func test_prReview_noLongerAvailable() {
+        var state = PRReviewFeature.State(key: .pullRequest("github.com/example/repo#12"))
+        state.screen.phase = .missing
+        let view = PRReviewView(store: store(state))
+        assertScreenVariants { view }
+    }
+}

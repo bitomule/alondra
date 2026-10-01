@@ -13,6 +13,8 @@ public enum DetailRoute {
     case schedules(SchedulesFeature)
     case scheduleEditor(ScheduleEditorFeature)
     case review(ReviewFeature)
+    case prReview(PRReviewFeature)
+    case nodeDetail(NodeDetailFeature)
 }
 
 public extension DetailRoute {
@@ -47,11 +49,15 @@ public extension DetailRoute.State {
 
     init?(key: ViewKey, owner: String) {
         switch DetailRoute.Kind(key: key) {
+        case .card where key.pullRequestID != nil:
+            self = .prReview(PRReviewFeature.State(key: .pullRequest(key.pullRequestID ?? "")))
         case .card, .document: self = .review(ReviewFeature.State(key: key))
         case .task: self = .taskDetail(TaskDetailFeature.State(key: key))
         case .request: self = .requestDetail(RequestDetailFeature.State(key: key))
         case .schedules: self = .schedules(SchedulesFeature.State())
         case .schedule: self = .scheduleEditor(ScheduleEditorFeature.State(key: key))
+        case .pullRequest: self = .prReview(PRReviewFeature.State(key: key))
+        case .node: self = .nodeDetail(NodeDetailFeature.State(key: key))
         case nil: return nil
         default: self = .legacy(ViewsScreenFeature.State(key: key, owner: owner))
         }
@@ -65,6 +71,8 @@ public extension DetailRoute.State {
         case .requestDetail(let state): state.screen.key
         case .schedules(let state): state.screen.key
         case .scheduleEditor(let state): state.screen.key
+        case .prReview(let state): state.screen.key
+        case .nodeDetail(let state): state.screen.key
         }
     }
 }
@@ -79,9 +87,20 @@ public extension DetailRoute.Action {
         case .taskDetail(.delegate(let delegate)),
              .requestDetail(.delegate(let delegate)),
              .schedules(.delegate(let delegate)),
-             .scheduleEditor(.delegate(let delegate)):
+             .scheduleEditor(.delegate(let delegate)),
+             .prReview(.delegate(let delegate)),
+             .nodeDetail(.delegate(let delegate)):
             delegate
         default: nil
         }
+    }
+}
+
+private extension ViewKey {
+    /// A pull request's card is keyed by the PR itself (`card:<repo>#12`); it opens the PR review.
+    var pullRequestID: String? {
+        guard rawValue.hasPrefix("card:") else { return nil }
+        let id = String(rawValue.dropFirst("card:".count))
+        return id.contains("#") ? id : nil
     }
 }

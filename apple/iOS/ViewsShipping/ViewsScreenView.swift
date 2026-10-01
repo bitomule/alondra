@@ -132,19 +132,7 @@ struct ViewsScreenView: View {
 
     private var screenContent: some View {
         Group {
-            if let document = store.document, store.key.rawValue.hasPrefix("pull_request:") {
-                PRReviewView(document: document,
-                                           diff: store.contentReference?.kind == .diff ? store.content : nil,
-                                           comments: $diffComments,
-                                           onAction: { action, optionID in
-                    present(action)
-                    if let optionID {
-                        store.send(.action(.chooseOption(optionID)))
-                    }
-                }, onLink: follow,
-                   onContent: { store.send(.fetchContent($0)) },
-                   onAttachment: { store.send(.fetchAttachment($0)) })
-            } else if let document = store.document {
+            if let document = store.document {
                 documentScreen(document)
             } else if store.loading {
                 ProgressView().tint(Palette.dawn).frame(maxWidth: .infinity, maxHeight: .infinity)

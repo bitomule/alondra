@@ -175,8 +175,7 @@ struct RootView<AccountContent: View>: View {
             }
             Tab("Fleet", systemImage: "circle.hexagongrid", value: .fleet) {
                 NavigationStack(path: $store.scope(state: \.fleetPath, action: \.fleetPath)) {
-                    ViewsScreenView(store: store.scope(state: \.fleet, action: \.fleet),
-                                    openView: { store.send(.open(.fleet, $0)) })
+                    FleetView(store: store.scope(state: \.fleet, action: \.fleet))
                 } destination: { route in
                     detail(route, tab: .fleet)
                 }
@@ -218,6 +217,10 @@ struct RootView<AccountContent: View>: View {
             SchedulesView(store: screen)
         case .scheduleEditor(let screen):
             ScheduleEditorView(store: screen)
+        case .prReview(let screen):
+            PRReviewView(store: screen)
+        case .nodeDetail(let screen):
+            NodeDetailView(store: screen)
         case .review(let review):
             if tab == .inbox {
                 ReviewView(store: review).navigationTransition(.zoom(sourceID: String(review.screen.key.rawValue.dropFirst("card:".count)), in: triageZoom))

@@ -1,0 +1,97 @@
+import AlondraContract
+import AlondraFeed
+import ComposableArchitecture
+import Foundation
+
+/// The Fleet tab: the orchestrator, every node grouped by project, a search the daemon answers,
+/// and closing a node from its row.
+@Reducer
+public struct FleetFeature: Sendable {
+    public init() {}
+
+    @ObservableState
+    public struct State: Equatable {
+        public var screen = ScreenFeature.State(key: .fleet)
+        public var search: ScreenFeature.State?
+        public var query = ""
+        public var actions: ActionFeature.State
+
+        public init() {
+            actions = .ios()
+        }
+
+        public var isSearching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
+        public var overview: FleetOverview? { screen.document.map(FleetOverview.init(document:)) }
+        public var results: FleetOverview? { search?.document.map(FleetOverview.init(document:)) }
+    }
+
+    public enum Action {
+        case task
+        case refresh
+        case screen(ScreenFeature.Action)
+        case search(ScreenFeature.Action)
+        case queryChanged(String)
+        case searchStarted(String)
+        case close(WireAction)
+        case actions(ActionFeature.Action)
+        case follow(AlondraContract.Link)
+        case delegate(Delegate)
+
+        @CasePathable
+        public enum Delegate: Equatable, Sendable {
+            case screen(ScreenDelegate)
+            case closeRefused(String)
+        }
+    }
+
+    @Dependency(\.continuousClock) var clock
+    private enum CancelID { case debounce }
+    static let searchDelay = Duration.milliseconds(250)
+
+    public var body: some ReducerOf<Self> {
+        Scope(state: \.screen, action: \.screen) { ScreenFeature() }
+        Scope(state: \.actions, action: \.actions) { ActionFeature() }
+        Reduce { state, action in
+            switch action {
+            case .task:
+                return .send(.screen(.task))
+            case .refresh:
+                return .merge(.send(.screen(.retry)), state.search == nil ? .none : .send(.search(.retry)))
+            case .screen(.loaded(let document)):
+                state.actions.dataEpoch = document.dataEpoch
+                return .none
+            case .screen, .search:
+                return .none
+            case .queryChanged(let query):
+                state.query = query
+                guard state.isSearching else {
+                    state.search = nil
+                    return .cancel(id: CancelID.debounce)
+                }
+                return .run { [clock] send in
+                    try await clock.sleep(for: Self.searchDelay)
+                    await send(.searchStarted(query))
+                }
+                .cancellable(id: CancelID.debounce, cancelInFlight: true)
+            case .searchStarted(let query):
+                guard query == state.query, state.isSearching else { return .none }
+                state.search = ScreenFeature.State(key: .search(query.trimmingCharacters(in: .whitespaces)))
+                return .send(.search(.task))
+            case .close(let wire):
+                return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
+            case .actions(.response(let response)) where response.outcome == .rejected && state.actions.action?.id?.hasPrefix("close:") == true:
+                return .send(.delegate(.closeRefused(response.message ?? String(localized: "Couldn’t close the node"))))
+            case .actions(.delegate(let delegate)):
+                return .send(.delegate(.screen(ScreenDelegate(delegate))))
+            case .actions:
+                return .none
+            case .follow(let link):
+                guard let open = ScreenDelegate.opening(link) else { return .none }
+                return .send(.delegate(.screen(open)))
+            case .delegate:
+                return .none
+            }
+        }
+        .ifLet(\.search, action: \.search) { ScreenFeature() }
+    }
+}

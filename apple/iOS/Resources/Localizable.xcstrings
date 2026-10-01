@@ -1,6 +1,13 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "since": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "desde"}}}},
+    "This pull request is no longer available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta solicitud de cambios ya no está disponible"}}}},
+    "Running in the background": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "En segundo plano"}}}},
+    "Summary": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Resumen"}}}},
+    "Couldn’t load the diff. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el diff. Inténtalo de nuevo."}}}},
+    "Could not open attachment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo abrir el adjunto"}}}},
+    "Couldn’t close the node": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cerrar el nodo"}}}},
     "What should the node do?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Qué debe hacer el nodo?"}}}},
     "Custom": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Personalizada"}}}},
     "Once": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Una vez"}}}},
