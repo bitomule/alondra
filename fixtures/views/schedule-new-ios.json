@@ -4,11 +4,11 @@
   "view": "schedule",
   "key": "schedule:new",
   "client": "ios",
-  "version": "vdd4e94927cfa4080",
+  "version": "veba02912a6e2db9f",
   "cursor": "cursor-1",
   "title": "New Schedule",
   "status": {
-    "version": "v164538ff023163dd",
+    "version": "v47edd097e99cb5fc",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Agents",
+        "label": "Fleet",
         "value": 1
       },
       {

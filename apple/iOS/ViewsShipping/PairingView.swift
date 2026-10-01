@@ -65,7 +65,7 @@ struct SignInView: View {
         case .scanning, .submitting: "Connect to the Mac running Alondra to see what needs you, wherever you are."
         case .pending: "Confirm this connection on your Mac. Only devices you approve can access your work."
         case .approved: "Your inbox, tasks and conversations are ready."
-        default: "Keep up with your agents, answer a question, and help your work move forward."
+        default: "Keep up with your fleet, answer a question, and help your work move forward."
         }
     }
     private var step: Int {

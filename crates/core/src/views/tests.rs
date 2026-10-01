@@ -1874,3 +1874,13 @@ fn fleet_rows_offer_close_node_with_a_confirmation() {
         else { panic!("actions") };
     assert_eq!(bar.actions.iter().find(|action| action.label == "Close Node").map(|action| &action.id), Some(&close.id));
 }
+
+#[test]
+fn status_names_the_node_count_fleet() {
+    for (lang, label) in [(Lang::En, "Fleet"), (Lang::Es, "Flota")] {
+        let view = render(&fixture(), &LiveSnapshot::default(), Client::Tui, lang, "home", "");
+        let count = view.status.counts.iter().find(|count| count.id == "agents").unwrap();
+        assert_eq!(count.label, label);
+        assert!(view.status.counts.iter().all(|count| !count.label.to_lowercase().contains("agent")));
+    }
+}

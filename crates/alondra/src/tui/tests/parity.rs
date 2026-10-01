@@ -1128,7 +1128,7 @@ fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
         "version": "1", "summary": "", "badge": 0,
         "counts": [
             {"id": "inbox", "label": "Inbox", "value": 4}, {"id": "tasks", "label": "Tasks", "value": 1},
-            {"id": "agents", "label": "Agents", "value": 1}, {"id": "working", "label": "working", "value": 2},
+            {"id": "agents", "label": "Fleet", "value": 1}, {"id": "working", "label": "working", "value": 2},
             {"id": "waiting", "label": "waiting", "value": 1}
         ],
         "gauges": gauges,

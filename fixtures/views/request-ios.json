@@ -4,11 +4,11 @@
   "view": "request",
   "key": "request:r-9f2156b5a8894e53901f0af576dff6a2",
   "client": "ios",
-  "version": "vcc914778b618d9c5",
+  "version": "vaa1c2fcda69fe2ac",
   "cursor": "cursor-1",
   "title": "Polish the Alondra beta",
   "status": {
-    "version": "v164538ff023163dd",
+    "version": "v47edd097e99cb5fc",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       },
       {
         "id": "agents",
-        "label": "Agents",
+        "label": "Fleet",
         "value": 1
       },
       {
