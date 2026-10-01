@@ -199,16 +199,16 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
         InputValue::Integer(value) => value.to_string(),
     }).filter(|value| !value.trim().is_empty()).collect();
     let mut text = match option {
-        Some(option) => format!("{option}."),
-        None => "The user answered the question.".into(),
+        Some(option) if values.is_empty() => format!("{option}."),
+        Some(option) => format!("{option}. {}", values.join("; ")),
+        None => values.join("; "),
     };
-    if !values.is_empty() {
-        text.push_str(&format!(" {}", values.join("; ")));
+    for attachment in &answer.attachments {
+        text.push_str(&format!(" Open the attached file “{}” at {}.", attachment.name, attachment.content_reference));
     }
-    if !answer.attachments.is_empty() {
-        for attachment in &answer.attachments {
-            text.push_str(&format!(" Open the attached file “{}” at {}.", attachment.name, attachment.content_reference));
-        }
+    text = text.trim_start().to_owned();
+    if matches!(interaction.recipient, Recipient::Orchestrator) && matches!(interaction.author, Author::Agent { .. }) {
+        text = format!("The orchestrator answered: {text}");
     }
     let question = interaction.body.trim();
     if matches!(interaction.author, Author::Orchestrator { .. }) {
@@ -530,6 +530,98 @@ mod tests {
             .find(|message| message.interaction_id.as_deref() == Some("question")
                 && message.recipient_kind == "agent").unwrap();
         assert_eq!(render(&state, &message), "New API. Keep the old response format");
+    }
+
+    fn free_text_question(domain: &DomainRuntime, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
+        command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
+            attachments: vec![], interaction_id: id.into(), scope, recipient,
+            body: body.into(), blocking: true, options: vec![],
+        });
+    }
+
+    fn free_text_answer(domain: &DomainRuntime, actor: Actor, id: &str, text: &str) {
+        command(domain, actor, &format!("answer-{id}"), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: id.into(), option_id: String::new(),
+            inputs: BTreeMap::from([("text".into(), InputValue::Text(text.into()))]),
+        });
+    }
+
+    fn rendered_for(domain: &DomainRuntime, id: &str, recipient_kind: &str) -> String {
+        let state = domain.state().unwrap();
+        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
+            .unwrap();
+        render(&state, &message)
+    }
+
+    fn node_with_task(domain: &DomainRuntime) {
+        command(domain, Actor::System, "register", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+        });
+        command(domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        });
+    }
+
+    fn agent_actor() -> Actor {
+        Actor::Agent { agent_id: "agent-a".into() }
+    }
+
+    fn user_actor() -> Actor {
+        Actor::User { user_id: "u".into() }
+    }
+
+    fn task_scope() -> Scope {
+        Scope::Task { task_id: "task".into() }
+    }
+
+    #[test]
+    fn a_free_text_answer_reaches_the_node_as_the_text_alone() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+        free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
+        assert_eq!(rendered_for(&domain, "q", "agent"), "Call it Atlas");
+    }
+
+    #[test]
+    fn a_free_text_answer_names_the_question_only_when_another_is_open() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+        free_text_question(&domain, "other", agent_actor(), task_scope(), Recipient::User, "Which color?");
+        free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
+        assert_eq!(rendered_for(&domain, "q", "agent"), "About \"Which name?\": Call it Atlas");
+    }
+
+    #[test]
+    fn a_free_text_answer_to_the_orchestrator_names_the_question_and_request() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", Actor::Orchestrator { generation: 0 },
+            Scope::Orchestrator { request_id: Some("request".into()) }, Recipient::User, "Which name?");
+        free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
+        assert_eq!(rendered_for(&domain, "q", "orchestrator"),
+            "About \"Which name?\" (request \"Work\"): Call it Atlas");
+    }
+
+    #[test]
+    fn an_orchestrators_free_text_answer_to_a_node_says_who_answered_and_never_the_user() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::Orchestrator, "Which name?");
+        free_text_answer(&domain, Actor::Orchestrator { generation: 0 }, "q", "Call it Atlas");
+        let rendered = rendered_for(&domain, "q", "agent");
+        assert_eq!(rendered, "The orchestrator answered: Call it Atlas");
+        assert!(!rendered.contains("user"));
     }
 
     fn attempts(domain: &DomainRuntime) -> Vec<(i64, String, Option<String>)> {
