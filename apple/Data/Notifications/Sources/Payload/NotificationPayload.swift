@@ -71,8 +71,15 @@ public enum NotificationPayload {
                 let option = (entry["option"] as? String).flatMap { $0.isEmpty ? nil : $0 }
                 let text = (entry["text"] as? Bool) ?? false
                 let placeholder = (entry["placeholder"] as? String).flatMap { $0.isEmpty ? nil : $0 }
-                return PushAction(id: id, option: option, label: label, text: text, placeholder: placeholder)
+                let opens = (entry["open"] as? Bool) ?? false
+                return PushAction(id: id, option: option, label: label, text: text, placeholder: placeholder, opens: opens)
             }
+        }
+
+        /// The button opens the card in the app instead of acting from the notification.
+        public func opens(_ action: String) -> Bool {
+            guard let index = Action.index(action), actions.indices.contains(index) else { return false }
+            return actions[index].opens
         }
     }
 
@@ -82,6 +89,7 @@ public enum NotificationPayload {
         public let label: String
         public let text: Bool
         public let placeholder: String?
+        public let opens: Bool
     }
 
     public enum Category {

@@ -327,6 +327,44 @@ pub struct Interaction {
     #[serde(default)]
     pub withdrawn: bool,
 }
+/// What a held question stands for: a tool permission prompt or a plan to approve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Hold {
+    Permission,
+    Plan,
+}
+impl Hold {
+    pub const ALLOW: &'static str = "allow";
+    pub const DENY: &'static str = "deny";
+    pub const APPROVE: &'static str = "approve";
+    pub const REQUEST_CHANGES: &'static str = "request_changes";
+    pub const NOTE: &'static str = "text";
+
+    /// The yes option first; the no option takes an optional note for the node.
+    pub fn options(self) -> Vec<QuestionOption> {
+        let (yes, yes_label, no, no_label, hint) = match self {
+            Hold::Permission => (Self::ALLOW, "Allow", Self::DENY, "Deny", "Write the reason"),
+            Hold::Plan => (Self::APPROVE, "Approve", Self::REQUEST_CHANGES, "Request changes", "Write what to change"),
+        };
+        vec![
+            QuestionOption { id: yes.into(), label: yes_label.into(), description: None, inputs: vec![] },
+            QuestionOption {
+                id: no.into(),
+                label: no_label.into(),
+                description: Some(hint.into()),
+                inputs: vec![InputSpec { id: Self::NOTE.into(), kind: InputKind::Text, required: false }],
+            },
+        ]
+    }
+
+    pub fn approves(self, option_id: &str) -> bool {
+        option_id == match self {
+            Hold::Permission => Self::ALLOW,
+            Hold::Plan => Self::APPROVE,
+        }
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MergeAttemptState {
@@ -367,6 +405,9 @@ pub struct DomainState {
     pub stack_readiness: BTreeMap<TaskId, StackReadiness>,
     #[serde(default)]
     pub schedule: ScheduleState,
+    /// Questions a Claude Code hook is waiting on: the hook, not the outbox, hands the answer.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub holds: BTreeMap<InteractionId, Hold>,
 }
 impl DomainState {
     pub fn new(epoch: impl Into<DataEpoch>) -> Self {
@@ -385,6 +426,7 @@ impl DomainState {
             merge_authorizations: BTreeMap::new(),
             stack_readiness: BTreeMap::new(),
             schedule: ScheduleState::default(),
+            holds: BTreeMap::new(),
         }
     }
 }

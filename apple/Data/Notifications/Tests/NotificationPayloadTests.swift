@@ -22,6 +22,15 @@ final class NotificationPayloadTests: XCTestCase {
         XCTAssertNil(NotificationPayload.Action.index("OPT:approve"))
     }
 
+    func testAPlanPushApprovesOrOpensTheCardToReview() throws {
+        let push = try payload(#"{"alondra":{"protocol":1,"kind":"question","card":"hold-1","data_epoch":"e","actions":[{"id":"ans:hold-1@3","option":"approve","label":"Approve"},{"id":"open:hold-1","label":"Review","open":true}]}}"#)
+        let item = try XCTUnwrap(NotificationPayload.Item(userInfo: push))
+        XCTAssertEqual(item.actions.map(\.opens), [false, true])
+        XCTAssertFalse(item.opens("A0"))
+        XCTAssertTrue(item.opens("A1"))
+        XCTAssertFalse(item.opens("A2"))
+    }
+
     func testOnlyViewsPushesWithValidCardsAreRouted() throws {
         let payload = try payload(#"{"alondra":{"protocol":1,"kind":"information","card":"i-8","data_epoch":"e","actions":[]}}"#)
         XCTAssertEqual(NotificationPayload.Item(userInfo: payload)?.card, "i-8")

@@ -185,6 +185,9 @@ final class PushCenter {
         case UNNotificationDefaultActionIdentifier:
             guard await activate(authorized) else { return }
             route = NotificationRoute(itemID: item.card, opensDetail: false, binding: binding)
+        case let action where item.opens(action):
+            guard await activate(authorized) else { return }
+            route = NotificationRoute(itemID: item.card, opensDetail: true, binding: binding)
         default:
             await send(response, authorized: authorized)
         }

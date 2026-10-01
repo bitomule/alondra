@@ -2628,9 +2628,10 @@ fn variant_index(c: &Command) -> usize {
         Command::ArchiveTask { .. } => 40,
         Command::RetitleTask { .. } => 41,
         Command::WithdrawQuestion { .. } => 42,
+        Command::HoldHook { .. } => 43,
     }
 }
-const COMMAND_KINDS: usize = 43;
+const COMMAND_KINDS: usize = 44;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2723,6 +2724,9 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CancelTask { task_id: ids.task.into() }, false),
         (Command::ReopenTask { task_id: ids.task.into() }, false),
         (Command::ArchiveTask { task_id: ids.task.into(), archived: false }, false),
+        (Command::HoldHook { interaction_id: "fresh-hold".into(), task_id: ids.task.into(),
+            agent_id: ids.agent.into(), hold: Hold::Permission, body: "Bash: ls".into(),
+            options: Hold::Permission.options() }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -2929,4 +2933,36 @@ fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
         scope: Scope::Task { task_id: "scheduled-task".into() }, recipient: Recipient::User, body: "Started".into(),
     }).unwrap();
     state.validate().unwrap();
+}
+
+#[test]
+fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox() {
+    let mut s = fixture();
+    let held = |id: &str, hold: Hold| Command::HoldHook { interaction_id: id.into(), task_id: "t".into(),
+        agent_id: "a".into(), hold, body: "Bash: rm -rf build".into(), options: hold.options() };
+    reject_unchanged(&mut s, agent(), held("h", Hold::Permission), "forbidden");
+    let outcome = exec(&mut s, Actor::System, held("h", Hold::Permission)).unwrap();
+    assert_eq!(outcome.effects, [DomainEffect::NotifyUser { task_id: Some("t".into()), interaction_id: "h".into() }]);
+    let interaction = &s.interactions[&"h".into()];
+    assert_eq!((&interaction.author, &interaction.recipient, interaction.blocking),
+        (&Author::Agent { agent_id: "a".into() }, &Recipient::User, true));
+    assert_eq!(s.holds[&"h".into()], Hold::Permission);
+    let kinds = |s: &DomainState| s.projection().inbox.iter().map(|item| item.kind.clone()).collect::<Vec<_>>();
+    assert_eq!(kinds(&s), ["permission"]);
+    exec(&mut s, Actor::System, held("p", Hold::Plan)).unwrap();
+    assert_eq!(kinds(&s), ["permission", "plan"]);
+    let mut inputs = BTreeMap::new();
+    inputs.insert(Hold::NOTE.to_owned(), InputValue::Text("Branch first".into()));
+    let answered = exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "h".into(),
+        option_id: Hold::DENY.into(), inputs }).unwrap();
+    assert!(answered.effects.is_empty(), "the hook hands the answer: {:?}", answered.effects);
+    exec(&mut s, Actor::System, Command::WithdrawQuestion { interaction_id: "p".into() }).unwrap();
+    assert!(s.interactions[&"p".into()].withdrawn);
+    exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "q".into(),
+        scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Which?".into(),
+        blocking: true, options: Hold::Permission.options() }).unwrap();
+    reject_unchanged(&mut s, Actor::System, Command::WithdrawQuestion { interaction_id: "q".into() }, "forbidden");
+    let ordinary = exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(),
+        option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();
+    assert!(matches!(ordinary.effects[..], [DomainEffect::NotifyAgent { .. }]));
 }

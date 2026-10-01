@@ -336,7 +336,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::InterruptScheduleRunsOnRestart { .. }
         | Command::RegisterAgent { .. }
         | Command::ObserveAgent { .. }
-        | Command::AdvanceOrchestratorGeneration { .. } => None,
+        | Command::AdvanceOrchestratorGeneration { .. }
+        | Command::HoldHook { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {

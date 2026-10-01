@@ -955,4 +955,34 @@ mod tests {
         })).unwrap();
         assert!(plaintext.len() <= 1_500, "encrypted push plaintext is {} bytes", plaintext.len());
     }
+
+    #[test]
+    fn held_cards_push_allow_deny_or_approve_review_buttons() {
+        for (hold, expected) in [
+            (Hold::Permission, json!([{"option": "allow", "label": "Allow"}, {"option": "deny", "label": "Deny"}])),
+            (Hold::Plan, json!([{"option": "approve", "label": "Approve"}, {"label": "Review", "open": true}])),
+        ] {
+            let mut state = DomainState::new("epoch-1");
+            let id = InteractionId::from("hold-1");
+            state.interactions.insert(id.clone(), Interaction {
+                attachments: vec![], id: id.clone(), scope: Scope::Task { task_id: "task-a".into() },
+                author: Author::System, recipient: Recipient::User, body: "Bash: ls".into(),
+                blocking: true, subject: None,
+                payload: InteractionPayload::Question { options: hold.options(), answer: None },
+                revision: 3, order: 1, withdrawn: false,
+            });
+            state.holds.insert(id, hold);
+            let payload = user_push_payload(&state, Some("hold-1"), Lang::En);
+            assert_eq!(payload["alondra"]["kind"], "question", "the app decodes held cards as questions");
+            assert_eq!(payload["aps"]["category"], "ALONDRA_PUSH");
+            let shown: Vec<Value> = payload["alondra"]["actions"].as_array().unwrap().iter().map(|action| {
+                let mut action = action.clone();
+                let object = action.as_object_mut().unwrap();
+                assert!(object.remove("id").unwrap().as_str().unwrap().ends_with("hold-1@3")
+                    || object.get("open").is_some());
+                action
+            }).collect();
+            assert_eq!(Value::from(shown), expected, "{hold:?}");
+        }
+    }
 }

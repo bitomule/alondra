@@ -14,7 +14,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
     let pending = roots.len() as u32;
     let questions = roots
         .iter()
-        .filter(|item| matches!(item.kind.as_str(), "question" | "action_request"))
+        .filter(|item| matches!(item.kind.as_str(), "question" | "action_request" | "permission" | "plan"))
         .count() as u32;
     let to_read = pending - questions;
     let working = context

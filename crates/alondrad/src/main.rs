@@ -16,6 +16,7 @@ mod domain_delivery;
 #[cfg(test)]
 mod domain_e2e_tests;
 mod domain_github;
+mod domain_holds;
 mod domain_messages;
 mod domain_orchestrator;
 mod domain_orchestrator_reads;

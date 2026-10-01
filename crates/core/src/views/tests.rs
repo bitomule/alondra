@@ -1874,3 +1874,59 @@ fn fleet_rows_offer_close_node_with_a_confirmation() {
         else { panic!("actions") };
     assert_eq!(bar.actions.iter().find(|action| action.label == "Close Node").map(|action| &action.id), Some(&close.id));
 }
+
+fn held_fixture(hold: crate::domain_v2::Hold, body: &str) -> DomainState {
+    let mut state = fixture();
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = InteractionPayload::Question { options: hold.options(), answer: None };
+    interaction.body = body.into();
+    state.holds.insert("i-1".into(), hold);
+    state
+}
+
+fn answer_action(card: &Card) -> &Action {
+    card.actions.iter().find(|action| action.id.starts_with("ans:i-1@")).expect("answer action")
+}
+
+#[test]
+fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
+    use crate::domain_v2::Hold;
+    let state = held_fixture(Hold::Permission, "Bash: clean the build\n\n```\nrm -rf build\n```");
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str()), (Icon::Warning, "Permiso"));
+    assert_eq!(card.title, "Bash: clean the build");
+    assert_eq!(card.body.as_ref().unwrap().text, "```\nrm -rf build\n```");
+    let options = &answer_action(card).options;
+    assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("allow", "Permitir", Some("1")), ("deny", "Denegar", Some("2"))]);
+    assert_eq!(options[1].style, Style::Destructive);
+    assert!(matches!(&options[1].input, Input::Text { placeholder, required: false, .. } if placeholder == "Escribe el motivo"));
+    assert!(card.actions.iter().all(|action| !action.id.starts_with("ctx:")), "a held card is answered, not discussed");
+    assert_eq!(view.status.summary.split(" · ").next(), Some("1 pregunta"));
+    let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text, a.open)).collect::<Vec<_>>(),
+        [(Some("allow"), "Allow", false, false), (Some("deny"), "Deny", false, false)]);
+    assert!(pushed.iter().all(|action| action.id == answer_action(card).id));
+}
+
+#[test]
+fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes_and_a_review_button() {
+    use crate::domain_v2::Hold;
+    let plan = "# Ship the parser\n\n1. Split the lexer\n2. Add tests";
+    let state = held_fixture(Hold::Plan, plan);
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str()), (Icon::Document, "Plan"));
+    assert_eq!(card.title, "Ship the parser");
+    assert_eq!(card.body.as_ref().unwrap().text, plan);
+    let options = &answer_action(card).options;
+    assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
+        [("approve", "Approve", Some("a")), ("request_changes", "Request changes", Some("p"))]);
+    let pushed = push_actions(&state, "i-1", Lang::Es).unwrap();
+    assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.open)).collect::<Vec<_>>(),
+        [(Some("approve"), "Aprobar", false), (None, "Revisar", true)]);
+    assert_eq!(pushed[1].id, "open:i-1");
+    let ios = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(answer_action(card_of(&ios)).options.iter().all(|option| option.key.is_none()));
+}

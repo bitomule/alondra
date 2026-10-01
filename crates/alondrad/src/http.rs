@@ -709,7 +709,7 @@ fn risks(command: &str) -> Vec<&'static str> {
     found
 }
 
-fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
+pub(crate) fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) -> String {
     let tool = tool.unwrap_or("?");
     let said = str_field(input, "description").map(|d| d.trim().to_string()).filter(|d| !d.is_empty()).or_else(|| summary.map(|s| s.split_whitespace().collect::<Vec<_>>().join(" ")));
     let title = match said {
@@ -723,7 +723,7 @@ fn permission_title(tool: Option<&str>, input: &Value, summary: Option<&str>) ->
     }
 }
 
-fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
+pub(crate) fn permission_detail(input: &Value, summary: Option<&str>) -> Option<String> {
     if let Some(command) = str_field(input, "command") {
         let risks = risks(&command);
         if risks.is_empty() {

@@ -45,7 +45,11 @@ pub(crate) async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) ->
     }
 }
 
-async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
+async fn handle(stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
+    handle_with(stream, domain, |session| crate::watcher::is_background_session(&crate::watcher::claude_home(), session)).await
+}
+
+async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background: impl Fn(&str) -> bool) -> Result<()> {
     let len = stream.read_u32().await? as u64;
     if len > MAX_HOOK_BYTES {
         bail!("hook input exceeds {MAX_HOOK_BYTES} bytes");
@@ -53,10 +57,20 @@ async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
     let mut input = vec![0; len as usize];
     stream.read_exact(&mut input).await?;
     let envelope: Envelope = serde_json::from_slice(&input).context("invalid local hook envelope")?;
-    let reply = respond(domain, &envelope.payload)?;
+    let reply = respond(domain, &envelope.payload, background)?;
     let (body, claims) = match reply {
         Reply::Plain(body) => (body, vec![]),
         Reply::Delivery { body, claims } => (body, claims),
+        Reply::Held(held) => {
+            let answer = tokio::select! {
+                answer = crate::domain_holds::wait(domain, &held.id) => answer,
+                gone = stream.read_u8() => {
+                    log!("hook holding {} went away: {gone:?}", held.id);
+                    return crate::domain_holds::withdraw(domain, &held.id);
+                }
+            };
+            (answered(domain, &envelope.payload, &held, answer?), vec![])
+        }
     };
     let bytes = serde_json::to_vec(&body)?;
     let sent = async {
@@ -83,13 +97,25 @@ async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
 enum Reply {
     Plain(Value),
     Delivery { body: Value, claims: Vec<DeliveryClaim> },
+    Held(crate::domain_holds::Held),
+}
+
+/// The reply to a held hook. Words the user added to a refusal reach the session at its
+/// next turn end; a card that can no longer be answered lets Claude Code ask in its terminal.
+fn answered(domain: &DomainRuntime, payload: &Value, held: &crate::domain_holds::Held,
+    answer: Option<alondra_core::domain_v2::Answer>) -> Value {
+    let Some(answer) = answer else { return json!({}) };
+    if let (Some(text), Some(session)) = (crate::domain_holds::follow_up(held.hold, &answer), text(payload, "session_id")) {
+        domain.held.lock().expect("held messages poisoned").entry(AgentId(session)).or_default().push(text);
+    }
+    crate::domain_holds::decision(held, &answer, &crate::domain_messages::user_name())
 }
 
 fn text(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
-fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
+fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) -> bool) -> Result<Reply> {
     let Some(session_id) = text(payload, "session_id") else {
         return Ok(Reply::Plain(json!({})));
     };
@@ -104,6 +130,9 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         return Ok(Reply::Plain(json!({})));
     }
     domain.live.observe(payload);
+    if let Some(held) = crate::domain_holds::hold(domain, payload, background(&session_id))? {
+        return Ok(Reply::Held(held));
+    }
     match event.as_str() {
         "SessionStart" | "SessionEnd" => {
             let connected = event == "SessionStart";
@@ -332,6 +361,7 @@ pub(crate) async fn deliver_terminals(domain: &DomainRuntime, home: &Path,
 }
 
 pub(crate) async fn run(listener: UnixListener, domain: Arc<DomainRuntime>, home: PathBuf) -> Result<()> {
+    crate::domain_holds::release_orphans(&domain)?;
     tokio::select! {
         result = serve(listener, domain.clone()) => result,
         result = run_terminals(domain, home) => result,
@@ -866,5 +896,151 @@ mod tests {
         drop(domain);
         let reopened = fixture.open();
         assert!(agent_outbox(&reopened, "session-a").is_empty(), "an uncertain write is not retyped after restart");
+    }
+
+    fn working_agent(domain: &DomainRuntime, agent: &str) {
+        let user = || Actor::User { user_id: "u".into() };
+        command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into() });
+        command(domain, user(), &format!("request-{agent}"),
+            Command::CreateRequest { request_id: format!("request-{agent}").into(), body: "Work".into(), auto_merge: false });
+        command(domain, user(), &format!("task-{agent}"), Command::CreateTask {
+            task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
+            title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        });
+    }
+
+    fn permission(agent: &str) -> Value {
+        json!({"session_id": agent, "hook_event_name": "PermissionRequest", "tool_name": "Bash",
+            "tool_input": {"command": "rm -rf build", "description": "Clean the build"}})
+    }
+
+    fn plan(agent: &str) -> Value {
+        json!({"session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "ExitPlanMode",
+            "tool_input": {"plan": "# Ship the parser\n\n1. Split the lexer"}})
+    }
+
+    async fn open_hold(domain: &DomainRuntime) -> InteractionId {
+        let mut changed = domain.subscribe();
+        loop {
+            let state = domain.state().unwrap();
+            let open = state.holds.keys().find(|id| matches!(state.interactions[*id].payload,
+                InteractionPayload::Question { answer: None, .. }) && !state.interactions[*id].withdrawn);
+            if let Some(id) = open { return id.clone() }
+            changed.changed().await.unwrap();
+        }
+    }
+
+    /// The hook as Claude Code runs it, answered by the user from a card while it waits.
+    async fn held_hook(domain: &DomainRuntime, payload: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let body = serde_json::to_vec(&json!({"launched": true, "payload": payload})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        let handler = handle_with(server, domain, |_| true);
+        tokio::pin!(handler);
+        let id = tokio::select! {
+            id = open_hold(domain) => id,
+            result = &mut handler => panic!("the hook was answered without waiting: {result:?}"),
+        };
+        let inputs = note.map(|note| BTreeMap::from([(Hold::NOTE.to_owned(), InputValue::Text(note.into()))])).unwrap_or_default();
+        command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{id}"), Command::AnswerQuestion {
+            attachments: vec![], interaction_id: id.clone(), option_id: option.into(), inputs,
+        });
+        let mut bytes = vec![];
+        let (result, _) = tokio::join!(handler, async {
+            client.read_to_end(&mut bytes).await.unwrap();
+            client.write_u8(6).await.unwrap();
+        });
+        result.unwrap();
+        assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 200);
+        (serde_json::from_slice(&bytes[2..]).unwrap(), id)
+    }
+
+    #[tokio::test]
+    async fn a_permission_prompt_waits_for_allow_or_deny_and_the_reason_follows_as_a_message() {
+        for (option, note, behavior, message, follows) in [
+            (Hold::ALLOW, None, "allow", None, None),
+            (Hold::DENY, None, "deny", Some("denies it"), None),
+            (Hold::DENY, Some("Branch first"), "deny", Some("denied it; the message follows"), Some("Branch first")),
+        ] {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            working_agent(&domain, "agent-a");
+            let (reply, id) = held_hook(&domain, permission("agent-a"), option, note).await;
+            let output = &reply["hookSpecificOutput"];
+            assert_eq!(output["hookEventName"], "PermissionRequest");
+            assert_eq!(output["decision"]["behavior"], behavior, "{option}");
+            let said = output["decision"]["message"].as_str();
+            assert_eq!(said.is_some(), message.is_some(), "{option}");
+            assert!(message.is_none_or(|message| said.unwrap().ends_with(message)), "{option}: {said:?}");
+            let state = domain.state().unwrap();
+            assert_eq!(state.holds[&id], Hold::Permission);
+            assert!(state.interactions[&id].body.contains("Bash: Clean the build"), "{}", state.interactions[&id].body);
+            assert!(agent_outbox(&domain, "agent-a").is_empty(), "the hook, not the outbox, hands the answer");
+            assert_eq!(crate::domain_messages::take_held(&domain, &"agent-a".into()), follows.map(str::to_owned).into_iter().collect::<Vec<_>>());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_plan_waits_for_approve_or_request_changes() {
+        for (option, decision) in [(Hold::APPROVE, "allow"), (Hold::REQUEST_CHANGES, "deny")] {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            working_agent(&domain, "agent-a");
+            let (reply, id) = held_hook(&domain, plan("agent-a"), option, None).await;
+            let output = &reply["hookSpecificOutput"];
+            assert_eq!((output["hookEventName"].as_str(), output["permissionDecision"].as_str()), (Some("PreToolUse"), Some(decision)));
+            if decision == "allow" {
+                assert_eq!(output["updatedInput"], plan("agent-a")["tool_input"]);
+            } else {
+                assert!(output["permissionDecisionReason"].as_str().unwrap().ends_with("requests changes to the plan"));
+            }
+            assert_eq!(domain.state().unwrap().holds[&id], Hold::Plan);
+        }
+    }
+
+    #[tokio::test]
+    async fn only_a_background_agent_with_a_task_is_held() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        command(&domain, Actor::System, "register-idle", Command::RegisterAgent { agent_id: "idle".into(), name: "idle".into() });
+        let mut subagent_plan = plan("agent-a");
+        subagent_plan["agent_id"] = json!("sub-1");
+        for (payload, background) in [(permission("agent-a"), false), (subagent_plan, true), (permission("idle"), true),
+            (permission("stranger"), true)] {
+            assert!(matches!(respond(&domain, &payload, |_| background).unwrap(), Reply::Plain(body) if body == json!({})), "{payload}");
+        }
+        assert!(domain.state().unwrap().holds.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_goes_away_withdraws_its_card_and_a_restart_releases_the_rest() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let body = serde_json::to_vec(&json!({"launched": true, "payload": permission("agent-a")})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        let id = {
+            let handler = handle_with(server, &domain, |_| true);
+            tokio::pin!(handler);
+            let id = tokio::select! {
+                id = open_hold(&domain) => id,
+                result = &mut handler => panic!("the hook was answered without waiting: {result:?}"),
+            };
+            drop(client);
+            handler.await.unwrap();
+            id
+        };
+        assert!(domain.state().unwrap().interactions[&id].withdrawn);
+        let Reply::Held(orphan) = respond(&domain, &plan("agent-a"), |_| true).unwrap() else { panic!("held") };
+        drop(domain);
+        let reopened = fixture.open();
+        crate::domain_holds::release_orphans(&reopened).unwrap();
+        let state = reopened.state().unwrap();
+        assert!(state.interactions[&orphan.id].withdrawn);
+        assert!(state.projection().inbox.iter().all(|item| !item.pending || !matches!(item.kind.as_str(), "permission" | "plan")));
     }
 }

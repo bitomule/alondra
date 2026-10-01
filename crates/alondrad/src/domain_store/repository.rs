@@ -598,6 +598,7 @@ fn ensure_nothing_removed(before: &DomainState, after: &DomainState) -> Result<(
     kept("interaction", &before.interactions, &after.interactions)?;
     kept("merge authorization", &before.merge_authorizations, &after.merge_authorizations)?;
     kept("stack readiness", &before.stack_readiness, &after.stack_readiness)?;
+    kept("hook hold", &before.holds, &after.holds)?;
     kept("schedule", &before.schedule.schedules, &after.schedule.schedules)?;
     kept("schedule run", &before.schedule.runs, &after.schedule.runs)?;
     for (id, task) in &before.tasks {
@@ -691,6 +692,12 @@ pub(super) fn save_changes(c: &Connection, before: &DomainState, after: &DomainS
     }
     for (r, _) in changed(&before.stack_readiness, &after.stack_readiness) {
         upsert(c, "stack_readiness", &["task_id"], object(r)?)?;
+    }
+    for (id, hold) in &after.holds {
+        if before.holds.get(id) != Some(hold) {
+            let row = object(&json!({"interaction_id": id, "hold": hold}))?;
+            upsert(c, "interaction_holds", &["interaction_id"], row)?;
+        }
     }
     save_schedule_changes(c, &before.schedule, &after.schedule)?;
     Ok(())
@@ -938,6 +945,9 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
     for row in rows(c, "stack_readiness", &["ready"], &[])? {
         let x: StackReadiness = decode(row)?;
         state.stack_readiness.insert(x.task_id.clone(), x);
+    }
+    for row in rows(c, "interaction_holds", &[], &[])? {
+        state.holds.insert(InteractionId::from(s(&row["interaction_id"])?), decode(row["hold"].clone())?);
     }
     state.schedule = load_schedule_state(c)?;
     state.validate()?;

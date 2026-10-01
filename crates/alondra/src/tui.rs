@@ -2515,6 +2515,16 @@ impl App {
                     let _ = self.view_action_key(k);
                     return;
                 }
+                KeyCode::Char(c)
+                    if !c.is_ascii_digit() && !"qcCdsnN/".contains(c)
+                        && self.card_view.as_ref().is_some_and(|view| {
+                            view_render::actions(view).iter().flat_map(|action| &action.options)
+                                .any(|option| option.key.as_deref() == Some(c.encode_utf8(&mut [0; 4])))
+                        }) =>
+                {
+                    let _ = self.view_action_key(k);
+                    return;
+                }
                 KeyCode::Char(c @ '1'..='9') => {
                     let has_review = self
                         .reviews

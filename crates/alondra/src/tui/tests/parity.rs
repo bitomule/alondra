@@ -1233,3 +1233,50 @@ fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
     let help: String = crate::tui::draw::help_lines().iter().map(|line| line.to_string()).collect();
     assert!(help.contains("scheduled tasks: n creates one") && help.contains(":fleet"));
 }
+
+fn held_plan_card() -> alondra_core::views::View {
+    use alondra_core::domain_v2::*;
+    let mut state = DomainState::new("e");
+    let mut run = |actor: Actor, command: Command| {
+        let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: format!("c{}", state.revision).into(), expected_revision: state.revision, command };
+        state.execute(&actor, &envelope).unwrap();
+    };
+    let user = || Actor::User { user_id: "u".into() };
+    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
+    run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
+    run(user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Build".into(),
+        agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
+    run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
+        agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n1. Split the lexer".into(),
+        options: Hold::Plan.options() });
+    let live = alondra_core::views::LiveSnapshot::default();
+    alondra_core::views::build("card:hold-1", alondra_core::views::RenderContext {
+        domain: &state, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,
+        transport: alondra_core::views::Transport::Loopback, cursor: "c", rendered_at: "",
+    }).unwrap()
+}
+
+#[test]
+fn a_held_plan_is_approved_with_a_and_sent_back_with_p_like_8ccd131() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let reader_on_plan = || {
+        let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+        let mut app = App::new(tx);
+        app.view_navigation.push("card:hold-1".into());
+        app.card_view = Some(held_plan_card());
+        app.open_reader();
+        app
+    };
+    let mut app = reader_on_plan();
+    press(&mut app, KeyCode::Char('a'));
+    assert_eq!(posted(&app)[0].1["option_id"], "approve");
+    let mut app = reader_on_plan();
+    press(&mut app, KeyCode::Char('p'));
+    assert!(matches!(app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { option_id: Some(option), .. }) if option == "request_changes"));
+    typed(&mut app, "Split it in two PRs");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(posted(&app)[0].1["option_id"], "request_changes");
+    assert_eq!(posted(&app)[0].1["input"]["text"], "Split it in two PRs");
+}
