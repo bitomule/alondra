@@ -9615,7 +9615,7 @@
         "bzlTransitiveDigest": "Yk2jhc9VpOsrHAy8n4OL599bdy5O8jvzWqS2pBo09h0=",
         "usagesDigest": "3DW2E5BT7hX+gO4Rm+UNLH8Q4NfHyBp0eiZsw768ijU=",
         "recordedFileInputs": {
-          "@@//Package.resolved": "f72e210be0b935b6653254822901e0c06daf5ee24b301ee1e48f3aa3197a5ea4"
+          "@@//Package.resolved": "9ef19873180cb9dc940883f5982b97a7ab4e708f84db91a76b21ef27ad2bbd35"
         },
         "recordedDirentsInputs": {},
         "envVariables": {},
@@ -9625,7 +9625,9 @@
             "attributes": {
               "direct_dep_pkg_infos": {
                 "@swiftpkg_highlightswift//:pkg_info.json": "highlightswift",
-                "@swiftpkg_swift_composable_architecture//:pkg_info.json": "swift-composable-architecture"
+                "@swiftpkg_swift_composable_architecture//:pkg_info.json": "swift-composable-architecture",
+                "@swiftpkg_swift_snapshot_testing//:pkg_info.json": "swift-snapshot-testing",
+                "@swiftpkg_xctest_dynamic_overlay//:pkg_info.json": "xctest-dynamic-overlay"
               }
             }
           },
@@ -9669,6 +9671,58 @@
               "commit": "377da4061db10d26337a71bb279c506bb951f50f",
               "remote": "https://github.com/pointfreeco/swift-composable-architecture",
               "version": "1.26.2",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "init_submodules": false,
+              "recursive_init_submodules": true,
+              "patch_args": [
+                "-p0"
+              ],
+              "patch_cmds": [],
+              "patch_cmds_win": [],
+              "patch_tool": "",
+              "patches": [],
+              "publicly_expose_all_targets": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": ""
+            }
+          },
+          "swiftpkg_swift_snapshot_testing": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_swift_snapshot_testing",
+              "commit": "28e5de025e3fd98991791bfbf83023ab3708da03",
+              "remote": "https://github.com/pointfreeco/swift-snapshot-testing",
+              "version": "1.19.6",
+              "env": {},
+              "env_inherit": [],
+              "cached_json_directory": "",
+              "init_submodules": false,
+              "recursive_init_submodules": true,
+              "patch_args": [
+                "-p0"
+              ],
+              "patch_cmds": [],
+              "patch_cmds_win": [],
+              "patch_tool": "",
+              "patches": [],
+              "publicly_expose_all_targets": false,
+              "replace_scm_with_registry": false,
+              "target_deps": {},
+              "module_aliases": {},
+              "dep_module_aliases": ""
+            }
+          },
+          "swiftpkg_xctest_dynamic_overlay": {
+            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
+            "attributes": {
+              "bazel_package_name": "swiftpkg_xctest_dynamic_overlay",
+              "commit": "d9308ad679143c26a30dec52daefe82f54af2b82",
+              "remote": "https://github.com/pointfreeco/xctest-dynamic-overlay",
+              "version": "1.13.1",
               "env": {},
               "env_inherit": [],
               "cached_json_directory": "",
@@ -9999,38 +10053,14 @@
               "module_aliases": {},
               "dep_module_aliases": ""
             }
-          },
-          "swiftpkg_xctest_dynamic_overlay": {
-            "repoRuleId": "@@rules_swift_package_manager+//swiftpkg/internal:swift_package.bzl%swift_package",
-            "attributes": {
-              "bazel_package_name": "swiftpkg_xctest_dynamic_overlay",
-              "commit": "d9308ad679143c26a30dec52daefe82f54af2b82",
-              "remote": "https://github.com/pointfreeco/xctest-dynamic-overlay",
-              "version": "1.13.1",
-              "env": {},
-              "env_inherit": [],
-              "cached_json_directory": "",
-              "init_submodules": false,
-              "recursive_init_submodules": true,
-              "patch_args": [
-                "-p0"
-              ],
-              "patch_cmds": [],
-              "patch_cmds_win": [],
-              "patch_tool": "",
-              "patches": [],
-              "publicly_expose_all_targets": false,
-              "replace_scm_with_registry": false,
-              "target_deps": {},
-              "module_aliases": {},
-              "dep_module_aliases": ""
-            }
           }
         },
         "moduleExtensionMetadata": {
           "explicitRootModuleDirectDeps": [
             "swiftpkg_highlightswift",
             "swiftpkg_swift_composable_architecture",
+            "swiftpkg_swift_snapshot_testing",
+            "swiftpkg_xctest_dynamic_overlay",
             "swift_deps_info",
             "swift_package"
           ],
