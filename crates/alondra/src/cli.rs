@@ -72,10 +72,10 @@ pub fn agent(d: &DomainProjection, runtime: Option<&Runtime>, name: &str) -> Res
     let found: Vec<&AgentId> = if exact.is_empty() { d.agents.iter().filter(|a| a.id.0.starts_with(name)).map(|a| &a.id).collect() } else { exact };
     match found.as_slice() {
         [one] => Ok(Some((*one).clone())),
-        [] => bail!(trf!("No agent is called {name}", "Ningún agente se llama {name}")),
+        [] => bail!(trf!("No node is called {name}", "Ningún nodo se llama {name}")),
         many => {
             let names = many.iter().map(|a| a.0.as_str()).collect::<Vec<_>>().join(", ");
-            bail!(trf!("{name} names several agents: {names}", "{name} nombra varios agentes: {names}"))
+            bail!(trf!("{name} names several nodes: {names}", "{name} nombra varios nodos: {names}"))
         }
     }
 }
@@ -214,8 +214,8 @@ fn resolved(client: &Client, name: &str) -> Result<(Option<String>, Option<Strin
     }
     match matches.as_slice() {
         [one] => Ok((Some(one.0.clone()), Some(one.0.clone()))),
-        [] => bail!(trf!("No agent is called {name}", "Ningún agente se llama {name}")),
-        _ => bail!(trf!("{name} names several agents", "{name} nombra varios agentes")),
+        [] => bail!(trf!("No node is called {name}", "Ningún nodo se llama {name}")),
+        _ => bail!(trf!("{name} names several nodes", "{name} nombra varios nodos")),
     }
 }
 
@@ -265,7 +265,7 @@ pub fn close(name: &str, force: bool) -> Result<()> {
 pub fn attach(name: &str) -> Result<()> {
     let client = Client::for_user(Duration::from_secs(10));
     let (agent, _runtime) = resolved(&client, name)?;
-    let Some(agent) = agent else { bail!(tr!("Alondra manages the orchestrator automatically; open its activity in the Agents screen", "Alondra gestiona el orquestador automáticamente; abre su actividad en la pantalla de agentes")) };
+    let Some(agent) = agent else { bail!(tr!("Alondra manages the orchestrator automatically; open its activity in the Fleet screen", "Alondra gestiona el orquestador automáticamente; abre su actividad en la pantalla Flota")) };
     let view = client.views(&format!("node:{agent}"), None)?;
     let session = local_attach(&view).context("This node has no attachable session")?;
     crate::attach::attach(&session, crate::attach::Over::Shell)
@@ -337,7 +337,7 @@ mod tests {
         assert_eq!(named("a1b2c3").unwrap(), Some("agent-a".into()), "the short id from the runtime");
         assert_eq!(named("orchestrator").unwrap(), None);
         assert_eq!(named("alondra-orchestrator").unwrap(), None);
-        assert!(named("agent").unwrap_err().to_string().contains("several agents"));
-        assert!(named("nobody").unwrap_err().to_string().contains("No agent"));
+        assert!(named("agent").unwrap_err().to_string().contains("several nodes"));
+        assert!(named("nobody").unwrap_err().to_string().contains("No node"));
     }
 }

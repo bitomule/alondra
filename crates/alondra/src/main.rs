@@ -66,7 +66,7 @@ enum Cmd {
         option: Option<String>,
         text: Vec<String>,
     },
-    #[command(about = tr!("Send a message to a Task's agent (task id), an agent (name, short id or session_id) or the orchestrator", "Manda un mensaje al agente de una tarea (id de tarea), a un agente (nombre, id corto o session_id) o al orquestador"))]
+    #[command(about = tr!("Send a message to a Task's node (task id), a node (name, short id or session_id) or the orchestrator", "Manda un mensaje al nodo de una tarea (id de tarea), a un nodo (nombre, id corto o session_id) o al orquestador"))]
     Send { node: String, text: Vec<String> },
     #[command(about = tr!("Cancel tasks by id", "Cancela tareas por su id"))]
     Cancel {
@@ -75,13 +75,13 @@ enum Cmd {
         #[arg(long, help = tr!("Why, shown with each task", "Por qué, se muestra en cada tarea"))]
         reason: Option<String>,
     },
-    #[command(about = tr!("Close an agent's session (name, short id or session_id)", "Cierra la sesión de un agente (nombre, id corto o session_id)"))]
+    #[command(about = tr!("Close a node's session (name, short id or session_id)", "Cierra la sesión de un nodo (nombre, id corto o session_id)"))]
     Close {
         node: String,
         #[arg(long, help = tr!("Close even with unpushed work or open questions", "Cierra aunque tenga trabajo sin subir o preguntas abiertas"))]
         force: bool,
     },
-    #[command(about = tr!("Open an agent's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un agente (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
+    #[command(about = tr!("Open a node's terminal (← on an empty line, Ctrl+Z or /exit returns)", "Abre el terminal de un nodo (← con la línea vacía, Ctrl+Z o /exit vuelven)"))]
     Attach { node: String },
     #[command(about = tr!(
         "Pair an iPhone or iPad: shows a QR code with the public URL and a one-time code",

@@ -79,7 +79,7 @@ pub fn select(
     let root = if let Some(path) = explicit { resolve(path, home, cwd)? }
     else if no_input || dry_run { resolve(&home.join("Projects"), home, cwd)? }
     else {
-        writeln!(output, "{}", tr!("Choose the folder containing your projects. Alondra uses it to discover projects and start agents; it does not limit Claude's permissions.", "Elige la carpeta que contiene tus proyectos. Alondra la usa para descubrir proyectos y arrancar agentes; no limita los permisos de Claude."))?;
+        writeln!(output, "{}", tr!("Choose the folder containing your projects. Alondra uses it to discover projects and start nodes; it does not limit Claude's permissions.", "Elige la carpeta que contiene tus proyectos. Alondra la usa para descubrir proyectos y arrancar nodos; no limita los permisos de Claude."))?;
         loop {
             write!(output, "{} [{}]: ", tr!("Projects folder (created if missing; :cancel to stop)", "Carpeta de proyectos (se crea si falta; :cancel para salir)"), home.join("Projects").display())?;
             output.flush()?;
