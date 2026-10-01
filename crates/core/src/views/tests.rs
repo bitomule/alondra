@@ -495,6 +495,41 @@ fn golden_fixture() -> DomainState {
     state
 }
 
+fn golden_live() -> LiveSnapshot {
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode {
+        agent_id: "d887a34b-249e-4487-a89b-57de38c26372".into(),
+        short_id: Some("alondra-ios".into()),
+        name: "Alondra · iOS".into(),
+        project: Some("Demo Garden".into()),
+        state_key: Some("waiting_answer".into()),
+        state_label: Some("Waiting for you".into()),
+        summary: Some("Reviewing the native beta experience".into()),
+        needs: Some("A decision on the welcome copy".into()),
+        background: vec![],
+        background_badge: None,
+        background_suspect: false,
+        working: false,
+        waiting: true,
+        last_message: Some("The simulator pass completed successfully.".into()),
+        last_message_at: Some("2026-09-30T09:58:00Z".into()),
+    });
+    live.projects.push(crate::options::ProjectEntry {
+        name: "Demo Garden".into(),
+        path: "/demo/Demo Garden".into(),
+        last_used: Some(1_759_226_280_000),
+        nodes: 1,
+    });
+    live.options = crate::options::OptionsFile::default().catalog(None);
+    live.gauges = vec![
+        Gauge { id: "memory".into(), label: "Memory".into(), value: 0.38,
+            text: "6.1 GB of 16 GB".into(), detail: None, level: Level::Calm },
+        Gauge { id: "disk".into(), label: "Disk available".into(), value: 0.72,
+            text: "120 GB".into(), detail: None, level: Level::Calm },
+    ];
+    live
+}
+
 #[test]
 fn real_pr_id_opens_detail_diff_and_actions() {
     let mut state = pr_fixture();
@@ -732,6 +767,15 @@ fn pull_request_card_exposes_the_diff_and_read_actions_stay_primary() {
 }
 
 #[test]
+fn question_card_exposes_free_text_answer_alongside_options() {
+    let view = render(&fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("question card") };
+    let answer = card.actions.iter().find(|action| action.id.starts_with("ans:")).expect("answer action");
+    assert_eq!(answer.presentation, Presentation::Options);
+    assert!(matches!(&answer.input, Input::Text { required: false, multiline: true, .. }));
+}
+
+#[test]
 fn pull_request_detail_uses_live_title_body_and_branch_names() {
     let mut state = fixture();
     state.pull_requests.insert("pr-1".into(), PullRequest {
@@ -781,7 +825,7 @@ fn task_detail_keeps_dependencies_options_and_human_request_text() {
     let options = view.sections.iter().find(|section| section.id == "options").unwrap();
     let facts = options.items.iter().find_map(|item| if let Item::Facts(facts) = item { Some(&facts.items) } else { None }).unwrap();
     assert!(facts.iter().any(|fact| fact.label == "Project" && fact.value == "Alondra"));
-    assert!(facts.iter().any(|fact| fact.label == "Effort" && fact.value == "high"));
+    assert!(facts.iter().any(|fact| fact.label == "Effort" && fact.value == "High"));
 }
 
 #[test]
@@ -927,7 +971,7 @@ fn query_keys_decode_percent_encoding_and_reject_malformed_values() {
 #[test]
 fn home_ios_matches_golden() {
     let state = golden_fixture();
-    let live = LiveSnapshot::default();
+    let live = golden_live();
     let actual = render(
         &state,
         &live,
@@ -946,7 +990,7 @@ fn home_ios_matches_golden() {
 #[test]
 fn home_tui_matches_golden() {
     let state = golden_fixture();
-    let live = LiveSnapshot::default();
+    let live = golden_live();
     let actual = render(
         &state,
         &live,
@@ -965,7 +1009,7 @@ fn home_tui_matches_golden() {
 #[test]
 fn card_variants_match_goldens() {
     let state = golden_fixture();
-    let live = LiveSnapshot::default();
+    let live = golden_live();
     for (filename, key, expected) in [
         (
             "card-question.json",
@@ -1003,7 +1047,7 @@ fn card_variants_match_goldens() {
 #[test]
 fn home_ios_es_matches_golden() {
     let state = golden_fixture();
-    let live = LiveSnapshot::default();
+    let live = golden_live();
     let actual = render(
         &state,
         &live,
@@ -1024,7 +1068,7 @@ fn home_ios_es_matches_golden() {
 fn generate_goldens() {
     let dir = std::env::var("ALONDRA_GOLDEN_OUT").expect("ALONDRA_GOLDEN_OUT required");
     let state = golden_fixture();
-    let live = LiveSnapshot::default();
+    let live = golden_live();
     let cases = [
         ("home-ios.json", "home", Client::Ios, Lang::En),
         ("home-tui.json", "home", Client::Tui, Lang::En),
@@ -1033,6 +1077,16 @@ fn generate_goldens() {
         ("card-pr.json", "card:github.com/example/repo#12", Client::Ios, Lang::En),
         ("card-delivery.json", "card:hf-weekly-2026-09-30", Client::Ios, Lang::En),
         ("home-ios-es.json", "home", Client::Ios, Lang::Es),
+        ("tasks-ios.json", "tasks", Client::Ios, Lang::En),
+        ("fleet-ios.json", "fleet", Client::Ios, Lang::En),
+        ("new-request-ios.json", "new_request", Client::Ios, Lang::En),
+        ("node-ios.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
+        ("task-ios.json", "task:t-651c38484cd2f34e74d5107ba05f7f15", Client::Ios, Lang::En),
+        ("request-ios.json", "request:r-9f2156b5a8894e53901f0af576dff6a2", Client::Ios, Lang::En),
+        ("pull-request-ios.json", "pull_request:github.com/example/repo#12", Client::Ios, Lang::En),
+        ("machine-ios.json", "machine", Client::Ios, Lang::En),
+        ("schedules-ios.json", "schedules", Client::Ios, Lang::En),
+        ("schedule-new-ios.json", "schedule:new", Client::Ios, Lang::En),
     ];
     for (filename, key, client, lang) in cases {
         let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
@@ -1249,4 +1303,69 @@ fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
             if key == "pull_request:github.com/bitomule/alondra#153")
         })
     }));
+}
+
+#[test]
+fn built_in_request_options_keep_ids_and_translate_spanish_labels() {
+    let state = fixture();
+    let mut live = LiveSnapshot::default();
+    live.options = crate::options::OptionsFile::default().catalog(None);
+    let view = render(&state, &live, Client::Ios, Lang::Es, "new_request", "");
+    let fields = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Form(form) = item { Some(&form.fields) } else { None }
+    }).expect("request form");
+    let pr = fields.iter().find(|field| field.id == "pr").expect("PR handling");
+    assert_eq!(pr.label, "PRs");
+    let FieldKind::Choice { items } = &pr.kind else { panic!("PR choices") };
+    assert_eq!(items.iter().map(|item| (item.id.as_str(), item.label.as_str())).collect::<Vec<_>>(),
+        [("review", "Revisar cada una"), ("auto_merge", "Merge automático")]);
+    let effort = fields.iter().find(|field| field.id == "effort").expect("effort");
+    assert_eq!(effort.label, "Esfuerzo");
+    let FieldKind::Choice { items } = &effort.kind else { panic!("effort choices") };
+    assert!(items.iter().any(|item| item.id == "light" && item.label == "Ligero"));
+    assert_eq!(effort.value, serde_json::json!("auto"));
+    let english = render(&state, &live, Client::Ios, Lang::En, "new_request", "");
+    let english_fields = english.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Form(form) = item { Some(&form.fields) } else { None }
+    }).unwrap();
+    let english_pr = english_fields.iter().find(|field| field.id == "pr").unwrap();
+    assert_eq!(english_pr.label, "PRs");
+    let FieldKind::Choice { items } = &english_pr.kind else { panic!("PR choices") };
+    assert_eq!(items.iter().map(|item| item.label.as_str()).collect::<Vec<_>>(),
+        ["Review each one", "Auto-merge"]);
+    let schedule = render(&state, &live, Client::Ios, Lang::Es, "schedule:new", "");
+    let Item::Form(form) = &schedule.sections[0].items[0] else { panic!("schedule form") };
+    for (id, expected) in [("repeat", "daily"), ("time", "09:00"), ("pr", "review"), ("effort", "auto")] {
+        assert_eq!(form.fields.iter().find(|field| field.id == id).unwrap().value,
+            serde_json::json!(expected), "{id}");
+    }
+}
+
+#[test]
+fn node_last_message_keeps_its_time_next_to_the_message() {
+    let state = fixture();
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode {
+        agent_id: "a-1".into(), short_id: None, name: "Node One".into(),
+        project: None, state_key: None, state_label: None, summary: None, needs: None,
+        background: vec![], background_badge: None, background_suspect: false,
+        working: false, waiting: false,
+        last_message: Some("Ready for review".into()),
+        last_message_at: Some("2026-09-30T09:58:00Z".into()),
+    });
+    let view = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
+    let section = view.sections.iter().find(|section| section.id == "last_message").unwrap();
+    assert!(section.items.iter().any(|item| matches!(item, Item::Markdown(markdown) if markdown.text == "Ready for review")));
+    assert!(section.items.iter().any(|item| matches!(item,
+        Item::Row(row) if matches!(&row.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:58:00Z"))));
+    let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    let node = fleet.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }
+    }).unwrap();
+    assert!(node.children.iter().any(|child| child.id == "last_message"
+        && child.title == "Ready for review"
+        && matches!(&child.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:58:00Z")));
+    let search = render(&state, &live, Client::Ios, Lang::En, "search?q=Node", "");
+    let Item::Row(result) = &search.sections[0].items[0] else { panic!("search result") };
+    assert!(result.children.iter().any(|child| child.id == "last_message"));
 }

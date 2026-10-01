@@ -6,19 +6,26 @@ import SwiftUI
 /// Reusable editor for the server-declared inputs associated with a view action.
 public struct ActionInputView: View {
     @Bindable public var store: StoreOf<ActionFeature>
+    @State private var optionsPresented = false
     public let form: WireForm?
     public let showCommentEditor: Bool
     public var onReload: ((Field, JSONValue) -> Void)?
     public var onPicker: ((Field, String) -> Void)?
+    public var pickerPresented: Binding<Bool>?
+    public var pickerSheet: (() -> AnyView)?
 
     public init(store: StoreOf<ActionFeature>, form: WireForm? = nil, showCommentEditor: Bool = true,
                 onReload: ((Field, JSONValue) -> Void)? = nil,
-                onPicker: ((Field, String) -> Void)? = nil) {
+                onPicker: ((Field, String) -> Void)? = nil,
+                pickerPresented: Binding<Bool>? = nil,
+                pickerSheet: (() -> AnyView)? = nil) {
         self.store = store
         self.form = form
         self.showCommentEditor = showCommentEditor
         self.onReload = onReload
         self.onPicker = onPicker
+        self.pickerPresented = pickerPresented
+        self.pickerSheet = pickerSheet
     }
 
     public var body: some View {
@@ -30,7 +37,7 @@ public struct ActionInputView: View {
                     }
                 }
                 input(action.options.first(where: { $0.id == store.selectedOptionID })?.input ?? action.input)
-                if action.attachments || (form?.fields.contains(where: { if case .attachments = $0.kind { true } else { false } }) == true) {
+                if form?.id != "new_request", action.attachments || (form?.fields.contains(where: { if case .attachments = $0.kind { true } else { false } }) == true) {
                     AttachmentPicker(store: attachmentStore)
                 }
                 if let commentSpec = action.comments {
@@ -49,6 +56,8 @@ public struct ActionInputView: View {
                 }
                 if let form, form.id == "schedule" {
                     scheduleForm(form.fields)
+                } else if let form, form.id == "new_request" {
+                    newRequestForm(form.fields)
                 } else if let form {
                     formFields(form.fields)
                 }
@@ -88,19 +97,105 @@ public struct ActionInputView: View {
         }
     }
 
-    private func scheduleForm(_ fields: [Field]) -> some View {
+    @ViewBuilder private func scheduleForm(_ fields: [Field]) -> some View {
         let mission = fields.filter { ["name", "mission", "project"].contains($0.id) }
         let timing = fields.filter { ["repeat", "weekday", "interval", "start_at", "time", "active"].contains($0.id) }
         let advanced = fields.filter { $0.id == "disallowed_tools" }
         let launch = fields.filter { !["name", "mission", "project", "repeat", "weekday", "interval", "start_at", "time", "active", "disallowed_tools"].contains($0.id) }
-        return Form {
-            Section("Mission") { formFields(mission) }
-            Section("When") { formFields(timing) }
-            if !launch.isEmpty { Section("Launch options") { formFields(launch) } }
-            if !advanced.isEmpty { Section("Advanced") { formFields(advanced) } }
+        VStack(alignment: .leading, spacing: 20) {
+            scheduleSection("Mission", fields: mission)
+            scheduleSection("When", fields: timing)
+            if !launch.isEmpty { scheduleSection("Launch options", fields: launch) }
+            if !advanced.isEmpty { scheduleSection("Advanced", fields: advanced) }
         }
-        .formStyle(.grouped)
         .frame(minHeight: 260)
+    }
+
+    private func scheduleSection(_ title: LocalizedStringKey, fields: [Field]) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(title).font(.headline)
+            formFields(fields)
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(ViewPalette.card.opacity(0.9), in: .rect(cornerRadius: 18))
+    }
+
+    private func newRequestForm(_ fields: [Field]) -> some View {
+        VStack(alignment: .leading, spacing: 20) {
+            if let request = fields.first(where: { $0.id == "text" }) {
+                VStack(alignment: .leading, spacing: 10) {
+                    ZStack(alignment: .topLeading) {
+                        if case let .string(text) = store.fields[request.id] ?? request.value, text.isEmpty {
+                            Text(request.label).font(.title3).foregroundStyle(.tertiary)
+                                .padding(.horizontal, 5).padding(.vertical, 8)
+                                .allowsHitTesting(false)
+                        }
+                        TextEditor(text: stringBinding(request, value: request.value))
+                            .font(.title3)
+                            .scrollContentBackground(.hidden)
+                            .frame(minHeight: 240)
+                            .accessibilityLabel(request.label)
+                    }
+                    AttachmentPicker(store: attachmentStore)
+                }
+                .padding(16)
+                .background(ViewPalette.card, in: .rect(cornerRadius: 28))
+                .overlay(RoundedRectangle(cornerRadius: 28).strokeBorder(ViewPalette.hairline))
+                .shadow(color: .black.opacity(0.12), radius: 18, y: 10)
+            }
+            let options = fields.filter { $0.id != "text" && $0.id != "attachments" }
+            if !options.isEmpty {
+                Button { optionsPresented = true } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "slider.horizontal.3").foregroundStyle(ViewPalette.ember)
+                        VStack(alignment: .leading, spacing: 2) {
+                            if let project = options.first(where: { $0.id == "project" }) {
+                                Text(selectedLabel(project)).font(.subheadline.weight(.semibold))
+                                    .foregroundStyle(ViewPalette.ink)
+                            }
+                            Text(options.filter { $0.id != "project" }.map(selectedLabel).filter { !$0.isEmpty }.joined(separator: " · "))
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        Spacer(minLength: 0)
+                        Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.tertiary)
+                    }
+                    .padding(14)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(ViewPalette.card.opacity(0.8), in: .rect(cornerRadius: 18))
+                }
+                .buttonStyle(.plain)
+                .sheet(isPresented: $optionsPresented) {
+                    NavigationStack {
+                        ScrollView { formFields(options).padding(20) }
+                            .navigationTitle("Options")
+                            .toolbar { ToolbarItem(placement: .confirmationAction) {
+                                Button("Done") { optionsPresented = false }
+                            } }
+                            .sheet(isPresented: pickerPresented ?? .constant(false)) {
+                                if let pickerSheet { pickerSheet() }
+                            }
+                    }
+                    .presentationDetents([.medium, .large])
+                }
+            }
+        }
+    }
+
+    private func selectedLabel(_ field: Field) -> String {
+        let value = store.fields[field.id] ?? field.value
+        switch field.kind {
+        case let .choice(items):
+            guard case let .string(id) = value else { return "" }
+            return items.first(where: { $0.id == id })?.label ?? id
+        case .picker, .text, .multiline, .lines:
+            if case let .string(text) = value { return text }
+            return ""
+        case .toggle:
+            if case let .bool(enabled) = value { return enabled ? field.label : "" }
+            return ""
+        default: return ""
+        }
     }
 
     @ViewBuilder private func fieldControl(_ field: Field) -> some View {
@@ -110,20 +205,31 @@ public struct ActionInputView: View {
             if case .multiline = field.kind {
                 TextField(placeholder ?? "", text: stringBinding(field, value: value), axis: .vertical)
                     .lineLimit(4...8)
+                    .padding(10).background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 10))
             } else if case .lines = field.kind {
                 TextField(placeholder ?? "", text: stringBinding(field, value: value), axis: .vertical)
                     .lineLimit(2...6)
+                    .padding(10).background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 10))
             } else {
                 TextField(placeholder ?? "", text: stringBinding(field, value: value))
+                    .padding(10).background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 10))
             }
         case .attachments:
             EmptyView()
         case .toggle:
             Toggle(field.label, isOn: boolBinding(field, value: value)).labelsHidden()
         case let .choice(items):
-            Picker(field.label, selection: stringBinding(field, value: value)) {
-                ForEach(items, id: \.id) { item in Text(item.label).tag(item.id) }
-            }.labelsHidden()
+            if case .integer = value {
+                Picker(field.label, selection: integerBinding(field, value: value)) {
+                    ForEach(items, id: \.id) { item in
+                        if let number = Int64(item.id) { Text(item.label).tag(number) }
+                    }
+                }.labelsHidden().pickerStyle(.menu)
+            } else {
+                Picker(field.label, selection: stringBinding(field, value: value)) {
+                    ForEach(items, id: \.id) { item in Text(item.label).tag(item.id) }
+                }.labelsHidden().pickerStyle(.menu)
+            }
         case let .picker(source):
             if let onPicker {
                 Button {
@@ -138,7 +244,7 @@ public struct ActionInputView: View {
                 }
                 .buttonStyle(.bordered)
             } else {
-                TextField(source, text: stringBinding(field, value: value)).textFieldStyle(.roundedBorder)
+                TextField(field.label, text: stringBinding(field, value: value)).textFieldStyle(.roundedBorder)
             }
         case .date:
             DatePicker(field.label, selection: dateBinding(field, value: value), displayedComponents: .date)

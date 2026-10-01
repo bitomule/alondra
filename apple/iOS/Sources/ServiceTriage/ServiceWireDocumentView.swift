@@ -21,17 +21,30 @@ struct ServiceWireDocumentView: View {
     private var kind: Kind { Kind(card) }
     private var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: markdownText ?? card.body?.text ?? "") }
     private var canComment: Bool { card.actions.contains { $0.comments?.kind == .blocks } }
+    private var canReply: Bool { card.actions.contains { $0.id?.hasPrefix("reply:") == true } }
     private var feedback: [ActionComment] {
         blocks.compactMap { comments[$0.draftKey] }
     }
     private var hasFeedback: Bool {
         !feedback.isEmpty || !general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
+    private var orderedActions: [AlondraViews.Action] {
+        let reviewActions = card.actions.filter {
+            $0.id?.hasPrefix("changes:") == true || $0.id?.hasPrefix("accept:") == true
+        }
+        return (reviewActions.isEmpty ? card.actions : reviewActions).sorted { actionRank($0) < actionRank($1) }
+    }
+    private func actionRank(_ action: AlondraViews.Action) -> Int {
+        if action.id?.hasPrefix("changes:") == true { return 0 }
+        if action.id?.hasPrefix("accept:") == true { return 1 }
+        return 2
+    }
 
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header.padding(.bottom, 24)
+                ServiceArtifactLinks(text: markdownText ?? card.body?.text ?? "", tint: kind.tint)
                 LazyVStack(alignment: .leading, spacing: 6) {
                     ForEach(MarkdownParser.segments(blocks)) { segment in
                         if canComment {
@@ -64,6 +77,7 @@ struct ServiceWireDocumentView: View {
                              onLink: onLink, onAttachment: onAttachment)
                 }
                 if canComment { commentsSummary.padding(.top, 32) }
+                else if canReply { generalReply.padding(.top, 32) }
             }
             .padding(.horizontal, 20).padding(.bottom, 24)
         }
@@ -140,12 +154,23 @@ struct ServiceWireDocumentView: View {
         }
     }
 
+    private var generalReply: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Your comments").font(.display(.title3))
+            TextField("General comment (optional)", text: $general, axis: .vertical)
+                .lineLimit(2...8).focused($generalFocused).padding(14)
+                .background(Palette.card, in: .rect(cornerRadius: 14))
+                .overlay(RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(generalFocused ? kind.tint.opacity(0.6) : Palette.hairline))
+        }
+    }
+
     private var actionBar: some View {
         GlassEffectContainer(spacing: 12) {
             HStack(spacing: 12) {
-                ForEach(card.actions, id: \.label) { action in
+                ForEach(orderedActions, id: \.label) { action in
                     ServiceWireActionButton(action: action, tint: kind.tint,
-                                            disabled: !action.enabled || (action.comments != nil && !hasFeedback)) {
+                                            disabled: !action.enabled || ((action.comments != nil || action.id?.hasPrefix("reply:") == true) && !hasFeedback)) {
                         if let link = action.link { onLink(link) }
                         else { onAction(action, feedback, general) }
                     }
@@ -180,13 +205,25 @@ private struct ServiceWireActionButton: View {
 
     var body: some View {
         if action.style == .primary {
-            Button(action.label, action: onTap)
+            Button(action: onTap) {
+                if action.id?.hasPrefix("accept:") == true {
+                    Label(action.label, systemImage: "checkmark")
+                } else {
+                    Text(action.label)
+                }
+            }
                 .frame(maxWidth: .infinity)
                 .buttonStyle(.glassProminent)
                 .tint(Palette.sageDeep)
                 .disabled(disabled)
         } else {
-            Button(action.label, action: onTap)
+            Button(action: onTap) {
+                if action.id?.hasPrefix("changes:") == true {
+                    Label(action.label, systemImage: "arrow.uturn.backward")
+                } else {
+                    Text(action.label)
+                }
+            }
                 .frame(maxWidth: .infinity)
                 .buttonStyle(.glass)
                 .tint(tint)

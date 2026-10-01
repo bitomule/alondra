@@ -5,7 +5,7 @@ use super::{
 use crate::domain_v2::{AgentId, TaskState};
 use std::collections::BTreeMap;
 
-fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
+pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
     let live = context
         .live
         .nodes
@@ -32,6 +32,18 @@ fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> sup
         .filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
         .map(|task| super::tasks::task_row(task, context))
         .collect();
+    if context.client == super::Client::Ios
+        && let Some(node) = live
+        && let Some(message) = node.last_message.as_ref().filter(|text| !text.trim().starts_with("mcp__") && !text.trim().is_empty())
+    {
+        let mut last = common::row("last_message", "node", Icon::Notice,
+            message.trim().lines().next().unwrap_or("").into(), None);
+        last.link = None;
+        last.trailing = node.last_message_at.as_ref().map(|at| Trailing::Time {
+            at: at.clone(), format: super::TimeFormat::Relative,
+        });
+        row.children.push(last);
+    }
     row.trailing = Some(Trailing::Count {
         value: context
             .domain
@@ -211,17 +223,26 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     }
     if let Some(message) = live
         .and_then(|node| node.last_message.as_ref())
-        .filter(|text| !text.starts_with("mcp__"))
+        .filter(|text| !text.trim().starts_with("mcp__") && !text.trim().is_empty())
     {
+        let mut items = vec![Item::Markdown(Markdown {
+            text: message.clone(),
+            truncated: false,
+            more: None,
+            commentable: false,
+        })];
+        if context.client == super::Client::Ios
+            && let Some(at) = live.and_then(|node| node.last_message_at.as_ref()) {
+            let mut row = common::row("last_message_time", "node", Icon::History,
+                t!(context.lang, "Last message", "Último mensaje").into(), None);
+            row.link = None;
+            row.trailing = Some(Trailing::Time { at: at.clone(), format: super::TimeFormat::Relative });
+            items.push(Item::Row(row));
+        }
         view.sections.push(common::section(
             "last_message",
             Some(t!(context.lang, "What it said last", "Lo último que dijo").into()),
-            vec![Item::Markdown(Markdown {
-                text: message.clone(),
-                truncated: false,
-                more: None,
-                commentable: false,
-            })],
+            items,
         ));
     }
     if let Some(activity) = context
@@ -363,7 +384,8 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
             if !enabled { continue; }
             let style = if verb == Verb::OrchStop { Style::Destructive } else { Style::Secondary };
             if let Some(mut action) = common::action(verb, "orchestrator", context.domain.revision, label, style) {
-                if let Ok(id) = super::action_id::ActionId::new(verb, "orchestrator", context.domain.revision, Some(run.into())) {
+                match super::action_id::ActionId::new(verb, "orchestrator", context.domain.revision, Some(run.into())) {
+                    Ok(id) => {
                     action.id = id.to_string();
                     let confirmation = match verb {
                         Verb::OrchRetry => t!(context.lang,
@@ -379,6 +401,8 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
                     };
                     action.confirm = Some(Confirm { title: label.into(), message: confirmation.into(), button: label.into() });
                     actions.push(action);
+                    }
+                    Err(_) => eprintln!("Alondra omitted an action with an invalid identifier ({verb:?})"),
                 }
             }
         }

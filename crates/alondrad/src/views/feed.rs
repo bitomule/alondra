@@ -13,13 +13,14 @@ use std::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tokio::sync::{oneshot, watch};
 
 pub(crate) struct Feeds {
     waiters: Mutex<HashMap<String, (u64, oneshot::Sender<()>)>>,
     cache: Mutex<HashMap<String, Current>>,
+    open: Mutex<HashMap<String, (String, Instant)>>,
     next: AtomicU64,
     clock: watch::Sender<u64>,
 }
@@ -27,7 +28,7 @@ pub(crate) struct Feeds {
 impl Default for Feeds {
     fn default() -> Self {
         let (clock, _) = watch::channel(0);
-        Self { waiters: Mutex::default(), cache: Mutex::default(), next: AtomicU64::new(0), clock }
+        Self { waiters: Mutex::default(), cache: Mutex::default(), open: Mutex::default(), next: AtomicU64::new(0), clock }
     }
 }
 
@@ -38,7 +39,19 @@ impl Feeds {
     }
 
     fn live_keys(&self) -> Vec<String> {
-        let cache = self.cache.lock().expect("feed cache poisoned");
+        self.live_keys_at(Instant::now())
+    }
+
+    fn remember_open(&self, device: &str, key: String) {
+        self.open.lock().expect("feed open views poisoned")
+            .insert(device.to_owned(), (key, Instant::now()));
+    }
+
+    fn live_keys_at(&self, now: Instant) -> Vec<String> {
+        let mut open = self.open.lock().expect("feed open views poisoned");
+        open.retain(|_, (_, seen)| now.saturating_duration_since(*seen) < Duration::from_secs(60));
+        let mut cache = self.cache.lock().expect("feed cache poisoned");
+        cache.retain(|key, _| open.values().any(|(active, _)| active == key));
         let mut keys = cache.values().flat_map(|current| current.live_keys.iter().cloned())
             .collect::<Vec<_>>();
         keys.sort();
@@ -144,6 +157,7 @@ pub(crate) async fn handle(
         }
     };
     client.remember_language(device, lang);
+    client.feeds.remember_open(device, feed_key(kind, lang, transport, &views));
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let generation = client.feeds.next.fetch_add(1, Ordering::Relaxed);
     if let Some((_, old)) = client
@@ -228,7 +242,7 @@ async fn current(
         .map_err(|_| error("storage_unavailable", "domain state unavailable",
             "estado de datos no disponible", lang))?;
     let wake = *client.feeds.clock.borrow();
-    let cache_key = format!("{kind:?}/{lang:?}/{transport:?}/{views:?}");
+    let cache_key = feed_key(kind, lang, transport, views);
     if let Some(current) = client.feeds.cached_current(&cache_key, &state.data_epoch.0, state.revision, wake) {
         return Ok(current);
     }
@@ -278,6 +292,10 @@ async fn current(
     };
     cache_current(client, cache_key, &current);
     Ok(current)
+}
+
+fn feed_key(kind: Client, lang: Lang, transport: Transport, views: &[(String, String)]) -> String {
+    format!("{kind:?}/{lang:?}/{transport:?}/{views:?}")
 }
 
 fn cache_current(client: &crate::v2_client_routes::Client, key: String, current: &Current) {
@@ -675,6 +693,8 @@ mod tests {
             "tool_input": {"command": "echo first"}, "cwd": "/tmp/feed-project"
         }));
         let current = fixture.initial(&[(format!("node:{agent}"), "v0000000000000000".into())]).await;
+        let open = vec![(format!("node:{agent}"), "v0000000000000000".into())];
+        let _ = response_json(handle(&fixture.client, "device-node", &query(&current.cursor, 0, &open), Transport::Loopback).await).await;
         assert!(!current.live_keys.is_empty(), "the open node view is registered for live sampling");
         let mut last = None;
         assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
@@ -691,23 +711,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn gauges_wake_at_most_once_a_minute_and_only_on_visible_change() {
+    async fn an_unchanged_feed_reuses_its_cached_current() {
         let fixture = FeedFixture::new();
         let before = fixture.initial(&[]).await;
-        // Re-reading an unchanged Current must hit the real Feeds cache.
         let again = fixture.initial(&[]).await;
         assert_eq!(before.cursor, again.cursor);
         assert_eq!(fixture.client.feeds.cached_current("Ios/En/Loopback/[]", &before.epoch, before.clock.1, before.wake).unwrap().cursor,
-            before.cursor, "the unchanged Current must be returned from the real feed cache");
-        let visible_gauges_equal = |left: &[alondra_core::views::Gauge], right: &[alondra_core::views::Gauge]| {
-            left.len() == right.len() && left.iter().zip(right).all(|(a, b)|
-                a.id == b.id && a.text == b.text && a.level == b.level && a.detail == b.detail)
-        };
-        assert!(visible_gauges_equal(&[], &[]));
-        assert!(!visible_gauges_equal(&[], &[alondra_core::views::Gauge {
-            id: "test".into(), label: "Usage".into(), value: 0.5, text: "50%".into(), detail: None,
-            level: alondra_core::views::Level::Calm,
-        }]));
+            before.cursor);
+    }
+
+    #[tokio::test]
+    async fn sampler_discards_views_after_device_switch_or_lease_expiry() {
+        let fixture = FeedFixture::new();
+        let open = vec![("node:missing".to_owned(), "v0000000000000000".to_owned())];
+        let first = fixture.initial(&open).await;
+        let _ = response_json(handle(&fixture.client, "device-a", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
+        assert_eq!(fixture.client.feeds.live_keys(), vec!["home", "node:missing"]);
+
+        let empty = fixture.initial(&[]).await;
+        let _ = response_json(handle(&fixture.client, "device-a", &query(&empty.cursor, 0, &[]), Transport::Loopback).await).await;
+        assert_eq!(fixture.client.feeds.live_keys(), vec!["home"], "switching views evicts the previous open key");
+        assert!(!fixture.client.feeds.cache.lock().unwrap().contains_key(&feed_key(Client::Ios, Lang::En, Transport::Loopback, &open)));
+
+        let _ = response_json(handle(&fixture.client, "device-a", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
+        assert_eq!(fixture.client.feeds.live_keys(), vec!["home", "node:missing"]);
+        assert!(fixture.client.feeds.live_keys_at(Instant::now() + Duration::from_secs(61)).is_empty());
+        assert!(fixture.client.feeds.cache.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

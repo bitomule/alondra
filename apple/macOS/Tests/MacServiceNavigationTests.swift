@@ -8,6 +8,27 @@ import Testing
 @MainActor
 struct MacServiceNavigationTests {
     @Test
+    func scheduleScreenOpensItsEditableFormWithServerDefaults() async throws {
+        let data = Data(#"{"protocol":1,"view":"schedule","key":"schedule:new","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[{"id":"form","collapsed":false,"items":[{"type":"form","id":"schedule","fields":[{"id":"repeat","label":"Repeat","kind":{"kind":"choice","items":[{"id":"daily","label":"Daily"}]},"value":"daily","required":true,"reload_on_change":false},{"id":"time","label":"Time","kind":{"kind":"time"},"value":"09:00","required":true,"reload_on_change":false}],"submit":{"id":"sched_save:view@1","label":"Save Schedule","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}}]}]}"#.utf8)
+        let document = try JSONDecoder().decode(ViewDocument.self, from: data)
+        let form = try #require(document.sections.first?.items.first.flatMap { item -> Form? in
+            if case let .form(form) = item { form } else { nil }
+        })
+        let store = TestStore(initialState: ViewsScreenFeature.State(key: .newSchedule(), owner: "schedule-editor-test")) {
+            ViewsScreenFeature()
+        }
+
+        await store.send(.loaded(.document(document))) {
+            $0.document = document
+            $0.action.dataEpoch = "epoch"
+            $0.form = form
+            $0.action.action = form.submit
+            $0.action.fields = ["repeat": .string("daily"), "time": .string("09:00")]
+            $0.action.requiresAttachments = false
+        }
+    }
+
+    @Test
     func explicitRefreshOmitsTheKnownViewVersion() async throws {
         let data = Data(#"{"protocol":1,"view":"tasks","key":"tasks","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[]}"#.utf8)
         var state = ViewsScreenFeature.State(key: .tasks, owner: "refresh-test")

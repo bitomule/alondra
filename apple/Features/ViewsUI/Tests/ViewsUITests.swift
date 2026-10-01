@@ -38,4 +38,38 @@ final class ViewsUITests: XCTestCase {
         await store.send(.submit) { $0.confirmation = action.confirm }
         await store.send(.cancelConfirmation) { $0.confirmation = nil }
     }
+
+    @MainActor
+    func testQuestionAcceptsFreeTextWithoutChoosingAnOption() async throws {
+        let bytes = #"{"id":"ans:q-1@1","label":"Answer","style":"primary","presentation":"options","options":[{"id":"yes","label":"Yes","style":"primary","input":{"kind":"none"}}],"input":{"kind":"text","placeholder":"Answer in your own words…","required":false,"multiline":true},"attachments":false,"enabled":true}"#.data(using: .utf8)!
+        let action = try ViewsCodec.decode(AlondraViews.Action.self, from: bytes)
+        let reply = try ViewsCodec.decode(ActionResponse.self, from: #"{"protocol":1,"outcome":"applied","stamp":"Answered"}"#.data(using: .utf8)!)
+        let store = TestStore(initialState: ActionFeature.State(dataEpoch: "epoch", client: .ios, lang: "en")) {
+            ActionFeature()
+        } withDependencies: {
+            $0.uuid = .constant(UUID(uuidString: "5F0C2D9E-8D0B-4C71-9B0E-2B6F5D8F1A10")!)
+            $0.viewsClient.perform = { request in
+                XCTAssertEqual(request.optionId, "")
+                XCTAssertEqual(request.input.text, "My answer")
+                return reply
+            }
+        }
+        await store.send(.present(action)) { $0.action = action }
+        await store.send(.submit) { $0.error = "Choose an option" }
+        await store.send(.textChanged("My answer")) {
+            $0.text = "My answer"
+            $0.error = nil
+        }
+        await store.send(.submit) {
+            $0.inFlight = true
+            $0.pending = ActionRequest(commandId: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10",
+                                           dataEpoch: "epoch", client: .ios, lang: "en", actionId: "ans:q-1@1",
+                                           optionId: "", input: ActionInput(text: "My answer"))
+        }
+        await store.receive(\.response) {
+            $0.inFlight = false
+            $0.pending = nil
+            $0.stamp = "Answered"
+        }
+    }
 }

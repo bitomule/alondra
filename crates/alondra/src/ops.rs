@@ -75,10 +75,6 @@ impl Message {
     }
 }
 
-pub fn close(agent: &AgentId, force: bool) -> (String, Value) {
-    (format!("/agents/{}/close", urlencode(&agent.0)), json!({"force": force}))
-}
-
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Recovery {
     Cancel,
@@ -95,48 +91,12 @@ pub fn orchestrator(action: Recovery, run_id: &str) -> (String, Value) {
     (format!("/orchestrator/{step}"), json!({"run_id": run_id}))
 }
 
-pub fn resolve_conflicts(pr: &PrId) -> (String, Value) {
-    (format!("/pull-requests/{}/resolve-conflicts", urlencode(&pr.0)), json!({}))
-}
-
 pub fn cancel_reason(task: &TaskId, reason: &str) -> (String, Value) {
     (format!("/tasks/{}/cancel-reason", urlencode(&task.0)), json!({"reason": reason}))
 }
 
-pub fn history(task: &TaskId) -> String {
-    format!("/tasks/{}/history", urlencode(&task.0))
-}
-
-pub fn task_actions(task: &TaskId) -> String {
-    format!("/tasks/{}/actions", urlencode(&task.0))
-}
-
-pub fn schedule_run(schedule_id: &str) -> String {
-    format!("/schedules/{}/runs", urlencode(schedule_id))
-}
-
-pub fn activity(agent: &AgentId) -> String {
-    format!("/agents/{}/activity", urlencode(&agent.0))
-}
-
-pub fn search(query: &str) -> String {
-    format!("/agents/search?q={}", urlencode(query))
-}
-
 pub const PRESENCE: &str = "/activity";
 pub const REQUESTS: &str = "/requests";
-pub const PROJECTS: &str = "/projects";
-
-pub fn options(project: Option<&str>) -> String {
-    match project {
-        Some(p) => format!("/options?project={}", urlencode(p)),
-        None => "/options".into(),
-    }
-}
-
-pub fn issues(refresh: bool) -> &'static str {
-    if refresh { "/issues?refresh=1" } else { "/issues" }
-}
 
 /// A new request carrying what the plain `create_request` command cannot: its project, launch
 /// options, issue and attachments. The daemon creates the Request and keeps its launch policy
@@ -166,23 +126,12 @@ mod tests {
 
     #[test]
     fn operational_routes_use_unversioned_resource_paths() {
-        assert_eq!(close(&"agent-1".into(), false).0, "/agents/agent-1/close");
         assert_eq!(Message::to(Some("agent-1".into()), MessageKind::Message, "x".into()).path(), "/agents/agent-1/messages");
-        assert_eq!(activity(&"agent-1".into()), "/agents/agent-1/activity");
-        assert_eq!(search("two words"), "/agents/search?q=two%20words");
         assert_eq!(orchestrator(Recovery::Cancel, "run-1").0, "/orchestrator/cancel");
         assert_eq!(orchestrator(Recovery::Acknowledge, "run-1").0, "/orchestrator/acknowledge");
         assert_eq!(orchestrator(Recovery::Retry, "run-1").0, "/orchestrator/retry");
-        assert_eq!(history(&"task-1".into()), "/tasks/task-1/history");
-        assert_eq!(task_actions(&"task/1".into()), "/tasks/task%2F1/actions");
-        assert_eq!(schedule_run("schedule/1"), "/schedules/schedule%2F1/runs");
         assert_eq!(cancel_reason(&"task-1".into(), "done").0, "/tasks/task-1/cancel-reason");
         assert_eq!(PRESENCE, "/activity");
-        assert_eq!(PROJECTS, "/projects");
-        assert_eq!(options(None), "/options");
-        assert_eq!(options(Some("My App")), "/options?project=My%20App");
-        assert_eq!(issues(false), "/issues");
-        assert_eq!(issues(true), "/issues?refresh=1");
     }
 
     #[test]
@@ -194,9 +143,7 @@ mod tests {
         pr.attachments = vec![a.clone()];
         let built = [
             ("message", (pr.path(), pr.body())),
-            ("close", close(&"agent-a".into(), true)),
             ("orchestrator_retry", orchestrator(Recovery::Retry, "run-7")),
-            ("resolve_conflicts", resolve_conflicts(&"pr-1".into())),
             ("cancel_reason", cancel_reason(&"task-1".into(), "Superseded")),
             ("new_request", (REQUESTS.to_string(), new_request("request-9", "Ship it", Some("App"), &json!({"effort": "hard"}), Some("me/App#3"), &[a]))),
         ];

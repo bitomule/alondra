@@ -314,7 +314,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
     let option_specs = context.live.project_options.get(selected_project)
         .unwrap_or(&context.live.options);
     fields.extend(option_specs.iter().map(|spec| {
-        let mut field = super::misc::option_field(spec);
+        let mut field = super::misc::option_field(spec, context.lang, context.client);
         if let Some(value) = schedule
             .filter(|schedule| schedule.project.as_deref().unwrap_or("") == selected_project)
             .and_then(|schedule| schedule.options.get(&spec.id)) {

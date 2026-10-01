@@ -11,7 +11,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{DeliveryClaim, OutboxMessage};
 use crate::wake::WriteFailure;
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{AgentId, DomainState, InputValue, InteractionId, InteractionPayload, ScheduleLaunchState};
+use alondra_core::domain_v2::{AgentId, Author, DomainState, InputValue, InteractionId, InteractionPayload, Recipient, Scope, ScheduleLaunchState};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -183,9 +183,12 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     };
     let Some(answer) = answer else {
         let mut text = interaction.body.clone();
-        let labels: Vec<&str> = options.iter().map(|option| option.label.as_str()).collect();
+        let labels: Vec<String> = options.iter().map(|option| format!("{} ({})", option.label, option.id)).collect();
         if !labels.is_empty() {
             text.push_str(&format!("\nOptions: {}.", labels.join(", ")));
+        }
+        if matches!(interaction.recipient, Recipient::Agent { .. } | Recipient::Orchestrator) {
+            text.push_str(&format!("\nAnswer with answer_question(\"{}\", option: \"<option_id>\").", interaction.id));
         }
         return text;
     };
@@ -196,16 +199,39 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
         InputValue::Integer(value) => value.to_string(),
     }).filter(|value| !value.trim().is_empty()).collect();
     let mut text = match option {
-        Some(option) => format!("The user answered: {option}."),
-        None if !values.is_empty() => format!("The user answered: {}.", values.join("; ")),
+        Some(option) => format!("{option}."),
         None => "The user answered the question.".into(),
     };
-    if !values.is_empty() && option.is_some() {
-        text.push_str(&format!(" Additional details: {}.", values.join("; ")));
+    if !values.is_empty() {
+        text.push_str(&format!(" {}", values.join("; ")));
     }
     if !answer.attachments.is_empty() {
         for attachment in &answer.attachments {
             text.push_str(&format!(" Open the attached file “{}” at {}.", attachment.name, attachment.content_reference));
+        }
+    }
+    let question = interaction.body.trim();
+    if matches!(interaction.author, Author::Orchestrator { .. }) {
+        let request_title = match &interaction.scope {
+            Scope::Orchestrator { request_id: Some(request_id) } => state.requests.get(request_id)
+                .map(|request| request.title.as_deref().unwrap_or(&request.body)),
+            Scope::Task { task_id } => state.tasks.get(task_id)
+                .and_then(|task| state.requests.get(&task.request_id))
+                .map(|request| request.title.as_deref().unwrap_or(&request.body)),
+            _ => None,
+        };
+        text = match request_title {
+            Some(title) => format!("About \"{question}\" (request \"{}\"): {text}", title.trim()),
+            None => format!("About \"{question}\": {text}"),
+        };
+    } else if let Author::Agent { agent_id } = &interaction.author {
+        let other_open = state.interactions.values().any(|other| {
+            other.id != interaction.id && other.author == Author::Agent { agent_id: agent_id.clone() }
+                && !other.withdrawn && matches!(&other.payload,
+                    InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. })
+        });
+        if other_open {
+            text = format!("About \"{question}\": {text}");
         }
     }
     text
@@ -397,9 +423,113 @@ mod tests {
             .find(|message| message.interaction_id.as_deref() == Some("question-agent-a"))
             .unwrap();
         let rendered = render(&state, &message);
-        assert_eq!(rendered, "The user answered: Yes.");
+        assert_eq!(rendered, "Yes.");
         assert!(!rendered.contains("data_epoch"));
         assert!(!rendered.contains("protocol"));
+    }
+
+    #[test]
+    fn an_orchestrator_can_answer_a_node_question_from_the_delivered_text() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        command(&domain, Actor::System, "register", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Build a widget".into(), auto_merge: false,
+        });
+        command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Widget".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        });
+        command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task".into() },
+            recipient: Recipient::Orchestrator, body: "Which API should I use?".into(), blocking: true,
+            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None, inputs: vec![] }],
+        });
+        let state = domain.state().unwrap();
+        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some("question-1")).unwrap();
+        let delivered = render(&state, &message);
+        assert!(delivered.contains("Which API should I use?"), "{delivered}");
+        assert!(delivered.contains("New API (new_api)"), "{delivered}");
+        let parse_answer = |text: &str| {
+            let id = text.split_once("Answer with answer_question(\"")?.1.split_once('"')?.0;
+            let option = text.split_once("New API (")?.1.split_once(')')?.0;
+            Some((id.to_owned(), option.to_owned()))
+        };
+        assert!(parse_answer(&delivered.replace("Answer with answer_question", "Omitted")).is_none(),
+            "without the invocation line the recipient cannot recover the interaction ID");
+        let (interaction_id, option_id) = parse_answer(&delivered).unwrap();
+        command(&domain, Actor::Orchestrator { generation: 0 }, "answer", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: interaction_id.into(), option_id, inputs: Default::default(),
+        });
+        assert!(matches!(&domain.state().unwrap().interactions[&"question-1".into()].payload,
+            InteractionPayload::Question { answer: Some(_), .. }));
+    }
+
+    #[test]
+    fn answers_name_the_question_when_ambiguous_and_always_name_the_orchestrators_request() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        answered_question(&domain, "agent-a");
+        command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "another-question", Command::AskQuestion {
+            attachments: vec![], interaction_id: "another-question".into(),
+            scope: Scope::Task { task_id: "task-agent-a".into() }, recipient: Recipient::User,
+            body: "Second choice?".into(), blocking: true,
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+        });
+        let state = domain.state().unwrap();
+        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some("question-agent-a")).unwrap();
+        assert_eq!(render(&state, &message), "About \"Choose\": Yes.");
+
+        command(&domain, Actor::Orchestrator { generation: 0 }, "orchestrator-question", Command::AskQuestion {
+            attachments: vec![], interaction_id: "orchestrator-question".into(),
+            scope: Scope::Orchestrator { request_id: Some("request-agent-a".into()) },
+            recipient: Recipient::User, body: "Ship this?".into(), blocking: true,
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+        });
+        command(&domain, Actor::User { user_id: "u".into() }, "orchestrator-answer", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: "orchestrator-question".into(),
+            option_id: "yes".into(), inputs: Default::default(),
+        });
+        let state = domain.state().unwrap();
+        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some("orchestrator-question")
+                && message.recipient_kind == "orchestrator").unwrap();
+        assert_eq!(render(&state, &message), "About \"Ship this?\" (request \"Work\"): Yes.");
+    }
+
+    #[test]
+    fn a_users_option_and_text_reach_the_node_as_plain_language() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        command(&domain, Actor::System, "register", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+        });
+        command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
+        });
+        command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
+            recipient: Recipient::User, body: "Which approach?".into(), blocking: true,
+            options: vec![QuestionOption { id: "new".into(), label: "New API".into(), description: None,
+                inputs: vec![InputSpec { id: "details".into(), kind: InputKind::Text, required: true }] }],
+        });
+        command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: "question".into(), option_id: "new".into(),
+            inputs: BTreeMap::from([("details".into(), InputValue::Text("Keep the old response format".into()))]),
+        });
+        let state = domain.state().unwrap();
+        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some("question")
+                && message.recipient_kind == "agent").unwrap();
+        assert_eq!(render(&state, &message), "New API. Keep the old response format");
     }
 
     fn attempts(domain: &DomainRuntime) -> Vec<(i64, String, Option<String>)> {
@@ -441,7 +571,7 @@ mod tests {
         result.unwrap();
         let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
         assert_eq!(reply["hookSpecificOutput"]["hookEventName"], "Stop");
-        assert_eq!(context, "The user answered: Yes.");
+        assert_eq!(context, "Yes.");
         assert!(!context.contains("data_epoch") && !context.contains("revision=")
             && !context.contains("task_id=") && !context.contains("interaction_id=")
             && !context.contains("option_id"), "{context}");
@@ -456,7 +586,7 @@ mod tests {
         let (reply, result) = hook(&domain, json!({"session_id": "session-b", "hook_event_name": "Stop"}), None).await;
         assert!(result.is_err());
         let uncertain_context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert_eq!(uncertain_context, "The user answered: Yes.");
+        assert_eq!(uncertain_context, "Yes.");
         assert!(!uncertain_context.contains("question-session-b"));
         assert!(attempts(&domain).contains(&(id, "uncertain".into(), Some("hook_ack_missing".into()))));
         assert!(agent_outbox(&domain, "session-b").is_empty(), "an uncertain handoff is not retried blindly");
@@ -476,7 +606,7 @@ mod tests {
         let (body, result) = hook(&domain, stop.clone(), Some(6)).await;
         result.unwrap();
         let context = body["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert_eq!(context, "Use the new API\n\nThe user answered: Yes.");
+        assert_eq!(context, "Use the new API\n\nYes.");
         assert!(agent_outbox(&domain, "session-a").is_empty());
         domain.held.lock().unwrap().entry("session-a".into()).or_default().push("Only this".into());
         let (body, _) = hook(&domain, stop.clone(), Some(6)).await;
@@ -508,7 +638,7 @@ mod tests {
         let (reply, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
         let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert_eq!(context, "The user answered: Yes.\n\nThe user authorized merging the presented pull request.");
+        assert_eq!(context, "Yes.\n\nThe user authorized merging the presented pull request.");
         assert!(!context.contains("authorization_id") && !context.contains("pr_id")
             && !context.contains("head") && !context.contains("auth-"), "{context}");
     }
@@ -613,7 +743,7 @@ mod tests {
         let writes = terminal.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].0, "ab1234");
-        assert_eq!(writes[0].1, "The user answered: Yes.");
+        assert_eq!(writes[0].1, "Yes.");
         assert!(!writes[0].1.contains("data_epoch") && !writes[0].1.contains("revision=")
             && !writes[0].1.contains("interaction_id="), "{}", writes[0].1);
         assert!(agent_outbox(&domain, "session-a").is_empty());

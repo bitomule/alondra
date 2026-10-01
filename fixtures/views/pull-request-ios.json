@@ -1,0 +1,302 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "pull_request",
+  "key": "pull_request:github.com/example/repo#12",
+  "client": "ios",
+  "version": "v8972c98393a4fbd1",
+  "cursor": "cursor-1",
+  "title": "PR #12",
+  "status": {
+    "version": "v164538ff023163dd",
+    "summary": "1 question · 3 to read · 0 nodes working",
+    "badge": 4,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Agents",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "facts",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Repository",
+              "value": "example/repo"
+            },
+            {
+              "label": "Base",
+              "value": "main"
+            },
+            {
+              "label": "Head",
+              "value": "Branch unavailable"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "children",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "8fa4034b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Question",
+            "tone": "accent"
+          },
+          "title": "Restore the native review experience",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            },
+            {
+              "icon": "mission",
+              "text": "Mission · Polish the Alondra beta",
+              "link": {
+                "kind": "view",
+                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
+              }
+            }
+          ],
+          "detail": "included",
+          "body": {
+            "text": "The pull request is ready. Should the compact schedule editor ship with this beta?",
+            "truncated": false,
+            "commentable": false
+          },
+          "actions": [
+            {
+              "id": "ans:8fa4034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Answer",
+              "style": "primary",
+              "presentation": "options",
+              "input": {
+                "kind": "text",
+                "placeholder": "Answer in your own words…",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "stamp": "Answered"
+            },
+            {
+              "id": "ctx:8fa4034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Need more context",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "What is missing?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "type": "card",
+          "id": "cc2d034b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "Notice",
+            "tone": "accent"
+          },
+          "title": "Restore the native review experience",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+              },
+              "chip": {
+                "text": "Demo Garden",
+                "tone": "neutral"
+              }
+            },
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            },
+            {
+              "icon": "mission",
+              "text": "Mission · Polish the Alondra beta",
+              "link": {
+                "kind": "view",
+                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
+              }
+            }
+          ],
+          "detail": "included",
+          "body": {
+            "text": "All required checks passed and the branch is up to date with main.",
+            "truncated": false,
+            "commentable": false
+          },
+          "actions": [
+            {
+              "id": "read:cc2d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Mark as read",
+              "style": "primary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Read",
+              "key": "x"
+            },
+            {
+              "id": "reply:cc2d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Reply",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Write a reply",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "ask_pr:github.com/example/repo#12@0",
+              "label": "Ask about the PR",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Your question",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true
+            },
+            {
+              "id": "changes:github.com/example/repo#12@0~abcdef12",
+              "label": "Request changes",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Describe the changes",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": true,
+              "comments": {
+                "kind": "diff_lines"
+              },
+              "enabled": true,
+              "link": {
+                "kind": "view",
+                "key": "pull_request:github.com/example/repo#12"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diff",
+          "size": 0,
+          "digest": "abcdef12",
+          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
+          "commentable": true
+        }
+      ]
+    }
+  ]
+}

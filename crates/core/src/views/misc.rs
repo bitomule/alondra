@@ -104,7 +104,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         .project_options
         .get(&project)
         .unwrap_or(&context.live.options);
-    fields.extend(specs.iter().map(option_field));
+    fields.extend(specs.iter().map(|spec| option_field(spec, context.lang, context.client)));
     fields.push(Field {
         id: "issue".into(),
         label: t!(context.lang, "Issue", "Incidencia").into(),
@@ -183,7 +183,26 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
     Ok(view)
 }
 
-pub(super) fn option_field(spec: &Spec) -> Field {
+pub(super) fn option_field(spec: &Spec, lang: super::Lang, client: Client) -> Field {
+    let builtin_label = |id: &str, value: Option<&str>, fallback: &str| -> String {
+        if !spec.builtin || client != Client::Ios { return fallback.into(); }
+        match (id, value, lang) {
+            ("pr", None, _) => "PRs",
+            ("pr", Some("review"), super::Lang::En) => "Review each one",
+            ("pr", Some("review"), super::Lang::Es) => "Revisar cada una",
+            ("pr", Some("auto_merge"), super::Lang::En) => "Auto-merge",
+            ("pr", Some("auto_merge"), super::Lang::Es) => "Merge automático",
+            ("effort", None, super::Lang::En) => "Effort",
+            ("effort", None, super::Lang::Es) => "Esfuerzo",
+            ("effort", Some("auto"), _) => "Auto",
+            ("effort", Some("light"), super::Lang::En) => "Light",
+            ("effort", Some("light"), super::Lang::Es) => "Ligero",
+            ("effort", Some("normal"), _) => "Normal",
+            ("effort", Some("hard"), super::Lang::En) => "Hard",
+            ("effort", Some("hard"), super::Lang::Es) => "A fondo",
+            _ => fallback,
+        }.into()
+    };
     let kind = match spec.kind {
         OptionKind::Toggle => FieldKind::Toggle,
         OptionKind::Choice => FieldKind::Choice {
@@ -192,14 +211,14 @@ pub(super) fn option_field(spec: &Spec) -> Field {
                 .iter()
                 .map(|value| ChoiceItem {
                     id: value.id.clone(),
-                    label: value.label.clone(),
+                    label: builtin_label(&spec.id, Some(&value.id), &value.label),
                 })
                 .collect(),
         },
     };
     Field {
         id: spec.id.clone(),
-        label: spec.label.clone(),
+        label: builtin_label(&spec.id, None, &spec.label),
         kind,
         value: serde_json::to_value(&spec.default).unwrap_or(serde_json::Value::Null),
         required: false,
@@ -294,9 +313,6 @@ pub(super) fn issue_picker(key: &str, context: &RenderContext<'_>) -> Result<Vie
 }
 
 pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
-    if context.client == Client::Ios {
-        return Err(BuildError::UnsupportedClient);
-    }
     let q = common::key_param(key, "search", "q")?
         .unwrap_or_default()
         .to_ascii_lowercase();
@@ -315,13 +331,17 @@ pub(super) fn search(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
         .filter(|agent| agent.name.to_ascii_lowercase().contains(&q)
             || context.live.search_matches.as_ref().is_some_and(|matches| matches.contains(&agent.id.0)))
         .map(|agent| {
-            Item::Row(common::row(
-                &agent.id.0,
-                &format!("node:{}", agent.id),
-                Icon::Node,
-                agent.name.clone(),
-                None,
-            ))
+            if context.client == Client::Ios {
+                Item::Row(super::fleet::node_row(agent, context))
+            } else {
+                Item::Row(common::row(
+                    &agent.id.0,
+                    &format!("node:{}", agent.id),
+                    Icon::Node,
+                    agent.name.clone(),
+                    None,
+                ))
+            }
         })
         .collect();
     let count = rows.len();

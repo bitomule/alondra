@@ -74,7 +74,8 @@ import Testing
         let nodeID = try contextID(.node)
         let taskID = try contextID(.task)
         let requestID = try contextID(.mission)
-        for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID), .request(requestID)] {
+        for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID), .request(requestID),
+                    .newRequest(), .machine, .schedules, .schedule("new")] {
             guard case let .document(screen) = try await client.load(key, nil) else {
                 Issue.record("Missing demo destination \(key.rawValue)")
                 continue
@@ -88,12 +89,25 @@ import Testing
                 Issue.record("Missing demo list \(key.rawValue)")
                 continue
             }
-            let links = screen.sections.flatMap(\.items).compactMap { item -> Link? in
-                if case let .row(row) = item { return row.link }
-                return nil
+            func links(in row: Row) -> [Link] {
+                (row.link.map { [$0] } ?? []) + row.children.flatMap(links)
+            }
+            let links = screen.sections.flatMap(\.items).flatMap { item -> [Link] in
+                if case let .row(row) = item { return links(in: row) }
+                return []
             }
             #expect(links.contains(.view(key: expectedLink)))
         }
+
+        guard case let .document(newRequest) = try await client.load(.newRequest(), nil) else {
+            Issue.record("Missing production-shaped new request fixture")
+            return
+        }
+        let form = try #require(newRequest.sections.flatMap(\.items).compactMap { item -> Form? in
+            if case let .form(form) = item { form } else { nil }
+        }.first)
+        #expect(form.fields.contains { $0.id == "pr" })
+        #expect(form.fields.contains { $0.id == "effort" })
 
         let deliveryID = try #require(ids.dropFirst(2).first)
         guard case let .document(delivery) = try await client.load(.card(deliveryID), nil),
@@ -121,14 +135,14 @@ import Testing
             if case let .contentRef(value) = item, value.kind == .diff { return value }
             return nil
         }.first)
-        #expect(diff.fetch == "/pull-requests/\(prID)/diff")
+        #expect(diff.fetch == "/pull-requests/github.com%2Fexample%2Frepo%2312/diff")
         #expect(try await client.fetchContent(diff).contains("diff --git"))
         let actions = items.flatMap { item -> [AlondraViews.Action] in
             if case let .actions(bar) = item { return bar.actions }
             return []
         }
         #expect(actions.contains { $0.label == "Request changes" && $0.comments?.kind == .diffLines })
-        #expect(actions.allSatisfy { $0.link == nil })
+        #expect(actions.contains { $0.id?.hasPrefix("ask_pr:\(prID)@") == true })
 
         guard case let .document(prCardView) = try await client.load(.card(prID), nil),
               case let .card(prCard) = try #require(prCardView.sections.flatMap(\.items).first) else {

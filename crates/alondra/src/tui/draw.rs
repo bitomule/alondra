@@ -738,7 +738,26 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
                 )
             };
             let mut title = Vec::new();
-            if !hint.is_empty() {
+            if action.enabled {
+                let rendered = super::view_render::action_line(action);
+                if let Some((hint, label)) = rendered
+                    .strip_prefix('[')
+                    .and_then(|rendered| rendered.split_once("] "))
+                {
+                    title.push(Span::styled(
+                        format!(" {hint} "),
+                        Style::new()
+                            .fg(Color::Black)
+                            .bg(ACCENT)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                    title.push(Span::raw(format!(" {label}")));
+                } else {
+                    title.push(Span::raw(format!(" {rendered}")));
+                }
+            } else if hint.is_empty() {
+                title.push(Span::raw(format!(" {label}")));
+            } else {
                 title.push(Span::styled(
                     format!(" {hint} "),
                     Style::new()
@@ -746,20 +765,21 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
                         .bg(ACCENT)
                         .add_modifier(Modifier::BOLD),
                 ));
+                title.push(Span::raw(format!(" {label}")));
             }
-            title.push(Span::raw(format!(" {label}")));
             lines.push(Line::from(title));
             for (index, option) in action.options.iter().enumerate() {
                 let hint = option
                     .key
                     .clone()
                     .unwrap_or_else(|| (index + 1).to_string());
+                let label = merge_option_label(option);
                 lines.push(Line::from(vec![
                     Span::styled(
                         format!("  {hint} "),
                         Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
                     ),
-                    Span::raw(option.label.clone()),
+                    Span::raw(label),
                 ]));
             }
         }
@@ -1455,7 +1475,7 @@ pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(Stri
                 .key
                 .clone()
                 .unwrap_or_else(|| (index + 1).to_string());
-            keys.push((hint, option.label.clone()));
+            keys.push((hint, merge_option_label(&option)));
         }
     }
     if has_diff {
@@ -1464,8 +1484,23 @@ pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(Stri
     keys
 }
 
+fn merge_option_label(option: &alondra_core::views::ActionOption) -> String {
+    let method = match option.id.as_str() {
+        "merge" => Some(alondra_core::pr::MergeMethod::Merge),
+        "squash" => Some(alondra_core::pr::MergeMethod::Squash),
+        "rebase" => Some(alondra_core::pr::MergeMethod::Rebase),
+        _ => None,
+    };
+    match method {
+        Some(alondra_core::pr::MergeMethod::Merge) => tr!("Merge commit", "Commit de fusión").into(),
+        Some(alondra_core::pr::MergeMethod::Squash) => tr!("Squash merge", "Fusión squash").into(),
+        Some(alondra_core::pr::MergeMethod::Rebase) => "rebase".into(),
+        None => option.label.clone(),
+    }
+}
+
 /// Only an uncertain handoff needs the user: a dispatching one settles by itself.
-fn footer_keys(app: &App) -> Vec<(String, String)> {
+pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
     let k = |a: &str, b: &str| (a.to_string(), b.to_string());
     if app.composer.is_none() {
         if let Some(reader) = app.reader.as_ref() {
@@ -1513,6 +1548,31 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
                         ));
                     }
                 }
+            }
+            match app.screen {
+                Screen::Tasks => {
+                    for shortcut in [
+                        k("r", tr!("message", "mensaje")),
+                        k("x", tr!("cancel / withdraw", "descartar / retirar")),
+                        k("Shift+A", tr!("archive finished", "archivar terminadas")),
+                    ] {
+                        if !keys.iter().any(|(key, _)| key == &shortcut.0) {
+                            keys.push(shortcut);
+                        }
+                    }
+                }
+                Screen::Fleet => {
+                    for shortcut in [
+                        k("/", tr!("search", "buscar")),
+                        k("r", tr!("message", "mensaje")),
+                        k("x", tr!("close the session", "cerrar la sesión")),
+                    ] {
+                        if !keys.iter().any(|(key, _)| key == &shortcut.0) {
+                            keys.push(shortcut);
+                        }
+                    }
+                }
+                Screen::Inbox => {}
             }
             keys.extend([
                 k("Tab", tr!("next", "siguiente")),
@@ -1574,7 +1634,85 @@ fn footer_keys(app: &App) -> Vec<(String, String)> {
             k("Esc", tr!("cancel", "cancela")),
         ];
     }
-    Vec::new()
+    match app.screen {
+        Screen::Tasks if app.schedules_open => vec![
+            k("j/k", tr!("move", "mover")),
+            k("n", tr!("new", "nueva")),
+            k("e", tr!("edit", "editar")),
+            k("p", tr!("pause / resume", "pausar / reanudar")),
+            k("⏎", tr!("run", "ejecutar")),
+            k("d d", tr!("delete", "borrar")),
+            k("Esc", tr!("back", "volver")),
+        ],
+        Screen::Tasks => {
+            let mut keys = vec![k("j/k", tr!("move", "mover")), k("h/l", tr!("pane", "panel"))];
+            match app.task_sel.as_ref() {
+                Some(super::tasks::TaskKey::Finished | super::tasks::TaskKey::Archived) => {
+                    keys.push(k("⏎", tr!("show / hide", "mostrar / ocultar")));
+                }
+                Some(super::tasks::TaskKey::Task(_)) => {
+                    keys.extend([
+                        k("o", tr!("detail", "detalle")),
+                        k("⏎", tr!("its terminal", "su terminal")),
+                        k("r", tr!("message", "mensaje")),
+                        k("x", tr!("cancel", "descartar")),
+                    ]);
+                }
+                Some(super::tasks::TaskKey::Request(_)) => {
+                    keys.extend([
+                        k("o", tr!("detail", "detalle")),
+                        k("x", tr!("withdraw", "retirar")),
+                    ]);
+                }
+                None => {}
+            }
+            keys.extend([
+                k("Shift+A", tr!("archive finished", "archivar terminadas")),
+                k("s", tr!("scheduled", "programadas")),
+                k("Tab", tr!("agents", "agentes")),
+                k("n", tr!("new", "nuevo")),
+                k("q", tr!("quit", "salir")),
+            ]);
+            keys
+        }
+        Screen::Fleet if app.orchestrator_selected() => vec![
+            k("j/k", tr!("move", "mover")),
+            k("⏎/o", tr!("activity", "actividad")),
+            k("r", tr!("message", "mensaje")),
+            k("Esc", tr!("back", "volver")),
+            k("n", tr!("new", "nuevo")),
+            k("Tab", tr!("inbox", "bandeja")),
+        ],
+        Screen::Fleet if app.agent_zoom => vec![
+            k("j/k", tr!("scroll", "desplazar")),
+            k("Esc/o", tr!("back", "volver")),
+            k("r", tr!("message", "mensaje")),
+            k("x", tr!("close", "cerrar")),
+            k("a", tr!("its terminal", "su terminal")),
+        ],
+        Screen::Fleet => vec![
+            k("j/k", tr!("move", "mover")),
+            k("h/l", tr!("pane", "panel")),
+            k("/", tr!("search", "buscar")),
+            k("o", tr!("expand", "expandir")),
+            k("r", tr!("message", "mensaje")),
+            k("⏎", tr!("its terminal", "su terminal")),
+            k("x", tr!("close the session", "cerrar la sesión")),
+            k("n", tr!("new", "nuevo")),
+            k("Tab", tr!("inbox", "bandeja")),
+            k("q", tr!("quit", "salir")),
+        ],
+        Screen::Inbox => vec![
+            k("j/k", tr!("move", "mover")),
+            k("⏎/o", tr!("detail", "detalle")),
+            k("r", tr!("reply", "responder")),
+            k("x", tr!("mark read", "marcar leído")),
+            k("/", tr!("search", "buscar")),
+            k("Tab", tr!("tasks", "tareas")),
+            k("n", tr!("new", "nuevo")),
+            k("q", tr!("quit", "salir")),
+        ],
+    }
 }
 
 /// Action results float above the key bar, wrapped, so they never hide the keys or get cut.

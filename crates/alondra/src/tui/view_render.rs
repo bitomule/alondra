@@ -78,6 +78,8 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
         }
     }
     if !meta.is_empty() {
+        let mut seen = std::collections::HashSet::new();
+        meta.retain(|value| seen.insert(value.clone()));
         lines.push(fit(
             vec![
                 Span::raw(if nested { "      " } else { "  " }),
@@ -263,7 +265,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-fn action_line(action: &Action) -> String {
+pub(super) fn action_line(action: &Action) -> String {
     let hint = action_hint(action);
     if hint.is_empty() {
         action.label.clone()
@@ -273,7 +275,10 @@ fn action_line(action: &Action) -> String {
 }
 
 pub fn format_time(at: &str, format: alondra_core::views::TimeFormat) -> String {
-    let Some((millis, date, time)) = parse_utc(at) else {
+    let Some(millis) = parse_utc(at) else {
+        return at.to_owned();
+    };
+    let Some((date, time)) = local_date_time(millis) else {
         return at.to_owned();
     };
     match format {
@@ -283,7 +288,7 @@ pub fn format_time(at: &str, format: alondra_core::views::TimeFormat) -> String 
     }
 }
 
-fn parse_utc(value: &str) -> Option<(i64, String, String)> {
+fn parse_utc(value: &str) -> Option<i64> {
     let value = value.strip_suffix('Z')?;
     let (date, clock) = value.split_once('T')?;
     let mut date_parts = date.split('-');
@@ -318,7 +323,22 @@ fn parse_utc(value: &str) -> Option<(i64, String, String)> {
         .unwrap_or(0);
     let millis = ((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000)
         + i64::from(fraction);
-    Some((millis, date.to_owned(), format!("{hour:02}:{minute:02}")))
+    Some(millis)
+}
+
+fn local_date_time(millis: i64) -> Option<(String, String)> {
+    let seconds = millis.div_euclid(1_000);
+    let timestamp = libc::time_t::try_from(seconds).ok()?;
+    // SAFETY: localtime_r writes to the supplied `tm` and does not retain either pointer.
+    let tm = unsafe {
+        let mut tm = std::mem::MaybeUninit::<libc::tm>::uninit();
+        libc::localtime_r(&timestamp, tm.as_mut_ptr()).as_ref()?;
+        tm.assume_init()
+    };
+    Some((
+        format!("{:04}-{:02}-{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday),
+        format!("{:02}:{:02}", tm.tm_hour, tm.tm_min),
+    ))
 }
 
 pub fn actions(view: &View) -> Vec<Action> {
@@ -342,8 +362,36 @@ pub fn actions(view: &View) -> Vec<Action> {
         }
     }
     let mut seen = std::collections::HashSet::new();
-    out.retain(|action| action.id.is_empty() || seen.insert(action.id.clone()));
+    out.retain(|action| {
+        let identity = if action.id.is_empty() {
+            format!(
+                "{}\0{}\0{}",
+                action.label,
+                action.key.as_deref().unwrap_or(""),
+                presentation_key(action.presentation)
+            )
+        } else {
+            action.id.clone()
+        };
+        seen.insert(identity)
+    });
+    let mut labels = std::collections::HashSet::new();
+    out.retain(|action| {
+        labels.insert((
+            action.label.clone(),
+            action.key.clone(),
+            presentation_key(action.presentation),
+        ))
+    });
     out
+}
+
+fn presentation_key(presentation: alondra_core::views::Presentation) -> &'static str {
+    match presentation {
+        alondra_core::views::Presentation::Button => "button",
+        alondra_core::views::Presentation::Options => "options",
+        alondra_core::views::Presentation::Menu => "menu",
+    }
 }
 
 pub fn detail_card(view: &View) -> Option<&Card> {
@@ -365,6 +413,8 @@ pub fn action_hint(action: &Action) -> &str {
             "m"
         } else if label.contains("conflict") {
             "1"
+        } else if label.contains("withdraw") || label.contains("retirar") {
+            "x"
         } else {
             ""
         }
@@ -447,9 +497,27 @@ mod tests {
 
     #[test]
     fn view_times_are_formatted_for_people_instead_of_showing_wire_timestamps() {
-        assert_eq!(format_time("2026-10-01T09:55:00Z", alondra_core::views::TimeFormat::Absolute), "2026-10-01 09:55");
-        assert_eq!(format_time("2026-10-01T09:55:00.000Z", alondra_core::views::TimeFormat::Time), "09:55");
+        let expected = local_date_time(parse_utc("2026-10-01T09:55:00Z").unwrap()).unwrap();
+        let absolute = format_time(
+            "2026-10-01T09:55:00Z",
+            alondra_core::views::TimeFormat::Absolute,
+        );
+        let time = format_time("2026-10-01T09:55:00.000Z", alondra_core::views::TimeFormat::Time);
+        assert_eq!(absolute, format!("{} {}", expected.0, expected.1));
+        assert_eq!(time, expected.1);
         assert_eq!(format_time("not-a-date", alondra_core::views::TimeFormat::Absolute), "not-a-date");
+    }
+
+    #[test]
+    fn duplicate_row_state_metadata_is_shown_once() {
+        let row: Row = serde_json::from_value(serde_json::json!({
+            "id": "task", "icon": "task", "title": "Ship", "depth": 0,
+            "subtitle": "working", "badges": [{"text": "working", "tone": "info"}],
+            "struck": false
+        })).unwrap();
+        let rendered = row_lines(&row, 80, false, false);
+        assert_eq!(rendered.len(), 2);
+        assert_eq!(rendered[1].to_string().matches("working").count(), 1);
     }
 
     #[test]
@@ -461,5 +529,33 @@ mod tests {
             disabled_reason: None, stamp: None, key: None, link: None,
         };
         assert_eq!(action_line(&action), "Message");
+        let withdraw = Action {
+            label: "Withdraw Request".into(),
+            ..action
+        };
+        assert_eq!(action_hint(&withdraw), "x");
+        assert_eq!(action_line(&withdraw), "[x] Withdraw Request");
+    }
+
+    #[test]
+    fn duplicate_attach_actions_with_legacy_empty_ids_are_shown_once() {
+        let attach = serde_json::json!({
+            "id":"", "label":"Attach to node", "style":"plain",
+            "presentation":"button", "input":{"kind":"none"},
+            "attachments":false, "enabled":true, "key":"a"
+        });
+        let view: View = serde_json::from_value(serde_json::json!({
+            "protocol":1, "data_epoch":"test", "view":"card", "key":"card:pr",
+            "client":"tui", "version":"v1", "cursor":"c",
+            "status":{"version":"v1", "summary":"", "badge":0, "counts":[],
+                "gauges":[], "orchestrator":{"text":"idle", "tone":"neutral"}},
+            "sections":[{"id":"card", "collapsed":false, "items":[{
+                "type":"card", "id":"pr", "icon":"pull_request", "title":"PR",
+                "detail":"included", "actions":[attach.clone(), attach]
+            }]}]
+        })).unwrap();
+        let actions = actions(&view);
+        assert_eq!(actions.len(), 1);
+        assert_eq!(actions[0].label, "Attach to node");
     }
 }

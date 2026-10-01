@@ -4,10 +4,10 @@
   "view": "home",
   "key": "home",
   "client": "ios",
-  "version": "v0ec8d4222a2ddc53",
+  "version": "v760a3cbd11feca81",
   "cursor": "cursor-1",
   "status": {
-    "version": "v8721d9127b0633bd",
+    "version": "ve9d1903fe14ab95b",
     "summary": "1 pregunta · 3 por leer · 0 nodos trabajando",
     "badge": 4,
     "counts": [
@@ -24,7 +24,7 @@
       {
         "id": "agents",
         "label": "Agentes",
-        "value": 0
+        "value": 1
       },
       {
         "id": "working",
@@ -34,10 +34,25 @@
       {
         "id": "waiting",
         "label": "esperando",
-        "value": 0
+        "value": 1
       }
     ],
-    "gauges": [],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
     "orchestrator": {
       "text": "inactivo",
       "tone": "neutral"

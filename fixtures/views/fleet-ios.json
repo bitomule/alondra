@@ -1,0 +1,137 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "fleet",
+  "key": "fleet",
+  "client": "ios",
+  "version": "vf9f5fdc3884fe2fd",
+  "cursor": "cursor-1",
+  "title": "Fleet",
+  "status": {
+    "version": "v164538ff023163dd",
+    "summary": "1 question · 3 to read · 0 nodes working",
+    "badge": 4,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Agents",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "orchestrator",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "orchestrator",
+          "link": {
+            "kind": "view",
+            "key": "node:orchestrator"
+          },
+          "icon": "orchestrator",
+          "title": "Orchestrator",
+          "badges": [
+            {
+              "text": "Idle",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "Idle"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "project:Demo Garden",
+      "title": "Demo Garden",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "d887a34b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "title": "Alondra · iOS",
+          "subtitle": "Connected",
+          "badges": [
+            {
+              "text": "Waiting for you",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 1
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "last_message",
+              "icon": "notice",
+              "title": "The simulator pass completed successfully.",
+              "trailing": {
+                "kind": "time",
+                "at": "2026-09-30T09:58:00Z",
+                "format": "relative"
+              },
+              "depth": 0,
+              "struck": false
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

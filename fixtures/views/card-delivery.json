@@ -4,11 +4,11 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v6823e264789efbc5",
+  "version": "v361693af32f7c58d",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
-    "version": "v2d6ccffc4668392a",
+    "version": "v164538ff023163dd",
     "summary": "1 question · 3 to read · 0 nodes working",
     "badge": 4,
     "counts": [
@@ -25,7 +25,7 @@
       {
         "id": "agents",
         "label": "Agents",
-        "value": 0
+        "value": 1
       },
       {
         "id": "working",
@@ -35,10 +35,25 @@
       {
         "id": "waiting",
         "label": "waiting",
-        "value": 0
+        "value": 1
       }
     ],
-    "gauges": [],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
     "orchestrator": {
       "text": "idle",
       "tone": "neutral"

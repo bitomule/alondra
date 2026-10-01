@@ -200,21 +200,10 @@ pub(crate) async fn gather(
         .clone();
     let gauges = if let Some((machine, usage)) = sample {
         let mut published = client.views_gauges.lock().expect("published views gauges poisoned");
-        if published.as_ref().is_none_or(|(at, _, _)| at.elapsed() >= std::time::Duration::from_secs(60)) {
-            let en = gauges(&machine, usage.as_ref(), Lang::En);
-            let es = gauges(&machine, usage.as_ref(), Lang::Es);
-            match published.as_mut() {
-                Some((at, old_en, old_es)) => {
-                    *at = std::time::Instant::now();
-                    if !same_visible_gauges(old_en, &en) || !same_visible_gauges(old_es, &es) {
-                        *old_en = en;
-                        *old_es = es;
-                    }
-                }
-                None => *published = Some((std::time::Instant::now(), en, es)),
-            }
-        }
-        published.as_ref().map(|(_, en, es)| if lang == Lang::En { en.clone() } else { es.clone() }).unwrap_or_default()
+        published_gauges(&mut published, std::time::Instant::now(), lang, || (
+            gauges(&machine, usage.as_ref(), Lang::En),
+            gauges(&machine, usage.as_ref(), Lang::Es),
+        ))
     } else { vec![] };
     let request_times = if clock_only { BTreeMap::new() } else { client
         .domain
@@ -289,10 +278,7 @@ pub(crate) async fn gather(
         .filter(|id| *id != "orchestrator")
     {
         let path = format!("/agents/{id}/activity");
-        let activity_revision = client.domain.live.threads(id)
-            .and_then(|activity| serde_json::to_vec(&activity).ok())
-            .map(|bytes| digest_hex(&bytes))
-            .unwrap_or_default();
+        let activity_revision = activity_source_revision(client, id);
         if let Some(data) = read_live_json(client, &path, state.revision, &activity_revision).await {
             let entries: Vec<alondra_core::activity::Activity> =
                 serde_json::from_value(data["activity"].clone()).unwrap_or_default();
@@ -427,6 +413,35 @@ fn search_source_revision(client: &crate::v2_client_routes::Client, state: &Doma
     digest_hex(&bytes)
 }
 
+fn activity_source_revision(client: &crate::v2_client_routes::Client, id: &str) -> String {
+    client.domain.live.threads(id)
+        .and_then(|activity| serde_json::to_vec(&activity).ok())
+        .map(|bytes| digest_hex(&bytes))
+        .unwrap_or_default()
+}
+
+fn published_gauges(
+    published: &mut Option<(std::time::Instant, Vec<Gauge>, Vec<Gauge>)>,
+    now: std::time::Instant,
+    lang: Lang,
+    compute: impl FnOnce() -> (Vec<Gauge>, Vec<Gauge>),
+) -> Vec<Gauge> {
+    if published.as_ref().is_none_or(|(at, _, _)| now.saturating_duration_since(*at) >= std::time::Duration::from_secs(60)) {
+        let (en, es) = compute();
+        match published.as_mut() {
+            Some((at, old_en, old_es)) => {
+                *at = now;
+                if !same_visible_gauges(old_en, &en) || !same_visible_gauges(old_es, &es) {
+                    *old_en = en;
+                    *old_es = es;
+                }
+            }
+            None => *published = Some((now, en, es)),
+        }
+    }
+    published.as_ref().map(|(_, en, es)| if lang == Lang::En { en.clone() } else { es.clone() }).unwrap_or_default()
+}
+
 fn digest_hex(bytes: &[u8]) -> String {
     sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
 }
@@ -434,34 +449,78 @@ fn digest_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod cache_tests {
     use super::*;
+    use alondra_core::domain_v2::{Actor, Command, CommandEnvelope};
+    use std::{fs, sync::Arc};
 
     #[test]
-    fn activity_and_search_reads_are_reused_until_their_sources_change() {
-        let cache = LiveReadCache::default();
-        let mut reads = 0;
-        let read = |cache: &LiveReadCache, path: &str, domain: u64, source: &str, reads: &mut usize| {
-            if let Some(value) = cache.get(path, domain, source) { return value; }
-            *reads += 1;
-            let value = serde_json::json!({"path":path,"read":*reads});
-            cache.insert(path.to_owned(), domain, source, value.clone());
-            value
+    fn published_gauges_debounce_for_a_minute_and_ignore_invisible_values() {
+        let now = std::time::Instant::now();
+        let mut published = None;
+        let gauge = |text: &str, value: f64| Gauge {
+            id: "usage".into(), label: "Usage".into(), value, text: text.into(),
+            detail: None, level: Level::Calm,
         };
+        assert_eq!(published_gauges(&mut published, now, Lang::En, || (vec![gauge("50%", 0.5)], vec![]))[0].text, "50%");
+        let mut computed = false;
+        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(59), Lang::En, || {
+            computed = true;
+            (vec![gauge("60%", 0.6)], vec![])
+        })[0].text, "50%");
+        assert!(!computed, "a fresh sample must not be recomputed before the minute boundary");
+        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(60), Lang::En, || {
+            (vec![gauge("50%", 0.501)], vec![])
+        })[0].value, 0.5, "a hidden fraction change must not change the published gauge");
+        assert_eq!(published_gauges(&mut published, now + std::time::Duration::from_secs(120), Lang::En, || {
+            (vec![gauge("60%", 0.6)], vec![])
+        })[0].text, "60%");
+    }
 
-        let activity = read(&cache, "/agents/a/activity", 4, "node-a-1", &mut reads);
-        assert_eq!(read(&cache, "/agents/a/activity", 4, "node-a-1", &mut reads), activity);
-        let search = read(&cache, "/agents/search?q=parser", 4, "search-set-1", &mut reads);
-        assert_eq!(read(&cache, "/agents/search?q=parser", 4, "search-set-1", &mut reads), search);
-        assert_eq!(reads, 2, "unchanged activity and search results should not be reread");
+    #[tokio::test]
+    async fn activity_and_search_reads_are_reused_until_their_sources_change() {
+        let home = std::env::temp_dir().join(format!("alondra-live-cache-{}", crate::auth::random_hex(8)));
+        fs::create_dir(&home).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
+        for id in ["a", "b"] {
+            let state = domain.state().unwrap();
+            domain.execute(&Actor::System, &CommandEnvelope {
+                protocol_version: 2, data_epoch: state.data_epoch,
+                command_id: format!("register-{id}").into(), expected_revision: state.revision,
+                command: Command::RegisterAgent { agent_id: id.into(), name: format!("Agent {id}") },
+            }, None, || Ok(())).unwrap();
+        }
+        let activity_hook = |id: &str, message: &str| serde_json::json!({
+            "session_id": id, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_use_id": format!("tool-{message}"), "tool_input": {"command": message},
+        });
+        let message_hook = |id: &str, message: &str| serde_json::json!({
+            "session_id": id, "hook_event_name": "Stop", "last_assistant_message": message,
+        });
+        domain.live.observe(&activity_hook("a", "Parser ready"));
+        domain.live.observe(&message_hook("b", "Other work"));
+        let state = domain.state().unwrap();
+        let activity = activity_source_revision(&client, "a");
+        let search = search_source_revision(&client, &state);
+        let cache = &client.live_reads;
+        let activity_path = "/agents/a/activity";
+        let search_path = "/agents/search?q=parser";
+        cache.insert(activity_path.into(), state.revision, &activity, serde_json::json!({"activity": 1}));
+        cache.insert(search_path.into(), state.revision, &search, serde_json::json!({"search": 1}));
+        assert!(cache.get(activity_path, state.revision, &activity).is_some());
+        assert!(cache.get(search_path, state.revision, &search).is_some());
 
-        assert_eq!(read(&cache, "/agents/a/activity", 4, "node-a-1", &mut reads), activity,
-            "a hook in another node must not invalidate this activity read");
-        assert_ne!(read(&cache, "/agents/a/activity", 4, "node-a-2", &mut reads), activity,
-            "hook activity invalidates activity reads");
-        assert_ne!(read(&cache, "/agents/search?q=parser", 4, "search-set-2", &mut reads), search,
-            "hook updates can change search matches");
-        assert_ne!(read(&cache, "/agents/search?q=parser", 5, "search-set-2", &mut reads), search,
-            "domain updates can change search matches");
-        assert_eq!(reads, 5);
+        domain.live.observe(&message_hook("b", "Other work changed"));
+        assert_eq!(activity_source_revision(&client, "a"), activity);
+        assert!(cache.get(activity_path, state.revision, &activity_source_revision(&client, "a")).is_some());
+        assert_ne!(search_source_revision(&client, &state), search);
+        assert!(cache.get(search_path, state.revision, &search_source_revision(&client, &state)).is_none());
+
+        domain.live.observe(&activity_hook("a", "Parser changed"));
+        assert_ne!(activity_source_revision(&client, "a"), activity);
+        assert!(cache.get(activity_path, state.revision, &activity_source_revision(&client, "a")).is_none());
+        drop(client);
+        drop(domain);
+        fs::remove_dir_all(home).unwrap();
     }
 }
 

@@ -16,7 +16,7 @@ use axum::extract::rejection::JsonRejection;
 use axum::extract::State;
 use axum::http::{StatusCode, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post, put};
+use axum::routing::{post, put};
 use axum::{Extension, Json, Router};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -44,6 +44,7 @@ pub(crate) struct Client {
     issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub(crate) live_reads: crate::views::live::LiveReadCache,
     device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_core::views::Lang>>,
+    device_languages_path: PathBuf,
 }
 
 /// What a route answers: the status and the JSON body both the local listener and the relay
@@ -196,7 +197,20 @@ pub(crate) fn upload_step(path: &str) -> Option<&str> {
 
 impl Client {
     pub(crate) fn remember_language(&self, device: &str, lang: alondra_core::views::Lang) {
-        self.device_languages.lock().expect("device languages poisoned").insert(device.to_owned(), lang);
+        let mut languages = self.device_languages.lock().expect("device languages poisoned");
+        if languages.get(device) == Some(&lang) {
+            return;
+        }
+        let mut updated = languages.clone();
+        updated.insert(device.to_owned(), lang);
+        let next = self.device_languages_path.with_extension("json.next");
+        let saved = serde_json::to_vec(&updated).map_err(anyhow::Error::from)
+            .and_then(|bytes| std::fs::write(&next, bytes).map_err(anyhow::Error::from))
+            .and_then(|()| std::fs::rename(&next, &self.device_languages_path).map_err(anyhow::Error::from));
+        match saved {
+            Ok(()) => *languages = updated,
+            Err(error) => log!("could not save device language: {error:#}"),
+        }
     }
 
     pub(crate) fn language_for_device(&self, device: &str) -> alondra_core::views::Lang {
@@ -209,6 +223,21 @@ impl Client {
     }
 
     pub(crate) fn open(domain: Arc<DomainRuntime>, home: &Path, gauges: crate::machine::Gauges) -> Arc<Self> {
+        let device_languages_path = home.join("device-languages.json");
+        let device_languages = match std::fs::read(&device_languages_path) {
+            Ok(bytes) => match serde_json::from_slice(&bytes) {
+                Ok(languages) => languages,
+                Err(error) => {
+                    log!("could not read device languages: {error:#}");
+                    Default::default()
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Default::default(),
+            Err(error) => {
+                log!("could not read device languages: {error:#}");
+                Default::default()
+            }
+        };
         let client = Arc::new(Self {
             domain,
             home: home.to_owned(),
@@ -222,7 +251,8 @@ impl Client {
             options: Default::default(),
             issue_cache: Default::default(),
             live_reads: Default::default(),
-            device_languages: Default::default(),
+            device_languages: std::sync::Mutex::new(device_languages),
+            device_languages_path,
         });
         crate::views::feed::start_clock(&client);
         client
@@ -443,14 +473,6 @@ fn forbidden() -> Response {
     crate::domain_api::domain_error(DomainError::new("forbidden", "signed user device required"))
 }
 
-async fn read(State(client): State<Arc<Client>>, signed: Option<Extension<Signed>>, uri: Uri) -> Response {
-    if crate::domain_bootstrap::signed_device(client.home(), &signed).is_none() {
-        return forbidden();
-    }
-    let path_and_query = uri.path_and_query().map_or("/", |value| value.as_str());
-    client.read(path_and_query).await.unwrap_or_else(|| StatusCode::NOT_FOUND.into_response())
-}
-
 async fn write(
     State(client): State<Arc<Client>>,
     signed: Option<Extension<Signed>>,
@@ -509,18 +531,10 @@ async fn resolve_delivery(
 
 pub(crate) fn router(client: Arc<Client>) -> Router {
     Router::new()
-        .route("/agents/{id}/close", post(write))
         .route("/orchestrator/messages", post(write))
         .route("/activity", post(write))
         .route("/tasks/{id}/cancel-reason", put(write))
-        .route("/tasks/{id}/history", get(read))
         .route("/delivery-attempts/{id}/resolve", post(resolve_delivery))
-        .route("/pull-requests/{id}/resolve-conflicts", post(write))
-        .route("/options", get(read))
-        .route("/projects", get(read))
-        .route("/issues", get(read))
-        .route("/agents/search", get(read))
-        .route("/agents/{id}/activity", get(read))
         .with_state(client)
 }
 

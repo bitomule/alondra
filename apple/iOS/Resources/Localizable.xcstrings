@@ -1,6 +1,7 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Search fleet": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscar en la flota"}}}},
     "Service is no longer active": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El servicio ya no está activo"}}}},
     "Choose a non-empty file no larger than 20 MiB.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige un archivo que no esté vacío y no supere los 20 MiB."}}}},
     "The attachment could not be loaded.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el adjunto."}}}},

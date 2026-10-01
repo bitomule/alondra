@@ -197,7 +197,8 @@ async fn execute_action(
         && request.input.comments.is_empty() {
         return Ok(rejected_field(lang, "text", "This option needs text"));
     }
-    if action.verb == Verb::Ans && request.option_id.is_none() {
+    if action.verb == Verb::Ans && request.option_id.as_deref().is_none_or(str::is_empty)
+        && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
         return Ok(rejected_field(lang, "option_id", "Choose an option"));
     }
     if is_external(action.verb) {
@@ -348,19 +349,9 @@ async fn execute_external(
             Ok(to_applied(reply.status.as_u16(), reply.body))
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
-            let Some(run_id) = action.extra.as_deref() else { return Ok(no_longer_available(lang, "This run is no longer active")); };
             let runtime = crate::domain_orchestrator::load(home)?;
-            let ambiguous = runtime.active_run.is_some() && runtime.last_error.is_some();
-            if runtime.active_run.as_ref().is_none_or(|run| run.id != run_id)
-                || matches!(action.verb, Verb::OrchRetry | Verb::OrchAck) && !ambiguous
-                || action.verb == Verb::OrchStop && ambiguous
-            {
+            let Some((run_id, decision)) = orchestrator_decision(&runtime, action) else {
                 return Ok(no_longer_available(lang, "This run is no longer active"));
-            }
-            let decision = match action.verb {
-                Verb::OrchRetry => crate::domain_orchestrator::Decision::Retry,
-                Verb::OrchAck => crate::domain_orchestrator::Decision::Acknowledge,
-                _ => crate::domain_orchestrator::Decision::Cancel,
             };
             let reply = crate::domain_bootstrap::apply_orchestrator_decision(client.domain.clone(), home, decision, Some(&json!({"run_id":run_id})));
             Ok(to_applied(reply["status"].as_u64().unwrap_or(500) as u16, reply["body"].clone()))
@@ -388,6 +379,27 @@ async fn execute_external(
         }
         _ => Ok(no_longer_available(lang, "This action is no longer available")),
     }
+}
+
+fn orchestrator_decision<'a>(
+    runtime: &crate::domain_orchestrator::Runtime,
+    action: &'a ActionId,
+) -> Option<(&'a str, crate::domain_orchestrator::Decision)> {
+    if action.subject != "orchestrator" {
+        return None;
+    }
+    let run_id = action.extra.as_deref()?;
+    let ambiguous = runtime.active_run.is_some() && runtime.last_error.is_some();
+    if runtime.active_run.as_ref().is_none_or(|run| run.id != run_id) {
+        return None;
+    }
+    let decision = match action.verb {
+        Verb::OrchRetry if ambiguous => crate::domain_orchestrator::Decision::Retry,
+        Verb::OrchAck if ambiguous => crate::domain_orchestrator::Decision::Acknowledge,
+        Verb::OrchStop if !ambiguous => crate::domain_orchestrator::Decision::Cancel,
+        _ => return None,
+    };
+    Some((run_id, decision))
 }
 
 async fn schedule_action(
@@ -602,14 +614,25 @@ fn archive_done(
     if action.subject != "view" || action.revision > state.revision {
         return Ok(no_longer_available(lang, "This view has changed"));
     }
-    let tasks = archive_targets(state, action.revision);
+    let tasks: Vec<_> = archive_targets(state, action.revision)
+        .into_iter()
+        .map(|task| task.id.clone())
+        .collect();
     let mut revision = state.revision;
-    for task in tasks {
+    for task_id in tasks {
+        let current = domain.state()?;
+        let Some(task) = current.tasks.get(&task_id).filter(|task| {
+            task.state == alondra_core::domain_v2::TaskState::Done
+                && !task.archived
+                && task.revision <= action.revision
+        }) else {
+            continue;
+        };
         let envelope = CommandEnvelope {
             protocol_version: 2,
-            data_epoch: state.data_epoch.clone(),
+            data_epoch: current.data_epoch.clone(),
             command_id: archive_command_id(&request.command_id, &task.id),
-            expected_revision: task.revision,
+            expected_revision: current.revision,
             command: Command::ArchiveTask { task_id: task.id.clone(), archived: true },
         };
         match domain.execute(&Actor::User { user_id: format!("device:{device}") }, &envelope, None,
@@ -658,17 +681,27 @@ fn map_domain_action(
         Verb::Ans => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             let (InteractionPayload::Question { options, answer: None } | InteractionPayload::ActionRequest { options, answer: None }) = &interaction.payload else { return None; };
-            let option_id = request.option_id.clone()?;
-            let option = options.iter().find(|option| option.id == option_id)?;
+            let option_id = request.option_id.clone().unwrap_or_default();
             let mut inputs = std::collections::BTreeMap::new();
-            if let Some(text) = request.input.text.as_ref() {
+            let option = options.iter().find(|option| option.id == option_id);
+            if option_id.is_empty() {
+                let text = request.input.text.as_ref()?.trim();
+                if text.is_empty() { return None; }
+                inputs.insert("text".into(), alondra_core::domain_v2::InputValue::Text(text.into()));
+            } else if let Some(text) = request.input.text.as_ref() {
+                let option = option?;
                 let input = option.inputs.iter().find(|input| input.kind == alondra_core::domain_v2::InputKind::Text)?;
                 inputs.insert(input.id.clone(), alondra_core::domain_v2::InputValue::Text(text.clone()));
+            } else if option.is_none() {
+                return None;
             }
             Some((Command::AnswerQuestion {
                 interaction_id: interaction.id.clone(), option_id,
                 inputs, attachments: attachments.to_vec(),
-            }, format!("{} · {}", stamp("Answered", "Respondida"), option.label)))
+            }, match option {
+                Some(option) => format!("{} · {}", stamp("Answered", "Respondida"), option.label),
+                None => stamp("Answered", "Respondida"),
+            }))
         }
         Verb::Read => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
@@ -947,8 +980,6 @@ fn head_prefix(head: &str) -> &str {
 mod tests {
     use super::*;
 
-    use alondra_core::domain_v2::{RequestId, Task, TaskState};
-
     fn choice_spec(id: &str, selected: &str, default: &str) -> alondra_core::options::Spec {
         alondra_core::options::Spec {
             id: id.into(), label: id.into(), kind: alondra_core::options::Kind::Choice,
@@ -988,36 +1019,97 @@ mod tests {
         assert_eq!(draft["options"], json!({"old_option":"old_value"}));
     }
 
-    fn completed_task(id: &str, revision: u64) -> Task {
-        Task {
-            id: TaskId(id.into()), request_id: RequestId("request".into()), agent_id: None,
-            title: id.into(), state: TaskState::Done, revision, started: true,
-            review_prs: false, final_presentation: None, pr_id: None,
-            dependencies: Default::default(), stack: None, documents: Default::default(),
-            archived: false,
-        }
+    fn apply_seed_command(
+        domain: &crate::domain_runtime::DomainRuntime,
+        actor: Actor,
+        command_id: &str,
+        command: Command,
+    ) {
+        let state = domain.state().unwrap();
+        domain.execute(&actor, &CommandEnvelope {
+            protocol_version: 2,
+            data_epoch: state.data_epoch,
+            command_id: command_id.into(),
+            expected_revision: state.revision,
+            command,
+        }, None, || Ok(())).unwrap();
     }
 
-    #[test]
-    fn archive_batch_retry_keeps_child_identity_and_original_targets() {
-        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
-        state.tasks.insert(TaskId("task-a".into()), completed_task("task-a", 5));
-        state.tasks.insert(TaskId("task-b".into()), completed_task("task-b", 6));
-        let original: Vec<_> = archive_targets(&state, 6).into_iter()
-            .map(|task| (task.id.clone(), archive_command_id("request-uuid", &task.id)))
-            .collect();
-        assert_eq!(original.len(), 2);
+    fn semantic_receipt_count(home: &std::path::Path) -> i64 {
+        let database = crate::domain_database_migration::active_path(home);
+        let connection = rusqlite::Connection::open(database).unwrap();
+        connection.query_row("SELECT count(*) FROM semantic_receipts", [], |row| row.get(0)).unwrap()
+    }
 
-        // Simulate a stopped batch after its first durable child commit. A new
-        // completion must not be pulled into the retry of the old action.
-        state.tasks.get_mut(&original[0].0).unwrap().archived = true;
-        state.tasks.insert(TaskId("task-c".into()), completed_task("task-c", 7));
-        let remaining: Vec<_> = archive_targets(&state, 6).into_iter()
-            .map(|task| (task.id.clone(), archive_command_id("request-uuid", &task.id)))
-            .collect();
-        assert_eq!(remaining, vec![original[1].clone()]);
-        assert_ne!(original[0].1, original[1].1);
-        assert!(original[0].1.0.len() <= 256);
+    #[tokio::test]
+    async fn archive_done_is_idempotent() {
+        use alondra_core::domain_v2::DeliveryTarget;
+        use std::{fs, path::PathBuf};
+
+        struct TestHome(PathBuf);
+        impl Drop for TestHome {
+            fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        }
+
+        let home = std::env::temp_dir().join(format!("alondra-archive-action-{}", crate::auth::random_hex(8)));
+        fs::create_dir(&home).unwrap();
+        let _home = TestHome(home.clone());
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+        });
+        for task_id in ["task-a", "task-b"] {
+            apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("create-{task_id}"), Command::CreateTask {
+                task_id: task_id.into(), request_id: "request".into(), title: task_id.into(),
+                agent_id: Some("agent-a".into()), review_prs: false,
+                dependencies: Default::default(), stack: None,
+            });
+            let delivery_id = format!("delivery-{task_id}");
+            apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, &format!("present-{task_id}"), Command::PresentResult {
+                attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
+                body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
+                is_final: true,
+            });
+            apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
+                presentation_id: delivery_id.clone().into(),
+                targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
+            });
+            apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, &format!("finish-{task_id}"), Command::CompleteTask {
+                task_id: task_id.into(), presentation_id: delivery_id.into(),
+            });
+        }
+
+        let before = domain.state().unwrap();
+        let action = ActionId::new(Verb::ArchiveDone, "view", before.revision, None).unwrap();
+        let request = ActionRequest {
+            protocol: VIEWS_PROTOCOL,
+            command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: before.data_epoch.0.clone(),
+            client: "ios".into(),
+            lang: "en".into(),
+            action_id: action.to_string(),
+            option_id: None,
+            input: ActionInput::default(),
+        };
+        let receipts_before = semantic_receipt_count(&home);
+        let first = execute_action(&domain, &client, &home, "test-device", request.clone(), None, || Ok(())).await.unwrap();
+        assert_eq!(first["outcome"], "applied", "{first}");
+        let archived = domain.state().unwrap();
+        assert!(archived.tasks.values().all(|task| task.archived));
+        assert_eq!(semantic_receipt_count(&home), receipts_before + 2,
+            "the first application commits one durable archive command per task");
+
+        let second = execute_action(&domain, &client, &home, "test-device", request, None, || Ok(())).await.unwrap();
+        assert_eq!(second["outcome"], "applied", "{second}");
+        let repeated = domain.state().unwrap();
+        assert_eq!(repeated.revision, archived.revision, "repeating the action changes no domain revision");
+        assert!(repeated.tasks.values().all(|task| task.archived));
+        assert_eq!(semantic_receipt_count(&home), receipts_before + 2,
+            "the repeated action creates no duplicate durable commands");
     }
 
     #[test]
@@ -1069,6 +1161,70 @@ mod tests {
         assert_eq!(context_request(""),
             "I need more context before deciding. Explain what is at stake, the options with their consequences and your recommendation, and ask again.");
         assert!(context_request("Timing").contains("[What is missing: Timing]"));
+    }
+
+    #[test]
+    fn a_disabled_action_is_not_executed() {
+        use crate::domain_orchestrator::{Decision, Run, Runtime};
+
+        let retry = ActionId::new(Verb::OrchRetry, "orchestrator", 1, Some("run-1".into())).unwrap();
+        let acknowledge = ActionId::new(Verb::OrchAck, "orchestrator", 1, Some("run-1".into())).unwrap();
+        let stop = ActionId::new(Verb::OrchStop, "orchestrator", 1, Some("run-1".into())).unwrap();
+        assert!(orchestrator_decision(&Runtime::default(), &retry).is_none(),
+            "a retry that is not rendered for an active run must not execute");
+
+        let mut runtime = Runtime {
+            active_run: Some(Run {
+                id: "run-1".into(), message_ids: vec![], attempts: vec![],
+                started_at: 0, spawned: false,
+            }),
+            ..Default::default()
+        };
+        assert!(orchestrator_decision(&runtime, &retry).is_none());
+        assert_eq!(orchestrator_decision(&runtime, &stop).map(|(_, decision)| decision), Some(Decision::Cancel));
+
+        runtime.last_error = Some("uncertain".into());
+        assert_eq!(orchestrator_decision(&runtime, &retry).map(|(_, decision)| decision), Some(Decision::Retry));
+        assert_eq!(orchestrator_decision(&runtime, &acknowledge).map(|(_, decision)| decision), Some(Decision::Acknowledge));
+        assert!(orchestrator_decision(&runtime, &stop).is_none());
+
+        let forged = ActionId::new(Verb::OrchRetry, "another-subject", 1, Some("run-1".into())).unwrap();
+        assert!(orchestrator_decision(&runtime, &forged).is_none());
+    }
+
+    #[test]
+    fn free_text_question_maps_to_empty_option_and_text_input() {
+        use alondra_core::domain_v2::{Author, Interaction, InteractionPayload, Recipient, Scope, InputValue, QuestionOption};
+        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        state.interactions.insert("q-1".into(), Interaction {
+            attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
+            author: Author::System, recipient: Recipient::User, body: "Pick one or explain".into(),
+            blocking: true, subject: None, payload: InteractionPayload::Question {
+                options: vec![QuestionOption {
+                    id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![],
+                }], answer: None,
+            }, revision: 1, order: 1, withdrawn: false,
+        });
+        let request = ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "ios".into(), lang: "en".into(),
+            action_id: String::new(), option_id: Some(String::new()),
+            input: ActionInput { text: Some("  My own answer  ".into()), ..Default::default() },
+        };
+        let action = ActionId::new(Verb::Ans, "q-1", 1, None).unwrap();
+        let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
+            map_domain_action(&state, &action, &request, &[], Lang::En) else { panic!("free answer") };
+        assert!(option_id.is_empty());
+        assert_eq!(inputs.get("text"), Some(&InputValue::Text("My own answer".into())));
+        let mut blank = request;
+        blank.input.text = Some("   ".into());
+        assert!(map_domain_action(&state, &action, &blank, &[], Lang::En).is_none());
+        blank.option_id = Some("yes".into());
+        blank.input.text = None;
+        let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
+            map_domain_action(&state, &action, &blank, &[], Lang::En) else { panic!("option answer") };
+        assert_eq!(option_id, "yes");
+        assert!(inputs.is_empty());
     }
 
     #[test]

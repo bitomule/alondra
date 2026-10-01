@@ -24,6 +24,7 @@ swift_library(
     name = "AlondraViewsShared",
     srcs = [
         "Shared/Sources/AlondraError.swift",
+        "Shared/Sources/Artifacts.swift",
         "Shared/Sources/AttachmentFile.swift",
         "Shared/Sources/CloseNode.swift",
         "Shared/Sources/Diff/DiffHighlighter.swift",
@@ -45,6 +46,7 @@ swift_test(
     name = "AlondraSharedTests",
     srcs = [
         "Shared/Tests/APIErrorPresentationTests.swift",
+        "Shared/Tests/ArtifactTests.swift",
         "Shared/Tests/AttachmentTests.swift",
         "Shared/Tests/CodeColourTests.swift",
         "Shared/Tests/DiffHighlighterTests.swift",
@@ -179,6 +181,7 @@ swift_library(
         "iOS/Sources/ServiceTriage/ServiceHomeCard.swift",
         "iOS/Sources/ServiceTriage/ServiceHomeView.swift",
         "iOS/Sources/ServiceTriage/ServiceWireDocumentView.swift",
+        "iOS/Sources/ServiceTriage/ServiceWirePullRequestView.swift",
         "iOS/Sources/Theme.swift",
     ],
     module_name = "AlondraiOS",

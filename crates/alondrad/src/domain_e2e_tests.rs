@@ -189,7 +189,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     assert_eq!(hook(&home, json!({"session_id": "stranger", "hook_event_name": "Stop"})), json!({}));
     let stop = hook(&home, json!({"session_id": session, "hook_event_name": "Stop"}));
     let context = stop["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_owned();
-    assert_eq!(context, "The user answered: Yes.");
+    assert_eq!(context, "Yes.");
     assert!(!context.contains("data_epoch") && !context.contains("revision=")
         && !context.contains("interaction_id=") && !context.contains("option_id"), "{stop}");
     let evidence = daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();

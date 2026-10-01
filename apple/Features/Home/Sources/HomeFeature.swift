@@ -74,6 +74,7 @@ public struct HomeFeature {
             case let .focus(id):
                 state.key = .focusedHome(id)
                 state.document = nil
+                state.orderedIDs = []
                 state.index = 0
                 return loadHome(state.key, known: nil)
             case let .stale(keys):

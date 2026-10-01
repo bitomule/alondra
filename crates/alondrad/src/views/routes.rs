@@ -561,6 +561,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn protocol_mismatch_is_refused() {
+        let (home, state) = fixture();
+        let response = respond(
+            &state.client(),
+            "home",
+            "protocol=2&client=ios&lang=es",
+            Transport::Loopback,
+            None,
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(value["code"], "incompatible_protocol");
+        assert_eq!(value["message"], "Actualiza Alondra");
+        drop(state);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
     async fn views_route_requires_a_signed_device() {
         let (home, state) = fixture();
         let response = local(
@@ -647,6 +669,19 @@ mod tests {
         assert_eq!(client.language_for_device("phone-b"), Lang::En);
         drop(client);
         drop(state);
+        let reopened = V2Only::open(&home).unwrap();
+        let reopened_client = reopened.client();
+        assert_eq!(reopened_client.language_for_device("phone-a"), Lang::Es,
+            "pushes after a daemon restart use the device's persisted language");
+        assert_eq!(reopened_client.language_for_device("phone-b"), Lang::En);
+        let response = relay(&reopened_client, "phone-a", "/views/home?protocol=1&client=ios&lang=en").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        drop(reopened_client);
+        drop(reopened);
+        let reopened = V2Only::open(&home).unwrap();
+        assert_eq!(reopened.client().language_for_device("phone-a"), Lang::En,
+            "the last language survives a second restart");
+        drop(reopened);
         std::fs::remove_dir_all(home).unwrap();
     }
 }

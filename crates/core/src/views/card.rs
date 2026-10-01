@@ -444,7 +444,7 @@ fn pr_detail(
         ) {
         actions.push(Action {
             id: id.to_string(),
-            label: t!(context.lang, "Request changes", "Solicitar cambios").into(),
+            label: t!(context.lang, "Request changes", "Pedir cambios").into(),
             style: Style::Secondary,
             presentation: Presentation::Button,
             options: vec![],
@@ -620,7 +620,7 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
                 {
                     (
                         Verb::Ctx,
-                        t!(context.lang, "Need more context", "Pedir más contexto"),
+                        t!(context.lang, "Need more context", "Necesito más contexto"),
                         t!(context.lang, "What is missing?", "¿Qué falta?"),
                         "c",
                     )
@@ -670,12 +670,16 @@ fn action_for(
             t!(context.lang, "Answer", "Responder"),
             Style::Primary,
             Presentation::Options,
-            Input::None,
+            Input::Text {
+                placeholder: t!(context.lang, "Answer in your own words…", "Responde con tus palabras…").into(),
+                required: false,
+                multiline: true,
+            },
             None,
         ),
         "mark_read" => (
             Verb::Read,
-            t!(context.lang, "Mark as read", "Marcar como leído"),
+            t!(context.lang, "Mark as read", "Leído"),
             Style::Primary,
             Presentation::Button,
             Input::None,
@@ -695,7 +699,7 @@ fn action_for(
         ),
         "submit_feedback" => (
             Verb::Changes,
-            t!(context.lang, "Request changes", "Solicitar cambios"),
+            t!(context.lang, "Request changes", "Pedir cambios"),
             Style::Secondary,
             Presentation::Button,
             Input::Text {

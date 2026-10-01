@@ -111,7 +111,13 @@ public struct ActionFeature {
             case let .fieldsChanged(fields): state.fields = fields; return .none
             case .submit:
                 guard let selected = state.action, selected.enabled, selected.id != nil, !state.inFlight else { return .none }
-                if selected.presentation == .options && state.selectedOptionID == nil {
+                let freeText: Bool = {
+                    guard state.selectedOptionID == nil,
+                          !state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
+                    if case .text = selected.input { return true }
+                    return false
+                }()
+                if selected.presentation == .options && !freeText && state.selectedOptionID == nil {
                     state.error = String(localized: "Choose an option")
                     return .none
                 }
@@ -200,7 +206,7 @@ public struct ActionFeature {
         ActionRequest(
             commandId: uuid().uuidString.lowercased(), dataEpoch: state.dataEpoch,
             client: state.client, lang: state.lang, actionId: actionID,
-            optionId: state.selectedOptionID,
+            optionId: state.selectedOptionID ?? (state.action?.presentation == .options && !state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "" : nil),
             input: ActionInput(text: state.text.isEmpty ? nil : state.text,
                 attachments: state.attachments.isEmpty ? nil : state.attachments,
                 comments: state.comments.isEmpty ? nil : state.comments,

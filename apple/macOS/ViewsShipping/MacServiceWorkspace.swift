@@ -500,6 +500,7 @@ private struct MacViewSidebarRow: View {
         case .action: .pink
         case .document: .blue
         case .pullRequest: .green
+        case .notice: .purple
         case .node: nodeTint
         case .task: .secondary
         default: .secondary
@@ -563,7 +564,7 @@ private func color(forTaskRow row: Row) -> Color {
         case .action: return .pink
         case .pullRequest: return .mint
         case .branch: return .indigo
-        case .check: return .teal
+        case .check: return .gray
         case .warning: return .gray
         default: break
         }

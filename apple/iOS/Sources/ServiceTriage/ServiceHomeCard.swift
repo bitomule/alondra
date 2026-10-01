@@ -17,11 +17,15 @@ struct ServiceHomeCard: View {
     let openReview: (String) -> Void
     @Environment(\.openURL) private var openURL
     @State private var contentHeight: CGFloat?
+    @State private var replyDraft = ""
+    @State private var contextAction: AlondraViews.Action?
+    @State private var contextNote = ""
     @FocusState private var replyFocused: Bool
     @Environment(\.dynamicTypeSize) private var typeSize
 
     private var kind: Kind { Kind(card) }
     private var tint: Color { kind.tint }
+    private var actionTint: Color { kind.tint == Palette.slate ? Palette.dawn : kind.tint }
     private var allActions: [AlondraViews.Action] {
         card.actions + card.children.flatMap(\.actions)
     }
@@ -29,11 +33,51 @@ struct ServiceHomeCard: View {
         guard let action = actions.action, allActions.contains(where: { $0.id == action.id }) else { return nil }
         return action
     }
-    private var activeInput: Input? {
-        guard let selected else { return nil }
-        return selected.options.first(where: { $0.id == actions.selectedOptionID })?.input ?? selected.input
+    private var replyAction: AlondraViews.Action? {
+        let preferred: [String] = switch card.icon {
+        case .pullRequest, .document: ["changes", "reply", "ans", "ask_pr"]
+        default: ["ans", "reply", "changes", "ask_pr"]
+        }
+        for verb in preferred {
+            if let action = allActions.first(where: { isReplyAction($0, verb: verb) }) { return action }
+        }
+        return nil
+    }
+    private func isReplyAction(_ action: AlondraViews.Action, verb: String) -> Bool {
+        guard action.enabled, action.id?.hasPrefix(verb + ":") == true else { return false }
+        if action.presentation == .options { return true }
+        if case .text = action.input { return true }
+        return false
+    }
+    private func inputPlaceholder(_ action: AlondraViews.Action) -> String {
+        if card.icon == .pullRequest { return String(localized: "What should change?") }
+        if case let .text(value, _, _) = action.input {
+            return value ?? String(localized: "Write your answer")
+        }
+        return String(localized: "Write your answer")
     }
     private var stamp: String? { selected == nil ? nil : actions.stamp }
+    private var isQuestion: Bool { card.icon == .question || card.icon == .action }
+    private var isDocumentReview: Bool { card.icon == .document || card.icon == .delivery }
+    private func verb(_ action: AlondraViews.Action) -> String {
+        action.id?.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
+    }
+    private func controlRank(_ action: AlondraViews.Action) -> Int {
+        switch (card.icon, verb(action)) {
+        case (.question, "ctx"), (.action, "ctx"): return 1
+        case (.document, "changes"), (.delivery, "changes"): return 1
+        case (.document, "accept"), (.delivery, "accept"): return 2
+        case (.pullRequest, "ask_pr"): return 1
+        case (.pullRequest, "changes"): return 2
+        case (.pullRequest, "merge"): return 3
+        default: return 4
+        }
+    }
+    private var controlActions: [AlondraViews.Action] {
+        card.actions.filter { action in
+            action.presentation != .options && (action.id != replyAction?.id || action.comments != nil)
+        }.sorted { controlRank($0) < controlRank($1) }
+    }
 
     var body: some View {
         layout
@@ -53,6 +97,24 @@ struct ServiceHomeCard: View {
             .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
             .scaleEffect(stamp == nil ? 1 : 1.02)
             .animation(.spring(duration: 0.35, bounce: 0.4), value: stamp)
+            .onChange(of: actions.stamp) { old, new in
+                if old == nil, new != nil { replyDraft = "" }
+            }
+            .alert("What do you need to decide?", isPresented: Binding(
+                get: { contextAction != nil }, set: { if !$0 { contextAction = nil } }
+            )) {
+                TextField("Optional", text: $contextNote)
+                Button("Cancel", role: .cancel) { contextAction = nil }
+                Button("Ask for Context") {
+                    guard let contextAction else { return }
+                    actions.send(.present(contextAction))
+                    actions.send(.textChanged(contextNote))
+                    submit()
+                    self.contextAction = nil
+                }
+            } message: {
+                Text("The node will explain and ask again.")
+            }
     }
 
     @ViewBuilder private var layout: some View {
@@ -126,6 +188,9 @@ struct ServiceHomeCard: View {
                 }
             }
             if let body = card.body {
+                if card.icon == .delivery || card.icon == .document {
+                    ServiceArtifactLinks(text: body.text, tint: tint)
+                }
                 if body.truncated || body.more != nil || body.text.count > 600 {
                     excerpt(body)
                 } else {
@@ -133,7 +198,7 @@ struct ServiceHomeCard: View {
                 }
             }
             ForEach(card.attachments, id: \.id) { attachment in
-                Button { openReview("card:\(card.id)") } label: {
+                Button { openCardDetail() } label: {
                     HStack(spacing: 12) {
                         Image(systemName: "doc.text.magnifyingglass").font(.title3).foregroundStyle(tint)
                         VStack(alignment: .leading, spacing: 2) {
@@ -175,15 +240,15 @@ struct ServiceHomeCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background {
             Color.clear.contentShape(.rect)
-                .onTapGesture { openReview("card:\(card.id)") }
+                .onTapGesture { openCardDetail() }
         }
-        .accessibilityAction(named: "Open") { openReview("card:\(card.id)") }
+        .accessibilityAction(named: "Open") { openCardDetail() }
     }
 
     private func excerpt(_ markdown: Markdown) -> some View {
         let blocks = MarkdownParser.blocks(from: markdown.text)
         let segments = MarkdownParser.segments(blocks.prefix(5))
-        return Button { openReview("card:\(card.id)") } label: {
+        return Button { openCardDetail() } label: {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(segments) { segment in
@@ -229,6 +294,10 @@ struct ServiceHomeCard: View {
         }
     }
 
+    private func openCardDetail() {
+        openReview(card.icon == .pullRequest ? "pull_request:\(card.id)" : "card:\(card.id)")
+    }
+
     @ViewBuilder private func contextNavigation<Content: View>(
         _ line: ContextLine, @ViewBuilder content: () -> Content
     ) -> some View {
@@ -243,22 +312,16 @@ struct ServiceHomeCard: View {
 
     private var controls: some View {
         VStack(spacing: 8) {
-            ForEach(card.actions, id: \.label) { action in
-                actionControl(action)
-            }
-            if let selected {
-                if selected.attachments {
-                    ServiceAttachmentStrip(store: attachments)
-                }
-                if let activeInput, case let .text(placeholder, _, _) = activeInput {
-                    composer(placeholder: placeholder ?? String(localized: "Write your answer"))
-                } else if selected.presentation == .options {
-                    Button(selected.label, action: submit)
-                        .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
-                        .buttonStyle(ServiceFilledStyle(tint: tint))
-                        .disabled(actions.selectedOptionID == nil || actions.inFlight)
+            if isQuestion {
+                ForEach(card.actions.filter { $0.presentation == .options }, id: \.label) { action in
+                    actionControl(action)
                 }
             }
+            if let replyAction {
+                ServiceAttachmentStrip(store: attachments)
+                composer(placeholder: inputPlaceholder(replyAction), action: replyAction)
+            }
+            ForEach(controlActions, id: \.label) { action in actionControl(action) }
         }
     }
 
@@ -272,7 +335,12 @@ struct ServiceHomeCard: View {
                         if selected?.id != action.id { actions.send(.present(action)) }
                         actions.send(.chooseOption(option.id))
                     } label: {
-                        Text(option.label).font(.headline)
+                        VStack(alignment: compact ? .center : .leading, spacing: 4) {
+                            Text(option.label).font(.headline)
+                            if !compact, let description = option.description {
+                                Text(description).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
                             .frame(maxWidth: .infinity, minHeight: 46, alignment: compact ? .center : .leading)
                             .padding(.horizontal, compact ? 0 : 6)
                     }
@@ -283,8 +351,35 @@ struct ServiceHomeCard: View {
         } else { actionButton(action) }
     }
 
-    private func actionButton(_ action: AlondraViews.Action) -> some View {
-        Button {
+    @ViewBuilder private func actionButton(_ action: AlondraViews.Action) -> some View {
+        if action.presentation == .menu, !action.options.isEmpty {
+            Menu {
+                ForEach(action.options, id: \.id) { option in
+                    Button(option.label) {
+                        actions.send(.present(action))
+                        actions.send(.chooseOption(option.id))
+                        submit()
+                    }
+                }
+            } label: {
+                Label(action.label + "…", systemImage: "arrow.triangle.merge")
+                    .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
+            }
+            .buttonStyle(ServiceFilledStyle(tint: actionTint))
+            .disabled(!action.enabled || actions.inFlight)
+        } else {
+            Button {
+            if verb(action) == "ctx" {
+                contextNote = ""
+                contextAction = action
+                return
+            }
+            if verb(action) == "ask_pr" {
+                actions.send(.present(action))
+                actions.send(.textChanged(replyDraft))
+                submit()
+                return
+            }
             if action.comments != nil {
                 if case let .view(key) = action.link { openReview(key) }
                 else { openReview("card:\(card.id)") }
@@ -304,27 +399,55 @@ struct ServiceHomeCard: View {
             }
             actions.send(.present(action))
             if case .none = action.input, action.presentation == .button { submit() }
-        } label: {
-            Text(action.label).font(action.style == .primary ? .headline : .subheadline.weight(.medium))
-                .frame(maxWidth: .infinity, minHeight: action.style == .primary ? 50 : 30)
+            } label: {
+                let prominent = isDocumentReview ? verb(action) == "changes" : action.style == .primary
+                if verb(action) == "ctx" {
+                    Label(action.label, systemImage: "questionmark.bubble")
+                        .font(.subheadline.weight(.medium)).frame(minHeight: 30)
+                } else if verb(action) == "read" {
+                    Label(action.label, systemImage: "checkmark")
+                        .font(prominent ? .headline : .subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: prominent ? 50 : 30)
+                } else {
+                    Text(action.label).font(prominent ? .headline : .subheadline.weight(.medium))
+                        .frame(maxWidth: .infinity, minHeight: prominent ? 50 : 30)
+                }
+            }
+            .buttonStyle(AnyButtonStyle(tint: (isDocumentReview ? verb(action) == "changes" : action.style == .primary) ? actionTint : nil))
+            .disabled(!action.enabled || actions.inFlight ||
+                (verb(action) == "ask_pr" && replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
         }
-        .buttonStyle(action.style == .primary ? AnyButtonStyle(tint: tint) : AnyButtonStyle(tint: nil))
-        .disabled(!action.enabled || actions.inFlight)
     }
 
-    private func composer(placeholder: String) -> some View {
+    private func composer(placeholder: String, action: AlondraViews.Action) -> some View {
         HStack(alignment: .bottom, spacing: 8) {
-            if selected?.attachments == true {
+            if action.attachments {
                 ServiceAttachButton(store: attachments).padding(.leading, 6).padding(.bottom, 4)
             }
-            TextField(placeholder, text: Binding(get: { actions.text }, set: { actions.send(.textChanged($0)) }), axis: .vertical)
+            TextField(placeholder, text: $replyDraft, axis: .vertical)
                 .lineLimit(1...5).focused($replyFocused)
                 .padding(.leading, 16).padding(.vertical, 12)
-            Button { replyFocused = false; submit() } label: {
+                .onChange(of: replyDraft) { _, new in
+                    guard !new.isEmpty, selected?.id == action.id,
+                          let optionID = actions.selectedOptionID,
+                          let option = action.options.first(where: { $0.id == optionID }) else { return }
+                    if case .none = option.input { actions.send(.present(action)) }
+                }
+            Button {
+                replyFocused = false
+                if selected?.id != action.id {
+                    actions.send(.present(action))
+                }
+                if !replyDraft.isEmpty { actions.send(.textChanged(replyDraft)) }
+                submit()
+            } label: {
                 Image(systemName: "arrow.up").font(.body.weight(.bold)).foregroundStyle(Palette.onAccent)
                     .frame(width: 36, height: 36).background(tint, in: .circle)
             }
-            .buttonStyle(ServicePressStyle()).disabled(actions.inFlight).padding(4)
+            .buttonStyle(ServicePressStyle())
+            .disabled((replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                && !(selected?.id == action.id && actions.selectedOptionID != nil)) || actions.inFlight)
+            .padding(4)
             .accessibilityLabel("Send")
         }
         .background(Palette.cardRaised, in: .rect(cornerRadius: 22, style: .continuous))
@@ -364,6 +487,42 @@ struct ServiceHomeCard: View {
         case .task: "checklist"
         case .mission: "scope"
         default: "circle.fill"
+        }
+    }
+}
+
+struct ServiceArtifactLink: View {
+    let url: URL
+    let tint: Color
+
+    var body: some View {
+        Link(destination: url) {
+            HStack(spacing: 12) {
+                Image(systemName: "safari").font(.title3).foregroundStyle(tint)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(Artifacts.openInBrowserLabel).font(.headline).foregroundStyle(Palette.ink)
+                    Text(url.absoluteString).font(.caption).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Image(systemName: "arrow.up.right").font(.footnote.weight(.bold)).foregroundStyle(.tertiary)
+            }
+            .padding(14)
+            .background(tint.opacity(0.10), in: .rect(cornerRadius: 18, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(tint.opacity(0.25)))
+            .contentShape(.rect(cornerRadius: 18))
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+struct ServiceArtifactLinks: View {
+    let text: String
+    let tint: Color
+
+    var body: some View {
+        ForEach(Artifacts.urls(in: text), id: \.self) { url in
+            ServiceArtifactLink(url: url, tint: tint).padding(.bottom, 12)
         }
     }
 }

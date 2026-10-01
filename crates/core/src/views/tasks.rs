@@ -18,6 +18,23 @@ fn state(task: &Task, lang: super::Lang) -> &'static str {
     }
 }
 
+fn effort_label(effort: &str, lang: super::Lang) -> String {
+    match effort {
+        "auto" => t!(lang, "Auto", "Automático"),
+        "light" => t!(lang, "Light", "Ligero"),
+        "normal" => t!(lang, "Normal", "Normal"),
+        "hard" => t!(lang, "Hard", "A fondo"),
+        "low" => t!(lang, "Low", "Bajo"),
+        "medium" => t!(lang, "Medium", "Medio"),
+        "high" => t!(lang, "High", "Alto"),
+        "xhigh" => t!(lang, "Extra high", "Muy alto"),
+        "max" => t!(lang, "Maximum", "Máximo"),
+        "ultra" => t!(lang, "Ultra", "Ultra"),
+        other => other,
+    }
+    .into()
+}
+
 pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     let (icon, tone) = common::task_presentation(task.state);
     let mut row = common::row(
@@ -448,7 +465,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         if let Some(effort) = &options.effort {
             task_options.push(Fact {
                 label: t!(context.lang, "Effort", "Esfuerzo").into(),
-                value: effort.clone(),
+                value: effort_label(effort, context.lang),
                 tone: None,
                 link: None,
             });
@@ -486,9 +503,10 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             Verb::Msg, &agent_id.0, context.domain.revision,
             t!(context.lang, "Message", "Mensaje"), Style::Secondary,
         ) {
-            if let Ok(id) = super::action_id::ActionId::new(
+            match super::action_id::ActionId::new(
                 Verb::Msg, &agent_id.0, context.domain.revision, Some(task.id.0.clone()),
             ) {
+                Ok(id) => {
                 message.id = id.to_string();
                 message.key = (context.client == super::Client::Tui).then(|| "M".into());
                 message.input = super::Input::Text {
@@ -498,6 +516,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 };
                 message.attachments = true;
                 actions.push(message);
+                }
+                Err(_) => eprintln!("Alondra omitted an action with an invalid identifier ({:?})", Verb::Msg),
             }
         }
     }

@@ -913,7 +913,7 @@ mod tests {
         let spanish = user_push_payload(&state, Some(push_fixture_id("question")), Lang::Es);
         assert!(english["alondra"].get("actions_es").is_none());
         assert_eq!(english["alondra"]["actions"][2]["label"], "Need more context");
-        assert_eq!(spanish["alondra"]["actions"][2]["label"], "Pedir más contexto");
+        assert_eq!(spanish["alondra"]["actions"][2]["label"], "Necesito más contexto");
     }
 
     fn push_fixture_id(name: &str) -> &'static str {

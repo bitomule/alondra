@@ -33,7 +33,7 @@ public enum ViewsDate {
 
 /// The view palette mirrors the app's existing Palette values and adapts them to the same
 /// light/dark colors. These components deliberately leave screen layout to their callers.
-private enum ViewPalette {
+enum ViewPalette {
     static let ink = adaptive(light: 0x1B1A18, dark: 0xF4EFE8)
     static let card = adaptive(light: 0xFFFDFA, dark: 0x1C1E27)
     static let raised = adaptive(light: 0xFFFFFF, dark: 0x252836)

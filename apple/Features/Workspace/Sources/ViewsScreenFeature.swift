@@ -25,8 +25,15 @@ public struct ViewsScreenFeature {
         public var pickerQuery = ""
         public var pickerLoading = false
         public var pickerError: String?
+        public var searchQuery = ""
+        public var searchDocument: ViewDocument?
+        public var searchLoading = false
         public var attachmentPreview: ViewsAttachmentPreview?
         public var action: ActionFeature.State
+
+        public var hasInlineForm: Bool {
+            key.rawValue.hasPrefix("new_request") || key.rawValue.hasPrefix("schedule:")
+        }
 
         public init(key: ViewKey, owner: String) {
             self.key = key
@@ -47,12 +54,13 @@ public struct ViewsScreenFeature {
         case presentForm(WireForm)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
         case pickerSelected(String), pickerClosed
+        case searchQueryChanged(String), searchLoaded(String, ViewFetch), searchFailed(String, String)
         case action(ActionFeature.Action)
     }
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case load, picker }
+    private enum CancelID { case load, picker, search }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.action, action: \.action) { ActionFeature() }
@@ -69,7 +77,7 @@ public struct ViewsScreenFeature {
                 return load(state, force: true)
             case .disappeared:
                 state.isPresented = false
-                return .merge(.cancel(id: CancelID.load), .run { [viewsClient, owner = state.owner] _ in
+                return .merge(.cancel(id: CancelID.load), .cancel(id: CancelID.search), .run { [viewsClient, owner = state.owner] _ in
                     await viewsClient.closeScreen(owner)
                 })
             case .reloadForm(let fieldID, let value):
@@ -135,8 +143,57 @@ public struct ViewsScreenFeature {
                 state.pickerFieldID = nil
                 state.pickerDocument = nil
                 return .cancel(id: CancelID.picker)
+            case .searchQueryChanged(let query):
+                guard state.key.rawValue == "fleet" else { return .none }
+                state.searchQuery = query
+                state.searchLoading = !query.isEmpty
+                state.searchDocument = nil
+                if query.isEmpty {
+                    state.searchDocument = nil
+                    let owner = state.owner
+                    let key = state.key
+                    return .merge(.cancel(id: CancelID.search), .run { [viewsClient] _ in
+                        await viewsClient.openScreen(owner, [key])
+                    })
+                }
+                let owner = state.owner
+                let baseKey = state.key
+                let searchKey = ViewKey.search(query)
+                return .run { [clock, viewsClient] send in
+                    do {
+                        try await clock.sleep(for: .milliseconds(250))
+                        await viewsClient.openScreen(owner, [baseKey, searchKey])
+                        await send(.searchLoaded(query, try await viewsClient.load(searchKey, nil)))
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        await send(.searchFailed(query, String(localized: "Couldn’t load this from your Mac. Try again.")))
+                    }
+                }.cancellable(id: CancelID.search, cancelInFlight: true)
+            case .searchLoaded(let query, .document(let document)):
+                guard query == state.searchQuery else { return .none }
+                state.searchDocument = document
+                state.searchLoading = false
+                return .none
+            case .searchLoaded(let query, .unchanged):
+                guard query == state.searchQuery else { return .none }
+                state.searchLoading = false
+                return .none
+            case .searchFailed(let query, _):
+                guard query == state.searchQuery else { return .none }
+                state.searchLoading = false
+                return .none
             case .stale(let keys):
-                guard state.isPresented, keys.contains(state.key.rawValue) else { return .none }
+                guard state.isPresented else { return .none }
+                if let search = state.searchDocument, keys.contains(search.key), !state.searchQuery.isEmpty {
+                    let query = state.searchQuery
+                    let key = ViewKey.search(query)
+                    return .run { [viewsClient] send in
+                        do { await send(.searchLoaded(query, try await viewsClient.load(key, search.version))) }
+                        catch { await send(.searchFailed(query, String(localized: "Couldn’t load this from your Mac. Try again."))) }
+                    }.cancellable(id: CancelID.search, cancelInFlight: true)
+                }
+                guard keys.contains(state.key.rawValue) else { return .none }
                 state.loading = true
                 return load(state)
             case .reset:
@@ -148,15 +205,18 @@ public struct ViewsScreenFeature {
                 guard document.key == state.key.rawValue else { return .none }
                 state.document = document
                 state.action.dataEpoch = document.dataEpoch
-                if state.form != nil,
-                   let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> WireForm? in
+                if let updated = document.sections.lazy.flatMap(\.items).compactMap({ item -> WireForm? in
                        if case let .form(form) = item { form } else { nil }
-                   }).first {
+                   }).first, state.form != nil || state.hasInlineForm {
+                    let wasEditing = state.form != nil
                     state.form = updated
                     state.action.action = updated.submit
                     state.action.fields = Dictionary(uniqueKeysWithValues: updated.fields.map {
-                        ($0.id, state.action.fields[$0.id] ?? $0.value)
+                        ($0.id, wasEditing ? state.action.fields[$0.id] ?? $0.value : $0.value)
                     })
+                    state.action.requiresAttachments = updated.submit.attachments || updated.fields.contains {
+                        if case .attachments = $0.kind { true } else { false }
+                    }
                 }
                 state.loading = false
                 state.error = nil
@@ -204,6 +264,11 @@ public struct ViewsScreenFeature {
                 return .none
             case .action(.response(let response)) where response.outcome == .applied:
                 state.loading = true
+                if state.hasInlineForm {
+                    state.form = nil
+                    state.action.action = nil
+                    return load(state, force: true)
+                }
                 return .merge(load(state), .send(.action(.dismiss)))
             case .action(.present):
                 state.form = nil

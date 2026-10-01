@@ -1,0 +1,318 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "schedule",
+  "key": "schedule:new",
+  "client": "ios",
+  "version": "vd735a77bb632d88d",
+  "cursor": "cursor-1",
+  "title": "New Schedule",
+  "status": {
+    "version": "v164538ff023163dd",
+    "summary": "1 question · 3 to read · 0 nodes working",
+    "badge": 4,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Agents",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "form",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "form",
+          "id": "schedule",
+          "fields": [
+            {
+              "id": "name",
+              "label": "Name",
+              "kind": {
+                "kind": "text",
+                "placeholder": null
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "mission",
+              "label": "Mission",
+              "kind": {
+                "kind": "multiline",
+                "placeholder": null
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "project",
+              "label": "Project",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "",
+                    "label": "Projects folder"
+                  },
+                  {
+                    "id": "Demo Garden",
+                    "label": "Demo Garden"
+                  }
+                ]
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": true
+            },
+            {
+              "id": "repeat",
+              "label": "Repeat",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "daily",
+                    "label": "Daily"
+                  },
+                  {
+                    "id": "weekly",
+                    "label": "Weekly"
+                  },
+                  {
+                    "id": "every_hours",
+                    "label": "Hours"
+                  },
+                  {
+                    "id": "every_days",
+                    "label": "Days"
+                  },
+                  {
+                    "id": "every_months",
+                    "label": "Months"
+                  },
+                  {
+                    "id": "once",
+                    "label": "Once"
+                  }
+                ]
+              },
+              "value": "daily",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "weekday",
+              "label": "Weekday",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "0",
+                    "label": "Sunday"
+                  },
+                  {
+                    "id": "1",
+                    "label": "Monday"
+                  },
+                  {
+                    "id": "2",
+                    "label": "Tuesday"
+                  },
+                  {
+                    "id": "3",
+                    "label": "Wednesday"
+                  },
+                  {
+                    "id": "4",
+                    "label": "Thursday"
+                  },
+                  {
+                    "id": "5",
+                    "label": "Friday"
+                  },
+                  {
+                    "id": "6",
+                    "label": "Saturday"
+                  }
+                ]
+              },
+              "value": 1,
+              "required": true,
+              "visible_when": {
+                "field": "repeat",
+                "equals": "weekly"
+              },
+              "reload_on_change": false
+            },
+            {
+              "id": "interval",
+              "label": "Interval",
+              "kind": {
+                "kind": "stepper",
+                "min": 1,
+                "max": 365
+              },
+              "value": 1,
+              "required": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "every_hours",
+                  "every_days",
+                  "every_months"
+                ]
+              },
+              "reload_on_change": false
+            },
+            {
+              "id": "start_at",
+              "label": "Start date",
+              "kind": {
+                "kind": "date"
+              },
+              "value": null,
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "time",
+              "label": "Time",
+              "kind": {
+                "kind": "time"
+              },
+              "value": "09:00",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "active",
+              "label": "Active",
+              "kind": {
+                "kind": "toggle"
+              },
+              "value": true,
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "disallowed_tools",
+              "label": "Disallowed tools",
+              "kind": {
+                "kind": "lines",
+                "placeholder": null
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "pr",
+              "label": "PRs",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "review",
+                    "label": "Review each one"
+                  },
+                  {
+                    "id": "auto_merge",
+                    "label": "Auto-merge"
+                  }
+                ]
+              },
+              "value": "review",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "effort",
+              "label": "Effort",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Auto"
+                  },
+                  {
+                    "id": "light",
+                    "label": "Light"
+                  },
+                  {
+                    "id": "normal",
+                    "label": "Normal"
+                  },
+                  {
+                    "id": "hard",
+                    "label": "Hard"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "sched_save:view@0",
+            "label": "Save Schedule",
+            "style": "primary",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": false,
+            "enabled": true
+          }
+        }
+      ]
+    }
+  ]
+}

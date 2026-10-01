@@ -1,5 +1,5 @@
-//! Each route is exercised the way the TUI calls it: a signed request with the body of
-//! `fixtures/client-v2`, over the real router, against a real domain database.
+//! Public routes are exercised with signed requests. Views use the same client
+//! in-process, so their reads and actions exercise that client directly.
 use super::*;
 use crate::auth::Auth;
 use crate::domain_bootstrap::V2Only;
@@ -99,9 +99,22 @@ impl Fixture {
     }
 
     pub(super) async fn get_json(&self, path: &str) -> Value {
-        let (status, body) = self.get(path).await;
+        let (status, body) = self.local_get(path).await;
         assert_eq!(status, StatusCode::OK, "{path}: {}", String::from_utf8_lossy(&body));
         serde_json::from_slice(&body).unwrap()
+    }
+
+    async fn local_get(&self, path: &str) -> (StatusCode, Vec<u8>) {
+        let Some(response) = self.client.read(path).await else { return (StatusCode::NOT_FOUND, vec![]) };
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), 2 * 1024 * 1024).await.unwrap();
+        (status, body.to_vec())
+    }
+
+    async fn local_send(&self, path: &str, body: &Value) -> (StatusCode, Value) {
+        let route = parse_write(path).unwrap();
+        let reply = self.client.write("device:test", route, body, None, &|| Ok(())).await.unwrap();
+        (reply.status, reply.body)
     }
 
     async fn runtime_json(&self) -> Value {
@@ -304,8 +317,8 @@ async fn activity_and_search_answer_as_the_fixture_does() {
     assert_covers(&expected["activity"]["response"]["activity"][1], sub, "activity.subagent");
     let idle = fixture.get_json("/agents/agent-b/activity").await;
     assert!(idle["activity"].as_array().unwrap().iter().all(|thread| thread["tool"].is_null()), "{idle}");
-    assert_eq!(fixture.get("/agents/nobody/activity").await.0, StatusCode::NOT_FOUND);
-    assert_eq!(fixture.unsigned_get("/agents/agent-a/activity").await, StatusCode::FORBIDDEN);
+    assert_eq!(fixture.local_get("/agents/nobody/activity").await.0, StatusCode::NOT_FOUND);
+    assert_eq!(fixture.get("/agents/agent-a/activity").await.0, StatusCode::NOT_FOUND);
 
     let found = fixture.get_json("/agents/search?q=parser").await;
     assert_covers(&expected["search"]["response"], &found, "search");
@@ -318,9 +331,13 @@ async fn activity_and_search_answer_as_the_fixture_does() {
 #[tokio::test]
 async fn unknown_v2_routes_are_a_bare_404_and_reads_are_named_exactly() {
     let fixture = Fixture::start().await;
-    for path in ["/nothing", "/runtime/extra", "/agents/a/nothing"] {
+    for path in ["/nothing", "/runtime/extra", "/agents/a/nothing", "/tasks/a/history",
+        "/options", "/projects", "/issues", "/agents/search?q=parser", "/agents/a/activity"] {
         let (status, body) = fixture.get(path).await;
         assert_eq!((status, body.len()), (StatusCode::NOT_FOUND, 0), "{path}");
+    }
+    for path in ["/agents/a/close", "/pull-requests/a/resolve-conflicts"] {
+        assert_eq!(fixture.send("POST", path, &json!({})).await.0, StatusCode::NOT_FOUND, "{path}");
     }
     assert_eq!(fixture.get("/agents").await.0, StatusCode::NOT_FOUND);
     assert_eq!(fixture.get("/runtime?x=1").await, (StatusCode::NOT_FOUND, vec![]), "a runtime read takes no query");
@@ -383,7 +400,7 @@ async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fle
     let request = &expected["close"];
     let bearer = fixture.domain.bind_agent("agent-a").unwrap().expose_for_child_environment().to_owned();
 
-    let (status, answer) = fixture.send("POST", request["path"].as_str().unwrap(), &request["body"]).await;
+    let (status, answer) = fixture.local_send(request["path"].as_str().unwrap(), &request["body"]).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_covers(&request["response"], &answer, "close");
     assert_eq!(answer["interactive"], false);
@@ -403,7 +420,7 @@ async fn closing_an_interactive_session_only_leaves_the_fleet() {
     fixture.command(Actor::System, "connect-b", Command::ObserveAgent { agent_id: "agent-b".into(), connected: true });
     let sessions = FakeSessions::listing(&[]);
     fixture.client.use_sessions(sessions.clone());
-    let (status, answer) = fixture.send("POST", "/agents/agent-b/close", &json!({"force": false})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-b/close", &json!({"force": false})).await;
     assert_eq!(status, StatusCode::OK, "{answer}");
     assert_eq!(answer["interactive"], true);
     assert!(answer["output"].as_str().unwrap().contains("interactive session"));
@@ -422,23 +439,23 @@ async fn a_busy_session_or_one_with_unsaved_work_is_not_closed() {
         calls: Default::default(), stuck: false,
     });
     fixture.client.use_sessions(sessions.clone());
-    let (status, answer) = fixture.send("POST", "/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": true})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(answer["reasons"], json!([{"kind": "busy"}]), "{answer}");
     assert!(answer["error"].as_str().unwrap().contains("still has something pending"));
 
     fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
-    let (status, answer) = fixture.send("POST", "/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": true})).await;
     assert_eq!(status, StatusCode::CONFLICT);
     assert_eq!(answer["reasons"], json!([{"kind": "worktree", "detail": "2 uncommitted file(s) in /w"}]), "force never discards work: {answer}");
     assert!(sessions.calls.lock().unwrap().iter().all(|call| call[0] != "rm"), "nothing was removed");
 
     let stuck = Arc::new(FakeSessions { listed: std::sync::Mutex::new(vec![short.clone()]), leftovers: None, calls: Default::default(), stuck: true });
     fixture.client.use_sessions(stuck);
-    let (status, answer) = fixture.send("POST", "/agents/agent-a/close", &json!({"force": true})).await;
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": true})).await;
     assert_eq!(status, StatusCode::CONFLICT, "{answer}");
     assert!(answer["error"].as_str().unwrap().contains("is still listed by claude agents"), "{answer}");
-    let (status, error) = fixture.send("POST", "/agents/nobody/close", &json!({"force": true})).await;
+    let (status, error) = fixture.local_send("/agents/nobody/close", &json!({"force": true})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
 }
 
@@ -558,7 +575,7 @@ async fn options_offer_pr_handling_effort_and_the_users_own() {
     let broken = fixture.get_json("/options?project=App").await;
     assert_eq!(ids(&broken), ["pr", "effort", "tests"], "a broken file keeps the last good options in use");
     assert!(broken["error"].as_str().is_some_and(|error| error.contains("options.toml")), "and says why: {broken}");
-    assert_eq!(fixture.unsigned_get("/options").await, StatusCode::FORBIDDEN);
+    assert_eq!(fixture.get("/options").await.0, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -596,7 +613,7 @@ async fn issues_are_searched_once_and_kept_unless_refreshed() {
     assert_eq!(github.searches(), 1, "the second read is served from memory");
     fixture.get_json("/issues?refresh=1").await;
     assert_eq!(github.searches(), 2, "a refresh asks again");
-    assert_eq!(fixture.get("/issues?refresh=0").await, (StatusCode::NOT_FOUND, vec![]), "refresh takes only 1");
+    assert_eq!(fixture.local_get("/issues?refresh=0").await, (StatusCode::NOT_FOUND, vec![]), "refresh takes only 1");
 }
 
 #[tokio::test]
@@ -765,10 +782,10 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     assert_eq!(steps, [("not_started", ""), ("running", ""), ("needs_you", "Which colour?"), ("running", ""), ("cancelled", "")]);
     let times: Vec<i64> = history["history"].as_array().unwrap().iter().map(|step| step["at"].as_i64().unwrap()).collect();
     assert!(times.iter().all(|at| *at > 0) && times.windows(2).all(|pair| pair[0] <= pair[1]), "{times:?}");
-    let (status, error) = (fixture.get("/tasks/nothing/history").await, ());
+    let (status, error) = (fixture.local_get("/tasks/nothing/history").await, ());
     let _ = error;
     assert_eq!(status.0, StatusCode::NOT_FOUND);
-    assert_eq!(fixture.unsigned_get("/tasks/task-1/history").await, StatusCode::FORBIDDEN);
+    assert_eq!(fixture.get("/tasks/task-1/history").await.0, StatusCode::NOT_FOUND);
     assert!(approved_read_path("/tasks/task-1/history") && !approved_read_path("/tasks/task-1/history?x=1") && !approved_read_path("/tasks//history"));
 }
 
@@ -850,17 +867,17 @@ async fn resolving_conflicts_is_refused_before_anything_is_typed_when_it_cannot_
     seed_work(&fixture);
     let expected = fixture_json("requests.json");
     let path = expected["resolve_conflicts"]["path"].as_str().unwrap();
-    let (status, error) = fixture.send("POST", "/pull-requests/nothing/resolve-conflicts", &json!({})).await;
+    let (status, error) = fixture.local_send("/pull-requests/nothing/resolve-conflicts", &json!({})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::NOT_FOUND, Some("not_found")));
-    let (status, error) = fixture.send("POST", path, &json!({"extra": 1})).await;
+    let (status, error) = fixture.local_send(path, &json!({"extra": 1})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
     fixture.command(Actor::System, "closed", Command::ObservePrState {
         pr_id: "pr-1".into(), head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
         state: alondra_core::domain_v2::PrState::Closed, merged_head: None });
-    let (status, error) = fixture.send("POST", path, &json!({})).await;
+    let (status, error) = fixture.local_send(path, &json!({})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
     let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&json!({})).send().await.unwrap();
-    assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
+    assert_eq!(unsigned.status(), StatusCode::NOT_FOUND);
     assert_eq!(parse_write(path), Some(Write::ResolveConflicts("pr-1".into())));
     assert!(!atomic_write_path(path), "typing into a session is never replayed");
 }
