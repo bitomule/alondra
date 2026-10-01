@@ -38,7 +38,6 @@ filegroup(
     name = "view_sources",
     srcs = glob([
         "iOS/ViewsShipping/*.swift",
-        "iOS/Sources/Triage/*.swift",
         "macOS/ViewsShipping/*.swift",
     ]) + ["//apple/Features:sources", "//apple/iOS/UI:sources"],
 )
@@ -157,7 +156,7 @@ ios_application(
 swift_library(
     name = "AlondraiOSViewsEntry",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
-    srcs = glob(["iOS/ViewsShipping/*.swift", "iOS/Sources/Triage/*.swift"]),
+    srcs = glob(["iOS/ViewsShipping/*.swift"]),
     module_name = "AlondraiOS",
     deps = [
         "//apple/Design:AlondraDesign",

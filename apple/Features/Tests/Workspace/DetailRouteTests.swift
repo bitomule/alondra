@@ -27,7 +27,7 @@ final class DetailRouteTests: XCTestCase {
             try XCTUnwrap(DetailRoute.State(key: ViewKey(rawValue: key), owner: "test"), key)
         }
 
-        for key in ["card:i-1", "card:github.com/o/r#1", "document:rev-1"] {
+        for key in ["card:i-1", "document:rev-1"] {
             guard case .review = try route(key) else { return XCTFail("\(key) must open the review") }
         }
         guard case .taskDetail = try route("task:t-1") else { return XCTFail("task") }
@@ -35,13 +35,18 @@ final class DetailRouteTests: XCTestCase {
         guard case .schedules = try route("schedules") else { return XCTFail("schedules") }
         guard case .scheduleEditor = try route("schedule:new") else { return XCTFail("new schedule") }
         guard case .scheduleEditor = try route("schedule:s-1") else { return XCTFail("schedule") }
-        for key in ["pull_request:github.com/o/r#1", "node:a-1", "tasks?section=finished&after=20"] {
+        guard case .prReview(let card) = try route("card:github.com/o/r#1") else { return XCTFail("a pull request card opens the PR review") }
+        XCTAssertEqual(card.screen.key, .pullRequest("github.com/o/r#1"))
+        guard case .prReview = try route("pull_request:github.com/o/r#1") else { return XCTFail("pull request") }
+        guard case .nodeDetail = try route("node:a-1") else { return XCTFail("node") }
+        guard case .nodeDetail = try route("node:orchestrator") else { return XCTFail("orchestrator") }
+        for key in ["tasks?section=finished&after=20"] {
             guard case .legacy = try route(key) else { return XCTFail("\(key) is not on the legacy renderer yet") }
         }
     }
 
     func testTheKeyOfARebuiltScreenIsTheKeyItWasOpenedWith() throws {
-        for key in ["card:i-1", "document:rev-1", "task:t-1", "request:r-1", "schedules", "schedule:new", "schedule:s-1"] {
+        for key in ["card:i-1", "document:rev-1", "task:t-1", "request:r-1", "schedules", "schedule:new", "schedule:s-1", "pull_request:github.com/o/r#1", "node:a-1"] {
             XCTAssertEqual(DetailRoute.State(key: ViewKey(rawValue: key), owner: "test")?.key.rawValue, key)
         }
     }

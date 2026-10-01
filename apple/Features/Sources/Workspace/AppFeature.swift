@@ -21,7 +21,7 @@ public struct AppFeature: Sendable {
         public var closeRefusal: String?
         public var triage = TriageFeature.State()
         public var tasks = TasksFeature.State()
-        public var fleet = ViewsScreenFeature.State(key: .fleet, owner: "ios.fleet")
+        public var fleet = FleetFeature.State()
         public var newRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
         public var inboxPath = StackState<DetailRoute.State>()
         public var tasksPath = StackState<DetailRoute.State>()
@@ -42,7 +42,7 @@ public struct AppFeature: Sendable {
         case dismissCloseRefusal
         case triage(TriageFeature.Action)
         case tasks(TasksFeature.Action)
-        case fleet(ViewsScreenFeature.Action)
+        case fleet(FleetFeature.Action)
         case newRequest(ViewsScreenFeature.Action)
         case inboxPath(StackActionOf<DetailRoute>)
         case tasksPath(StackActionOf<DetailRoute>)
@@ -58,7 +58,7 @@ public struct AppFeature: Sendable {
     public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
         Scope(state: \.tasks, action: \.tasks) { TasksFeature() }
-        Scope(state: \.fleet, action: \.fleet) { ViewsScreenFeature() }
+        Scope(state: \.fleet, action: \.fleet) { FleetFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { ViewsScreenFeature() }
         Reduce { state, action in
             if let toast = Self.toast(for: action) {
@@ -109,18 +109,19 @@ public struct AppFeature: Sendable {
                 case .newRequest: Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
                 }
                 return .none
-            case .fleet(.action(.response(let response))):
-                guard state.fleet.action.action?.id?.hasPrefix("close:") == true,
-                      response.outcome == .rejected else { return .none }
-                state.closeRefusal = response.message ?? String(localized: "Couldn’t close the node")
+            case .fleet(.delegate(.closeRefused(let message))):
+                state.closeRefusal = message
+                return .none
+            case .fleet(.delegate(.screen(.open(let key)))):
+                Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
                 return .none
             case .viewsFeed(.stale(let keys)):
                 return .merge(
-                    .send(.fleet(.stale(keys))), .send(.newRequest(.stale(keys))),
+                    .send(.newRequest(.stale(keys))),
                     Self.refreshPaths(state, .stale(keys)))
             case .viewsFeed(.reset):
                 return .merge(
-                    .send(.fleet(.reset)), .send(.newRequest(.reset)),
+                    .send(.newRequest(.reset)),
                     Self.refreshPaths(state, .reset))
             case .viewsFeed(.snapshot(let snapshot)):
                 if snapshot.reset { return .send(.viewsFeed(.reset)) }
@@ -176,10 +177,9 @@ public struct AppFeature: Sendable {
         let delegate: ActionFeature.Action.Delegate
         switch action {
         case .triage(.cards(.element(id: _, action: .actions(.delegate(let value))))),
-             .fleet(.action(.delegate(let value))),
              .newRequest(.action(.delegate(let value))):
             delegate = value
-        case .tasks(.delegate(let value)):
+        case .tasks(.delegate(let value)), .fleet(.delegate(.screen(let value))):
             return value.event
         case .triage(.delegate(.noLongerPending)):
             return .actionCompleted(String(localized: "That’s no longer pending"))
