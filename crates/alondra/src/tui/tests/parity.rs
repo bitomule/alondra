@@ -1140,6 +1140,7 @@ fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
 fn production_gauges() -> serde_json::Value {
     serde_json::json!([
         {"id": "memory", "label": "RAM", "value": 0.42, "text": "42%", "level": "calm"},
+        {"id": "cpu", "label": "CPU", "value": 0.34, "text": "34%", "level": "calm"},
         {"id": "disk", "label": "Disk", "value": 0.72, "text": "120 GB free", "level": "calm"}
     ])
 }
@@ -1152,10 +1153,10 @@ fn header_has_the_alondra_badge_the_bars_and_how_many_are_working() {
     app.loaded = true;
     app.view_status = Some(status_with(production_gauges()));
     let shown = screen(&mut app, 140, 6);
-    for expected in [" Alondra ", "Fleet 1", "2 working", "RAM ▰▰▱▱ 42%", "Disk ▰▰▰▱ 120 GB free"] {
+    for expected in [" Alondra ", "Fleet 1", "2 working", "RAM ▰▰▱▱ 42%  CPU ▰▱▱▱ 34%", "Disk ▰▰▰▱ 120 GB free"] {
         assert!(shown.contains(expected), "{expected}: {shown}");
     }
-    assert!(shown.contains("42%  Disk"), "the gauges are separated: {shown}");
+    assert!(shown.contains("34%  Disk"), "the gauges are separated: {shown}");
     assert!(!shown.contains("Local"));
 }
 
@@ -1179,8 +1180,8 @@ fn header_drops_the_gauge_names_before_it_overflows() {
     let mut app = App::new(tx);
     app.loaded = true;
     app.view_status = Some(status_with(production_gauges()));
-    let shown = screen(&mut app, 80, 6);
-    assert!(shown.contains("▰▰▱▱ 42%") && !shown.contains("RAM"), "{shown}");
+    let shown = screen(&mut app, 92, 6);
+    assert!(shown.contains("▰▰▱▱ 42% ▰▱▱▱ 34%") && !shown.contains("RAM"), "{shown}");
     let shown = screen(&mut app, 50, 6);
     assert!(!shown.contains("▰"), "{shown}");
 }
