@@ -28,17 +28,6 @@ fn fleet_search_types_and_pastes_into_the_views_key() {
 }
 
 #[test]
-fn new_work_opens_the_server_form_before_the_sidebar_arrives() {
-    let mut app = app();
-    press(&mut app, KeyCode::Char('n'));
-    assert_eq!(
-        app.view_navigation.last().map(String::as_str),
-        Some("new_request")
-    );
-    assert!(app.composer.is_none());
-}
-
-#[test]
 fn terminal_presence_is_recorded_once_per_minute() {
     let mut app = app();
     app.activity_told = 0;

@@ -248,7 +248,10 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                     }
                     lines.push(Line::from(vec![
                         Span::styled("[e] ", Style::new().fg(ACCENT).add_modifier(Modifier::BOLD)),
-                        Span::raw(format!("Edit fields and {}", form.submit.label)),
+                        Span::raw({
+                            let label = &form.submit.label;
+                            trf!("Edit the fields and {label}", "Edita los campos y {label}")
+                        }),
                     ]));
                 }
                 Item::Notice(notice) => lines.push(Line::from(Span::styled(

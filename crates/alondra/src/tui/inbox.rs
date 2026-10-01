@@ -155,21 +155,9 @@ impl App {
                 || key.code == KeyCode::Char('e')
                 || (!hint.is_empty() && hint_matches(hint, key))
             {
-                return Some(Flow::EditViewForm {
-                    action_id: submit.id.clone(),
-                    label: submit.label.clone(),
-                    data_epoch: document.data_epoch.clone(),
-                    attachment_field: submit
-                        .attachments
-                        .then(|| {
-                            form.fields.iter().find_map(|field| {
-                                matches!(field.kind, alondra_core::views::FieldKind::Attachments)
-                                    .then(|| field.id.clone())
-                            })
-                        })
-                        .flatten(),
-                    fields: form.fields.clone(),
-                });
+                let view = document.key.clone();
+                self.compose(super::Target::Form { view }, "");
+                return Some(Flow::Go);
             }
         }
         for action in super::view_render::actions(document) {
@@ -318,8 +306,6 @@ impl App {
                         option_id,
                         required: *required,
                         allow_attachments: action.attachments,
-                        form_fields: None,
-                        attachment_field: None,
                     },
                     "",
                 );

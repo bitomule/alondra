@@ -1093,7 +1093,7 @@ fn form_height(form: Option<&super::work::OptionsForm>) -> u16 {
 fn form_lines(form: &super::work::OptionsForm) -> Vec<Line<'static>> {
     if !form.loaded {
         return vec![Line::from(
-            tr!("Loading the options…", "Cargando las opciones…").fg(DIM),
+            tr!("Loading the form…", "Cargando el formulario…").fg(DIM),
         )];
     }
     let width = form
@@ -1133,8 +1133,16 @@ fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
     let Some(popup) = form.popup.as_ref() else {
         return;
     };
-    let (title, hint, lines): (String, &str, Vec<Line<'static>>) = match popup {
-        Popup::Issues(p) => {
+    let title = form.popup_title();
+    let selected = |on: bool| {
+        if on {
+            Style::new().fg(Color::Black).bg(ACCENT)
+        } else {
+            Style::new()
+        }
+    };
+    let (hint, lines): (&str, Vec<Line<'static>>) = match popup {
+        Popup::Issues { picker: p, .. } => {
             let mut lines = vec![Line::from(vec![
                 Span::styled("/ ", Style::new().fg(DIM)),
                 Span::raw(p.query.clone()),
@@ -1152,20 +1160,16 @@ fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
             }
             let visible = p.visible();
             if visible.is_empty() && !p.loading {
-                lines.push(Line::from(
-                    tr!("No open issues match", "Ninguna issue abierta coincide").fg(DIM),
-                ));
+                lines.push(Line::from(match p.typed_reference() {
+                    Some(reference) => trf!("⏎ uses {reference}", "⏎ usa {reference}").fg(DIM),
+                    None => tr!("No open issues match", "Ninguna issue abierta coincide").fg(DIM),
+                }));
             }
             let room = (area.height as usize)
                 .saturating_sub(lines.len() + 2)
                 .max(1);
             let start = p.sel.saturating_sub(room - 1);
             for (i, issue) in visible.iter().enumerate().skip(start).take(room) {
-                let style = if i == p.sel {
-                    Style::new().fg(Color::Black).bg(ACCENT)
-                } else {
-                    Style::new()
-                };
                 let labels = if issue.labels.is_empty() {
                     String::new()
                 } else {
@@ -1175,24 +1179,24 @@ fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
                     &format!("{}  {}{labels}", issue.reference(), issue.title),
                     area.width.saturating_sub(4) as usize,
                 );
-                lines.push(Line::from(Span::styled(text, style)));
+                lines.push(Line::from(Span::styled(text, selected(i == p.sel))));
             }
-            let hint = tr!(
-                " type to filter · ↑↓ · ⏎ picks · Ctrl+R searches GitHub again · Esc ",
-                " escribe para filtrar · ↑↓ · ⏎ elige · Ctrl+R busca de nuevo en GitHub · Esc "
-            );
-            (tr!("Issues", "Issues").to_string(), hint, lines)
+            (
+                tr!(
+                    " type to filter · ↑↓ · ⏎ picks · Ctrl+R searches GitHub again · Esc ",
+                    " escribe para filtrar · ↑↓ · ⏎ elige · Ctrl+R busca de nuevo en GitHub · Esc "
+                ),
+                lines,
+            )
         }
-        Popup::Projects { query, sel } => {
+        Popup::Filter { field, query, sel } => {
             let mut lines = vec![Line::from(vec![
                 Span::styled("/ ", Style::new().fg(DIM)),
                 Span::raw(query.clone()),
             ])];
-            let choices = form.project_choices(query);
+            let choices = form.filtered(*field, query);
             if choices.is_empty() {
-                lines.push(Line::from(
-                    tr!("No project matches", "Ningún proyecto coincide").fg(DIM),
-                ));
+                lines.push(Line::from(tr!("Nothing matches", "Nada coincide").fg(DIM)));
             }
             let sel = (*sel).min(choices.len().saturating_sub(1));
             let room = (area.height as usize)
@@ -1200,60 +1204,42 @@ fn draw_form_popup(f: &mut Frame, form: &super::work::OptionsForm, area: Rect) {
                 .max(1);
             let start = sel.saturating_sub(room - 1);
             for (i, choice) in choices.iter().enumerate().skip(start).take(room) {
-                let style = if i == sel {
-                    Style::new().fg(Color::Black).bg(ACCENT)
-                } else {
-                    Style::new()
-                };
-                let (name, note) = match choice {
-                    None => (
-                        tr!("The orchestrator decides", "Lo decide el orquestador").to_string(),
-                        String::new(),
-                    ),
-                    Some(p) if form.suggested.as_ref() == Some(p) => (
-                        p.clone(),
-                        tr!("  · this directory", "  · este directorio").to_string(),
-                    ),
-                    Some(p) => (p.clone(), String::new()),
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(name, style),
-                    Span::styled(note, Style::new().fg(DIM)),
-                ]));
-            }
-            let hint = tr!(
-                " type to filter · ↑↓ · ⏎ picks · Esc ",
-                " escribe para filtrar · ↑↓ · ⏎ elige · Esc "
-            );
-            (tr!("Project", "Proyecto").to_string(), hint, lines)
-        }
-        Popup::Values { spec, sel } => {
-            let title = form
-                .specs
-                .get(*spec)
-                .map(super::work::label)
-                .unwrap_or_default();
-            let mut lines = vec![];
-            for (i, e) in form.entries(*spec).into_iter().enumerate() {
-                let style = if i == *sel {
-                    Style::new().fg(Color::Black).bg(ACCENT)
-                } else {
-                    Style::new().bold()
-                };
-                lines.push(Line::from(Span::styled(format!(" {} ", e.label), style)));
-                if let Some(d) = e.description {
-                    lines.push(Line::from(Span::styled(
-                        format!("   {}", truncate(&d, area.width.saturating_sub(8) as usize)),
-                        Style::new().fg(DIM),
-                    )));
-                }
+                lines.push(Line::from(Span::styled(
+                    choice.label.clone(),
+                    selected(i == sel),
+                )));
             }
             (
-                title,
-                tr!(" ↑↓ · ⏎ picks · Esc ", " ↑↓ · ⏎ elige · Esc "),
+                tr!(
+                    " type to filter · ↑↓ · ⏎ picks · Esc ",
+                    " escribe para filtrar · ↑↓ · ⏎ elige · Esc "
+                ),
                 lines,
             )
         }
+        Popup::Values { field, sel } => {
+            let lines = form
+                .choices(*field)
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    let style = if i == *sel {
+                        selected(true)
+                    } else {
+                        Style::new().bold()
+                    };
+                    Line::from(Span::styled(format!(" {} ", item.label), style))
+                })
+                .collect();
+            (tr!(" ↑↓ · ⏎ picks · Esc ", " ↑↓ · ⏎ elige · Esc "), lines)
+        }
+        Popup::Text { input, .. } => (
+            tr!(" ⏎ saves · Esc ", " ⏎ guarda · Esc "),
+            vec![Line::from(vec![
+                Span::raw(input.clone()),
+                Span::styled("▏", Style::new().fg(ACCENT)),
+            ])],
+        ),
     };
     let height = (lines.len() as u16 + 2).min(area.height);
     let area = Rect {
@@ -1334,11 +1320,16 @@ fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option
                 crate::ops::MessageKind::Message => trf!("Message to {name}", "Mensaje a {name}"),
             }
         }
-        Target::NewRequest => tr!(
+        Target::Form { view } if view.starts_with("new_request") => tr!(
             "New work: the orchestrator turns it into tasks",
             "Trabajo nuevo: el orquestador lo convierte en tareas"
         )
         .into(),
+        Target::Form { .. } => c
+            .form
+            .as_ref()
+            .and_then(|form| form.submit.as_ref())
+            .map_or_else(String::new, |submit| md::one_line(&submit.label)),
         Target::Comment { quote, .. } => {
             let q = md::one_line(quote);
             trf!("Comment on “{q}”", "Comentario sobre «{q}»")
