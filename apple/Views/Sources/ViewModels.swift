@@ -175,15 +175,14 @@ public struct Card: Codable, Equatable, Sendable {
 }
 public struct Row: Codable, Equatable, Sendable {
     public let id: String; public let link: Link?; public let icon: Icon; public let title: String; public let subtitle: String?; public let badges: [Label]
-    public let trailing: Trailing?; public let depth: UInt8; public let struck: Bool; public let stateKey: String?; public let tooltip: String?; public let children: [Row]; public let actions: [Action]
-    enum CodingKeys: String, CodingKey { case id, link, icon, title, subtitle, badges, trailing, depth, struck, children, actions; case stateKey = "state_key", tooltip }
+    public let trailing: Trailing?; public let depth: UInt8; public let struck: Bool; public let children: [Row]; public let actions: [Action]
+    enum CodingKeys: String, CodingKey { case id, link, icon, title, subtitle, badges, trailing, depth, struck, children, actions }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); link = try c.decodeIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
         title = try c.decode(String.self, forKey: .title); subtitle = try c.decodeIfPresent(String.self, forKey: .subtitle)
         badges = try c.decodeIfPresent([Label].self, forKey: .badges) ?? []; trailing = try c.decodeIfPresent(Trailing.self, forKey: .trailing)
         depth = try c.decode(UInt8.self, forKey: .depth); struck = try c.decode(Bool.self, forKey: .struck)
-        stateKey = try c.decodeIfPresent(String.self, forKey: .stateKey); tooltip = try c.decodeIfPresent(String.self, forKey: .tooltip)
         children = try c.decodeIfPresent([Row].self, forKey: .children) ?? []; actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
     }
     public func encode(to encoder: Encoder) throws {
@@ -192,7 +191,6 @@ public struct Row: Codable, Equatable, Sendable {
         try c.encode(title, forKey: .title); try c.encodeIfPresent(subtitle, forKey: .subtitle)
         if !badges.isEmpty { try c.encode(badges, forKey: .badges) }; try c.encodeIfPresent(trailing, forKey: .trailing)
         try c.encode(depth, forKey: .depth); try c.encode(struck, forKey: .struck)
-        try c.encodeIfPresent(stateKey, forKey: .stateKey); try c.encodeIfPresent(tooltip, forKey: .tooltip)
         if !children.isEmpty { try c.encode(children, forKey: .children) }; if !actions.isEmpty { try c.encode(actions, forKey: .actions) }
     }
 }
@@ -274,7 +272,28 @@ public struct Action: Codable, Equatable, Sendable {
 public struct ActionOption: Codable, Equatable, Sendable { public let id: String; public let label: String; public let description: String?; public let style: Style; public let input: Input; public let key: String? }
 public struct CommentSpec: Codable, Equatable, Sendable { public let kind: CommentKind }
 public struct Confirm: Codable, Equatable, Sendable { public let title: String; public let message: String; public let button: String }
-public struct Condition: Codable, Equatable, Sendable { public let field: String; public let equals: JSONValue }
+public struct Condition: Codable, Equatable, Sendable {
+    public let field: String
+    public let equals: JSONValue?
+    public let anyOf: [JSONValue]?
+    enum CodingKeys: String, CodingKey { case field, equals; case anyOf = "any_of" }
+
+    public init(field: String, equals: JSONValue) {
+        self.field = field
+        self.equals = equals
+        self.anyOf = nil
+    }
+
+    public init(field: String, anyOf: [JSONValue]) {
+        self.field = field
+        self.equals = nil
+        self.anyOf = anyOf
+    }
+
+    public func matches(_ value: JSONValue) -> Bool {
+        equals == value || anyOf?.contains(value) == true
+    }
+}
 public struct ChoiceItem: Codable, Equatable, Sendable { public let id: String; public let label: String }
 public struct Form: Codable, Equatable, Sendable { public let id: String; public let fields: [Field]; public let submit: Action }
 public struct Field: Codable, Equatable, Sendable {

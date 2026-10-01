@@ -62,16 +62,32 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(response.outcome, .noLongerAvailable)
     }
 
-    func testSidebarStateAndAttachmentDigestDecodeAndRoundTrip() throws {
+    func testRowIgnoresRemovedPresentationFieldsAndAttachmentDigestRoundTrips() throws {
         let rowJSON = #"{"id":"worker-1","link":{"kind":"view","key":"node:worker-1"},"icon":"node","title":"Worker","subtitle":"Working","badges":[],"trailing":{"kind":"count","value":1},"depth":0,"struck":false,"state_key":"busy","tooltip":"Worker · Working\nRecent summary","children":[],"actions":[]}"#.data(using: .utf8)!
         let row = try ViewsCodec.decode(Row.self, from: rowJSON)
-        XCTAssertEqual(row.stateKey, "busy")
-        XCTAssertEqual(row.tooltip, "Worker · Working\nRecent summary")
-        XCTAssertEqual(try ViewsCodec.decode(Row.self, from: ViewsCodec.encode(row)), row)
+        let encodedRow = try XCTUnwrap(JSONSerialization.jsonObject(with: ViewsCodec.encode(row)) as? [String: Any])
+        XCTAssertNil(encodedRow["state_key"])
+        XCTAssertNil(encodedRow["tooltip"])
 
         let attachmentJSON = #"{"id":"att-1","name":"notes.txt","kind":"text","size":12,"fetch":"private/ref","digest":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#.data(using: .utf8)!
         let attachment = try ViewsCodec.decode(Attachment.self, from: attachmentJSON)
         XCTAssertEqual(attachment.digest, String(repeating: "a", count: 64))
         XCTAssertEqual(try ViewsCodec.decode(Attachment.self, from: ViewsCodec.encode(attachment)), attachment)
+    }
+
+    func testConditionDecodesScalarAndAnyOfVisibilityRules() throws {
+        let scalar = try ViewsCodec.decode(Condition.self, from: Data(#"{"field":"frequency","equals":"daily"}"#.utf8))
+        XCTAssertEqual(scalar.equals, .string("daily"))
+        XCTAssertNil(scalar.anyOf)
+        XCTAssertTrue(scalar.matches(.string("daily")))
+        XCTAssertFalse(scalar.matches(.string("weekly")))
+
+        let anyOf = try ViewsCodec.decode(Condition.self, from: Data(#"{"field":"frequency","any_of":["every_hours","every_days","every_months"]}"#.utf8))
+        XCTAssertNil(anyOf.equals)
+        XCTAssertEqual(anyOf.anyOf, [.string("every_hours"), .string("every_days"), .string("every_months")])
+        XCTAssertTrue(anyOf.matches(.string("every_months")))
+        XCTAssertFalse(anyOf.matches(.string("weekly")))
+        let encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: ViewsCodec.encode(anyOf)) as? [String: Any])
+        XCTAssertEqual(encoded["any_of"] as? [String], ["every_hours", "every_days", "every_months"])
     }
 }

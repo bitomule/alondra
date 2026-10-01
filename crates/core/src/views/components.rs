@@ -252,10 +252,6 @@ pub struct Row {
     pub icon: Icon,
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub state_key: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub tooltip: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub badges: Vec<Label>,
@@ -458,7 +454,10 @@ pub struct Field {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Condition {
     pub field: String,
-    pub equals: serde_json::Value,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub equals: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub any_of: Vec<serde_json::Value>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

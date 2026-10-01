@@ -5,1005 +5,14 @@ import Foundation
 /// Bundled, network-free Views documents for Demo. The fixture documents use the same
 /// protocol DTOs as the real relay so the shipping Views UI runs unchanged.
 enum DemoViews {
-    private static let homeIOS = #"""
-{
-  "protocol": 1,
-  "data_epoch": "test-epoch",
-  "view": "home",
-  "key": "home",
-  "client": "ios",
-  "version": "vfda4b38e2ecd5d09",
-  "cursor": "cursor-1",
-  "status": {
-    "version": "v2d6ccffc4668392a",
-    "summary": "1 question · 3 to read · 0 nodes working",
-    "badge": 4,
-    "counts": [
-      {
-        "id": "inbox",
-        "label": "Inbox",
-        "value": 4
-      },
-      {
-        "id": "tasks",
-        "label": "Tasks",
-        "value": 1
-      },
-      {
-        "id": "agents",
-        "label": "Agents",
-        "value": 0
-      },
-      {
-        "id": "working",
-        "label": "working",
-        "value": 0
-      },
-      {
-        "id": "waiting",
-        "label": "waiting",
-        "value": 0
-      }
-    ],
-    "gauges": [],
-    "orchestrator": {
-      "text": "idle",
-      "tone": "neutral"
-    }
-  },
-  "sections": [
-    {
-      "id": "queue",
-      "title": "Waiting for You",
-      "count": 4,
-      "collapsed": false,
-      "items": [
-        {
-          "type": "card",
-          "id": "i-1",
-          "link": {
-            "kind": "view",
-            "key": "card:i-1"
-          },
-          "icon": "question",
-          "eyebrow": {
-            "text": "Question",
-            "tone": "accent"
-          },
-          "title": "Build a feature",
-          "context": [
-            {
-              "icon": "node",
-              "text": "Node One",
-              "link": {
-                "kind": "view",
-                "key": "node:a-1"
-              }
-            },
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Mission · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "body": {
-            "text": "Body 0",
-            "truncated": false,
-            "commentable": false
-          },
-          "actions": [
-            {
-              "id": "ans:i-1@1",
-              "label": "Answer",
-              "style": "primary",
-              "presentation": "options",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "Answered"
-            },
-            {
-              "id": "ctx:i-1@1",
-              "label": "Need more context",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "What is missing?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true
-            }
-          ]
-        },
-        {
-          "type": "card",
-          "id": "i-2",
-          "link": {
-            "kind": "view",
-            "key": "card:i-2"
-          },
-          "icon": "notice",
-          "eyebrow": {
-            "text": "Notice",
-            "tone": "accent"
-          },
-          "title": "Build a feature",
-          "context": [
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Mission · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "body": {
-            "text": "Body 1",
-            "truncated": false,
-            "commentable": false
-          },
-          "actions": [
-            {
-              "id": "read:i-2@1",
-              "label": "Mark as read",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "stamp": "Read",
-              "key": "x"
-            },
-            {
-              "id": "reply:i-2@1",
-              "label": "Reply",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Write a reply",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true
-            }
-          ]
-        }
-      ],
-      "card_ids": [
-        "i-1",
-        "i-2",
-        "i-3",
-        "pr-1"
-      ]
-    }
-  ]
-}
-"""#
-
-    private static let homeMac = #"""
-{
-  "protocol": 1,
-  "data_epoch": "test-epoch",
-  "view": "home",
-  "key": "home",
-  "client": "tui",
-  "version": "vb2c2a2a8c5f27ce6",
-  "cursor": "cursor-1",
-  "status": {
-    "version": "v2d6ccffc4668392a",
-    "summary": "1 question · 3 to read · 0 nodes working",
-    "badge": 4,
-    "counts": [
-      {
-        "id": "inbox",
-        "label": "Inbox",
-        "value": 4
-      },
-      {
-        "id": "tasks",
-        "label": "Tasks",
-        "value": 1
-      },
-      {
-        "id": "agents",
-        "label": "Agents",
-        "value": 0
-      },
-      {
-        "id": "working",
-        "label": "working",
-        "value": 0
-      },
-      {
-        "id": "waiting",
-        "label": "waiting",
-        "value": 0
-      }
-    ],
-    "gauges": [],
-    "orchestrator": {
-      "text": "idle",
-      "tone": "neutral"
-    }
-  },
-  "sections": [
-    {
-      "id": "waiting",
-      "title": "Waiting for You",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "i-1",
-          "link": {
-            "kind": "view",
-            "key": "card:i-1"
-          },
-          "icon": "question",
-          "title": "Build a feature",
-          "depth": 0,
-          "struck": false
-        },
-        {
-          "type": "row",
-          "id": "i-3",
-          "link": {
-            "kind": "view",
-            "key": "card:i-3"
-          },
-          "icon": "delivery",
-          "title": "Build a feature",
-          "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
-      "id": "pull_requests",
-      "title": "Pull requests",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "pr-1",
-          "link": {
-            "kind": "view",
-            "key": "card:pr-1"
-          },
-          "icon": "pull_request",
-          "title": "example/repo #12",
-          "depth": 0,
-          "struck": false,
-          "children": [
-            {
-              "id": "i-5",
-              "link": {
-                "kind": "view",
-                "key": "card:i-5"
-              },
-              "icon": "question",
-              "title": "Build a feature",
-              "depth": 1,
-              "struck": false
-            },
-            {
-              "id": "i-6",
-              "link": {
-                "kind": "view",
-                "key": "card:i-6"
-              },
-              "icon": "notice",
-              "title": "Build a feature",
-              "depth": 1,
-              "struck": false
-            }
-          ]
-        }
-      ]
-    },
-    {
-      "id": "to_read",
-      "title": "To Read",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "i-2",
-          "link": {
-            "kind": "view",
-            "key": "card:i-2"
-          },
-          "icon": "notice",
-          "title": "Build a feature",
-          "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
-      "id": "detail",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "card",
-          "id": "i-1",
-          "link": {
-            "kind": "view",
-            "key": "card:i-1"
-          },
-          "icon": "question",
-          "eyebrow": {
-            "text": "Question",
-            "tone": "accent"
-          },
-          "title": "Build a feature",
-          "context": [
-            {
-              "icon": "node",
-              "text": "Node One",
-              "link": {
-                "kind": "view",
-                "key": "node:a-1"
-              }
-            },
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Mission · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "body": {
-            "text": "Body 0",
-            "truncated": false,
-            "commentable": false
-          },
-          "actions": [
-            {
-              "id": "ans:i-1@1",
-              "label": "Answer",
-              "style": "primary",
-              "presentation": "options",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "Answered"
-            },
-            {
-              "id": "ctx:i-1@1",
-              "label": "Need more context",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "What is missing?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "c"
-            },
-            {
-              "id": "",
-              "label": "Attach to node",
-              "style": "plain",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": true,
-              "key": "a",
-              "link": {
-                "kind": "local",
-                "local": {
-                  "kind": "attach",
-                  "session": "a-1"
-                }
-              }
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-"""#
-
-    private static let questionCard = #"""
-{
-  "protocol": 1,
-  "data_epoch": "test-epoch",
-  "view": "card",
-  "key": "card:i-1",
-  "client": "ios",
-  "version": "vbaf44f88529a6966",
-  "cursor": "cursor-1",
-  "title": "Build a feature",
-  "status": {
-    "version": "v2d6ccffc4668392a",
-    "summary": "1 question · 3 to read · 0 nodes working",
-    "badge": 4,
-    "counts": [
-      {
-        "id": "inbox",
-        "label": "Inbox",
-        "value": 4
-      },
-      {
-        "id": "tasks",
-        "label": "Tasks",
-        "value": 1
-      },
-      {
-        "id": "agents",
-        "label": "Agents",
-        "value": 0
-      },
-      {
-        "id": "working",
-        "label": "working",
-        "value": 0
-      },
-      {
-        "id": "waiting",
-        "label": "waiting",
-        "value": 0
-      }
-    ],
-    "gauges": [],
-    "orchestrator": {
-      "text": "idle",
-      "tone": "neutral"
-    }
-  },
-  "sections": [
-    {
-      "id": "card",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "card",
-          "id": "i-1",
-          "link": {
-            "kind": "view",
-            "key": "card:i-1"
-          },
-          "icon": "question",
-          "eyebrow": {
-            "text": "Question",
-            "tone": "accent"
-          },
-          "title": "Build a feature",
-          "context": [
-            {
-              "icon": "node",
-              "text": "Node One",
-              "link": {
-                "kind": "view",
-                "key": "node:a-1"
-              }
-            },
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Mission · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "body": {
-            "text": "Body 0",
-            "truncated": false,
-            "commentable": false
-          },
-          "actions": [
-            {
-              "id": "ans:i-1@1",
-              "label": "Answer",
-              "style": "primary",
-              "presentation": "options",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": true,
-              "enabled": true,
-              "stamp": "Answered"
-            },
-            {
-              "id": "ctx:i-1@1",
-              "label": "Need more context",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "What is missing?",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": false,
-              "enabled": true
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-"""#
-
-    private static let deliveryCard = #"""
-{
-  "protocol": 1,
-  "data_epoch": "test-epoch",
-  "view": "card",
-  "key": "card:i-3",
-  "client": "ios",
-  "version": "vf7955a142d6a051b",
-  "cursor": "cursor-1",
-  "title": "Build a feature",
-  "status": {
-    "version": "v2d6ccffc4668392a",
-    "summary": "1 question · 3 to read · 0 nodes working",
-    "badge": 4,
-    "counts": [
-      {
-        "id": "inbox",
-        "label": "Inbox",
-        "value": 4
-      },
-      {
-        "id": "tasks",
-        "label": "Tasks",
-        "value": 1
-      },
-      {
-        "id": "agents",
-        "label": "Agents",
-        "value": 0
-      },
-      {
-        "id": "working",
-        "label": "working",
-        "value": 0
-      },
-      {
-        "id": "waiting",
-        "label": "waiting",
-        "value": 0
-      }
-    ],
-    "gauges": [],
-    "orchestrator": {
-      "text": "idle",
-      "tone": "neutral"
-    }
-  },
-  "sections": [
-    {
-      "id": "card",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "card",
-          "id": "i-3",
-          "link": {
-            "kind": "view",
-            "key": "card:i-3"
-          },
-          "icon": "delivery",
-          "eyebrow": {
-            "text": "Finished",
-            "tone": "accent"
-          },
-          "title": "Build a feature",
-          "context": [
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Mission · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "body": {
-            "text": "Body 2",
-            "truncated": false,
-            "commentable": false
-          },
-          "actions": [
-            {
-              "id": "accept:i-3@1",
-              "label": "Accept",
-              "style": "primary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": false,
-              "disabled_reason": "This card has changed",
-              "stamp": "Accepted",
-              "key": "v"
-            },
-            {
-              "id": "changes:i-3@1",
-              "label": "Request changes",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Describe the changes",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "comments": {
-                "kind": "blocks"
-              },
-              "enabled": false,
-              "disabled_reason": "This card has changed",
-              "stamp": "Changes requested",
-              "key": "r"
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-"""#
-
-    private static let pullRequestCard = #"""
-{
-  "protocol": 1,
-  "data_epoch": "test-epoch",
-  "view": "card",
-  "key": "card:pr-1",
-  "client": "ios",
-  "version": "v65d769f5bae723df",
-  "cursor": "cursor-1",
-  "title": "example/repo #12",
-  "status": {
-    "version": "v2d6ccffc4668392a",
-    "summary": "1 question · 3 to read · 0 nodes working",
-    "badge": 4,
-    "counts": [
-      {
-        "id": "inbox",
-        "label": "Inbox",
-        "value": 4
-      },
-      {
-        "id": "tasks",
-        "label": "Tasks",
-        "value": 1
-      },
-      {
-        "id": "agents",
-        "label": "Agents",
-        "value": 0
-      },
-      {
-        "id": "working",
-        "label": "working",
-        "value": 0
-      },
-      {
-        "id": "waiting",
-        "label": "waiting",
-        "value": 0
-      }
-    ],
-    "gauges": [],
-    "orchestrator": {
-      "text": "idle",
-      "tone": "neutral"
-    }
-  },
-  "sections": [
-    {
-      "id": "card",
-      "collapsed": false,
-      "items": [
-        {
-          "type": "card",
-          "id": "pr-1",
-          "link": {
-            "kind": "view",
-            "key": "card:pr-1"
-          },
-          "icon": "pull_request",
-          "eyebrow": {
-            "text": "Pull request",
-            "tone": "accent"
-          },
-          "title": "example/repo #12",
-          "context": [
-            {
-              "icon": "task",
-              "text": "Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "task:t-1"
-              }
-            },
-            {
-              "icon": "mission",
-              "text": "Mission · Build a feature",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
-            }
-          ],
-          "detail": "included",
-          "children": [
-            {
-              "id": "i-5",
-              "link": {
-                "kind": "view",
-                "key": "card:i-5"
-              },
-              "icon": "question",
-              "eyebrow": {
-                "text": "Question",
-                "tone": "accent"
-              },
-              "title": "Build a feature",
-              "context": [
-                {
-                  "icon": "task",
-                  "text": "Build a feature",
-                  "link": {
-                    "kind": "view",
-                    "key": "task:t-1"
-                  }
-                },
-                {
-                  "icon": "mission",
-                  "text": "Mission · Build a feature",
-                  "link": {
-                    "kind": "view",
-                    "key": "request:r-1"
-                  }
-                }
-              ],
-              "detail": "included",
-              "body": {
-                "text": "Review the PR",
-                "truncated": false,
-                "commentable": false
-              },
-              "actions": [
-                {
-                  "id": "ans:i-5@1",
-                  "label": "Answer",
-                  "style": "primary",
-                  "presentation": "options",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "attachments": true,
-                  "enabled": true,
-                  "stamp": "Answered"
-                },
-                {
-                  "id": "ctx:i-5@1",
-                  "label": "Need more context",
-                  "style": "secondary",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "text",
-                    "placeholder": "What is missing?",
-                    "required": false,
-                    "multiline": true
-                  },
-                  "attachments": false,
-                  "enabled": true
-                }
-              ]
-            },
-            {
-              "id": "i-6",
-              "link": {
-                "kind": "view",
-                "key": "card:i-6"
-              },
-              "icon": "notice",
-              "eyebrow": {
-                "text": "Notice",
-                "tone": "accent"
-              },
-              "title": "Build a feature",
-              "context": [
-                {
-                  "icon": "node",
-                  "text": "Node One",
-                  "link": {
-                    "kind": "view",
-                    "key": "node:a-1"
-                  }
-                },
-                {
-                  "icon": "task",
-                  "text": "Build a feature",
-                  "link": {
-                    "kind": "view",
-                    "key": "task:t-1"
-                  }
-                },
-                {
-                  "icon": "mission",
-                  "text": "Mission · Build a feature",
-                  "link": {
-                    "kind": "view",
-                    "key": "request:r-1"
-                  }
-                }
-              ],
-              "detail": "included",
-              "body": {
-                "text": "The PR checks passed",
-                "truncated": false,
-                "commentable": false
-              },
-              "actions": [
-                {
-                  "id": "read:i-6@1",
-                  "label": "Mark as read",
-                  "style": "secondary",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "none"
-                  },
-                  "attachments": false,
-                  "enabled": true,
-                  "stamp": "Read",
-                  "key": "x"
-                },
-                {
-                  "id": "reply:i-6@1",
-                  "label": "Reply",
-                  "style": "secondary",
-                  "presentation": "button",
-                  "input": {
-                    "kind": "text",
-                    "placeholder": "Write a reply",
-                    "required": true,
-                    "multiline": true
-                  },
-                  "attachments": true,
-                  "enabled": true
-                }
-              ]
-            }
-          ],
-          "facts": {
-            "items": [
-              {
-                "label": "Repository",
-                "value": "example/repo #12"
-              },
-              {
-                "label": "Base",
-                "value": "main"
-              }
-            ]
-          },
-          "actions": [
-            {
-              "id": "ask_pr:pr-1@0",
-              "label": "Ask about the PR",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Your question",
-                "required": true,
-                "multiline": true
-              },
-              "attachments": true,
-              "enabled": true
-            },
-            {
-              "id": "changes:pr-1@0~abcdef12",
-              "label": "Request changes",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "text",
-                "placeholder": "Describe the changes",
-                "required": false,
-                "multiline": true
-              },
-              "attachments": true,
-              "comments": {
-                "kind": "diff_lines"
-              },
-              "enabled": true,
-              "link": {
-                "kind": "view",
-                "key": "pull_request:pr-1"
-              }
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-"""#
-
-
     static func client() -> ViewsClient {
         ViewsClient(
-            load: { key, known in try load(key.rawValue, known: known) },
+            load: { key, known in
+                if let fixture = fixtureName(for: key.rawValue) {
+                    return try loadFixture(fixture, key: key.rawValue, known: known)
+                }
+                return try loadGenerated(key.rawValue, known: known)
+            },
             open: { _ in },
             openScreen: { _, _ in },
             closeScreen: { _ in },
@@ -1026,100 +35,188 @@ enum DemoViews {
         )
     }
 
-    private static func load(_ rawKey: String, known: String?) throws -> ViewLoad {
-        let template: String
-        if rawKey == "home" { template = homeIOS }
-        else if rawKey == "sidebar" { template = homeMac }
-        else if rawKey == "card:i-1" { template = questionCard }
-        else if rawKey == "card:i-3" { template = deliveryCard }
-        else if rawKey == "card:pr-1" { template = pullRequestCard }
-        else if rawKey == "card:i-2" { template = questionCard.replacingOccurrences(of: "i-1", with: "i-2") }
-        else if rawKey == "tasks" || rawKey.hasPrefix("tasks?") { template = screen("Tasks", id: "tasks") }
-        else if rawKey == "fleet" || rawKey.hasPrefix("fleet?") { template = screen("Fleet", id: "fleet") }
-        else if rawKey == "machine" { template = screen("Machine", id: "machine") }
-        else if rawKey.hasPrefix("node:") { template = screen("Node One", id: "node") }
-        else if rawKey.hasPrefix("task:") { template = screen("Build a feature", id: "task") }
-        else if rawKey.hasPrefix("request:") { template = screen("Build a feature", id: "request") }
-        else if rawKey.hasPrefix("pull_request:") { template = try pullRequestDetail() }
-        else if rawKey.hasPrefix("card:") {
-            let id = String(rawKey.dropFirst("card:".count))
-            template = questionCard.replacingOccurrences(of: "i-1", with: id)
-        } else if rawKey == "new_request" || rawKey.hasPrefix("new_request?") {
-            template = try newRequest()
-        } else {
-            template = homeMac
-        }
-
-        let data = Data(template.utf8)
-        var object = try JSONSerialization.jsonObject(with: data) as! [String: Any]
-        if rawKey == "home", var sections = object["sections"] as? [[String: Any]], !sections.isEmpty {
-            sections[0]["items"] = [] // The current home contract loads cards through card_ids.
-            object["sections"] = sections
-        }
-        object["key"] = rawKey
-        object["view"] = rawKey.split(separator: "?", maxSplits: 1).first.map(String.init) ?? rawKey
-        object["client"] = rawKey == "sidebar" ? "mac" : "ios"
-        object["data_epoch"] = "demo-views"
-        object["cursor"] = "demo-views-cursor"
-        let stableVersion = rawKey.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
-        object["version"] = "demo-" + String(stableVersion, radix: 16)
-        let document = try ViewsCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
-        if known == document.version { return .unchanged(cursor: document.cursor) }
-        return .document(document)
+    private static func fixtureName(for key: String) -> String? {
+        if key == "home" { return "home-ios" }
+        if key == "sidebar" { return "home-tui" }
+        if key.hasPrefix("pull_request:") { return "card-pr" }
+        guard key.hasPrefix("card:") else { return nil }
+        let cardID = String(key.dropFirst("card:".count))
+        if cardID == "f12d034b-249e-4487-a89b-57de38c26372" { return "card-information" }
+        if cardID.hasPrefix("hf-weekly-") { return "card-delivery" }
+        if cardID.contains("/") && cardID.contains("#") { return "card-pr" }
+        return "card-question"
     }
 
-    private static func newRequest() throws -> String {
-        var object = try JSONSerialization.jsonObject(with: Data(homeIOS.utf8)) as! [String: Any]
-        object["sections"] = [[
-            "id": "new_request",
-            "title": "New request",
-            "collapsed": false,
-            "items": [[
-                "type": "form",
-                "id": "new_request",
-                "fields": [
-                    ["id": "text", "label": "What would you like done?", "kind": ["kind": "multiline", "placeholder": "Describe the work"], "value": "", "required": true, "reload_on_change": false],
-                    ["id": "attachments", "label": "Attachments", "kind": ["kind": "attachments"], "value": [], "required": false, "reload_on_change": false],
-                    ["id": "project", "label": "Project", "kind": ["kind": "choice", "items": [["id": "Demo Garden", "label": "Demo Garden"]]], "value": "Demo Garden", "required": false, "reload_on_change": false]
-                ],
-                "submit": ["id": "new_request:submit@demo", "label": "Send Request", "style": "primary", "presentation": "button", "input": ["kind": "none"], "attachments": true, "enabled": true, "key": "n"]
-            ]]
-        ] as [String: Any]]
-        return String(data: try JSONSerialization.data(withJSONObject: object), encoding: .utf8)!
+    private static func loadFixture(_ name: String, key: String, known: String?) throws -> ViewLoad {
+        let fixture = try fixtureData(name)
+        var object = try JSONSerialization.jsonObject(with: fixture)
+        if key.hasPrefix("card:") { object = replacingCardID(in: object, with: String(key.dropFirst("card:".count))) }
+        guard var document = object as? [String: Any] else { throw ViewsClientError.missingView }
+        if key.hasPrefix("pull_request:") { document = try pullRequestDocument(from: document, key: key) }
+        document["key"] = key
+        document["view"] = key.split(separator: "?", maxSplits: 1).first.map(String.init) ?? key
+        document["client"] = key == "sidebar" ? "mac" : "ios"
+        document["data_epoch"] = "demo-views"
+        document["cursor"] = "demo-views-cursor"
+        let stableVersion = key.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
+        document["version"] = "demo-" + String(stableVersion, radix: 16)
+        let decoded = try ViewsCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: document))
+        if known == decoded.version { return .unchanged(cursor: decoded.cursor) }
+        return .document(decoded)
     }
 
-    private static func pullRequestDetail() throws -> String {
-        var document = try JSONSerialization.jsonObject(with: Data(screen("example/repo #12", id: "pull_request").utf8)) as! [String: Any]
-        let cardView = try JSONSerialization.jsonObject(with: Data(pullRequestCard.utf8)) as! [String: Any]
-        let card = ((cardView["sections"] as? [[String: Any]])?.first?["items"] as? [[String: Any]])?.first ?? [:]
-        let detailActions = (card["actions"] as? [[String: Any]] ?? []).map { action in
+    private static func fixtureRoot() -> URL {
+        let environment = ProcessInfo.processInfo.environment
+        if let sourceDirectory = environment["TEST_SRCDIR"] {
+            return URL(fileURLWithPath: sourceDirectory)
+                .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
+                .appendingPathComponent("fixtures/views")
+        }
+        return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent("fixtures/views")
+    }
+
+    private static func fixtureData(_ name: String) throws -> Data {
+        if let sourceDirectory = ProcessInfo.processInfo.environment["TEST_SRCDIR"] {
+            let root = URL(fileURLWithPath: sourceDirectory)
+                .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
+                .appendingPathComponent("fixtures/views")
+            return try Data(contentsOf: root.appendingPathComponent("\(name).json"))
+        }
+        if let bundled = Bundle.main.url(forResource: name, withExtension: "json", subdirectory: "fixtures/views")
+            ?? Bundle.main.url(forResource: name, withExtension: "json", subdirectory: "views")
+            ?? Bundle.main.url(forResource: name, withExtension: "json") {
+            return try Data(contentsOf: bundled)
+        }
+        return try Data(contentsOf: fixtureRoot().appendingPathComponent("\(name).json"))
+    }
+
+    private static func loadGenerated(_ key: String, known: String?) throws -> ViewLoad {
+        let base = try JSONSerialization.jsonObject(with: fixtureData("home-ios")) as! [String: Any]
+        let canonicalKey = key.split(separator: "?", maxSplits: 1).first.map(String.init) ?? key
+        let context = try questionContext()
+        let task = context.first { (($0["icon"] as? String) == "task") }
+        let mission = context.first { (($0["icon"] as? String) == "mission") }
+        let node = context.first { (($0["icon"] as? String) == "node") }
+        let sections: [[String: Any]]
+        let title: String
+        switch canonicalKey {
+        case "tasks":
+            title = "Tasks"
+            sections = [["id": "tasks", "title": "Tasks", "collapsed": false,
+                         "items": [row(from: task, icon: "task"), row(from: mission, icon: "request")].compactMap { $0 }]]
+        case "fleet":
+            title = "Fleet"
+            sections = [["id": "fleet", "title": "Agents", "collapsed": false,
+                         "items": [row(from: node, icon: "node")].compactMap { $0 }]]
+        case "new_request", "new_request?":
+            title = "New request"
+            sections = [newRequestSection()]
+        case let detail where detail.hasPrefix("pull_request:"):
+            let fixture = try JSONSerialization.jsonObject(with: fixtureData("card-pr")) as! [String: Any]
+            let document = try pullRequestDocument(from: fixture, key: key)
+            return try decode(document, key: key, title: nil, known: known)
+        case let detail where detail.hasPrefix("node:"):
+            title = node?["text"] as? String ?? "Node"
+            sections = [factsSection(title: "Node", value: title)]
+        case let detail where detail.hasPrefix("task:"):
+            title = task?["text"] as? String ?? "Task"
+            sections = [factsSection(title: "Task", value: title)]
+        case let detail where detail.hasPrefix("request:"):
+            title = mission?["text"] as? String ?? "Request"
+            sections = [factsSection(title: "Request", value: title)]
+        case "machine":
+            title = "Demo Mac"
+            sections = [factsSection(title: "Machine", value: "Sample data")]
+        default:
+            throw ViewsClientError.missingView
+        }
+        return try decode(base, key: key, title: title, sections: sections, known: known)
+    }
+
+    private static func decode(_ source: [String: Any], key: String, title: String?, sections: [[String: Any]]? = nil,
+                               known: String?) throws -> ViewLoad {
+        var document = source
+        document["key"] = key
+        document["view"] = key.split(separator: "?", maxSplits: 1).first.map(String.init) ?? key
+        document["client"] = "ios"
+        document["data_epoch"] = "demo-views"
+        document["cursor"] = "demo-views-cursor"
+        document["title"] = title
+        if let sections { document["sections"] = sections }
+        let stableVersion = key.utf8.reduce(UInt64(14_695_981_039_346_656_037)) { ($0 ^ UInt64($1)) &* 1_099_511_628_211 }
+        document["version"] = "demo-" + String(stableVersion, radix: 16)
+        let view = try ViewsCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: document))
+        if known == view.version { return .unchanged(cursor: view.cursor) }
+        return .document(view)
+    }
+
+    private static func questionContext() throws -> [[String: Any]] {
+        let data = try fixtureData("card-question")
+        let document = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let sections = document["sections"] as? [[String: Any]] ?? []
+        let items = sections.flatMap { $0["items"] as? [[String: Any]] ?? [] }
+        let card = items.first { $0["type"] as? String == "card" } ?? [:]
+        return card["context"] as? [[String: Any]] ?? []
+    }
+
+    private static func row(from context: [String: Any]?, icon: String) -> [String: Any]? {
+        guard let context,
+              let text = context["text"] as? String,
+              let link = context["link"] as? [String: Any],
+              let key = link["key"] as? String else { return nil }
+        let id = String(key.split(separator: ":").last ?? "")
+        return ["type": "row", "id": id, "link": link, "icon": icon, "title": text,
+                "depth": 0, "struck": false]
+    }
+
+    private static func factsSection(title: String, value: String) -> [String: Any] {
+        ["id": "detail", "title": title, "collapsed": false,
+         "items": [["type": "facts", "items": [["label": title, "value": value], ["label": "Source", "value": "Sample data"]]]]]
+    }
+
+    private static func newRequestSection() -> [String: Any] {
+        ["id": "new_request", "title": "New request", "collapsed": false, "items": [[
+            "type": "form", "id": "new_request", "fields": [
+                ["id": "text", "label": "What would you like done?", "kind": ["kind": "multiline", "placeholder": "Describe the work"], "value": "", "required": true, "reload_on_change": false],
+                ["id": "project", "label": "Project", "kind": ["kind": "choice", "items": [["id": "Demo Garden", "label": "Demo Garden"]]], "value": "Demo Garden", "required": false, "reload_on_change": false]
+            ],
+            "submit": ["id": "new_request:submit@demo", "label": "Send Request", "style": "primary", "presentation": "button", "input": ["kind": "none"], "attachments": true, "enabled": true]
+        ]]]
+    }
+
+    private static func pullRequestDocument(from source: [String: Any], key: String) throws -> [String: Any] {
+        var document = source
+        let sections = source["sections"] as? [[String: Any]] ?? []
+        let items = sections.flatMap { $0["items"] as? [[String: Any]] ?? [] }
+        guard let card = items.first(where: { $0["type"] as? String == "card" }) else { throw ViewsClientError.missingView }
+        let actions = (card["actions"] as? [[String: Any]] ?? []).map { action -> [String: Any] in
             var action = action
-            action.removeValue(forKey: "link") // A card navigates here; actions in the detail execute here.
+            action.removeValue(forKey: "link")
             return action
         }
+        let prID = String(key.dropFirst("pull_request:".count))
+        let title = card["title"] as? String ?? prID
+        document["title"] = title
         document["sections"] = [
-            ["id": "summary", "title": "example/repo #12", "collapsed": false,
+            ["id": "summary", "title": title, "collapsed": false,
              "items": [["type": "facts", "items": [["label": "Repository", "value": "example/repo"], ["label": "Base", "value": "main"]]]]],
-            ["id": "actions", "collapsed": false,
-             "items": [["type": "actions", "actions": detailActions]]],
+            ["id": "actions", "collapsed": false, "items": [["type": "actions", "actions": actions]]],
             ["id": "diff", "title": "Diff", "collapsed": false,
              "items": [["type": "content_ref", "kind": "diff", "title": "Diff", "size": 0,
-                         "digest": "demo-head-1", "fetch": "/pull-requests/pr-1/diff", "commentable": true]]]
-        ] as [[String: Any]]
-        return String(data: try JSONSerialization.data(withJSONObject: document), encoding: .utf8)!
+                         "digest": "demo-head-1", "fetch": "/pull-requests/\(prID)/diff", "commentable": true]]]
+        ]
+        return document
     }
 
-    private static func screen(_ title: String, id: String) -> String {
-        let items: String
-        switch id {
-        case "tasks":
-            items = #"{"type":"row","id":"t-1","link":{"kind":"view","key":"task:t-1"},"icon":"task","title":"Build a feature","subtitle":"Demo Garden","depth":0,"struck":false},{"type":"row","id":"r-1","link":{"kind":"view","key":"request:r-1"},"icon":"request","title":"Welcome experience","depth":0,"struck":false}"#
-        case "fleet":
-            items = #"{"type":"row","id":"a-1","link":{"kind":"view","key":"node:a-1"},"icon":"node","title":"Node One","subtitle":"Working on a sample task","depth":0,"struck":false},{"type":"row","id":"machine","link":{"kind":"view","key":"machine"},"icon":"machine","title":"Demo Mac","depth":0,"struck":false}"#
-        default:
-            items = #"{"type":"facts","items":[{"label":"Workspace","value":"Demo Garden"},{"label":"Source","value":"Sample data"}]}"#
+    private static func replacingCardID(in value: Any, with newID: String) -> Any {
+        switch value {
+        case let string as String:
+            guard string.contains("a98d034b-249e-4487-a89b-57de38c26372") else { return value }
+            return string.replacingOccurrences(of: "a98d034b-249e-4487-a89b-57de38c26372", with: newID)
+        case let array as [Any]: return array.map { replacingCardID(in: $0, with: newID) }
+        case let dictionary as [String: Any]: return dictionary.mapValues { replacingCardID(in: $0, with: newID) }
+        default: return value
         }
-        return #"{"protocol":1,"data_epoch":"demo-views","view":"\#(id)","key":"\#(id)","client":"ios","version":"demo-1","cursor":"demo-views-cursor","status":{"version":"demo-1","summary":"Sample data","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[{"id":"\#(id)","title":"\#(title)","collapsed":false,"items":[\#(items)]}]}"#
     }
 
     private static func response() throws -> ActionOutcome {

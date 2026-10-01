@@ -1,6 +1,6 @@
 use super::{
     Action, ActionOption, Attachment, AttachmentKind, BuildError, Card, Check, CheckState, Checks,
-    Client, CommentSpec, ContextLine, Detail, Fact, Facts, Icon, Input, Item, Label, Link, LocalLink,
+    Client, CommentSpec, ContentKind, ContentRef, ContextLine, Detail, Fact, Facts, Icon, Input, Item, Label, Link, LocalLink,
     Markdown, Presentation, RenderContext, Section, Stamp, Style, TimeFormat, Tone, VIEWS_PROTOCOL,
     View,
     action_id::{ActionId, Verb},
@@ -35,7 +35,60 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         .or(fallback.as_ref())
         .ok_or(BuildError::NotFound)?;
     let card = from_item(item, context, true)?;
+    let title = card.title.clone();
     let status = super::status::build(&projection, context);
+    let mut sections = vec![Section {
+        id: "card".into(),
+        title: None,
+        count: None,
+        collapsed: false,
+        items: vec![Item::Card(card)],
+        card_ids: vec![],
+        more: None,
+    }];
+    if let InboxSubject::DocumentReview { revision_id, .. } = &item.subject
+        && let Some(revision) = context.domain.document_revisions.get(revision_id)
+        && let Some(document) = context.domain.documents.get(&revision.document_id)
+    {
+        sections.push(Section {
+            id: "body".into(),
+            title: None,
+            count: None,
+            collapsed: false,
+            items: vec![Item::ContentRef(ContentRef {
+                kind: ContentKind::Document,
+                title: document.title.clone(),
+                size: 0,
+                digest: Some(revision.content_digest.clone()),
+                fetch: format!("/document-revisions/{revision_id}/content"),
+                commentable: true,
+            })],
+            card_ids: vec![],
+            more: None,
+        });
+    } else if let InboxSubject::PullRequest { pr_id } = &item.subject
+        && let Some(pr) = context.domain.pull_requests.get(pr_id)
+    {
+        sections.push(Section {
+            id: "diff".into(),
+            title: None,
+            count: None,
+            collapsed: false,
+            items: vec![Item::ContentRef(ContentRef {
+                kind: ContentKind::Diff,
+                title: t!(context.lang, "Diff", "Diferencias").into(),
+                size: 0,
+                digest: Some(pr.head.clone()),
+                fetch: format!(
+                    "/pull-requests/{}/diff",
+                    super::id::path_segment(&pr.id.0)
+                ),
+                commentable: true,
+            })],
+            card_ids: vec![],
+            more: None,
+        });
+    }
     Ok(View {
         protocol: VIEWS_PROTOCOL,
         data_epoch: context.domain.data_epoch.0.clone(),
@@ -44,17 +97,9 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         client: context.client,
         version: String::new(),
         cursor: context.cursor.into(),
-        title: Some(card.title.clone()),
+        title: Some(title),
         status,
-        sections: vec![Section {
-            id: "card".into(),
-            title: None,
-            count: None,
-            collapsed: false,
-            items: vec![Item::Card(card)],
-            card_ids: vec![],
-            more: None,
-        }],
+        sections,
         empty: None,
         notices: vec![],
     })
@@ -215,7 +260,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     } else {
         vec![]
     };
-    let children = if included {
+    let mut children = if included {
         item.children
             .iter()
             .map(|child| from_item(child, context, true))
@@ -223,6 +268,11 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     } else {
         vec![]
     };
+    if included && item.kind == "document_review" {
+        for child in &mut children {
+            actions.append(&mut child.actions);
+        }
+    }
     Ok(Card {
         id: public_id(item).into(),
         link: Some(Link::View {
@@ -362,8 +412,7 @@ fn pr_detail(
     }
     let revision = context.domain.revision;
     {
-        let id = ActionId::new(Verb::AskPr, pr_id.0.clone(), revision, None)
-            .map_err(|_| BuildError::InvalidActionId)?;
+        if let Some(id) = action_id(Verb::AskPr, &pr_id.0, revision, None) {
         actions.push(Action {
             id: id.to_string(),
             label: t!(context.lang, "Ask about the PR", "Preguntar por la PR").into(),
@@ -384,14 +433,15 @@ fn pr_detail(
             key: (context.client != Client::Ios).then(|| "p".into()),
             link: None,
         });
+        }
     }
     {
-        let id = ActionId::new(
+        if let Some(id) = action_id(
         Verb::Changes,
-        pr_id.0.clone(),
+        &pr_id.0,
         revision,
         Some(pr.head.chars().take(8).collect()),
-        ).map_err(|_| BuildError::InvalidActionId)?;
+        ) {
         actions.push(Action {
             id: id.to_string(),
             label: t!(context.lang, "Request changes", "Solicitar cambios").into(),
@@ -417,11 +467,11 @@ fn pr_detail(
                 key: format!("pull_request:{pr_id}"),
             }),
         });
+        }
     }
     if live.is_some_and(|detail| detail.conflicts) {
         {
-            let id = ActionId::new(Verb::Conflicts, pr_id.0.clone(), revision, None)
-                .map_err(|_| BuildError::InvalidActionId)?;
+            if let Some(id) = action_id(Verb::Conflicts, &pr_id.0, revision, None) {
             actions.push(Action {
                 id: id.to_string(),
                 label: t!(context.lang, "Resolve conflicts", "Resolver conflictos").into(),
@@ -438,6 +488,7 @@ fn pr_detail(
                 key: None,
                 link: None,
             });
+            }
         }
     } else if let Some((child, available)) = item
         .children
@@ -452,7 +503,7 @@ fn pr_detail(
         .next()
     {
         {
-            let id = ActionId::new(
+            if let Some(id) = action_id(
             Verb::Merge,
             public_id(child),
             child.revision,
@@ -460,7 +511,7 @@ fn pr_detail(
                 .expected_head
                 .as_ref()
                 .map(|head| merge_extra(head, public_id(child))),
-            ).map_err(|_| BuildError::InvalidActionId)?;
+            ) {
             let stacked = live.and_then(|detail| detail.stacked_on.as_deref());
             let methods = pr
                 .allowed_methods
@@ -483,7 +534,7 @@ fn pr_detail(
                 .collect();
             actions.push(Action {
                 id: id.to_string(),
-                label: t!(context.lang, "Merge", "Integrar").into(),
+                label: t!(context.lang, "Merge", "Fusionar").into(),
                 style: Style::Primary,
                 presentation: Presentation::Menu,
                 options: methods,
@@ -494,16 +545,16 @@ fn pr_detail(
                     title: t!(
                         context.lang,
                         "Merge pull request?",
-                        "¿Integrar la solicitud de cambios?"
+                        "¿Fusionar la solicitud de cambios?"
                     )
                     .into(),
                     message: tf!(
                         context.lang,
                         "Merge PR #{number}?",
-                        "¿Integrar la PR #{number}?",
+                        "¿Fusionar la PR #{number}?",
                         number = pr.number
                     ),
-                    button: t!(context.lang, "Merge", "Integrar").into(),
+                    button: t!(context.lang, "Merge", "Fusionar").into(),
                 }),
                 enabled: available.enabled && stacked.is_none(),
                 disabled_reason: stacked.map(|id| context.domain.pull_requests.get(&crate::domain_v2::PrId(id.into()))
@@ -511,9 +562,10 @@ fn pr_detail(
                         || t!(context.lang, "Merge the upstream PR first", "Fusiona primero la PR anterior").into(),
                         |upstream| tf!(context.lang, "Merge #{number} first", "Fusiona primero la #{number}", number = upstream.number))),
                 stamp: None,
-                key: None,
+                key: (context.client != Client::Ios).then(|| "m".into()),
                 link: None,
             });
+            }
         }
     }
     Ok((Some(Facts { items: facts }), checks, badges))
@@ -542,6 +594,17 @@ fn item_attachment_refs(item: &InboxItem, domain: &DomainState) -> Vec<Attachmen
         })
         .unwrap_or_default()
 }
+
+fn action_id(verb: Verb, subject: &str, revision: u64, extra: Option<String>) -> Option<ActionId> {
+    match ActionId::new(verb, subject, revision, extra) {
+        Ok(id) => Some(id),
+        Err(_) => {
+            eprintln!("Alondra omitted an action with an invalid identifier ({verb:?})");
+            None
+        }
+    }
+}
+
 fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>, BuildError> {
     let mut out = vec![];
     for available in &item.available_actions {
@@ -570,9 +633,7 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
                 ),
                 _ => return Ok(out),
             };
-            {
-                let id = ActionId::new(verb, interaction_id.0.clone(), interaction.revision, None)
-                    .map_err(|_| BuildError::InvalidActionId)?;
+            if let Some(id) = action_id(verb, &interaction_id.0, interaction.revision, None) {
                 out.push(Action {
                     id: id.to_string(),
                     label: label.into(),
@@ -615,14 +676,18 @@ fn action_for(
         "mark_read" => (
             Verb::Read,
             t!(context.lang, "Mark as read", "Marcar como leído"),
-            Style::Secondary,
+            Style::Primary,
             Presentation::Button,
             Input::None,
             Some("x"),
         ),
         "accept_delivery" => (
             Verb::Accept,
-            t!(context.lang, "Accept", "Aceptar"),
+            if is_document_review(item, context.domain) {
+                t!(context.lang, "Approve", "Aprobar")
+            } else {
+                t!(context.lang, "Accept", "Aceptar")
+            },
             Style::Primary,
             Presentation::Button,
             Input::None,
@@ -643,11 +708,11 @@ fn action_for(
         ),
         "authorize_merge" => (
             Verb::Merge,
-            t!(context.lang, "Merge", "Integrar"),
+            t!(context.lang, "Merge", "Fusionar"),
             Style::Primary,
             Presentation::Menu,
             Input::None,
-            None,
+            Some("m"),
         ),
         _ => return Ok(None),
     };
@@ -668,9 +733,7 @@ fn action_for(
     } else {
         None
     };
-    let id = ActionId::new(verb, subject, revision, extra)
-        .map_err(|_| BuildError::InvalidActionId)?
-        .to_string();
+    let Some(id) = action_id(verb, subject, revision, extra).map(|id| id.to_string()) else { return Ok(None); };
     let options = if verb == Verb::Ans {
         question_options(item, context)
     } else {
@@ -728,7 +791,7 @@ fn action_for(
         title: t!(
             context.lang,
             "Merge pull request?",
-            "¿Integrar la solicitud de cambios?"
+            "¿Fusionar la solicitud de cambios?"
         )
         .into(),
         message: t!(
@@ -737,14 +800,18 @@ fn action_for(
             "Esto integrará la solicitud de cambios."
         )
         .into(),
-        button: t!(context.lang, "Merge", "Integrar").into(),
+        button: t!(context.lang, "Merge", "Fusionar").into(),
     });
     let stamp = match verb {
         Verb::Ans => Some(t!(context.lang, "Answered", "Respondida")),
         Verb::Read => Some(t!(context.lang, "Read", "Leída")),
-        Verb::Accept => Some(t!(context.lang, "Accepted", "Aceptada")),
+        Verb::Accept => Some(if is_document_review(item, context.domain) {
+            t!(context.lang, "Approved", "Aprobada")
+        } else {
+            t!(context.lang, "Accepted", "Aceptada")
+        }),
         Verb::Changes => Some(t!(context.lang, "Changes requested", "Cambios solicitados")),
-        Verb::Merge => Some(t!(context.lang, "Merged", "Integrada")),
+        Verb::Merge => Some(t!(context.lang, "Merged", "Fusionada")),
         _ => None,
     }
     .map(str::to_owned);
@@ -770,6 +837,21 @@ fn action_for(
         link: None,
     }))
 }
+
+fn is_document_review(item: &InboxItem, domain: &DomainState) -> bool {
+    if matches!(&item.subject, InboxSubject::DocumentReview { .. }) {
+        return true;
+    }
+    let InboxSubject::Interaction { interaction_id } = &item.subject else {
+        return false;
+    };
+    domain.interactions.get(interaction_id).is_some_and(|interaction| {
+        matches!(&interaction.payload, InteractionPayload::Delivery { targets, .. }
+            if targets.iter().any(|target| matches!(target,
+                crate::domain_v2::DeliveryTarget::DocumentRevision { .. })))
+    })
+}
+
 fn question_options(item: &InboxItem, context: &RenderContext<'_>) -> Vec<ActionOption> {
     let InboxSubject::Interaction { interaction_id } = &item.subject else {
         return vec![];
@@ -808,7 +890,7 @@ fn question_options(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action
         .collect()
 }
 
-fn disabled_reason(code: &str, lang: super::Lang) -> &'static str {
+pub(super) fn disabled_reason(code: &str, lang: super::Lang) -> &'static str {
     match code {
         "already_read" => t!(lang, "Already read", "Ya leído"),
         "withdrawn" => t!(lang, "Withdrawn", "Retirada"),

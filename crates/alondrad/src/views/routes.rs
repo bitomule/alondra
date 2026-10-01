@@ -24,14 +24,15 @@ async fn local(
     Path(key): Path<String>,
     uri: axum::http::Uri,
 ) -> Response {
-    if crate::domain_bootstrap::signed_device(state.client().home(), &signed).is_none() {
+    let Some(device) = crate::domain_bootstrap::signed_device(state.client().home(), &signed) else {
         return error("forbidden", "signed user device required");
-    }
+    };
     let response = respond(
         &state.client(),
         &key,
         uri.query().unwrap_or(""),
         Transport::Loopback,
+        Some(&device.device_id),
     )
     .await;
     if crate::domain_bootstrap::signed_device(state.client().home(), &signed).is_none() {
@@ -40,7 +41,7 @@ async fn local(
     response
 }
 
-pub(crate) async fn relay(client: &v2_client_routes::Client, path_and_query: &str) -> Response {
+pub(crate) async fn relay(client: &v2_client_routes::Client, device: &str, path_and_query: &str) -> Response {
     let Some((raw_key, query)) = path_and_query
         .strip_prefix("/views/")
         .and_then(|rest| rest.split_once('?'))
@@ -50,7 +51,7 @@ pub(crate) async fn relay(client: &v2_client_routes::Client, path_and_query: &st
     let Some(key) = normalize_key(raw_key) else {
         return error_lang(requested_lang(query), "invalid_input", "invalid view key");
     };
-    respond(client, &key, query, Transport::Relay).await
+    respond(client, &key, query, Transport::Relay, Some(device)).await
 }
 
 pub(crate) async fn relay_feed(
@@ -69,6 +70,7 @@ async fn respond(
     path_key: &str,
     query: &str,
     transport: Transport,
+    device: Option<&str>,
 ) -> Response {
     let requested_language = requested_lang(query);
     let mut protocol = None;
@@ -128,6 +130,9 @@ async fn respond(
         Some("es") => Lang::Es,
         _ => return error_lang(requested_language, "invalid_input", "invalid language"),
     };
+    if let Some(device) = device {
+        client.remember_language(device, language);
+    }
     if known.as_deref().is_some_and(|version| {
         version.len() != 17
             || !version.starts_with('v')
@@ -156,6 +161,7 @@ async fn respond(
         Ok(view) => view,
         Err(BuildError::NotFound) => return error_lang(language, "not_found", "view not found"),
         Err(BuildError::InvalidActionId) => {
+            log!("view {key} could not be rendered because an action identifier was invalid");
             return error_lang(language, "internal_error", "could not render an action");
         }
         Err(BuildError::InvalidKey | BuildError::UnsupportedClient) => {
@@ -542,7 +548,7 @@ mod tests {
             ("client=ios&lang=es", "Falta el protocolo"),
             ("protocol=1&client=unknown&lang=es", "Cliente no válido"),
         ] {
-            let response = respond(&client, "home", query, Transport::Loopback).await;
+            let response = respond(&client, "home", query, Transport::Loopback, None).await;
             let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
                 .await
                 .unwrap();
@@ -578,6 +584,7 @@ mod tests {
             "home",
             "protocol=1&client=ios&lang=en",
             Transport::Loopback,
+            None,
         )
         .await;
         assert_eq!(full.status(), StatusCode::OK);
@@ -591,6 +598,7 @@ mod tests {
             "home",
             &format!("protocol=1&client=ios&lang=en&known={known}"),
             Transport::Loopback,
+            None,
         )
         .await;
         assert_eq!(conditional.status(), StatusCode::OK);
@@ -601,6 +609,42 @@ mod tests {
         assert_eq!(value["unchanged"], true);
         assert_eq!(value["cursor"], view["cursor"]);
         assert_eq!(value["data_epoch"], view["data_epoch"]);
+        drop(client);
+        drop(state);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn relay_serves_views() {
+        let (home, state) = fixture();
+        let client = state.client();
+        let query = "protocol=1&client=ios&lang=en";
+        let local = respond(&client, "home", query, Transport::Loopback, None).await;
+        let remote = relay(&client, "phone-a", &format!("/views/home?{query}")).await;
+        assert_eq!(local.status(), StatusCode::OK);
+        assert_eq!(remote.status(), StatusCode::OK);
+        let local = axum::body::to_bytes(local.into_body(), super::super::VIEW_BUDGET_BYTES)
+            .await
+            .unwrap();
+        let remote = axum::body::to_bytes(remote.into_body(), super::super::VIEW_BUDGET_BYTES)
+            .await
+            .unwrap();
+        assert_eq!(local, remote);
+        assert_eq!(client.language_for_device("phone-a"), Lang::En);
+        drop(client);
+        drop(state);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn views_remember_the_last_language_per_device_with_english_default() {
+        let (home, state) = fixture();
+        let client = state.client();
+        assert_eq!(client.language_for_device("phone-a"), Lang::En);
+        let response = relay(&client, "phone-a", "/views/home?protocol=1&client=ios&lang=es").await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(client.language_for_device("phone-a"), Lang::Es);
+        assert_eq!(client.language_for_device("phone-b"), Lang::En);
         drop(client);
         drop(state);
         std::fs::remove_dir_all(home).unwrap();

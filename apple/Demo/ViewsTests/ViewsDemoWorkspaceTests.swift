@@ -1,8 +1,29 @@
 import AlondraViews
 import AlondraViewsDemoWorkspace
+import AlondraHomeFeature
+import ComposableArchitecture
 import Testing
 
 @Suite struct ViewsDemoWorkspaceTests {
+    @MainActor
+    @Test func homeReducerKeepsDistinctPrefetchedCards() async throws {
+        let client = ViewsDemoWorkspace.client()
+        let store = withDependencies {
+            $0.viewsClient = client
+        } operation: {
+            Store(initialState: HomeFeature.State()) { HomeFeature() }
+        }
+        await store.send(.appeared).finish()
+        let state = store.withState { $0 }
+        let ids = state.orderedIDs
+        #expect(ids.count == 4)
+        guard ids.count >= 2 else { return }
+        #expect(state.cards[ids[0]]?.icon == .question)
+        #expect(state.cards[ids[1]]?.icon == .notice)
+        #expect(state.cards[ids[0]]?.body?.text != state.cards[ids[1]]?.body?.text)
+        store.send(.disappeared)
+    }
+
     @Test func homeCardsAndLinkedScreensUseViewsDocuments() async throws {
         let client = ViewsDemoWorkspace.client()
         guard case let .document(home) = try await client.load(.home, nil) else {
@@ -10,7 +31,7 @@ import Testing
             return
         }
         let ids = try #require(home.sections.first { $0.id == "queue" }?.cardIds)
-        #expect(ids == ["i-1", "i-2", "i-3", "pr-1"])
+        #expect(ids.count == 4)
         #expect(home.sections.first { $0.id == "queue" }?.items.isEmpty == true)
 
         for id in ids {
@@ -22,7 +43,38 @@ import Testing
             #expect(!card.sections.isEmpty)
         }
 
-        for key in [ViewKey.tasks, .fleet, .node("a-1"), .task("t-1"), .request("r-1")] {
+        guard case let .document(question) = try await client.load(.card(ids[0]), nil) else {
+            Issue.record("The first demo card must load")
+            return
+        }
+        let questionCard = try #require(question.sections.flatMap(\.items).compactMap { item -> Card? in
+            if case let .card(card) = item { card } else { nil }
+        }.first)
+        #expect(questionCard.title == "Restore the native review experience")
+        #expect(questionCard.body?.text.contains("Body 0") == false)
+        let answer = try #require(questionCard.actions.first { $0.presentation == .options })
+        #expect(answer.options.map(\.label) == ["Ship the concise copy", "Keep the warmer copy"])
+        guard case let .document(information) = try await client.load(.card(ids[1]), nil) else {
+            Issue.record("The information demo card must load")
+            return
+        }
+        let informationCard = try #require(information.sections.flatMap(\.items).compactMap { item -> Card? in
+            if case let .card(card) = item { card } else { nil }
+        }.first)
+        #expect(informationCard.icon == .notice)
+        #expect(informationCard.body?.text.contains("simulator pass completed") == true)
+        func contextID(_ icon: Icon) throws -> String {
+            let context = try #require(questionCard.context.first { $0.icon == icon })
+            guard case let .view(key)? = context.link else {
+                Issue.record("The demo context must link to its screen")
+                return ""
+            }
+            return String(key.split(separator: ":").last ?? "")
+        }
+        let nodeID = try contextID(.node)
+        let taskID = try contextID(.task)
+        let requestID = try contextID(.mission)
+        for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID), .request(requestID)] {
             guard case let .document(screen) = try await client.load(key, nil) else {
                 Issue.record("Missing demo destination \(key.rawValue)")
                 continue
@@ -31,7 +83,7 @@ import Testing
             #expect(!screen.sections.isEmpty)
         }
 
-        for (key, expectedLink) in [(ViewKey.tasks, "task:t-1"), (.fleet, "node:a-1")] {
+        for (key, expectedLink) in [(ViewKey.tasks, "task:\(taskID)"), (.fleet, "node:\(nodeID)")] {
             guard case let .document(screen) = try await client.load(key, nil) else {
                 Issue.record("Missing demo list \(key.rawValue)")
                 continue
@@ -42,11 +94,25 @@ import Testing
             }
             #expect(links.contains(.view(key: expectedLink)))
         }
+
+        let deliveryID = try #require(ids.dropFirst(2).first)
+        guard case let .document(delivery) = try await client.load(.card(deliveryID), nil),
+              case let .card(deliveryCard) = try #require(delivery.sections.flatMap(\.items).first) else {
+            Issue.record("The demo delivery card must load")
+            return
+        }
+        #expect(deliveryCard.title == "Restore the native review experience")
+        #expect(deliveryCard.body?.text.contains("The candidate is ready for your final approval.") == true)
     }
 
     @Test func pullRequestOpensDiffAndContextNoteIsOptional() async throws {
         let client = ViewsDemoWorkspace.client()
-        guard case let .document(pr) = try await client.load(.pullRequest("pr-1"), nil) else {
+        guard case let .document(home) = try await client.load(.home, nil) else {
+            Issue.record("The demo home must load")
+            return
+        }
+        let prID = try #require(home.sections.first?.cardIds?.last)
+        guard case let .document(pr) = try await client.load(.pullRequest(prID), nil) else {
             Issue.record("Missing demo pull request")
             return
         }
@@ -55,7 +121,7 @@ import Testing
             if case let .contentRef(value) = item, value.kind == .diff { return value }
             return nil
         }.first)
-        #expect(diff.fetch == "/pull-requests/pr-1/diff")
+        #expect(diff.fetch == "/pull-requests/\(prID)/diff")
         #expect(try await client.fetchContent(diff).contains("diff --git"))
         let actions = items.flatMap { item -> [AlondraViews.Action] in
             if case let .actions(bar) = item { return bar.actions }
@@ -64,7 +130,7 @@ import Testing
         #expect(actions.contains { $0.label == "Request changes" && $0.comments?.kind == .diffLines })
         #expect(actions.allSatisfy { $0.link == nil })
 
-        guard case let .document(prCardView) = try await client.load(.card("pr-1"), nil),
+        guard case let .document(prCardView) = try await client.load(.card(prID), nil),
               case let .card(prCard) = try #require(prCardView.sections.flatMap(\.items).first) else {
             Issue.record("Missing demo PR home card")
             return
@@ -72,9 +138,10 @@ import Testing
         let review = try #require(prCard.actions.first { $0.label == "Request changes" })
         #expect(review.comments?.kind == .diffLines)
         #expect(review.enabled)
-        #expect(review.link == .view(key: "pull_request:pr-1"))
+        #expect(review.link == .view(key: "pull_request:\(prID)"))
 
-        guard case let .document(cardView) = try await client.load(.card("i-1"), nil),
+        let ids = try #require(home.sections.first?.cardIds)
+        guard case let .document(cardView) = try await client.load(.card(ids[0]), nil),
               case let .card(card) = try #require(cardView.sections.flatMap(\.items).first) else {
             Issue.record("Missing demo question card")
             return

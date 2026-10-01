@@ -89,6 +89,39 @@ fn changed_view_action_requires_a_fresh_explicit_confirmation() {
 }
 
 #[test]
+fn merge_needs_two_presses() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let pr_id = "github.com/example/repo#12";
+    app.sel = Some(Key(pr_id.into()));
+    let key = format!("card:{pr_id}");
+    let mut card = view_fixture("card-pr.json");
+    card["sections"][0]["items"][0]["actions"] = serde_json::json!([{
+        "id": format!("merge:{pr_id}@7~abcdef12"),
+        "label": "Merge",
+        "style": "primary",
+        "presentation": "button",
+        "input": {"kind": "none"},
+        "attachments": false,
+        "enabled": true,
+        "confirm": {"title": "Merge", "message": "Merge this pull request?", "button": "Merge"},
+        "key": "m"
+    }]);
+    app.on_msg(Msg::ViewCard {
+        key,
+        result: Ok(serde_json::from_value(card).unwrap()),
+    });
+
+    press(&mut app, KeyCode::Char('m'));
+    assert!(posted(&app).is_empty(), "the first press only arms confirmation");
+    press(&mut app, KeyCode::Char('m'));
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "/actions");
+    assert_eq!(sent[0].1["action_id"], format!("merge:{pr_id}@7~abcdef12"));
+}
+
+#[test]
 fn failed_views_feed_marks_cached_fleet_as_outdated_until_recovery() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -223,7 +256,7 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
         "WAITING FOR YOU",
         "PULL REQUESTS",
         "TO READ",
-        "Build a feature",
+        "Restore the native review experience",
     ] {
         assert!(list.contains(label), "{label}: {list}");
     }
@@ -234,7 +267,7 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
     });
     let detail = screen(&mut app, 120, 26);
     assert!(
-        detail.contains("Body 0") && detail.contains("Need more context"),
+        detail.contains("The new empty state is ready.") && detail.contains("Need more context"),
         "{detail}"
     );
 }
@@ -461,6 +494,20 @@ fn canonical_pr_diff_content_ref_opens_in_the_views_reader() {
         "Diff truncated",
     );
     assert!(cut.contains("partial diff\n\nDiff truncated"));
+}
+
+#[test]
+fn diff_card_footer_names_the_diff_and_comments_shortcut() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let mut view = view_fixture("card-question.json");
+    view["key"] = serde_json::json!("pull_request:owner/repo#1");
+    view["sections"] = serde_json::json!([{"id":"diff", "collapsed":false, "items":[{
+        "type":"content_ref", "kind":"diff", "title":"Diff", "size":0,
+        "digest":"head-1", "fetch":"/diff", "commentable":true
+    }]}]);
+    let rendered: alondra_core::views::View = serde_json::from_value(view).unwrap();
+    let keys = crate::tui::draw::view_footer_actions(&rendered);
+    assert!(keys.iter().any(|(key, label)| key == "d" && label == "diff and comments"));
 }
 
 #[test]

@@ -256,7 +256,7 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
 }
 
 #[test]
-fn producer_zero_revision_is_filled_and_replays_by_the_bytes_it_sent() {
+fn replay_returns_the_first_outcome() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);

@@ -73,7 +73,7 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     if let Some(trailing) = &row.trailing {
         match trailing {
             alondra_core::views::Trailing::Count { value } => meta.push(value.to_string()),
-            alondra_core::views::Trailing::Time { at, .. } => meta.push(at.clone()),
+            alondra_core::views::Trailing::Time { at, format } => meta.push(format_time(at, *format)),
             alondra_core::views::Trailing::Text { text } => meta.push(text.clone()),
         }
     }
@@ -218,7 +218,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                 Item::Timeline(timeline) => {
                     for entry in &timeline.entries {
                         lines.push(Line::from(vec![
-                            Span::styled(format!("{}  ", entry.at), Style::new().fg(DIM)),
+                            Span::styled(format!("{}  ", format_time(&entry.at, alondra_core::views::TimeFormat::Absolute)), Style::new().fg(DIM)),
                             Span::raw(entry.title.clone()),
                         ]));
                         if let Some(text) = &entry.text {
@@ -256,19 +256,69 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                         tone: notice.tone,
                     }),
                 ))),
-                Item::Actions(bar) => {
-                    for action in &bar.actions {
-                        lines.push(Line::from(format!(
-                            "[{}] {}",
-                            action_hint(action),
-                            action.label
-                        )));
-                    }
-                }
+                Item::Actions(_) => {}
             }
         }
     }
     lines
+}
+
+fn action_line(action: &Action) -> String {
+    let hint = action_hint(action);
+    if hint.is_empty() {
+        action.label.clone()
+    } else {
+        format!("[{hint}] {}", action.label)
+    }
+}
+
+pub fn format_time(at: &str, format: alondra_core::views::TimeFormat) -> String {
+    let Some((millis, date, time)) = parse_utc(at) else {
+        return at.to_owned();
+    };
+    match format {
+        alondra_core::views::TimeFormat::Relative => super::draw::ago(millis),
+        alondra_core::views::TimeFormat::Absolute => format!("{date} {time}"),
+        alondra_core::views::TimeFormat::Time => time,
+    }
+}
+
+fn parse_utc(value: &str) -> Option<(i64, String, String)> {
+    let value = value.strip_suffix('Z')?;
+    let (date, clock) = value.split_once('T')?;
+    let mut date_parts = date.split('-');
+    let (year, month, day) = (
+        date_parts.next()?.parse::<i64>().ok()?,
+        date_parts.next()?.parse::<i64>().ok()?,
+        date_parts.next()?.parse::<i64>().ok()?,
+    );
+    if date_parts.next().is_some() || !(1..=12).contains(&month) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let clock = clock.split('.').next()?;
+    let mut time_parts = clock.split(':');
+    let (hour, minute, second) = (
+        time_parts.next()?.parse::<i64>().ok()?,
+        time_parts.next()?.parse::<i64>().ok()?,
+        time_parts.next()?.parse::<i64>().ok()?,
+    );
+    if time_parts.next().is_some() || hour > 23 || minute > 59 || second > 60 {
+        return None;
+    }
+    let year_adj = year - i64::from(month <= 2);
+    let era = year_adj.div_euclid(400);
+    let year_of_era = year_adj - era * 400;
+    let month_adj = month + if month > 2 { -3 } else { 9 };
+    let day_of_year = (153 * month_adj + 2) / 5 + day - 1;
+    let day_of_era = year_of_era * 365 + year_of_era / 4 - year_of_era / 100 + day_of_year;
+    let days = era * 146_097 + day_of_era - 719_468;
+    let fraction = value
+        .split_once('.')
+        .and_then(|(_, fraction)| fraction.parse::<u16>().ok())
+        .unwrap_or(0);
+    let millis = ((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000)
+        + i64::from(fraction);
+    Some((millis, date.to_owned(), format!("{hour:02}:{minute:02}")))
 }
 
 pub fn actions(view: &View) -> Vec<Action> {
@@ -291,6 +341,8 @@ pub fn actions(view: &View) -> Vec<Action> {
             }
         }
     }
+    let mut seen = std::collections::HashSet::new();
+    out.retain(|action| action.id.is_empty() || seen.insert(action.id.clone()));
     out
 }
 
@@ -386,4 +438,28 @@ fn fit(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
         result.push(Span::styled(take, span.style));
     }
     Line::from(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alondra_core::views::{Input, Presentation, Style};
+
+    #[test]
+    fn view_times_are_formatted_for_people_instead_of_showing_wire_timestamps() {
+        assert_eq!(format_time("2026-10-01T09:55:00Z", alondra_core::views::TimeFormat::Absolute), "2026-10-01 09:55");
+        assert_eq!(format_time("2026-10-01T09:55:00.000Z", alondra_core::views::TimeFormat::Time), "09:55");
+        assert_eq!(format_time("not-a-date", alondra_core::views::TimeFormat::Absolute), "not-a-date");
+    }
+
+    #[test]
+    fn actions_without_keyboard_bindings_do_not_render_empty_brackets() {
+        let action = Action {
+            id: "message".into(), label: "Message".into(), style: Style::Primary,
+            presentation: Presentation::Button, options: vec![], input: Input::None,
+            attachments: false, comments: None, confirm: None, enabled: true,
+            disabled_reason: None, stamp: None, key: None, link: None,
+        };
+        assert_eq!(action_line(&action), "Message");
+    }
 }

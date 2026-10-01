@@ -4,7 +4,25 @@ use alondra_core::views::{
     LivePullRequest, LiveSnapshot, Notice, Tone,
 };
 use serde_json::Value;
-use std::collections::BTreeMap;
+use sha2::Digest;
+use std::{collections::{BTreeMap, HashMap}, sync::Mutex};
+
+#[derive(Default)]
+pub(crate) struct LiveReadCache(Mutex<HashMap<String, (u64, String, Value)>>);
+
+impl LiveReadCache {
+    fn get(&self, path: &str, domain_revision: u64, source_revision: &str) -> Option<Value> {
+        self.0.lock().expect("live read cache poisoned").get(path)
+            .filter(|(domain, source, _)| *domain == domain_revision && source == source_revision)
+            .map(|(_, _, value)| value.clone())
+    }
+
+    fn insert(&self, path: String, domain_revision: u64, source_revision: &str, value: Value) {
+        let mut cache = self.0.lock().expect("live read cache poisoned");
+        if cache.len() >= 128 && !cache.contains_key(&path) { cache.clear(); }
+        cache.insert(path, (domain_revision, source_revision.to_owned(), value));
+    }
+}
 
 pub(crate) async fn gather(
     client: &crate::v2_client_routes::Client,
@@ -102,6 +120,10 @@ pub(crate) async fn gather(
             let details = client.details.get(&pr.id.0);
             LivePullRequest {
                 id: pr.id.0.clone(),
+                title: details.as_ref().and_then(|details| details.title.clone()),
+                body: details.as_ref().and_then(|details| details.body.clone()),
+                head_ref: details.as_ref().and_then(|details| details.head_ref.clone()),
+                base_ref: details.as_ref().and_then(|details| details.base_ref.clone()),
                 checks_passed: details.as_ref().map(|details| {
                     details
                         .checks
@@ -204,6 +226,12 @@ pub(crate) async fn gather(
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
         .collect() };
+    let launches = client.domain.store.lock().expect("domain store poisoned")
+        .request_launch_summaries().unwrap_or_default();
+    let task_options = state.tasks.values().map(|task| {
+        let (project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
+        (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { project, effort })
+    }).collect();
     let wants_new = keys
         .iter()
         .any(|key| key.as_str() == "new_request" || key.starts_with("new_request?"));
@@ -260,7 +288,12 @@ pub(crate) async fn gather(
         .filter_map(|key| key.strip_prefix("node:"))
         .filter(|id| *id != "orchestrator")
     {
-        if let Some(data) = read_json(client, &format!("/agents/{id}/activity")).await {
+        let path = format!("/agents/{id}/activity");
+        let activity_revision = client.domain.live.threads(id)
+            .and_then(|activity| serde_json::to_vec(&activity).ok())
+            .map(|bytes| digest_hex(&bytes))
+            .unwrap_or_default();
+        if let Some(data) = read_live_json(client, &path, state.revision, &activity_revision).await {
             let entries: Vec<alondra_core::activity::Activity> =
                 serde_json::from_value(data["activity"].clone()).unwrap_or_default();
             activity.insert(
@@ -308,7 +341,8 @@ pub(crate) async fn gather(
             .find(|(name, _)| name == "q").map(|(_, value)| value.into_owned()).unwrap_or_default();
         if query.chars().count() >= 3 {
             let path = format!("/agents/search?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>());
-            if let Some(data) = read_json(client, &path).await {
+            let search_revision = search_source_revision(client, state);
+            if let Some(data) = read_live_json(client, &path, state.revision, &search_revision).await {
                 search_matches = serde_json::from_value(data["sessions"].clone()).ok();
             }
         }
@@ -328,6 +362,7 @@ pub(crate) async fn gather(
         issue_error,
         activity,
         task_history,
+        task_options,
         search_matches,
     }
 }
@@ -361,6 +396,73 @@ async fn read_json(client: &crate::v2_client_routes::Client, path: &str) -> Opti
         .await
         .ok()?;
     serde_json::from_slice(&bytes).ok()
+}
+
+async fn read_live_json(
+    client: &crate::v2_client_routes::Client,
+    path: &str,
+    domain_revision: u64,
+    source_revision: &str,
+) -> Option<Value> {
+    if let Some(cached) = client.live_reads.get(path, domain_revision, source_revision) {
+        return Some(cached);
+    }
+    let value = read_json(client, path).await?;
+    client.live_reads.insert(path.to_owned(), domain_revision, source_revision, value.clone());
+    Some(value)
+}
+
+fn search_source_revision(client: &crate::v2_client_routes::Client, state: &DomainState) -> String {
+    let nodes = client.domain.live.nodes();
+    let candidates: Vec<_> = state.agents.values().map(|agent| {
+        let node = nodes.iter().find(|node| node.session_id == agent.id.0);
+        let tasks: Vec<&str> = state.tasks.values()
+            .filter(|task| task.agent_id.as_ref() == Some(&agent.id)).map(|task| task.title.as_str()).collect();
+        let text = format!("{} {} {} {} {}", agent.name, node.map_or(String::new(), |n| n.short_id.clone()),
+            node.map_or(String::new(), |n| n.project()),
+            node.and_then(|n| n.last_message.clone()).unwrap_or_default(), tasks.join(" "));
+        (agent.id.0.clone(), text)
+    }).collect();
+    let bytes = serde_json::to_vec(&candidates).expect("search source serialization");
+    digest_hex(&bytes)
+}
+
+fn digest_hex(bytes: &[u8]) -> String {
+    sha2::Sha256::digest(bytes).iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use super::*;
+
+    #[test]
+    fn activity_and_search_reads_are_reused_until_their_sources_change() {
+        let cache = LiveReadCache::default();
+        let mut reads = 0;
+        let read = |cache: &LiveReadCache, path: &str, domain: u64, source: &str, reads: &mut usize| {
+            if let Some(value) = cache.get(path, domain, source) { return value; }
+            *reads += 1;
+            let value = serde_json::json!({"path":path,"read":*reads});
+            cache.insert(path.to_owned(), domain, source, value.clone());
+            value
+        };
+
+        let activity = read(&cache, "/agents/a/activity", 4, "node-a-1", &mut reads);
+        assert_eq!(read(&cache, "/agents/a/activity", 4, "node-a-1", &mut reads), activity);
+        let search = read(&cache, "/agents/search?q=parser", 4, "search-set-1", &mut reads);
+        assert_eq!(read(&cache, "/agents/search?q=parser", 4, "search-set-1", &mut reads), search);
+        assert_eq!(reads, 2, "unchanged activity and search results should not be reread");
+
+        assert_eq!(read(&cache, "/agents/a/activity", 4, "node-a-1", &mut reads), activity,
+            "a hook in another node must not invalidate this activity read");
+        assert_ne!(read(&cache, "/agents/a/activity", 4, "node-a-2", &mut reads), activity,
+            "hook activity invalidates activity reads");
+        assert_ne!(read(&cache, "/agents/search?q=parser", 4, "search-set-2", &mut reads), search,
+            "hook updates can change search matches");
+        assert_ne!(read(&cache, "/agents/search?q=parser", 5, "search-set-2", &mut reads), search,
+            "domain updates can change search matches");
+        assert_eq!(reads, 5);
+    }
 }
 
 fn same_visible_gauges(left: &[Gauge], right: &[Gauge]) -> bool {

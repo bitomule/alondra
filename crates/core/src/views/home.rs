@@ -161,8 +161,6 @@ fn row(item: &InboxItem, context: &RenderContext<'_>, depth: u8) -> Result<Row, 
         }),
         icon: card.icon,
         title: card.title,
-        state_key: None,
-        tooltip: None,
         subtitle: card.subtitle,
         badges: card.badges,
         trailing: context.live.time(&item.id).map(|at| Trailing::Time {

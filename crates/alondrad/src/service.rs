@@ -1261,7 +1261,7 @@ impl Service {
                 Some(crate::views::routes::relay_feed(client, sender, &request.path).await)
             }
             Some(client) if crate::views::routes::approved_read_path(&request.path) => {
-                Some(crate::views::routes::relay(client, &request.path).await)
+                Some(crate::views::routes::relay(client, sender, &request.path).await)
             }
             Some(client) => client.read(&request.path).await,
             None => None,
@@ -1451,6 +1451,14 @@ impl Service {
         payload: &Value,
         with_sound: bool,
     ) -> Result<(usize, usize)> {
+        self.broadcast_push_report_for_device(with_sound, |_| payload.clone()).await
+    }
+
+    pub async fn broadcast_push_report_for_device(
+        &self,
+        with_sound: bool,
+        payload_for_device: impl Fn(&str) -> Value,
+    ) -> Result<(usize, usize)> {
         let mut epoch = None;
         let mut attempted = 0;
         let mut accepted = 0;
@@ -1464,8 +1472,9 @@ impl Service {
                 continue;
             };
             attempted += 1;
+            let payload = payload_for_device(id);
             if let Err(error) = self
-                .send_device_push(id, device, &binding, payload, with_sound, &mut epoch)
+                .send_device_push(id, device, &binding, &payload, with_sound, &mut epoch)
                 .await
             {
                 log!("service push for {id} failed: {error:#}");

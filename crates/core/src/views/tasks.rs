@@ -18,16 +18,17 @@ fn state(task: &Task, lang: super::Lang) -> &'static str {
     }
 }
 
-fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
+pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
+    let (icon, tone) = common::task_presentation(task.state);
     let mut row = common::row(
         &task.id.0,
         &format!("task:{}", task.id),
-        Icon::Task,
+        icon,
         task.title.clone(),
         Some(state(task, context.lang).into()),
     );
     row.struck = task.state == TaskState::Cancelled;
-    row.state_key = serde_json::to_value(task.state).ok().and_then(|value| value.as_str().map(str::to_owned));
+    row.badges.push(super::Label { text: state(task, context.lang).into(), tone });
     row.trailing = Some(Trailing::Count {
         value: context
             .domain
@@ -189,15 +190,9 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
             None,
         ))],
     );
-    scheduled.count = Some(
-        context
-            .domain
-            .schedule
-            .schedules
-            .values()
-            .filter(|s| s.deleted_at.is_none())
-            .count() as u32,
-    );
+    let scheduled_count = context.domain.schedule.schedules.values()
+        .filter(|schedule| schedule.deleted_at.is_none()).count() as u32;
+    scheduled.count = (scheduled_count > 0).then_some(scheduled_count);
     view.sections.push(scheduled);
     for (id, title) in [
         ("active", t!(context.lang, "Active", "Activas")),
@@ -252,7 +247,8 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
             action: None,
         });
     }
-    if let Some(action) = common::action(
+    if context.domain.tasks.values().any(|task| task.state.terminal() && !task.archived)
+        && let Some(action) = common::action(
         Verb::ArchiveDone,
         "view",
         context.domain.revision,
@@ -309,7 +305,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         label: t!(context.lang, "Request", "Solicitud").into(),
         value: request
             .and_then(|r| r.title.clone())
-            .unwrap_or_else(|| task.request_id.0.clone()),
+            .or_else(|| request.map(|r| r.body.lines().next().unwrap_or("").trim().chars().take(120).collect()))
+            .filter(|title: &String| !title.is_empty())
+            .unwrap_or_else(|| t!(context.lang, "Request details unavailable", "Detalles de la solicitud no disponibles").into()),
         tone: None,
         link: Some(super::Link::View {
             key: format!("request:{}", task.request_id),
@@ -393,13 +391,18 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             .map(move |pr| (owner, pr)))
         .enumerate()
         .map(|(index, (owner, pr))| {
+            let details = context.live.pull_requests.iter().find(|details| details.id == pr.id.0);
+            let title = details.and_then(|details| details.title.as_deref())
+                .map(str::to_owned).unwrap_or_else(|| format!("PR #{}", pr.number));
+            let branches = details.and_then(|details| details.head_ref.as_deref())
+                .map(|head| format!("{head} → {}", details.and_then(|details| details.base_ref.as_deref()).unwrap_or(&pr.base)));
             Item::Row(common::row(
                 &pr.id.0,
                 &format!("pull_request:{}", pr.id),
                 Icon::PullRequest,
-                format!("{} · PR #{}", index + 1, pr.number),
-                Some(if owner.id == task.id { format!("{} → {}", pr.head, pr.base) }
-                    else { format!("{} · {} → {}", owner.title, pr.head, pr.base) }),
+                format!("{} · {title}", index + 1),
+                branches.map(|branches| if owner.id == task.id { branches }
+                    else { format!("{} · {branches}", owner.title) }),
             ))
         })
         .collect();
@@ -423,6 +426,39 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             deps,
         ));
     }
+    let mut task_options = vec![Fact {
+            label: t!(context.lang, "PR handling", "Gestión de PR").into(),
+            value: if task.review_prs {
+                t!(context.lang, "Review before merge", "Revisar antes de fusionar")
+            } else {
+                t!(context.lang, "No PR review; merge still needs your authorization", "Sin revisión de PR; fusionar sigue requiriendo tu autorización")
+            }.into(),
+            tone: None,
+            link: None,
+        }];
+    if let Some(options) = context.live.task_options.get(id) {
+        if let Some(project) = options.project.as_ref().filter(|project| !project.is_empty()) {
+            task_options.push(Fact {
+                label: t!(context.lang, "Project", "Proyecto").into(),
+                value: project.clone(),
+                tone: None,
+                link: None,
+            });
+        }
+        if let Some(effort) = &options.effort {
+            task_options.push(Fact {
+                label: t!(context.lang, "Effort", "Esfuerzo").into(),
+                value: effort.clone(),
+                tone: None,
+                link: None,
+            });
+        }
+    }
+    view.sections.push(common::section(
+        "options",
+        Some(t!(context.lang, "Options", "Opciones").into()),
+        vec![Item::Facts(Facts { items: task_options })],
+    ));
     let documents: Vec<_> = task
         .documents
         .iter()
@@ -454,6 +490,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 Verb::Msg, &agent_id.0, context.domain.revision, Some(task.id.0.clone()),
             ) {
                 message.id = id.to_string();
+                message.key = (context.client == super::Client::Tui).then(|| "M".into());
                 message.input = super::Input::Text {
                     placeholder: t!(context.lang, "Write to this task's node…", "Escribe al nodo de esta tarea…").into(),
                     required: true,
@@ -492,7 +529,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             common::action(verb, id, available.expected_revision, label, style)
         {
             action.enabled = available.enabled;
-            action.disabled_reason = available.disabled_reason;
+            action.disabled_reason = available.disabled_reason
+                .as_deref()
+                .map(|code| super::card::disabled_reason(code, context.lang).to_owned());
             if verb == Verb::Cancel {
                 action.confirm = Some(Confirm {
                     title: label.into(),

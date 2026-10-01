@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v848401d85cff1ee5",
+  "version": "v5c0c9e37b2f4169f",
   "cursor": "cursor-1",
   "status": {
     "version": "v2d6ccffc4668392a",
@@ -57,7 +57,7 @@
             "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
           },
           "icon": "question",
-          "title": "Build a feature",
+          "title": "Restore the native review experience",
           "depth": 0,
           "struck": false
         },
@@ -69,7 +69,7 @@
             "key": "card:hf-weekly-2026-09-30"
           },
           "icon": "delivery",
-          "title": "Build a feature",
+          "title": "Restore the native review experience",
           "depth": 0,
           "struck": false
         }
@@ -99,7 +99,7 @@
                 "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
               },
               "icon": "question",
-              "title": "Build a feature",
+              "title": "Restore the native review experience",
               "depth": 1,
               "struck": false
             },
@@ -110,7 +110,7 @@
                 "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
               },
               "icon": "notice",
-              "title": "Build a feature",
+              "title": "Restore the native review experience",
               "depth": 1,
               "struck": false
             }
@@ -131,7 +131,7 @@
             "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
           },
           "icon": "notice",
-          "title": "Build a feature",
+          "title": "Restore the native review experience",
           "depth": 0,
           "struck": false
         }
@@ -153,11 +153,11 @@
             "text": "Question",
             "tone": "accent"
           },
-          "title": "Build a feature",
+          "title": "Restore the native review experience",
           "context": [
             {
               "icon": "node",
-              "text": "Node One",
+              "text": "Alondra · iOS",
               "link": {
                 "kind": "view",
                 "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
@@ -165,24 +165,24 @@
             },
             {
               "icon": "task",
-              "text": "Build a feature",
+              "text": "Restore the native review experience",
               "link": {
                 "kind": "view",
-                "key": "task:t-1"
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               }
             },
             {
               "icon": "mission",
-              "text": "Mission · Build a feature",
+              "text": "Mission · Polish the Alondra beta",
               "link": {
                 "kind": "view",
-                "key": "request:r-1"
+                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
               }
             }
           ],
           "detail": "included",
           "body": {
-            "text": "Body 0",
+            "text": "The new empty state is ready. Which copy should we ship in the beta?",
             "truncated": false,
             "commentable": false
           },
@@ -192,6 +192,28 @@
               "label": "Answer",
               "style": "primary",
               "presentation": "options",
+              "options": [
+                {
+                  "id": "clear",
+                  "label": "Ship the concise copy",
+                  "description": "Use a short title and one explanatory sentence.",
+                  "style": "primary",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "key": "1"
+                },
+                {
+                  "id": "warm",
+                  "label": "Keep the warmer copy",
+                  "description": "Preserve the more conversational explanation.",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "key": "2"
+                }
+              ],
               "input": {
                 "kind": "none"
               },

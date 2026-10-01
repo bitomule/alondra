@@ -1,6 +1,7 @@
 version: 1
 satisfied:
 - {check: "root/apple-tests", scope_hash: "227b3ffa333a855e56eb09c5697125f8b2bf4b0d51cff353c9a73a4001840400"}
+- {check: "root/apple-tests", scope_hash: "d5bdbd94abaee5757914a78bfb2a480c3c4cc3a980db6d76f708300e7d77d458"}
 - {check: "root/bazel-build", scope_hash: "01356912ae7426c12dda7e721f0ec202783e53ec7dc50aa2274203f1a3547fca"}
 - {check: "root/bazel-build", scope_hash: "028d0412ccc420a2f998e2ad1075a5c4751d62ec2b753fe2d69f9a389fd34e07"}
 - {check: "root/bazel-build", scope_hash: "02be4b8943f2cb3dbe20d7437b1bb1e9505edca2c9a958bf9613821ac00dbed8"}
@@ -160,6 +161,7 @@ satisfied:
 - {check: "root/bazel-build", scope_hash: "a3ce589e9a1f2d7178a88bdaacea3e272ca3c13e44f15c5e8ab7c0d13339ef6d"}
 - {check: "root/bazel-build", scope_hash: "a46faa964c5e1d8663c83c9bedd7591f6ba6cb7165b25e88aaa9feed6d451c84"}
 - {check: "root/bazel-build", scope_hash: "a4fbedd4706409ade4648498b1bedb65016f2e6bf73136ff4667a33ba8bdce41"}
+- {check: "root/bazel-build", scope_hash: "a58ac428dcac07104aa352ebae0095e5488ad46fa4e7d0e3aa1cebab1287177f"}
 - {check: "root/bazel-build", scope_hash: "a71c0538c7950c3f992b21b95976de52e013e402e2edb31c0d9502de00f25fdb"}
 - {check: "root/bazel-build", scope_hash: "a7e11fd83d4a688230edfb0db97d15c686954adf3f70b50ac4d4a36e8f48f8ea"}
 - {check: "root/bazel-build", scope_hash: "a922ab8564b42ab93619b4337dbe670c507ecaba39f97d37d30923f156639ecd"}
@@ -244,6 +246,7 @@ satisfied:
 - {check: "root/bazel-test", scope_hash: "0a630b4336477aa3a89ffea46b8539fc5b36ae47c3d36d352782d90f2e69b156"}
 - {check: "root/bazel-test", scope_hash: "0a8fa200a805edfff5a50af38049268e8ada472c4b6c4c2b4c0b76e8f8ed5bbf"}
 - {check: "root/bazel-test", scope_hash: "0b5ac90aad877fb921064428d35352737f025a98ea1c52461963366301c99edb"}
+- {check: "root/bazel-test", scope_hash: "0da80c58b08da22c2d5141a98e9f797b0f748e8c76c411573d2b3a35ce8af64f"}
 - {check: "root/bazel-test", scope_hash: "0ec205087609caf4de31d55759ca19a290a0f0eec4a4431d05feb52f1c7a530f"}
 - {check: "root/bazel-test", scope_hash: "0f9ea1d65e62f3cea6f5def2566f83a81b03e26439a11694d597db2fe5ede263"}
 - {check: "root/bazel-test", scope_hash: "10ba85d8c13173e0b0bd9aef1c06efc4811aec1612f15ebe3e42f07a152cf677"}

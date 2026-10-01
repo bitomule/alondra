@@ -1,0 +1,122 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
+  "client": "ios",
+  "version": "v9361af3a0bc9ad0c",
+  "cursor": "cursor-1",
+  "title": "Restore the native review experience",
+  "status": {
+    "version": "v2d6ccffc4668392a",
+    "summary": "1 question · 3 to read · 0 nodes working",
+    "badge": 4,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Agents",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "Notice",
+            "tone": "accent"
+          },
+          "title": "Restore the native review experience",
+          "context": [
+            {
+              "icon": "task",
+              "text": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            },
+            {
+              "icon": "mission",
+              "text": "Mission · Polish the Alondra beta",
+              "link": {
+                "kind": "view",
+                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
+              }
+            }
+          ],
+          "detail": "included",
+          "body": {
+            "text": "The iPhone simulator pass completed successfully. Swipe navigation, inline replies, and attachment previews are ready for review.",
+            "truncated": false,
+            "commentable": false
+          },
+          "actions": [
+            {
+              "id": "read:f12d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Mark as read",
+              "style": "primary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Read",
+              "key": "x"
+            },
+            {
+              "id": "reply:f12d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Reply",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Write a reply",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

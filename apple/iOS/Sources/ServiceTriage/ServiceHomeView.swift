@@ -133,6 +133,7 @@ struct ServiceHomeView: View {
                             .background(Palette.card, in: .rect(cornerRadius: 34, style: .continuous))
                     }
                 }
+                .id(id)
                 .frame(maxHeight: depth == 0 ? nil : frontHeight, alignment: .top)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
                     if depth == 0 { frontHeight = height }

@@ -1,6 +1,5 @@
 use std::collections::HashMap;
 
-use alondra_core::domain_v2::{InboxItem, InboxSubject, InputKind, InteractionPayload, TaskState};
 use alondra_core::now_millis;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
@@ -11,7 +10,6 @@ use ratatui::widgets::{
     Wrap,
 };
 
-use super::inbox::{Section, action, interaction_of, merge_method, pr_state, section_of};
 use super::md::{self, str_width, truncate, wrap};
 use super::{App, Key, Pane, Screen, Target, View, unavailable};
 use crate::i18n::{self, Occupancy};
@@ -246,19 +244,6 @@ pub(super) fn node_color(n: &FleetNode) -> Color {
         Occupancy::Busy => Color::Green,
         Occupancy::Free => SOFT,
         Occupancy::WaitingMachine => Color::LightRed,
-    }
-}
-
-pub(super) fn state_glyph(s: TaskState) -> (&'static str, Color) {
-    match s {
-        TaskState::NotStarted => ("○", DIM),
-        TaskState::WaitingDependency => ("◌", DIM),
-        TaskState::Running => ("●", Color::Green),
-        TaskState::NeedsYou => ("?", Color::Yellow),
-        TaskState::InReview => ("⇄", Color::LightGreen),
-        TaskState::Closing => ("⇉", Color::Cyan),
-        TaskState::Done => ("✓", Color::LightGreen),
-        TaskState::Cancelled => ("✗", DIM),
     }
 }
 
@@ -1449,14 +1434,17 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
-fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(String, String)> {
+pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(String, String)> {
     let mut keys = Vec::new();
+    let has_diff = view.sections.iter().flat_map(|section| &section.items).any(|item|
+        matches!(item, alondra_core::views::Item::ContentRef(content)
+            if content.kind == alondra_core::views::ContentKind::Diff));
     for action in super::view_render::actions(view)
         .into_iter()
         .filter(|action| action.enabled)
     {
         let hint = super::view_render::action_hint(&action);
-        if !hint.is_empty() {
+        if !hint.is_empty() && !(has_diff && hint.eq_ignore_ascii_case("d")) {
             keys.push((
                 if hint == "enter" { "⏎" } else { hint }.into(),
                 action.label.clone(),
@@ -1469,6 +1457,9 @@ fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(String, String)
                 .unwrap_or_else(|| (index + 1).to_string());
             keys.push((hint, option.label.clone()));
         }
+    }
+    if has_diff {
+        keys.push(("d".into(), tr!("diff and comments", "diff y comentarios").into()));
     }
     keys
 }

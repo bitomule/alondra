@@ -260,7 +260,7 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
                     })
                     .collect(),
             },
-            json!(schedule.and_then(|s| s.weekday)),
+            json!(schedule.and_then(|s| s.weekday).or_else(|| (id == "new").then_some(1))),
             false,
         ),
         field(
@@ -325,12 +325,17 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
     fields[2].reload_on_change = true;
     fields[4].visible_when = Some(super::Condition {
         field: "repeat".into(),
-        equals: json!("weekly"),
+        equals: Some(json!("weekly")),
+        any_of: vec![],
     });
     fields[4].required = true;
     fields[5].visible_when = Some(super::Condition {
         field: "repeat".into(),
-        equals: json!("every_days"),
+        equals: None,
+        any_of: ["every_hours", "every_days", "every_months"]
+            .into_iter()
+            .map(|value| json!(value))
+            .collect(),
     });
     let subject = if id == "new" {
         "view".to_owned()
@@ -392,12 +397,55 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
 
 #[cfg(test)]
 mod tests {
+    use super::super::{Client, Item, Lang, LiveSnapshot, RenderContext, Transport};
+    use crate::domain_v2::DomainState;
+
     #[test]
     fn schedule_instants_are_absolute_utc() {
         assert_eq!(super::instant(0), "1970-01-01T00:00:00.000Z");
         assert_eq!(
             super::instant(1_784_204_760_123),
             "2026-07-16T12:26:00.123Z"
+        );
+    }
+
+    #[test]
+    fn interval_is_visible_for_every_supported_interval_frequency() {
+        let domain = DomainState::new("epoch");
+        let live = LiveSnapshot::default();
+        let view = super::editor(
+            "schedule:new",
+            &RenderContext {
+                domain: &domain,
+                live: &live,
+                client: Client::Ios,
+                lang: Lang::En,
+                transport: Transport::Loopback,
+                cursor: "cursor",
+                rendered_at: "",
+            },
+        )
+        .unwrap();
+        let form = view
+            .sections
+            .iter()
+            .flat_map(|section| &section.items)
+            .find_map(|item| match item { Item::Form(form) => Some(form), _ => None })
+            .unwrap();
+        let condition = form
+            .fields
+            .iter()
+            .find(|field| field.id == "interval")
+            .unwrap()
+            .visible_when
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            condition.any_of,
+            ["every_hours", "every_days", "every_months"]
+                .into_iter()
+                .map(|value| serde_json::json!(value))
+                .collect::<Vec<_>>()
         );
     }
 }

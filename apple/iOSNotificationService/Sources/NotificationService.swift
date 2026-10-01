@@ -38,11 +38,6 @@ final class NotificationService: UNNotificationServiceExtension {
         // including when its approved pairing changed since the extension ran.
         if var item = payload["alondra"] as? [String: Any],
            let outer = content.userInfo["alondra"] as? [String: Any] {
-            if Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true,
-               let spanish = item["actions_es"] {
-                item["actions"] = spanish
-            }
-            item.removeValue(forKey: "actions_es")
             item["envelope"] = outer["envelope"]
             payload["alondra"] = item
         }

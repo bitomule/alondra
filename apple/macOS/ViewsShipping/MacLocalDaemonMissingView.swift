@@ -6,6 +6,7 @@ import SwiftUI
 /// looking for the local daemon and connects on its own as soon as it answers.
 struct MacLocalDaemonMissingView: View {
     let connectToAnotherMac: () -> Void
+    var exploreDemo: (() -> Void)? = nil
 
     var body: some View {
         ContentUnavailableView {
@@ -16,6 +17,7 @@ struct MacLocalDaemonMissingView: View {
             Text(ConnectionProblem.alondraNotRunning.detail)
         } actions: {
             Button("Connect to Another Mac…", action: connectToAnotherMac)
+            if let exploreDemo { Button("Explore the demo", action: exploreDemo).accessibilityIdentifier("demo.enter") }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .accessibilityIdentifier("connection.localDaemonMissing")

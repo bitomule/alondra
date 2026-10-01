@@ -827,7 +827,11 @@ fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -
         if field
             .visible_when
             .as_ref()
-            .is_some_and(|condition| values.get(&condition.field) != Some(&condition.equals))
+            .is_some_and(|condition| {
+                let actual = values.get(&condition.field);
+                !condition.equals.as_ref().is_some_and(|expected| actual == Some(expected))
+                    && !actual.is_some_and(|value| condition.any_of.contains(value))
+            })
         {
             continue;
         }

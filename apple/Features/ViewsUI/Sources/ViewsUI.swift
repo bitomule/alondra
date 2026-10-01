@@ -109,12 +109,13 @@ public struct ViewItemRenderer: View {
     public var onForm: (WireForm) -> Void
     public var onContent: ((ContentRef) -> Void)?
     public var onAttachment: ((Attachment) -> Void)?
-    public init(item: ViewItem, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, onAttachment: ((Attachment) -> Void)? = nil) {
-        self.item = item; self.onAction = onAction; self.onLink = onLink; self.onForm = onForm; self.onContent = onContent; self.onAttachment = onAttachment
+    public var excludedActionIDs: Set<String> = []
+    public init(item: ViewItem, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, onAttachment: ((Attachment) -> Void)? = nil, excludingActionIDs: Set<String> = []) {
+        self.item = item; self.onAction = onAction; self.onLink = onLink; self.onForm = onForm; self.onContent = onContent; self.onAttachment = onAttachment; self.excludedActionIDs = excludingActionIDs
     }
     @ViewBuilder public var body: some View {
         switch item {
-        case let .card(value): CardView(card: value, onAction: onAction, onLink: onLink, onAttachment: onAttachment)
+        case let .card(value): CardView(card: value, onAction: onAction, onLink: onLink, onAttachment: onAttachment, excludingActionIDs: excludedActionIDs)
         case let .row(value): RowView(row: value, onAction: onAction, onLink: onLink)
         case let .markdown(value): MarkdownView(markdown: value)
         case let .contentRef(value): ContentRefView(content: value, onOpen: onLink, onLoad: onContent)
@@ -123,7 +124,7 @@ public struct ViewItemRenderer: View {
         case let .timeline(value): TimelineView(timeline: value)
         case let .form(value): FormView(form: value, onSubmit: onAction, onOpenForm: onForm)
         case let .notice(value): NoticeView(notice: value, onAction: onAction)
-        case let .actions(value): ActionBarView(bar: value, onAction: onAction, onLink: onLink)
+        case let .actions(value): ActionBarView(bar: value, onAction: onAction, onLink: onLink, excludingActionIDs: excludedActionIDs)
         }
     }
 }
@@ -136,8 +137,9 @@ public struct SectionView: View {
     public var onForm: (WireForm) -> Void
     public var onContent: ((ContentRef) -> Void)?
     public var onAttachment: ((Attachment) -> Void)?
-    public init(section: ViewSection, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onMore: @escaping (String) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, onAttachment: ((Attachment) -> Void)? = nil) {
-        self.section = section; self.onAction = onAction; self.onLink = onLink; self.onMore = onMore; self.onForm = onForm; self.onContent = onContent; self.onAttachment = onAttachment
+    public var excludedActionIDs: Set<String> = []
+    public init(section: ViewSection, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onMore: @escaping (String) -> Void = { _ in }, onForm: @escaping (WireForm) -> Void = { _ in }, onContent: ((ContentRef) -> Void)? = nil, onAttachment: ((Attachment) -> Void)? = nil, excludingActionIDs: Set<String> = []) {
+        self.section = section; self.onAction = onAction; self.onLink = onLink; self.onMore = onMore; self.onForm = onForm; self.onContent = onContent; self.onAttachment = onAttachment; self.excludedActionIDs = excludingActionIDs
     }
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -150,7 +152,7 @@ public struct SectionView: View {
             }
             if !section.collapsed {
                 ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
-                    ViewItemRenderer(item: item, onAction: onAction, onLink: onLink, onForm: onForm, onContent: onContent, onAttachment: onAttachment)
+                    ViewItemRenderer(item: item, onAction: onAction, onLink: onLink, onForm: onForm, onContent: onContent, onAttachment: onAttachment, excludingActionIDs: excludedActionIDs)
                 }
                 if let more = section.more {
                     Button("Show \(more.remaining) more") { onMore(more.key) }
@@ -166,7 +168,8 @@ public struct CardView: View {
     public var onAction: (Action) -> Void
     public var onLink: (Link) -> Void
     public var onAttachment: ((Attachment) -> Void)?
-    public init(card: Card, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onAttachment: ((Attachment) -> Void)? = nil) { self.card = card; self.onAction = onAction; self.onLink = onLink; self.onAttachment = onAttachment }
+    public var excludedActionIDs: Set<String> = []
+    public init(card: Card, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, onAttachment: ((Attachment) -> Void)? = nil, excludingActionIDs: Set<String> = []) { self.card = card; self.onAction = onAction; self.onLink = onLink; self.onAttachment = onAttachment; self.excludedActionIDs = excludingActionIDs }
     public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(spacing: 8) {
@@ -202,8 +205,9 @@ public struct CardView: View {
             }
             if let facts = card.facts { FactsView(facts: facts, onLink: onLink) }
             if let checks = card.checks { ChecksView(checks: checks, onLink: onLink) }
-            ForEach(Array(card.children.enumerated()), id: \.offset) { _, child in CardView(card: child, onAction: onAction, onLink: onLink, onAttachment: onAttachment) }
-            if !card.actions.isEmpty { ActionButtons(actions: card.actions, onAction: onAction, onLink: onLink) }
+            ForEach(Array(card.children.enumerated()), id: \.offset) { _, child in CardView(card: child, onAction: onAction, onLink: onLink, onAttachment: onAttachment, excludingActionIDs: excludedActionIDs) }
+            let actions = card.actions.filter { $0.id.map(excludedActionIDs.contains) != true }
+            if !actions.isEmpty { ActionButtons(actions: actions, onAction: onAction, onLink: onLink) }
         }
         .padding(16).frame(maxWidth: .infinity, alignment: .leading)
         .background(ViewPalette.card, in: .rect(cornerRadius: 20, style: .continuous))
@@ -353,10 +357,11 @@ public struct ActionBarView: View {
     public let bar: ActionBar
     public var onAction: (Action) -> Void
     public var onLink: (Link) -> Void
-    public init(bar: ActionBar, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }) {
-        self.bar = bar; self.onAction = onAction; self.onLink = onLink
+    public var excludingActionIDs: Set<String> = []
+    public init(bar: ActionBar, onAction: @escaping (Action) -> Void = { _ in }, onLink: @escaping (Link) -> Void = { _ in }, excludingActionIDs: Set<String> = []) {
+        self.bar = bar; self.onAction = onAction; self.onLink = onLink; self.excludingActionIDs = excludingActionIDs
     }
-    public var body: some View { ActionButtons(actions: bar.actions, onAction: onAction, onLink: onLink) }
+    public var body: some View { ActionButtons(actions: bar.actions.filter { $0.id.map { !excludingActionIDs.contains($0) } ?? true }, onAction: onAction, onLink: onLink) }
 }
 
 private struct ActionButtons: View {

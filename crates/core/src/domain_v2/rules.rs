@@ -1651,7 +1651,7 @@ impl DomainState {
                 self.notify(
                     &task,
                     Some(presentation_id.clone()),
-                    "The user accepted your delivery.",
+                    "Delivery accepted. Please declare the Task complete when your work is finished.",
                     effects,
                 )?;
             }

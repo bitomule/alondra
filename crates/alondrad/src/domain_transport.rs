@@ -387,6 +387,21 @@ mod tests {
             .map(|m| (m.id, m.state)).collect()
     }
 
+    #[test]
+    fn answered_question_delivery_contains_only_the_users_answer() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        answered_question(&domain, "agent-a");
+        let state = domain.state().unwrap();
+        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some("question-agent-a"))
+            .unwrap();
+        let rendered = render(&state, &message);
+        assert_eq!(rendered, "The user answered: Yes.");
+        assert!(!rendered.contains("data_epoch"));
+        assert!(!rendered.contains("protocol"));
+    }
+
     fn attempts(domain: &DomainRuntime) -> Vec<(i64, String, Option<String>)> {
         domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().into_iter()
             .map(|item| (item.message_id, item.state, item.reason)).collect()

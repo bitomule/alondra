@@ -52,8 +52,6 @@ pub(super) fn row(
         link: Some(Link::View { key: key.into() }),
         icon,
         title,
-        state_key: None,
-        tooltip: None,
         subtitle,
         badges: vec![],
         trailing: None,
@@ -64,6 +62,48 @@ pub(super) fn row(
     }
 }
 
+pub(super) fn state_tone(state: &str) -> super::Tone {
+    use super::Tone;
+    match state {
+        "needs_you" | "your_turn" | "unclear" | "stalled" => Tone::Warning,
+        "in_review" | "waiting_answer" | "waiting_merge" | "waiting_machine"
+        | "waiting_dependency" | "closing" | "defining" => Tone::Info,
+        "running" | "working" | "busy" | "free" => Tone::Accent,
+        "done" | "delivered" => Tone::Success,
+        "cancelled" | "archived" | "not_started" | "connected" | "idle" => Tone::Neutral,
+        "offline" => Tone::Critical,
+        _ => Tone::Neutral,
+    }
+}
+
+pub(super) fn task_presentation(state: crate::domain_v2::TaskState) -> (super::Icon, super::Tone) {
+    use crate::domain_v2::TaskState as S;
+    use super::{Icon, Tone};
+    match state {
+        S::Running => (Icon::Mission, Tone::Accent),
+        S::NeedsYou => (Icon::Action, Tone::Warning),
+        S::InReview => (Icon::PullRequest, Tone::Info),
+        S::WaitingDependency => (Icon::Branch, Tone::Info),
+        S::Done | S::Closing => (Icon::Check, Tone::Success),
+        S::Cancelled => (Icon::Warning, Tone::Neutral),
+        S::NotStarted => (Icon::Task, Tone::Neutral),
+    }
+}
+
+pub(super) fn node_presentation(state: Option<&str>) -> (super::Icon, super::Tone) {
+    use super::{Icon, Tone};
+    match state.unwrap_or("free") {
+        "working" | "busy" => (Icon::Node, Tone::Success),
+        "waiting_machine" => (Icon::Machine, Tone::Info),
+        "waiting_answer" => (Icon::Question, Tone::Info),
+        "your_turn" => (Icon::Action, Tone::Warning),
+        "waiting_merge" => (Icon::Merge, Tone::Info),
+        "unclear" => (Icon::Notice, Tone::Warning),
+        "stalled" => (Icon::Warning, Tone::Critical),
+        _ => (Icon::Node, Tone::Neutral),
+    }
+}
+
 pub(super) fn action(
     verb: Verb,
     subject: &str,
@@ -71,9 +111,13 @@ pub(super) fn action(
     label: &str,
     style: Style,
 ) -> Option<Action> {
-    let id = ActionId::new(verb, subject, revision, None)
-        .ok()?
-        .to_string();
+    let id = match ActionId::new(verb, subject, revision, None) {
+        Ok(id) => id.to_string(),
+        Err(_) => {
+            eprintln!("Alondra omitted an action with an invalid identifier ({verb:?})");
+            return None;
+        }
+    };
     Some(Action {
         id,
         label: label.into(),

@@ -54,6 +54,7 @@ pub async fn run_v2(
     home: std::path::PathBuf,
     push: Arc<Push>,
     service: Option<Arc<Service>>,
+    client: Arc<crate::v2_client_routes::Client>,
 ) -> Result<()> {
     let mut changed = domain.subscribe();
     let mut retry_after: HashMap<i64, Instant> = HashMap::new();
@@ -71,7 +72,7 @@ pub async fn run_v2(
         // committed process instead of silently serving a dead outbox.
         for message in ready_messages_v2(pending, &retry_after) {
             let id = message.id;
-            deliver_one_v2(&domain, &home, &push, service.as_deref(), message).await?;
+            deliver_one_v2(&domain, &home, &push, service.as_deref(), &client, message).await?;
             retry_after.insert(id, Instant::now());
         }
         tokio::select! {
@@ -86,6 +87,7 @@ async fn deliver_one_v2(
     home: &Path,
     push: &Push,
     service: Option<&Service>,
+    client: &crate::v2_client_routes::Client,
     message: OutboxMessage,
 ) -> Result<()> {
     if matches!(message.recipient_kind.as_str(), "agent" | "orchestrator") {
@@ -97,7 +99,7 @@ async fn deliver_one_v2(
     };
     let Some(claim) = claim else { return Ok(()) };
     let outcome = match claim.message.recipient_kind.as_str() {
-        "user" => deliver_user_runtime(domain, home, push, service, &claim.message).await,
+        "user" => deliver_user_runtime(domain, home, push, service, Some(client), &claim.message).await,
         _ => Err((State::Uncertain, "unknown_recipient")),
     };
     let (state, reason) = match outcome {
@@ -206,7 +208,7 @@ async fn deliver_user(
     service: Option<&Service>,
     message: &OutboxMessage,
 ) -> std::result::Result<(), (State, &'static str)> {
-    deliver_user_runtime(&hub.domain, &hub.home, push, service, message).await
+    deliver_user_runtime(&hub.domain, &hub.home, push, service, None, message).await
 }
 
 async fn deliver_user_runtime(
@@ -214,6 +216,7 @@ async fn deliver_user_runtime(
     home: &Path,
     push: &Push,
     service: Option<&Service>,
+    client: Option<&crate::v2_client_routes::Client>,
     message: &OutboxMessage,
 ) -> std::result::Result<(), (State, &'static str)> {
     // DomainProjection is the durable user inbox. APNs is only a generic wake hint;
@@ -223,8 +226,12 @@ async fn deliver_user_runtime(
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
     let payload = user_push_payload(&state, message.interaction_id.as_deref(), Lang::En);
     if let Some(service) = service {
+        let interaction_id = message.interaction_id.clone();
         let (attempted, accepted) = service
-            .broadcast_push_report(&payload, true)
+            .broadcast_push_report_for_device(true, |device| {
+                user_push_payload(&state, interaction_id.as_deref(), client
+                    .map_or(Lang::En, |client| client.language_for_device(device)))
+            })
             .await
             .map_err(|_| (State::Uncertain, "encrypted_push_unknown"))?;
         if attempted != accepted {
@@ -262,15 +269,6 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
             });
             if !actions.is_empty() {
                 alondra["actions"] = json!(actions);
-                let spanish = views::push_actions(state, id, Lang::Es).unwrap_or_else(|error| {
-                    log!("could not render Spanish push actions for card {id}: {error:?}");
-                    vec![]
-                });
-                if spanish != actions {
-                    // The extension selects this localized copy on the device before
-                    // handing the authenticated payload to the app.
-                    alondra["actions_es"] = json!(spanish);
-                }
                 // The extension replaces this bootstrap category with a per-card
                 // category after authenticating the encrypted payload.
                 aps["category"] = json!("ALONDRA_PUSH");
@@ -320,9 +318,10 @@ mod tests {
             .execute_batch("DROP TABLE domain_outbox")
             .unwrap();
         let push = Arc::new(Push::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
         let result = tokio::time::timeout(
             Duration::from_secs(2),
-            run_v2(domain.clone(), home.clone(), push, None),
+            run_v2(domain.clone(), home.clone(), push, None, client),
         )
         .await
         .unwrap();
@@ -394,7 +393,12 @@ mod tests {
             crate::auth::random_hex(8)
         ));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(
+            domain.clone(),
+            &home,
+            Default::default(),
+        );
         v2_command(
             &domain,
             Actor::System,
@@ -465,7 +469,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "user")
             .unwrap();
-        deliver_one_v2(&domain, &home, &push, None, user.clone())
+        deliver_one_v2(&domain, &home, &push, None, &client, user.clone())
             .await
             .unwrap();
         assert!(
@@ -504,7 +508,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "agent")
             .unwrap();
-        deliver_one_v2(&domain, &home, &push, None, producer.clone())
+        deliver_one_v2(&domain, &home, &push, None, &client, producer.clone())
             .await
             .unwrap();
         let evidence = domain
@@ -873,7 +877,7 @@ mod tests {
             ),
         ];
         for (name, payload) in payloads {
-            let id = InteractionId::from(format!("i-{name}").as_str());
+            let id = InteractionId::from(push_fixture_id(name));
             state.interactions.insert(
                 id.clone(),
                 Interaction {
@@ -897,12 +901,29 @@ mod tests {
         let cases = fixture["cases"].as_array().unwrap();
         assert_eq!(cases.len(), 5);
         for case in cases {
+            let id = case["id"].as_str().unwrap();
             let name = case["interaction"].as_str().unwrap();
             assert_eq!(
-                user_push_payload(&state, Some(&format!("i-{name}")), Lang::En),
+                user_push_payload(&state, Some(id), Lang::En),
                 case["payload"],
                 "{name}"
             );
+        }
+        let english = user_push_payload(&state, Some(push_fixture_id("question")), Lang::En);
+        let spanish = user_push_payload(&state, Some(push_fixture_id("question")), Lang::Es);
+        assert!(english["alondra"].get("actions_es").is_none());
+        assert_eq!(english["alondra"]["actions"][2]["label"], "Need more context");
+        assert_eq!(spanish["alondra"]["actions"][2]["label"], "Pedir más contexto");
+    }
+
+    fn push_fixture_id(name: &str) -> &'static str {
+        match name {
+            "question" => "c92d0a11-7c47-4c47-b42b-36b8f22f5120",
+            "action_request" => "a019b231-43d1-4aa9-a0c3-5713a8ac2150",
+            "information" => "f0ab22dc-2a7a-4c90-b178-d5a91a6338d8",
+            "delivery_text" => "hf-weekly-2026-10-01",
+            "delivery_pull_request" => "hf-weekly-2026-10-02",
+            _ => panic!("unknown fixture interaction {name}"),
         }
     }
 

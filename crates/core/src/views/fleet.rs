@@ -11,10 +11,11 @@ fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> sup
         .nodes
         .iter()
         .find(|node| node.agent_id == agent.id.0);
+    let (icon, tone) = common::node_presentation(live.and_then(|node| node.state_key.as_deref()));
     let mut row = common::row(
         &agent.id.0,
         &format!("node:{}", agent.id),
-        Icon::Node,
+        icon,
         agent.name.clone(),
         Some(
             if live.is_some_and(|node| node.working) {
@@ -27,6 +28,10 @@ fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> sup
             .into(),
         ),
     );
+    row.children = context.domain.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
+        .map(|task| super::tasks::task_row(task, context))
+        .collect();
     row.trailing = Some(Trailing::Count {
         value: context
             .domain
@@ -37,7 +42,9 @@ fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> sup
             .count() as u32,
     });
     if let Some(live) = live {
-        row.state_key = live.state_key.clone();
+        if let Some(label) = &live.state_label {
+            row.badges.push(super::Label { text: label.clone(), tone });
+        }
         if let Some(text) = &live.background_badge {
             row.badges.push(super::Label { text: text.clone(), tone: if live.background_suspect { Tone::Warning } else { Tone::Neutral } });
         }
@@ -77,9 +84,13 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         }
         .into(),
     });
-    orchestrator.state_key = Some(if context.live.orchestrator.as_ref().is_some_and(|o| o.working) {
-        "working"
-    } else { "done" }.into());
+    let orchestrator_state = if context.live.orchestrator.as_ref().is_some_and(|o| o.working) {
+        t!(context.lang, "Working", "Trabajando")
+    } else { t!(context.lang, "Idle", "Inactivo") };
+    orchestrator.badges.push(super::Label {
+        text: orchestrator_state.into(),
+        tone: common::state_tone(if context.live.orchestrator.as_ref().is_some_and(|o| o.working) { "working" } else { "idle" }),
+    });
     view.sections.push(common::section(
         "orchestrator",
         None,
@@ -336,6 +347,7 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
     let mut actions = Vec::new();
     if let Some(mut message) = common::action(Verb::Msg, "view", context.domain.revision,
         t!(context.lang, "Message", "Mensaje"), Style::Primary) {
+        message.key = (context.client == super::Client::Tui).then(|| "M".into());
         message.input = super::Input::Text { placeholder: t!(context.lang, "Write to the orchestrator…", "Escribe al orquestador…").into(),
             required: true, multiline: true };
         message.attachments = true;

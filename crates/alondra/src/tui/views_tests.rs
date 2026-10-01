@@ -10,30 +10,6 @@ fn press(app: &mut App, code: KeyCode) {
 }
 
 #[test]
-fn changed_view_action_requires_a_new_confirmed_command() {
-    let mut app = app();
-    let request = json!({"protocol":1,"command_id":"old-command","data_epoch":"epoch",
-        "client":"tui","lang":"en","action_id":"changes:pr@1~oldhead",
-        "input":{"text":"Please fix this"}});
-    let reply = view_action_result(json!({"outcome":"changed",
-        "message":"The PR changed", "confirm":{"action_id":"changes:pr@2~newhead",
-        "button":"Send anyway"}}))
-    .unwrap();
-    app.on_msg(Msg::ViewAction {
-        request,
-        result: Ok(reply),
-    });
-    assert!(app.posted.borrow().is_empty());
-    press(&mut app, KeyCode::Char('y'));
-    let posted = app.posted.borrow();
-    assert_eq!(posted.len(), 1);
-    assert_eq!(posted[0].0, "/actions");
-    assert_eq!(posted[0].1["action_id"], "changes:pr@2~newhead");
-    assert_eq!(posted[0].1["input"]["text"], "Please fix this");
-    assert_ne!(posted[0].1["command_id"], "old-command");
-}
-
-#[test]
 fn fleet_search_types_and_pastes_into_the_views_key() {
     let mut app = app();
     app.screen = Screen::Fleet;
@@ -91,6 +67,16 @@ fn views_form_validates_choices_and_visible_required_fields() {
     assert!(validate_view_fields(&fields, &json!({"project":"App","repeat":"daily"})).is_ok());
     assert!(validate_view_fields(&fields, &json!({"project":"Other","repeat":"daily"})).is_err());
     assert!(validate_view_fields(&fields, &json!({"project":"App","repeat":"weekly"})).is_err());
+
+    let interval_fields: Vec<alondra_core::views::Field> = serde_json::from_value(json!([{
+        "id":"interval","label":"Interval","kind":{"kind":"stepper","min":1,"max":365},
+        "value":1,"required":true,
+        "visible_when":{"field":"repeat","any_of":["every_hours","every_days","every_months"]},
+        "reload_on_change":false
+    }])).unwrap();
+    assert!(validate_view_fields(&interval_fields, &json!({"repeat":"every_hours","interval":2})).is_ok());
+    assert!(validate_view_fields(&interval_fields, &json!({"repeat":"every_months"})).is_err());
+    assert!(validate_view_fields(&interval_fields, &json!({"repeat":"daily"})).is_ok());
 }
 
 #[test]

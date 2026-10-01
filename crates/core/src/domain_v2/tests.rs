@@ -1148,6 +1148,23 @@ fn sole_document_review_accepts_exact_final_delivery() {
     .unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
+
+#[test]
+fn accepting_delivery_keeps_the_agents_completion_declaration_step() {
+    let mut state = fixture();
+    present(&mut state, "final", text());
+    let accepted = exec(&mut state, user(), Command::AcceptDelivery {
+        presentation_id: "final".into(), targets: text(),
+    }).unwrap();
+    let message = accepted.effects.iter().find_map(|effect| match effect {
+        DomainEffect::NotifyAgent { message, .. } => Some(message.as_str()),
+        _ => None,
+    }).expect("acceptance must notify the assigned Agent");
+    assert!(message.contains("declare the Task complete"));
+    assert!(!message.contains("data_epoch") && !message.contains("revision"));
+    assert_eq!(state.tasks[&"t".into()].state, TaskState::Closing,
+        "acceptance still waits for the Agent to declare completion");
+}
 #[test]
 fn cross_task_delivery_and_dependency_cycle_roll_back() {
     let mut s = fixture();

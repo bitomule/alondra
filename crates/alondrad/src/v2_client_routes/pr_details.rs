@@ -28,6 +28,9 @@ impl PrView for GhView {
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub(crate) struct Details {
     pub title: Option<String>,
+    pub body: Option<String>,
+    pub head_ref: Option<String>,
+    pub base_ref: Option<String>,
     pub checks: Vec<Check>,
     pub conflicts: bool,
     pub mergeability_unknown: bool,
@@ -66,6 +69,9 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
     let card = crate::prs::refreshed(&stub, view, None);
     Details {
         title: Some(card.title.clone()),
+        body: card.body.clone(),
+        head_ref: card.head.clone(),
+        base_ref: card.base.clone(),
         conflicts: card.conflicts(),
         mergeability_unknown: card.mergeability_unknown(),
         checks: card.checks,

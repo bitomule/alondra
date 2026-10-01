@@ -3,38 +3,13 @@
 
 use std::collections::BTreeMap;
 
-use alondra_core::domain_v2::{
-    AttachmentRef, AvailableAction, Command, DeliveryTarget, InboxItem, InboxSubject, InputKind,
-    InputValue, Interaction, InteractionId, InteractionPayload, MergeAttemptState,
-    MergeAuthorization, MergeMethod, PrId, PrState, PullRequest, Revision,
-};
+use alondra_core::domain_v2::PrId;
 use alondra_core::now_millis;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use super::keys::{self, Cmd, Motion};
 use super::{App, Flow, Key, Msg, Pane, Part, Screen, Target, md, unavailable};
 use crate::ops::{self, MessageKind};
-
-pub fn action<'a>(item: &'a InboxItem, kind: &str) -> Option<&'a AvailableAction> {
-    item.available_actions.iter().find(|a| a.kind == kind)
-}
-
-pub fn interaction_of(item: &InboxItem) -> Option<&InteractionId> {
-    match &item.subject {
-        InboxSubject::Interaction { interaction_id } => Some(interaction_id),
-        _ => None,
-    }
-}
-
-/// Where a root is listed: what waits for a decision, the pull requests, and what is only read.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Section {
-    Waiting,
-    PullRequests,
-    ToRead,
-}
-
-pub const SECTIONS: [Section; 3] = [Section::Waiting, Section::PullRequests, Section::ToRead];
 
 pub(super) fn review_clone_flow(
     selected: &Key,
@@ -48,87 +23,6 @@ pub(super) fn review_clone_flow(
         number,
         dir,
     })
-}
-
-pub fn section_of(item: &InboxItem) -> Section {
-    match item.kind.as_str() {
-        "pull_request" => Section::PullRequests,
-        "information" => Section::ToRead,
-        _ => Section::Waiting,
-    }
-}
-
-/// A question or action request nobody has to answer any more: answered, or withdrawn.
-fn answered(item: &InboxItem) -> bool {
-    matches!(item.kind.as_str(), "question" | "action_request") && !item.pending
-}
-
-pub fn merge_method(m: MergeMethod) -> &'static str {
-    match m {
-        MergeMethod::Merge => tr!("merge commit", "commit de fusión"),
-        MergeMethod::Squash => "squash",
-        MergeMethod::Rebase => "rebase",
-    }
-}
-
-pub fn pr_state(s: PrState) -> &'static str {
-    match s {
-        PrState::Open => tr!("open", "abierto"),
-        PrState::Closed => tr!("closed", "cerrado"),
-        PrState::Merged => tr!("merged", "fusionado"),
-    }
-}
-
-/// Where an authorization stands; only a merge the agent confirmed reads as merged.
-pub fn authorization_state(a: &MergeAuthorization) -> String {
-    let method = merge_method(a.method);
-    if !a.valid {
-        return trf!(
-            "merge authorization ({method}) no longer valid",
-            "autorización de fusión ({method}) ya no vale"
-        );
-    }
-    match a.attempt {
-        MergeAttemptState::Unclaimed => trf!(
-            "merge authorized ({method}) · waiting for the agent",
-            "fusión autorizada ({method}) · pendiente del agente"
-        ),
-        MergeAttemptState::Claimed => trf!(
-            "merge authorized ({method}) · the agent is merging",
-            "fusión autorizada ({method}) · el agente la está haciendo"
-        ),
-        MergeAttemptState::Uncertain => trf!(
-            "merge authorized ({method}) · outcome not confirmed",
-            "fusión autorizada ({method}) · resultado sin confirmar"
-        ),
-        MergeAttemptState::Confirmed => trf!(
-            "merged by the agent ({method})",
-            "fusionado por el agente ({method})"
-        ),
-        MergeAttemptState::Failed => trf!(
-            "merge authorized ({method}) · the merge failed",
-            "fusión autorizada ({method}) · la fusión falló"
-        ),
-    }
-}
-
-fn short(head: &str) -> &str {
-    &head[..head.len().min(7)]
-}
-
-pub fn pr_line(pr: &PullRequest) -> String {
-    let state = pr_state(pr.state);
-    format!(
-        "{} #{} · {} ← {} · {state}",
-        pr.repository,
-        pr.number,
-        pr.base,
-        short(&pr.head)
-    )
-}
-
-pub fn pr_url(pr: &PullRequest) -> String {
-    format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)
 }
 
 impl App {
@@ -203,6 +97,15 @@ impl App {
 
     fn view_inbox_key(&mut self, key: KeyEvent) -> Flow {
         if key.code == KeyCode::Enter {
+            self.open_reader();
+            return Flow::Go;
+        }
+        if key.code == KeyCode::Char('d')
+            && self.card_view.as_ref().is_some_and(|view| view.sections.iter()
+                .flat_map(|section| &section.items)
+                .any(|item| matches!(item, alondra_core::views::Item::ContentRef(content)
+                    if content.kind == alondra_core::views::ContentKind::Diff)))
+        {
             self.open_reader();
             return Flow::Go;
         }

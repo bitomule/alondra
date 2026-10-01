@@ -47,7 +47,11 @@ public struct ActionInputView: View {
                         }
                     }
                 }
-                if let form { formFields(form.fields) }
+                if let form, form.id == "schedule" {
+                    scheduleForm(form.fields)
+                } else if let form {
+                    formFields(form.fields)
+                }
                 if let error = store.error { Text(error).font(.callout).foregroundStyle(.red) }
                 if let stamp = store.stamp { Label(stamp, systemImage: "checkmark.circle.fill").foregroundStyle(.green) }
             }
@@ -84,12 +88,34 @@ public struct ActionInputView: View {
         }
     }
 
+    private func scheduleForm(_ fields: [Field]) -> some View {
+        let mission = fields.filter { ["name", "mission", "project"].contains($0.id) }
+        let timing = fields.filter { ["repeat", "weekday", "interval", "start_at", "time", "active"].contains($0.id) }
+        let advanced = fields.filter { $0.id == "disallowed_tools" }
+        let launch = fields.filter { !["name", "mission", "project", "repeat", "weekday", "interval", "start_at", "time", "active", "disallowed_tools"].contains($0.id) }
+        return Form {
+            Section("Mission") { formFields(mission) }
+            Section("When") { formFields(timing) }
+            if !launch.isEmpty { Section("Launch options") { formFields(launch) } }
+            if !advanced.isEmpty { Section("Advanced") { formFields(advanced) } }
+        }
+        .formStyle(.grouped)
+        .frame(minHeight: 260)
+    }
+
     @ViewBuilder private func fieldControl(_ field: Field) -> some View {
         let value = store.fields[field.id] ?? field.value
         switch field.kind {
         case let .text(placeholder), let .multiline(placeholder), let .lines(placeholder):
-            TextField(placeholder ?? "", text: stringBinding(field, value: value), axis: .vertical)
-                .textFieldStyle(.roundedBorder)
+            if case .multiline = field.kind {
+                TextField(placeholder ?? "", text: stringBinding(field, value: value), axis: .vertical)
+                    .lineLimit(4...8)
+            } else if case .lines = field.kind {
+                TextField(placeholder ?? "", text: stringBinding(field, value: value), axis: .vertical)
+                    .lineLimit(2...6)
+            } else {
+                TextField(placeholder ?? "", text: stringBinding(field, value: value))
+            }
         case .attachments:
             EmptyView()
         case .toggle:
@@ -114,9 +140,12 @@ public struct ActionInputView: View {
             } else {
                 TextField(source, text: stringBinding(field, value: value)).textFieldStyle(.roundedBorder)
             }
-        case .date, .time:
-            TextField(field.kind == .date ? "YYYY-MM-DD" : "HH:MM", text: stringBinding(field, value: value))
-                .textFieldStyle(.roundedBorder)
+        case .date:
+            DatePicker(field.label, selection: dateBinding(field, value: value), displayedComponents: .date)
+                .labelsHidden()
+        case .time:
+            DatePicker(field.label, selection: dateBinding(field, value: value), displayedComponents: .hourAndMinute)
+                .labelsHidden()
         case let .stepper(minimum, maximum):
             Stepper("\(integerValue(value, fallback: minimum))", value: integerBinding(field, value: value), in: minimum...maximum)
         }
@@ -124,7 +153,8 @@ public struct ActionInputView: View {
 
     private func visible(_ field: Field) -> Bool {
         guard let condition = field.visibleWhen else { return true }
-        return (store.fields[condition.field] ?? form?.fields.first(where: { $0.id == condition.field })?.value) == condition.equals
+        guard let value = store.fields[condition.field] ?? form?.fields.first(where: { $0.id == condition.field })?.value else { return false }
+        return condition.matches(value)
     }
 
     private func stringBinding(_ field: Field, value: JSONValue) -> Binding<String> {
@@ -140,6 +170,28 @@ public struct ActionInputView: View {
     private func integerBinding(_ field: Field, value: JSONValue) -> Binding<Int64> {
         Binding(get: { integerValue(store.fields[field.id] ?? value, fallback: 0) },
                 set: { update(field, .integer($0)) })
+    }
+
+    private func dateBinding(_ field: Field, value: JSONValue) -> Binding<Date> {
+        Binding(get: {
+            switch store.fields[field.id] ?? value {
+            case .integer(let millis): return Date(timeIntervalSince1970: Double(millis) / 1000)
+            case .string(let string) where field.kind == .time:
+                let parts = string.split(separator: ":").compactMap { Int($0) }
+                return Calendar.current.date(bySettingHour: parts.first ?? 9, minute: parts.dropFirst().first ?? 0, second: 0, of: .now) ?? .now
+            case .string(let string):
+                let formatter = ISO8601DateFormatter()
+                return formatter.date(from: string) ?? .now
+            default: return .now
+            }
+        }, set: { date in
+            if field.kind == .time {
+                let parts = Calendar.current.dateComponents([.hour, .minute], from: date)
+                update(field, .string(String(format: "%02d:%02d", parts.hour ?? 9, parts.minute ?? 0)))
+            } else {
+                update(field, .integer(Int64((date.timeIntervalSince1970 * 1000).rounded())))
+            }
+        })
     }
 
     private func integerValue(_ value: JSONValue, fallback: Int64) -> Int64 {

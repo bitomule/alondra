@@ -11,6 +11,8 @@ const MAX_ENTRIES: usize = 256;
 #[derive(Default)]
 pub(crate) struct Cache {
     entries: Mutex<Entries>,
+    #[cfg(test)]
+    builds: std::sync::atomic::AtomicUsize,
 }
 
 #[derive(Default)]
@@ -68,6 +70,8 @@ impl Cache {
         if let Some(view) = entries.get(&cache_key) {
             return Ok(view);
         }
+        #[cfg(test)]
+        self.builds.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut view = views::build(
             key,
             RenderContext {
@@ -113,5 +117,20 @@ mod tests {
         assert_eq!(revision, domain.revision);
         assert_eq!(live_revision.len(), 16);
         assert_eq!(status_version, view.status.version);
+    }
+
+    #[test]
+    fn render_cache_hits_for_the_same_clock() {
+        let cache = Cache::default();
+        let domain = DomainState::new("epoch");
+        let live = LiveSnapshot::default();
+        let first = cache.render(
+            "home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback,
+        ).unwrap();
+        let second = cache.render(
+            "home", &domain, &live, Client::Ios, Lang::En, Transport::Loopback,
+        ).unwrap();
+        assert_eq!(first, second);
+        assert_eq!(cache.builds.load(std::sync::atomic::Ordering::Relaxed), 1);
     }
 }

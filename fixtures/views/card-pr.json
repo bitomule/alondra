@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "ved8243ef29e1e0f2",
+  "version": "v4cd7087ad2dabb07",
   "cursor": "cursor-1",
   "title": "example/repo #12",
   "status": {
@@ -65,18 +65,18 @@
           "context": [
             {
               "icon": "task",
-              "text": "Build a feature",
+              "text": "Restore the native review experience",
               "link": {
                 "kind": "view",
-                "key": "task:t-1"
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               }
             },
             {
               "icon": "mission",
-              "text": "Mission · Build a feature",
+              "text": "Mission · Polish the Alondra beta",
               "link": {
                 "kind": "view",
-                "key": "request:r-1"
+                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
               }
             }
           ],
@@ -93,28 +93,28 @@
                 "text": "Question",
                 "tone": "accent"
               },
-              "title": "Build a feature",
+              "title": "Restore the native review experience",
               "context": [
                 {
                   "icon": "task",
-                  "text": "Build a feature",
+                  "text": "Restore the native review experience",
                   "link": {
                     "kind": "view",
-                    "key": "task:t-1"
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
                   }
                 },
                 {
                   "icon": "mission",
-                  "text": "Mission · Build a feature",
+                  "text": "Mission · Polish the Alondra beta",
                   "link": {
                     "kind": "view",
-                    "key": "request:r-1"
+                    "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
                   }
                 }
               ],
               "detail": "included",
               "body": {
-                "text": "Review the PR",
+                "text": "The pull request is ready. Should the compact schedule editor ship with this beta?",
                 "truncated": false,
                 "commentable": false
               },
@@ -158,11 +158,11 @@
                 "text": "Notice",
                 "tone": "accent"
               },
-              "title": "Build a feature",
+              "title": "Restore the native review experience",
               "context": [
                 {
                   "icon": "node",
-                  "text": "Node One",
+                  "text": "Alondra · iOS",
                   "link": {
                     "kind": "view",
                     "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
@@ -170,24 +170,24 @@
                 },
                 {
                   "icon": "task",
-                  "text": "Build a feature",
+                  "text": "Restore the native review experience",
                   "link": {
                     "kind": "view",
-                    "key": "task:t-1"
+                    "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
                   }
                 },
                 {
                   "icon": "mission",
-                  "text": "Mission · Build a feature",
+                  "text": "Mission · Polish the Alondra beta",
                   "link": {
                     "kind": "view",
-                    "key": "request:r-1"
+                    "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
                   }
                 }
               ],
               "detail": "included",
               "body": {
-                "text": "The PR checks passed",
+                "text": "All required checks passed and the branch is up to date with main.",
                 "truncated": false,
                 "commentable": false
               },
@@ -195,7 +195,7 @@
                 {
                   "id": "read:cc2d034b-249e-4487-a89b-57de38c26372@1",
                   "label": "Mark as read",
-                  "style": "secondary",
+                  "style": "primary",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -271,6 +271,21 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "diff",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diff",
+          "size": 0,
+          "digest": "abcdef12",
+          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
+          "commentable": true
         }
       ]
     }

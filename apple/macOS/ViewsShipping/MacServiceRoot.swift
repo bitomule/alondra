@@ -3,6 +3,7 @@ import AlondraAttachmentsFeature
 import AlondraViewsWorkspaceFeature
 import AlondraViewsAppComposition
 import AlondraViewsWorkspaceServices
+import AlondraViewsDemoWorkspace
 import AlondraCloudPairingFeature
 import AlondraConnectionFeature
 import AlondraNetworkReachability
@@ -14,9 +15,14 @@ import SwiftUI
 struct MacServiceRoot: View {
     let owner: MacWorkspaceOwner
     @State private var connectingRemote = false
+    @State private var demoSession: UUID?
     private var account: CloudPairingOwner { owner.account }
     var body: some View {
         Group {
+            if let demoSession {
+                MacViewsDemoScene(reset: { self.demoSession = UUID() }, exit: { self.demoSession = nil })
+                    .id(demoSession)
+            } else {
             switch owner.route {
             case .searching:
                 ProgressView("Looking for Alondra on this Mac…")
@@ -37,12 +43,54 @@ struct MacServiceRoot: View {
                 } onboarding: {
                     if connectingRemote || account.store.phase != .signedOut {
                         MacServicePairingScreen(store: account.store)
+                            .safeAreaInset(edge: .bottom) {
+                                if account.store.phase == .signedOut { demoButton }
+                            }
                     } else {
-                        MacLocalDaemonMissingView { connectingRemote = true }
+                        MacLocalDaemonMissingView(connectToAnotherMac: { connectingRemote = true },
+                                                  exploreDemo: { demoSession = UUID() })
                     }
                 }
             }
+            }
         }.task { await owner.run() }
+    }
+
+    private var demoButton: some View {
+        Button("Explore the demo") { demoSession = UUID() }
+            .accessibilityIdentifier("demo.enter")
+            .padding()
+    }
+}
+
+private struct MacViewsDemoScene: View {
+    let reset: () -> Void
+    let exit: () -> Void
+    @State private var store = Store(initialState: ViewsServiceRootFeature.State()) {
+        ViewsServiceRootFeature()
+    } withDependencies: {
+        $0.viewsClient = ViewsDemoWorkspace.client()
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label("Demo · Sample data", systemImage: "sparkles")
+                Spacer()
+                Button("Reset demo", action: reset).accessibilityIdentifier("demo.reset")
+                Button("Exit demo", action: exit).accessibilityIdentifier("demo.exit")
+            }
+            .font(.callout).padding().background(.thinMaterial)
+            MacServiceWorkspace(store: store, accountContent: DemoAccountView())
+        }
+        .environment(\.openURL, OpenURLAction { _ in .discarded })
+    }
+}
+
+private struct DemoAccountView: View {
+    var body: some View {
+        ContentUnavailableView("Demo workspace", systemImage: "sparkles",
+            description: Text("Everything here is sample data. Actions stay in memory and never reach a real account."))
     }
 }
 

@@ -39,7 +39,9 @@ struct MacServiceWorkspace<AccountContent: View>: View {
         }
         .environment(\.searchActive, searchFocused)
         .navigationTitle("Alondra")
-        .navigationSubtitle(presentation.sidebarDocument?.status.summary ?? "Connecting to the fleet…")
+        .navigationSubtitle(presentation.sidebarDocument != nil && presentation.viewError != nil
+            ? String(localized: "saved data · connection lost")
+            : presentation.sidebarDocument?.status.summary ?? String(localized: "Connecting to the fleet…"))
         .toolbar {
             if let status = presentation.sidebarDocument?.status {
                 ToolbarItem(placement: .status) { MacViewStatusGauges(gauges: status.gauges) }
@@ -438,7 +440,7 @@ private struct MacViewSidebarRow: View {
                 }
                 trailingLabel
             }
-            .help(row.tooltip ?? [row.title, row.subtitle ?? ""].filter { !$0.isEmpty }.joined(separator: " · "))
+            .help(([row.title, row.subtitle].compactMap { $0 } + row.badges.map(\.text)).filter { !$0.isEmpty }.joined(separator: " · "))
             .accessibilityElement(children: .combine)
         } else {
         VStack(alignment: .leading, spacing: 2) {
@@ -504,16 +506,14 @@ private struct MacViewSidebarRow: View {
         }
     }
     private var nodeTint: Color {
-        switch row.stateKey {
-        case "busy", "working": .green
-        case "free", "done", "delivered": .gray
-        case "waiting_machine": .yellow
-        case "waiting_answer": .orange
-        case "your_turn": .pink
-        case "waiting_merge": .mint
-        case "unclear": .purple
-        case "stalled": .red
-        default: .gray
+        guard let tone = row.badges.first?.tone else { return .gray }
+        return switch tone {
+        case .neutral: .gray
+        case .info: .indigo
+        case .accent: .orange
+        case .success: .green
+        case .warning: .yellow
+        case .critical: .red
         }
     }
     private func taskTint(_ row: Row) -> Color {
@@ -558,15 +558,13 @@ private struct MacNodeTaskRow: View {
 
 private func color(forTaskRow row: Row) -> Color {
         if row.struck { return .gray }
-        switch row.stateKey {
-        case "not_started": return .secondary
-        case "running": return .green
-        case "needs_you": return row.icon == .action ? .pink : .orange
-        case "in_review": return .mint
-        case "waiting_dependency": return .indigo
-        case "closing": return .teal
-        case "done", "cancelled", "archived": return .gray
-        case "defining": return .purple
+        switch row.icon {
+        case .mission: return .green
+        case .action: return .pink
+        case .pullRequest: return .mint
+        case .branch: return .indigo
+        case .check: return .teal
+        case .warning: return .gray
         default: break
         }
         guard let tone = row.badges.first?.tone else { return .gray }

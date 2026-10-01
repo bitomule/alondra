@@ -42,6 +42,8 @@ pub(crate) struct Client {
     github: std::sync::Mutex<Arc<dyn Github>>,
     options: std::sync::Mutex<Option<alondra_core::options::OptionsFile>>,
     issue_cache: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
+    pub(crate) live_reads: crate::views::live::LiveReadCache,
+    device_languages: std::sync::Mutex<std::collections::HashMap<String, alondra_core::views::Lang>>,
 }
 
 /// What a route answers: the status and the JSON body both the local listener and the relay
@@ -193,6 +195,15 @@ pub(crate) fn upload_step(path: &str) -> Option<&str> {
 }
 
 impl Client {
+    pub(crate) fn remember_language(&self, device: &str, lang: alondra_core::views::Lang) {
+        self.device_languages.lock().expect("device languages poisoned").insert(device.to_owned(), lang);
+    }
+
+    pub(crate) fn language_for_device(&self, device: &str) -> alondra_core::views::Lang {
+        self.device_languages.lock().expect("device languages poisoned").get(device).copied()
+            .unwrap_or(alondra_core::views::Lang::En)
+    }
+
     pub(crate) async fn cached_issues(&self) -> Option<crate::issues::IssueList> {
         self.issue_cache.lock().await.clone()
     }
@@ -210,6 +221,8 @@ impl Client {
             github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
             options: Default::default(),
             issue_cache: Default::default(),
+            live_reads: Default::default(),
+            device_languages: Default::default(),
         });
         crate::views::feed::start_clock(&client);
         client

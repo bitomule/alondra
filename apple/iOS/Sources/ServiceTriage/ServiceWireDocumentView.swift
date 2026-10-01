@@ -7,6 +7,7 @@ import SwiftUI
 /// previous document screen. The server supplies content and permitted actions.
 struct ServiceWireDocumentView: View {
     let card: AlondraViews.Card
+    var markdownText: String? = nil
     let onAction: (AlondraViews.Action, [ActionComment], String) -> Void
     let onLink: (AlondraViews.Link) -> Void
     let onAttachment: (AlondraViews.Attachment) -> Void
@@ -18,7 +19,7 @@ struct ServiceWireDocumentView: View {
     @FocusState private var generalFocused: Bool
 
     private var kind: Kind { Kind(card) }
-    private var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: card.body?.text ?? "") }
+    private var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: markdownText ?? card.body?.text ?? "") }
     private var canComment: Bool { card.actions.contains { $0.comments?.kind == .blocks } }
     private var feedback: [ActionComment] {
         blocks.compactMap { comments[$0.draftKey] }

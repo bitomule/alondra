@@ -858,7 +858,30 @@ fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
         "forbidden" => "Este dispositivo ya no tiene permiso para completar la acción",
         "invalid_input" => "Revisa los datos de la acción e inténtalo de nuevo",
         "not_found" | "no_longer_available" => "Este elemento ya no está disponible",
-        "conflict" | "stale_head" | "stale_revision" | "revision_conflict" => "El elemento ha cambiado; actualiza la vista e inténtalo de nuevo",
+        "conflict" | "stale_head" | "stale_revision" | "stale_epoch" | "stale_generation"
+        | "acceptance_stale" => "El elemento ha cambiado; actualiza la vista e inténtalo de nuevo",
+        "stack_not_ready" => "La pila todavía no está lista para esta acción",
+        "task_not_active" => "La tarea ya no está activa",
+        "withdrawn" => "La persona autora retiró esta pregunta",
+        "dependency_not_done" => "Completa primero la tarea dependiente",
+        "not_assigned" => "La tarea ya no está asignada a este agente",
+        "invalid_action_for_kind" => "Esta acción no se puede aplicar a este elemento",
+        "acceptance_missing" => "Autoriza primero la fusión de la PR presentada",
+        "subject_already_linked" => "Este elemento ya está vinculado a otra tarea",
+        "delivery_uncertain" => "No se pudo confirmar si el agente recibió el mensaje",
+        "blocking_interaction" => "Responde primero a la interacción pendiente de la tarea",
+        "merge_not_confirmed" => "No se pudo confirmar la fusión de la PR",
+        "task_not_cancelled" => "La tarea todavía no está cancelada",
+        "interactive_session" => "La sesión del agente requiere interacción manual",
+        "launch_failed" => "No se pudo iniciar la sesión del agente",
+        "session_unreachable" => "No se puede acceder a la sesión del agente",
+        "unavailable" => "Esta acción no está disponible ahora mismo",
+        "task_already_has_pr" => "Esta tarea ya tiene una PR asociada",
+        "pr_owned_by_other_task" => "Esta PR ya pertenece a otra tarea",
+        "idempotency_conflict" => "El identificador del comando ya se usó con otros datos",
+        "dependency_cycle" => "La dependencia crearía un ciclo entre tareas",
+        "content_unavailable" => "El contenido ya no está disponible",
+        "payload_too_large" => "La solicitud supera el tamaño permitido",
         "storage_unavailable" => "Los datos de Alondra no están disponibles ahora mismo",
         "external_read_failed" | "github_unavailable" => "No se pudo comprobar el estado remoto",
         "schedule_rejected" => "No se pudo completar la acción de programación",
@@ -1019,6 +1042,26 @@ mod tests {
             "Los datos de Alondra no están disponibles ahora mismo");
         assert_eq!(rejection_message(Lang::En, "storage_unavailable", "database unavailable"),
             "database unavailable");
+        for (code, expected) in [
+            ("stack_not_ready", "La pila todavía no está lista para esta acción"),
+            ("acceptance_stale", "El elemento ha cambiado; actualiza la vista e inténtalo de nuevo"),
+            ("task_not_active", "La tarea ya no está activa"),
+            ("withdrawn", "La persona autora retiró esta pregunta"),
+            ("dependency_not_done", "Completa primero la tarea dependiente"),
+            ("subject_already_linked", "Este elemento ya está vinculado a otra tarea"),
+            ("delivery_uncertain", "No se pudo confirmar si el agente recibió el mensaje"),
+            ("blocking_interaction", "Responde primero a la interacción pendiente de la tarea"),
+            ("merge_not_confirmed", "No se pudo confirmar la fusión de la PR"),
+            ("task_not_cancelled", "La tarea todavía no está cancelada"),
+            ("incompatible_protocol", "Actualiza Alondra para completar esta acción"),
+            ("interactive_session", "La sesión del agente requiere interacción manual"),
+            ("launch_failed", "No se pudo iniciar la sesión del agente"),
+            ("session_unreachable", "No se puede acceder a la sesión del agente"),
+            ("unavailable", "Esta acción no está disponible ahora mismo"),
+        ] {
+            assert_eq!(rejection_message(Lang::Es, code, "domain detail"), expected, "{code}");
+        }
+        assert_eq!(rejection_message(Lang::Es, "revision_conflict", "legacy"), "No se pudo completar la acción");
     }
 
     #[test]

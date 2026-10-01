@@ -8,19 +8,23 @@ use std::collections::BTreeMap;
 fn task_subtitle(task: &Task, context: &RenderContext<'_>) -> String {
     let project = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter()
         .find(|node| node.agent_id == id.0).and_then(|node| node.project.as_deref()));
-    let state = match task.state {
-        TaskState::NotStarted => t!(context.lang, "Not started", "Sin empezar"),
-        TaskState::Running => t!(context.lang, "Working", "Trabajando"),
-        TaskState::NeedsYou => t!(context.lang, "Needs you", "Te necesita"),
-        TaskState::InReview => t!(context.lang, "In review", "En revisión"),
-        TaskState::WaitingDependency => t!(context.lang, "Waiting", "Esperando"),
-        TaskState::Closing => t!(context.lang, "Closing", "Cerrando"),
-        TaskState::Done => t!(context.lang, "Finished", "Terminado"),
-        TaskState::Cancelled => t!(context.lang, "Cancelled", "Cancelado"),
-    };
+    let state = task_state_label(task.state, context.lang);
     match project {
         Some(project) if !project.is_empty() && project != "others" => format!("{project} · {state}"),
         _ => state.into(),
+    }
+}
+
+fn task_state_label(state: TaskState, lang: super::Lang) -> &'static str {
+    match state {
+        TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
+        TaskState::Running => t!(lang, "Working", "Trabajando"),
+        TaskState::NeedsYou => t!(lang, "Needs you", "Te necesita"),
+        TaskState::InReview => t!(lang, "In review", "En revisión"),
+        TaskState::WaitingDependency => t!(lang, "Waiting", "Esperando"),
+        TaskState::Closing => t!(lang, "Closing", "Cerrando"),
+        TaskState::Done => t!(lang, "Finished", "Terminado"),
+        TaskState::Cancelled => t!(lang, "Cancelled", "Cancelado"),
     }
 }
 
@@ -40,10 +44,11 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         let children: Vec<_> = context.domain.tasks.values()
             .filter(|task| !task.archived && task.state == state)
             .map(|task| {
+                let (icon, tone) = common::task_presentation(state);
                 let mut row = common::row(&task.id.0, &format!("task:{}", task.id),
-                    Icon::Task, task.title.clone(), Some(task_subtitle(task, context)));
+                    icon, task.title.clone(), Some(task_subtitle(task, context)));
                 row.struck = state == TaskState::Cancelled;
-                row.state_key = Some(id.into());
+                row.badges.push(Label { text: title.into(), tone });
                 row.depth = 1;
                 row
             }).collect();
@@ -57,7 +62,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
             let title = request.title.clone().unwrap_or_else(|| request.body.lines().next().unwrap_or("").chars().take(80).collect());
             let mut row = common::row(&request.id.0, &format!("request:{}", request.id), Icon::Mission, title, None);
             row.depth = 1;
-            row.state_key = Some("defining".into());
+            row.badges.push(Label { text: t!(context.lang, "Defining", "Definiendo").into(), tone: common::state_tone("defining") });
             row
         }).collect();
     if !defining.is_empty() {
@@ -67,7 +72,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         .map(|task| {
             let mut row = common::row(&task.id.0, &format!("task:{}", task.id), Icon::Task, task.title.clone(), None);
             row.depth = 1;
-            row.state_key = Some("archived".into());
+            row.badges.push(Label { text: t!(context.lang, "Archived", "Archivada").into(), tone: common::state_tone("archived") });
             row
         }).collect();
     if !archived.is_empty() {
@@ -84,9 +89,24 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
 }
 
 fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
-    let mut row = common::row(id, "tasks", Icon::Task, title.into(), None);
+    let state = match id {
+        "needs_you" => "needs_you", "in_review" => "in_review", "closing" => "closing",
+        "running" => "running", "waiting_dependency" => "waiting_dependency",
+        "not_started" => "not_started", "done" => "done", "cancelled" => "cancelled",
+        "archived" => "archived", _ => "defining",
+    };
+    let icon = match state {
+        "needs_you" => super::Icon::Action,
+        "in_review" => super::Icon::PullRequest,
+        "closing" | "done" => super::Icon::Check,
+        "running" => super::Icon::Mission,
+        "waiting_dependency" => super::Icon::Branch,
+        "cancelled" => super::Icon::Warning,
+        _ => super::Icon::Task,
+    };
+    let mut row = common::row(id, "tasks", icon, title.into(), None);
     row.link = None;
-    row.state_key = Some(id.into());
+    row.badges.push(Label { text: title.into(), tone: common::state_tone(state) });
     row.trailing = Some(Trailing::Count { value: children.len() as u32 });
     row.children = children;
     row
@@ -99,16 +119,15 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         let live = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0);
         let project = live.and_then(|node| node.project.as_deref()).filter(|name| *name != "others")
             .unwrap_or(t!(context.lang, "Other", "Otros"));
-        let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node,
+        let live_state = live.and_then(|node| node.state_key.as_deref());
+        let (icon, state_tone) = common::node_presentation(live_state);
+        let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), icon,
             agent.name.clone(), None);
         if let Some(node) = live {
-            row.state_key = node.state_key.clone();
-            let header = format!("{} · {}", agent.name, node.state_label.as_deref().unwrap_or(""));
             let summary = node.summary.as_deref().unwrap_or("").lines().next().unwrap_or("");
-            row.tooltip = Some(if summary.is_empty() { header } else {
-                let excerpt: String = summary.chars().take(140).collect();
-                format!("{header}\n{excerpt}{}", if summary.chars().count() > 140 { "…" } else { "" })
-            });
+            let label = node.state_label.as_deref().unwrap_or("");
+            row.badges.push(Label { text: label.into(), tone: state_tone });
+            row.subtitle = (!summary.is_empty()).then(|| summary.chars().take(140).collect::<String>());
             if let Some(text) = &node.background_badge {
                 row.badges.push(Label { text: text.clone(), tone: if node.background_suspect { Tone::Warning } else { Tone::Neutral } });
             }
@@ -118,10 +137,11 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         row.trailing = Some(Trailing::Count { value: pending as u32 });
         row.children = context.domain.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
             .map(|task| {
-                let mut child = common::row(&task.id.0, &format!("task:{}", task.id), Icon::Task,
-                    task.title.clone(), None);
+                let (icon, tone) = common::task_presentation(task.state);
+                let mut child = common::row(&task.id.0, &format!("task:{}", task.id), icon,
+                    task.title.clone(), Some(task_subtitle(task, context)));
                 child.depth = 1;
-                child.state_key = serde_json::to_value(task.state).ok().and_then(|value| value.as_str().map(str::to_owned));
+                child.badges.push(Label { text: task_state_label(task.state, context.lang).into(), tone });
                 child
             }).collect();
         projects.entry(project.into()).or_default().push(row);

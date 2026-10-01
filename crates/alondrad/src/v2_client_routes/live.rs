@@ -4,8 +4,7 @@
 use alondra_core::{Event, HookEvent, Node, View, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
 #[derive(Default)]
 pub(crate) struct Live {

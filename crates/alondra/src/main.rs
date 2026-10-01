@@ -418,7 +418,7 @@ fn status() -> Result<()> {
                         let summary = card.body.as_ref().map(|body| body.text.lines().next().unwrap_or_default()).unwrap_or(&card.title);
                         println!("  {:<16} {}", card.eyebrow.as_ref().map_or("item", |label| label.text.as_str()), summary);
                     }
-                    alondra_core::views::Item::Row(row) => println!("  {:<24} {}", row.state_key.as_deref().unwrap_or(""), row.title),
+                    alondra_core::views::Item::Row(row) => println!("  {:<24} {}", row.badges.first().map_or("", |badge| badge.text.as_str()), row.title),
                     alondra_core::views::Item::Markdown(markdown) => println!("  {}", markdown.text.lines().next().unwrap_or_default()),
                     _ => {}
                 }

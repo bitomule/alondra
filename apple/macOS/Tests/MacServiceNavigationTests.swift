@@ -25,6 +25,19 @@ struct MacServiceNavigationTests {
     }
 
     @Test
+    func fleetLoadFailureKeepsCachedDocumentForConnectionNotice() async throws {
+        let data = Data(#"{"protocol":1,"view":"fleet","key":"fleet","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"2 agents","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[{"id":"agents","collapsed":false,"items":[]}] }"#.utf8)
+        let document = try JSONDecoder().decode(ViewDocument.self, from: data)
+        var state = ViewsScreenFeature.State(key: .fleet, owner: "fleet-offline-test")
+        state.document = document
+        state.isPresented = true
+        let store = TestStore(initialState: state) { ViewsScreenFeature() }
+
+        await store.send(.failed("offline")) { $0.error = "offline" }
+        #expect(store.state.document == document)
+    }
+
+    @Test
     func changingSearchCancelsThePreviousViewsRequest() async throws {
         let clock = TestClock()
         let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {

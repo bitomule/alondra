@@ -422,6 +422,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.home.clone(),
         push,
         service.clone(),
+        client.clone(),
     ));
     let scheduler = tokio::spawn(domain_schedule_runner::run(
         domain.clone(),

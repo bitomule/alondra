@@ -4,11 +4,19 @@ swift_library(
     srcs = ["Sources/DemoViews.swift", "ViewsSources/ViewsDemoWorkspace.swift"],
     module_name = "AlondraViewsDemoWorkspace",
     visibility = ["//visibility:public"],
+    data = ["//fixtures/views:all"],
     deps = ["//apple/Views:AlondraViews", "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency"],
 )
 
 swift_test(
     name = "AlondraViewsDemoWorkspaceTests",
     srcs = ["ViewsTests/ViewsDemoWorkspaceTests.swift"],
-    deps = [":AlondraViewsDemoWorkspace", "//apple/Views:AlondraViews"],
+    data = ["//fixtures/views:all"],
+    deps = [
+        ":AlondraViewsDemoWorkspace",
+        "//apple/Features/Home:AlondraViewsHomeFeature",
+        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
+        "//apple/Views:AlondraViews",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
 )

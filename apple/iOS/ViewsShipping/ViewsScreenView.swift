@@ -11,15 +11,42 @@ struct ViewsScreenView: View {
     @Bindable var store: StoreOf<ViewsScreenFeature>
     let openView: (ViewKey) -> Void
     @Environment(\.openURL) private var openURL
+    @Namespace private var cardZoom
     @State private var diffComments: [String: ActionComment] = [:]
+    @State private var fleetQuery = ""
+    @State private var nodeMessageDraft = ""
 
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
     private var isNewRequestScreen: Bool { store.key.rawValue == "new_request" || store.key.rawValue.hasPrefix("new_request?") }
     private var documentCard: AlondraViews.Card? {
         guard store.key.rawValue.hasPrefix("card:") else { return nil }
         return store.document?.sections.lazy.flatMap(\.items).compactMap { item in
+            if case let .card(card) = item, card.icon == .document { card } else { nil }
+        }.first
+    }
+    private var routeCard: AlondraViews.Card? {
+        guard store.key.rawValue.hasPrefix("card:") else { return nil }
+        return store.document?.sections.lazy.flatMap(\.items).compactMap { item in
             if case let .card(card) = item { card } else { nil }
         }.first
+    }
+    private var isDocumentRoute: Bool { store.key.rawValue.hasPrefix("document:") }
+    private var documentContentRef: ContentRef? {
+        store.document?.sections.lazy.flatMap(\.items).compactMap { item -> ContentRef? in
+            if case let .contentRef(reference) = item, reference.kind == .document { reference } else { nil }
+        }.first
+    }
+    private var documentReviewCard: AlondraViews.Card? {
+        guard isDocumentRoute || documentCard != nil, let document = store.document, let content = store.content,
+              let actionData = try? ViewsCodec.encode(document.sections.flatMap(\.items).flatMap { item -> [AlondraViews.Action] in
+                  if case let .actions(bar) = item { bar.actions } else { [] }
+              }), let actions = try? JSONSerialization.jsonObject(with: actionData),
+              let data = try? JSONSerialization.data(withJSONObject: [
+                  "id": "document-review", "icon": "document", "title": document.title ?? "Document",
+                  "detail": "included", "body": ["text": content, "truncated": false, "commentable": true],
+                  "actions": actions,
+              ] as [String: Any]) else { return nil }
+        return try? ViewsCodec.decode(AlondraViews.Card.self, from: data)
     }
     private var pickerRows: [AlondraViews.Row] {
         store.pickerDocument?.sections.flatMap(\.items).compactMap { item in
@@ -34,13 +61,27 @@ struct ViewsScreenView: View {
 
     var body: some View {
         Group {
-            if let card = documentCard {
-                ServiceWireDocumentView(card: card, onAction: { action, comments, text in
+            if let card = documentReviewCard ?? documentCard {
+                ServiceWireDocumentView(card: card,
+                                        markdownText: documentContentRef == nil ? nil : (store.content ?? ""),
+                                        onAction: { action, comments, text in
                     store.send(.action(.present(action)))
                     store.send(.action(.commentsChanged(comments)))
                     store.send(.action(.textChanged(text)))
                 }, onLink: follow, onAttachment: { store.send(.fetchAttachment($0)) })
                 .id(card.id)
+            } else if let card = routeCard {
+                VStack(spacing: 16) {
+                    ServiceHomeCard(card: card,
+                        actions: store.scope(state: \.action, action: \.action),
+                        attachments: store.scope(state: \.action.attachmentPicker, action: { .action(.attachmentPicker($0)) }),
+                        isFront: true, zoom: cardZoom,
+                        submit: { store.send(.action(.submit)) },
+                        openReview: { open(ViewKey(rawValue: $0)) })
+                    if store.contentReference?.kind == .diff, let content = store.content {
+                        ViewsPRDiff(text: content, comments: $diffComments)
+                    }
+                }
             } else if let document = store.document {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 16) {
@@ -53,8 +94,22 @@ struct ViewsScreenView: View {
                                 .padding(.top, 4)
                         }
                         ForEach(document.notices, id: \.text) { notice in NoticeView(notice: notice) }
+                        if store.key.rawValue == "fleet", store.document != nil, store.error != nil {
+                            Label(String(localized: "saved data · connection lost"), systemImage: "wifi.slash")
+                                .font(.footnote.weight(.medium)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(.thinMaterial, in: .rect(cornerRadius: 12))
+                                .accessibilityIdentifier("fleet.savedDataConnectionLost")
+                        }
+                        if store.key.rawValue.hasPrefix("node:"), let lastMessage = document.sections.first(where: { $0.id == "last_message" }) {
+                            SectionView(section: lastMessage, onAction: present, onLink: follow,
+                                        onMore: { open(ViewKey(rawValue: $0)) }, onForm: presentForm,
+                                        onContent: { store.send(.fetchContent($0)) },
+                                        onAttachment: { store.send(.fetchAttachment($0)) })
+                        }
                         ForEach(document.sections, id: \.id) { section in
-                            sectionContent(section)
+                            if section.id != "last_message" { sectionContent(section) }
                         }
                         if let content = store.content {
                             if store.contentReference?.kind == .diff {
@@ -79,6 +134,24 @@ struct ViewsScreenView: View {
                 .navigationTitle(isTasksScreen || isNewRequestScreen ? "" : (document.title ?? document.status.summary))
                 .navigationBarTitleDisplayMode(isTasksScreen || isNewRequestScreen ? .inline : .automatic)
                 .refreshable { await store.send(.refresh).finish() }
+                .safeAreaBar(edge: .bottom) {
+                    if store.key.rawValue.hasPrefix("node:"), let action = nodeMessageAction(document) {
+                        HStack(spacing: 10) {
+                            ServiceAttachButton(store: store.scope(state: \.action.attachmentPicker,
+                                action: { .action(.attachmentPicker($0)) }))
+                            TextField(messagePlaceholder(action),
+                                      text: $nodeMessageDraft,
+                                      axis: .vertical)
+                                .lineLimit(1...4).textFieldStyle(.roundedBorder)
+                            Button(action.label, systemImage: "arrow.up.circle.fill") {
+                                store.send(.action(.textChanged(nodeMessageDraft)))
+                                store.send(.action(.submit))
+                            }
+                            .labelStyle(.iconOnly).font(.title2).disabled(nodeMessageDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                        .padding(.horizontal, 16).padding(.vertical, 8).background(.ultraThinMaterial)
+                    }
+                }
                 .toolbar {
                     ToolbarItem(placement: .topBarTrailing) {
                         Button("Refresh", systemImage: "arrow.clockwise") { store.send(.refresh) }
@@ -94,14 +167,28 @@ struct ViewsScreenView: View {
         }
         .task { await store.send(.appeared).finish() }
         .task(id: store.document?.version) {
-            guard store.key.rawValue.hasPrefix("pull_request:"), let document = store.document else { return }
-            guard let diff = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
-                if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
-            }).first else { return }
-            if store.contentReference?.digest != diff.digest {
-                diffComments = [:]
-                store.send(.fetchContent(diff))
+            guard let document = store.document else { return }
+            if store.key.rawValue.hasPrefix("node:"), let message = nodeMessageAction(document),
+               store.action.action?.id != message.id {
+                store.send(.action(.present(message)))
             }
+            if store.key.rawValue.hasPrefix("pull_request:") || store.key.rawValue.hasPrefix("card:"),
+               let diff = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
+                    if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
+                }).first {
+                if store.contentReference?.digest != diff.digest {
+                    diffComments = [:]
+                    store.send(.fetchContent(diff))
+                }
+                return
+            }
+            if let reference = documentContentRef,
+                      store.contentReference?.digest != reference.digest {
+                store.send(.fetchContent(reference))
+            }
+        }
+        .onChange(of: store.action.stamp) { old, new in
+            if old == nil, new != nil { nodeMessageDraft = "" }
         }
         .onDisappear { store.send(.disappeared) }
         .sheet(item: Binding(get: { store.attachmentPreview }, set: { if $0 == nil { store.send(.closeAttachment) } })) { preview in
@@ -115,7 +202,7 @@ struct ViewsScreenView: View {
         } message: {
             Text(store.error ?? "")
         }
-        .sheet(isPresented: Binding(get: { store.action.action != nil }, set: { if !$0 { store.send(.action(.dismiss)) } })) {
+        .sheet(isPresented: Binding(get: { store.action.action != nil && !isInlineNodeMessage }, set: { if !$0 && !isInlineNodeMessage { store.send(.action(.dismiss)) } })) {
             ActionInputView(store: store.scope(state: \.action, action: \.action), form: store.form,
                             showCommentEditor: documentCard == nil && !store.key.rawValue.hasPrefix("pull_request:"),
                             onReload: { field, value in store.send(.reloadForm(field.id, value)) },
@@ -150,7 +237,7 @@ struct ViewsScreenView: View {
                     }
                 }
                 .safeAreaInset(edge: .bottom) {
-                    Button("Continue") { store.send(.action(.submit)) }
+                    Button(store.form?.id == "schedule" ? (store.form?.submit.label ?? String(localized: "Save Schedule")) : String(localized: "Continue")) { store.send(.action(.submit)) }
                         .buttonStyle(.borderedProminent).tint(Palette.dawn).padding()
                 }
         }
@@ -201,7 +288,7 @@ struct ViewsScreenView: View {
                             Text(title).font(.display(.title3, weight: .bold)).foregroundStyle(Palette.ink)
                         }
                         Spacer()
-                        if let count = section.count { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
+                        if let count = section.count, count > 0 { Text("\(count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary) }
                     }
                     let rows = section.items.compactMap { item -> AlondraViews.Row? in
                         if case let .row(row) = item { row } else { nil }
@@ -231,18 +318,69 @@ struct ViewsScreenView: View {
                 let rows = section.items.compactMap { item -> AlondraViews.Row? in
                     if case let .row(row) = item { row } else { nil }
                 }
-                ForEach(rows, id: \.id) { row in FleetWireRow(row: row, onLink: follow) }
+                ForEach(rows.filter { fleetQuery.isEmpty || "\($0.title) \($0.subtitle ?? "") \($0.badges.map(\.text).joined(separator: " "))".localizedCaseInsensitiveContains(fleetQuery) }, id: \.id) { row in FleetWireRow(row: row, onLink: follow) }
             }
+            .searchable(text: $fleetQuery, prompt: Text("Search fleet"))
+        } else if isTasksScreen, section.id == "actions", !hasFinishedRows {
+            let actions = section.items.flatMap { item -> [AlondraViews.Action] in
+                if case let .actions(bar) = item { bar.actions } else { [] }
+            }
+            if !actions.isEmpty && actions.allSatisfy({ $0.label.localizedCaseInsensitiveContains("archive") || $0.label.localizedCaseInsensitiveContains("archivar") }) {
+                EmptyView()
+            } else {
+                SectionView(section: section, onAction: present, onLink: follow,
+                            onMore: { open(ViewKey(rawValue: $0)) }, onForm: presentForm,
+                            onContent: { store.send(.fetchContent($0)) }, onAttachment: { store.send(.fetchAttachment($0)) })
+            }
+        } else if store.key.rawValue == "schedules", section.id == "schedules", section.items.isEmpty,
+                  let empty = store.document?.empty {
+            ContentUnavailableView(empty.text, systemImage: "calendar.badge.clock",
+                                   description: Text("Run a task automatically on a schedule."))
+                .frame(maxWidth: .infinity, minHeight: 220)
         } else {
             SectionView(section: section, onAction: present,
                         onLink: follow, onMore: { open(ViewKey(rawValue: $0)) },
                         onForm: presentForm, onContent: { store.send(.fetchContent($0)) },
-                        onAttachment: { store.send(.fetchAttachment($0)) })
+                        onAttachment: { store.send(.fetchAttachment($0)) },
+                        excludingActionIDs: excludedActionIDs(for: section))
         }
     }
 
     private func presentForm(_ form: WireForm) {
         store.send(.presentForm(form))
+    }
+
+    private var hasFinishedRows: Bool {
+        store.document?.sections.first(where: { $0.id == "finished" })?.items.contains(where: {
+            if case .row = $0 { true } else { false }
+        }) == true
+    }
+
+    private func nodeMessageAction(_ document: ViewDocument) -> AlondraViews.Action? {
+        document.sections.flatMap(\.items).flatMap { item -> [AlondraViews.Action] in
+            if case let .actions(bar) = item { bar.actions } else { [] }
+        }.first { $0.label.localizedCaseInsensitiveContains("message") || $0.label.localizedCaseInsensitiveContains("mensaje") }
+    }
+
+    private var isInlineNodeMessage: Bool {
+        guard store.key.rawValue.hasPrefix("node:"), let action = store.action.action,
+              let document = store.document, let message = nodeMessageAction(document) else { return false }
+        return action.id == message.id
+    }
+
+    private func messagePlaceholder(_ action: AlondraViews.Action) -> String {
+        if case let .text(placeholder, _, _) = action.input, let placeholder { return placeholder }
+        return String(localized: "Write a message")
+    }
+
+    private func excludedActionIDs(for section: ViewSection) -> Set<String> {
+        guard let document = store.document else { return [] }
+        if store.key.rawValue.hasPrefix("node:"), section.id == "actions",
+           let message = nodeMessageAction(document), let id = message.id { return [id] }
+        guard store.key.rawValue.hasPrefix("pull_request:"), section.id != "actions" else { return [] }
+        return Set(document.sections.flatMap(\.items).flatMap { item -> [AlondraViews.Action] in
+            if case let .actions(bar) = item { bar.actions } else { [] }
+        }.compactMap(\.id))
     }
 }
 
@@ -309,10 +447,11 @@ private struct FleetWireRow: View {
     }
 
     private var fleetTint: Color {
-        switch row.stateKey {
-        case "working", "running": Palette.sky
-        case "offline", "disconnected": Palette.rose
-        default: row.icon == .orchestrator ? Palette.ember : Palette.sage
+        if row.icon == .orchestrator { return Palette.ember }
+        return switch row.badges.first?.tone {
+        case .success: Palette.sky
+        case .critical: Palette.rose
+        default: Palette.sage
         }
     }
 }
@@ -352,12 +491,23 @@ private struct TaskWireRow: View {
     let row: AlondraViews.Row
     let onLink: (AlondraViews.Link) -> Void
     private var tint: Color {
-        switch row.stateKey?.lowercased() {
-        case "running": Palette.sky
-        case "needs_you", "in_review": Palette.dawn
-        case "done", "closing": Palette.sage
-        case "cancelled", "waiting_dependency": Palette.slate
-        default: Palette.slate
+        switch row.icon {
+        case .mission: return .green
+        case .action: return .pink
+        case .pullRequest: return .mint
+        case .branch: return .indigo
+        case .check: return row.struck ? Palette.slate : .teal
+        case .warning: return Palette.slate
+        default: break
+        }
+        guard let tone = row.badges.first?.tone else { return Palette.slate }
+        return switch tone {
+        case .neutral: Palette.slate
+        case .info: Palette.sky
+        case .accent: Palette.dawn
+        case .success: Palette.sage
+        case .warning: Palette.dawn
+        case .critical: Palette.rose
         }
     }
 
@@ -388,14 +538,21 @@ private struct TaskWireRow: View {
     }
 
     private var symbol: String {
-        switch row.stateKey?.lowercased() {
-        case "running": "hammer.fill"
-        case "needs_you": "hand.raised.fill"
-        case "in_review": "arrow.triangle.pull"
-        case "done", "closing": "checkmark"
-        case "waiting_dependency": "link"
-        case "cancelled": "xmark"
-        default: "circle.dashed"
+        switch row.icon {
+        case .mission: "hammer.fill"
+        case .action: "hand.raised.fill"
+        case .task: row.struck ? "checkmark" : "circle.dashed"
+        case .pullRequest: "arrow.triangle.pull"
+        case .branch: "link"
+        case .check: "checkmark"
+        case .warning: "xmark"
+        case .request: "paperplane"
+        default:
+            switch row.badges.first?.tone {
+            case .success: "checkmark"
+            case .warning, .critical: "hand.raised.fill"
+            default: "circle.dashed"
+            }
         }
     }
 }

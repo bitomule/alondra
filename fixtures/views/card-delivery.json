@@ -4,9 +4,9 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v2d25aeae8696340d",
+  "version": "v6823e264789efbc5",
   "cursor": "cursor-1",
-  "title": "Build a feature",
+  "title": "Restore the native review experience",
   "status": {
     "version": "v2d6ccffc4668392a",
     "summary": "1 question · 3 to read · 0 nodes working",
@@ -61,28 +61,28 @@
             "text": "Finished",
             "tone": "accent"
           },
-          "title": "Build a feature",
+          "title": "Restore the native review experience",
           "context": [
             {
               "icon": "task",
-              "text": "Build a feature",
+              "text": "Restore the native review experience",
               "link": {
                 "kind": "view",
-                "key": "task:t-1"
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               }
             },
             {
               "icon": "mission",
-              "text": "Mission · Build a feature",
+              "text": "Mission · Polish the Alondra beta",
               "link": {
                 "kind": "view",
-                "key": "request:r-1"
+                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
               }
             }
           ],
           "detail": "included",
           "body": {
-            "text": "Body 2",
+            "text": "## Beta candidate ready\n\n- Restored the native review layouts\n- Kept swipe navigation between cards\n- Verified the ARM simulator build\n\nThe candidate is ready for your final approval.",
             "truncated": false,
             "commentable": false
           },

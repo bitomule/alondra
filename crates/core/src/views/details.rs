@@ -84,10 +84,11 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         .pull_requests
         .get(&PrId(id.into()))
         .ok_or(BuildError::NotFound)?;
+    let live = context.live.pull_requests.iter().find(|details| details.id == id);
     let mut view = common::view(
         "pull_request",
         &format!("pull_request:{id}"),
-        Some(format!("PR #{}", pr.number)),
+        Some(live.and_then(|details| details.title.clone()).unwrap_or_else(|| format!("PR #{}", pr.number))),
         context,
         vec![],
     );
@@ -106,7 +107,9 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         },
         Fact {
             label: t!(context.lang, "Head", "Rama").into(),
-            value: pr.head.clone(),
+            value: live.and_then(|details| details.head_ref.clone()).unwrap_or_else(|| {
+                t!(context.lang, "Branch unavailable", "Rama no disponible").into()
+            }),
             tone: None,
             link: None,
         },
@@ -132,7 +135,16 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
                 card.children.into_iter().map(Item::Card).collect(),
             ));
         }
-        if let Some(body) = card.body {
+        if let Some(body) = live
+            .and_then(|details| details.body.clone())
+            .map(|text| super::Markdown {
+                text,
+                truncated: false,
+                more: None,
+                commentable: false,
+            })
+            .or(card.body)
+        {
             view.sections.push(common::section(
                 "description",
                 None,
@@ -148,6 +160,20 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
                 })],
             ));
         }
+    }
+    if !view.sections.iter().any(|section| section.id == "description")
+        && let Some(text) = live.and_then(|details| details.body.clone())
+    {
+        view.sections.push(common::section(
+            "description",
+            None,
+            vec![Item::Markdown(super::Markdown {
+                text,
+                truncated: false,
+                more: None,
+                commentable: false,
+            })],
+        ));
     }
     view.sections.push(common::section(
         "diff",

@@ -37,6 +37,8 @@ pub struct LiveSnapshot {
     #[serde(default)]
     pub task_history: BTreeMap<String, Vec<LiveHistoryStep>>,
     #[serde(default)]
+    pub task_options: BTreeMap<String, LiveTaskOptions>,
+    #[serde(default)]
     pub search_matches: Option<Vec<String>>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +72,14 @@ pub struct LiveNode {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePullRequest {
     pub id: String,
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub body: Option<String>,
+    #[serde(default)]
+    pub head_ref: Option<String>,
+    #[serde(default)]
+    pub base_ref: Option<String>,
     pub checks_passed: Option<bool>,
     pub conflicts: bool,
     pub stacked_on: Option<String>,
@@ -114,6 +124,12 @@ pub struct LiveHistoryStep {
     pub at: String,
     pub state: String,
     pub summary: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveTaskOptions {
+    pub project: Option<String>,
+    pub effort: Option<String>,
 }
 impl LiveSnapshot {
     pub fn time(&self, id: &str) -> Option<&str> {

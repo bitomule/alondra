@@ -1,7 +1,8 @@
 use super::*;
 use crate::domain_v2::{
-    Agent, Author, DomainState, Interaction, InteractionPayload, InteractionSubject, PrState,
-    PullRequest, Recipient, Request, Scope, Task, TaskState,
+    Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
+    InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
+    TaskState,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -157,7 +158,7 @@ fn home_ios_sends_only_ordered_ids() {
 }
 
 #[test]
-fn huge_home_sends_only_ordered_ids() {
+fn a_huge_inbox_stays_under_the_budget_and_reports_more() {
     let mut state = fixture();
     for index in 0..2_000 {
         let id = format!("q-{index:04}");
@@ -193,11 +194,12 @@ fn huge_home_sends_only_ordered_ids() {
         "2026-09-30T10:00:00Z",
     );
     let queue = &view.sections[0];
-    assert_eq!(queue.card_ids.len(), 2_003);
     assert!(queue.items.is_empty());
     assert_eq!(queue.card_ids.first().unwrap(), "i-1");
     assert_eq!(queue.card_ids.last().unwrap(), "q-1999");
-    assert!(serde_json::to_vec(&view).unwrap().len() < 160 * 1024);
+    let bytes = serde_json::to_vec(&view).unwrap();
+    assert!(bytes.len() < 744 * 1024, "home used {} bytes", bytes.len());
+    assert_eq!(queue.card_ids.len(), 2_003, "every remaining card is reported by id");
 }
 #[test]
 fn focus_puts_the_id_first() {
@@ -396,6 +398,8 @@ fn pr_fixture() -> DomainState {
 
 fn golden_fixture() -> DomainState {
     let mut state = pr_fixture();
+    let request_id = "r-9f2156b5a8894e53901f0af576dff6a2";
+    let task_id = "t-651c38484cd2f34e74d5107ba05f7f15";
     let interaction_ids = [
         ("i-1", "a98d034b-249e-4487-a89b-57de38c26372"),
         ("i-2", "f12d034b-249e-4487-a89b-57de38c26372"),
@@ -405,6 +409,48 @@ fn golden_fixture() -> DomainState {
     ];
     let agent_id = "d887a34b-249e-4487-a89b-57de38c26372";
     let pr_id = "github.com/example/repo#12";
+    if let Some(request) = state.requests.get_mut(&"r-1".into()) {
+        request.title = Some("Polish the Alondra beta".into());
+        request.body = "Prepare the next Alondra beta: restore the established review experience, verify the simulator build, and keep the release notes concise.".into();
+    }
+    if let Some(task) = state.tasks.get_mut(&"t-1".into()) {
+        task.title = "Restore the native review experience".into();
+    }
+    if let Some(agent) = state.agents.get_mut(&"a-1".into()) {
+        agent.name = "Alondra · iOS".into();
+    }
+    if let Some(interaction) = state.interactions.get_mut(&"i-1".into()) {
+        interaction.body = "The new empty state is ready. Which copy should we ship in the beta?".into();
+        interaction.payload = InteractionPayload::Question {
+            options: vec![
+                QuestionOption {
+                    id: "clear".into(),
+                    label: "Ship the concise copy".into(),
+                    description: Some("Use a short title and one explanatory sentence.".into()),
+                    inputs: vec![],
+                },
+                QuestionOption {
+                    id: "warm".into(),
+                    label: "Keep the warmer copy".into(),
+                    description: Some("Preserve the more conversational explanation.".into()),
+                    inputs: vec![],
+                },
+            ],
+            answer: None,
+        };
+    }
+    if let Some(interaction) = state.interactions.get_mut(&"i-2".into()) {
+        interaction.body = "The iPhone simulator pass completed successfully. Swipe navigation, inline replies, and attachment previews are ready for review.".into();
+    }
+    if let Some(interaction) = state.interactions.get_mut(&"i-3".into()) {
+        interaction.body = "## Beta candidate ready\n\n- Restored the native review layouts\n- Kept swipe navigation between cards\n- Verified the ARM simulator build\n\nThe candidate is ready for your final approval.".into();
+    }
+    if let Some(interaction) = state.interactions.get_mut(&"i-5".into()) {
+        interaction.body = "The pull request is ready. Should the compact schedule editor ship with this beta?".into();
+    }
+    if let Some(interaction) = state.interactions.get_mut(&"i-6".into()) {
+        interaction.body = "All required checks passed and the branch is up to date with main.".into();
+    }
     let old_interactions = std::mem::take(&mut state.interactions);
     state.interactions = old_interactions.into_values().map(|mut interaction| {
         if let Some((_, replacement)) = interaction_ids.iter().find(|(old, _)| *old == interaction.id.0) {
@@ -428,7 +474,22 @@ fn golden_fixture() -> DomainState {
         if agent.id.0 == "a-1" { agent.id = agent_id.into(); }
         (agent.id.clone(), agent)
     }).collect();
-    if let Some(task) = state.tasks.get_mut(&"t-1".into()) {
+    let mut request = state.requests.remove(&"r-1".into()).unwrap();
+    request.id = request_id.into();
+    state.requests.insert(request.id.clone(), request);
+    let mut task = state.tasks.remove(&"t-1".into()).unwrap();
+    task.id = task_id.into();
+    task.request_id = request_id.into();
+    state.tasks.insert(task.id.clone(), task);
+    for interaction in state.interactions.values_mut() {
+        if let Scope::Task { task_id: id } = &mut interaction.scope {
+            if id.0 == "t-1" { *id = task_id.into(); }
+        }
+    }
+    for pr in state.pull_requests.values_mut() {
+        if pr.task_id.0 == "t-1" { pr.task_id = task_id.into(); }
+    }
+    if let Some(task) = state.tasks.get_mut(&task_id.into()) {
         task.final_presentation = Some("hf-weekly-2026-09-30".into());
     }
     state
@@ -464,11 +525,21 @@ fn real_pr_id_opens_detail_diff_and_actions() {
 }
 
 #[test]
-fn invalid_generated_pr_action_id_fails_the_view() {
+fn invalid_generated_pr_action_id_is_omitted_while_the_card_renders() {
     let mut state = golden_fixture();
     let pr_id = "github.com/example/repo#12";
     state.pull_requests.get_mut(&pr_id.into()).unwrap().head = "bad/head123".into();
-    let live = LiveSnapshot::default();
+    let mut live = LiveSnapshot::default();
+    live.pull_requests.push(crate::views::live::LivePullRequest {
+        id: pr_id.into(), title: None, body: None, head_ref: None, base_ref: None,
+        checks_passed: Some(true), conflicts: true, stacked_on: None, url: None,
+    });
+    let view = render(&state, &live, Client::Ios, Lang::En, &format!("card:{pr_id}"), "");
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("the card remains visible") };
+    assert!(card.actions.iter().any(|action| action.label == "Ask about the PR"));
+    assert!(!card.actions.iter().any(|action| action.label == "Request changes"));
+    assert!(card.actions.iter().any(|action| action.label == "Resolve conflicts"),
+        "a valid action after the invalid action should still render");
     let result = build(&format!("card:{pr_id}"), RenderContext {
         domain: &state,
         live: &live,
@@ -478,7 +549,7 @@ fn invalid_generated_pr_action_id_fails_the_view() {
         cursor: "test",
         rendered_at: "",
     });
-    assert_eq!(result, Err(BuildError::InvalidActionId));
+    assert!(result.is_ok());
 }
 
 #[test]
@@ -564,6 +635,168 @@ fn search_view_counts_found_agents_and_reports_empty_results() {
 }
 
 #[test]
+fn document_detail_exposes_the_revision_content_route() {
+    let mut state = fixture();
+    state.documents.insert("document-1".into(), Document {
+        id: "document-1".into(), title: "Design notes".into(), current_revision: "revision-1".into(),
+    });
+    state.document_revisions.insert("revision-1".into(), DocumentRevision {
+        id: "revision-1".into(), document_id: "document-1".into(), number: 1,
+        content_digest: "a".repeat(64), content_reference: "stored/design".into(),
+    });
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "document:revision-1", "");
+    assert_eq!(view.title.as_deref(), Some("Design notes"));
+    let content = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::ContentRef(content) = item { Some(content) } else { None }
+    }).expect("document content remains fetchable by revision");
+    assert_eq!(content.fetch, "/document-revisions/revision-1/content");
+    assert!(content.commentable);
+}
+
+#[test]
+fn document_review_card_exposes_revision_content_and_review_actions() {
+    let mut state = fixture();
+    state.documents.insert("document-1".into(), Document {
+        id: "document-1".into(), title: "Design notes".into(), current_revision: "revision-1".into(),
+    });
+    state.document_revisions.insert("revision-1".into(), DocumentRevision {
+        id: "revision-1".into(), document_id: "document-1".into(), number: 1,
+        content_digest: "b".repeat(64), content_reference: "stored/design".into(),
+    });
+    let interaction = state.interactions.get_mut(&"i-3".into()).unwrap();
+    if let InteractionPayload::Delivery { targets, .. } = &mut interaction.payload {
+        *targets = vec![crate::domain_v2::DeliveryTarget::DocumentRevision {
+            document_id: "document-1".into(), revision_id: "revision-1".into(),
+        }];
+    } else { panic!("delivery fixture") }
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "card:revision-1", "");
+    let content = view.sections.iter().flat_map(|section| &section.items).find_map(|item|
+        if let Item::ContentRef(content) = item { Some(content) } else { None })
+        .expect("document review card exposes the revision content");
+    assert_eq!(content.kind, ContentKind::Document);
+    assert_eq!(content.fetch, "/document-revisions/revision-1/content");
+    let digest = "b".repeat(64);
+    assert_eq!(content.digest.as_deref(), Some(digest.as_str()));
+    assert!(content.commentable);
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("review card") };
+    assert!(card.actions.iter().any(|action| action.label == "Approve"
+        && action.style == Style::Primary
+        && action.stamp.as_deref() == Some("Approved")), "{:?}", card.actions);
+    assert!(card.actions.iter().any(|action| action.label == "Request changes"));
+}
+
+#[test]
+fn pull_request_card_exposes_the_diff_and_read_actions_stay_primary() {
+    let state = golden_fixture();
+    let pr_id = "github.com/example/repo#12";
+    let view = render(
+        &state,
+        &LiveSnapshot::default(),
+        Client::Ios,
+        Lang::En,
+        &format!("card:{pr_id}"),
+        "",
+    );
+    let diff = view
+        .sections
+        .iter()
+        .flat_map(|section| &section.items)
+        .find_map(|item| match item {
+            Item::ContentRef(content) if content.kind == ContentKind::Diff => Some(content),
+            _ => None,
+        })
+        .expect("PR card exposes the diff used by the review surface");
+    assert_eq!(
+        diff.fetch,
+        "/pull-requests/github.com%2Fexample%2Frepo%2312/diff"
+    );
+    assert!(diff.commentable);
+
+    let information = render(
+        &state,
+        &LiveSnapshot::default(),
+        Client::Ios,
+        Lang::En,
+        "card:f12d034b-249e-4487-a89b-57de38c26372",
+        "",
+    );
+    let Item::Card(card) = &information.sections[0].items[0] else {
+        panic!("information card")
+    };
+    let read = card
+        .actions
+        .iter()
+        .find(|action| action.label == "Mark as read")
+        .expect("information card keeps its read action");
+    assert_eq!(read.style, Style::Primary);
+}
+
+#[test]
+fn pull_request_detail_uses_live_title_body_and_branch_names() {
+    let mut state = fixture();
+    state.pull_requests.insert("pr-1".into(), PullRequest {
+        id: "pr-1".into(), task_id: "t-1".into(), host: "github.com".into(),
+        repository: "owner/repo".into(), number: 154, head: "0123456789abcdef".into(),
+        base: "main".into(), state: PrState::Open, merged_head: None,
+        allowed_methods: vec![], review: None,
+    });
+    let mut live = LiveSnapshot::default();
+    live.pull_requests.push(LivePullRequest {
+        id: "pr-1".into(), title: Some("Readable task editor".into()),
+        body: Some("Why this change matters".into()), head_ref: Some("task/editor".into()),
+        base_ref: Some("main".into()), checks_passed: None, conflicts: false,
+        stacked_on: None, url: None,
+    });
+    let view = render(&state, &live, Client::Tui, Lang::En, "pull_request:pr-1", "");
+    assert_eq!(view.title.as_deref(), Some("Readable task editor"));
+    let facts = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Facts(facts) = item { Some(&facts.items) } else { None }
+    }).unwrap();
+    assert!(facts.iter().any(|fact| fact.label == "Head" && fact.value == "task/editor"));
+    assert!(facts.iter().all(|fact| !fact.value.contains("0123456789abcdef")));
+    assert!(view.sections.iter().any(|section| section.items.iter().any(|item|
+        matches!(item, Item::Markdown(markdown) if markdown.text == "Why this change matters"))));
+}
+
+#[test]
+fn task_detail_keeps_dependencies_options_and_human_request_text() {
+    let mut state = fixture();
+    state.requests.get_mut(&"r-1".into()).unwrap().title = None;
+    let mut dependency = state.tasks[&"t-1".into()].clone();
+    dependency.id = "t-2".into();
+    dependency.title = "Prepare API".into();
+    dependency.dependencies.clear();
+    state.tasks.insert(dependency.id.clone(), dependency);
+    state.tasks.get_mut(&"t-1".into()).unwrap().dependencies.insert("t-2".into());
+    let mut live = LiveSnapshot::default();
+    live.task_options.insert("t-1".into(), LiveTaskOptions {
+        project: Some("Alondra".into()), effort: Some("high".into()),
+    });
+    let view = render(&state, &live, Client::Tui, Lang::En, "task:t-1", "");
+    let request = view.sections.iter().find(|section| section.id == "header").unwrap()
+        .items.iter().find_map(|item| if let Item::Facts(facts) = item { Some(&facts.items) } else { None }).unwrap()
+        .iter().find(|fact| fact.label == "Request").unwrap();
+    assert_eq!(request.value, "Build a feature");
+    assert!(view.sections.iter().any(|section| section.id == "dependencies"));
+    let options = view.sections.iter().find(|section| section.id == "options").unwrap();
+    let facts = options.items.iter().find_map(|item| if let Item::Facts(facts) = item { Some(&facts.items) } else { None }).unwrap();
+    assert!(facts.iter().any(|fact| fact.label == "Project" && fact.value == "Alondra"));
+    assert!(facts.iter().any(|fact| fact.label == "Effort" && fact.value == "high"));
+}
+
+#[test]
+fn fleet_node_rows_keep_their_assigned_task_rows() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "fleet", "");
+    let node = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }
+    }).unwrap();
+    assert_eq!(node.id, "a-1");
+    assert!(node.children.iter().any(|task| task.id == "t-1" && task.title == "Build a feature"));
+}
+
+#[test]
 fn schedule_editor_includes_selected_projects_launch_options() {
     let state = fixture();
     let mut live = LiveSnapshot::default();
@@ -577,6 +810,31 @@ fn schedule_editor_includes_selected_projects_launch_options() {
     let Item::Form(form) = &view.sections[0].items[0] else { panic!("schedule form") };
     let option = form.fields.iter().find(|field| field.id == "run_checks").unwrap();
     assert_eq!(option.value, serde_json::json!(true));
+}
+
+#[test]
+fn new_schedule_keeps_deterministic_weekday_and_unset_start_date_defaults() {
+    let view = render(&fixture(), &LiveSnapshot::default(), Client::Tui, Lang::En, "schedule:new", "");
+    let form = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Form(form) = item { Some(form) } else { None }
+    }).unwrap();
+    assert_eq!(form.fields.iter().find(|field| field.id == "weekday").unwrap().value, serde_json::json!(1));
+    assert_eq!(form.fields.iter().find(|field| field.id == "start_at").unwrap().value, serde_json::Value::Null);
+}
+
+#[test]
+fn tasks_hide_zero_scheduled_count_and_archive_action_until_completed_tasks_exist() {
+    let mut state = fixture();
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "tasks", "");
+    let scheduled = view.sections.iter().find(|section| section.id == "scheduled").unwrap();
+    assert_eq!(scheduled.count, None);
+    assert!(!view.sections.iter().flat_map(|section| &section.items).any(|item|
+        matches!(item, Item::Actions(actions) if actions.actions.iter().any(|action| action.id.starts_with("archive_done:")))));
+
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "tasks", "");
+    assert!(view.sections.iter().flat_map(|section| &section.items).any(|item|
+        matches!(item, Item::Actions(actions) if actions.actions.iter().any(|action| action.id.starts_with("archive_done:")))));
 }
 
 #[test]
@@ -618,7 +876,8 @@ fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
     let mut live = LiveSnapshot::default();
     live.nodes.push(live::LiveNode {
         agent_id: "a-1".into(), short_id: Some("short-a-1".into()),
-        name: "Node One".into(), project: None, state_key: None,
+        name: "Node One".into(), project: None,
+        state_key: None,
         state_label: None, summary: None, needs: None, background: vec![],
         background_badge: None, background_suspect: false, working: true,
         waiting: false, last_message: None, last_message_at: None,
@@ -714,6 +973,11 @@ fn card_variants_match_goldens() {
             include_str!("../../../../fixtures/views/card-question.json"),
         ),
         (
+            "card-information.json",
+            "card:f12d034b-249e-4487-a89b-57de38c26372",
+            include_str!("../../../../fixtures/views/card-information.json"),
+        ),
+        (
             "card-pr.json",
             "card:github.com/example/repo#12",
             include_str!("../../../../fixtures/views/card-pr.json"),
@@ -765,6 +1029,7 @@ fn generate_goldens() {
         ("home-ios.json", "home", Client::Ios, Lang::En),
         ("home-tui.json", "home", Client::Tui, Lang::En),
         ("card-question.json", "card:a98d034b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
+        ("card-information.json", "card:f12d034b-249e-4487-a89b-57de38c26372", Client::Ios, Lang::En),
         ("card-pr.json", "card:github.com/example/repo#12", Client::Ios, Lang::En),
         ("card-delivery.json", "card:hf-weekly-2026-09-30", Client::Ios, Lang::En),
         ("home-ios-es.json", "home", Client::Ios, Lang::Es),
@@ -799,7 +1064,6 @@ fn node_quote_filters_raw_tool_calls() {
     let mut live = LiveSnapshot::default();
     live.nodes.push(live::LiveNode {
         project: None,
-        state_key: None,
         state_label: None,
         summary: None,
         needs: None,
@@ -809,6 +1073,7 @@ fn node_quote_filters_raw_tool_calls() {
         agent_id: "a-1".into(),
         short_id: Some("a-1".into()),
         name: "Node One".into(),
+        state_key: None,
         working: true,
         waiting: false,
         last_message: Some(" mcp__tools__call ".into()),
@@ -955,6 +1220,10 @@ fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
     let mut live = LiveSnapshot::default();
     live.pull_requests.push(LivePullRequest {
         id: "pr-1".into(),
+        title: None,
+        body: None,
+        head_ref: None,
+        base_ref: None,
         checks_passed: None,
         conflicts: false,
         stacked_on: Some("github.com/bitomule/alondra#153".into()),

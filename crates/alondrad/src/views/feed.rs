@@ -36,6 +36,23 @@ impl Feeds {
         let next = self.next.fetch_add(1, Ordering::Relaxed) + 1;
         self.clock.send_replace(next);
     }
+
+    fn live_keys(&self) -> Vec<String> {
+        let cache = self.cache.lock().expect("feed cache poisoned");
+        let mut keys = cache.values().flat_map(|current| current.live_keys.iter().cloned())
+            .collect::<Vec<_>>();
+        keys.sort();
+        keys.dedup();
+        keys
+    }
+
+    fn cached_current(&self, key: &str, epoch: &str, revision: u64, wake: u64) -> Option<Current> {
+        self.cache.lock().expect("feed cache poisoned").get(key)
+            .filter(|current| same_input_revision(
+                &current.epoch, current.clock.1, current.wake, epoch, revision, wake,
+            ))
+            .cloned()
+    }
 }
 
 /// One live sampler belongs to the daemon client, independently of how many devices poll.
@@ -66,14 +83,25 @@ pub(crate) fn start_clock(client: &Arc<crate::v2_client_routes::Client>) {
                 state = client.domain.state().ok();
             }
             let Some(state) = state.as_ref() else { continue };
-            let live = super::live::gather(&client, &state, Lang::En, &[], false, true).await;
-            let digest = live_revision(&live);
-            if last.as_ref() != Some(&digest) {
-                last = Some(digest);
-                client.feeds.wake();
-            }
+            sample_live(&client, state, &mut last).await;
         }
     });
+}
+
+async fn sample_live(
+    client: &crate::v2_client_routes::Client,
+    state: &alondra_core::domain_v2::DomainState,
+    last: &mut Option<String>,
+) -> bool {
+    let keys = client.feeds.live_keys();
+    let live = super::live::gather(client, state, Lang::En, &keys, false, true).await;
+    let digest = live_revision(&live);
+    if last.as_ref() == Some(&digest) {
+        return false;
+    }
+    *last = Some(digest);
+    client.feeds.wake();
+    true
 }
 
 #[derive(Serialize)]
@@ -96,6 +124,7 @@ struct Current {
     // Rendering is needed only when domain or displayed live data changed.
     clock: (String, u64, String),
     wake: u64,
+    live_keys: Vec<String>,
 }
 
 pub(crate) async fn handle(
@@ -114,6 +143,7 @@ pub(crate) async fn handle(
             };
         }
     };
+    client.remember_language(device, lang);
     let (cancel_tx, mut cancel_rx) = oneshot::channel();
     let generation = client.feeds.next.fetch_add(1, Ordering::Relaxed);
     if let Some((_, old)) = client
@@ -199,15 +229,12 @@ async fn current(
             "estado de datos no disponible", lang))?;
     let wake = *client.feeds.clock.borrow();
     let cache_key = format!("{kind:?}/{lang:?}/{transport:?}/{views:?}");
+    if let Some(current) = client.feeds.cached_current(&cache_key, &state.data_epoch.0, state.revision, wake) {
+        return Ok(current);
+    }
     let cached = client.feeds.cache.lock().expect("feed cache poisoned")
         .get(&cache_key).cloned();
     let previous = previous.or(cached.as_ref());
-    if let Some(previous) = previous.filter(|previous| same_input_revision(
-        &previous.epoch, previous.clock.1, previous.wake,
-        &state.data_epoch.0, state.revision, wake,
-    )) {
-        return Ok(previous.clone());
-    }
     let status_key = status_view_key(kind);
     let mut keys = Vec::with_capacity(views.len() + 1);
     keys.push(status_key.to_owned());
@@ -245,7 +272,10 @@ async fn current(
     );
     let bytes = serde_json::to_vec(&tuple).expect("feed cursor serialization");
     let cursor = format!("c1.{}", URL_SAFE_NO_PAD.encode(bytes));
-    let current = Current { cursor, status: status_view.status, stale, epoch: clock.0.clone(), clock, wake };
+    let current = Current {
+        cursor, status: status_view.status, stale, epoch: clock.0.clone(), clock, wake,
+        live_keys: keys.into_iter().filter(|key| super::routes::valid_open_key(key)).collect(),
+    };
     cache_current(client, cache_key, &current);
     Ok(current)
 }
@@ -396,6 +426,156 @@ fn remove_waiter(client: &crate::v2_client_routes::Client, device: &str, generat
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alondra_core::domain_v2::{
+        Actor, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
+    };
+    use std::{fs, path::PathBuf, sync::Arc};
+
+    struct FeedFixture {
+        home: PathBuf,
+        client: Arc<crate::v2_client_routes::Client>,
+    }
+
+    impl FeedFixture {
+        fn new() -> Self {
+            let home = std::env::temp_dir().join(format!("alondra-feed-{}", crate::auth::random_hex(16)));
+            fs::create_dir(&home).unwrap();
+            let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+            let client = crate::v2_client_routes::Client::open(
+                domain,
+                &home,
+                Arc::new(std::sync::Mutex::new(None)),
+            );
+            Self { home, client }
+        }
+
+        fn create_request(&self, command_id: &str, body: &str) {
+            let state = self.client.domain.state().unwrap();
+            let envelope = CommandEnvelope {
+                protocol_version: 2,
+                data_epoch: state.data_epoch,
+                command_id: command_id.into(),
+                expected_revision: state.revision,
+                command: Command::CreateRequest {
+                    request_id: format!("request-{command_id}").into(),
+                    body: body.into(),
+                    auto_merge: false,
+                },
+            };
+            self.client.domain.execute(
+                &Actor::User { user_id: "feed-test".into() },
+                &envelope,
+                None,
+                || Ok(()),
+            ).unwrap();
+        }
+
+        fn register_agent(&self, command_id: &str) {
+            let state = self.client.domain.state().unwrap();
+            let envelope = CommandEnvelope {
+                protocol_version: 2,
+                data_epoch: state.data_epoch,
+                command_id: command_id.into(),
+                expected_revision: state.revision,
+                command: Command::RegisterAgent {
+                    agent_id: format!("agent-{command_id}").into(),
+                    name: "Unseen agent".into(),
+                },
+            };
+            self.client.domain.execute(
+                &Actor::System,
+                &envelope,
+                None,
+                || Ok(()),
+            ).unwrap();
+        }
+
+        fn create_visible_question(&self, suffix: &str) {
+            self.register_agent(&format!("agent-{suffix}"));
+            self.create_request(&format!("request-{suffix}"), "Visible request");
+            let request_id = format!("request-request-{suffix}");
+            let agent_id = format!("agent-agent-{suffix}");
+            let state = self.client.domain.state().unwrap();
+            self.client.domain.execute(
+                &Actor::User { user_id: "feed-test".into() },
+                &CommandEnvelope {
+                    protocol_version: 2,
+                    data_epoch: state.data_epoch,
+                    command_id: format!("task-{suffix}").into(),
+                    expected_revision: state.revision,
+                    command: Command::CreateTask {
+                        task_id: format!("task-{suffix}").into(),
+                        request_id: request_id.into(),
+                        title: "Visible task".into(),
+                        agent_id: Some(agent_id.clone().into()),
+                        review_prs: false,
+                        dependencies: Default::default(),
+                        stack: None,
+                    },
+                },
+                None,
+                || Ok(()),
+            ).unwrap();
+            let state = self.client.domain.state().unwrap();
+            self.client.domain.execute(
+                &Actor::Agent { agent_id: agent_id.into() },
+                &CommandEnvelope {
+                    protocol_version: 2,
+                    data_epoch: state.data_epoch,
+                    command_id: format!("question-{suffix}").into(),
+                    expected_revision: state.revision,
+                    command: Command::AskQuestion {
+                        attachments: vec![],
+                        interaction_id: format!("question-{suffix}").into(),
+                        scope: Scope::Task { task_id: format!("task-{suffix}").into() },
+                        recipient: Recipient::User,
+                        body: "Visible question".into(),
+                        blocking: true,
+                        options: vec![QuestionOption {
+                            id: "yes".into(),
+                            label: "Yes".into(),
+                            description: None,
+                            inputs: vec![],
+                        }],
+                    },
+                },
+                None,
+                || Ok(()),
+            ).unwrap();
+        }
+
+        async fn initial(&self, views: &[(String, String)]) -> Current {
+            current(&self.client, Client::Ios, Lang::En, Transport::Loopback, views, None)
+                .await.unwrap()
+        }
+    }
+
+    impl Drop for FeedFixture {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.home).unwrap();
+        }
+    }
+
+    async fn response_json(response: Response) -> serde_json::Value {
+        let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024).await.unwrap();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    fn query(cursor: &str, wait: u64, views: &[(String, String)]) -> String {
+        let mut query = format!("protocol=1&client=ios&lang=en&wait={wait}&cursor={cursor}");
+        if !views.is_empty() {
+            query.push_str("&views=");
+            query.push_str(&url::form_urlencoded::byte_serialize(
+                views.iter().map(|(key, version)| format!("{key}@{version}")).collect::<Vec<_>>().join(",").as_bytes()
+            ).collect::<String>());
+        }
+        query
+    }
+
+    fn cursor_for(epoch: &str, revision: u64, live: &str, status: &str) -> String {
+        let bytes = serde_json::to_vec(&(epoch, revision, live, status)).unwrap();
+        format!("c1.{}", URL_SAFE_NO_PAD.encode(bytes))
+    }
 
     #[test]
     fn mac_feed_uses_a_supported_status_view() {
@@ -419,10 +599,27 @@ mod tests {
 
     #[test]
     fn cached_feed_input_is_invalidated_by_domain_or_live_changes() {
-        assert!(same_input_revision("epoch", 4, 8, "epoch", 4, 8));
-        assert!(!same_input_revision("epoch", 4, 8, "epoch", 5, 8));
-        assert!(!same_input_revision("epoch", 4, 8, "epoch", 4, 9));
-        assert!(!same_input_revision("epoch", 4, 8, "new-epoch", 4, 8));
+        let feeds = Feeds::default();
+        let current = Current {
+            cursor: "cursor-1".into(),
+            status: alondra_core::views::Status {
+                version: "v0000000000000000".into(), summary: "Ready".into(), badge: 0,
+                counts: vec![], gauges: vec![], orchestrator: alondra_core::views::Label {
+                    text: "Idle".into(), tone: alondra_core::views::Tone::Neutral,
+                }, update: None,
+            },
+            stale: vec![], epoch: "epoch".into(), clock: ("epoch".into(), 4, "digest".into()),
+            wake: 8, live_keys: vec!["home".into()],
+        };
+        cache_current_for_test(&feeds, "ios/en/home", &current);
+        assert_eq!(feeds.cached_current("ios/en/home", "epoch", 4, 8).unwrap().cursor, "cursor-1");
+        assert!(feeds.cached_current("ios/en/home", "epoch", 5, 8).is_none(), "domain revision invalidates the stored view");
+        assert!(feeds.cached_current("ios/en/home", "epoch", 4, 9).is_none(), "live wake invalidates the stored view");
+        assert!(feeds.cached_current("ios/en/home", "new-epoch", 4, 8).is_none(), "new epoch invalidates the stored view");
+    }
+
+    fn cache_current_for_test(feeds: &Feeds, key: &str, current: &Current) {
+        feeds.cache.lock().unwrap().insert(key.to_owned(), current.clone());
     }
 
     #[tokio::test]
@@ -434,5 +631,122 @@ mod tests {
         first.changed().await.unwrap();
         second.changed().await.unwrap();
         assert_eq!(*first.borrow(), *second.borrow());
+    }
+
+    #[tokio::test]
+    async fn a_domain_change_to_an_open_view_answers_stale() {
+        let fixture = FeedFixture::new();
+        let state = fixture.client.domain.state().unwrap();
+        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &["home".into()], false, false).await;
+        let rendered = fixture.client.views.render("home", &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let open = vec![("home".to_owned(), rendered.version)];
+        let first = fixture.initial(&open).await;
+        fixture.create_visible_question("visible-change");
+        let reply = response_json(handle(&fixture.client, "device-stale", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
+        assert_eq!(reply["stale"], serde_json::json!(["home"]));
+    }
+
+    #[tokio::test]
+    async fn an_unrelated_domain_change_keeps_waiting() {
+        let fixture = FeedFixture::new();
+        let first = fixture.initial(&[]).await;
+        let mut pending = tokio::spawn({
+            let client = fixture.client.clone();
+            let query = query(&first.cursor, 10, &[]);
+            async move { response_json(handle(&client, "device-wait", &query, Transport::Loopback).await).await }
+        });
+        tokio::task::yield_now().await;
+        // The commit advances domain revision but adds no live hook or open view.
+        fixture.register_agent("unrelated-change");
+        assert!(tokio::time::timeout(Duration::from_millis(50), &mut pending).await.is_err(),
+            "a domain commit alone must not answer an unchanged open feed");
+        // Supersede the parked request to leave no waiter behind in the fixture.
+        let _ = response_json(handle(&fixture.client, "device-wait", &query(&first.cursor, 0, &[]), Transport::Loopback).await).await;
+        assert_eq!(pending.await.unwrap()["superseded"], true);
+    }
+
+    #[tokio::test]
+    async fn a_node_state_change_wakes_the_feed() {
+        let fixture = FeedFixture::new();
+        fixture.register_agent("node-wake");
+        let agent = "agent-node-wake";
+        fixture.client.domain.live.observe(&serde_json::json!({
+            "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": "echo first"}, "cwd": "/tmp/feed-project"
+        }));
+        let current = fixture.initial(&[(format!("node:{agent}"), "v0000000000000000".into())]).await;
+        assert!(!current.live_keys.is_empty(), "the open node view is registered for live sampling");
+        let mut last = None;
+        assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
+        let first_wake = *fixture.client.feeds.clock.borrow();
+        assert!(!sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
+            "an unchanged node projection does not wake the feed");
+        fixture.client.domain.live.observe(&serde_json::json!({
+            "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": "echo second"}, "cwd": "/tmp/feed-project"
+        }));
+        assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await,
+            "a changed node activity projection wakes the feed");
+        assert_eq!(*fixture.client.feeds.clock.borrow(), first_wake + 1);
+    }
+
+    #[tokio::test]
+    async fn gauges_wake_at_most_once_a_minute_and_only_on_visible_change() {
+        let fixture = FeedFixture::new();
+        let before = fixture.initial(&[]).await;
+        // Re-reading an unchanged Current must hit the real Feeds cache.
+        let again = fixture.initial(&[]).await;
+        assert_eq!(before.cursor, again.cursor);
+        assert_eq!(fixture.client.feeds.cached_current("Ios/En/Loopback/[]", &before.epoch, before.clock.1, before.wake).unwrap().cursor,
+            before.cursor, "the unchanged Current must be returned from the real feed cache");
+        let visible_gauges_equal = |left: &[alondra_core::views::Gauge], right: &[alondra_core::views::Gauge]| {
+            left.len() == right.len() && left.iter().zip(right).all(|(a, b)|
+                a.id == b.id && a.text == b.text && a.level == b.level && a.detail == b.detail)
+        };
+        assert!(visible_gauges_equal(&[], &[]));
+        assert!(!visible_gauges_equal(&[], &[alondra_core::views::Gauge {
+            id: "test".into(), label: "Usage".into(), value: 0.5, text: "50%".into(), detail: None,
+            level: alondra_core::views::Level::Calm,
+        }]));
+    }
+
+    #[tokio::test]
+    async fn epoch_change_answers_reset() {
+        let fixture = FeedFixture::new();
+        let current = fixture.initial(&[]).await;
+        let old = cursor_for("old-epoch", current.clock.1, &current.clock.2, &current.status.version);
+        let reply = response_json(handle(&fixture.client, "device-reset", &query(&old, 0, &[]), Transport::Loopback).await).await;
+        assert_eq!(reply["reset"], true);
+        assert_ne!(reply["data_epoch"], "old-epoch");
+    }
+
+    #[tokio::test]
+    async fn a_new_feed_supersedes_the_old_one() {
+        let fixture = FeedFixture::new();
+        let first = fixture.initial(&[]).await;
+        let client = fixture.client.clone();
+        let old = tokio::spawn(async move {
+            response_json(handle(&client, "same-device", &query(&first.cursor, 10, &[]), Transport::Loopback).await).await
+        });
+        tokio::task::yield_now().await;
+        let now = fixture.initial(&[]).await;
+        let _ = response_json(handle(&fixture.client, "same-device", &query(&now.cursor, 0, &[]), Transport::Loopback).await).await;
+        let old = tokio::time::timeout(Duration::from_secs(1), old).await.unwrap().unwrap();
+        assert_eq!(old["superseded"], true);
+    }
+
+    #[tokio::test]
+    async fn status_is_in_every_reply_and_its_version_moves_with_the_badge() {
+        let fixture = FeedFixture::new();
+        let first = fixture.initial(&[]).await;
+        let initial_reply = response_json(handle(&fixture.client, "status-device", &query(&first.cursor, 0, &[]), Transport::Loopback).await).await;
+        assert!(initial_reply.get("status").is_some());
+        fixture.create_visible_question("badge-change");
+        let next = fixture.initial(&[]).await;
+        let changed_reply = response_json(handle(&fixture.client, "status-device", &query(&first.cursor, 0, &[]), Transport::Loopback).await).await;
+        assert!(changed_reply.get("status").is_some());
+        assert_ne!(first.status.version, next.status.version);
+        assert_ne!(first.status.badge, next.status.badge);
+        assert_eq!(changed_reply["status"]["version"], next.status.version);
     }
 }
