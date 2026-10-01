@@ -26,10 +26,8 @@ def receipt(path):
     owned = json.loads(ownership.read_text())
     if any(owned.get(k) != value[k] for k in ('vm', 'owner_token', 'tart_home', 'source')):
         raise m.GateError('recovery ownership mismatch')
-    if value.get('profile') not in ('app', 'cli', 'visual'):
+    if value.get('profile') not in ('app', 'cli'):
         raise m.GateError('unexpected recovery profile')
-    if value['profile'] == 'visual' and not re.fullmatch('[a-f0-9]{64}', value.get('input_executable_sha256') or ''):
-        raise m.GateError('visual recovery requires original executable hash')
     if type(value.get('brew_lifecycle', False)) is not bool or (value.get('brew_lifecycle') and value['profile'] != 'cli'):
         raise m.GateError('invalid lifecycle recovery variant')
     return value
@@ -92,10 +90,6 @@ def recover(args):
         if saved['profile'] == 'app':
             path, _ = m.validate_report(gate.out / 'evidence')
             gate.result['mav_report_sha256'] = m.digest(path)
-        elif saved['profile'] == 'visual':
-            gate.result['visual'] = m.validate_visual(gate.out / 'evidence')
-            if gate.result['visual'].get('binarySHA256') != saved['input_executable_sha256']:
-                raise m.GateError('visual guest ran a different executable')
         else:
             cli = json.loads((gate.out / 'evidence/project/cli-result.json').read_text())
             m.validate_cli(cli, saved['brew_version'], saved.get('brew_lifecycle', False))

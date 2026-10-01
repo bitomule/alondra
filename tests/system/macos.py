@@ -83,7 +83,7 @@ def digest(path):
     return h.hexdigest()
 
 
-def validate_app(app, visual=False):
+def validate_app(app):
     app = app.resolve(strict=True)
     if app.suffix != '.app' or not app.is_dir():
         raise GateError('--app must name an existing Alondra macOS .app')
@@ -91,47 +91,12 @@ def validate_app(app, visual=False):
         raise GateError('use the Debug app without an App Store provisioning profile, not the TestFlight package')
     with (app / 'Contents/Info.plist').open('rb') as stream:
         info = plistlib.load(stream)
-    expected = 'com.bitomule.alondra.visualharness' if visual else BUNDLE
     executable = info.get('CFBundleExecutable', '')
-    if (info.get('CFBundleIdentifier') != expected or not re.fullmatch(r'[A-Za-z0-9_-]+', executable)
-            or (not visual and executable != 'Alondra')):
+    if (info.get('CFBundleIdentifier') != BUNDLE or executable != 'Alondra'):
         raise GateError('unexpected app identity')
     if info.get('CFBundlePackageType') != 'APPL':
         raise GateError('invalid package type')
     return app, {key: info.get(key) for key in ('CFBundleIdentifier', 'CFBundleExecutable', 'CFBundleShortVersionString', 'CFBundleVersion')}
-
-
-def validate_visual(folder):
-    # Same state/UI contract as the simulator driver, checked again on the host.
-    import importlib.util
-    spec = importlib.util.spec_from_file_location('visual_driver', HERE.parent / 'native/visual/driver.py')
-    driver = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(driver)
-    result = json.loads((folder / 'project/visual-summary.json').read_text())
-    entries = result.get('scenarios', [])
-    if (result.get('status') != 'passed' or result.get('cleanup') is not True
-            or [entry.get('scenario') for entry in entries] != list(driver.CHECKS)):
-        raise GateError('incomplete visual scenarios or cleanup')
-    run_ids = set()
-    mav_runs = set()
-    for entry in entries:
-        run = str(uuid.UUID(entry['runID']))
-        if run in run_ids: raise GateError('duplicate visual run ID')
-        run_ids.add(run)
-        scenario = entry['scenario']
-        assertions = folder / 'project' / scenario / 'assertions'
-        native = json.loads((assertions / 'result.json').read_text())
-        driver.validate_report(native, run, scenario)
-        receipt = json.loads((assertions / 'driver.json').read_text())
-        if (receipt.get('status') != 'passed' or receipt.get('runID') != run or receipt.get('scenario') != scenario
-                or receipt.get('steps') != driver.STEPS[scenario]):
-            raise GateError('wrong visual driver receipt')
-        mav_run = receipt.get('mavRunID', '')
-        if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', mav_run) or mav_run in mav_runs:
-            raise GateError('invalid or reused visual MAV run')
-        mav_runs.add(mav_run)
-        driver.validate_mav_report(folder / 'project/.mav/runs' / mav_run / 'report.json', receipt['steps'], mav_run)
-    return result
 
 
 def extract_evidence(archive, target):
@@ -233,7 +198,7 @@ class Gate:
         self.result = {'status': 'incomplete', 'vm': self.name, 'base': args.base,
                        'profile': args.profile,
                        'scope': 'disposable Mac acceptance; individual assertions below, no authenticated service/Claude/APNs/TestFlight installation',
-                       'artifact_kind': 'debug-visual-harness' if args.profile == 'visual' else ('debug-app' if args.profile == 'app' else 'public-brew'),
+                       'artifact_kind': 'debug-app' if args.profile == 'app' else 'public-brew',
                        'commands': [], 'cleanup': {}}
 
     def call(self, *args, timeout=60, input_file=None, output_file=None, check=True):
@@ -327,8 +292,8 @@ class Gate:
             self.result['source'] = {
                 'runner_commit': self.call('git', 'rev-parse', 'HEAD').stdout.decode().strip(),
                 'runner_dirty': bool(self.call('git', 'status', '--porcelain').stdout.strip())}
-            if self.args.profile in ('app', 'visual'):
-                app, identity = validate_app(self.args.app, visual=self.args.profile == 'visual')
+            if self.args.profile == 'app':
+                app, identity = validate_app(self.args.app)
                 self.result['app'] = identity
                 self.result['input_executable_sha256'] = digest(app / 'Contents/MacOS' / identity['CFBundleExecutable'])
                 self.result['source']['app_source'] = self.args.app_source
@@ -384,16 +349,12 @@ class Gate:
             stage.mkdir()
             (stage / 'ownership.json').write_text(json.dumps({'vm': self.name, 'owner_token': self.owner_token}))
             shutil.copyfile(HERE / 'macos/evidence-transfer.py', stage / 'evidence-transfer.py')
-            if self.args.profile in ('app', 'visual'):
+            if self.args.profile == 'app':
                 shutil.copytree(app, stage / 'Alondra.app', symlinks=True)
                 shutil.copyfile(HERE / 'macos/cua-session.py', stage / 'cua-session.py')
-                if self.args.profile == 'app':
-                    shutil.copyfile(HERE / 'macos/guest.sh', stage / 'guest.sh')
-                    shutil.copyfile(HERE / 'macos/demo.yaml', stage / 'demo.yaml')
-                    (stage / 'config.yaml').write_text(config())
-                else:
-                    for source, destination in [('mac-guest.sh', 'guest.sh'), ('mac_guest.py', 'mac_guest.py'), ('driver.py', 'driver.py')]:
-                        shutil.copyfile(HERE.parent / 'native/visual' / source, stage / destination)
+                shutil.copyfile(HERE / 'macos/guest.sh', stage / 'guest.sh')
+                shutil.copyfile(HERE / 'macos/demo.yaml', stage / 'demo.yaml')
+                (stage / 'config.yaml').write_text(config())
             else:
                 shutil.copyfile(HERE / 'macos/cli.py', stage / 'cli.py')
                 shutil.copyfile(HERE / 'macos/cli.sh', stage / 'guest.sh')
@@ -406,7 +367,7 @@ class Gate:
                 self.call('tart', 'exec', '-i', self.name, '/usr/bin/tar', '-xf', '-', '-C', GUEST, timeout=120, input_file=payload)
             self.evidence_pending = True
             self.step = self.args.profile
-            parameter = 'debug' if self.args.profile in ('app', 'visual') else ('lifecycle' if getattr(self.args, 'brew_lifecycle', False) else self.args.brew_version)
+            parameter = 'debug' if self.args.profile == 'app' else ('lifecycle' if getattr(self.args, 'brew_lifecycle', False) else self.args.brew_version)
             try:
                 test = self.guest('/bin/bash', GUEST + '/guest.sh', parameter, timeout=600, check=False)
                 (self.out / 'guest.txt').write_bytes((test.stdout or b'') + test.stderr)
@@ -434,10 +395,6 @@ class Gate:
                 report_path, report = validate_report(self.out / 'evidence')
                 self.result['mav_report'] = str(report_path.relative_to(self.out))
                 self.result['mav_report_sha256'] = digest(report_path)
-            elif self.args.profile == 'visual':
-                self.result['visual'] = validate_visual(self.out / 'evidence')
-                if self.result['visual'].get('binarySHA256') != self.result['input_executable_sha256']:
-                    raise GateError('visual guest ran a different executable')
             else:
                 cli = json.loads((self.out / 'evidence/project/cli-result.json').read_text())
                 validate_cli(cli, self.args.brew_version, getattr(self.args, 'brew_lifecycle', False))
@@ -492,7 +449,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--run', action='store_true', help='without this flag, print the plan and start nothing')
     p.add_argument('--base', default=BASE_NAME, type=checked_name)
-    p.add_argument('--profile', choices=('cli', 'app', 'visual'), default='cli')
+    p.add_argument('--profile', choices=('cli', 'app'), default='cli')
     p.add_argument('--brew-version', default='0.1.8', help='assert this exact public Brew version')
     p.add_argument('--brew-lifecycle', action='store_true', help='018 install -> 019 upgrade -> explicit 018 snapshot recovery -> uninstall, owned guest only')
     p.add_argument('--app', type=Path)
@@ -501,8 +458,8 @@ def main():
     args = p.parse_args()
     if args.brew_lifecycle and (args.profile != 'cli' or args.brew_version != '0.1.9'):
         p.error('--brew-lifecycle requires --profile cli --brew-version 0.1.9')
-    if args.profile in ('app', 'visual') and (not args.app or not re.fullmatch('[0-9a-f]{40}', args.app_source or '')):
-        p.error('app/visual profile requires --app and full --app-source commit SHA')
+    if args.profile == 'app' and (not args.app or not re.fullmatch('[0-9a-f]{40}', args.app_source or '')):
+        p.error('app profile requires --app and full --app-source commit SHA')
     if args.profile == 'cli' and (args.app or args.app_source):
         p.error('Apple artifact/signature flags require --profile app')
     if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', args.brew_version):
