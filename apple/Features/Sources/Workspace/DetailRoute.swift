@@ -8,6 +8,7 @@ import Foundation
 @Reducer(state: .equatable)
 public enum DetailRoute {
     case legacy(ViewsScreenFeature)
+    case review(ReviewFeature)
 }
 
 public extension DetailRoute {
@@ -41,13 +42,17 @@ public extension DetailRoute.State {
     }
 
     init?(key: ViewKey, owner: String) {
-        guard DetailRoute.Kind(key: key) != nil else { return nil }
-        self = .legacy(ViewsScreenFeature.State(key: key, owner: owner))
+        switch DetailRoute.Kind(key: key) {
+        case .card, .document: self = .review(ReviewFeature.State(key: key))
+        case .some: self = .legacy(ViewsScreenFeature.State(key: key, owner: owner))
+        case nil: return nil
+        }
     }
 
     var key: ViewKey {
         switch self {
         case .legacy(let state): state.key
+        case .review(let state): state.screen.key
         }
     }
 }

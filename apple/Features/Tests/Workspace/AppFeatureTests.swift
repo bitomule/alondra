@@ -32,11 +32,53 @@ final class AppFeatureTests: XCTestCase {
         let store = makeStore(state)
 
         await store.send(.notificationOpened(cardID: "card:a98d034b"))
-        await store.receive(\.home.focus, "a98d034b")
+        await store.receive(\.triage.focus, "a98d034b")
         XCTAssertEqual(store.state.tab, .inbox)
 
         await store.send(.notificationOpened(cardID: "i-7"))
-        await store.receive(\.home.focus, "i-7")
+        await store.receive(\.triage.focus, "i-7")
+    }
+
+    @MainActor
+    func testATappedNotificationClosesWhateverWasOpenOverWaitingForYou() async {
+        var state = AppFeature.State()
+        state.tab = .tasks
+        state.settingsPresented = true
+        let store = makeStore(state)
+        await store.send(.open(.inbox, key("task:t-1")))
+
+        await store.send(.notificationOpened(cardID: "i-7"))
+        XCTAssertEqual(store.state.tab, .inbox)
+        XCTAssertFalse(store.state.settingsPresented)
+        XCTAssertTrue(store.state.inboxPath.isEmpty)
+    }
+
+    @MainActor
+    func testACardThatIsNoLongerPendingSaysSoInAToast() async {
+        let store = makeStore()
+        await store.send(.triage(.delegate(.noLongerPending)))
+        XCTAssertEqual(store.state.notice?.event, .actionCompleted("That’s no longer pending"))
+    }
+
+    @MainActor
+    func testOpeningFromACardInWaitingForYouPushesItsScreenAsTheOnlyOne() async {
+        let store = makeStore()
+        await store.send(.open(.inbox, key("task:t-1")))
+        await store.send(.triage(.delegate(.open(key("node:a-1")))))
+        await store.receive(\.openFromTriage)
+        XCTAssertEqual(store.state.inboxPath.map(\.key), [key("node:a-1")])
+    }
+
+    @MainActor
+    func testTheReviewIsTheScreenForACardAndItsLinksOpenOnTheSameTab() async throws {
+        let store = makeStore()
+        await store.send(.open(.tasks, key("card:i-9")))
+        let id = try XCTUnwrap(store.state.tasksPath.ids.first)
+        guard case .review = store.state.tasksPath[id: id] else { return XCTFail("a card opens the review") }
+
+        await store.send(.tasksPath(.element(id: id, action: .review(.delegate(.open(key("task:t-1")))))))
+        XCTAssertEqual(store.state.tasksPath.map(\.key), [key("card:i-9"), key("task:t-1")])
+        XCTAssertTrue(store.state.inboxPath.isEmpty)
     }
 
     // MARK: Navigation
@@ -79,8 +121,10 @@ final class AppFeatureTests: XCTestCase {
 
     @MainActor
     func testACompletedActionShowsAToastThatLeavesAfterTwoPointTwoSeconds() async {
-        let store = makeStore()
-        await store.send(.home(.actions(.delegate(.completed("Answered")))))
+        var state = AppFeature.State()
+        state.triage.cards = [TriageCardFeature.State(id: "c-1")]
+        let store = makeStore(state)
+        await store.send(.triage(.cards(.element(id: "c-1", action: .actions(.delegate(.completed("Answered")))))))
         XCTAssertEqual(store.state.notice?.event, .actionCompleted("Answered"))
 
         await clock.advance(by: .seconds(2))
@@ -129,6 +173,15 @@ final class AppFeatureTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testTheReviewReportsItsActionsAsToasts() async throws {
+        let store = makeStore()
+        await store.send(.open(.inbox, key("card:i-9")))
+        let id = try XCTUnwrap(store.state.inboxPath.ids.first)
+        await store.send(.inboxPath(.element(id: id, action: .review(.actions(.delegate(.completed("Accepted")))))))
+        XCTAssertEqual(store.state.notice?.event, .actionCompleted("Accepted"))
+    }
+
     // MARK: Close refusal
 
     @MainActor
@@ -152,14 +205,28 @@ final class AppFeatureTests: XCTestCase {
     // MARK: Feed
 
     @MainActor
-    func testAChangeReachesTheRootScreensAndEveryScreenStillOnTheLegacyRenderer() async {
+    func testAChangeReachesTheRootScreensAndOnlyTheScreensStillOnTheLegacyRenderer() async {
         let store = makeStore()
         await store.send(.open(.tasks, key("task:t-1")))
         await store.send(.open(.inbox, key("node:a-1")))
+        await store.send(.open(.inbox, key("card:i-9")))
 
+        store.exhaustivity = .on
         await store.send(.viewsFeed(.stale(["task:t-1"])))
         await store.receive(\.tasks.stale)
+        await store.receive(\.fleet.stale)
+        await store.receive(\.newRequest.stale)
         await store.receive(\.inboxPath.element)
         await store.receive(\.tasksPath.element)
+        XCTAssertEqual(store.state.inboxPath.count, 2, "the review is not sent the change, it observes its own key")
+    }
+
+    @MainActor
+    func testWaitingForYouTakesItsStatusFromTheApp() async throws {
+        let store = makeStore()
+        let status = try Fixtures.document("home-ios").status
+        await store.send(.triage(.feedStatus(status)))
+        XCTAssertEqual(store.state.triage.status, status)
+        XCTAssertEqual(store.state.triage.badge, 4)
     }
 }

@@ -4,35 +4,38 @@ import AlondraContract
 import ComposableArchitecture
 import SwiftUI
 
-/// The iOS home retains the existing card stack geometry. Its content comes from the
-/// server's ordered home view and its buttons use ActionFeature.
-struct TriageView: View {
-    @Bindable var store: StoreOf<HomeFeature>
+/// Waiting for You: a stack of cards in the order the server sends them. Swiping browses; nothing
+/// is marked until a card's own controls are used.
+public struct TriageView: View {
+    @Bindable var store: StoreOf<TriageFeature>
     let zoom: Namespace.ID
-    let openReview: (String) -> Void
     @State private var drag: CGFloat = 0
     @State private var frontHeight: CGFloat?
     @State private var keyboardVisible = false
-    @State private var machinePresented = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    var body: some View {
+    public init(store: StoreOf<TriageFeature>, zoom: Namespace.ID) {
+        self.store = store
+        self.zoom = zoom
+    }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             if !keyboardVisible {
                 header.padding(.horizontal, 20)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
-            if store.document == nil, let error = store.error {
+            if let error = store.loadError {
                 ContentUnavailableView {
                     Label("Could not connect to the fleet", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(error)
                 } actions: {
-                    Button("Try Again") { store.send(.appeared) }
+                    Button("Try Again") { store.send(.screen(.retry)) }
                         .buttonStyle(.borderedProminent).tint(Palette.dawn)
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if store.document == nil {
+            } else if store.screen.document == nil {
                 VStack(spacing: 16) {
                     ProgressView().controlSize(.large).tint(Palette.dawn)
                     Text("Connecting to the fleet…").font(.subheadline).foregroundStyle(.secondary)
@@ -48,17 +51,17 @@ struct TriageView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
-                Button { machinePresented = true } label: {
-                    HomeMachineBadge(gauges: store.status?.gauges ?? store.document?.status.gauges ?? [])
+                Button { store.send(.machinePresented(true)) } label: {
+                    MachineBadge(gauges: gauges)
                 }
-                .popover(isPresented: $machinePresented) {
-                    HomeMachineDetail(gauges: store.status?.gauges ?? store.document?.status.gauges ?? [])
+                .popover(isPresented: Binding(get: { store.machinePresented }, set: { store.send(.machinePresented($0)) })) {
+                    MachineDetail(gauges: gauges)
                         .presentationCompactAdaptation(.popover)
                 }
                 .accessibilityLabel("Mac Status")
             }
         }
-        .task { await store.send(.appeared).finish() }
+        .task { await store.send(.task).finish() }
         .onDisappear { store.send(.disappeared) }
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillShowNotification)) { _ in
             withAnimation(.smooth(duration: 0.3)) { keyboardVisible = true }
@@ -66,26 +69,24 @@ struct TriageView: View {
         .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
             withAnimation(.smooth(duration: 0.3)) { keyboardVisible = false }
         }
-        .alert("Check Alondra", isPresented: Binding(get: { store.document != nil && store.error != nil }, set: { if !$0 { store.send(.dismissError) } })) {
-            Button("OK") { store.send(.dismissError) }
-        } message: { Text(store.error ?? "") }
-        .alert(store.actions.confirmation?.title ?? "", isPresented: Binding(get: { store.actions.confirmation != nil }, set: { if !$0 { store.send(.actions(.cancelConfirmation)) } })) {
-            Button(store.actions.confirmation?.button ?? String(localized: "Continue")) { store.send(.actions(.confirm)) }
-            Button("Cancel", role: .cancel) { store.send(.actions(.cancelConfirmation)) }
-        } message: { Text(store.actions.confirmation?.message ?? "") }
-        .alert("This item changed", isPresented: Binding(get: { store.actions.changed != nil }, set: { if !$0 { store.send(.actions(.dismiss)) } })) {
-            Button(store.actions.changed?.button ?? String(localized: "Continue")) { store.send(.actions(.sendChangedAction)) }
-            Button("Cancel", role: .cancel) { store.send(.actions(.dismiss)) }
-        } message: { Text(store.actions.error ?? "") }
+    }
+
+    private var gauges: [AlondraContract.Gauge] {
+        store.status?.gauges ?? store.screen.document?.status.gauges ?? []
     }
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(store.document?.sections.first(where: { $0.id == "queue" })?.title ?? String(localized: "Waiting for You"))
+            Text(store.queueTitle ?? String(localized: "Waiting for You"))
                 .font(.display(.largeTitle, weight: .bold)).foregroundStyle(Palette.ink)
-            Text(store.status?.summary ?? store.document?.status.summary ?? String(localized: "Connecting to the fleet…"))
-                .font(.subheadline.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
-                .contentTransition(.numericText())
+            if store.isOffline {
+                Label("saved data · connection lost", systemImage: "wifi.slash")
+                    .font(.subheadline.weight(.medium)).foregroundStyle(Palette.rose).lineLimit(1)
+            } else {
+                Text(store.status?.summary ?? store.screen.document?.status.summary ?? String(localized: "Connecting to the fleet…"))
+                    .font(.subheadline.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
+                    .contentTransition(.numericText())
+            }
             if store.orderedIDs.count > 1 {
                 pageDots.padding(.top, 6)
             }
@@ -120,13 +121,12 @@ struct TriageView: View {
             ForEach(ids.reversed(), id: \.self) { id in
                 let depth = ids.firstIndex(of: id) ?? 0
                 Group {
-                    if let card = store.cards[id] {
-                        TriageCard(card: card,
-                                        actions: store.scope(state: \.actions, action: \.actions),
-                                        attachments: store.scope(state: \.attachments, action: \.attachments),
-                                        isFront: depth == 0, zoom: zoom,
-                                        submit: { store.send(.submitSelected) },
-                                        openReview: openReview)
+                    if let cardStore = store.scope(state: \.cards[id: id], action: \.cards[id: id]) {
+                        if let card = cardStore.card {
+                            TriageCard(store: cardStore, card: card, isFront: depth == 0, zoom: zoom)
+                        } else {
+                            CardPlaceholder(store: cardStore)
+                        }
                     } else {
                         ProgressView().frame(maxWidth: .infinity, minHeight: 300)
                             .background(Palette.card, in: .rect(cornerRadius: 34, style: .continuous))
@@ -174,7 +174,7 @@ struct TriageView: View {
                 .font(.system(size: 64, weight: .light))
                 .foregroundStyle(LinearGradient(colors: [Palette.dawn, Palette.ember], startPoint: .top, endPoint: .bottom))
                 .symbolEffect(.breathe.pulse, options: .repeat(.continuous))
-            Text(store.document?.empty?.text ?? String(localized: "Nothing is waiting for you"))
+            Text(store.screen.document?.empty?.text ?? String(localized: "Nothing is waiting for you"))
                 .font(.display(.title, weight: .bold))
             Text("The fleet carries on by itself. When a node needs you, it will show up here.")
                 .font(.body).foregroundStyle(.secondary).multilineTextAlignment(.center).frame(maxWidth: 300)
@@ -189,7 +189,7 @@ struct TriageView: View {
     }
 
     private func statusCount(_ id: String) -> Int {
-        Int((store.status ?? store.document?.status)?.counts.first(where: { $0.id == id })?.value ?? 0)
+        Int((store.status ?? store.screen.document?.status)?.counts.first(where: { $0.id == id })?.value ?? 0)
     }
 
     private func emptyStat(_ label: LocalizedStringKey, count: Int, tint: Color) -> some View {
@@ -203,59 +203,27 @@ struct TriageView: View {
     }
 }
 
-private struct HomeMachineBadge: View {
-    let gauges: [AlondraContract.Gauge]
+private struct CardPlaceholder: View {
+    let store: StoreOf<TriageCardFeature>
+
     var body: some View {
-        HStack(spacing: 6) {
-            Circle().fill(Palette.sage).frame(width: 8, height: 8)
-                .shadow(color: Palette.sage.opacity(0.8), radius: 4)
-            Image(systemName: "desktopcomputer").font(.footnote)
-            ForEach(gauges.filter { $0.id != "disk" }, id: \.id) { gauge in
-                HStack(spacing: 3) {
-                    HomeReadingBar(value: gauge.value, tint: gauge.level.tint)
-                    Text(gauge.text).font(.caption2.monospacedDigit().weight(.medium))
-                        .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink.opacity(0.65))
-                        .contentTransition(.numericText())
+        Group {
+            switch store.screen.phase {
+            case .failed(let message):
+                ContentUnavailableView {
+                    Label("Could not connect to the fleet", systemImage: "exclamationmark.triangle")
+                } description: {
+                    Text(message)
+                } actions: {
+                    Button("Try Again") { store.send(.screen(.retry)) }.buttonStyle(.glass)
                 }
+            case .missing:
+                ContentUnavailableView("This screen is no longer available", systemImage: "tray")
+            case .loading, .loaded:
+                ProgressView()
             }
-        }.foregroundStyle(Palette.ink.opacity(0.65))
-    }
-}
-
-private struct HomeMachineDetail: View {
-    let gauges: [AlondraContract.Gauge]
-    var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Mac").font(.display(.title3, weight: .bold))
-            ForEach(gauges, id: \.id) { gauge in
-                HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    HomeReadingBar(value: gauge.value, tint: gauge.level.tint)
-                    Text(gauge.detail ?? "\(gauge.label): \(gauge.text)")
-                        .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-            }
-        }.font(.subheadline).padding(20).frame(minWidth: 260, alignment: .leading)
-    }
-}
-
-private struct HomeReadingBar: View {
-    let value: Double
-    let tint: Color
-    var body: some View {
-        Capsule().fill(Palette.ink.opacity(0.15)).frame(width: 22, height: 4)
-            .overlay(alignment: .leading) {
-                Capsule().fill(tint).frame(width: 22 * max(0.06, min(value, 1)))
-            }
-    }
-}
-
-private extension Level {
-    var tint: Color {
-        switch self {
-        case .calm: Palette.sky
-        case .warm: Palette.dawn
-        case .hot: Palette.rose
         }
+        .frame(maxWidth: .infinity, minHeight: 300)
+        .background(Palette.card, in: .rect(cornerRadius: 34, style: .continuous))
     }
 }

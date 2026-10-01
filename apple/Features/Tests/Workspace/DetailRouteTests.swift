@@ -22,6 +22,19 @@ final class DetailRouteTests: XCTestCase {
         }
     }
 
+    func testCardsAndDocumentsOpenTheReviewAndTheOthersStayOnTheGenericScreen() {
+        for key in ["card:i-1", "card:github.com/o/r#1", "document:rev-1"] {
+            guard case .review = DetailRoute.State(key: ViewKey(rawValue: key), owner: "test") else {
+                return XCTFail("\(key) must open the review")
+            }
+        }
+        for key in ["task:t-1", "request:r-1", "node:a-1", "pull_request:github.com/o/r#1", "schedules", "schedule:new"] {
+            guard case .legacy = DetailRoute.State(key: ViewKey(rawValue: key), owner: "test") else {
+                return XCTFail("\(key) is not rebuilt yet")
+            }
+        }
+    }
+
     func testAKeyOutsideTheTableOpensNothing() {
         for key in ["", "home", "tasks", "fleet", "new_request", "cards:i-1", "taskz:1", "scheduled", "unknown:1"] {
             XCTAssertNil(DetailRoute.State(key: ViewKey(rawValue: key), owner: "test"), key)

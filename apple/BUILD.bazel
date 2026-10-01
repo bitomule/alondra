@@ -5,6 +5,11 @@ load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUNDLE_ID", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
+exports_files(
+    ["iOS/Resources/Localizable.xcstrings"],
+    visibility = ["//apple/Testing:__subpackages__"],
+)
+
 sh_test(
     name = "no_sleep_wording_test",
     srcs = ["no_sleep_wording_test.sh"],
@@ -35,7 +40,7 @@ filegroup(
         "iOS/ViewsShipping/*.swift",
         "iOS/Sources/Triage/*.swift",
         "macOS/ViewsShipping/*.swift",
-    ]) + ["//apple/Features:sources"],
+    ]) + ["//apple/Features:sources", "//apple/iOS/UI:sources"],
 )
 
 filegroup(
@@ -166,6 +171,7 @@ swift_library(
         "//apple/Features:AlondraFeatures",
         "//apple/Data/Feed:AlondraFeed",
         "//apple/Data/Pairing:AlondraPairing",
+        "//apple/iOS/UI:AlondraiOSUI",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

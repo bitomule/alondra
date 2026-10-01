@@ -2,6 +2,7 @@ import AlondraContract
 import AlondraFeed
 import AlondraFeatures
 import AlondraDesign
+import AlondraiOSUI
 import ComposableArchitecture
 import SwiftUI
 import UIKit
@@ -10,47 +11,12 @@ struct ViewsScreenView: View {
     @Bindable var store: StoreOf<ViewsScreenFeature>
     let openView: (ViewKey) -> Void
     @Environment(\.openURL) private var openURL
-    @Namespace private var cardZoom
     @State private var diffComments: [String: ActionComment] = [:]
     @State private var nodeMessageDraft = ""
 
     private var isTasksScreen: Bool { store.key.rawValue == "tasks" || store.key.rawValue.hasPrefix("tasks?") }
     private var isNewRequestScreen: Bool { store.key.rawValue == "new_request" || store.key.rawValue.hasPrefix("new_request?") }
     private var isInlineForm: Bool { isNewRequestScreen || store.key.rawValue.hasPrefix("schedule:") }
-    private var documentCard: AlondraContract.Card? { store.document?.documentCard(forKey: store.key.rawValue) }
-    private var routeCard: AlondraContract.Card? {
-        guard store.key.rawValue.hasPrefix("card:") else { return nil }
-        return store.document?.sections.lazy.flatMap(\.items).compactMap { item in
-            if case let .card(card) = item { card } else { nil }
-        }.first
-    }
-    private var readableCard: AlondraContract.Card? {
-        guard let card = routeCard,
-              card.icon != .question, card.icon != .action, card.icon != .pullRequest else { return nil }
-        return card
-    }
-    private var isDocumentRoute: Bool { store.key.rawValue.hasPrefix("document:") }
-    private var documentContentRef: ContentRef? {
-        store.document?.sections.lazy.flatMap(\.items).compactMap { item -> ContentRef? in
-            if case let .contentRef(reference) = item, reference.kind == .document { reference } else { nil }
-        }.first
-    }
-    private var documentReviewCard: AlondraContract.Card? {
-        guard isDocumentRoute || documentCard != nil, let document = store.document, let content = store.content,
-              let actionData = try? ContractCodec.encode(document.reviewActions(forKey: store.key.rawValue)),
-              let actions = try? JSONSerialization.jsonObject(with: actionData),
-              let data = try? JSONSerialization.data(withJSONObject: [
-                  "id": "document-review", "icon": "document", "title": document.title ?? "Document",
-                  "detail": "included", "body": ["text": content, "truncated": false, "commentable": true],
-                  "actions": actions,
-              ] as [String: Any]) else { return nil }
-        return try? ContractCodec.decode(AlondraContract.Card.self, from: data)
-    }
-    private func presentReview(_ action: AlondraContract.Action, comments: [ActionComment], text: String) {
-        store.send(.action(.present(action)))
-        store.send(.action(.commentsChanged(comments)))
-        store.send(.action(.textChanged(text)))
-    }
     private var pickerRows: [AlondraContract.Row] {
         store.pickerDocument?.sections.flatMap(\.items).compactMap { item in
             if case let .row(row) = item { row } else { nil }
@@ -73,7 +39,7 @@ struct ViewsScreenView: View {
                store.action.action?.id != message.id {
                 store.send(.action(.present(message)))
             }
-            if store.key.rawValue.hasPrefix("pull_request:") || store.key.rawValue.hasPrefix("card:"),
+            if store.key.rawValue.hasPrefix("pull_request:"),
                let diff = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
                     if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
                 }).first {
@@ -82,10 +48,6 @@ struct ViewsScreenView: View {
                     store.send(.fetchContent(diff))
                 }
                 return
-            }
-            if let reference = documentContentRef,
-                      store.contentReference?.digest != reference.digest {
-                store.send(.fetchContent(reference))
             }
         }
         .onChange(of: store.action.stamp) { old, new in
@@ -99,21 +61,13 @@ struct ViewsScreenView: View {
         .sheet(item: Binding(get: { store.attachmentPreview }, set: { if $0 == nil { store.send(.closeAttachment) } })) { preview in
             AttachmentPreviewView(preview: preview)
         }
-        .alert("Could not open attachment", isPresented: Binding(
-            get: { documentCard != nil && store.error != nil },
-            set: { if !$0 { store.send(.dismissError) } }
-        )) {
-            Button("OK") { store.send(.dismissError) }
-        } message: {
-            Text(store.error ?? "")
-        }
     }
 
     private var actionSheetContent: some View {
         attachmentContent
         .sheet(isPresented: Binding(get: { store.action.action != nil && !isInlineNodeMessage && !isInlineForm }, set: { if !$0 && !isInlineNodeMessage && !isInlineForm { store.send(.action(.dismiss)) } })) {
             ActionInputView(store: store.scope(state: \.action, action: \.action), form: store.form,
-                            showCommentEditor: documentCard == nil && !store.key.rawValue.hasPrefix("pull_request:"),
+                            showCommentEditor: !store.key.rawValue.hasPrefix("pull_request:"),
                             onReload: { field, value in store.send(.reloadForm(field.id, value)) },
                             onPicker: { field, source in store.send(.pickerOpened(field.id, source)) })
                 .padding()
@@ -178,32 +132,7 @@ struct ViewsScreenView: View {
 
     private var screenContent: some View {
         Group {
-            if let card = documentReviewCard ?? documentCard {
-                ReviewView(card: card,
-                                        markdownText: documentContentRef == nil ? nil : (store.content ?? ""),
-                                        attachments: store.scope(state: \.action.attachmentPicker, action: { .action(.attachmentPicker($0)) }),
-                                        onAction: { presentReview($0, comments: $1, text: $2) },
-                                        onLink: follow, onAttachment: { store.send(.fetchAttachment($0)) })
-                .id(card.id)
-            } else if let card = readableCard {
-                ReviewView(card: card,
-                                        attachments: store.scope(state: \.action.attachmentPicker, action: { .action(.attachmentPicker($0)) }),
-                                        onAction: { presentReview($0, comments: $1, text: $2) },
-                                        onLink: follow, onAttachment: { store.send(.fetchAttachment($0)) })
-                    .id(card.id)
-            } else if let card = routeCard {
-                VStack(spacing: 16) {
-                    TriageCard(card: card,
-                        actions: store.scope(state: \.action, action: \.action),
-                        attachments: store.scope(state: \.action.attachmentPicker, action: { .action(.attachmentPicker($0)) }),
-                        isFront: true, zoom: cardZoom,
-                        submit: { store.send(.action(.submit)) },
-                        openReview: { open(ViewKey(rawValue: $0)) })
-                    if store.contentReference?.kind == .diff, let content = store.content {
-                        DiffView(text: content, comments: $diffComments)
-                    }
-                }
-            } else if store.key.rawValue.hasPrefix("schedule:"), let form = store.form {
+            if store.key.rawValue.hasPrefix("schedule:"), let form = store.form {
                 ScheduleEditorView(store: store, form: form)
             } else if let document = store.document, store.key.rawValue.hasPrefix("pull_request:") {
                 PRReviewView(document: document,
@@ -627,34 +556,6 @@ struct ViewsScreenView: View {
         return Set(document.sections.flatMap(\.items).flatMap { item -> [AlondraContract.Action] in
             if case let .actions(bar) = item { bar.actions } else { [] }
         }.compactMap(\.id))
-    }
-}
-
-private struct AttachmentPreviewView: View {
-    let preview: AttachmentPreview
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                Group {
-                    if preview.attachment.kind == .image, let image = UIImage(data: preview.data) {
-                        Image(uiImage: image).resizable().scaledToFit()
-                    } else if preview.attachment.kind == .text,
-                              let text = String(data: preview.data, encoding: .utf8) {
-                        Text(text).font(.system(.body, design: .monospaced))
-                            .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-                    } else {
-                        ContentUnavailableView("Preview unavailable", systemImage: "doc")
-                    }
-                }
-                .padding(20)
-            }
-            .background(DawnBackground())
-            .navigationTitle(preview.attachment.name)
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar { ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } } }
-        }
     }
 }
 

@@ -7,21 +7,20 @@ import Testing
 
 @Suite struct DemoWorkspaceTests {
     @MainActor
-    @Test func homeReducerKeepsDistinctPrefetchedCards() async throws {
+    @Test func triageReducerKeepsDistinctNeighbouringCards() async throws {
         let client = ViewsClient.demo()
         let store = withDependencies {
             $0.viewsClient = client
         } operation: {
-            Store(initialState: HomeFeature.State()) { HomeFeature() }
+            Store(initialState: TriageFeature.State()) { TriageFeature() }
         }
-        await store.send(.appeared).finish()
+        await store.send(.task).finish()
         let state = store.withState { $0 }
         let ids = state.orderedIDs
         #expect(ids.count == 4)
-        guard ids.count >= 2 else { return }
-        #expect(state.cards[ids[0]]?.icon == .question)
-        #expect(state.cards[ids[1]]?.icon == .notice)
-        #expect(state.cards[ids[0]]?.body?.text != state.cards[ids[1]]?.body?.text)
+        #expect(state.cards[id: ids[0]]?.card?.icon == .question)
+        #expect(state.cards[id: ids[1]]?.card?.icon == .notice)
+        #expect(state.cards[id: ids[0]]?.card?.body?.text != state.cards[id: ids[1]]?.card?.body?.text)
         store.send(.disappeared)
     }
 
