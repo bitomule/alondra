@@ -1,5 +1,4 @@
-import AlondraNotificationPayload
-import AlondraViews
+import AlondraContract
 import Foundation
 
 /// Resolves a notification button to the opaque action the daemon rendered into the push.

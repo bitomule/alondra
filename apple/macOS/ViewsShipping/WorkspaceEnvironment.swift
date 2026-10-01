@@ -1,4 +1,4 @@
-import AlondraViewsWorkspaceFeature
+import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
@@ -7,11 +7,11 @@ extension EnvironmentValues {
 }
 
 private struct WorkspaceSettingsStoreKey: FocusedValueKey {
-    typealias Value = StoreOf<ViewsServiceRootFeature>
+    typealias Value = StoreOf<MacAppFeature>
 }
 
 extension FocusedValues {
-    var workspaceSettingsStore: StoreOf<ViewsServiceRootFeature>? {
+    var workspaceSettingsStore: StoreOf<MacAppFeature>? {
         get { self[WorkspaceSettingsStoreKey.self] }
         set { self[WorkspaceSettingsStoreKey.self] = newValue }
     }

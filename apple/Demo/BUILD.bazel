@@ -1,22 +1,29 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
 swift_library(
-    name = "AlondraViewsDemoWorkspace",
-    srcs = ["Sources/DemoViews.swift", "ViewsSources/ViewsDemoWorkspace.swift"],
-    module_name = "AlondraViewsDemoWorkspace",
-    visibility = ["//visibility:public"],
+    name = "AlondraDemo",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraDemo",
     data = ["//fixtures/views:all"],
-    deps = ["//apple/Views:AlondraViews", "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Feed:AlondraFeed",
+    ],
 )
 
 swift_test(
-    name = "AlondraViewsDemoWorkspaceTests",
-    srcs = ["ViewsTests/ViewsDemoWorkspaceTests.swift"],
+    name = "AlondraDemoTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Tests/**/*.swift"]),
     data = ["//fixtures/views:all"],
     deps = [
-        ":AlondraViewsDemoWorkspace",
-        "//apple/Features/Home:AlondraViewsHomeFeature",
-        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
-        "//apple/Views:AlondraViews",
+        ":AlondraDemo",
+        "//apple/Features:AlondraFeatures",
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Feed:AlondraFeed",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )

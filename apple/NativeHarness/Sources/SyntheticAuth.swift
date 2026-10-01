@@ -1,4 +1,4 @@
-import AlondraAuth
+import AlondraAccount
 import Foundation
 import Synchronization
 

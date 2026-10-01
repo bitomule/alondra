@@ -52,22 +52,17 @@ checks:
       - ".bazelversion"
     with:
       targets:
-        - //apple/APIClient:AlondraViewsAPIClientTests
-        - //apple/Auth:AlondraAuthTests
-        - //apple/Data/Notifications:AlondraNotificationActionsTests
-        - //apple/Data/PushBinding:AlondraPushBindingTests
-        - //apple/Data/RelayOutbox:AlondraRelayOutboxTests
-        - //apple/Data/Views:AlondraViewsDataTests
-        - //apple/Demo:AlondraViewsDemoWorkspaceTests
-        - //apple/Features/CloudPairing:AlondraCloudPairingFeatureTests
-        - //apple/Features/Home:AlondraHomeFeatureTests
-        - //apple/Features/Settings:AlondraSettingsFeatureTests
-        - //apple/Features/ViewsDependency:AlondraViewsDependencyTests
-        - //apple/Features/ViewsUI:AlondraViewsUITests
-        - //apple/NotificationPayload:AlondraNotificationPayloadTests
-        - //apple/ServicePairing:AlondraServicePairingTests
+        - //apple/Contract:AlondraContractTests
+        - //apple/Data/Transport:AlondraTransportTests
+        - //apple/Data/Account:AlondraAccountTests
+        - //apple/Data/Pairing:AlondraPairingTests
+        - //apple/Data/Notifications:AlondraNotificationsTests
+        - //apple/Data/Feed:AlondraFeedTests
+        - //apple/Data/Attachments:AlondraAttachmentsTests
+        - //apple/Demo:AlondraDemoTests
+        - //apple/Design:AlondraDesignTests
+        - //apple/Features:AlondraFeaturesTests
         - //apple/Testing:IssueReportingIntegrationTests
-        - //apple/Views:AlondraViewsTests
+        - //apple/Testing/Snapshots:AlondraSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests
-        - //apple:AlondraSharedTests

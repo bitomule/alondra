@@ -1,12 +1,12 @@
-@testable import AlondraServicePairing
-import AlondraAPIClient
-import AlondraNotificationPayload
+@testable import AlondraPairing
+import AlondraTransport
+import AlondraNotifications
 import CryptoKit
 import Foundation
 import Security
 import Synchronization
 import Testing
-@testable import AlondraNotificationActions
+@testable import AlondraNotifications
 
 private final class MemoryDecryptionItem: NotificationDecryptionItemStorage {
     struct State: Sendable {
@@ -86,9 +86,9 @@ private struct PushFixture {
     try store.save(b.context)
     for fixture in [a, b] {
         let wire = try fixture.wire()
-        let hint = try ServiceNotificationDecoder.bindingHint(wire)
+        let hint = try NotificationDecoder.bindingHint(wire)
         let context = try #require(try store.load(binding: hint))
-        let clear = try ServiceNotificationDecoder.decrypt(wire, context: context)
+        let clear = try NotificationDecoder.decrypt(wire, context: context)
         let payload = try #require(try JSONSerialization.jsonObject(with: clear) as? [AnyHashable: Any])
         #expect(NotificationPayload.BoundItem(userInfo: payload)?.item.inboxID == "interaction:q-42")
         #expect(NotificationPayload.BoundItem(userInfo: payload)?.binding == fixture.binding)
@@ -96,9 +96,9 @@ private struct PushFixture {
         #expect((aps["alert"] as? [String: String])?["title"] == fixture.context.macID)
     }
     let altered = try a.wire(outerBinding: b.binding.value)
-    let selected = try #require(try store.load(binding: ServiceNotificationDecoder.bindingHint(altered)))
+    let selected = try #require(try store.load(binding: NotificationDecoder.bindingHint(altered)))
     #expect(throws: (any Error).self) {
-        try ServiceNotificationDecoder.decrypt(altered, context: selected)
+        try NotificationDecoder.decrypt(altered, context: selected)
     }
     #expect(try store.load(binding: PushFixture(3).binding) == nil)
 }
@@ -115,9 +115,9 @@ func untrustedRoutingCannotProducePlaintextOrActions(mutation: String) throws {
         var object = try #require(try JSONSerialization.jsonObject(with: wire) as? [String: [String: Any]])
         object["alondra"]?.removeValue(forKey: "push_binding")
         wire = try JSONSerialization.data(withJSONObject: object)
-        #expect(throws: (any Error).self) { try ServiceNotificationDecoder.bindingHint(wire) }
+        #expect(throws: (any Error).self) { try NotificationDecoder.bindingHint(wire) }
     }
-    #expect(throws: (any Error).self) { try ServiceNotificationDecoder.decrypt(wire, context: a.context) }
+    #expect(throws: (any Error).self) { try NotificationDecoder.decrypt(wire, context: a.context) }
 }
 
 @Test func reusedBindingCannotReplaceAnotherAccountOrPrivateKey() throws {

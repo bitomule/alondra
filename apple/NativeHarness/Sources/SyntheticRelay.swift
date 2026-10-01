@@ -1,10 +1,10 @@
-import AlondraAPIClient
+import AlondraTransport
 import CryptoKit
 import Foundation
 
 /// A declared fake relay + Mac peer. Production request signing, envelope crypto,
 /// resource reads and durable outbox all still execute.
-actor SyntheticRelayHTTP: ServiceHTTPTransport {
+actor SyntheticRelayHTTP: HTTPTransport {
     struct Observation: Sendable {
         var offsets: [Int] = []
         var resourcePaths: [String] = []
@@ -35,12 +35,12 @@ actor SyntheticRelayHTTP: ServiceHTTPTransport {
     func onFirstChunk(_ action: @escaping @Sendable () async throws -> Void) { firstChunk = action }
     func observation() -> Observation { observed }
 
-    func send(_ request: URLRequest) async throws -> ServiceHTTPResponse {
+    func send(_ request: URLRequest) async throws -> HTTPReply {
         guard let url = request.url, url.host == "relay.fixture.invalid", url.scheme == "https" else {
             throw RelayWireError.invalidEndpoint
         }
         if url.path == "/v1/bootstrap", request.httpMethod == "GET" {
-            return ServiceHTTPResponse(status: 200, body: Data(#"{"protocol":1,"epoch":"AAAAAAAAAAAAAAAAAAAAAA"}"#.utf8))
+            return HTTPReply(status: 200, body: Data(#"{"protocol":1,"epoch":"AAAAAAAAAAAAAAAAAAAAAA"}"#.utf8))
         }
         guard request.value(forHTTPHeaderField: "Authorization") == "Bearer synthetic-access" else {
             throw RelayWireError.unauthorized
@@ -48,7 +48,7 @@ actor SyntheticRelayHTTP: ServiceHTTPTransport {
         if url.path.hasPrefix("/v1/requests/"), request.httpMethod == "GET" {
             observed.statusReads += 1
             guard let receipt = receipts[url.lastPathComponent] else { throw RelayWireError.outcomeUnknown }
-            return ServiceHTTPResponse(status: 200, body: receipt)
+            return HTTPReply(status: 200, body: receipt)
         }
         guard url.path == "/v1/requests", request.httpMethod == "POST", let data = request.httpBody else {
             throw RelayWireError.invalidField
@@ -101,6 +101,6 @@ actor SyntheticRelayHTTP: ServiceHTTPTransport {
             observed.losses += 1
             throw URLError(.networkConnectionLost)
         }
-        return ServiceHTTPResponse(status: 200, body: receipt)
+        return HTTPReply(status: 200, body: receipt)
     }
 }

@@ -1,40 +1,41 @@
-//! The options of "New": one row per setting ("Label: value"), each opening a short list of
-//! its values. The project, the issue, the built-ins and the user's own options from
-//! `options.toml` all work the same way.
+//! The forms of "New" and of the schedules: one row per field the server sends ("Label: value"),
+//! each opening a short list of its values or a line to type. Which fields exist, their labels
+//! and their values all come from the server's form; nothing here knows what a project, an
+//! option or a repeat is.
 
 use std::collections::BTreeMap;
 
 use alondra_core::issues::Issue;
-use alondra_core::options::{AUTO, Choice, EFFORT, Kind, PR, Spec, filter_projects};
+use alondra_core::views::{ChoiceItem, Field, FieldKind, Item, View};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{Value, json};
 
-const PROJECT_ROW: usize = 0;
-const ISSUE_ROW: usize = 1;
-const FIRST_OPTION_ROW: usize = 2;
-
 #[derive(Default)]
 pub struct OptionsForm {
-    /// Projects as alondrad ranks them: most recently used first.
-    pub projects: Vec<String>,
-    /// The project of the directory the TUI runs in, offered first.
-    pub suggested: Option<String>,
-    pub project: Option<String>,
-    pub specs: Vec<Spec>,
-    /// Only what differs from the defaults; alondrad fills in the rest.
-    pub chosen: BTreeMap<String, Choice>,
+    /// The view the fields come from, without its project.
+    pub view: String,
+    pub fields: Vec<Field>,
+    pub values: BTreeMap<String, Value>,
+    pub submit: Option<Submit>,
     /// The row under the cursor, or `None` while typing the text.
     pub focus: Option<usize>,
     pub error: Option<String>,
     pub loaded: bool,
-    pub issue: Option<Issue>,
     pub popup: Option<Popup>,
 }
 
+pub struct Submit {
+    pub action_id: String,
+    pub label: String,
+    pub data_epoch: String,
+    pub attachments: bool,
+}
+
 pub enum Popup {
-    Values { spec: usize, sel: usize },
-    Projects { query: String, sel: usize },
-    Issues(IssuePicker),
+    Values { field: usize, sel: usize },
+    Filter { field: usize, query: String, sel: usize },
+    Issues { field: usize, picker: IssuePicker },
+    Text { field: usize, input: String },
 }
 
 /// The open issues, filtered as the user types; the list comes once from alondrad's cache.
@@ -51,165 +52,295 @@ impl IssuePicker {
     pub fn visible(&self) -> Vec<&Issue> {
         self.all.iter().filter(|i| i.matches(&self.query)).collect()
     }
+
+    /// What was typed when it is an issue link or `owner/repo#number` that is not listed.
+    pub fn typed_reference(&self) -> Option<String> {
+        let (repo, number) = alondra_core::issues::parse_ref(&self.query)?;
+        Some(format!("{repo}#{number}"))
+    }
 }
 
 pub enum FormKey {
     Handled,
-    /// The project changed: fetch its options.
-    Reload(Option<String>),
+    /// The field that reloads the form changed: fetch the form for this value.
+    Reload(String),
     /// Fetch the open issues; `true` asks alondrad to search GitHub again.
     LoadIssues(bool),
     NotMine,
 }
 
-/// One entry of a values list: what it sets, its label and the line under it.
-pub struct Entry {
-    pub choice: Choice,
-    pub label: String,
-    pub description: Option<String>,
+pub fn field_visible(field: &Field, values: &BTreeMap<String, Value>) -> bool {
+    let Some(condition) = &field.visible_when else {
+        return true;
+    };
+    let actual = values.get(&condition.field);
+    condition.equals.as_ref().is_some_and(|expected| actual == Some(expected))
+        || actual.is_some_and(|value| condition.any_of.contains(value))
+}
+
+fn is_primary(field: &Field) -> bool {
+    matches!(field.kind, FieldKind::Multiline { .. })
+}
+
+fn is_row(field: &Field) -> bool {
+    !matches!(field.kind, FieldKind::Attachments)
+}
+
+fn display(value: &Value) -> String {
+    match value {
+        Value::Null => String::new(),
+        Value::String(text) => text.clone(),
+        other => other.to_string(),
+    }
 }
 
 impl OptionsForm {
-    pub fn current(&self, spec: &Spec) -> Choice {
-        self.chosen
-            .get(&spec.id)
-            .cloned()
-            .unwrap_or_else(|| spec.default.clone())
+    pub fn new(view: &str) -> Self {
+        Self {
+            view: view.to_owned(),
+            ..Self::default()
+        }
     }
 
-    fn set(&mut self, spec: usize, choice: Choice) {
-        let Some(s) = self.specs.get(spec) else {
+    /// The field whose text is the composer's: the first long one.
+    pub fn primary(&self) -> Option<&Field> {
+        self.fields.iter().find(|field| is_primary(field))
+    }
+
+    pub fn attachments_field(&self) -> Option<&Field> {
+        self.fields
+            .iter()
+            .find(|field| matches!(field.kind, FieldKind::Attachments))
+    }
+
+    /// Indexes of the fields shown as rows: the one that reloads the form first, then pickers,
+    /// then the rest in the server's order.
+    fn rows(&self) -> Vec<usize> {
+        let rank = |field: &Field| match field.kind {
+            _ if field.reload_on_change => 0,
+            FieldKind::Picker { .. } => 1,
+            _ => 2,
+        };
+        let primary = self.fields.iter().position(is_primary);
+        let mut rows: Vec<usize> = self
+            .fields
+            .iter()
+            .enumerate()
+            .filter(|(index, field)| {
+                Some(*index) != primary && is_row(field) && field_visible(field, &self.values)
+            })
+            .map(|(index, _)| index)
+            .collect();
+        rows.sort_by_key(|index| rank(&self.fields[*index]));
+        rows
+    }
+
+    fn reloading_field(&self) -> Option<usize> {
+        self.fields
+            .iter()
+            .position(|field| field.reload_on_change && matches!(field.kind, FieldKind::Choice { .. }))
+    }
+
+    pub fn loaded(&mut self, view: &View) {
+        let Some(form) = view.sections.iter().flat_map(|s| &s.items).find_map(|item| match item {
+            Item::Form(form) => Some(form),
+            _ => None,
+        }) else {
+            self.error = Some(view.title.clone().unwrap_or_default());
+            self.loaded = true;
             return;
         };
-        if choice == s.default {
-            self.chosen.remove(&s.id);
-        } else {
-            self.chosen.insert(s.id.clone(), choice);
-        }
-    }
-
-    fn rows(&self) -> usize {
-        FIRST_OPTION_ROW + self.specs.len()
-    }
-
-    pub fn loaded(
-        &mut self,
-        project: Option<String>,
-        projects: Vec<String>,
-        specs: Vec<Spec>,
-        error: Option<String>,
-    ) {
-        if project != self.project {
-            return;
-        }
-        self.chosen.retain(|id, c| {
-            specs
-                .iter()
-                .any(|s| &s.id == id && s.accepts(c).is_ok() && s.default != *c)
+        let previous = std::mem::take(&mut self.values);
+        self.values = form
+            .fields
+            .iter()
+            .filter_map(|field| {
+                let kept = previous.get(&field.id).filter(|value| keeps(&field.kind, value));
+                let value = kept.unwrap_or(&field.value);
+                (!value.is_null()).then(|| (field.id.clone(), value.clone()))
+            })
+            .collect();
+        self.fields = form.fields.clone();
+        self.submit = Some(Submit {
+            action_id: form.submit.id.clone(),
+            label: form.submit.label.clone(),
+            data_epoch: view.data_epoch.clone(),
+            attachments: form.submit.attachments,
         });
-        self.projects = projects;
-        self.specs = specs;
-        self.error = error;
+        self.error = None;
         self.loaded = true;
-        if let Some(f) = self.focus {
-            self.focus = Some(f.min(self.rows() - 1));
+        if let Some(at) = self.focus {
+            self.focus = Some(at.min(self.rows().len().saturating_sub(1)));
         }
+    }
+
+    /// The value of the field that reloads the form, to ask for its fields.
+    pub fn reload_value(&self) -> Option<String> {
+        let field = &self.fields[self.reloading_field()?];
+        Some(self.values.get(&field.id).map(display).unwrap_or_default())
+    }
+
+    pub fn failed(&mut self, error: String) {
+        self.error = Some(error);
+        self.loaded = true;
     }
 
     pub fn issues_loaded(&mut self, result: Result<(Vec<Issue>, Option<String>), String>) {
-        let Some(Popup::Issues(p)) = self.popup.as_mut() else {
+        let Some(Popup::Issues { picker, .. }) = self.popup.as_mut() else {
             return;
         };
-        p.loading = false;
+        picker.loading = false;
         match result {
             Ok((all, error)) => {
-                p.all = all;
-                p.error = error;
-                p.sel = p.sel.min(p.visible().len().saturating_sub(1));
+                picker.all = all;
+                picker.error = error;
+                picker.sel = picker.sel.min(picker.visible().len().saturating_sub(1));
             }
-            Err(e) => p.error = Some(e),
+            Err(e) => picker.error = Some(e),
         }
     }
 
-    /// The values a popup lists for an option: its own, or yes and no for a toggle.
-    pub fn entries(&self, spec: usize) -> Vec<Entry> {
-        let Some(s) = self.specs.get(spec) else {
-            return vec![];
-        };
-        match s.kind {
-            Kind::Toggle => [true, false]
-                .into_iter()
-                .map(|b| Entry {
-                    choice: Choice::Toggle(b),
-                    label: value_label(s, &Choice::Toggle(b)),
-                    description: None,
-                })
-                .collect(),
-            Kind::Choice => s
-                .values
-                .iter()
-                .map(|v| {
-                    let choice = Choice::Value(v.id.clone());
-                    Entry {
-                        label: value_label(s, &choice),
-                        description: description(s, &v.id).or(v.description.clone()),
-                        choice,
-                    }
-                })
-                .collect(),
+    pub fn choices(&self, field: usize) -> &[ChoiceItem] {
+        match &self.fields[field].kind {
+            FieldKind::Choice { items } => items,
+            _ => &[],
         }
     }
 
-    /// What the project list shows for what was typed, with "the orchestrator decides" first
-    /// while nothing is typed.
-    pub fn project_choices(&self, query: &str) -> Vec<Option<String>> {
-        let found = filter_projects(&self.projects, query, self.suggested.as_deref())
-            .into_iter()
-            .map(Some);
-        if query.trim().is_empty() {
-            std::iter::once(None).chain(found).collect()
+    /// The choices a typed filter leaves, in the server's order.
+    pub fn filtered(&self, field: usize, query: &str) -> Vec<&ChoiceItem> {
+        let query = query.trim().to_lowercase();
+        self.choices(field)
+            .iter()
+            .filter(|item| query.is_empty() || item.label.to_lowercase().contains(&query))
+            .collect()
+    }
+
+    fn set(&mut self, field: usize, value: Value) {
+        let id = self.fields[field].id.clone();
+        if value.is_null() {
+            self.values.remove(&id);
         } else {
-            found.collect()
+            self.values.insert(id, value);
+        }
+        let rows = self.rows().len();
+        if let Some(at) = self.focus {
+            self.focus = Some(at.min(rows.saturating_sub(1)));
         }
     }
 
-    fn open(&mut self, row: usize) -> FormKey {
-        match row {
-            PROJECT_ROW => {
-                self.popup = Some(Popup::Projects {
-                    query: String::new(),
-                    sel: 0,
-                })
+    fn value_label(&self, field: &Field) -> String {
+        let value = self.values.get(&field.id).cloned().unwrap_or(Value::Null);
+        match &field.kind {
+            FieldKind::Choice { items } => items
+                .iter()
+                .find(|item| value.as_str() == Some(item.id.as_str()))
+                .map(|item| item.label.clone())
+                .unwrap_or_else(|| display(&value)),
+            FieldKind::Toggle => match value.as_bool() {
+                Some(true) => tr!("yes", "sí").into(),
+                _ => tr!("no", "no").into(),
+            },
+            FieldKind::Lines { .. } => display(&value).lines().collect::<Vec<_>>().join(", "),
+            _ => display(&value),
+        }
+    }
+
+    /// `(label, value, focused)` for each row.
+    pub fn rows_shown(&self) -> Vec<(String, String, bool)> {
+        self.rows()
+            .into_iter()
+            .enumerate()
+            .map(|(at, index)| {
+                let field = &self.fields[index];
+                let shown = self.value_label(field);
+                let shown = if shown.is_empty() { tr!("none", "ninguno").to_owned() } else { shown };
+                (field.label.clone(), shown, self.focus == Some(at))
+            })
+            .collect()
+    }
+
+    pub fn popup_title(&self) -> String {
+        match &self.popup {
+            Some(
+                Popup::Values { field, .. }
+                | Popup::Filter { field, .. }
+                | Popup::Issues { field, .. }
+                | Popup::Text { field, .. },
+            ) => self.fields[*field].label.clone(),
+            None => String::new(),
+        }
+    }
+
+    fn open(&mut self, at: usize) -> FormKey {
+        let Some(&field) = self.rows().get(at) else {
+            return FormKey::Handled;
+        };
+        let current = self.values.get(&self.fields[field].id).cloned().unwrap_or(Value::Null);
+        match self.fields[field].kind.clone() {
+            FieldKind::Choice { items } => {
+                if self.fields[field].reload_on_change {
+                    self.popup = Some(Popup::Filter { field, query: String::new(), sel: 0 });
+                } else {
+                    let sel = items
+                        .iter()
+                        .position(|item| current.as_str() == Some(item.id.as_str()))
+                        .unwrap_or(0);
+                    self.popup = Some(Popup::Values { field, sel });
+                }
             }
-            ISSUE_ROW => {
-                self.popup = Some(Popup::Issues(IssuePicker {
-                    loading: true,
-                    ..Default::default()
-                }));
+            FieldKind::Picker { .. } => {
+                self.popup = Some(Popup::Issues {
+                    field,
+                    picker: IssuePicker { loading: true, ..Default::default() },
+                });
                 return FormKey::LoadIssues(false);
             }
-            r => {
-                let spec = r - FIRST_OPTION_ROW;
-                let Some(s) = self.specs.get(spec) else {
-                    return FormKey::Handled;
+            FieldKind::Toggle => {
+                let on = current.as_bool().unwrap_or(false);
+                self.set(field, json!(!on));
+            }
+            FieldKind::Attachments => {}
+            FieldKind::Text { .. }
+            | FieldKind::Multiline { .. }
+            | FieldKind::Date
+            | FieldKind::Time
+            | FieldKind::Stepper { .. }
+            | FieldKind::Lines { .. } => {
+                let input = match self.fields[field].kind {
+                    FieldKind::Lines { .. } => self.value_label(&self.fields[field]),
+                    _ => display(&current),
                 };
-                let current = self.current(s);
-                let sel = self
-                    .entries(spec)
-                    .iter()
-                    .position(|e| e.choice == current)
-                    .unwrap_or(0);
-                self.popup = Some(Popup::Values { spec, sel });
+                self.popup = Some(Popup::Text { field, input });
             }
         }
         FormKey::Handled
     }
 
-    fn popup_key(&mut self, k: KeyEvent) -> FormKey {
-        let n = match &self.popup {
-            Some(Popup::Values { spec, .. }) => self.entries(*spec).len(),
-            _ => 0,
+    fn pick_choice(&mut self, field: usize, id: String) -> FormKey {
+        let changed = self.values.get(&self.fields[field].id).and_then(Value::as_str) != Some(id.as_str());
+        self.set(field, json!(id.clone()));
+        if changed && self.fields[field].reload_on_change {
+            FormKey::Reload(id)
+        } else {
+            FormKey::Handled
+        }
+    }
+
+    fn commit_text(&mut self, field: usize, input: &str) {
+        let input = input.trim();
+        let value = match &self.fields[field].kind {
+            _ if input.is_empty() => Value::Null,
+            FieldKind::Stepper { .. } => input.parse::<i64>().map_or_else(|_| json!(input), |n| json!(n)),
+            FieldKind::Lines { .. } => {
+                json!(input.split(',').map(str::trim).filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n"))
+            }
+            _ => json!(input),
         };
+        self.set(field, value);
+    }
+
+    fn popup_key(&mut self, k: KeyEvent) -> FormKey {
         let Some(popup) = self.popup.as_mut() else {
             return FormKey::NotMine;
         };
@@ -218,24 +349,26 @@ impl OptionsForm {
             return FormKey::Handled;
         }
         match popup {
-            Popup::Values { spec, sel } => {
-                let spec = *spec;
+            Popup::Values { field, sel } => {
+                let field = *field;
+                let n = self.choices(field).len();
+                let Some(Popup::Values { sel, .. }) = self.popup.as_mut() else {
+                    return FormKey::Handled;
+                };
                 match k.code {
                     KeyCode::Up | KeyCode::Char('k') => *sel = sel.saturating_sub(1),
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        *sel = (*sel + 1).min(n.saturating_sub(1))
-                    }
+                    KeyCode::Down | KeyCode::Char('j') => *sel = (*sel + 1).min(n.saturating_sub(1)),
                     KeyCode::Enter | KeyCode::Char(' ') => {
                         let pick = *sel;
                         self.popup = None;
-                        if let Some(e) = self.entries(spec).into_iter().nth(pick) {
-                            self.set(spec, e.choice);
+                        if let Some(item) = self.choices(field).get(pick).cloned() {
+                            return self.pick_choice(field, item.id);
                         }
                     }
                     _ => {}
                 }
             }
-            Popup::Projects { query, sel } => match k.code {
+            Popup::Filter { field, query, sel } => match k.code {
                 KeyCode::Up => *sel = sel.saturating_sub(1),
                 KeyCode::Down => *sel += 1,
                 KeyCode::Backspace => {
@@ -247,59 +380,81 @@ impl OptionsForm {
                     *sel = 0;
                 }
                 KeyCode::Enter => {
-                    let (query, sel) = (query.clone(), *sel);
-                    let choices = self.project_choices(&query);
+                    let (field, query, sel) = (*field, query.clone(), *sel);
                     self.popup = None;
-                    let Some(project) = choices
-                        .get(sel.min(choices.len().saturating_sub(1)))
-                        .cloned()
-                    else {
+                    let items = self.filtered(field, &query);
+                    let Some(item) = items.get(sel.min(items.len().saturating_sub(1))).map(|i| (*i).clone()) else {
                         return FormKey::Handled;
                     };
-                    if project != self.project {
-                        self.project = project;
-                        return FormKey::Reload(self.project.clone());
-                    }
+                    return self.pick_choice(field, item.id);
                 }
                 _ => {}
             },
-            Popup::Issues(p) => match k.code {
+            Popup::Issues { field, picker } => match k.code {
                 KeyCode::Char('r') if k.modifiers.contains(KeyModifiers::CONTROL) => {
-                    p.loading = true;
+                    picker.loading = true;
                     return FormKey::LoadIssues(true);
                 }
-                KeyCode::Up => p.sel = p.sel.saturating_sub(1),
-                KeyCode::Down => p.sel = (p.sel + 1).min(p.visible().len().saturating_sub(1)),
+                KeyCode::Up => picker.sel = picker.sel.saturating_sub(1),
+                KeyCode::Down => {
+                    picker.sel = (picker.sel + 1).min(picker.visible().len().saturating_sub(1))
+                }
                 KeyCode::Backspace => {
-                    p.query.pop();
-                    p.sel = 0;
+                    picker.query.pop();
+                    picker.sel = 0;
                 }
                 KeyCode::Char(c) => {
-                    p.query.push(c);
-                    p.sel = 0;
+                    picker.query.push(c);
+                    picker.sel = 0;
                 }
                 KeyCode::Enter => {
-                    let Some(issue) = p.visible().get(p.sel).map(|i| (*i).clone()) else {
-                        return FormKey::Handled;
+                    let field = *field;
+                    let reference = match picker.visible().get(picker.sel) {
+                        Some(issue) => issue.reference(),
+                        None => match picker.typed_reference() {
+                            Some(reference) => reference,
+                            None => return FormKey::Handled,
+                        },
                     };
-                    let name = issue.repo.split_once('/').map(|(_, n)| n.to_string());
-                    self.issue = Some(issue);
                     self.popup = None;
-                    if let Some(project) = name.and_then(|n| {
-                        self.projects
-                            .iter()
-                            .find(|p| p.eq_ignore_ascii_case(&n))
-                            .cloned()
-                    }) && self.project.as_ref() != Some(&project)
-                    {
-                        self.project = Some(project);
-                        return FormKey::Reload(self.project.clone());
-                    }
+                    self.set(field, json!(reference.clone()));
+                    return self.project_of(&reference);
                 }
+                _ => {}
+            },
+            Popup::Text { field, input } => match k.code {
+                KeyCode::Enter => {
+                    let (field, input) = (*field, input.clone());
+                    self.popup = None;
+                    self.commit_text(field, &input);
+                }
+                KeyCode::Backspace => {
+                    input.pop();
+                }
+                KeyCode::Char(c) => input.push(c),
                 _ => {}
             },
         }
         FormKey::Handled
+    }
+
+    /// Choosing an issue picks the project named like its repository, when there is one.
+    fn project_of(&mut self, reference: &str) -> FormKey {
+        let Some(field) = self.reloading_field() else {
+            return FormKey::Handled;
+        };
+        let Some(name) = reference.split_once('#').and_then(|(repo, _)| repo.split_once('/')).map(|(_, name)| name) else {
+            return FormKey::Handled;
+        };
+        let Some(item) = self
+            .choices(field)
+            .iter()
+            .find(|item| !item.id.is_empty() && item.id.eq_ignore_ascii_case(name))
+            .cloned()
+        else {
+            return FormKey::Handled;
+        };
+        self.pick_choice(field, item.id)
     }
 
     pub fn key(&mut self, k: KeyEvent) -> FormKey {
@@ -307,395 +462,240 @@ impl OptionsForm {
             return self.popup_key(k);
         }
         let Some(at) = self.focus else {
-            if k.code == KeyCode::Tab && self.loaded {
-                self.focus = Some(PROJECT_ROW);
+            if k.code == KeyCode::Tab && self.loaded && !self.rows().is_empty() {
+                self.focus = Some(0);
                 return FormKey::Handled;
             }
             return FormKey::NotMine;
         };
+        let last = self.rows().len().saturating_sub(1);
         match k.code {
             KeyCode::Tab | KeyCode::Esc | KeyCode::BackTab => self.focus = None,
             KeyCode::Up | KeyCode::Char('k') => self.focus = Some(at.saturating_sub(1)),
-            KeyCode::Down | KeyCode::Char('j') => self.focus = Some((at + 1).min(self.rows() - 1)),
+            KeyCode::Down | KeyCode::Char('j') => self.focus = Some((at + 1).min(last)),
             KeyCode::Enter | KeyCode::Char(' ') => return self.open(at),
-            KeyCode::Char('p') => return self.open(PROJECT_ROW),
-            KeyCode::Char('i') => return self.open(ISSUE_ROW),
-            KeyCode::Char('x') => self.issue = None,
+            KeyCode::Char('p') => {
+                if let Some(at) = self.reloading_field().and_then(|f| self.rows().iter().position(|r| *r == f)) {
+                    self.focus = Some(at);
+                    return self.open(at);
+                }
+            }
+            KeyCode::Char('i') => {
+                let picker = self.rows().iter().position(|r| matches!(self.fields[*r].kind, FieldKind::Picker { .. }));
+                if let Some(at) = picker {
+                    self.focus = Some(at);
+                    return self.open(at);
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(&field) = self.rows().get(at)
+                    && matches!(self.fields[field].kind, FieldKind::Picker { .. })
+                {
+                    self.set(field, Value::Null);
+                }
+            }
             _ => {}
         }
         FormKey::Handled
     }
 
-    /// The body of a new request carrying the project, options and issue chosen here.
-    pub fn request(
-        &self,
-        request_id: &str,
-        text: &str,
-        attachments: &[alondra_core::domain_v2::AttachmentRef],
-    ) -> Value {
-        let issue = self.issue.as_ref().map(Issue::reference);
-        crate::ops::new_request(
-            request_id,
-            text,
-            self.project.as_deref(),
-            &json!(self.chosen),
-            issue.as_deref(),
-            attachments,
-        )
-    }
-
-    /// `(label, value, focused)` for each row: project, issue, then every option.
-    pub fn rows_shown(&self) -> Vec<(String, String, bool)> {
-        let project = self
-            .project
-            .clone()
-            .unwrap_or_else(|| tr!("the orchestrator decides", "lo decide el orquestador").into());
-        let issue = self
-            .issue
-            .as_ref()
-            .map(Issue::reference)
-            .unwrap_or_else(|| tr!("none", "ninguna").into());
-        let mut out = vec![
-            (tr!("Project", "Proyecto").to_string(), project),
-            (tr!("Issue", "Issue").to_string(), issue),
-        ];
-        out.extend(
-            self.specs
-                .iter()
-                .map(|s| (label(s), value_label(s, &self.current(s)))),
-        );
-        out.into_iter()
-            .enumerate()
-            .map(|(i, (l, v))| (l, v, self.focus == Some(i)))
-            .collect()
+    /// The `fields` of the submit: the typed text, the attachments and every visible row.
+    pub fn submitted(&self, text: &str, attachments: &[String]) -> Value {
+        let mut out = serde_json::Map::new();
+        for field in &self.fields {
+            if !field_visible(field, &self.values) {
+                continue;
+            }
+            let value = match &field.kind {
+                FieldKind::Multiline { .. } if self.primary().is_some_and(|p| p.id == field.id) => json!(text),
+                FieldKind::Attachments if attachments.is_empty() => continue,
+                FieldKind::Attachments => json!(attachments),
+                _ => match self.values.get(&field.id) {
+                    Some(value) => value.clone(),
+                    None => continue,
+                },
+            };
+            out.insert(field.id.clone(), value);
+        }
+        Value::Object(out)
     }
 }
 
-pub fn label(s: &Spec) -> String {
-    match (s.builtin, s.id.as_str()) {
-        (true, PR) => tr!("PRs", "PRs").into(),
-        (true, EFFORT) => tr!("Effort", "Esfuerzo").into(),
-        _ => s.label.clone(),
+fn keeps(kind: &FieldKind, value: &Value) -> bool {
+    match kind {
+        FieldKind::Choice { items } => items.iter().any(|item| value.as_str() == Some(item.id.as_str())),
+        FieldKind::Multiline { .. } | FieldKind::Attachments => false,
+        _ => true,
     }
-}
-
-/// How a task's PRs are handled, in the launch option's words.
-pub fn pr_handling(auto_merge: bool) -> &'static str {
-    if auto_merge {
-        tr!("auto-merge", "merge automático")
-    } else {
-        tr!("review each one", "revisar cada una")
-    }
-}
-
-pub fn value_label(s: &Spec, c: &Choice) -> String {
-    let builtin = |v: &str| match v {
-        "review" => Some(pr_handling(false)),
-        "auto_merge" => Some(pr_handling(true)),
-        AUTO => Some(tr!("auto", "automático")),
-        "light" => Some(tr!("light", "ligero")),
-        "normal" => Some(tr!("normal", "normal")),
-        "hard" => Some(tr!("hard", "a fondo")),
-        _ => None,
-    };
-    match c {
-        Choice::Toggle(true) => tr!("yes", "sí").into(),
-        Choice::Toggle(false) => tr!("no", "no").into(),
-        Choice::Value(v) => s
-            .builtin
-            .then(|| builtin(v))
-            .flatten()
-            .map(str::to_string)
-            .unwrap_or_else(|| s.value_label(c)),
-    }
-}
-
-/// The built-ins' value descriptions in the user's language; the user's own come from alondrad.
-fn description(s: &Spec, value: &str) -> Option<String> {
-    if !s.builtin {
-        return None;
-    }
-    let text = match value {
-        "review" => tr!(
-            "Each PR is a card for you; the node waits for your merge",
-            "Cada PR es una tarjeta para ti; el nodo espera a que hagas merge"
-        ),
-        "auto_merge" => tr!(
-            "The node merges its own PR once its checks pass",
-            "El nodo hace merge de su propio PR cuando pasan los checks"
-        ),
-        AUTO => tr!(
-            "The orchestrator picks the model and effort from the task",
-            "El orquestador elige modelo y esfuerzo según la tarea"
-        ),
-        "light" => tr!(
-            "A quick, cheaper model for small, clear work",
-            "Un modelo rápido y barato para trabajo pequeño y claro"
-        ),
-        "normal" => tr!(
-            "Claude's default model and effort",
-            "El modelo y el esfuerzo por defecto de Claude"
-        ),
-        "hard" => tr!(
-            "The strongest model and the most effort",
-            "El modelo más potente y el máximo esfuerzo"
-        ),
-        _ => return None,
-    };
-    Some(text.into())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::i18n;
-    use alondra_core::options::OptionsFile;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn form() -> OptionsForm {
-        let file = OptionsFile::parse("[[option]]\nid = \"far\"\nlabel = \"Hasta dónde\"\nkind = \"choice\"\nvalues = [{ id = \"merge\", label = \"merge\" }, { id = \"beta\", label = \"beta\", description = \"Sube una beta\" }]\n[[option]]\nid = \"device\"\nlabel = \"Device\"\nkind = \"toggle\"\n").unwrap();
-        let mut f = OptionsForm::default();
-        f.loaded(
-            None,
-            vec!["Recent".into(), "Older".into(), "Here".into()],
-            file.catalog(None),
-            None,
-        );
-        f.suggested = Some("Here".into());
-        f
+    fn fixture(name: &str) -> View {
+        serde_json::from_value(crate::tui::parity::view_fixture(name)).unwrap()
     }
 
-    fn keys(f: &mut OptionsForm, codes: &[KeyCode]) {
-        for c in codes {
-            f.key(key(*c));
+    pub(crate) fn new_request() -> OptionsForm {
+        let mut form = OptionsForm::new("new_request");
+        form.loaded(&fixture("new-request-ios.json"));
+        form
+    }
+
+    pub(crate) fn schedule() -> OptionsForm {
+        let mut form = OptionsForm::new("schedule:new");
+        form.loaded(&fixture("schedule-new-ios.json"));
+        form
+    }
+
+    fn keys(form: &mut OptionsForm, codes: &[KeyCode]) {
+        for code in codes {
+            form.key(key(*code));
         }
     }
 
     #[test]
-    fn each_option_is_a_row_whose_values_open_in_a_list() {
+    fn the_new_request_rows_are_the_servers_fields_project_and_issue_first() {
         i18n::set_for_this_thread(i18n::Lang::En);
-        let mut f = form();
-        assert!(
-            matches!(f.key(key(KeyCode::Down)), FormKey::NotMine),
-            "while typing, arrows are text"
-        );
-        keys(
-            &mut f,
-            &[
-                KeyCode::Tab,
-                KeyCode::Down,
-                KeyCode::Down,
-                KeyCode::Down,
-                KeyCode::Down,
-            ],
-        );
-        assert_eq!(
-            f.focus,
-            Some(4),
-            "rows: project, issue, PRs, effort, how far"
-        );
-        f.key(key(KeyCode::Enter));
-        let Some(Popup::Values { sel, .. }) = &f.popup else {
-            panic!("Enter opens the values")
-        };
-        assert_eq!(*sel, 0, "the list opens on the current value");
-        let labels: Vec<(String, Option<String>)> = f
-            .entries(2)
-            .into_iter()
-            .map(|e| (e.label, e.description))
-            .collect();
+        let form = new_request();
+        let labels: Vec<_> = form.rows_shown().into_iter().map(|(l, v, _)| (l, v)).collect();
         assert_eq!(
             labels,
             [
-                ("merge".to_string(), None),
-                ("beta".into(), Some("Sube una beta".into()))
+                ("Project", "The orchestrator picks the project"),
+                ("Issue", "none"),
+                ("PRs", "Review each one"),
+                ("Effort", "Auto"),
             ]
+            .map(|(l, v)| (l.to_owned(), v.to_owned()))
         );
-        keys(&mut f, &[KeyCode::Down, KeyCode::Enter]);
-        assert!(f.popup.is_none());
-        assert_eq!(
-            f.chosen,
-            BTreeMap::from([("far".into(), Choice::Value("beta".into()))])
-        );
-        keys(&mut f, &[KeyCode::Enter, KeyCode::Up, KeyCode::Enter]);
-        assert!(f.chosen.is_empty(), "back to the default sends nothing");
-        keys(
-            &mut f,
-            &[
-                KeyCode::Up,
-                KeyCode::Enter,
-                KeyCode::Down,
-                KeyCode::Down,
-                KeyCode::Enter,
-            ],
-        );
-        assert_eq!(
-            f.chosen,
-            BTreeMap::from([(EFFORT.into(), Choice::Value("normal".into()))])
-        );
-        keys(
-            &mut f,
-            &[KeyCode::Down, KeyCode::Down, KeyCode::Enter, KeyCode::Esc],
-        );
-        assert!(
-            f.popup.is_none() && f.focus == Some(5),
-            "Esc closes only the list"
-        );
-        let body = f.request("request-1", "hola", &[]);
-        assert_eq!(
-            body,
-            json!({"request_id": "request-1", "text": "hola", "attachments": [], "project": null, "options": {"effort": "normal"}})
-        );
+        assert_eq!(form.primary().map(|f| f.id.as_str()), Some("text"));
     }
 
     #[test]
-    fn the_project_list_filters_as_you_type_with_this_directorys_project_first() {
-        let mut f = form();
-        assert_eq!(
-            f.project_choices(""),
-            [
-                None,
-                Some("Here".into()),
-                Some("Recent".into()),
-                Some("Older".into())
-            ]
-        );
-        assert_eq!(
-            f.project_choices("re"),
-            [Some("Here".into()), Some("Recent".into())]
-        );
-        keys(
-            &mut f,
-            &[
-                KeyCode::Tab,
-                KeyCode::Enter,
-                KeyCode::Char('o'),
-                KeyCode::Char('l'),
-            ],
-        );
-        match f.key(key(KeyCode::Enter)) {
-            FormKey::Reload(p) => assert_eq!(p.as_deref(), Some("Older")),
-            _ => panic!("picking a project loads its options"),
-        }
-        keys(&mut f, &[KeyCode::Char('p')]);
-        match f.key(key(KeyCode::Enter)) {
-            FormKey::Reload(p) => {
-                assert_eq!(p, None, "the first entry lets the orchestrator decide")
-            }
-            _ => panic!("a change reloads"),
-        }
-    }
-
-    fn issue(repo: &str, number: u64, title: &str) -> Issue {
-        Issue {
-            repo: repo.into(),
-            number,
-            title: title.into(),
-            url: format!("https://github.com/{repo}/issues/{number}"),
-            author: None,
-            association: None,
-            labels: vec![],
-            updated_at: None,
-            comments: 0,
-        }
+    fn a_choice_row_opens_its_values_and_enter_sets_one() {
+        let mut form = new_request();
+        keys(&mut form, &[KeyCode::Tab, KeyCode::Down, KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Enter]);
+        assert!(form.popup.is_none());
+        assert_eq!(form.values["pr"], json!("auto_merge"));
+        assert!(matches!(form.key(key(KeyCode::Down)), FormKey::Handled));
     }
 
     #[test]
-    fn the_issue_row_opens_the_issues_and_picking_one_picks_its_project() {
-        let mut f = form();
-        f.key(key(KeyCode::Tab));
-        f.key(key(KeyCode::Down));
-        assert!(matches!(
-            f.key(key(KeyCode::Enter)),
-            FormKey::LoadIssues(false)
-        ));
-        f.issues_loaded(Ok((
-            vec![
-                issue("me/Recent", 1, "Crash on launch"),
-                issue("me/B", 2, "Slow sync"),
-                issue("x/Other", 3, "Crash in export"),
-            ],
-            None,
-        )));
-        for c in "crash".chars() {
-            f.key(key(KeyCode::Char(c)));
+    fn the_reloading_choice_filters_as_you_type_and_asks_for_its_fields() {
+        let mut form = new_request();
+        keys(&mut form, &[KeyCode::Tab, KeyCode::Enter]);
+        assert!(matches!(form.popup, Some(Popup::Filter { .. })));
+        for c in "garden".chars() {
+            form.key(key(KeyCode::Char(c)));
         }
-        let Some(Popup::Issues(p)) = &f.popup else {
-            panic!("the list is open")
+        match form.key(key(KeyCode::Enter)) {
+            FormKey::Reload(project) => assert_eq!(project, "Demo Garden"),
+            _ => panic!("picking another project reloads the form"),
+        }
+        assert_eq!(form.values["project"], json!("Demo Garden"));
+    }
+
+    #[test]
+    fn picking_the_project_already_chosen_does_not_reload() {
+        let mut form = new_request();
+        keys(&mut form, &[KeyCode::Tab, KeyCode::Enter]);
+        assert!(matches!(form.key(key(KeyCode::Enter)), FormKey::Handled));
+    }
+
+    #[test]
+    fn the_issue_row_loads_issues_and_picking_one_picks_its_project() {
+        let mut form = new_request();
+        keys(&mut form, &[KeyCode::Tab, KeyCode::Down]);
+        assert!(matches!(form.key(key(KeyCode::Enter)), FormKey::LoadIssues(false)));
+        let issue = |repo: &str| Issue {
+            repo: repo.into(), number: 7, title: "Crash".into(), url: String::new(),
+            author: None, association: None, labels: vec![], updated_at: None, comments: 0,
         };
-        assert_eq!(
-            p.visible()
-                .iter()
-                .map(|i| i.reference())
-                .collect::<Vec<_>>(),
-            ["me/Recent#1", "x/Other#3"]
-        );
-        match f.key(key(KeyCode::Enter)) {
-            FormKey::Reload(p) => assert_eq!(p.as_deref(), Some("Recent")),
-            _ => panic!("the issue's repo names a known project"),
+        form.issues_loaded(Ok((vec![issue("me/demo garden")], None)));
+        match form.key(key(KeyCode::Enter)) {
+            FormKey::Reload(project) => assert_eq!(project, "Demo Garden"),
+            _ => panic!("an issue of a known project picks it"),
         }
-        assert_eq!(f.request("r", "x", &[])["issue"], "me/Recent#1");
-        assert!(matches!(
-            f.key(key(KeyCode::Char('i'))),
-            FormKey::LoadIssues(false)
-        ));
-        assert!(matches!(
-            f.key(KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)),
-            FormKey::LoadIssues(true)
-        ));
-        f.issues_loaded(Err("gh: not logged in".into()));
-        f.key(key(KeyCode::Esc));
-        f.key(key(KeyCode::Char('x')));
-        assert!(
-            f.request("r", "x", &[]).get("issue").is_none(),
-            "x drops the issue"
-        );
+        assert_eq!(form.values["issue"], json!("me/demo garden#7"));
+        keys(&mut form, &[KeyCode::Char('x')]);
+        assert!(!form.values.contains_key("issue"));
     }
 
     #[test]
-    fn rows_speak_the_users_language_and_user_options_keep_their_own_words() {
-        i18n::set_for_this_thread(i18n::Lang::Es);
-        let f = form();
-        let rows: Vec<String> = f
-            .rows_shown()
-            .into_iter()
-            .map(|(l, v, _)| format!("{l}: {v}"))
-            .collect();
-        assert_eq!(
-            rows,
-            [
-                "Proyecto: lo decide el orquestador",
-                "Issue: ninguna",
-                "PRs: revisar cada una",
-                "Esfuerzo: automático",
-                "Hasta dónde: merge",
-                "Device: no"
-            ]
-        );
-        assert_eq!(
-            f.entries(1)[0].description.as_deref(),
-            Some("El orquestador elige modelo y esfuerzo según la tarea")
-        );
+    fn a_pasted_issue_link_is_accepted_when_it_is_not_listed() {
+        let mut form = new_request();
+        keys(&mut form, &[KeyCode::Tab, KeyCode::Char('i')]);
+        form.issues_loaded(Ok((vec![], None)));
+        for c in "https://github.com/me/app/issues/9".chars() {
+            form.key(key(KeyCode::Char(c)));
+        }
+        form.key(key(KeyCode::Enter));
+        assert_eq!(form.values["issue"], json!("me/app#9"));
     }
 
     #[test]
-    fn a_new_catalog_drops_choices_that_no_longer_exist() {
-        let mut f = form();
-        f.chosen.insert("gone".into(), Choice::Toggle(true));
-        f.chosen.insert("far".into(), Choice::Value("beta".into()));
-        let specs = f.specs.clone();
-        f.loaded(None, vec![], specs, Some("options.toml: broken".into()));
-        assert_eq!(f.chosen.keys().collect::<Vec<_>>(), ["far"]);
-        assert_eq!(f.error.as_deref(), Some("options.toml: broken"));
-        let before = f.specs.len();
-        f.loaded(Some("A".into()), vec![], vec![], None);
+    fn rows_follow_the_visibility_rules_of_the_schedule_form() {
+        let mut form = schedule();
+        let shown = |form: &OptionsForm| form.rows_shown().into_iter().map(|(l, _, _)| l).collect::<Vec<_>>();
+        assert!(shown(&form).contains(&"Time".to_owned()) || !shown(&form).is_empty());
+        assert!(!shown(&form).iter().any(|l| l == "Weekday"));
+        form.set(form.fields.iter().position(|f| f.id == "repeat").unwrap(), json!("weekly"));
+        assert!(shown(&form).iter().any(|l| l == "Weekday"));
+    }
+
+    #[test]
+    fn text_toggle_and_stepper_rows_edit_in_place() {
+        let mut form = schedule();
+        let repeat = form.fields.iter().position(|f| f.id == "repeat").unwrap();
+        form.set(repeat, json!("every_days"));
+        let at = |form: &OptionsForm, id: &str| {
+            let field = form.fields.iter().position(|f| f.id == id).unwrap();
+            form.rows().iter().position(|r| *r == field).unwrap()
+        };
+        form.focus = Some(at(&form, "interval"));
+        keys(&mut form, &[KeyCode::Enter, KeyCode::Backspace, KeyCode::Char('3'), KeyCode::Enter]);
+        assert_eq!(form.values["interval"], json!(3));
+        form.focus = Some(at(&form, "active"));
+        keys(&mut form, &[KeyCode::Enter]);
+        assert_eq!(form.values["active"], json!(false));
+    }
+
+    #[test]
+    fn submitted_carries_the_text_the_attachments_and_only_visible_rows() {
+        let mut form = new_request();
+        let sent = form.submitted("Fix the crash", &["att-1".into()]);
         assert_eq!(
-            f.specs.len(),
-            before,
-            "an answer for a project no longer chosen is dropped"
+            sent,
+            json!({
+                "text": "Fix the crash", "attachments": ["att-1"], "project": "", "issue": "",
+                "pr": "review", "effort": "auto"
+            })
         );
+        assert!(form.submitted("Fix the crash", &[]).get("attachments").is_none());
+        let schedule = schedule();
+        let sent = schedule.submitted("Check the beta", &[]);
+        assert!(sent.get("weekday").is_none() && sent["time"] == json!("09:00"));
+        form.set(form.fields.len() - 1, json!("me/app#3"));
+        assert_eq!(form.submitted("x", &[])["issue"], json!("me/app#3"));
+    }
+
+    #[test]
+    fn a_reload_keeps_what_was_chosen_while_it_is_still_offered() {
+        let mut form = new_request();
+        let pr = form.fields.iter().position(|f| f.id == "pr").unwrap();
+        form.set(pr, json!("auto_merge"));
+        form.loaded(&fixture("new-request-ios.json"));
+        assert_eq!(form.values["pr"], json!("auto_merge"));
+        let effort = form.fields.iter().position(|f| f.id == "effort").unwrap();
+        form.set(effort, json!("gone"));
+        form.loaded(&fixture("new-request-ios.json"));
+        assert_eq!(form.values["effort"], json!("auto"));
     }
 }

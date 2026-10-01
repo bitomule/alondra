@@ -1,7 +1,6 @@
-import AlondraAPIClient
-import AlondraViews
-import AlondraNotificationActions
-import AlondraNotificationPayload
+import AlondraTransport
+import AlondraContract
+import AlondraNotifications
 import CryptoKit
 import Foundation
 import Testing
@@ -96,7 +95,7 @@ import Testing
         func entry(submit: @escaping @Sendable (ActionRequest) async -> NotificationActionResult = { _ in .noLongerPending }) -> NotificationRoutingCoordinator.Entry {
             let scope = NotificationBindingScope(relayURL: URL(string: "https://relay.example")!, ownerSub: owner,
                 macID: mac, deviceID: "phone", credentialRevision: mac)
-            return .init(client: ServiceNotificationClient(identity: mac, binding: binding, register: { _, _, _, _, _ in }, submit: submit),
+            return .init(client: NotificationClient(identity: mac, binding: binding, register: { _, _, _, _, _ in }, submit: submit),
                 context: NotificationDecryptionContext(macID: mac, deviceID: "phone", binding: binding.value,
                     macSigningKey: signer.publicKey.rawRepresentation, agreementPrivateKey: recipient.rawRepresentation, scope: scope))
         }

@@ -1,5 +1,5 @@
-import AlondraConnectionFeature
-import AlondraContracts
+import AlondraFeatures
+import AlondraContract
 import SwiftUI
 
 /// Shown when neither this Mac's daemon nor a remote Mac is available. The window keeps

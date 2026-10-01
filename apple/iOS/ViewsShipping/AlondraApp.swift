@@ -1,5 +1,5 @@
-import AlondraViewsAppComposition
-import AlondraShared
+import AlondraAccount
+import AlondraDesign
 import SwiftUI
 import UIKit
 
@@ -9,7 +9,7 @@ struct AlondraApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ServiceAppScene(owner: delegate.cloudPairing, notifications: delegate.notifications)
+            AppScene(owner: delegate.cloudPairing, notifications: delegate.notifications)
                 .environment(delegate.cloudPairing)
                 .tint(Palette.dawn)
         }
@@ -19,8 +19,8 @@ struct AlondraApp: App {
 /// Process ownership is limited to credentials and the approved service session.
 /// Each WindowGroup instance creates its own presentation stores.
 final class AppDelegate: NSObject, UIApplicationDelegate {
-    let notifications = ServiceNotificationRuntime()
-    lazy var cloudPairing = makeCloudPairingOwner(notifications: notifications)
+    let notifications = NotificationRuntime()
+    lazy var cloudPairing = makeAccountSession(notifications: notifications)
 
     func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
         let owner = cloudPairing

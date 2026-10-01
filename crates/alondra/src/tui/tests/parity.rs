@@ -2,7 +2,7 @@
 
 use super::*;
 
-fn view_fixture(name: &str) -> serde_json::Value {
+pub(in crate::tui) fn view_fixture(name: &str) -> serde_json::Value {
     let path = match std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR")) {
         Ok(root) => std::path::PathBuf::from(root)
             .join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into()))
@@ -558,7 +558,7 @@ fn views_task_and_agent_footers_restore_reviewed_shortcuts() {
     let keys = crate::tui::draw::footer_keys(&app);
     assert!(keys.iter().any(|(key, label)| key == "/" && label == "search"));
     assert!(keys.iter().any(|(key, label)| key == "r" && label == "message"));
-    assert!(keys.iter().any(|(key, label)| key == "x" && label == "close the session"));
+    assert!(keys.iter().any(|(key, label)| key == "x" && label == "close node"));
 }
 
 #[test]
@@ -726,66 +726,138 @@ fn task_detail_view_is_loaded_and_its_action_posts_with_the_document_epoch() {
     assert_eq!(requests[0].1["data_epoch"], "test-epoch");
 }
 
+fn form_msg(view: &str, fixture: &str) -> Msg {
+    Msg::FormView {
+        view: view.into(),
+        project: None,
+        result: Ok(serde_json::from_value(view_fixture(fixture)).unwrap()),
+    }
+}
+
 #[test]
-fn view_form_opens_editor_with_its_bound_action_and_epoch() {
+fn n_opens_the_new_work_composer_with_the_servers_rows() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    press(&mut app, KeyCode::Char('n'));
+    assert!(matches!(
+        app.composer.as_ref().map(|c| &c.target),
+        Some(Target::Form { view }) if view == "new_request"
+    ));
+    assert!(app.view_navigation.is_empty(), "the form is the composer, not a view to edit elsewhere");
+    assert!(screen(&mut app, 100, 24).contains("Loading the form…"));
+
+    app.on_msg(form_msg("new_request", "new-request-ios.json"));
+    let shown = screen(&mut app, 100, 24);
+    for expected in [
+        "New work", "Project", "The orchestrator picks the project", "Issue", "none", "PRs",
+        "Review each one", "Effort", "Auto", "Tab",
+    ] {
+        assert!(shown.contains(expected), "{expected} missing from {shown}");
+    }
+}
+
+#[test]
+fn new_work_sends_the_typed_text_and_the_chosen_rows_by_action_id() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    press(&mut app, KeyCode::Char('n'));
+    app.on_msg(form_msg("new_request", "new-request-ios.json"));
+    typed(&mut app, "Fix the crash");
+    for code in [
+        KeyCode::Tab, KeyCode::Down, KeyCode::Down, KeyCode::Enter, KeyCode::Down, KeyCode::Enter,
+        KeyCode::Esc,
+    ] {
+        press(&mut app, code);
+    }
+    assert!(screen(&mut app, 100, 24).contains("Auto-merge"));
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].0, "/actions");
+    assert_eq!(sent[0].1["action_id"], "new_request:view@0");
+    assert_eq!(sent[0].1["data_epoch"], "test-epoch");
+    assert_eq!(
+        sent[0].1["input"],
+        serde_json::json!({"fields": {
+            "text": "Fix the crash", "project": "", "issue": "", "pr": "auto_merge", "effort": "auto"
+        }})
+    );
+}
+
+#[test]
+fn new_work_without_text_stays_open_and_says_what_is_missing() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    press(&mut app, KeyCode::Char('n'));
+    app.on_msg(form_msg("new_request", "new-request-ios.json"));
+    press(&mut app, KeyCode::Enter);
+    assert!(posted(&app).is_empty());
+    assert!(app.composer.is_some());
+    assert!(flash(&app).contains("What do you want done?"), "{}", flash(&app));
+}
+
+#[test]
+fn schedule_create_is_a_composer_whose_rows_follow_the_repeat() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.schedules_open = true;
+    app.home_view = Some(serde_json::from_value(view_fixture("schedules-ios.json")).unwrap());
+    press(&mut app, KeyCode::Char('n'));
+    assert!(matches!(
+        app.composer.as_ref().map(|c| &c.target),
+        Some(Target::Form { view }) if view == "schedule:new"
+    ));
+    app.on_msg(form_msg("schedule:new", "schedule-new-ios.json"));
+    let shown = screen(&mut app, 100, 30);
+    for expected in ["Save Schedule", "Name", "Repeat", "Daily", "Time", "09:00", "Active", "yes"] {
+        assert!(shown.contains(expected), "{expected} missing from {shown}");
+    }
+    assert!(!shown.contains("Weekday"));
+
+    typed(&mut app, "Check the beta");
+    press(&mut app, KeyCode::Enter);
+    assert!(posted(&app).is_empty());
+    assert!(flash(&app).contains("Name"), "{}", flash(&app));
+
+    for code in [KeyCode::Tab, KeyCode::Down, KeyCode::Enter] {
+        press(&mut app, code);
+    }
+    typed(&mut app, "Beta check");
+    for code in [KeyCode::Enter, KeyCode::Esc, KeyCode::Enter] {
+        press(&mut app, code);
+    }
+    let sent = posted(&app);
+    assert_eq!(sent.len(), 1);
+    assert_eq!(sent[0].1["input"]["fields"]["name"], "Beta check");
+    assert_eq!(sent[0].1["input"]["fields"]["mission"], "Check the beta");
+    assert_eq!(sent[0].1["input"]["fields"]["time"], "09:00");
+    assert_eq!(sent[0].1["input"]["fields"]["active"], true);
+    assert!(sent[0].1["input"]["fields"].get("weekday").is_none());
+}
+
+#[test]
+fn enter_on_a_form_view_opens_it_as_a_composer_not_an_external_editor() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     app.screen = Screen::Tasks;
     app.task_sel = Some(tasks::TaskKey::Task(TaskId("t-1".into())));
-    let mut card = view_fixture("card-question.json");
+    let mut card = view_fixture("new-request-ios.json");
     card["key"] = serde_json::json!("task:t-1");
-    let mut submit = card["sections"][0]["items"][0]["actions"][0].clone();
-    submit["id"] = serde_json::json!("sched_save:s-new@1");
-    submit["label"] = serde_json::json!("Save schedule");
-    submit["key"] = serde_json::json!("e");
-    submit["attachments"] = serde_json::json!(true);
-    card["sections"][0]["items"].as_array_mut().unwrap().push(serde_json::json!({
-        "type": "form",
-        "id": "schedule",
-        "fields": [
-            {"id": "title", "label": "Title", "kind": {"kind": "text", "placeholder": null}, "value": "Daily check", "required": true, "reload_on_change": false},
-            {"id": "uploads", "label": "Attachments", "kind": {"kind": "attachments"}, "value": [], "required": false, "reload_on_change": false}
-        ],
-        "submit": submit
-    }));
     app.on_msg(Msg::ViewCard {
         key: "task:t-1".into(),
         result: Ok(serde_json::from_value(card).unwrap()),
     });
-
+    assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)), Flow::Go));
     assert!(matches!(
-        app.on_key(KeyEvent::new(KeyCode::Char('e'), KeyModifiers::NONE)),
-        Flow::EditViewForm { action_id, data_epoch, fields, attachment_field, .. }
-            if action_id == "sched_save:s-new@1"
-                && data_epoch == "test-epoch"
-                && fields.len() == 2
-                && attachment_field.as_deref() == Some("uploads")
+        app.composer.as_ref().map(|c| &c.target),
+        Some(Target::Form { view }) if view == "task:t-1"
     ));
-}
-
-#[test]
-fn schedule_view_submission_sends_only_form_fields() {
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    let fields = serde_json::json!({"title": "Daily check", "hour": 9});
-    app.submit_view_fields(
-        "sched_save:hf-weekly-2026-09-30@2",
-        "test-epoch",
-        fields.clone(),
-    );
-    let requests = posted(&app);
-    assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].0, "/actions");
-    assert_eq!(
-        requests[0].1["action_id"],
-        "sched_save:hf-weekly-2026-09-30@2"
-    );
-    assert_eq!(requests[0].1["data_epoch"], "test-epoch");
-    assert_eq!(
-        requests[0].1["input"],
-        serde_json::json!({"fields": fields})
-    );
 }
 
 #[test]
@@ -893,4 +965,271 @@ fn detail_hides_the_disabled_accept_action() {
 
     assert!(!visible.iter().any(|action| action.id.starts_with("accept:")));
     assert!(visible.iter().any(|action| action.id.starts_with("changes:")));
+}
+
+fn question_card() -> alondra_core::views::View {
+    let mut card = view_fixture("card-question.json");
+    card["sections"][0]["items"][0]["timestamps"] =
+        serde_json::json!([{"role": "created", "at": "2026-09-30T09:58:00Z", "format": "relative"}]);
+    serde_json::from_value(card).unwrap()
+}
+
+fn text_of(lines: &[ratatui::text::Line<'_>]) -> Vec<String> {
+    lines.iter().map(|line| line.to_string()).collect()
+}
+
+#[test]
+fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let card = question_card();
+    let lines = text_of(&crate::tui::view_render::document_lines(&card, 80));
+    let header = &lines[0];
+    assert!(
+        header.starts_with("? Question · Alondra · iOS · Demo Garden · ") && header.ends_with(" ago"),
+        "{header}"
+    );
+    assert_eq!(lines[1], "Restore the native review experience");
+    assert_eq!(
+        lines.iter().filter(|line| line.contains("Restore the native review experience")).count(),
+        1,
+        "{lines:#?}"
+    );
+    assert!(lines.iter().any(|line| line == "Mission · Polish the Alondra beta"));
+}
+
+#[test]
+fn detail_pane_is_titled_with_the_kind_of_the_card() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("home-tui.json")).unwrap())));
+    app.reconcile();
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{}", question_id()),
+        result: Ok(question_card()),
+    });
+    let shown = screen(&mut app, 120, 26);
+    assert!(shown.contains(" question "), "{shown}");
+    assert!(!shown.contains(" Detail "), "{shown}");
+}
+
+#[test]
+fn reader_header_names_the_real_kind_and_the_agent() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let id = question_id();
+    app.view_navigation.push(format!("card:{id}"));
+    app.card_view = Some(question_card());
+    app.open_reader();
+    let shown = screen(&mut app, 120, 20);
+    assert!(
+        shown.contains("? question · Alondra · iOS · Restore the native review experience"),
+        "{shown}"
+    );
+    assert!(!shown.contains("item"), "{shown}");
+}
+
+#[test]
+fn before_the_first_answer_the_screen_says_it_is_connecting_or_not_answering() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let shown = screen(&mut app, 100, 20);
+    assert!(shown.contains("Connecting to alondrad…") && shown.contains(" Inbox "), "{shown}");
+    app.offline = true;
+    assert!(screen(&mut app, 100, 20).contains("alondrad is not responding · retrying…"));
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    assert!(screen(&mut app, 100, 20).contains("alondrad no responde · reintentando…"));
+}
+
+#[test]
+fn an_empty_inbox_says_all_caught_up_and_offers_the_next_step() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let mut home = view_fixture("home-tui.json");
+    home["sections"] = serde_json::json!([]);
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(home).unwrap())));
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let shown = screen(&mut app, 100, 20);
+    for expected in [
+        "✓ All caught up", "Nobody is waiting for you and there is",
+        "n order new work", "Tab see the tasks",
+    ] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let shown = screen(&mut app, 100, 20);
+    assert!(shown.contains("✓ Todo al día") && shown.contains("Tab mira las tareas"), "{shown}");
+}
+
+#[test]
+fn footers_name_the_next_screen_the_pane_key_and_the_terminal() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let has = |app: &App, key: &str, label: &str| {
+        crate::tui::draw::footer_keys(app).iter().any(|(k, l)| k == key && l == label)
+    };
+    app.home_view = Some(serde_json::from_value(view_fixture("home-tui.json")).unwrap());
+    assert!(has(&app, "Tab", "tasks") && has(&app, "^d/^u", "scroll detail") && has(&app, "o", "expand"));
+    app.screen = Screen::Tasks;
+    app.home_view = Some(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap());
+    assert!(has(&app, "h/l", "pane") && has(&app, "⏎", "its terminal") && has(&app, "Tab", "fleet"));
+    app.screen = Screen::Fleet;
+    app.home_view = Some(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap());
+    assert!(has(&app, "h/l", "pane") && has(&app, "⏎", "its terminal (← returns)") && has(&app, "Tab", "inbox"));
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    assert!(has(&app, "Tab", "bandeja") && has(&app, "⏎", "su terminal (← vuelve)"));
+}
+
+#[test]
+fn a_narrow_footer_keeps_tab_new_and_quit() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.home_view = Some(serde_json::from_value(view_fixture("home-tui.json")).unwrap());
+    app.on_msg(Msg::ViewCard {
+        key: format!("card:{}", question_id()),
+        result: Ok(question_card()),
+    });
+    app.sel = Some(Key(question_id()));
+    let shown = screen(&mut app, 70, 20);
+    let foot: String = shown.chars().rev().take(70 * 2).collect::<Vec<_>>().into_iter().rev().collect();
+    assert!(foot.contains("Tab tasks") && foot.contains("n new") && foot.contains("q quit"), "{foot}");
+}
+
+#[test]
+fn enter_on_a_task_or_node_opens_its_terminal() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.view_navigation.push("task:t-1".into());
+    let mut task = view_fixture("card-question.json");
+    task["view"] = serde_json::json!("task");
+    task["key"] = serde_json::json!("task:t-1");
+    task["sections"] = serde_json::json!([{"id": "attach", "collapsed": false, "items": [{
+        "type": "row", "id": "attach", "icon": "node", "title": "Attach", "depth": 0, "struck": false,
+        "link": {"kind": "local", "local": {"kind": "attach", "session": "short-a-1"}}
+    }]}]);
+    app.card_view = Some(serde_json::from_value(task).unwrap());
+    assert!(matches!(
+        app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
+        Flow::Attach(session) if session == "short-a-1"
+    ));
+    app.card_view = None;
+    assert!(matches!(app.on_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)), Flow::Go));
+    assert!(flash(&app).contains("no terminal"), "{}", flash(&app));
+}
+
+fn status_with(gauges: serde_json::Value) -> alondra_core::views::Status {
+    serde_json::from_value(serde_json::json!({
+        "version": "1", "summary": "", "badge": 0,
+        "counts": [
+            {"id": "inbox", "label": "Inbox", "value": 4}, {"id": "tasks", "label": "Tasks", "value": 1},
+            {"id": "agents", "label": "Agents", "value": 1}, {"id": "working", "label": "working", "value": 2},
+            {"id": "waiting", "label": "waiting", "value": 1}
+        ],
+        "gauges": gauges,
+        "orchestrator": {"text": "idle", "tone": "neutral"}
+    }))
+    .unwrap()
+}
+
+fn production_gauges() -> serde_json::Value {
+    serde_json::json!([
+        {"id": "memory", "label": "RAM", "value": 0.42, "text": "42%", "level": "calm"},
+        {"id": "disk", "label": "Disk", "value": 0.72, "text": "120 GB free", "level": "calm"}
+    ])
+}
+
+#[test]
+fn header_has_the_alondra_badge_the_bars_and_how_many_are_working() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    app.view_status = Some(status_with(production_gauges()));
+    let shown = screen(&mut app, 140, 6);
+    for expected in [" Alondra ", "Fleet 1", "2 working", "RAM ▰▰▱▱ 42%", "Disk ▰▰▰▱ 120 GB free"] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+    assert!(shown.contains("42%  Disk"), "the gauges are separated: {shown}");
+    assert!(!shown.contains("Local"));
+}
+
+#[test]
+fn header_gauges_come_in_the_servers_language() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    app.view_status = Some(status_with(serde_json::json!([
+        {"id": "disk", "label": "Disco", "value": 0.72, "text": "120 GB libres", "level": "calm"}
+    ])));
+    let shown = screen(&mut app, 140, 6);
+    assert!(shown.contains("Flota 1") && shown.contains("Disco ▰▰▰▱ 120 GB libres"), "{shown}");
+}
+
+#[test]
+fn header_drops_the_gauge_names_before_it_overflows() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    app.view_status = Some(status_with(production_gauges()));
+    let shown = screen(&mut app, 80, 6);
+    assert!(shown.contains("▰▰▱▱ 42%") && !shown.contains("RAM"), "{shown}");
+    let shown = screen(&mut app, 50, 6);
+    assert!(!shown.contains("▰"), "{shown}");
+}
+
+#[test]
+fn tasks_open_on_the_first_task_and_leave_scheduled_to_the_s_key() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap())));
+    assert_eq!(
+        app.sel.as_ref().map(|key| key.0.as_str()),
+        Some("r-9f2156b5a8894e53901f0af576dff6a2")
+    );
+    let shown = screen(&mut app, 120, 20);
+    assert!(shown.contains("Polish the Alondra beta") && shown.contains("Scheduled [s]"), "{shown}");
+    assert!(!shown.contains("Scheduled Tasks"), "{shown}");
+}
+
+#[test]
+fn an_empty_fleet_detail_summarises_the_fleet_from_the_servers_counts() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Fleet;
+    app.on_msg(Msg::ViewHome(Ok(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap())));
+    app.sel = None;
+    app.card_view_asked = None;
+    let shown = screen(&mut app, 120, 20);
+    for expected in ["The fleet right now", "0 working", "1 waiting"] {
+        assert!(shown.contains(expected), "{expected}: {shown}");
+    }
+}
+
+#[test]
+fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
+    for lang in [crate::i18n::Lang::En, crate::i18n::Lang::Es] {
+        crate::i18n::set_for_this_thread(lang);
+        let help: String = crate::tui::draw::help_lines()
+            .iter()
+            .map(|line| line.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(help.contains("RAM") && !help.contains("CPU"), "{help}");
+        assert!(!help.to_lowercase().contains("agent"), "{help}");
+        assert!(!help.contains("sesión") && !help.contains("session"), "{help}");
+    }
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let help: String = crate::tui::draw::help_lines().iter().map(|line| line.to_string()).collect();
+    assert!(help.contains("scheduled tasks: n creates one") && help.contains(":fleet"));
 }

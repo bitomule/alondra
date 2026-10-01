@@ -1,4 +1,3 @@
-import AlondraNotificationPayload
 import Foundation
 
 /// Resolves authenticated notifications to an immutable approved session. Selection is
@@ -6,9 +5,9 @@ import Foundation
 @MainActor
 public final class NotificationRoutingCoordinator {
     public struct Entry {
-        public let client: ServiceNotificationClient
+        public let client: NotificationClient
         public let context: NotificationDecryptionContext
-        public init(client: ServiceNotificationClient, context: NotificationDecryptionContext) {
+        public init(client: NotificationClient, context: NotificationDecryptionContext) {
             self.client = client; self.context = context
         }
     }
@@ -54,9 +53,9 @@ public final class NotificationRoutingCoordinator {
     /// The outer binding is only a lookup hint. No authority escapes before signature,
     /// recipient, route, expiry and inner binding have all been checked by the decoder.
     public func authorize(_ raw: Data) throws -> Authorized {
-        let hint = try ServiceNotificationDecoder.bindingHint(raw)
+        let hint = try NotificationDecoder.bindingHint(raw)
         guard let live = entries[hint] else { throw NotificationDecryptionError.invalidPayload }
-        let plaintext = try ServiceNotificationDecoder.decrypt(raw, context: live.entry.context)
+        let plaintext = try NotificationDecoder.decrypt(raw, context: live.entry.context)
         guard let payload = try JSONSerialization.jsonObject(with: plaintext) as? [AnyHashable: Any],
               let bound = NotificationPayload.BoundItem(userInfo: payload), bound.binding == hint else {
             throw NotificationDecryptionError.invalidPayload

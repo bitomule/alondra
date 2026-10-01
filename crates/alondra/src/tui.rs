@@ -205,7 +205,7 @@ pub struct Reader {
     pub key: Key,
     pub agent: String,
     pub title: String,
-    pub kind: &'static str,
+    pub kind: String,
     pub glyph: &'static str,
     pub color: ratatui::style::Color,
     parts: Vec<Part>,
@@ -353,8 +353,6 @@ pub enum Target {
         option_id: Option<String>,
         required: bool,
         allow_attachments: bool,
-        form_fields: Option<Value>,
-        attachment_field: Option<String>,
     },
     /// A message to an agent or the orchestrator; the text is filled in when it is sent.
     Message {
@@ -363,7 +361,10 @@ pub enum Target {
         name: String,
         title: String,
     },
-    NewRequest,
+    /// A server form: new work, a schedule. `view` is the view its fields come from.
+    Form {
+        view: String,
+    },
     Comment {
         block: usize,
         quote: String,
@@ -399,7 +400,7 @@ impl Target {
                 );
                 Some(format!("message:{:?}:{agent}:{interaction}:{pr}", m.kind))
             }
-            Target::NewRequest => Some("new".into()),
+            Target::Form { view } => Some(format!("form:{view}")),
             Target::Comment { .. } | Target::General { .. } => None,
         }
     }
@@ -473,17 +474,10 @@ enum Msg {
         seq: u64,
         image: image::DynamicImage,
     },
-    Options {
+    FormView {
+        view: String,
         project: Option<String>,
-        result: Result<
-            (
-                Vec<String>,
-                Option<String>,
-                Vec<alondra_core::options::Spec>,
-                Option<String>,
-            ),
-            String,
-        >,
+        result: Result<ViewDocument, String>,
     },
     Issues(Result<(Vec<alondra_core::issues::Issue>, Option<String>), String>),
     Threads {
@@ -514,13 +508,6 @@ pub enum Flow {
         pr: PrId,
         number: u64,
         dir: std::path::PathBuf,
-    },
-    EditViewForm {
-        action_id: String,
-        label: String,
-        data_epoch: String,
-        fields: Vec<alondra_core::views::Field>,
-        attachment_field: Option<String>,
     },
 }
 
@@ -713,46 +700,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             repaint(terminal, &mut app)?;
                             break;
                         }
-                        Flow::EditViewForm {
-                            action_id,
-                            label,
-                            data_epoch,
-                            fields,
-                            attachment_field,
-                        } => {
-                            let _ = execute!(stdout(), DisableBracketedPaste);
-                            ratatui::restore();
-                            let result = edit_view_fields(&fields);
-                            *terminal = ratatui::init();
-                            let _ = execute!(stdout(), EnableBracketedPaste);
-                            match result {
-                                Ok(Some(fields)) => {
-                                    if attachment_field.is_some() {
-                                        app.compose(
-                                            Target::ViewAction {
-                                                action_id,
-                                                label,
-                                                data_epoch,
-                                                option_id: None,
-                                                required: false,
-                                                allow_attachments: true,
-                                                form_fields: Some(fields),
-                                                attachment_field,
-                                            },
-                                            "",
-                                        );
-                                    } else {
-                                        app.submit_view_fields(&action_id, &data_epoch, fields)
-                                    }
-                                }
-                                Ok(None) => {
-                                    app.flash(tr!("No changes saved", "No se guardaron cambios"))
-                                }
-                                Err(error) => app.fail(error.to_string()),
-                            }
-                            repaint(terminal, &mut app)?;
-                            break;
-                        }
                         Flow::Go => {}
                     },
                     Event::Paste(s) => app.on_paste(&s),
@@ -770,54 +717,6 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
         }
         dirty |= app.on_timers();
     }
-}
-
-fn edit_view_fields(fields: &[alondra_core::views::Field]) -> Result<Option<Value>> {
-    let values = Value::Object(
-        fields
-            .iter()
-            .filter(|field| !field.value.is_null())
-            .map(|field| (field.id.clone(), field.value.clone()))
-            .collect(),
-    );
-    let toml_value = toml::Value::try_from(&values)?;
-    let before = toml::to_string_pretty(&toml_value)?;
-    let path = std::env::temp_dir().join(format!(
-        "alondra-view-form-{}-{}.toml",
-        std::process::id(),
-        now_millis()
-    ));
-    use std::io::Write;
-    #[cfg(unix)]
-    use std::os::unix::fs::OpenOptionsExt;
-    let mut file = std::fs::OpenOptions::new();
-    file.write(true).create_new(true);
-    #[cfg(unix)]
-    file.mode(0o600);
-    file.open(&path)?.write_all(before.as_bytes())?;
-    let editor = std::env::var("EDITOR").unwrap_or_else(|_| "vi".into());
-    let status = std::process::Command::new(editor).arg(&path).status();
-    let edited = std::fs::read_to_string(&path);
-    let _ = std::fs::remove_file(&path);
-    if !status?.success() {
-        anyhow::bail!(tr!(
-            "Editor exited without saving",
-            "El editor salió sin guardar"
-        ));
-    }
-    let edited = edited?;
-    if edited == before {
-        return Ok(None);
-    }
-    let parsed: toml::Value = toml::from_str(&edited).map_err(|error| {
-        anyhow::anyhow!(trf!(
-            "Invalid form TOML: {error}",
-            "TOML del formulario no válido: {error}"
-        ))
-    })?;
-    let values: Value = serde_json::to_value(parsed)?;
-    validate_view_fields(fields, &values)?;
-    Ok(Some(values))
 }
 
 fn validate_view_fields(fields: &[alondra_core::views::Field], values: &Value) -> Result<()> {
@@ -1136,12 +1035,6 @@ impl App {
         self.detail_scroll = 0;
         self.load_selected_view();
         self.sync_open_views();
-    }
-
-    fn submit_view_fields(&mut self, action_id: &str, data_epoch: &str, fields: Value) {
-        let input = json!({"fields": fields});
-        let request = Client::action_body(data_epoch, action_id, None, input);
-        self.submit_view_request(request);
     }
 
     fn submit_view_request(&mut self, request: Value) {
@@ -1664,23 +1557,44 @@ impl App {
                     self.previews.insert(seq, p.new_resize_protocol(image));
                 }
             }
-            Msg::Options { project, result } => match result {
-                Ok((projects, suggested, specs, error)) => {
-                    if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
-                        f.suggested = suggested;
-                        f.loaded(project, projects, specs, error);
+            Msg::FormView {
+                view,
+                project,
+                result,
+            } => {
+                let Some(form) = self
+                    .composer
+                    .as_mut()
+                    .and_then(|c| c.form.as_mut())
+                    .filter(|form| form.view == view && form.reload_value() == project)
+                else {
+                    return;
+                };
+                match result {
+                    Ok(document) => {
+                        let first = !form.loaded;
+                        form.loaded(&document);
+                        if first
+                            && let Some(text) = form
+                                .primary()
+                                .and_then(|field| field.value.as_str())
+                                .filter(|text| !text.is_empty())
+                                .map(str::to_owned)
+                            && let Some(composer) = self.composer.as_mut()
+                            && composer.input.text().is_empty()
+                        {
+                            composer.input = TextInput::with(&text);
+                        }
+                    }
+                    Err(e) => {
+                        form.failed(e.clone());
+                        self.fail(trf!(
+                            "Could not load the form: {e}",
+                            "No se pudo cargar el formulario: {e}"
+                        ));
                     }
                 }
-                Err(e) => {
-                    if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
-                        f.loaded(project.clone(), vec![], vec![], Some(e.clone()));
-                    }
-                    self.fail(trf!(
-                        "Could not load the options: {e}",
-                        "No se pudieron cargar las opciones: {e}"
-                    ));
-                }
-            },
+            }
             Msg::Issues(result) => {
                 if let Some(f) = self.composer.as_mut().and_then(|c| c.form.as_mut()) {
                     f.issues_loaded(result);
@@ -1783,6 +1697,10 @@ impl App {
             self.help_key(k);
             return Flow::Go;
         }
+        if self.composer.is_some() {
+            self.composer_key(k);
+            return Flow::Go;
+        }
         if self.schedules_open {
             if let Some(flow) = self.schedule_row_key(k) {
                 return flow;
@@ -1794,10 +1712,6 @@ impl App {
             self.load_selected_view();
             self.sync_open_views();
             return flow;
-        }
-        if self.composer.is_some() {
-            self.composer_key(k);
-            return Flow::Go;
         }
         if self.cmdline.is_some() {
             return self.cmdline_key(k);
@@ -1857,9 +1771,12 @@ impl App {
                 } else {
                     Screen::Fleet
                 }),
-                KeyCode::Char('n') => {
-                    self.navigate_view("new_request");
-                }
+                KeyCode::Char('n') => self.compose(
+                    Target::Form {
+                        view: "new_request".into(),
+                    },
+                    "",
+                ),
                 KeyCode::Char('s') if self.screen == Screen::Tasks => {
                     self.schedules_open = true;
                     self.home_view = None;
@@ -1965,10 +1882,15 @@ impl App {
                 self.schedules_open = false;
                 self.reload_schedules();
             }
-            KeyCode::Char('n') => self.navigate_view("schedule:new"),
+            KeyCode::Char('n') => self.compose(
+                Target::Form {
+                    view: "schedule:new".into(),
+                },
+                "",
+            ),
             KeyCode::Char('e') => {
-                if let Some(key) = self.selected_view_key() {
-                    self.navigate_view(&key);
+                if let Some(view) = self.selected_view_key() {
+                    self.compose(Target::Form { view }, "");
                 }
             }
             KeyCode::Char('r') => self.reload_schedules(),
@@ -2053,15 +1975,19 @@ impl App {
             .draft_key()
             .and_then(|k| self.drafts.remove(&k))
             .unwrap_or_else(|| (prefill.to_string(), vec![]));
-        let form = matches!(target, Target::NewRequest).then(work::OptionsForm::default);
+        let view = match &target {
+            Target::Form { view } => Some(view.clone()),
+            _ => None,
+        };
+        let form = view.as_deref().map(work::OptionsForm::new);
         self.composer = Some(Composer {
             target,
             input: TextInput::with(&text),
             chips,
             form,
         });
-        if self.composer.as_ref().is_some_and(|c| c.form.is_some()) {
-            self.load_options(None);
+        if let Some(view) = view {
+            self.load_form(&view, None);
         }
     }
 
@@ -2112,10 +2038,23 @@ impl App {
         });
     }
 
-    /// New work is a server-owned form, including its project and option fields.
-    fn load_options(&mut self, _project: Option<String>) {
-        self.composer = None;
-        self.navigate_view("new_request");
+    /// The server's form for `view`, with the fields it offers for `project`.
+    fn load_form(&self, view: &str, project: Option<String>) {
+        let view = view.to_owned();
+        let key = match &project {
+            Some(project) => format!("{view}?project={}", crate::mcp::urlencode(project)),
+            None => view.clone(),
+        };
+        self.spawn(move |tx| {
+            let result = Client::for_tui(Duration::from_secs(25))
+                .views(&key, None)
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::FormView {
+                view,
+                project,
+                result,
+            });
+        });
     }
 
     fn cancel_composer(&mut self) {
@@ -2141,7 +2080,10 @@ impl App {
         if let Some(form) = c.form.as_mut() {
             match form.key(k) {
                 work::FormKey::Handled => return,
-                work::FormKey::Reload(project) => return self.load_options(project),
+                work::FormKey::Reload(project) => {
+                    let view = form.view.clone();
+                    return self.load_form(&view, Some(project));
+                }
                 work::FormKey::LoadIssues(refresh) => return self.load_issues(refresh),
                 work::FormKey::NotMine => {}
             }
@@ -2176,7 +2118,8 @@ impl App {
             Target::Message { message, .. } if message.kind == ops::MessageKind::MoreContext => {
                 false
             }
-            Target::NewRequest | Target::Message { .. } => c.chips.is_empty(),
+            Target::Message { .. } => c.chips.is_empty(),
+            Target::Form { .. } => false,
             Target::Comment { .. } | Target::General { .. } => false,
         };
         if needs_text && text.is_empty() {
@@ -2191,6 +2134,9 @@ impl App {
             ));
             return;
         }
+        if matches!(c.target, Target::Form { .. }) {
+            return self.submit_form(c, text);
+        }
         let attachments = dropped::stored(&c.chips);
         if !matches!(c.target, Target::Comment { .. } | Target::General { .. }) {
             for chip in &c.chips {
@@ -2203,15 +2149,9 @@ impl App {
                 data_epoch,
                 option_id,
                 allow_attachments,
-                form_fields,
-                attachment_field,
                 ..
             } => {
-                let mut input = if let Some(fields) = form_fields {
-                    json!({"fields": fields})
-                } else {
-                    json!({})
-                };
+                let mut input = json!({});
                 if !text.trim().is_empty() {
                     input["text"] = Value::String(text);
                 }
@@ -2220,11 +2160,7 @@ impl App {
                         .iter()
                         .map(|attachment| attachment.id.clone())
                         .collect::<Vec<_>>();
-                    if let Some(field) = attachment_field {
-                        input["fields"][field] = json!(ids);
-                    } else {
-                        input["attachments"] = json!(ids);
-                    }
+                    input["attachments"] = json!(ids);
                 }
                 let request =
                     Client::action_body(&data_epoch, &action_id, option_id.as_deref(), input);
@@ -2248,21 +2184,7 @@ impl App {
                 };
                 self.message(key, message, ok);
             }
-            Target::NewRequest => {
-                let request_id = crate::client::new_id("request");
-                let body = match c.form.as_ref() {
-                    Some(form) => form.request(&request_id, &text, &attachments),
-                    None => {
-                        ops::new_request(&request_id, &text, None, &json!({}), None, &attachments)
-                    }
-                };
-                self.op(
-                    None,
-                    ops::REQUESTS.into(),
-                    body,
-                    tr!("Sent to the orchestrator", "Enviado al orquestador").into(),
-                );
-            }
+            Target::Form { .. } => {}
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
                     return;
@@ -2287,6 +2209,37 @@ impl App {
                 }
             }
         }
+    }
+
+    fn submit_form(&mut self, c: Composer, text: String) {
+        let attachments = dropped::stored(&c.chips);
+        let ids: Vec<String> = attachments.iter().map(|a| a.id.clone()).collect();
+        let Some((form, submit)) = c
+            .form
+            .as_ref()
+            .and_then(|form| form.submit.as_ref().map(|submit| (form, submit)))
+        else {
+            self.composer = Some(c);
+            self.flash(tr!("Still loading the form", "Aún se está cargando el formulario"));
+            return;
+        };
+        let fields = form.submitted(&text, &ids);
+        let checked = validate_view_fields(&form.fields, &fields);
+        let request = Client::action_body(
+            &submit.data_epoch,
+            &submit.action_id,
+            None,
+            json!({"fields": fields}),
+        );
+        if let Err(error) = checked {
+            self.composer = Some(c);
+            self.fail(error.to_string());
+            return;
+        }
+        for chip in &c.chips {
+            self.previews.remove(&chip.seq);
+        }
+        self.submit_view_request(request);
     }
 
     fn open_reader(&mut self) {
@@ -2375,22 +2328,33 @@ impl App {
                     }
                 }
             }
-            let (glyph, kind, color) = view
+            let first_card = view
                 .sections
                 .iter()
                 .flat_map(|section| section.items.iter())
                 .find_map(|item| match item {
-                    alondra_core::views::Item::Card(card) => Some((
-                        view_render::icon(card.icon),
-                        "item",
-                        view_render::icon_color(card.icon),
-                    )),
+                    alondra_core::views::Item::Card(card) => Some(card),
                     _ => None,
-                })
-                .unwrap_or(("▤", "document", ratatui::style::Color::Cyan));
+                });
+            let (glyph, kind, color) = match first_card {
+                Some(card) => (
+                    view_render::icon(card.icon),
+                    view_render::document_kind(&view).unwrap_or_default(),
+                    view_render::icon_color(card.icon),
+                ),
+                None => (
+                    "▤",
+                    tr!("document", "documento").to_owned(),
+                    ratatui::style::Color::Cyan,
+                ),
+            };
+            let agent = first_card
+                .and_then(view_render::card_agent)
+                .map(|line| line.text.clone())
+                .unwrap_or_default();
             self.reader = Some(Reader {
                 key: Key(view.key),
-                agent: String::new(),
+                agent,
                 title,
                 kind,
                 glyph,
@@ -2414,11 +2378,15 @@ impl App {
             .cloned()
         {
             let key = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
-            let (glyph, kind, color) = (
-                view_render::icon(card.icon),
-                "item",
-                view_render::icon_color(card.icon),
-            );
+            let kind = card
+                .eyebrow
+                .as_ref()
+                .map(|eyebrow| eyebrow.text.to_lowercase())
+                .unwrap_or_default();
+            let agent = view_render::card_agent(&card)
+                .map(|line| line.text.clone())
+                .unwrap_or_default();
+            let (glyph, color) = (view_render::icon(card.icon), view_render::icon_color(card.icon));
             let mut text = format!("# {}", card.title);
             for context in &card.context {
                 text.push_str(&format!("\n\n{}", context.text));
@@ -2441,7 +2409,7 @@ impl App {
             }
             self.reader = Some(Reader {
                 key,
-                agent: String::new(),
+                agent,
                 title: card.title,
                 kind,
                 glyph,
@@ -2674,8 +2642,6 @@ impl App {
                     option_id: None,
                     required,
                     allow_attachments: action.attachments,
-                    form_fields: None,
-                    attachment_field: None,
                 },
                 &text,
             );

@@ -1,19 +1,18 @@
-import AlondraShared
-import AlondraViewsWorkspaceFeature
+import AlondraDesign
+import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
-import AlondraViews
-import AlondraViewsUI
+import AlondraContract
 import AppKit
 
 struct MacServiceWorkspace<AccountContent: View>: View {
-    @Bindable var store: StoreOf<ViewsServiceRootFeature>
+    @Bindable var store: StoreOf<MacAppFeature>
     let accountContent: AccountContent
     var isActive = true
     private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
     @FocusState private var searchFocused: Bool
 
-    init(store: StoreOf<ViewsServiceRootFeature>, accountContent: AccountContent, isActive: Bool = true) {
+    init(store: StoreOf<MacAppFeature>, accountContent: AccountContent, isActive: Bool = true) {
         self.store = store
         self.accountContent = accountContent
         self.isActive = isActive
@@ -35,7 +34,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
                     .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity))
             }
             .animation(.smooth(duration: 0.22), value: presentation.selection)
-            .overlay(alignment: .top) { ServiceDeliveryBanner(store: store) }
+            .overlay(alignment: .top) { DeliveryBanner(store: store) }
         }
         .environment(\.searchActive, searchFocused)
         .navigationTitle("Alondra")
@@ -213,12 +212,12 @@ private struct MacServiceDetail: View {
         }
     }
 
-    private func perform(_ action: AlondraViews.Action) {
+    private func perform(_ action: AlondraContract.Action) {
         if let link = action.link { openLink(link) }
         else { presentation.send(.beginViewAction(action)) }
     }
 
-    private func openLink(_ link: AlondraViews.Link) {
+    private func openLink(_ link: AlondraContract.Link) {
         switch link {
         case let .view(key): presentation.send(.select(.viewKey(key)))
         case let .url(raw):
@@ -232,10 +231,10 @@ private struct MacServiceDetail: View {
         }
     }
 
-    private func keyedActions(_ document: ViewDocument) -> [AlondraViews.Action] {
+    private func keyedActions(_ document: ViewDocument) -> [AlondraContract.Action] {
         document.sections.flatMap(\.items).flatMap(keyedActions)
     }
-    private func keyedActions(_ item: ViewItem) -> [AlondraViews.Action] {
+    private func keyedActions(_ item: ViewItem) -> [AlondraContract.Action] {
         switch item {
         case let .card(card): return card.actions + card.children.flatMap { $0.actions }
         case let .row(row): return row.actions + row.children.flatMap { $0.actions }
@@ -281,7 +280,7 @@ private struct MacContentViewer: View {
 
 private struct MacViewActionSheet: View {
     let presentation: StoreOf<MacPresentationFeature>
-    let form: AlondraViews.Form?
+    let form: AlondraContract.Form?
     let onDismiss: () -> Void
     private var store: StoreOf<ActionFeature> {
         presentation.scope(state: \.actionFeature, action: \.action)

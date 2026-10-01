@@ -32,7 +32,7 @@ def main():
                 key = match.group(1) or match.group(2)
                 if key in BRAND or "\\(" in key or not re.search("[A-Za-z]", key):
                     continue
-                if "AlondraShared" in line and translated(shared, key):
+                if "AlondraDesign" in line and translated(shared, key):
                     continue
                 for name, catalog in catalogs.items():
                     if client in (None, name) and not translated(catalog, key):

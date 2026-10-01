@@ -1,18 +1,18 @@
-import AlondraShared
-import AlondraCloudPairingFeature
-import AlondraViewsAppComposition
+import AlondraDesign
+import AlondraFeatures
+import AlondraAccount
 import ComposableArchitecture
 import SwiftUI
 import VisionKit
 
 struct PairingView: View {
     var showsClose = false
-    @Environment(CloudPairingOwner.self) private var owner
-    var body: some View { CloudPairingScreen(store: owner.store) }
+    @Environment(AccountSession.self) private var owner
+    var body: some View { SignInView(store: owner.store) }
 }
 
-struct CloudPairingScreen: View {
-    @Bindable var store: StoreOf<CloudPairingFeature>
+struct SignInView: View {
+    @Bindable var store: StoreOf<SignInFeature>
 
     var body: some View {
         ScrollView {

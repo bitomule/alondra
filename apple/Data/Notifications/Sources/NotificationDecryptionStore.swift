@@ -1,4 +1,3 @@
-import AlondraNotificationPayload
 import Foundation
 import Security
 import Synchronization

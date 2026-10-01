@@ -97,6 +97,9 @@ impl App {
 
     fn view_inbox_key(&mut self, key: KeyEvent) -> Flow {
         if key.code == KeyCode::Enter {
+            if self.screen != Screen::Inbox && !self.schedules_open {
+                return self.open_terminal();
+            }
             self.open_reader();
             return Flow::Go;
         }
@@ -131,6 +134,26 @@ impl App {
         self.view_action_key(key).unwrap_or(Flow::Go)
     }
 
+    /// Enter on a task or a node opens its session's terminal.
+    fn open_terminal(&mut self) -> Flow {
+        let selected = self.selected_view_key();
+        let session = self
+            .card_view
+            .as_ref()
+            .filter(|view| selected.as_deref() == Some(view.key.as_str()))
+            .and_then(super::view_render::attach_session);
+        match session {
+            Some(session) => Flow::Attach(session),
+            None => {
+                self.flash(tr!(
+                    "It has no terminal to open",
+                    "No tiene terminal que abrir"
+                ));
+                Flow::Go
+            }
+        }
+    }
+
     pub(super) fn view_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
         let selected = self.selected_view_key()?;
         let document = self
@@ -155,21 +178,9 @@ impl App {
                 || key.code == KeyCode::Char('e')
                 || (!hint.is_empty() && hint_matches(hint, key))
             {
-                return Some(Flow::EditViewForm {
-                    action_id: submit.id.clone(),
-                    label: submit.label.clone(),
-                    data_epoch: document.data_epoch.clone(),
-                    attachment_field: submit
-                        .attachments
-                        .then(|| {
-                            form.fields.iter().find_map(|field| {
-                                matches!(field.kind, alondra_core::views::FieldKind::Attachments)
-                                    .then(|| field.id.clone())
-                            })
-                        })
-                        .flatten(),
-                    fields: form.fields.clone(),
-                });
+                let view = document.key.clone();
+                self.compose(super::Target::Form { view }, "");
+                return Some(Flow::Go);
             }
         }
         for action in super::view_render::actions(document) {
@@ -318,8 +329,6 @@ impl App {
                         option_id,
                         required: *required,
                         allow_attachments: action.attachments,
-                        form_fields: None,
-                        attachment_field: None,
                     },
                     "",
                 );

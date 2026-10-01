@@ -1,4 +1,4 @@
-import AlondraNotificationActions
+import AlondraNotifications
 import Foundation
 import XCTest
 

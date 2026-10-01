@@ -1,13 +1,10 @@
-import AlondraShared
-import AlondraAttachmentsFeature
-import AlondraViewsWorkspaceFeature
-import AlondraViewsAppComposition
-import AlondraViewsWorkspaceServices
-import AlondraViewsDemoWorkspace
-import AlondraCloudPairingFeature
-import AlondraConnectionFeature
+import AlondraDesign
+import AlondraAttachments
+import AlondraFeatures
+import AlondraAccount
+import AlondraDemo
 import AlondraNetworkReachability
-import AlondraViewsDependency
+import AlondraFeed
 import ComposableArchitecture
 import Observation
 import SwiftUI
@@ -16,7 +13,7 @@ struct MacServiceRoot: View {
     let owner: MacWorkspaceOwner
     @State private var connectingRemote = false
     @State private var demoSession: UUID?
-    private var account: CloudPairingOwner { owner.account }
+    private var account: AccountSession { owner.account }
     var body: some View {
         Group {
             if let demoSession {
@@ -33,7 +30,7 @@ struct MacServiceRoot: View {
                         .id(ObjectIdentifier(services))
                 }
             case .remote:
-                CloudWorkspaceGate(store: account.store, hasServices: account.services != nil) {
+                LaunchGate(store: account.store, hasServices: account.services != nil) {
                     if let services = account.services {
                         MacServiceWindow(services: services, account: account)
                             .id(ObjectIdentifier(services))
@@ -66,10 +63,10 @@ struct MacServiceRoot: View {
 private struct MacViewsDemoScene: View {
     let reset: () -> Void
     let exit: () -> Void
-    @State private var store = Store(initialState: ViewsServiceRootFeature.State()) {
-        ViewsServiceRootFeature()
+    @State private var store = Store(initialState: MacAppFeature.State()) {
+        MacAppFeature()
     } withDependencies: {
-        $0.viewsClient = ViewsDemoWorkspace.client()
+        $0.viewsClient = ViewsClient.demo()
     }
 
     var body: some View {
@@ -97,15 +94,15 @@ private struct DemoAccountView: View {
 /// Scene dependency assembly; authentication and I/O are process-owned by the account.
 @MainActor @Observable
 private final class MacServiceWindowContext {
-    private(set) var store: StoreOf<ViewsServiceRootFeature>?
-    func connect(_ services: CloudAppServices) async {
+    private(set) var store: StoreOf<MacAppFeature>?
+    func connect(_ services: Connection) async {
         guard store == nil else { return }
         let viewsFeed = await services.viewsFeed
         let viewActionSender = await services.viewActionSender
         guard !Task.isCancelled else { return }
-        store = Store(initialState: ViewsServiceRootFeature.State()) { ViewsServiceRootFeature() } withDependencies: {
+        store = Store(initialState: MacAppFeature.State()) { MacAppFeature() } withDependencies: {
             $0.viewsClient = ViewsClient.live(session: viewsFeed, sender: viewActionSender)
-            $0.attachmentImport = CloudAppServices.attachmentImportClient()
+            $0.attachmentImport = Connection.attachmentImportClient()
             $0.attachmentUpload = AttachmentUploadClient(uploadWithProgress: { draft, progress in
                 try await services.uploadAttachment(draft.data, name: draft.name, transferID: draft.id, progress: progress)
             })
@@ -114,8 +111,8 @@ private final class MacServiceWindowContext {
 }
 
 private struct MacServiceWindow: View {
-    let services: CloudAppServices
-    let account: CloudPairingOwner?
+    let services: Connection
+    let account: AccountSession?
     @State private var context = MacServiceWindowContext()
     var body: some View {
         Group {

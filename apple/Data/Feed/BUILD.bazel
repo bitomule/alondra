@@ -1,0 +1,27 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+swift_library(
+    name = "AlondraFeed",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraFeed",
+    features = ["swift.enable_testing"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Contract:AlondraContract",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraFeedTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [
+        ":AlondraFeed",
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Contract:AlondraContract",
+    ],
+)

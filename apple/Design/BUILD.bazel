@@ -1,0 +1,29 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+swift_library(
+    name = "AlondraDesign",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraDesign",
+    data = glob(["Resources/*.xcstrings"]),
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Attachments:AlondraAttachments",
+        "@swiftpkg_highlightswift//:HighlightSwift",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraDesignTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Tests/**/*.swift"]),
+    data = ["//fixtures/markdown"],
+    deps = [
+        ":AlondraDesign",
+    ],
+)
+
+exports_files(["Resources/AlondraDesign.xcstrings"])

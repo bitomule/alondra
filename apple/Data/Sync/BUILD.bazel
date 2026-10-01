@@ -1,7 +1,9 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 swift_library(
     name = "AlondraNetworkReachability",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = ["Sources/NetworkReachability.swift"],
     module_name = "AlondraNetworkReachability",
     visibility = ["//visibility:public"],

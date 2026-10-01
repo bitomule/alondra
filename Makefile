@@ -4,7 +4,7 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
+.PHONY: snapshots-record snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -16,6 +16,26 @@ device:
 
 test:
 	bazelisk test //crates/...
+
+SNAPSHOT_TARGET := //apple/Testing/Snapshots:AlondraSnapshotTests
+SNAPSHOT_ROOT := apple/Testing/Snapshots/Tests/__Snapshots__
+
+# Record mode always reports FAILED; the images land in the test outputs and are copied back.
+snapshots-record:
+	-bazelisk test $(SNAPSHOT_TARGET) \
+		--test_env=SNAPSHOT_TESTING_RECORD=all \
+		--test_env=SNAPSHOT_ROOT=$(SNAPSHOT_ROOT) \
+		--nocache_test_results --test_output=errors
+	@outputs=$$(find bazel-testlogs/apple/Testing/Snapshots/AlondraSnapshotTests -type d -name test.outputs | head -1); \
+	if [ -n "$$outputs" ] && [ -d "$$outputs/$(SNAPSHOT_ROOT)" ]; then \
+		mkdir -p $(SNAPSHOT_ROOT) && cp -R "$$outputs/$(SNAPSHOT_ROOT)/." $(SNAPSHOT_ROOT)/ && chmod -R u+w $(SNAPSHOT_ROOT); \
+		echo "Baselines copied to $(SNAPSHOT_ROOT)"; \
+	else \
+		echo "No recorded snapshots found"; exit 1; \
+	fi
+
+snapshots-verify:
+	bazelisk test $(SNAPSHOT_TARGET) --test_output=errors
 
 cargo-test:
 	cargo test

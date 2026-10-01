@@ -1,20 +1,19 @@
-import AlondraViewsDiff
-import AlondraShared
-import AlondraViews
+import AlondraDesign
+import AlondraContract
 import SwiftUI
 
 /// The Views PR diff keeps the file and line controls used by the earlier Mac review.
 struct MacViewsPRDiff: View {
-    let files: [AlondraViewsDiff.DiffFile]
+    let files: [AlondraDesign.DiffFile]
     @Binding var comments: [String: ActionComment]
     @Environment(\.colorScheme) private var colorScheme
     @State private var collapsed: Set<String>
     @State private var highlighted: [String: AttributedString] = [:]
-    @State private var editing: AlondraViewsDiff.DiffLine?
+    @State private var editing: AlondraDesign.DiffLine?
     @State private var editingText = ""
 
     init(text: String, comments: Binding<[String: ActionComment]>) {
-        let files = AlondraViewsDiff.UnifiedDiff.parse(text)
+        let files = AlondraDesign.UnifiedDiff.parse(text)
         self.files = files
         self._comments = comments
         self._collapsed = State(initialValue: Set(files.filter(\.startsCollapsed).map(\.id)))
@@ -35,7 +34,7 @@ struct MacViewsPRDiff: View {
                         if !collapsed.contains(file.id) {
                             ForEach(file.lines) { line in
                                 VStack(alignment: .leading, spacing: 4) {
-                                    AlondraViewsDiff.DiffCodeLine(line: line, coloured: highlighted[line.id])
+                                    AlondraDesign.DiffCodeLine(line: line, coloured: highlighted[line.id])
                                         .contentShape(.rect)
                                         .onTapGesture { edit(line) }
                                         .contextMenu {
@@ -54,7 +53,7 @@ struct MacViewsPRDiff: View {
                             }
                         }
                     } header: {
-                        AlondraViewsDiff.DiffFileHeader(file: file,
+                        AlondraDesign.DiffFileHeader(file: file,
                                        comments: file.commentCount(in: comments.mapValues(\.text)),
                                        collapsed: collapsed.contains(file.id)) {
                             withAnimation(.snappy(duration: 0.2)) { collapsed.formSymmetricDifference([file.id]) }
@@ -68,13 +67,13 @@ struct MacViewsPRDiff: View {
             var rendered: [String: AttributedString] = [:]
             for file in files {
                 guard !Task.isCancelled else { return }
-                rendered.merge(await AlondraViewsDiff.DiffHighlighter.highlight(file, dark: colorScheme == .dark)) { _, new in new }
+                rendered.merge(await AlondraDesign.DiffHighlighter.highlight(file, dark: colorScheme == .dark)) { _, new in new }
             }
             guard !Task.isCancelled else { return }
             highlighted = rendered
         }
         .sheet(item: $editing) { line in
-            AlondraViewsDiff.LineCommentSheet(line: line,
+            AlondraDesign.LineCommentSheet(line: line,
                              initial: line.anchor.flatMap { comments[$0]?.text } ?? "",
                              text: $editingText) { value in
                 guard let anchor = line.anchor else { return }
@@ -85,7 +84,7 @@ struct MacViewsPRDiff: View {
         }
     }
 
-    private func edit(_ line: AlondraViewsDiff.DiffLine) {
+    private func edit(_ line: AlondraDesign.DiffLine) {
         guard let anchor = line.anchor else { return }
         editingText = comments[anchor]?.text ?? ""
         editing = line

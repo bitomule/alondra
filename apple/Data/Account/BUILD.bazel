@@ -1,0 +1,30 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+swift_library(
+    name = "AlondraAccount",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraAccount",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Data/Pairing:AlondraPairing",
+        "//apple/Data/Notifications:AlondraNotifications",
+        "//apple/Data/Feed:AlondraFeed",
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Sync:AlondraNetworkReachability",
+        "//apple/Data/Attachments:AlondraAttachments",
+        "//apple/Features:AlondraFeatures",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraAccountTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Tests/**/*.swift"]),
+    deps = [
+        ":AlondraAccount",
+    ],
+)

@@ -955,6 +955,17 @@ fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
         matches!(item, Item::Row(row) if matches!(&row.link,
             Some(Link::Local { local: LocalLink::Attach { session } }) if session == "short-a-1"))
     }));
+    let task = render(&state, &live, Client::Tui, Lang::En,
+        "task:t-1", "2026-09-30T10:00:00Z");
+    assert!(task.sections.iter().flat_map(|section| &section.items).any(|item| {
+        matches!(item, Item::Row(row) if matches!(&row.link,
+            Some(Link::Local { local: LocalLink::Attach { session } }) if session == "short-a-1"))
+    }));
+    let phone_task = render(&state, &live, Client::Ios, Lang::En,
+        "task:t-1", "2026-09-30T10:00:00Z");
+    assert!(!phone_task.sections.iter().flat_map(|section| &section.items).any(|item| {
+        matches!(item, Item::Row(row) if matches!(&row.link, Some(Link::Local { .. })))
+    }));
     let card = render(&state, &live, Client::Tui, Lang::En,
         "card:i-1", "2026-09-30T10:00:00Z");
     assert!(card.sections.iter().flat_map(|section| &section.items).any(|item| {

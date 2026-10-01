@@ -1,7 +1,5 @@
-import AlondraViewsAppComposition
-import AlondraAuth
-import AlondraAuthPresentation
-import AlondraViewsWorkspaceFeature
+import AlondraAccount
+import AlondraFeatures
 import ComposableArchitecture
 import AppKit
 import SwiftUI
@@ -15,7 +13,7 @@ struct AlondraMacApp: App {
             NSApplication.shared.keyWindow ?? NSApplication.shared.mainWindow
         }))
         let storage = AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra.mac")
-        let account = CloudPairingOwner(auth: auth, displayName: "Mac", storageDirectory: storage)
+        let account = AccountSession(auth: auth, displayName: "Mac", storageDirectory: storage)
         _owner = State(initialValue: MacWorkspaceOwner(account: account, storageDirectory: storage,
             deviceName: "Mac (\(Host.current().localizedName ?? ProcessInfo.processInfo.hostName))"))
     }
