@@ -76,6 +76,7 @@ enum Daemon {
     ClosesWithoutReply,
     Replies(u16, &'static str),
     RepliesAndDropsAck(&'static str),
+    RepliesAndAwaitsAck(&'static str),
 }
 
 fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::process::Output {
@@ -99,6 +100,14 @@ fn run_hook(name: &str, daemon: Daemon, launched: bool, input: &[u8]) -> std::pr
                         stream.write_all(body.as_bytes()).unwrap();
                         stream.shutdown(std::net::Shutdown::Write).unwrap();
                         let _ = stream.read(&mut [0]);
+                    }
+                    Daemon::RepliesAndAwaitsAck(body) => {
+                        stream.write_all(&200u16.to_be_bytes()).unwrap();
+                        stream.write_all(body.as_bytes()).unwrap();
+                        stream.set_read_timeout(Some(std::time::Duration::from_secs(30))).unwrap();
+                        let mut ack = [0];
+                        stream.read_exact(&mut ack).expect("the hook acknowledges a complete reply while the connection stays open");
+                        assert_eq!(ack, [6]);
                     }
                     Daemon::RepliesAndDropsAck(body) => {
                         stream.write_all(&200u16.to_be_bytes()).unwrap();
@@ -163,6 +172,15 @@ fn a_deliberate_refusal_still_blocks_the_tool() {
 fn a_printed_reply_stands_when_its_acknowledgement_is_lost() {
     let reply = r#"{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}"#;
     let output = run_hook("ack", Daemon::RepliesAndDropsAck(reply), true, BASH);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(String::from_utf8_lossy(&output.stdout), reply);
+}
+
+#[test]
+fn a_complete_reply_is_printed_and_acknowledged_before_the_daemon_closes() {
+    let reply = r#"{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"Yes."}}"#;
+    let output = run_hook("open", Daemon::RepliesAndAwaitsAck(reply), true,
+        br#"{"session_id":"s","hook_event_name":"Stop"}"#);
     assert_eq!(output.status.code(), Some(0));
     assert_eq!(String::from_utf8_lossy(&output.stdout), reply);
 }

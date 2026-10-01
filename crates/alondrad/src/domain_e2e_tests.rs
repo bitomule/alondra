@@ -205,7 +205,8 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
     assert!(daemon.domain.state().unwrap().interactions.contains_key(&"info-2".into()));
-    assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "Stop"})), json!({}));
+    let reminder = hook(&home, json!({"session_id": session, "hook_event_name": "Stop"}));
+    assert!(reminder["hookSpecificOutput"]["additionalContext"].as_str().unwrap().starts_with("[Alondra] Your turn ended"), "{reminder}");
     let evidence = daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
     assert_eq!(evidence.iter().filter(|item| item.recipient_kind == "agent").count(), 1, "no second delivery");
 
