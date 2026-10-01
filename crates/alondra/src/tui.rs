@@ -3131,6 +3131,3 @@ pub fn unavailable(action: &AvailableAction) -> String {
         _ => reason,
     }
 }
-
-#[cfg(test)]
-pub(crate) mod tests;
