@@ -1,0 +1,7 @@
+# Views the screens' tests and snapshots are drawn from, beyond the daemon's own fixtures in
+# fixtures/views: populated lists, a task with every section, schedule forms, in English and Spanish.
+filegroup(
+    name = "all",
+    srcs = glob(["*.json"]),
+    visibility = ["//visibility:public"],
+)

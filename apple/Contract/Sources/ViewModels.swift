@@ -297,7 +297,7 @@ public struct Condition: Codable, Equatable, Sendable {
         equals == value || anyOf?.contains(value) == true
     }
 }
-public struct ChoiceItem: Codable, Equatable, Sendable { public let id: String; public let label: String }
+public struct ChoiceItem: Codable, Equatable, Sendable { public let id: String; public let label: String; public let description: String? }
 public struct Form: Codable, Equatable, Sendable { public let id: String; public let fields: [Field]; public let submit: Action }
 public struct Field: Codable, Equatable, Sendable {
     public let id: String; public let label: String; public let kind: FieldKind; public let value: JSONValue; public let required: Bool; public let help: String?

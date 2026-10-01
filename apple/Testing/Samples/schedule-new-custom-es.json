@@ -1,0 +1,296 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "schedule",
+  "key": "schedule:new",
+  "version": "vschedule-schedule-new",
+  "title": "Nueva programación",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "form",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "form",
+          "id": "schedule",
+          "fields": [
+            {
+              "id": "name",
+              "label": "Nombre",
+              "kind": {
+                "kind": "text"
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "mission",
+              "label": "Misión",
+              "kind": {
+                "kind": "multiline"
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "project",
+              "label": "Proyecto",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "",
+                    "label": "Carpeta de proyectos"
+                  },
+                  {
+                    "id": "Alondra",
+                    "label": "Alondra"
+                  }
+                ]
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": true
+            },
+            {
+              "id": "repeat",
+              "label": "Repetir",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "daily",
+                    "label": "Diariamente"
+                  },
+                  {
+                    "id": "weekly",
+                    "label": "Semanalmente"
+                  },
+                  {
+                    "id": "every_hours",
+                    "label": "Horas"
+                  },
+                  {
+                    "id": "every_days",
+                    "label": "Días"
+                  },
+                  {
+                    "id": "every_months",
+                    "label": "Meses"
+                  },
+                  {
+                    "id": "once",
+                    "label": "Una vez"
+                  }
+                ]
+              },
+              "value": "every_days",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "weekday",
+              "label": "Día de la semana",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "0",
+                    "label": "Domingo"
+                  },
+                  {
+                    "id": "1",
+                    "label": "Lunes"
+                  },
+                  {
+                    "id": "2",
+                    "label": "Martes"
+                  },
+                  {
+                    "id": "3",
+                    "label": "Miércoles"
+                  },
+                  {
+                    "id": "4",
+                    "label": "Jueves"
+                  },
+                  {
+                    "id": "5",
+                    "label": "Viernes"
+                  },
+                  {
+                    "id": "6",
+                    "label": "Sábado"
+                  }
+                ]
+              },
+              "value": 1,
+              "required": true,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "equals": "weekly"
+              }
+            },
+            {
+              "id": "interval",
+              "label": "Intervalo",
+              "kind": {
+                "kind": "stepper",
+                "min": 1,
+                "max": 365
+              },
+              "value": 3,
+              "required": false,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "every_hours",
+                  "every_days",
+                  "every_months"
+                ]
+              }
+            },
+            {
+              "id": "start_at",
+              "label": "Fecha de inicio",
+              "kind": {
+                "kind": "date"
+              },
+              "value": 1767254400000,
+              "required": false,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "every_hours",
+                  "every_days",
+                  "every_months",
+                  "once"
+                ]
+              }
+            },
+            {
+              "id": "time",
+              "label": "Hora",
+              "kind": {
+                "kind": "time"
+              },
+              "value": "09:00",
+              "required": true,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "daily",
+                  "weekly"
+                ]
+              }
+            },
+            {
+              "id": "active",
+              "label": "Activa",
+              "kind": {
+                "kind": "toggle"
+              },
+              "value": true,
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "disallowed_tools",
+              "label": "Herramientas no permitidas",
+              "kind": {
+                "kind": "lines"
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "pr",
+              "label": "PRs",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "review",
+                    "label": "Revisar cada una",
+                    "description": "Cada PR que abre el nodo es una tarjeta para ti; el nodo espera tu fusión"
+                  },
+                  {
+                    "id": "auto_merge",
+                    "label": "Fusión automática",
+                    "description": "El nodo fusiona su propio PR cuando pasan las comprobaciones"
+                  }
+                ]
+              },
+              "value": "review",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "effort",
+              "label": "Esfuerzo",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Auto",
+                    "description": "El orquestador elige el modelo y el esfuerzo según la tarea"
+                  },
+                  {
+                    "id": "light",
+                    "label": "Ligero",
+                    "description": "Un modelo rápido y más barato para trabajo pequeño y claro"
+                  },
+                  {
+                    "id": "normal",
+                    "label": "Normal",
+                    "description": "El modelo y el esfuerzo por defecto de Claude"
+                  },
+                  {
+                    "id": "hard",
+                    "label": "Intenso",
+                    "description": "El modelo más potente y el mayor esfuerzo"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "sched_save:new@3",
+            "label": "Guardar programación",
+            "style": "primary",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": false,
+            "enabled": true
+          }
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,339 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "task",
+  "key": "task:t-1",
+  "version": "vtask-detail",
+  "title": "Recuperar la experiencia nativa de revisión",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "header",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Estado",
+              "value": "Te necesita",
+              "tone": "warning"
+            },
+            {
+              "label": "Nodo",
+              "value": "Alondra · iOS",
+              "link": {
+                "kind": "view",
+                "key": "node:n-1"
+              }
+            },
+            {
+              "label": "Solicitud",
+              "value": "Pulir la beta de Alondra",
+              "link": {
+                "kind": "view",
+                "key": "request:r-1"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "since",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "since",
+          "icon": "history",
+          "title": "Desde",
+          "depth": 0,
+          "struck": false,
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T21:30:00Z",
+            "format": "relative"
+          }
+        }
+      ]
+    },
+    {
+      "id": "now",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "now",
+          "icon": "history",
+          "title": "pregunta: Recuperar la experiencia nativa de revisión",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "card:i-1"
+          }
+        }
+      ]
+    },
+    {
+      "id": "history",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "2025-12-31T20:00:00Z",
+          "icon": "history",
+          "title": "Trabajando",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Iniciada",
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T20:00:00Z",
+            "format": "relative"
+          }
+        },
+        {
+          "type": "row",
+          "id": "2025-12-31T21:30:00Z",
+          "icon": "history",
+          "title": "Te necesita",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Esperando una decisión",
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T21:30:00Z",
+            "format": "relative"
+          }
+        }
+      ],
+      "title": "Historial"
+    },
+    {
+      "id": "waiting",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "i-1",
+          "link": {
+            "kind": "view",
+            "key": "card:i-1"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Pregunta",
+            "tone": "accent"
+          },
+          "title": "Recuperar la experiencia nativa de revisión",
+          "detail": "reference"
+        },
+        {
+          "type": "card",
+          "id": "i-2",
+          "link": {
+            "kind": "view",
+            "key": "card:i-2"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "Aviso",
+            "tone": "accent"
+          },
+          "title": "Recuperar la experiencia nativa de revisión",
+          "detail": "reference"
+        }
+      ],
+      "title": "Te espera"
+    },
+    {
+      "id": "request",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Preparar la próxima beta de Alondra: recuperar la experiencia de revisión de siempre, verificar la compilación del simulador y mantener las notas de la versión breves.",
+          "truncated": false,
+          "commentable": false
+        }
+      ],
+      "title": "Solicitud"
+    },
+    {
+      "id": "pull_requests",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "github.com/example/repo#12",
+          "icon": "pull_request",
+          "title": "1 · Añadir el editor compacto de programaciones",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "feature/compact-schedule-editor → main",
+          "link": {
+            "kind": "view",
+            "key": "pull_request:github.com/example/repo#12"
+          }
+        }
+      ],
+      "title": "Solicitudes de cambios"
+    },
+    {
+      "id": "dependencies",
+      "collapsed": false,
+      "items": [
+        {
+          "id": "t-2",
+          "icon": "pull_request",
+          "title": "Verificar la compilación del simulador",
+          "subtitle": "En revisión",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "task:t-2"
+          },
+          "badges": [
+            {
+              "text": "En revisión",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 1
+          },
+          "type": "row"
+        },
+        {
+          "id": "t-3",
+          "icon": "task",
+          "title": "Escribir las notas de la versión",
+          "subtitle": "Sin empezar",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "task:t-3"
+          },
+          "badges": [
+            {
+              "text": "Sin empezar",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Dependencias"
+    },
+    {
+      "id": "options",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Gestión de PR",
+              "value": "Revisar antes de fusionar"
+            },
+            {
+              "label": "Esfuerzo",
+              "value": "Normal"
+            }
+          ]
+        }
+      ],
+      "title": "Opciones"
+    },
+    {
+      "id": "documents",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "rev-1",
+          "icon": "document",
+          "title": "Notas de diseño",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "document:rev-1"
+          }
+        }
+      ],
+      "title": "Documentos"
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "cancel:t-1@4",
+              "label": "Cancelar tarea",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "confirm": {
+                "title": "Cancelar tarea",
+                "message": "¿Cancelar esta tarea?",
+                "button": "Cancelar tarea"
+              }
+            },
+            {
+              "id": "reopen:t-1@4",
+              "label": "Reabrir",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false
+            },
+            {
+              "id": "archive:t-1@4",
+              "label": "Archivar",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Solo se archivan las tareas terminadas"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

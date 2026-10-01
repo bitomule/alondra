@@ -1,0 +1,66 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "tasks",
+  "key": "tasks",
+  "version": "vtasks-empty",
+  "title": "Tasks",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "icon": "schedule",
+          "title": "Scheduled Tasks",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          }
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "collapsed": false,
+      "items": [],
+      "title": "Active",
+      "count": 0
+    },
+    {
+      "id": "finished",
+      "collapsed": true,
+      "items": [],
+      "title": "Finished",
+      "count": 0
+    },
+    {
+      "id": "archived",
+      "collapsed": true,
+      "items": [],
+      "title": "Archived",
+      "count": 0
+    }
+  ],
+  "empty": {
+    "text": "No tasks yet",
+    "tone": "neutral"
+  }
+}
