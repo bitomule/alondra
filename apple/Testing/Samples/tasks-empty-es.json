@@ -1,0 +1,66 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "tasks",
+  "key": "tasks",
+  "version": "vtasks-empty",
+  "title": "Tareas",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "icon": "schedule",
+          "title": "Tareas programadas",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          }
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "collapsed": false,
+      "items": [],
+      "title": "Activas",
+      "count": 0
+    },
+    {
+      "id": "finished",
+      "collapsed": true,
+      "items": [],
+      "title": "Terminadas",
+      "count": 0
+    },
+    {
+      "id": "archived",
+      "collapsed": true,
+      "items": [],
+      "title": "Archivadas",
+      "count": 0
+    }
+  ],
+  "empty": {
+    "text": "Aún no hay tareas",
+    "tone": "neutral"
+  }
+}

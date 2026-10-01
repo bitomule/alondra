@@ -132,9 +132,7 @@ struct ViewsScreenView: View {
 
     private var screenContent: some View {
         Group {
-            if store.key.rawValue.hasPrefix("schedule:"), let form = store.form {
-                ScheduleEditorView(store: store, form: form)
-            } else if let document = store.document, store.key.rawValue.hasPrefix("pull_request:") {
+            if let document = store.document, store.key.rawValue.hasPrefix("pull_request:") {
                 PRReviewView(document: document,
                                            diff: store.contentReference?.kind == .diff ? store.content : nil,
                                            comments: $diffComments,

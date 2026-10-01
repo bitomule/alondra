@@ -1,0 +1,153 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "request",
+  "key": "request:r-1",
+  "version": "vrequest-detail",
+  "title": "Pulir la beta de Alondra",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "facts",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Estado",
+              "value": "Activas"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "collapsed": false,
+      "items": [
+        {
+          "id": "t-1",
+          "icon": "action",
+          "title": "Recuperar la experiencia nativa de revisión",
+          "subtitle": "Te necesita",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "task:t-1"
+          },
+          "badges": [
+            {
+              "text": "Te necesita",
+              "tone": "warning"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 4
+          },
+          "type": "row"
+        },
+        {
+          "id": "t-2",
+          "icon": "pull_request",
+          "title": "Verificar la compilación del simulador",
+          "subtitle": "En revisión",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "task:t-2"
+          },
+          "badges": [
+            {
+              "text": "En revisión",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 1
+          },
+          "type": "row"
+        },
+        {
+          "id": "t-3",
+          "icon": "task",
+          "title": "Escribir las notas de la versión",
+          "subtitle": "Sin empezar",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "task:t-3"
+          },
+          "badges": [
+            {
+              "text": "Sin empezar",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "type": "row"
+        }
+      ],
+      "title": "Tareas"
+    },
+    {
+      "id": "body",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Preparar la próxima beta de Alondra: recuperar la experiencia de revisión de siempre, verificar la compilación del simulador y mantener las notas de la versión breves.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "withdraw:r-1@4",
+              "label": "Retirar solicitud",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "confirm": {
+                "title": "Retirar solicitud",
+                "message": "¿Retirar esta solicitud?",
+                "button": "Retirar solicitud"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

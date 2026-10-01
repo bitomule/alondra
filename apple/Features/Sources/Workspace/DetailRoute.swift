@@ -8,6 +8,10 @@ import Foundation
 @Reducer(state: .equatable)
 public enum DetailRoute {
     case legacy(ViewsScreenFeature)
+    case taskDetail(TaskDetailFeature)
+    case requestDetail(RequestDetailFeature)
+    case schedules(SchedulesFeature)
+    case scheduleEditor(ScheduleEditorFeature)
     case review(ReviewFeature)
 }
 
@@ -44,8 +48,12 @@ public extension DetailRoute.State {
     init?(key: ViewKey, owner: String) {
         switch DetailRoute.Kind(key: key) {
         case .card, .document: self = .review(ReviewFeature.State(key: key))
-        case .some: self = .legacy(ViewsScreenFeature.State(key: key, owner: owner))
+        case .task: self = .taskDetail(TaskDetailFeature.State(key: key))
+        case .request: self = .requestDetail(RequestDetailFeature.State(key: key))
+        case .schedules: self = .schedules(SchedulesFeature.State())
+        case .schedule: self = .scheduleEditor(ScheduleEditorFeature.State(key: key))
         case nil: return nil
+        default: self = .legacy(ViewsScreenFeature.State(key: key, owner: owner))
         }
     }
 
@@ -53,6 +61,27 @@ public extension DetailRoute.State {
         switch self {
         case .legacy(let state): state.key
         case .review(let state): state.screen.key
+        case .taskDetail(let state): state.screen.key
+        case .requestDetail(let state): state.screen.key
+        case .schedules(let state): state.screen.key
+        case .scheduleEditor(let state): state.screen.key
+        }
+    }
+}
+
+public extension DetailRoute.Action {
+    /// What the screen on top of a stack asks of the app, whichever screen it is.
+    var delegate: ScreenDelegate? {
+        switch self {
+        case .legacy(.action(.delegate(let outcome))): ScreenDelegate(outcome)
+        case .review(.delegate(.open(let key))): .open(key)
+        case .review(.actions(.delegate(let outcome))): ScreenDelegate(outcome)
+        case .taskDetail(.delegate(let delegate)),
+             .requestDetail(.delegate(let delegate)),
+             .schedules(.delegate(let delegate)),
+             .scheduleEditor(.delegate(let delegate)):
+            delegate
+        default: nil
         }
     }
 }

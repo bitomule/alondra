@@ -1,0 +1,296 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "schedule",
+  "key": "schedule:new",
+  "version": "vschedule-schedule-new",
+  "title": "New Schedule",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "form",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "form",
+          "id": "schedule",
+          "fields": [
+            {
+              "id": "name",
+              "label": "Name",
+              "kind": {
+                "kind": "text"
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "mission",
+              "label": "Mission",
+              "kind": {
+                "kind": "multiline"
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "project",
+              "label": "Project",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "",
+                    "label": "Projects folder"
+                  },
+                  {
+                    "id": "Alondra",
+                    "label": "Alondra"
+                  }
+                ]
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": true
+            },
+            {
+              "id": "repeat",
+              "label": "Repeat",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "daily",
+                    "label": "Daily"
+                  },
+                  {
+                    "id": "weekly",
+                    "label": "Weekly"
+                  },
+                  {
+                    "id": "every_hours",
+                    "label": "Hours"
+                  },
+                  {
+                    "id": "every_days",
+                    "label": "Days"
+                  },
+                  {
+                    "id": "every_months",
+                    "label": "Months"
+                  },
+                  {
+                    "id": "once",
+                    "label": "Once"
+                  }
+                ]
+              },
+              "value": "every_days",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "weekday",
+              "label": "Weekday",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "0",
+                    "label": "Sunday"
+                  },
+                  {
+                    "id": "1",
+                    "label": "Monday"
+                  },
+                  {
+                    "id": "2",
+                    "label": "Tuesday"
+                  },
+                  {
+                    "id": "3",
+                    "label": "Wednesday"
+                  },
+                  {
+                    "id": "4",
+                    "label": "Thursday"
+                  },
+                  {
+                    "id": "5",
+                    "label": "Friday"
+                  },
+                  {
+                    "id": "6",
+                    "label": "Saturday"
+                  }
+                ]
+              },
+              "value": 1,
+              "required": true,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "equals": "weekly"
+              }
+            },
+            {
+              "id": "interval",
+              "label": "Interval",
+              "kind": {
+                "kind": "stepper",
+                "min": 1,
+                "max": 365
+              },
+              "value": 3,
+              "required": false,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "every_hours",
+                  "every_days",
+                  "every_months"
+                ]
+              }
+            },
+            {
+              "id": "start_at",
+              "label": "Start date",
+              "kind": {
+                "kind": "date"
+              },
+              "value": 1767254400000,
+              "required": false,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "every_hours",
+                  "every_days",
+                  "every_months",
+                  "once"
+                ]
+              }
+            },
+            {
+              "id": "time",
+              "label": "Time",
+              "kind": {
+                "kind": "time"
+              },
+              "value": "09:00",
+              "required": true,
+              "reload_on_change": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "daily",
+                  "weekly"
+                ]
+              }
+            },
+            {
+              "id": "active",
+              "label": "Active",
+              "kind": {
+                "kind": "toggle"
+              },
+              "value": true,
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "disallowed_tools",
+              "label": "Disallowed tools",
+              "kind": {
+                "kind": "lines"
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "pr",
+              "label": "PRs",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "review",
+                    "label": "Review each one",
+                    "description": "Each PR the node opens is a card for you; the node waits for your merge"
+                  },
+                  {
+                    "id": "auto_merge",
+                    "label": "Auto-merge",
+                    "description": "The node merges its own PR once its checks pass"
+                  }
+                ]
+              },
+              "value": "review",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "effort",
+              "label": "Effort",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Auto",
+                    "description": "The orchestrator picks the model and effort from the task"
+                  },
+                  {
+                    "id": "light",
+                    "label": "Light",
+                    "description": "A quick, cheaper model for small, clear work"
+                  },
+                  {
+                    "id": "normal",
+                    "label": "Normal",
+                    "description": "Claude's default model and effort"
+                  },
+                  {
+                    "id": "hard",
+                    "label": "Hard",
+                    "description": "The strongest model and the most effort"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "sched_save:new@3",
+            "label": "Save Schedule",
+            "style": "primary",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": false,
+            "enabled": true
+          }
+        }
+      ]
+    }
+  ]
+}

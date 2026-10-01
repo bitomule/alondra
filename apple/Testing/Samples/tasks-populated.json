@@ -1,0 +1,287 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "tasks",
+  "key": "tasks",
+  "version": "vtasks-populated",
+  "title": "Tasks",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "icon": "schedule",
+          "title": "Scheduled Tasks",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          }
+        }
+      ],
+      "count": 3
+    },
+    {
+      "id": "active",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-1",
+          "icon": "mission",
+          "title": "Polish the Alondra beta",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Active",
+          "link": {
+            "kind": "view",
+            "key": "request:r-1"
+          },
+          "badges": [
+            {
+              "text": "Alondra",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T21:30:00.000Z",
+            "format": "relative"
+          },
+          "children": [
+            {
+              "id": "t-1",
+              "icon": "action",
+              "title": "Restore the native review experience",
+              "subtitle": "Needs you",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "badges": [
+                {
+                  "text": "Needs you",
+                  "tone": "warning"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 4
+              }
+            },
+            {
+              "id": "t-2",
+              "icon": "pull_request",
+              "title": "Verify the simulator build",
+              "subtitle": "In review",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-2"
+              },
+              "badges": [
+                {
+                  "text": "In review",
+                  "tone": "info"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 1
+              },
+              "children": [
+                {
+                  "id": "t-3",
+                  "icon": "task",
+                  "title": "Write the release notes",
+                  "subtitle": "Not started",
+                  "depth": 2,
+                  "struck": false,
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-3"
+                  },
+                  "badges": [
+                    {
+                      "text": "Not started",
+                      "tone": "neutral"
+                    }
+                  ],
+                  "trailing": {
+                    "kind": "count",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "r-2",
+          "icon": "mission",
+          "title": "Weekly efficiency review",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Active",
+          "link": {
+            "kind": "view",
+            "key": "request:r-2"
+          },
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T23:10:00.000Z",
+            "format": "relative"
+          },
+          "children": [
+            {
+              "id": "t-4",
+              "icon": "mission",
+              "title": "Weekly efficiency review",
+              "subtitle": "Working",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-4"
+              },
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              }
+            }
+          ]
+        }
+      ],
+      "title": "Active",
+      "count": 2
+    },
+    {
+      "id": "finished",
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-3",
+          "icon": "mission",
+          "title": "Fix the onboarding crash",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Finished",
+          "link": {
+            "kind": "view",
+            "key": "request:r-3"
+          },
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-30T10:00:00.000Z",
+            "format": "relative"
+          },
+          "children": [
+            {
+              "id": "t-5",
+              "icon": "check",
+              "title": "Fix the onboarding crash",
+              "subtitle": "Finished",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-5"
+              },
+              "badges": [
+                {
+                  "text": "Finished",
+                  "tone": "success"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "r-4",
+          "icon": "mission",
+          "title": "Rename the settings screen",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Withdrawn",
+          "link": {
+            "kind": "view",
+            "key": "request:r-4"
+          },
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-29T10:00:00.000Z",
+            "format": "relative"
+          }
+        }
+      ],
+      "title": "Finished",
+      "count": 27,
+      "more": {
+        "key": "tasks?section=finished&after=20",
+        "remaining": 7
+      }
+    },
+    {
+      "id": "archived",
+      "collapsed": true,
+      "items": [],
+      "title": "Archived",
+      "count": 0
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "archive_done:view@12",
+              "label": "Archive Completed",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

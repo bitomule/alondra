@@ -1,0 +1,287 @@
+{
+  "protocol": 1,
+  "data_epoch": "sample-epoch",
+  "client": "ios",
+  "cursor": "sample-cursor",
+  "view": "tasks",
+  "key": "tasks",
+  "version": "vtasks-populated",
+  "title": "Tareas",
+  "status": {
+    "version": "vstatus",
+    "summary": "",
+    "badge": 0,
+    "counts": [],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "icon": "schedule",
+          "title": "Tareas programadas",
+          "depth": 0,
+          "struck": false,
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          }
+        }
+      ],
+      "count": 3
+    },
+    {
+      "id": "active",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-1",
+          "icon": "mission",
+          "title": "Pulir la beta de Alondra",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Activas",
+          "link": {
+            "kind": "view",
+            "key": "request:r-1"
+          },
+          "badges": [
+            {
+              "text": "Alondra",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T21:30:00.000Z",
+            "format": "relative"
+          },
+          "children": [
+            {
+              "id": "t-1",
+              "icon": "action",
+              "title": "Recuperar la experiencia nativa de revisión",
+              "subtitle": "Te necesita",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              },
+              "badges": [
+                {
+                  "text": "Te necesita",
+                  "tone": "warning"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 4
+              }
+            },
+            {
+              "id": "t-2",
+              "icon": "pull_request",
+              "title": "Verificar la compilación del simulador",
+              "subtitle": "En revisión",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-2"
+              },
+              "badges": [
+                {
+                  "text": "En revisión",
+                  "tone": "info"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 1
+              },
+              "children": [
+                {
+                  "id": "t-3",
+                  "icon": "task",
+                  "title": "Escribir las notas de la versión",
+                  "subtitle": "Sin empezar",
+                  "depth": 2,
+                  "struck": false,
+                  "link": {
+                    "kind": "view",
+                    "key": "task:t-3"
+                  },
+                  "badges": [
+                    {
+                      "text": "Sin empezar",
+                      "tone": "neutral"
+                    }
+                  ],
+                  "trailing": {
+                    "kind": "count",
+                    "value": 0
+                  }
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "r-2",
+          "icon": "mission",
+          "title": "Revisión semanal de eficiencia",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Activas",
+          "link": {
+            "kind": "view",
+            "key": "request:r-2"
+          },
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T23:10:00.000Z",
+            "format": "relative"
+          },
+          "children": [
+            {
+              "id": "t-4",
+              "icon": "mission",
+              "title": "Revisión semanal de eficiencia",
+              "subtitle": "Trabajando",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-4"
+              },
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              }
+            }
+          ]
+        }
+      ],
+      "title": "Activas",
+      "count": 2
+    },
+    {
+      "id": "finished",
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-3",
+          "icon": "mission",
+          "title": "Arreglar el cierre en el primer inicio",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Terminada",
+          "link": {
+            "kind": "view",
+            "key": "request:r-3"
+          },
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-30T10:00:00.000Z",
+            "format": "relative"
+          },
+          "children": [
+            {
+              "id": "t-5",
+              "icon": "check",
+              "title": "Arreglar el cierre en el primer inicio",
+              "subtitle": "Terminada",
+              "depth": 1,
+              "struck": false,
+              "link": {
+                "kind": "view",
+                "key": "task:t-5"
+              },
+              "badges": [
+                {
+                  "text": "Terminada",
+                  "tone": "success"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              }
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "r-4",
+          "icon": "mission",
+          "title": "Renombrar la pantalla de ajustes",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "Retirada",
+          "link": {
+            "kind": "view",
+            "key": "request:r-4"
+          },
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-29T10:00:00.000Z",
+            "format": "relative"
+          }
+        }
+      ],
+      "title": "Terminadas",
+      "count": 27,
+      "more": {
+        "key": "tasks?section=finished&after=20",
+        "remaining": 7
+      }
+    },
+    {
+      "id": "archived",
+      "collapsed": true,
+      "items": [],
+      "title": "Archivadas",
+      "count": 0
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "archive_done:view@12",
+              "label": "Archivar terminadas",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
