@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "vb9a930928c9cc657",
+  "version": "v44793cae749ac8e5",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -80,6 +80,24 @@
               }
             }
           ]
+        }
+      ]
+    },
+    {
+      "id": "now",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "now",
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "history",
+          "title": "question: Restore the native review experience",
+          "depth": 0,
+          "struck": false
         }
       ]
     },

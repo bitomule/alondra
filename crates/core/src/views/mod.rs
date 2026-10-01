@@ -112,7 +112,8 @@ pub fn push_actions(
     let mut pushed = Vec::new();
     for action in &card.actions {
         if action.id.is_empty() || action.link.is_some() || !action.enabled ||
-            action.confirm.is_some() || action.comments.is_some() { continue; }
+            action.confirm.is_some() ||
+            (action.comments.is_some() && !action.id.starts_with("reply:")) { continue; }
         if action.options.is_empty() {
             let (text, placeholder) = push_text(&action.input);
             pushed.push(PushAction { id: action.id.clone(), option: None,

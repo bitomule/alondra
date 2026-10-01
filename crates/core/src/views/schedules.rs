@@ -337,6 +337,19 @@ pub(super) fn editor(key: &str, context: &RenderContext<'_>) -> Result<View, Bui
             .map(|value| json!(value))
             .collect(),
     });
+    fields[6].visible_when = Some(super::Condition {
+        field: "repeat".into(),
+        equals: None,
+        any_of: ["every_hours", "every_days", "every_months", "once"]
+            .into_iter()
+            .map(|value| json!(value))
+            .collect(),
+    });
+    fields[7].visible_when = Some(super::Condition {
+        field: "repeat".into(),
+        equals: None,
+        any_of: ["daily", "weekly"].into_iter().map(|value| json!(value)).collect(),
+    });
     let subject = if id == "new" {
         "view".to_owned()
     } else {
@@ -407,6 +420,58 @@ mod tests {
             super::instant(1_784_204_760_123),
             "2026-07-16T12:26:00.123Z"
         );
+    }
+
+    fn editor_fields() -> Vec<super::super::Field> {
+        let domain = DomainState::new("epoch");
+        let live = LiveSnapshot::default();
+        let view = super::editor(
+            "schedule:new",
+            &RenderContext {
+                domain: &domain,
+                live: &live,
+                client: Client::Ios,
+                lang: Lang::En,
+                transport: Transport::Loopback,
+                cursor: "cursor",
+                rendered_at: "",
+            },
+        )
+        .unwrap();
+        view.sections
+            .into_iter()
+            .flat_map(|section| section.items)
+            .find_map(|item| match item { Item::Form(form) => Some(form.fields), _ => None })
+            .unwrap()
+    }
+
+    fn visible_for(fields: &[super::super::Field], field: &str, repeat: &str) -> bool {
+        let condition = fields.iter().find(|candidate| candidate.id == field).unwrap()
+            .visible_when.as_ref().unwrap();
+        condition.any_of.contains(&serde_json::json!(repeat))
+            || condition.equals.as_ref() == Some(&serde_json::json!(repeat))
+    }
+
+    #[test]
+    fn start_date_only_appears_for_custom_and_once_schedules() {
+        let fields = editor_fields();
+        for repeat in ["every_hours", "every_days", "every_months", "once"] {
+            assert!(visible_for(&fields, "start_at", repeat), "{repeat}");
+        }
+        for repeat in ["daily", "weekly"] {
+            assert!(!visible_for(&fields, "start_at", repeat), "{repeat}");
+        }
+    }
+
+    #[test]
+    fn time_of_day_only_appears_for_daily_and_weekly_schedules() {
+        let fields = editor_fields();
+        for repeat in ["daily", "weekly"] {
+            assert!(visible_for(&fields, "time", repeat), "{repeat}");
+        }
+        for repeat in ["every_hours", "every_days", "every_months", "once"] {
+            assert!(!visible_for(&fields, "time", repeat), "{repeat}");
+        }
     }
 
     #[test]

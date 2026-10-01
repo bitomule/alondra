@@ -4,7 +4,7 @@
   "view": "schedule",
   "key": "schedule:new",
   "client": "ios",
-  "version": "vd735a77bb632d88d",
+  "version": "vfc2895cda5f603be",
   "cursor": "cursor-1",
   "title": "New Schedule",
   "status": {
@@ -218,6 +218,15 @@
               },
               "value": null,
               "required": false,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "every_hours",
+                  "every_days",
+                  "every_months",
+                  "once"
+                ]
+              },
               "reload_on_change": false
             },
             {
@@ -228,6 +237,13 @@
               },
               "value": "09:00",
               "required": true,
+              "visible_when": {
+                "field": "repeat",
+                "any_of": [
+                  "daily",
+                  "weekly"
+                ]
+              },
               "reload_on_change": false
             },
             {

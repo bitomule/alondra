@@ -284,7 +284,13 @@ async fn execute_external(
                 Scope::Orchestrator { .. } => return Ok(no_longer_available(lang, "This item has no active agent")),
             };
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This agent is no longer available")); }
-            let note = request.input.text.as_deref().unwrap_or_default().trim();
+            let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
+            let note = if action.verb == Verb::Reply {
+                alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default())
+            } else {
+                request.input.text.as_deref().unwrap_or_default().trim().to_owned()
+            };
+            let note = note.as_str();
             if action.verb == Verb::Reply && note.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let (kind, text, mark_read) = if action.verb == Verb::Ctx {
                 ("more_context", context_request(note), false)

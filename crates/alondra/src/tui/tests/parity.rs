@@ -864,3 +864,33 @@ fn review_clone_flow_keeps_delivery_selection_and_uses_canonical_pr_id() {
     );
     assert!(inbox::review_clone_flow(&selected, "../wrong", 154, dir).is_none());
 }
+
+#[test]
+fn schedules_screen_has_its_own_footer_with_the_create_hint() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.schedules_open = true;
+    app.home_view = Some(serde_json::from_value(view_fixture("schedules-ios.json")).unwrap());
+
+    let keys = crate::tui::draw::footer_keys(&app);
+
+    assert!(keys.iter().any(|(key, label)| key == "n" && label == "create"));
+    assert!(keys.iter().any(|(key, label)| key == "Esc" && label == "back"));
+    assert!(!keys.iter().any(|(key, _)| key == "Shift+A" || key == "Tab"));
+}
+
+#[test]
+fn detail_hides_the_disabled_accept_action() {
+    let mut view = view_fixture("card-delivery.json");
+    let actions = view["sections"][0]["items"][0]["actions"].as_array().unwrap();
+    assert!(actions.iter().any(|action| action["id"].as_str().is_some_and(|id| id.starts_with("accept:"))
+        && action["enabled"] == serde_json::json!(false)));
+    let document: alondra_core::views::View = serde_json::from_value(view.take()).unwrap();
+
+    let visible = crate::tui::draw::visible_detail_actions(&document);
+
+    assert!(!visible.iter().any(|action| action.id.starts_with("accept:")));
+    assert!(visible.iter().any(|action| action.id.starts_with("changes:")));
+}

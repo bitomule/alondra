@@ -66,6 +66,8 @@ pub struct LiveNode {
     pub working: bool,
     #[serde(default)]
     pub waiting: bool,
+    #[serde(default)]
+    pub state_since: Option<String>,
     pub last_message: Option<String>,
     pub last_message_at: Option<String>,
 }

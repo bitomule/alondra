@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "v916217a1c60a3cb7",
+  "version": "v23a924c26057404a",
   "cursor": "cursor-1",
   "title": "example/repo #12",
   "status": {
@@ -239,6 +239,9 @@
                     "multiline": true
                   },
                   "attachments": true,
+                  "comments": {
+                    "kind": "blocks"
+                  },
                   "enabled": true
                 }
               ]

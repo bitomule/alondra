@@ -70,12 +70,13 @@ struct ServiceHomeCard: View {
         case (.pullRequest, "ask_pr"): return 1
         case (.pullRequest, "changes"): return 2
         case (.pullRequest, "merge"): return 3
-        default: return 4
+        default: return CardActionPresentation.isOpenOnGitHub(action) ? 5 : 4
         }
     }
     private var controlActions: [AlondraViews.Action] {
         card.actions.filter { action in
-            action.presentation != .options && (action.id != replyAction?.id || action.comments != nil)
+            action.presentation != .options &&
+                (action.id != replyAction?.id || (action.comments != nil && verb(action) != "reply"))
         }.sorted { controlRank($0) < controlRank($1) }
     }
 
@@ -404,6 +405,21 @@ struct ServiceHomeCard: View {
                 if verb(action) == "ctx" {
                     Label(action.label, systemImage: "questionmark.bubble")
                         .font(.subheadline.weight(.medium)).frame(minHeight: 30)
+                } else if CardActionPresentation.isRescueComments(card: card, action: action) {
+                    Label("Rescue Comments", systemImage: "text.bubble")
+                        .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
+                } else if verb(action) == "ask_pr" {
+                    Label(action.label, systemImage: "questionmark.bubble")
+                        .font(.subheadline.weight(.medium)).frame(minHeight: 30)
+                } else if verb(action) == "accept", isDocumentReview {
+                    Label(action.label, systemImage: "checkmark.seal")
+                        .font(.subheadline.weight(.medium)).frame(minHeight: 30)
+                } else if CardActionPresentation.isOpenOnGitHub(action) {
+                    Label(action.label, systemImage: "arrow.up.right.square")
+                        .font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading)
+                } else if card.icon == .pullRequest, verb(action) == "changes" {
+                    Label(action.label, systemImage: "arrow.uturn.backward")
+                        .font(.subheadline.weight(.medium)).frame(minHeight: 30)
                 } else if verb(action) == "read" {
                     Label(action.label, systemImage: "checkmark")
                         .font(prominent ? .headline : .subheadline.weight(.medium))
@@ -413,10 +429,15 @@ struct ServiceHomeCard: View {
                         .frame(maxWidth: .infinity, minHeight: prominent ? 50 : 30)
                 }
             }
-            .buttonStyle(AnyButtonStyle(tint: (isDocumentReview ? verb(action) == "changes" : action.style == .primary) ? actionTint : nil))
+            .buttonStyle(AnyButtonStyle(tint: filledTint(for: action)))
             .disabled(!action.enabled || actions.inFlight ||
                 (verb(action) == "ask_pr" && replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
         }
+    }
+
+    private func filledTint(for action: AlondraViews.Action) -> Color? {
+        if isDocumentReview { return verb(action) == "changes" ? actionTint : nil }
+        return action.style == .primary ? actionTint : nil
     }
 
     private func composer(placeholder: String, action: AlondraViews.Action) -> some View {

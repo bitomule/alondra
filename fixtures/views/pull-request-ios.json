@@ -4,7 +4,7 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "ios",
-  "version": "v8972c98393a4fbd1",
+  "version": "v2fbcb6e32afe4cd0",
   "cursor": "cursor-1",
   "title": "PR #12",
   "status": {
@@ -231,6 +231,9 @@
                 "multiline": true
               },
               "attachments": true,
+              "comments": {
+                "kind": "blocks"
+              },
               "enabled": true
             }
           ]

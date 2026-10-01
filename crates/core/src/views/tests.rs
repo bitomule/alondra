@@ -512,6 +512,7 @@ fn golden_live() -> LiveSnapshot {
         working: false,
         waiting: true,
         last_message: Some("The simulator pass completed successfully.".into()),
+        state_since: None,
         last_message_at: Some("2026-09-30T09:58:00Z".into()),
     });
     live.projects.push(crate::options::ProjectEntry {
@@ -913,7 +914,7 @@ fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
         state_key: None,
         state_label: None, summary: None, needs: None, background: vec![],
         background_badge: None, background_suspect: false, working: true,
-        waiting: false, last_message: None, last_message_at: None,
+        waiting: false, state_since: None, last_message: None, last_message_at: None,
     });
     let node = render(&state, &live, Client::Tui, Lang::En,
         "node:a-1", "2026-09-30T10:00:00Z");
@@ -1120,6 +1121,7 @@ fn node_quote_filters_raw_tool_calls() {
         working: true,
         waiting: false,
         last_message: Some(" mcp__tools__call ".into()),
+        state_since: None,
         last_message_at: None,
     });
     let hidden = render(
@@ -1340,6 +1342,7 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
         background: vec![], background_badge: None, background_suspect: false,
         working: false, waiting: false,
         last_message: Some("Ready for review".into()),
+        state_since: None,
         last_message_at: Some("2026-09-30T09:58:00Z".into()),
     });
     let view = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
@@ -1357,6 +1360,79 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
     let search = render(&state, &live, Client::Ios, Lang::En, "search?q=Node", "");
     let Item::Row(result) = &search.sections[0].items[0] else { panic!("search result") };
     assert!(result.children.iter().any(|child| child.id == "last_message"));
+}
+
+#[test]
+fn task_detail_says_which_question_it_is_waiting_on() {
+    let state = fixture();
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "task:t-1", "2026-09-30T10:00:00Z");
+    let now = view.sections.iter().find(|section| section.id == "now").expect("now section");
+    let Item::Row(row) = &now.items[0] else { panic!("now row") };
+    assert!(row.title.starts_with("question: "), "{}", row.title);
+    assert!(matches!(&row.link, Some(Link::View { key }) if key.starts_with("card:")));
+    let spanish = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "task:t-1", "2026-09-30T10:00:00Z");
+    let Item::Row(row) = &spanish.sections.iter().find(|section| section.id == "now").unwrap().items[0] else { panic!("now row") };
+    assert!(row.title.starts_with("pregunta: "), "{}", row.title);
+}
+
+#[test]
+fn task_detail_has_no_now_line_while_the_node_just_works() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "task:t-1", "2026-09-30T10:00:00Z");
+    assert!(view.sections.iter().all(|section| section.id != "now"));
+}
+
+#[test]
+fn node_detail_names_the_occupancy_and_since_when() {
+    let state = fixture();
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(live::LiveNode {
+        project: None,
+        state_label: Some("working".into()),
+        summary: None,
+        needs: None,
+        background: vec![],
+        background_badge: None,
+        background_suspect: false,
+        agent_id: "a-1".into(),
+        short_id: Some("a-1".into()),
+        name: "Node One".into(),
+        state_key: Some("free".into()),
+        working: false,
+        waiting: false,
+        state_since: Some("2026-09-30T09:55:00Z".into()),
+        last_message: None,
+        last_message_at: None,
+    });
+    let view = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "2026-09-30T10:00:00Z");
+    let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
+        panic!("header facts")
+    };
+    assert_eq!(facts.items[0].value, "Libre");
+    let since = view.sections.iter().find(|section| section.id == "since").expect("since section");
+    let Item::Row(row) = &since.items[0] else { panic!("since row") };
+    assert!(matches!(&row.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:55:00Z"));
+}
+
+#[test]
+fn node_detail_without_live_data_keeps_the_connection_state() {
+    let state = fixture();
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "2026-09-30T10:00:00Z");
+    let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
+        panic!("header facts")
+    };
+    assert_eq!(facts.items[0].value, "Connected");
+    assert!(view.sections.iter().all(|section| section.id != "since"));
+}
+
+#[test]
+fn information_reply_accepts_block_comments() {
+    let state = fixture();
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-2", "2026-09-30T10:00:00Z");
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("card") };
+    let reply = card.actions.iter().find(|action| action.id.starts_with("reply:")).expect("reply action");
+    assert!(matches!(&reply.comments, Some(CommentSpec { kind: CommentKind::Blocks })));
 }
 
 #[test]
