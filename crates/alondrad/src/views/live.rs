@@ -643,10 +643,7 @@ fn gauges(
         label: "CPU".into(),
         value: cpu / 100.0,
         text: format!("{}%", cpu.round()),
-        detail: Some(match lang {
-            Lang::En => "The Mac's CPU in use; red when the load is too high to trust the readings".into(),
-            Lang::Es => "CPU del Mac en uso; en rojo si la carga es tan alta que las lecturas no son fiables".into(),
-        }),
+        detail: None,
         level: if machine.unreliable {
             Level::Hot
         } else if cpu >= 85.0 {
@@ -757,8 +754,6 @@ mod tests {
         assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["memory", "cpu", "disk"]);
         let cpu = &english[1];
         assert_eq!((cpu.label.as_str(), cpu.text.as_str(), cpu.level), ("CPU", "34%", Level::Calm));
-        assert!(cpu.detail.as_deref().unwrap().contains("CPU in use"));
-        assert!(gauges(&machine, None, Lang::Es)[1].detail.as_deref().unwrap().contains("CPU del Mac"));
         machine.cpu_usage = 90.0;
         assert_eq!(gauges(&machine, None, Lang::En)[1].level, Level::Warm);
         machine.cpu_usage = 10.0;

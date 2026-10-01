@@ -1226,7 +1226,7 @@ fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
             .map(|line| line.to_string())
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(help.contains("RAM") && !help.contains("CPU"), "{help}");
+        assert!(help.contains("RAM") && help.contains("CPU"), "{help}");
         assert!(!help.to_lowercase().contains("agent"), "{help}");
         assert!(!help.contains("sesión") && !help.contains("session"), "{help}");
     }
