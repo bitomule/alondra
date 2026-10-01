@@ -5,13 +5,17 @@
 //! external write and finished as handed, retryable or uncertain afterwards.
 //!
 //! Hooks observe sessions the domain already knows. They never create an
-//! Agent, a Task or a decision, and a hook payload never carries authority.
+//! Agent, a Task or a decision. The one transition they make is the one a
+//! session's own activity proves: its assigned Task has started.
 use crate::domain_agent_lifecycle as lifecycle;
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{DeliveryClaim, OutboxMessage};
 use crate::wake::WriteFailure;
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{AgentId, Author, DomainState, InputValue, InteractionId, InteractionPayload, Recipient, Scope, ScheduleLaunchState};
+use alondra_core::domain_v2::{
+    Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload,
+    PROTOCOL_VERSION, Recipient, Scope, ScheduleLaunchState, TaskId, TaskState,
+};
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -77,6 +81,9 @@ async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background:
         stream.write_all(&200u16.to_be_bytes()).await?;
         stream.write_all(&bytes).await?;
         stream.shutdown().await?;
+        if claims.is_empty() {
+            return Ok(());
+        }
         anyhow::ensure!(
             tokio::time::timeout(Duration::from_secs(5), stream.read_u8()).await?? == 6,
             "hook reply was not acknowledged"
@@ -130,6 +137,9 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
         return Ok(Reply::Plain(json!({})));
     }
     domain.live.observe(payload);
+    if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {
+        start_assigned(domain, &agent_id)?;
+    }
     if let Some(held) = crate::domain_holds::hold(domain, payload, background(&session_id))? {
         return Ok(Reply::Held(held));
     }
@@ -150,7 +160,10 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
             let batch = claim_batch(domain, &agent_id)?;
             let (text, claims) = match batch {
                 Some(batch) => (held.into_iter().chain([batch.text]).collect::<Vec<_>>().join("\n\n"), batch.claims),
-                None if held.is_empty() => return Ok(Reply::Plain(json!({}))),
+                None if held.is_empty() => match unreported(domain, &agent_id, payload)? {
+                    Some(text) => (text, vec![]),
+                    None => return Ok(Reply::Plain(json!({}))),
+                },
                 None => (held.join("\n\n"), vec![]),
             };
             let body = json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}});
@@ -158,6 +171,57 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
         }
         _ => Ok(Reply::Plain(json!({}))),
     }
+}
+
+/// The session bound to a Task works on it: its first hook after the assignment starts the
+/// Task, as the assigned Agent, so it shows as working without the Agent calling `start_task`.
+fn start_assigned(domain: &DomainRuntime, agent_id: &AgentId) -> Result<()> {
+    let state = domain.state()?;
+    let waiting = state.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(agent_id) && !task.started && task.state == TaskState::NotStarted);
+    for task in waiting {
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+            command_id: format!("start-{}", crate::auth::random_hex(16)).into(),
+            expected_revision: state.revision, command: Command::StartTask { task_id: task.id.clone() },
+        };
+        let actor = Actor::Agent { agent_id: agent_id.clone() };
+        if let Err(error) = domain.execute(&actor, &envelope, None, || Ok(())) {
+            log!("could not start {} for its working agent: {error:?}", task.id);
+        }
+    }
+    Ok(())
+}
+
+/// A turn that ends while the Agent's Task has neither a result nor a question for anyone gets,
+/// once per Task, the reminder 8ccd131 typed into such a node. A turn the reminder itself
+/// continued is never held again.
+fn unreported(domain: &DomainRuntime, agent_id: &AgentId, payload: &Value) -> Result<Option<String>> {
+    if payload.get("stop_hook_active") == Some(&Value::Bool(true)) {
+        return Ok(None);
+    }
+    let state = domain.state()?;
+    let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(agent_id)
+        && matches!(task.state, TaskState::NotStarted | TaskState::Running)
+        && task.final_presentation.is_none())
+    else {
+        return Ok(None);
+    };
+    if !domain.nudged.lock().expect("nudged tasks poisoned").insert(task.id.clone()) {
+        return Ok(None);
+    }
+    Ok(Some(nudge_text(&crate::domain_messages::user_name(), &task.id)))
+}
+
+pub(crate) fn nudge_text(user: &str, task: &TaskId) -> String {
+    format!(
+        "[Alondra] Your turn ended without telling {user} anything through Alondra, so they cannot tell whether you are \
+         done or waiting on them; your terminal does not reach them. The Alondra tools declare your state for task {task}: \
+         `present_result` with is_final true when you are done (the answer in body, files in attachments), `ask` for a \
+         decision (one question per decision, with options), `request_action` for something {user} does outside Alondra, \
+         `wait_for_machine` when you are waiting for resources. If you are still working on your own (a build, an upload, \
+         a review, a long command), there is nothing to send."
+    )
 }
 
 struct Batch {
@@ -668,7 +732,7 @@ mod tests {
         let (result, _) = tokio::join!(handle(server, domain), async {
             client.read_to_end(&mut bytes).await.unwrap();
             if let Some(ack) = ack {
-                client.write_u8(ack).await.unwrap();
+                let _ = client.write_u8(ack).await;
             }
             drop(client);
         });
@@ -701,7 +765,7 @@ mod tests {
         assert_eq!(attempts(&domain), vec![(pending[0].0, "handed".into(), None)]);
 
         let (reply, _) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
-        assert_eq!(reply, json!({}), "a handed message is never delivered twice");
+        assert!(reminder_only(&reply), "a handed message is never delivered twice: {reply}");
 
         answered_question(&domain, "session-b");
         let id = agent_outbox(&domain, "session-b")[0].0;
@@ -734,7 +798,12 @@ mod tests {
         let (body, _) = hook(&domain, stop.clone(), Some(6)).await;
         assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Only this");
         let (body, _) = hook(&domain, stop, Some(6)).await;
-        assert_eq!(body, json!({}), "a held message is handed once");
+        assert!(reminder_only(&body), "a held message is handed once: {body}");
+    }
+
+    fn reminder_only(reply: &Value) -> bool {
+        reply["hookSpecificOutput"]["additionalContext"].as_str()
+            .is_some_and(|text| text.starts_with("[Alondra] Your turn ended") && !text.contains("Yes.") && !text.contains("Only this"))
     }
 
     #[tokio::test]
@@ -798,6 +867,84 @@ mod tests {
         let nodes = domain.live.nodes();
         assert_eq!(nodes.iter().map(|node| node.session_id.as_str()).collect::<Vec<_>>(), ["session-a"]);
         assert!(nodes[0].busy && nodes[0].tool.is_some());
+    }
+
+    #[tokio::test]
+    async fn an_ordinary_hook_hangs_up_after_its_reply_without_waiting_for_an_acknowledgement() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let body = serde_json::to_vec(&json!({"launched": true, "payload": {"session_id": "agent-a",
+            "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        handle(server, &domain).await.expect("nothing was handed, so no acknowledgement is awaited");
+        let mut reply = vec![];
+        client.read_to_end(&mut reply).await.unwrap();
+        assert_eq!(&reply[..2], 200u16.to_be_bytes());
+        assert_eq!(serde_json::from_slice::<Value>(&reply[2..]).unwrap(), json!({}));
+    }
+
+    fn task_state(domain: &DomainRuntime) -> TaskState {
+        domain.state().unwrap().tasks[&TaskId::from("task")].state
+    }
+
+    #[tokio::test]
+    async fn the_assigned_sessions_first_activity_starts_its_task() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "SessionStart"}), Some(6)).await.1.unwrap();
+        assert_eq!(task_state(&domain), TaskState::NotStarted, "a session that only opened has not worked yet");
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "UserPromptSubmit", "prompt": "Work"}), Some(6)).await.1.unwrap();
+        assert_eq!(task_state(&domain), TaskState::Running);
+        let revision = domain.state().unwrap().revision;
+        hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        assert_eq!(domain.state().unwrap().revision, revision, "a started Task is not started again");
+        command(&domain, agent_actor(), "start", Command::StartTask { task_id: "task".into() });
+        assert_eq!(task_state(&domain), TaskState::Running, "start_task still works when the Agent calls it");
+    }
+
+    #[tokio::test]
+    async fn another_sessions_activity_never_starts_the_task() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        command(&domain, Actor::System, "register-b", Command::RegisterAgent { agent_id: "agent-b".into(), name: "B".into() });
+        hook(&domain, json!({"session_id": "agent-b", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        hook(&domain, json!({"session_id": "stranger", "hook_event_name": "PreToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        assert_eq!(task_state(&domain), TaskState::NotStarted);
+    }
+
+    #[tokio::test]
+    async fn a_turn_that_ends_without_a_result_is_reminded_once() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let stop = json!({"session_id": "agent-a", "hook_event_name": "Stop"});
+        let (reply, result) = hook(&domain, stop.clone(), Some(6)).await;
+        result.unwrap();
+        let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        assert!(context.starts_with("[Alondra] Your turn ended") && context.contains("`present_result`")
+            && context.contains("task task"), "{context}");
+        let (reply, _) = hook(&domain, stop, Some(6)).await;
+        assert_eq!(reply, json!({}), "the reminder comes once, never in a loop");
+    }
+
+    #[tokio::test]
+    async fn a_turn_continued_by_a_stop_hook_or_ending_after_a_result_is_not_reminded() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop", "stop_hook_active": true}), Some(6)).await;
+        assert_eq!(reply, json!({}));
+        command(&domain, agent_actor(), "present", Command::PresentResult {
+            attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
+            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true,
+        });
+        let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await;
+        assert_eq!(reply, json!({}), "a presented result already tells the user");
     }
 
     struct FakeTerminal {
@@ -949,7 +1096,7 @@ mod tests {
         let mut bytes = vec![];
         let (result, _) = tokio::join!(handler, async {
             client.read_to_end(&mut bytes).await.unwrap();
-            client.write_u8(6).await.unwrap();
+            let _ = client.write_u8(6).await;
         });
         result.unwrap();
         assert_eq!(u16::from_be_bytes([bytes[0], bytes[1]]), 200);

@@ -6,7 +6,7 @@ use crate::domain_store::StoreError;
 use alondra_core::domain_v2::{
     Actor, AgentId, Command, CommandEnvelope, CommandOutcome, DomainState, PROTOCOL_VERSION,
     Request, RequestId, ScheduleLaunchState, ScheduleRunOrigin, ScheduleRunState, Task,
-    TaskState,
+    TaskId, TaskState,
 };
 use alondra_core::domain_v2::{
     ScheduleDefinitionSnapshot, ScheduleFrequency, ScheduleId, ScheduleLaunchIntent, ScheduleRunId,
@@ -89,9 +89,15 @@ pub(crate) fn prepare_intent(
 pub(crate) fn producer_prompt(
     text: &str,
     resolved: &Resolved,
+    task: &TaskId,
 ) -> String {
+    let user = crate::domain_messages::user_name();
     let mut lines = vec![
         text.trim_end().to_owned(),
+        String::new(),
+        "## Your Alondra task".into(),
+        String::new(),
+        format!("This work is Alondra task {task}; pass it as task_id to the Alondra tools. Your terminal does not reach {user}: only the Alondra tools do, and {user}'s answers are typed into this session. Use `ask` for a decision and end your turn after it, `request_action` for something {user} does outside Alondra, and `publish_information` for a finding {user} should read now. When you are done, deliver it with `present_result` and is_final true (the answer in body, files in attachments, a PR you registered or a document revision in targets) and end your turn: {user} accepts it in Alondra. A file or a final message left in this session is not a delivery."),
         String::new(),
         "## Choices for this work".into(),
         String::new(),
@@ -120,6 +126,7 @@ pub(crate) fn producer_prompt(
 /// records the result against that claim; this function never retries Claude.
 async fn invoke_claimed(
     launch: &ScheduleLaunchIntent,
+    task: &TaskId,
     disallowed_tools: &[String],
     home: &Path,
     key: &str,
@@ -161,7 +168,7 @@ async fn invoke_claimed(
         args.extend(["--disallowedTools".into(), disallowed_tools.join(" ")]);
     }
     args.push("--".into());
-    args.push(producer_prompt(&launch.prompt, &resolved));
+    args.push(producer_prompt(&launch.prompt, &resolved, task));
     match launcher.run(&launch.cwd, &args).await {
         Ok(output) => Ok((alondra_core::sessions::launched_short(&output), settings)),
         Err(refusal) => {
@@ -333,7 +340,7 @@ async fn dispatch_pending(
         }
     };
     let intent = launch.intent.clone();
-    run.task_id.as_ref().context("sent run has no Task")?;
+    let task = run.task_id.clone().context("sent run has no Task")?;
     match execute_system(
         domain,
         Command::ClaimScheduleLaunch {
@@ -346,7 +353,7 @@ async fn dispatch_pending(
         Err(error) => return Err(error.into()),
     }
     let (short, settings) =
-        match invoke_claimed(&intent, &policy, home, &run_id.0, launcher).await {
+        match invoke_claimed(&intent, &task, &policy, home, &run_id.0, launcher).await {
             Ok(launched) => launched,
             Err((_, reason)) => {
                 fail_run(domain, run_id, reason)?;
@@ -664,11 +671,22 @@ mod tests {
             )
             .unwrap()
         };
-        let auto = producer_prompt("Fix it", &chosen("auto_merge"));
+        let auto = producer_prompt("Fix it", &chosen("auto_merge"), &TaskId::from("t-1"));
         assert!(auto.contains("Once its checks pass") && auto.contains("merge the pull request you registered"), "{auto}");
         assert!(!auto.contains("gh pr merge") && !auto.contains("authorization"), "{auto}");
-        let review = producer_prompt("Fix it", &chosen("review"));
+        let review = producer_prompt("Fix it", &chosen("review"), &TaskId::from("t-1"));
         assert!(!review.contains("auto-merge"), "{review}");
+    }
+
+    #[test]
+    fn the_mission_names_the_task_and_how_to_deliver_through_alondra() {
+        let resolved = OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap();
+        let prompt = producer_prompt("Analyse the mods", &resolved, &TaskId::from("t-mods"));
+        assert!(prompt.starts_with("Analyse the mods\n"), "{prompt}");
+        assert!(prompt.contains("This work is Alondra task t-mods; pass it as task_id"), "{prompt}");
+        assert!(prompt.contains("`present_result` and is_final true") && prompt.contains("`ask`")
+            && prompt.contains("is not a delivery"), "{prompt}");
+        assert!(!prompt.contains("`report`"), "the old tool does not exist for this session: {prompt}");
     }
 
     #[test]
@@ -798,6 +816,7 @@ mod tests {
         let home = root.join("home");
         let (short, settings) = invoke_claimed(
             &intent,
+            &TaskId::from("task-1"),
             &definition.disallowed_tools,
             &home,
             "run-1",
@@ -834,7 +853,7 @@ mod tests {
             prompt.starts_with("Review project\n")
                 && prompt.contains("Choices for this work")
                 && !prompt.contains("request-1")
-                && !prompt.contains("task-1")
+                && prompt.contains("Alondra task task-1")
                 && !prompt.contains("data_epoch=")
                 && !prompt.contains("revision="),
             "{prompt}"

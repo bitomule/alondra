@@ -304,7 +304,7 @@ enum HookReply {
 /// that delivery as uncertain. A 5xx, like no answer at all, lets Claude continue; a 4xx is
 /// a deliberate refusal.
 fn send_hook(body: &[u8]) -> HookReply {
-    use std::io::{Read, Write};
+    use std::io::Write;
     use std::os::unix::net::UnixStream;
 
     let path = client::config().home.join("hooks.sock");
@@ -314,8 +314,7 @@ fn send_hook(body: &[u8]) -> HookReply {
         anyhow::ensure!(body.len() <= u32::MAX as usize, "hook input is too large");
         stream.write_all(&(body.len() as u32).to_be_bytes())?;
         stream.write_all(body)?;
-        let mut response = Vec::new();
-        stream.read_to_end(&mut response)?;
+        let response = read_reply(&mut stream)?;
         anyhow::ensure!(response.len() >= 2, "daemon closed the hook connection without a reply");
         if u16::from_be_bytes([response[0], response[1]]) < 400 {
             let mut stdout = std::io::stdout();
@@ -334,6 +333,25 @@ fn send_hook(body: &[u8]) -> HookReply {
         status @ 500.. => HookReply::Unreachable(anyhow::anyhow!("daemon failed ({status}): {detail}")),
         status @ 400..=499 => HookReply::Refused(format!("daemon rejected hook ({status}): {detail}")),
         _ => HookReply::Answered,
+    }
+}
+
+/// A successful reply is one JSON value: once it is complete the hook acknowledges it without
+/// waiting for the daemon to close the connection. A refusal's text runs until the close.
+fn read_reply(stream: &mut impl std::io::Read) -> Result<Vec<u8>> {
+    let mut response = Vec::new();
+    let mut chunk = [0; 8192];
+    loop {
+        let read = stream.read(&mut chunk)?;
+        if read == 0 {
+            return Ok(response);
+        }
+        response.extend_from_slice(&chunk[..read]);
+        if response.len() > 2 && u16::from_be_bytes([response[0], response[1]]) < 400
+            && serde_json::from_slice::<serde::de::IgnoredAny>(&response[2..]).is_ok()
+        {
+            return Ok(response);
+        }
     }
 }
 
