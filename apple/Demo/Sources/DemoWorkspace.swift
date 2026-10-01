@@ -6,17 +6,27 @@ import Foundation
 /// protocol DTOs as the real relay so the shipping Views UI runs unchanged.
 enum DemoWorkspace {
     static func client() -> ViewsClient {
-        ViewsClient(
-            load: { key, known in
-                guard let fixture = fixtureName(for: key.rawValue) else {
-                    throw ViewsClientError.missingView
-                }
-                return try loadFixture(fixture, key: key.rawValue, known: known)
-            },
+        let load: @Sendable (ViewKey, String?) async throws -> ViewFetch = { key, known in
+            guard let fixture = fixtureName(for: key.rawValue) else {
+                throw ViewsClientError.missingView
+            }
+            return try loadFixture(fixture, key: key.rawValue, known: known)
+        }
+        return ViewsClient(
+            load: load,
             open: { _ in },
             openScreen: { _, _ in },
             closeScreen: { _ in },
             feed: { AsyncStream { $0.finish() } },
+            observe: { key in
+                AsyncThrowingStream { continuation in
+                    let task = Task {
+                        do { continuation.yield(try await load(key, nil)); continuation.finish() }
+                        catch { continuation.finish(throwing: error) }
+                    }
+                    continuation.onTermination = { _ in task.cancel() }
+                }
+            },
             perform: { _ in try response() },
             fetchContent: { reference in
                 if reference.kind == .diff {

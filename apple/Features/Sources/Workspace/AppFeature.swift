@@ -3,79 +3,66 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// The shipping workspace owns only server Views. The older domain presentation is kept in
-/// its separate test target and is never started by an approved service scene.
+/// The iPhone's root: four tabs, each with its own stack of pushed screens, the settings sheet, the
+/// toast, and where a tapped notification lands. It subscribes to the feed for the app-level status
+/// and for the screens that still refresh through the root (`legacy`); the rebuilt screens observe
+/// their own key.
 @Reducer
 public struct AppFeature: Sendable {
     public init() {}
 
     @ObservableState
-    public struct State {
+    public struct State: Equatable {
         public init() {}
-        public enum Tab: Hashable { case inbox, tasks, fleet, newRequest, account }
+        public enum Tab: Hashable, CaseIterable, Sendable { case inbox, tasks, fleet, newRequest }
         public var tab = Tab.inbox
         public var settingsPresented = false
         public var notice: WorkspaceNotice?
-        public var macError: WorkspaceNotice?
         public var closeRefusal: String?
         public var home = HomeFeature.State()
-        public var macPresentation = MacPresentationFeature.State()
-        public var serverTasks = ViewsScreenFeature.State(key: .tasks, owner: "ios.tasks")
-        public var serverFleet = ViewsScreenFeature.State(key: .fleet, owner: "ios.fleet")
-        public var serverNewRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
-        public var serverTasksPath = StackState<ViewsScreenFeature.State>()
-        public var serverFleetPath = StackState<ViewsScreenFeature.State>()
-        public var serverNewRequestPath = StackState<ViewsScreenFeature.State>()
-        public var serverReviewPath = StackState<ViewsScreenFeature.State>()
+        public var tasks = ViewsScreenFeature.State(key: .tasks, owner: "ios.tasks")
+        public var fleet = ViewsScreenFeature.State(key: .fleet, owner: "ios.fleet")
+        public var newRequest = ViewsScreenFeature.State(key: .newRequest(), owner: "ios.new_request")
+        public var inboxPath = StackState<DetailRoute.State>()
+        public var tasksPath = StackState<DetailRoute.State>()
+        public var fleetPath = StackState<DetailRoute.State>()
+        public var newRequestPath = StackState<DetailRoute.State>()
     }
 
     public enum Action {
         case appeared, disappeared
-        case tabSelected(State.Tab), settingsPresented(Bool), focusInbox(String)
-        case openServerView(String), openTasksView(ViewKey), openFleetView(ViewKey), openNewRequestView(ViewKey), openReviewView(ViewKey)
-        case dismissNotice(UUID), dismissMacError(UUID), dismissCloseRefusal
+        case tabSelected(State.Tab)
+        case settingsPresented(Bool)
+        /// A card was tapped in Waiting for You: its screen replaces whatever was pushed there.
+        case openFromTriage(ViewKey)
+        case open(State.Tab, ViewKey)
+        /// A notification was tapped: show that card at the front of Waiting for You.
+        case notificationOpened(cardID: String)
+        case dismissNotice(UUID)
+        case dismissCloseRefusal
         case home(HomeFeature.Action)
-        case macPresentation(MacPresentationFeature.Action)
-        case serverTasks(ViewsScreenFeature.Action)
-        case serverFleet(ViewsScreenFeature.Action)
-        case serverNewRequest(ViewsScreenFeature.Action)
-        case serverTasksPath(StackActionOf<ViewsScreenFeature>)
-        case serverFleetPath(StackActionOf<ViewsScreenFeature>)
-        case serverNewRequestPath(StackActionOf<ViewsScreenFeature>)
-        case serverReviewPath(StackActionOf<ViewsScreenFeature>)
+        case tasks(ViewsScreenFeature.Action)
+        case fleet(ViewsScreenFeature.Action)
+        case newRequest(ViewsScreenFeature.Action)
+        case inboxPath(StackActionOf<DetailRoute>)
+        case tasksPath(StackActionOf<DetailRoute>)
+        case fleetPath(StackActionOf<DetailRoute>)
+        case newRequestPath(StackActionOf<DetailRoute>)
         case viewsFeed(FeedEvent)
     }
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case feed, notice, macError }
+    private enum CancelID { case feed, notice }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.home, action: \.home) { HomeFeature() }
-        Scope(state: \.macPresentation, action: \.macPresentation) { MacPresentationFeature() }
-        Scope(state: \.serverTasks, action: \.serverTasks) { ViewsScreenFeature() }
-        Scope(state: \.serverFleet, action: \.serverFleet) { ViewsScreenFeature() }
-        Scope(state: \.serverNewRequest, action: \.serverNewRequest) { ViewsScreenFeature() }
+        Scope(state: \.tasks, action: \.tasks) { ViewsScreenFeature() }
+        Scope(state: \.fleet, action: \.fleet) { ViewsScreenFeature() }
+        Scope(state: \.newRequest, action: \.newRequest) { ViewsScreenFeature() }
         Reduce { state, action in
-            if case .dismissNotice(let id) = action {
-                guard state.notice?.id == id else { return .none }
-                state.notice = nil
-                return .cancel(id: CancelID.notice)
-            }
-            if case .dismissMacError(let id) = action {
-                guard state.macError?.id == id else { return .none }
-                state.macError = nil
-                return .cancel(id: CancelID.macError)
-            }
-            if case .dismissCloseRefusal = action { state.closeRefusal = nil; return .none }
-            if case .serverFleet(.action(.response(let response))) = action,
-               state.serverFleet.action.action?.id?.hasPrefix("close:") == true,
-               response.outcome == .rejected {
-                state.closeRefusal = response.message ?? String(localized: "Couldn’t close the node")
-                return .none
-            }
-            if let event = noticeEvent(action) {
-                let notice = WorkspaceNotice(event: event)
+            if let toast = Self.toast(for: action) {
+                let notice = WorkspaceNotice(event: toast)
                 state.notice = notice
                 return .run { send in
                     try await clock.sleep(for: .seconds(notice.failure ? 4 : 2.2))
@@ -89,104 +76,102 @@ public struct AppFeature: Sendable {
                 }.cancellable(id: CancelID.feed, cancelInFlight: true)
             case .disappeared:
                 return .merge(.send(.home(.disappeared)), .cancel(id: CancelID.feed))
-            case .tabSelected(let tab): state.tab = tab; return .none
-            case .settingsPresented(let value): state.settingsPresented = value; return .none
-            case .focusInbox(let id):
+            case .tabSelected(let tab):
+                state.tab = tab
+                return .none
+            case .settingsPresented(let value):
+                state.settingsPresented = value
+                return .none
+            case .dismissNotice(let id):
+                guard state.notice?.id == id else { return .none }
+                state.notice = nil
+                return .cancel(id: CancelID.notice)
+            case .dismissCloseRefusal:
+                state.closeRefusal = nil
+                return .none
+            case .notificationOpened(let cardID):
                 state.tab = .inbox
-                let publicID = String(id.split(separator: ":").last ?? Substring(id))
+                let publicID = String(cardID.split(separator: ":").last ?? Substring(cardID))
                 return .send(.home(.focus(publicID)))
-            case .openServerView(let key):
-                state.serverReviewPath.removeAll()
-                append(ViewKey(rawValue: key), to: &state.serverReviewPath, owner: "ios.detail")
+            case .openFromTriage(let key):
+                state.inboxPath.removeAll()
+                Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
                 return .none
-            case .openTasksView(let key):
-                append(key, to: &state.serverTasksPath, owner: "ios.tasks")
+            case .open(let tab, let key):
+                switch tab {
+                case .inbox: Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
+                case .tasks: Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
+                case .fleet: Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
+                case .newRequest: Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
+                }
                 return .none
-            case .openFleetView(let key):
-                append(key, to: &state.serverFleetPath, owner: "ios.fleet")
-                return .none
-            case .openNewRequestView(let key):
-                append(key, to: &state.serverNewRequestPath, owner: "ios.new_request")
-                return .none
-            case .openReviewView(let key):
-                append(key, to: &state.serverReviewPath, owner: "ios.detail")
+            case .fleet(.action(.response(let response))):
+                guard state.fleet.action.action?.id?.hasPrefix("close:") == true,
+                      response.outcome == .rejected else { return .none }
+                state.closeRefusal = response.message ?? String(localized: "Couldn’t close the node")
                 return .none
             case .viewsFeed(.stale(let keys)):
-                return .merge(.send(.home(.stale(keys))), .send(.macPresentation(.viewsStale(keys))),
-                    .send(.serverTasks(.stale(keys))), .send(.serverFleet(.stale(keys))),
-                    .send(.serverNewRequest(.stale(keys))), pathEffects(state, action: .stale(keys)))
+                return .merge(.send(.home(.stale(keys))),
+                    .send(.tasks(.stale(keys))), .send(.fleet(.stale(keys))), .send(.newRequest(.stale(keys))),
+                    Self.refreshPaths(state, .stale(keys)))
             case .viewsFeed(.reset):
-                return .merge(.send(.home(.reset)), .send(.macPresentation(.viewsReset)),
-                    .send(.serverTasks(.reset)), .send(.serverFleet(.reset)),
-                    .send(.serverNewRequest(.reset)), pathEffects(state, action: .reset))
+                return .merge(.send(.home(.reset)),
+                    .send(.tasks(.reset)), .send(.fleet(.reset)), .send(.newRequest(.reset)),
+                    Self.refreshPaths(state, .reset))
             case .viewsFeed(.snapshot(let snapshot)):
                 if snapshot.reset { return .send(.viewsFeed(.reset)) }
                 if let status = snapshot.status { return .send(.home(.feedStatus(status))) }
                 return .none
-            case .macPresentation(.viewFailed(_, let message)):
-                let notice = WorkspaceNotice(event: .failure(message))
-                state.macError = notice
-                return .run { send in
-                    try await clock.sleep(for: .seconds(4))
-                    await send(.dismissMacError(notice.id))
-                }.cancellable(id: CancelID.macError, cancelInFlight: true)
-            case .home, .macPresentation, .serverTasks, .serverFleet, .serverNewRequest,
-                 .serverTasksPath, .serverFleetPath, .serverNewRequestPath, .serverReviewPath,
-                 .dismissNotice, .dismissMacError, .dismissCloseRefusal:
+            case .home, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
                 return .none
             }
         }
-        .forEach(\.serverTasksPath, action: \.serverTasksPath) { ViewsScreenFeature() }
-        .forEach(\.serverFleetPath, action: \.serverFleetPath) { ViewsScreenFeature() }
-        .forEach(\.serverNewRequestPath, action: \.serverNewRequestPath) { ViewsScreenFeature() }
-        .forEach(\.serverReviewPath, action: \.serverReviewPath) { ViewsScreenFeature() }
+        .forEach(\.inboxPath, action: \.inboxPath)
+        .forEach(\.tasksPath, action: \.tasksPath)
+        .forEach(\.fleetPath, action: \.fleetPath)
+        .forEach(\.newRequestPath, action: \.newRequestPath)
     }
 
-    private func append(_ key: ViewKey, to path: inout StackState<ViewsScreenFeature.State>, owner: String) {
-        guard path.last?.key != key else { return }
-        path.append(ViewsScreenFeature.State(key: key, owner: "\(owner).\(path.count)"))
+    /// A key outside the route table opens nothing, and a screen already on top is not pushed twice.
+    private static func push(_ key: ViewKey, onto path: inout StackState<DetailRoute.State>, owner: String) {
+        guard path.last?.key != key,
+              let route = DetailRoute.State(key: key, owner: "\(owner).\(path.count)") else { return }
+        path.append(route)
     }
 
-    private func pathEffects(_ state: State, action: ViewsScreenFeature.Action) -> Effect<Action> {
-        let tasks: [Effect<Action>] = state.serverTasksPath.ids.map {
-            .send(.serverTasksPath(.element(id: $0, action: action)))
-        }
-        let fleet: [Effect<Action>] = state.serverFleetPath.ids.map {
-            .send(.serverFleetPath(.element(id: $0, action: action)))
-        }
-        let newRequest: [Effect<Action>] = state.serverNewRequestPath.ids.map {
-            .send(.serverNewRequestPath(.element(id: $0, action: action)))
-        }
-        let review: [Effect<Action>] = state.serverReviewPath.ids.map {
-            .send(.serverReviewPath(.element(id: $0, action: action)))
-        }
-        let effects = tasks + fleet + newRequest + review
-        return .merge(effects)
+    private static func refreshPaths(_ state: State, _ action: ViewsScreenFeature.Action) -> Effect<Action> {
+        .merge(
+            state.inboxPath.ids.map { .send(.inboxPath(.element(id: $0, action: .legacy(action)))) }
+            + state.tasksPath.ids.map { .send(.tasksPath(.element(id: $0, action: .legacy(action)))) }
+            + state.fleetPath.ids.map { .send(.fleetPath(.element(id: $0, action: .legacy(action)))) }
+            + state.newRequestPath.ids.map { .send(.newRequestPath(.element(id: $0, action: .legacy(action)))) }
+        )
     }
 
-    private func noticeEvent(_ action: Action) -> WorkspaceNotice.Event? {
-        let child: ActionFeature.Action
+    private static func toast(for action: Action) -> WorkspaceNotice.Event? {
+        let delegate: ActionFeature.Action.Delegate
         switch action {
-        case .home(.actions(let value)),
-             .serverTasks(.action(let value)), .serverFleet(.action(let value)),
-             .serverNewRequest(.action(let value)),
-             .serverTasksPath(.element(id: _, action: .action(let value))),
-             .serverFleetPath(.element(id: _, action: .action(let value))),
-             .serverNewRequestPath(.element(id: _, action: .action(let value))),
-             .serverReviewPath(.element(id: _, action: .action(let value))),
-             .macPresentation(.action(let value)):
-            child = value
-        default: return nil
+        case .home(.actions(.delegate(let value))),
+             .tasks(.action(.delegate(let value))),
+             .fleet(.action(.delegate(let value))),
+             .newRequest(.action(.delegate(let value))),
+             .inboxPath(.element(id: _, action: .legacy(.action(.delegate(let value))))),
+             .tasksPath(.element(id: _, action: .legacy(.action(.delegate(let value))))),
+             .fleetPath(.element(id: _, action: .legacy(.action(.delegate(let value))))),
+             .newRequestPath(.element(id: _, action: .legacy(.action(.delegate(let value))))):
+            delegate = value
+        default:
+            return nil
         }
-        switch child {
-        case .response(let response):
-            switch response.outcome {
-            case .applied: return .actionCompleted(response.message ?? String(localized: "Action completed"))
-            case .rejected, .noLongerAvailable: return .failure(response.message ?? String(localized: "Action failed"))
-            case .changed: return nil
-            }
-        case .failed(let message): return .failure(message)
-        default: return nil
+        return delegate.event
+    }
+}
+
+public extension ActionFeature.Action.Delegate {
+    var event: WorkspaceNotice.Event {
+        switch self {
+        case .completed(let message): .actionCompleted(message)
+        case .failed(let message): .failure(message)
         }
     }
 }

@@ -59,6 +59,14 @@ public struct ActionFeature: Sendable {
         case response(ActionResponse)
         case failed(String)
         case dismiss
+        case delegate(Delegate)
+
+        /// What the screen showing this action reports upward; the app turns it into a toast.
+        @CasePathable
+        public enum Delegate: Equatable, Sendable {
+            case completed(String)
+            case failed(String)
+        }
     }
 
     @Dependency(\.viewsClient) var viewsClient
@@ -160,17 +168,21 @@ public struct ActionFeature: Sendable {
                 case .applied:
                     state.stamp = reply.stamp ?? state.action?.stamp
                     state.error = nil
+                    return .send(.delegate(.completed(reply.message ?? String(localized: "Action completed"))))
                 case .changed:
                     state.changed = reply.confirm
                     state.error = reply.message
+                    return .none
                 case .noLongerAvailable, .rejected:
                     state.error = reply.message
+                    return .send(.delegate(.failed(reply.message ?? String(localized: "Action failed"))))
                 }
-                return .none
             case let .failed(message):
                 state.inFlight = false
                 state.error = message
                 // Keep the exact request and command ID for an explicit retry.
+                return .send(.delegate(.failed(message)))
+            case .delegate:
                 return .none
             case .dismiss:
                 state.action = nil; state.confirmation = nil; state.changed = nil

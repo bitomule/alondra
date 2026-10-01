@@ -84,6 +84,28 @@ final class ViewsUITests: XCTestCase {
             $0.pending = nil
             $0.stamp = "Answered"
         }
+        await store.receive(\.delegate.completed, "Action completed")
+    }
+
+    @MainActor
+    func testTheScreenIsToldHowTheActionEndedExceptWhenTheDaemonAsksForAConfirmation() async throws {
+        let action = try ContractCodec.decode(AlondraContract.Action.self, from: #"{"id":"close:n-1@1","label":"Close Node","style":"destructive","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#.data(using: .utf8)!)
+        func outcome(_ json: String) throws -> ActionResponse {
+            try ContractCodec.decode(ActionResponse.self, from: Data(json.utf8))
+        }
+        let store = TestStore(initialState: ActionFeature.State(dataEpoch: "epoch", client: .ios, lang: "en")) {
+            ActionFeature()
+        }
+        store.exhaustivity = .off
+        await store.send(.present(action))
+        await store.send(.response(try outcome(#"{"protocol":1,"outcome":"rejected","message":"It is working"}"#)))
+        await store.receive(\.delegate.failed, "It is working")
+        await store.send(.response(try outcome(#"{"protocol":1,"outcome":"no_longer_available"}"#)))
+        await store.receive(\.delegate.failed, "Action failed")
+        await store.send(.failed("Couldn’t send. Try again."))
+        await store.receive(\.delegate.failed, "Couldn’t send. Try again.")
+        await store.send(.response(try outcome(#"{"protocol":1,"outcome":"changed","message":"The question changed"}"#)))
+        await store.finish()
     }
 }
 
