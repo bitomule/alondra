@@ -1,14 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
 swift_library(
-    name = "AlondraConnectionFeature",
-    srcs = glob(["Sources/*.swift"]),
-    module_name = "AlondraConnectionFeature",
-    visibility = ["//visibility:public"],
-    deps = ["//apple/Contracts:AlondraContracts"],
-)
-
-swift_library(
     name = "AlondraViewsConnectionFeature",
     srcs = glob(["Sources/*.swift"]),
     module_name = "AlondraConnectionFeature",

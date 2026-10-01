@@ -1,26 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 
 swift_library(
-    name = "AlondraAppComposition",
-    testonly = True,
-    module_name = "AlondraAppComposition",
-    srcs = glob(["Sources/*.swift"]),
-    visibility = ["//visibility:public"],
-    deps = [
-        "//apple/Data/Workspace:AlondraWorkspace",
-        "//apple/Data/LoopbackSession:AlondraLoopbackSession",
-        "//apple/Data/Sync:AlondraSync",
-        "//apple/Data/Attachments:AlondraAttachmentsData",
-        "//apple/Features/Attachments:AlondraAttachmentsFeature",
-        "//apple/Domain:AlondraDomain",
-        "//apple/Auth:AlondraAuth",
-        "//apple/ServicePairing:AlondraServicePairing",
-        "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
-        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-    ],
-)
-
-swift_library(
     name = "AlondraViewsAppComposition",
     module_name = "AlondraViewsAppComposition",
     srcs = glob(["ViewsSources/*.swift"]) + ["Sources/AppStorageLocation.swift"],

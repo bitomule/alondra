@@ -1,14 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
 swift_library(
-    name = "AlondraSettingsFeature",
-    srcs = glob(["Sources/*.swift"]),
-    module_name = "AlondraSettingsFeature",
-    visibility = ["//visibility:public"],
-    deps = ["//apple/Contracts:AlondraContracts", "//apple/Features/Connection:AlondraConnectionFeature", "//apple/Features/CloudPairing:AlondraCloudPairingFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
-)
-
-swift_library(
     name = "AlondraViewsSettingsFeature",
     srcs = glob(["Sources/*.swift"]),
     module_name = "AlondraSettingsFeature",
@@ -22,8 +14,8 @@ swift_test(
     name = "AlondraSettingsFeatureTests",
     srcs = glob(["Tests/*.swift"]),
     deps = [
-        ":AlondraSettingsFeature",
-        "//apple/Features/CloudPairing:AlondraCloudPairingFeature",
+        ":AlondraViewsSettingsFeature",
+        "//apple/Features/CloudPairing:AlondraViewsCloudPairingFeature",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],

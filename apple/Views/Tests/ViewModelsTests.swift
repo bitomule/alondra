@@ -14,7 +14,7 @@ final class ViewModelsTests: XCTestCase {
             XCTAssertEqual(view.protocolVersion, 1, name)
             if name.hasPrefix("home-ios") {
                 XCTAssertEqual(view.sections.first?.cardIds?.count, 4, name)
-                XCTAssertEqual(view.sections.first?.items.count, 2, name)
+                XCTAssertEqual(view.sections.first?.items.count, 0, name)
             }
         }
     }

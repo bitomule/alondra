@@ -11,5 +11,5 @@ swift_test(
     name = "AlondraNotificationPayloadTests",
     srcs = glob(["Tests/**/*.swift"]),
     data = ["//fixtures/views:all"],
-    deps = [":AlondraNotificationPayload", "//apple/Contracts:AlondraContracts"],
+    deps = [":AlondraNotificationPayload", "//apple/Contracts:AlondraViewsContracts"],
 )

@@ -1,15 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
 swift_library(
-    name = "AlondraRelayOutbox",
-    srcs = glob(["Sources/**/*.swift"]),
-    module_name = "AlondraRelayOutbox",
-    visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraAPIClient"],
-)
-
-# Shipping Views variant; legacy target remains for domain fixture tests.
-swift_library(
     name = "AlondraViewsRelayOutbox",
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraRelayOutbox",
@@ -20,5 +11,5 @@ swift_library(
 swift_test(
     name = "AlondraRelayOutboxTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = [":AlondraRelayOutbox", "//apple/APIClient:AlondraAPIClient"],
+    deps = [":AlondraViewsRelayOutbox", "//apple/APIClient:AlondraViewsAPIClient"],
 )

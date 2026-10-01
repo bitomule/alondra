@@ -1,7 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
-swift_library(name = "AlondraCloudPairingFeature", srcs = glob(["Sources/*.swift"]), module_name = "AlondraCloudPairingFeature", visibility = ["//visibility:public"], deps = ["//apple/Contracts:AlondraContracts", "//apple/Features/Connection:AlondraConnectionFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"])
 swift_library(name = "AlondraViewsCloudPairingFeature", srcs = glob(["Sources/*.swift"]), module_name = "AlondraCloudPairingFeature", visibility = ["//visibility:public"], deps = ["//apple/Contracts:AlondraViewsContracts", "//apple/Features/Connection:AlondraViewsConnectionFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"])
 swift_test(
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
-    name = "AlondraCloudPairingFeatureTests", srcs = glob(["Tests/*.swift"]), deps = [":AlondraCloudPairingFeature", "//apple/Contracts:AlondraContracts", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture", "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport"])
+    name = "AlondraCloudPairingFeatureTests", srcs = glob(["Tests/*.swift"]), deps = [":AlondraViewsCloudPairingFeature", "//apple/Contracts:AlondraViewsContracts", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture", "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport"])

@@ -1,7 +1,7 @@
 import CryptoKit
 import Foundation
 
-/// The immutable upload receipt used by Views actions, independent of the old domain model.
+/// The immutable upload receipt used by Views actions.
 public struct ViewUploadedAttachment: Codable, Hashable, Sendable {
     public let id: String
     public let name: String
@@ -27,11 +27,15 @@ public extension AlondraAPIClient {
         struct Start: Encodable { let transferId: String; let name: String; let bytes: Int; let sha256: String }
         struct Chunk: Encodable { let transferId: String; let offset: Int; let data: String }
         struct Finish: Encodable { let transferId: String }
-        struct Started: Decodable { let offset: Int; let chunkBytes: Int; let completed: Bool }
+        struct Started: Decodable {
+            let offset: Int
+            let chunkBytes: Int
+            let completed: Bool
+            enum CodingKeys: String, CodingKey { case offset, chunkBytes = "chunk_bytes", completed }
+        }
         struct Advanced: Decodable { let offset: Int }
         struct Finished: Decodable { let attachment: ViewUploadedAttachment }
         let decoder = JSONDecoder()
-        decoder.keyDecodingStrategy = .convertFromSnakeCase
         let started = try decoder.decode(Started.self, from: try await send(
             viewUploadEndpoint("start", Start(transferId: id, name: name, bytes: data.count, sha256: hash)), operationID: id + "-start"))
         guard (0...data.count).contains(started.offset), started.chunkBytes == 64 * 1024,

@@ -68,20 +68,6 @@ struct Kind {
     let symbol: String
     let tint: Color
 
-    /// The server's inbox kind picks the badge; the card never guesses it from text.
-    #if !VIEWS_ONLY
-    init(_ item: DomainV2.InboxItem) {
-        switch item.kind {
-        case "action_request": self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
-        case "question": self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
-        case "pull_request": self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
-        case "document_review": self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
-        case "delivery": self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
-        default: self.init(String(localized: "Notice"), "bell", Palette.slate)
-        }
-    }
-    #endif
-
     init(_ card: AlondraViews.Card) {
         switch card.icon {
         case .action: self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
@@ -99,95 +85,6 @@ struct Kind {
         self.tint = tint
     }
 }
-
-#if !VIEWS_ONLY
-extension NodeState {
-    var tint: Color {
-        switch self {
-        case .working: Palette.sky
-        case .waitingAnswer: Palette.dawn
-        case .yourTurn: Palette.ember
-        case .waitingMerge: Palette.dawn
-        case .delivered: Palette.sage
-        case .waitingMachine: Palette.slate
-        case .done: Palette.sage
-        case .unclear, .stalled: Palette.rose
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .working: "hammer.fill"
-        case .waitingAnswer: "hand.raised.fill"
-        case .yourTurn: "hand.point.right.fill"
-        case .waitingMerge: "arrow.triangle.pull"
-        case .delivered: "tray.and.arrow.down.fill"
-        case .waitingMachine: "hourglass"
-        case .done: "checkmark"
-        case .unclear: "questionmark"
-        case .stalled: "pause.circle"
-        }
-    }
-}
-
-extension DomainV2.TaskState {
-    var tint: Color {
-        switch self {
-        case .notStarted, .waitingDependency, .cancelled: Palette.slate
-        case .running: Palette.sky
-        case .needsYou, .inReview: Palette.dawn
-        case .closing, .done: Palette.sage
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .notStarted: "circle.dashed"
-        case .waitingDependency: "link"
-        case .running: "hammer.fill"
-        case .needsYou: "hand.raised.fill"
-        case .inReview: "arrow.triangle.pull"
-        case .closing: "arrow.triangle.merge"
-        case .done: "checkmark"
-        case .cancelled: "xmark"
-        }
-    }
-}
-
-extension DomainV2.Task {
-    var tint: Color { state.tint }
-    var symbol: String { state.symbol }
-}
-
-extension DomainV2.Request {
-    var tint: Color { closed ? Palette.sage : Palette.sky }
-}
-
-extension NodeOccupancy {
-    var tint: Color {
-        switch self {
-        case .busy: Palette.sky
-        case .free: Palette.sage
-        case .waitingMachine: Palette.slate
-        }
-    }
-
-    var symbol: String {
-        switch self {
-        case .busy: "hammer.fill"
-        case .free: "moon.zzz.fill"
-        case .waitingMachine: "hourglass"
-        }
-    }
-}
-
-extension Node {
-    /// The orchestrator keeps its node state; every other node shows whether it is busy.
-    var glyphTint: Color { isOrchestrator ? (orchestratorRuntime?.activityState ?? state).tint : occupancy.tint }
-    var glyphSymbol: String { isOrchestrator ? (orchestratorRuntime?.activityState ?? state).symbol : occupancy.symbol }
-    var glyphPulses: Bool { isOrchestrator ? (orchestratorRuntime?.activityState ?? state) == .working : occupancy == .busy }
-}
-#endif
 
 /// A state's symbol in a tinted circle, at the sizes the lists and cards use.
 struct Glyph: View {
@@ -226,14 +123,6 @@ struct Glyph: View {
             .accessibilityHidden(true)
     }
 }
-
-#if !VIEWS_ONLY
-extension Glyph {
-    init(task: DomainV2.Task, size: Size = .regular) {
-        self.init(symbol: task.symbol, tint: task.tint, size: size, pulse: task.state == .running && size == .regular)
-    }
-}
-#endif
 
 struct KindBadge: View {
     let kind: Kind

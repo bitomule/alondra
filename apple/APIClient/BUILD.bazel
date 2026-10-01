@@ -1,15 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
 swift_library(
-    name = "AlondraAPIClient",
-    srcs = glob(["Sources/**/*.swift"], exclude = ["Sources/Client/ViewsAttachments.swift"]),
-    module_name = "AlondraAPIClient",
-    visibility = ["//visibility:public"],
-    deps = ["//apple/Contracts:AlondraContracts"],
-)
-
-# Shipping Views transport compiles without the DomainV2 client and its legacy routes.
-swift_library(
     name = "AlondraViewsAPIClient",
     srcs = glob(["Sources/Service/**/*.swift"]) + [
         "Sources/Client/AlondraAPIClient.swift",
@@ -19,34 +10,17 @@ swift_library(
     ],
     module_name = "AlondraAPIClient",
     visibility = ["//visibility:public"],
-    copts = ["-D", "VIEWS_ONLY"],
     features = ["swift.enable_testing"],
     deps = ["//apple/Contracts:AlondraViewsContracts"],
 )
 
 swift_test(
     name = "AlondraViewsAPIClientTests",
-    srcs = ["Tests/ViewsOnlyServiceRequestTests.swift"],
+    srcs = [
+        "Tests/ServiceAttachmentTests.swift",
+        "Tests/ServicePushRegistrationTests.swift",
+        "Tests/ServiceWireTransportTests.swift",
+        "Tests/ViewsOnlyServiceRequestTests.swift",
+    ],
     deps = [":AlondraViewsAPIClient"],
-)
-
-swift_test(
-    name = "AlondraAPIClientTests",
-    srcs = glob(["Tests/**/*.swift"], exclude = ["Tests/ViewsOnlyServiceRequestTests.swift"]),
-    data = [
-        "Tests/domain-v2-wire-fixtures.json",
-        "//fixtures/client-v2",
-        "//fixtures/domain-v2:acceptance.json",
-        "//fixtures/domain-v2:text-completion.commands.json",
-    ],
-    deps = [
-        ":AlondraAPIClient",
-        "//apple/Contracts:AlondraContracts",
-    ],
-)
-
-filegroup(
-    name = "domain_v2_wire_fixtures",
-    srcs = ["Tests/domain-v2-wire-fixtures.json"],
-    visibility = ["//visibility:public"],
 )

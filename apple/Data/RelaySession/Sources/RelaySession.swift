@@ -107,27 +107,11 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
     public func execute(requestID: String, method: String, path: String, body: Data? = nil,
                         statusPolls: Int = 10) async throws -> RelayOperationResult {
         guard active else { throw CancellationError() }
-        #if VIEWS_ONLY
         guard ["GET", "POST"].contains(method),
               Self.validViewsPath(method: method, path: path, hasBody: body != nil),
               !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
             throw RelaySessionError.invalidRequest
         }
-        #else
-        guard ["GET", "POST", "PUT", "PATCH", "DELETE"].contains(method),
-              ((method == "GET" && path == "/capabilities")
-               || (method == "GET" && body == nil && DomainReadPath.isValid(path))
-               || (method == "GET" && (path.hasPrefix("/pull-requests/") && path.hasSuffix("/diff")
-                   || path.hasPrefix("/document-revisions/") && path.contains("/content?offset=")
-                   || path.hasPrefix("/tasks/") && path.hasSuffix("/actions")))
-               || (HTTPMethod(rawValue: method).map { ServiceRequest.validResourceMutationPath(method: $0, path: path) } ?? false)
-               || Self.validDomainDeliveryPath(method: method, path: path)
-               || Self.validDomainSchedulePath(method: method, path: path, hasBody: body != nil)
-               || Self.validClientContractPath(method: method, path: path)),
-              !path.contains("#"), statusPolls >= 0, statusPolls <= 30 else {
-            throw RelaySessionError.invalidRequest
-        }
-        #endif
         if method == "GET" {
             // Read identities are private and never share the durable mutation namespace.
             guard body == nil else { throw RelaySessionError.invalidRequest }
@@ -156,20 +140,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
         return try await resume(requestID: requestID, statusPolls: statusPolls)
     }
 
-    /// Delivery recovery is a separate v2 resource. Keep the direct transport
-    /// allowlist as strict as ServiceRequest so internal callers cannot send a
-    /// similarly prefixed path with an arbitrary method or target.
-    static func validDomainDeliveryPath(method: String, path: String) -> Bool {
-        if method == "GET", path.hasPrefix("/delivery-attempts?after=") {
-            let suffix = path.dropFirst("/delivery-attempts?after=".count)
-            return !suffix.isEmpty && suffix.allSatisfy(\.isNumber) && Int64(suffix) != nil
-        }
-        guard method == "POST" else { return false }
-        let components = path.split(separator: "/")
-        return components.count == 3 && components[0] == "delivery-attempts" && components[2] == "resolve"
-            && Int64(components[1]).map { $0 > 0 } == true
-    }
-
     static func validClientContractPath(method: String, path: String) -> Bool {
         guard let method = HTTPMethod(rawValue: method), path.hasPrefix("/"),
               let components = URLComponents(string: "alondra://relay" + path) else { return false }
@@ -185,7 +155,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
         return ServiceRequest.validClientQuery(method: method, path: segments, query: query)
     }
 
-    #if VIEWS_ONLY
     private static func validViewsPath(method: String, path: String, hasBody: Bool) -> Bool {
         if method == "GET", !hasBody, validClientContractPath(method: method, path: path) { return true }
         if method == "POST", hasBody, validClientContractPath(method: method, path: path) { return true }
@@ -209,7 +178,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
         }
         return false
     }
-    #endif
 
     static func viewsChangeWait(_ path: String) -> Int? {
         guard path.hasPrefix("/changes?"), let components = URLComponents(string: path),
@@ -224,25 +192,6 @@ public actor RelaySession: ServiceOperationTransport, ServicePushTransport {
               let wait = items.first(where: { $0.name == "wait" })?.value.flatMap(Int.init), (0...50).contains(wait)
         else { return nil }
         return wait
-    }
-
-    /// Mirror the Mac's exact Schedule v2 operation shapes before sealing.
-    static func validDomainSchedulePath(method: String, path: String, hasBody: Bool) -> Bool {
-        if path == "/schedules" {
-            return (method == "GET" && !hasBody) || (method == "POST" && hasBody)
-        }
-        let prefix = "/schedules/"
-        guard path.hasPrefix(prefix) else { return false }
-        let suffix = String(path.dropFirst(prefix.count))
-        let isRun = suffix.hasSuffix("/runs")
-        let id = isRun ? String(suffix.dropLast(5)) : String(suffix)
-        guard (1...256).contains(id.utf8.count), id.utf8.allSatisfy({ byte in
-            (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122)
-                || (byte >= 48 && byte <= 57) || byte == 45 || byte == 95
-        }) else { return false }
-        if isRun { return method == "POST" && !hasBody }
-        return (method == "GET" && !hasBody) || (method == "PUT" && hasBody)
-            || (method == "DELETE" && !hasBody)
     }
 
     private func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> EnvelopeV1 {

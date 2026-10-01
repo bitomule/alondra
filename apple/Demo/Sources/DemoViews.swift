@@ -1010,7 +1010,6 @@ enum DemoViews {
             feed: { AsyncStream { $0.finish() } },
             perform: { _ in try response() },
             fetchContent: { reference in
-#if VIEWS_ONLY
                 if reference.kind == .diff {
                     return """
                     diff --git a/Welcome.swift b/Welcome.swift
@@ -1022,9 +1021,6 @@ enum DemoViews {
                     """
                 }
                 return "# Sample document\n\nThis document exists only in the demo."
-#else
-                DemoFixture.document
-#endif
             },
             fetchAttachment: { _ in Data("Demo attachment".utf8) }
         )

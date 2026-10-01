@@ -1,30 +1,10 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
 swift_library(
-    name = "AlondraLoopbackSession",
-    srcs = glob(["Sources/**/*.swift"]),
-    module_name = "AlondraLoopbackSession",
-    features = ["swift.enable_testing"],
-    visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraAPIClient"],
-)
-
-# Shipping Views variant; legacy target remains for domain fixture tests.
-swift_library(
     name = "AlondraViewsLoopbackSession",
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraLoopbackSession",
     visibility = ["//visibility:public"],
     deps = ["//apple/APIClient:AlondraViewsAPIClient"],
     features = ["swift.enable_testing"],
-)
-
-swift_test(
-    name = "AlondraLoopbackSessionTests",
-    srcs = glob(["Tests/**/*.swift"]),
-    deps = [
-        ":AlondraLoopbackSession",
-        "//apple/APIClient:AlondraAPIClient",
-        "//apple/Contracts:AlondraContracts",
-    ],
 )

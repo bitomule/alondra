@@ -21,21 +21,6 @@ filegroup(
 )
 
 swift_library(
-    name = "AlondraShared",
-    srcs = glob(["Shared/Sources/**/*.swift"]),
-    data = ["Shared/Resources/AlondraShared.xcstrings"],
-    module_name = "AlondraShared",
-    visibility = ["//visibility:public"],
-    deps = [
-        "//apple/APIClient:AlondraAPIClient",
-        "//apple/Contracts:AlondraContracts",
-        "//apple/Domain:AlondraDomain",
-        "@swiftpkg_highlightswift//:HighlightSwift",
-    ],
-)
-
-# Shipping Views UI utilities exclude legacy Domain presentation and DiffFile models.
-swift_library(
     name = "AlondraViewsShared",
     srcs = [
         "Shared/Sources/AlondraError.swift",
@@ -51,7 +36,6 @@ swift_library(
     data = ["Shared/Resources/AlondraShared.xcstrings"],
     module_name = "AlondraShared",
     visibility = ["//visibility:public"],
-    copts = ["-D", "VIEWS_ONLY"],
     deps = [
         "//apple/APIClient:AlondraViewsAPIClient",
         "//apple/Contracts:AlondraViewsContracts",
@@ -61,24 +45,18 @@ swift_library(
 
 swift_test(
     name = "AlondraSharedTests",
-    srcs = glob(["Shared/Tests/**/*.swift"]),
-    data = ["//fixtures/markdown"],
-    deps = [":AlondraShared", "//apple/APIClient:AlondraAPIClient", "//apple/Contracts:AlondraContracts", "//apple/Domain:AlondraDomain"],
-)
-
-swift_test(
-    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
-    linkopts = ["-Wl,-export_dynamic"],
-    name = "AlondraMacTriageIntegrationTests",
-    srcs = ["macOS/Tests/MacTriageIntegrationTests.swift"],
-    deps = [
-        ":AlondraShared",
-        "//apple/Domain:AlondraDomain",
-        "//apple/Features/Workspace:AlondraWorkspaceFeature",
-        "//apple/Features/Triage:AlondraTriageFeature",
-        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+    srcs = [
+        "Shared/Tests/APIErrorPresentationTests.swift",
+        "Shared/Tests/AttachmentTests.swift",
+        "Shared/Tests/CodeColourTests.swift",
+        "Shared/Tests/DiffHighlighterTests.swift",
+        "Shared/Tests/MarkdownCorpusTests.swift",
+        "Shared/Tests/MarkdownRulesTests.swift",
+        "Shared/Tests/SendFailureTests.swift",
+        "Shared/Tests/TableRowCardTests.swift",
     ],
+    data = ["//fixtures/markdown"],
+    deps = [":AlondraViewsShared", "//apple/APIClient:AlondraViewsAPIClient", "//apple/Contracts:AlondraViewsContracts"],
 )
 
 swift_test(
@@ -205,7 +183,6 @@ swift_library(
         "iOS/Sources/Theme.swift",
     ],
     module_name = "AlondraiOS",
-    copts = ["-D", "VIEWS_ONLY"],
     deps = [
         ":AlondraViewsShared",
         "//apple/APIClient:AlondraViewsAPIClient",

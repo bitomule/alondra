@@ -23,29 +23,6 @@ public struct ScheduledTask: Identifiable, Equatable, Sendable {
     public let status: String
     public let revision: Int
 
-    #if !VIEWS_ONLY
-    public init(_ schedule: DomainV2.Schedule) {
-        id = schedule.id.rawValue
-        title = schedule.title
-        text = schedule.text
-        project = schedule.project
-        options = schedule.options
-        disallowedTools = schedule.disallowedTools
-        frequency = schedule.frequency.rawValue
-        hour = Int(schedule.hour)
-        minute = Int(schedule.minute)
-        weekday = schedule.weekday.map(Int.init)
-        interval = schedule.interval.map(Int.init)
-        startAt = schedule.startAt
-        enabled = schedule.enabled
-        nextRun = schedule.nextRun
-        lastRun = schedule.lastRun
-        lastRequest = schedule.lastRequest?.rawValue
-        lastError = schedule.lastError
-        status = schedule.status.rawValue
-        revision = Int(schedule.revision)
-    }
-    #endif
 }
 
 public struct ScheduledTaskDraft: Equatable, Sendable {
@@ -79,18 +56,3 @@ public struct ScheduledTaskDraft: Equatable, Sendable {
         revision = task?.revision ?? 0
     }
 }
-
-#if !VIEWS_ONLY
-extension DomainV2.ScheduleDraft {
-    /// The same fields the editor always sent; the server validates them for the frequency.
-    public init?(_ draft: ScheduledTaskDraft) {
-        guard let frequency = DomainV2.ScheduleFrequency(rawValue: draft.frequency),
-              let hour = UInt8(exactly: draft.hour), let minute = UInt8(exactly: draft.minute) else { return nil }
-        self.init(title: draft.title, text: draft.text, project: draft.project, options: draft.options,
-                  disallowedTools: draft.disallowedTools.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty },
-                  frequency: frequency, hour: hour, minute: minute, weekday: draft.weekday.flatMap(UInt8.init(exactly:)),
-                  interval: draft.interval.flatMap(UInt32.init(exactly:)), startAt: draft.startAt,
-                  enabled: draft.enabled, revision: Int64(draft.revision))
-    }
-}
-#endif

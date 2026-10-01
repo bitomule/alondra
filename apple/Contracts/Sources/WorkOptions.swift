@@ -76,23 +76,3 @@ public struct ProjectList: Decodable, Sendable {
 
     public let projects: [Project]
 }
-
-/// What the New screen submits: the request text with its project, options, issue and
-/// uploaded attachments, sent as one `create_request`.
-#if !VIEWS_ONLY
-public struct NewRequestBody: Sendable, Equatable {
-    public let text: String
-    public var attachments: [DomainV2.AttachmentRef] = []
-    public let project: String?
-    public let options: [String: OptionChoice]
-    public var issue: String?
-
-    public init(text: String, attachments: [DomainV2.AttachmentRef] = [], project: String?, options: [String: OptionChoice], issue: String?) {
-        self.text = text
-        self.attachments = attachments
-        self.project = project
-        self.options = options
-        self.issue = issue
-    }
-}
-#endif

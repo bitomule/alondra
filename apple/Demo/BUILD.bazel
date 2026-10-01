@@ -1,34 +1,7 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 swift_library(
-    name = "AlondraDemoWorkspace",
-    testonly = True,
-    srcs = glob(["Sources/*.swift"]),
-    module_name = "AlondraDemoWorkspace",
-    visibility = ["//visibility:public"],
-    deps = [
-        "//apple:AlondraShared",
-        "//apple/Contracts:AlondraContracts",
-        "//apple/Domain:AlondraDomain",
-        "//apple/Features/DomainDependency:AlondraDomainDependency",
-        "//apple/Features/Attachments:AlondraAttachmentsFeature",
-        "//apple/Data/Attachments:AlondraAttachmentsData",
-        "//apple/Features/Triage:AlondraTriageFeature",
-        "//apple/Features/Questions:AlondraQuestionsFeature",
-        "//apple/Features/PullRequests:AlondraPullRequestsFeature",
-        "//apple/Features/Tasks:AlondraTasksFeature",
-        "//apple/Features/Fleet:AlondraFleetFeature",
-        "//apple/Features/NewWork:AlondraNewWorkFeature",
-        "//apple/Features/Workspace:AlondraWorkspaceFeature",
-        "//apple/Views:AlondraViews",
-        "//apple/Features/ViewsDependency:AlondraViewsDependency",
-        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
-    ],
-)
-
-swift_library(
     name = "AlondraViewsDemoWorkspace",
     srcs = ["Sources/DemoViews.swift", "ViewsSources/ViewsDemoWorkspace.swift"],
-    copts = ["-DVIEWS_ONLY"],
     module_name = "AlondraViewsDemoWorkspace",
     visibility = ["//visibility:public"],
     deps = ["//apple/Views:AlondraViews", "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency"],
@@ -38,11 +11,4 @@ swift_test(
     name = "AlondraViewsDemoWorkspaceTests",
     srcs = ["ViewsTests/ViewsDemoWorkspaceTests.swift"],
     deps = [":AlondraViewsDemoWorkspace", "//apple/Views:AlondraViews"],
-)
-swift_test(
-    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
-    linkopts = ["-Wl,-export_dynamic"],
-    name = "AlondraDemoWorkspaceTests",
-    srcs = glob(["Tests/*.swift"]),
-    deps = ["//apple/Contracts:AlondraContracts", "//apple/Data/Recovery:AlondraRecovery", "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport", "//apple/Domain:AlondraDomain", "//apple/Features/Fleet:AlondraFleetFeature", "//apple/Features/NewWork:AlondraNewWorkFeature", "//apple/Features/Attachments:AlondraAttachmentsFeature", "//apple/Features/PullRequests:AlondraPullRequestsFeature", ":AlondraDemoWorkspace", "//apple/Features/Workspace:AlondraWorkspaceFeature", "//apple:AlondraShared", "//apple/Features/Questions:AlondraQuestionsFeature", "//apple/Features/Tasks:AlondraTasksFeature", "//apple/Features/Triage:AlondraTriageFeature", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
 )

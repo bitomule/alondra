@@ -4,7 +4,6 @@ import AlondraContracts
 import AlondraRelayOutbox
 import AlondraRelaySession
 import CryptoKit
-import CryptoKit
 import Foundation
 
 /// Runs production client services with explicitly synthetic HTTP peers/storage.
@@ -51,8 +50,7 @@ public enum NativeScenarioRunner {
                         _ = try await api.send(Endpoint<Data>.data(.get, path: ["summary"]))
                         _ = try await api.send(Endpoint<Data>.data(.get, path: ["documents", "document-1"]))
                     }
-                    let text = try await api.domainDocumentContent(.init(rawValue: SyntheticRelayHTTP.revisionID),
-                        expectedDigest: fixture.documentDigest)
+                    let text = try await readDocumentContent(api, expectedDigest: fixture.documentDigest)
                     result = Data(text.utf8)
                 }
                 catch { rejected = true }
@@ -98,6 +96,57 @@ public enum NativeScenarioRunner {
         guard case let .completed(status, body) = result, status == 201,
               let value = try? JSONDecoder().decode(MutationReply.self, from: body) else { return false }
         return value.id == "synthetic-task" && value.accepted
+    }
+
+    /// Keep the fixture's immutable, digest-checked fragmented read independent of
+    /// the previous client so this harness can use the shipping Views client.
+    private static func readDocumentContent(_ api: AlondraAPIClient, expectedDigest: String) async throws -> String {
+        struct Chunk: Decodable, Sendable {
+            let revisionId: String
+            let contentDigest: String
+            let version: String
+            let data: String
+            let offset: UInt64
+            let total: UInt64
+            let nextOffset: UInt64
+            let eof: Bool
+        }
+        var collected = Data()
+        var version: String?
+        var total: UInt64?
+        repeat {
+            let offset = collected.count
+            let endpoint = Endpoint<Chunk>(.get,
+                path: ["document-revisions", SyntheticRelayHTTP.revisionID, "content"],
+                query: [("offset", String(offset))] + (version.map { [("version", $0)] } ?? [])) {
+                    let decoder = JSONDecoder()
+                    decoder.keyDecodingStrategy = .convertFromSnakeCase
+                    return try decoder.decode(Chunk.self, from: $0)
+                }
+            let chunk = try await api.send(endpoint)
+            guard chunk.revisionId == SyntheticRelayHTTP.revisionID,
+                  chunk.contentDigest == expectedDigest, chunk.contentDigest.count == 64,
+                  !chunk.version.isEmpty, version == nil || version == chunk.version,
+                  total == nil || total == chunk.total, chunk.total <= 32 * 1024 * 1024,
+                  chunk.offset == UInt64(offset), chunk.nextOffset <= chunk.total,
+                  chunk.nextOffset > chunk.offset || chunk.eof else { throw RelayWireError.invalidField }
+            let base64 = chunk.data.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            guard chunk.data.utf8.allSatisfy({
+                (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95
+            }), let bytes = Data(base64Encoded: base64 + String(repeating: "=", count: (4 - base64.count % 4) % 4)),
+                  bytes.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+                    .replacingOccurrences(of: "/", with: "_").replacingOccurrences(of: "=", with: "") == chunk.data,
+                  UInt64(bytes.count) == chunk.nextOffset - chunk.offset else { throw RelayWireError.invalidField }
+            collected.append(bytes)
+            version = chunk.version
+            total = chunk.total
+            if chunk.eof {
+                guard chunk.nextOffset == chunk.total,
+                      SHA256.hash(data: collected).map({ String(format: "%02x", $0) }).joined() == expectedDigest,
+                      let text = String(data: collected, encoding: .utf8) else { throw RelayWireError.invalidField }
+                return text
+            }
+        } while true
     }
     private struct MutationReply: Decodable { let id: String; let accepted: Bool }
 
@@ -158,7 +207,7 @@ private struct ScenarioFixture {
     private static func session(directory: URL, scope: RelayOutboxScope, auth: AuthSession, peer: SyntheticRelayHTTP,
         phoneSign: P256.Signing.PrivateKey, phoneAgreement: P256.KeyAgreement.PrivateKey,
         macSign: P256.Signing.PrivateKey, macAgreement: P256.KeyAgreement.PrivateKey) throws -> RelaySession {
-        try RelaySession(journalFile: directory.appendingPathComponent("outbox.json"), scope: scope,
+        try RelaySession(scope: scope,
             bearer: { try await auth.bearerToken() },
             transport: peer, signing: phoneSign, agreement: phoneAgreement,
             macSigning: macSign.publicKey, macAgreement: macAgreement.publicKey, now: { 1000 }, sleep: {})

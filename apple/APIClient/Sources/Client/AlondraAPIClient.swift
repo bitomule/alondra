@@ -24,13 +24,6 @@ public struct AlondraAPIClient: Sendable {
         case .unknown: throw ServiceAPIError.outcomeUnknown
         case let .completed(status, body):
             guard (200..<300).contains(status) else {
-                #if !VIEWS_ONLY
-                if ServiceRequest.isDomainReadRoute(method: endpoint.method, path: endpoint.path, query: endpoint.query,
-                                                    hasBody: endpoint.body != nil)
-                    || ServiceRequest.isDomainMutationRoute(method: endpoint.method, path: endpoint.path, hasBody: endpoint.body != nil)
-                    || ServiceRequest.validClientContractRoute(method: endpoint.method, path: endpoint.path),
-                   let error = try? DomainV2.decode(DomainV2.DomainError.self, from: body) { throw error }
-                #endif
                 throw APIError.from(status: status, body: body)
             }
             if endpoint.requiresJSONObjectResponse, (try? JSONSerialization.jsonObject(with: body)) as? [String: Any] == nil {

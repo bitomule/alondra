@@ -9,10 +9,10 @@ swift_library(
     module_name = "AlondraNativeScenarios",
     copts = ["-swift-version", "6", "-strict-concurrency=complete"],
     deps = [
-        "//apple/APIClient:AlondraAPIClient",
+        "//apple/APIClient:AlondraViewsAPIClient",
         "//apple/Auth:AlondraAuth",
-        "//apple/Data/RelayOutbox:AlondraRelayOutbox",
-        "//apple/Data/RelaySession:AlondraRelaySession",
+        "//apple/Data/RelayOutbox:AlondraViewsRelayOutbox",
+        "//apple/Data/RelaySession:AlondraViewsRelaySession",
     ],
 )
 

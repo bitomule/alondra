@@ -1,16 +1,6 @@
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 
 swift_library(
-    name = "AlondraViewsData",
-    srcs = glob(["Sources/**/*.swift"]),
-    module_name = "AlondraViewsData",
-    features = ["swift.enable_testing"],
-    visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraAPIClient", "//apple/Contracts:AlondraContracts", "//apple/Views:AlondraViews"],
-)
-
-# Shipping Views variant; legacy target remains for domain fixture tests.
-swift_library(
     name = "AlondraViewsOnlyData",
     srcs = glob(["Sources/**/*.swift"]),
     module_name = "AlondraViewsData",
@@ -22,5 +12,5 @@ swift_library(
 swift_test(
     name = "AlondraViewsDataTests",
     srcs = glob(["Tests/**/*.swift"]),
-    deps = [":AlondraViewsData", "//apple/APIClient:AlondraAPIClient", "//apple/Views:AlondraViews"],
+    deps = [":AlondraViewsOnlyData", "//apple/APIClient:AlondraViewsAPIClient", "//apple/Views:AlondraViews"],
 )

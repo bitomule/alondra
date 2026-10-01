@@ -4,20 +4,6 @@ import HighlightSwift
 /// Colours a file's diff lines with highlight.js, by the language its name implies. Lines it
 /// cannot place stay plain, so a failure never hides code.
 public enum DiffHighlighter {
-    #if !VIEWS_ONLY
-    public static func highlight(_ file: DiffFile, dark: Bool) async -> [String: AttributedString] {
-        let code = file.lines.filter { $0.kind != .hunk && $0.kind != .note }
-        guard !code.isEmpty, let language = language(for: file.path) else { return [:] }
-        let text = code.map(\.text).joined(separator: "\n")
-        guard let coloured = await colour(text, language: language, dark: dark) else { return [:] }
-        var out: [String: AttributedString] = [:]
-        for (line, highlighted) in zip(code, split(coloured)) {
-            out[line.id] = restoringIndent(highlighted, of: line.text)
-        }
-        return out
-    }
-    #endif
-
     /// Nil when highlight.js does not know the language, so the caller keeps the plain text.
     public static func colour(_ text: String, language: String, dark: Bool) async -> AttributedString? {
         let colors: HighlightColors = dark ? .dark(.github) : .light(.github)
