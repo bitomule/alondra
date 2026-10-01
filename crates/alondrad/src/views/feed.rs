@@ -711,6 +711,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn the_activity_updates_through_the_feed() {
+        let fixture = FeedFixture::new();
+        fixture.register_agent("activity");
+        let agent = "agent-activity";
+        let key = format!("node:{agent}");
+        let tool = |command: &str| serde_json::json!({
+            "session_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Bash",
+            "tool_input": {"command": command}, "cwd": "/tmp/feed-project"
+        });
+        fixture.client.domain.live.observe(&tool("echo first"));
+        let state = fixture.client.domain.state().unwrap();
+        let live = super::super::live::gather(&fixture.client, &state, Lang::En, &[key.clone()], false, false).await;
+        let rendered = fixture.client.views.render(&key, &state, &live, Client::Ios, Lang::En, Transport::Loopback).unwrap();
+        let open = vec![(key.clone(), rendered.version)];
+        let first = fixture.initial(&open).await;
+        let unchanged = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
+        assert_eq!(unchanged["stale"], serde_json::json!([]), "{unchanged}");
+        let mut last = None;
+        sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await;
+        fixture.client.domain.live.observe(&tool("echo second"));
+        assert!(sample_live(&fixture.client, &fixture.client.domain.state().unwrap(), &mut last).await);
+        let reply = response_json(handle(&fixture.client, "device-activity", &query(&first.cursor, 0, &open), Transport::Loopback).await).await;
+        assert_eq!(reply["stale"], serde_json::json!([key]), "{reply}");
+    }
+
+    #[tokio::test]
     async fn an_unchanged_feed_reuses_its_cached_current() {
         let fixture = FeedFixture::new();
         let before = fixture.initial(&[]).await;

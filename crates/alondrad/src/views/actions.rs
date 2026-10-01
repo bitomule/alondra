@@ -417,6 +417,9 @@ async fn schedule_action(
     if action.verb == Verb::SchedSave && action.subject == "view" {
         let options = schedule_option_specs(home, &request.input.fields, None);
         let body = schedule_draft(&request.input.fields, None, &options);
+        if let Some(rejection) = schedule_field_rejection(&request.input.fields, &body, lang) {
+            return Ok(rejection);
+        }
         let result = crate::domain_schedule_api::mutation(domain, home, "POST", "/schedules", Some(&body), identity, authorize);
         return Ok(schedule_reply(result, lang, stamp, state.revision));
     }
@@ -440,7 +443,11 @@ async fn schedule_action(
         }
         Verb::SchedSave => {
             let options = schedule_option_specs(home, &request.input.fields, Some(schedule));
-            ("PUT", format!("/schedules/{raw_id}"), Some(schedule_draft(&request.input.fields, Some(schedule), &options)))
+            let draft = schedule_draft(&request.input.fields, Some(schedule), &options);
+            if let Some(rejection) = schedule_field_rejection(&request.input.fields, &draft, lang) {
+                return Ok(rejection);
+            }
+            ("PUT", format!("/schedules/{raw_id}"), Some(draft))
         },
         _ => return Ok(no_longer_available(lang, "This schedule action is unavailable")),
     };
@@ -526,6 +533,64 @@ fn valid_schedule_option(spec: &alondra_core::options::Spec, value: &Value) -> b
     }
 }
 
+const SCHEDULE_DATE_LIMIT_MILLIS: i64 = 4_102_444_800_000;
+
+fn schedule_field_message(lang: Lang, field: &'static str, english: &'static str, spanish: &'static str) -> Value {
+    let message = if lang == Lang::Es { spanish } else { english };
+    json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","field":field,"message":message})
+}
+
+fn schedule_field_rejection(fields: &serde_json::Map<String, Value>, draft: &Value, lang: Lang) -> Option<Value> {
+    let reject = |field, english, spanish| Some(schedule_field_message(lang, field, english, spanish));
+    let title = draft["title"].as_str().unwrap_or_default();
+    if title.trim().is_empty() || title.len() > 120 {
+        return reject("name", "Enter a name of up to 120 characters.", "Escribe un nombre de hasta 120 caracteres.");
+    }
+    let mission = draft["text"].as_str().unwrap_or_default();
+    if mission.trim().is_empty() || mission.len() > 20_000 {
+        return reject("mission", "Enter instructions of up to 20,000 characters.", "Escribe instrucciones de hasta 20.000 caracteres.");
+    }
+    let valid_time = fields.get("time").and_then(Value::as_str).is_none_or(|time| {
+        time.split_once(':').is_some_and(|(hour, minute)| {
+            hour.parse::<u8>().is_ok_and(|hour| hour < 24) && minute.parse::<u8>().is_ok_and(|minute| minute < 60)
+        })
+    });
+    if !valid_time {
+        return reject("time", "Choose a valid time.", "Elige una hora válida.");
+    }
+    let frequency = draft["frequency"].as_str().unwrap_or_default();
+    if frequency == "weekly" && !draft["weekday"].as_i64().is_some_and(|weekday| (0..=6).contains(&weekday)) {
+        return reject("weekday", "Choose a day of the week.", "Elige un día de la semana.");
+    }
+    let custom = matches!(frequency, "every_hours" | "every_days" | "every_months");
+    if custom && !draft["interval"].as_i64().is_some_and(|interval| (1..=365).contains(&interval)) {
+        return reject("interval", "Choose an interval from 1 to 365.", "Elige un intervalo entre 1 y 365.");
+    }
+    if (custom || frequency == "once")
+        && !draft["start_at"].as_i64().is_some_and(|at| (0..=SCHEDULE_DATE_LIMIT_MILLIS).contains(&at)) {
+        return reject("start_at", "Choose a date before 2100.", "Elige una fecha anterior al año 2100.");
+    }
+    let tools = draft["disallowed_tools"].as_array().map(Vec::as_slice).unwrap_or_default();
+    if tools.len() > 100 || tools.iter().filter_map(Value::as_str).any(|pattern| {
+        pattern.len() > 200 || pattern.chars().any(char::is_whitespace) || pattern.starts_with('-')
+    }) {
+        return reject("disallowed_tools", "Enter up to 100 tool patterns without spaces.", "Escribe hasta 100 patrones de herramientas sin espacios.");
+    }
+    None
+}
+
+fn schedule_daemon_rejection(message: &str, lang: Lang) -> Option<Value> {
+    let (field, english, spanish) = match message {
+        "one-time date must be in the future" => ("start_at", "Choose a future date and time.", "Elige una fecha y hora futuras."),
+        "project cannot be empty" | "project must be one of the available project folders" =>
+            ("project", "Choose an available project.", "Elige un proyecto disponible."),
+        "projects directory does not exist" =>
+            ("project", "The Projects folder is unavailable.", "La carpeta Proyectos no está disponible."),
+        _ => return None,
+    };
+    Some(schedule_field_message(lang, field, english, spanish))
+}
+
 fn schedule_reply(result: Value, lang: Lang, stamp: &str, revision: u64) -> Value {
     let status = result["status"].as_u64().unwrap_or(500) as u16;
     let body = result["body"].clone();
@@ -535,6 +600,9 @@ fn schedule_reply(result: Value, lang: Lang, stamp: &str, revision: u64) -> Valu
         no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This schedule changed"))
     } else {
         let message = body.get("message").and_then(Value::as_str).unwrap_or("Schedule action failed");
+        if let Some(rejection) = schedule_daemon_rejection(message, lang) {
+            return rejection;
+        }
         let code = body.get("code").and_then(Value::as_str).unwrap_or("schedule_rejected");
         json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","code":code,"message":rejection_message(lang, code, message)})
     }
@@ -1270,6 +1338,119 @@ mod tests {
         assert!(map_domain_action(&state, &merge, &request, &[], Lang::En).is_none());
         let old = ActionId::new(Verb::Changes, id, 1, Some("00000000".into())).unwrap();
         assert_eq!(changed_pr_head(&state, &old, Lang::En).unwrap()["outcome"], "changed");
+    }
+
+    struct ActionHome(std::path::PathBuf);
+    impl Drop for ActionHome {
+        fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+    }
+
+    fn action_home() -> (ActionHome, std::sync::Arc<crate::domain_runtime::DomainRuntime>, std::sync::Arc<crate::v2_client_routes::Client>) {
+        let home = std::env::temp_dir().join(format!("alondra-view-actions-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir(&home).unwrap();
+        let domain = std::sync::Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        (ActionHome(home), domain, client)
+    }
+
+    fn action_request(domain: &crate::domain_runtime::DomainRuntime, command_id: &str, lang: &str,
+        action_id: String, option_id: Option<&str>, fields: Value) -> ActionRequest {
+        ActionRequest {
+            protocol: VIEWS_PROTOCOL,
+            command_id: command_id.into(),
+            data_epoch: domain.state().unwrap().data_epoch.0.clone(),
+            client: "ios".into(),
+            lang: lang.into(),
+            action_id,
+            option_id: option_id.map(str::to_owned),
+            input: ActionInput {
+                fields: fields.as_object().cloned().unwrap_or_default().into_iter().collect(),
+                ..Default::default()
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn an_answered_question_is_no_longer_available() {
+        use alondra_core::domain_v2::{Recipient, Scope, QuestionOption};
+        let (home, domain, client) = action_home();
+        let user = Actor::User { user_id: "user".into() };
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        apply_seed_command(&domain, user.clone(), "create-request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+        });
+        apply_seed_command(&domain, user, "create-task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+        });
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
+            recipient: Recipient::User, body: "Ship it?".into(), blocking: true,
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+        });
+        let state = domain.state().unwrap();
+        let revision = state.interactions[&"question".into()].revision;
+        let action = ActionId::new(Verb::Ans, "question", revision, None).unwrap().to_string();
+        let first = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "en", action.clone(), Some("yes"), json!({}));
+        let applied = execute_action(&domain, &client, &home.0, "test-device", first, None, || Ok(())).await.unwrap();
+        assert_eq!(applied["outcome"], "applied", "{applied}");
+        let revision_after_answer = domain.state().unwrap().revision;
+        let second = action_request(&domain, "7a1d3c5e-2b4f-4a6c-8d9e-0f1a2b3c4d5e", "en", action, Some("yes"), json!({}));
+        let stale = execute_action(&domain, &client, &home.0, "test-device", second, None, || Ok(())).await.unwrap();
+        assert_eq!(stale["outcome"], "no_longer_available", "{stale}");
+        assert_eq!(domain.state().unwrap().revision, revision_after_answer, "the second answer changes nothing");
+    }
+
+    #[test]
+    fn a_moved_pr_head_answers_changed_with_a_fresh_id() {
+        use alondra_core::domain_v2::{PrState, PullRequest};
+        let id = "github.com/bitomule/alondra#154";
+        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        state.pull_requests.insert(id.into(), PullRequest {
+            id: id.into(), task_id: "t-1".into(), host: "github.com".into(),
+            repository: "bitomule/alondra".into(), number: 154,
+            head: "bbbbbbbb2222".into(), base: "main".into(), state: PrState::Open,
+            merged_head: None, allowed_methods: vec![MergeMethod::Merge], review: None,
+        });
+        let reviewed = ActionId::new(Verb::Changes, id, 1, Some("aaaaaaaa".into())).unwrap();
+        let reply = changed_pr_head(&state, &reviewed, Lang::Es).unwrap();
+        assert_eq!(reply["outcome"], "changed");
+        assert_eq!(reply["confirm"]["button"], "Enviar igualmente");
+        let fresh = ActionId::parse(reply["confirm"]["action_id"].as_str().unwrap()).unwrap();
+        assert_eq!((fresh.verb, fresh.subject.as_str(), fresh.extra.as_deref()), (Verb::Changes, id, Some("bbbbbbbb")));
+        assert_ne!(fresh, reviewed);
+        assert!(changed_pr_head(&state, &fresh, Lang::Es).is_none(), "the fresh id is accepted as is");
+    }
+
+    #[tokio::test]
+    async fn sched_save_rejects_with_the_field() {
+        let (home, domain, client) = action_home();
+        let save = ActionId::new(Verb::SchedSave, "view", domain.state().unwrap().revision, None).unwrap().to_string();
+        let valid = json!({"name":"Morning", "mission":"Review work", "repeat":"daily", "time":"09:00"});
+        let cases = [
+            (json!({"name":"  "}), "name", "Enter a name of up to 120 characters.", "Escribe un nombre de hasta 120 caracteres."),
+            (json!({"mission":""}), "mission", "Enter instructions of up to 20,000 characters.", "Escribe instrucciones de hasta 20.000 caracteres."),
+            (json!({"time":"25:00"}), "time", "Choose a valid time.", "Elige una hora válida."),
+            (json!({"repeat":"weekly", "weekday":null}), "weekday", "Choose a day of the week.", "Elige un día de la semana."),
+            (json!({"repeat":"every_days", "interval":0, "start_at":1_800_000_000_000_i64}), "interval", "Choose an interval from 1 to 365.", "Elige un intervalo entre 1 y 365."),
+            (json!({"repeat":"once", "start_at":5_000_000_000_000_i64}), "start_at", "Choose a date before 2100.", "Elige una fecha anterior al año 2100."),
+            (json!({"disallowed_tools":"Bash(rm *)"}), "disallowed_tools", "Enter up to 100 tool patterns without spaces.", "Escribe hasta 100 patrones de herramientas sin espacios."),
+        ];
+        for (change, field, english, spanish) in cases {
+            for (lang, message) in [("en", english), ("es", spanish)] {
+                let mut fields = valid.as_object().unwrap().clone();
+                fields.extend(change.as_object().unwrap().clone());
+                let request = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", lang, save.clone(), None, Value::Object(fields));
+                let revision = domain.state().unwrap().revision;
+                let reply = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+                assert_eq!(reply["outcome"], "rejected", "{reply}");
+                assert_eq!(reply["field"], field, "{reply}");
+                assert_eq!(reply["message"], message, "{reply}");
+                assert_eq!(domain.state().unwrap().revision, revision, "a rejected save changes nothing");
+            }
+        }
     }
 
     #[test]

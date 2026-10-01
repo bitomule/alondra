@@ -637,7 +637,32 @@ fn reader_comments_follow_the_selected_views_text_option() {
 }
 
 #[test]
-fn view_number_key_posts_the_matching_option_id_and_epoch() {
+fn reader_comments_are_sent_as_anchored_comments() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    let mut view = view_fixture("card-question.json");
+    view["sections"][0]["items"][0]["actions"][0]["options"] = serde_json::json!([
+        {"id":"changes", "label":"Request changes", "style":"secondary",
+         "input":{"kind":"text", "placeholder":"Explain", "required":true,"multiline":true}, "key":"1"}
+    ]);
+    app.view_navigation.push(format!("card:{}", question_id()));
+    app.card_view = Some(serde_json::from_value(view).unwrap());
+    app.open_reader();
+    press(&mut app, KeyCode::Char('c'));
+    typed(&mut app, "Tighter");
+    press(&mut app, KeyCode::Enter);
+    press(&mut app, KeyCode::Char('1'));
+    let anchored = "1. On \"Restore the native review experience\":\n   Tighter";
+    assert!(app.composer.as_ref().is_some_and(|composer| composer.input.text().contains(anchored)));
+    press(&mut app, KeyCode::Enter);
+    let sent = posted(&app);
+    assert_eq!(sent[0].1["option_id"], "changes");
+    assert!(sent[0].1["input"]["text"].as_str().unwrap().contains(anchored));
+}
+
+#[test]
+fn number_keys_answer_with_the_option_id() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
