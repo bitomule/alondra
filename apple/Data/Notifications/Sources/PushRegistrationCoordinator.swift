@@ -1,5 +1,4 @@
-import AlondraAPIClient
-import AlondraNotificationPayload
+import AlondraTransport
 import Foundation
 
 /// One APNs token fans out to every approved binding. A selection change does not
@@ -12,14 +11,14 @@ public final class PushRegistrationCoordinator {
     public private(set) var state: State = .idle
     public var onChange: (@MainActor (State) -> Void)?
     private let preferences: PushPreferencesLedger
-    private var clients: [NotificationPayload.Binding: ServiceNotificationClient] = [:]
+    private var clients: [NotificationPayload.Binding: NotificationClient] = [:]
     private var registered: [NotificationPayload.Binding: String] = [:]
     private var generation = 0
     private var task: Task<Void, Never>?
 
     public init(preferences: PushPreferencesLedger) { self.preferences = preferences }
 
-    public func update(clients next: [ServiceNotificationClient], token: String?, environment: String,
+    public func update(clients next: [NotificationClient], token: String?, environment: String,
                        quietStart: String?, quietEnd: String?) throws {
         guard Set(next.map(\.binding)).count == next.count,
               Set(next.map(\.identity)).count == next.count else { throw Failure.duplicateIdentity }
@@ -45,7 +44,7 @@ public final class PushRegistrationCoordinator {
                         quietStart: quietStart, quietEnd: quietEnd)
                     try Task.checkCancellation()
                     do { try await client.register(token, environment, quietStart, quietEnd, revision) }
-                    catch ServicePushPreferencesError.stale(let minimum) {
+                    catch PushPreferencesError.stale(let minimum) {
                         try Task.checkCancellation()
                         let newer = try await preferences.reserve(identity: client.identity, binding: client.binding.value,
                             quietStart: quietStart, quietEnd: quietEnd, newerThan: minimum)

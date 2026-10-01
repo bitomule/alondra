@@ -3,6 +3,7 @@ load("@build_bazel_rules_apple//apple:macos.bzl", "macos_application")
 load("@build_bazel_rules_apple//apple:versioning.bzl", "apple_bundle_version")
 load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
 load("@alondra_signing//:signing.bzl", "IOS_BUNDLE_ID", "IOS_PROFILE", "MAC_BUNDLE_ID", "NOTIFICATION_SERVICE_BUNDLE_ID", "NOTIFICATION_SERVICE_PROFILE")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
 sh_test(
     name = "no_sleep_wording_test",
@@ -15,13 +16,13 @@ sh_test(
     name = "spanish_catalog_test",
     srcs = ["spanish_catalog_test.py"],
     args = [
-        "$(rootpath Shared/Resources/AlondraShared.xcstrings)",
+        "$(rootpath //apple/Design:Resources/AlondraDesign.xcstrings)",
         "$(rootpath iOS/Resources/Localizable.xcstrings)",
         "$(rootpath macOS/Resources/Localizable.xcstrings)",
         "$(rootpaths :view_sources)",
     ],
     data = [
-        "Shared/Resources/AlondraShared.xcstrings",
+        "//apple/Design:Resources/AlondraDesign.xcstrings",
         "iOS/Resources/Localizable.xcstrings",
         "macOS/Resources/Localizable.xcstrings",
         ":view_sources",
@@ -32,83 +33,44 @@ filegroup(
     name = "view_sources",
     srcs = glob([
         "iOS/ViewsShipping/*.swift",
-        "iOS/Sources/ServiceTriage/*.swift",
+        "iOS/Sources/Triage/*.swift",
         "macOS/ViewsShipping/*.swift",
-    ]) + ["//apple/Features/ViewsUI:sources"],
+    ]) + ["//apple/Features:sources"],
 )
 
 filegroup(
     name = "localization_catalogs",
     srcs = [
-        "Shared/Resources/AlondraShared.xcstrings",
+        "//apple/Design:Resources/AlondraDesign.xcstrings",
         "iOS/Resources/Localizable.xcstrings",
         "macOS/Resources/Localizable.xcstrings",
     ],
 )
 
-swift_library(
-    name = "AlondraViewsShared",
-    srcs = [
-        "Shared/Sources/AlondraError.swift",
-        "Shared/Sources/Artifacts.swift",
-        "Shared/Sources/AttachmentFile.swift",
-        "Shared/Sources/CloseNode.swift",
-        "Shared/Sources/Diff/DiffHighlighter.swift",
-        "Shared/Sources/MarkdownBlocks.swift",
-        "Shared/Sources/SendFailurePresentation.swift",
-        "Shared/Sources/TableRowCard.swift",
-    ] + glob(["Shared/Sources/Code/*.swift"]),
-    data = ["Shared/Resources/AlondraShared.xcstrings"],
-    module_name = "AlondraShared",
-    visibility = ["//visibility:public"],
-    deps = [
-        "//apple/APIClient:AlondraViewsAPIClient",
-        "//apple/Contracts:AlondraViewsContracts",
-        "@swiftpkg_highlightswift//:HighlightSwift",
-    ],
-)
-
 swift_test(
-    name = "AlondraSharedTests",
-    srcs = [
-        "Shared/Tests/APIErrorPresentationTests.swift",
-        "Shared/Tests/ArtifactTests.swift",
-        "Shared/Tests/AttachmentTests.swift",
-        "Shared/Tests/CodeColourTests.swift",
-        "Shared/Tests/DiffHighlighterTests.swift",
-        "Shared/Tests/MarkdownCorpusTests.swift",
-        "Shared/Tests/MarkdownRulesTests.swift",
-        "Shared/Tests/SendFailureTests.swift",
-        "Shared/Tests/TableRowCardTests.swift",
-    ],
-    data = ["//fixtures/markdown"],
-    deps = [":AlondraViewsShared", "//apple/APIClient:AlondraViewsAPIClient", "//apple/Contracts:AlondraViewsContracts"],
-)
-
-swift_test(
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraMacWorkspaceOwnerTests",
     srcs = ["macOS/Tests/MacWorkspaceOwnerTests.swift"],
     deps = [
-        "//apple/AppComposition:AlondraViewsAppComposition",
-        "//apple/Auth:AlondraAuth",
-        "//apple/Data/LoopbackSession:AlondraViewsLoopbackSession",
-        "//apple/Data/Workspace:AlondraViewsWorkspaceServices",
+        "//apple/Data/Account:AlondraAccount",
+        "//apple/Data/Transport:AlondraTransport",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],
 )
 
 swift_test(
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],
     name = "AlondraMacServiceNavigationTests",
     srcs = ["macOS/Tests/MacServiceNavigationTests.swift"],
     deps = [
-        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
-        "//apple/Features/Workspace:AlondraViewsWorkspaceFeature",
-        "//apple/Views:AlondraViews",
+        "//apple/Data/Feed:AlondraFeed",
+        "//apple/Features:AlondraFeatures",
+        "//apple/Contract:AlondraContract",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
         "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
     ],
@@ -144,29 +106,21 @@ macos_application(
 
 swift_library(
     name = "AlondraMacViewsEntry",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["macOS/ViewsShipping/*.swift"]) + [
         "macOS/Sources/SidebarCountHeader.swift",
     ],
     module_name = "AlondraMac",
     deps = [
-        ":AlondraViewsShared",
-        "//apple/APIClient:AlondraViewsAPIClient",
-        "//apple/Auth:AlondraAuth",
-        "//apple/AuthPresentation:AlondraAuthPresentation",
-        "//apple/Contracts:AlondraViewsContracts",
+        "//apple/Design:AlondraDesign",
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Data/Account:AlondraAccount",
+        "//apple/Contract:AlondraContract",
         "//apple/Data/Sync:AlondraNetworkReachability",
-        "//apple/AppComposition:AlondraViewsAppComposition",
-        "//apple/Data/Workspace:AlondraViewsWorkspaceServices",
-        "//apple/Features/Attachments:AlondraViewsAttachmentsFeature",
-        "//apple/Features/CloudPairing:AlondraViewsCloudPairingFeature",
-        "//apple/Features/Connection:AlondraViewsConnectionFeature",
-        "//apple/Features/Settings:AlondraViewsSettingsFeature",
-        "//apple/Features/Workspace:AlondraViewsWorkspaceFeature",
-        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
-        "//apple/Features/ViewsUI:AlondraViewsOnlyUI",
-        "//apple/Demo:AlondraViewsDemoWorkspace",
-        "//apple/ViewsDiff:AlondraViewsDiff",
-        "//apple/Views:AlondraViews",
+        "//apple/Data/Attachments:AlondraAttachments",
+        "//apple/Features:AlondraFeatures",
+        "//apple/Data/Feed:AlondraFeed",
+        "//apple/Demo:AlondraDemo",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
@@ -197,53 +151,31 @@ ios_application(
 
 swift_library(
     name = "AlondraiOSViewsEntry",
-    srcs = glob(["iOS/ViewsShipping/*.swift"]) + [
-        "iOS/Sources/CameraPicker.swift",
-        "iOS/Sources/MarkdownBlockView.swift",
-        "iOS/Sources/Presentation/PressStyle.swift",
-        "iOS/Sources/ServiceAttachButton.swift",
-        "iOS/Sources/ServiceAttachmentStrip.swift",
-        "iOS/Sources/TableRowCardView.swift",
-        "iOS/Sources/ServiceTriage/ServiceHomeCard.swift",
-        "iOS/Sources/ServiceTriage/ServiceHomeView.swift",
-        "iOS/Sources/ServiceTriage/ServiceWireDocumentView.swift",
-        "iOS/Sources/ServiceTriage/ServiceWirePullRequestView.swift",
-        "iOS/Sources/Theme.swift",
-    ],
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["iOS/ViewsShipping/*.swift", "iOS/Sources/Triage/*.swift"]),
     module_name = "AlondraiOS",
     deps = [
-        ":AlondraViewsShared",
-        "//apple/APIClient:AlondraViewsAPIClient",
-        "//apple/Auth:AlondraAuth",
-        "//apple/AuthPresentation:AlondraAuthPresentation",
-        "//apple/Contracts:AlondraViewsContracts",
-        "//apple/Data/Notifications:AlondraViewsNotificationActions",
-        "//apple/Data/PushBinding:AlondraPushBinding",
+        "//apple/Design:AlondraDesign",
+        "//apple/Data/Transport:AlondraTransport",
+        "//apple/Data/Account:AlondraAccount",
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Notifications:AlondraNotifications",
         "//apple/Data/Sync:AlondraNetworkReachability",
-        "//apple/Demo:AlondraViewsDemoWorkspace",
-        "//apple/NotificationPayload:AlondraNotificationPayload",
-        "//apple/AppComposition:AlondraViewsAppComposition",
-        "//apple/Data/Workspace:AlondraViewsWorkspaceServices",
-        "//apple/Features/Attachments:AlondraViewsAttachmentsFeature",
-        "//apple/Features/CloudPairing:AlondraViewsCloudPairingFeature",
-        "//apple/Features/Connection:AlondraViewsConnectionFeature",
-        "//apple/Features/Home:AlondraViewsHomeFeature",
-        "//apple/Features/Settings:AlondraViewsSettingsFeature",
-        "//apple/Features/Workspace:AlondraViewsWorkspaceFeature",
-        "//apple/Features/ViewsDependency:AlondraViewsOnlyDependency",
-        "//apple/Features/ViewsUI:AlondraViewsOnlyUI",
-        "//apple/ViewsDiff:AlondraViewsDiff",
-        "//apple/ServicePairing:AlondraViewsServicePairing",
-        "//apple/Views:AlondraViews",
+        "//apple/Demo:AlondraDemo",
+        "//apple/Data/Attachments:AlondraAttachments",
+        "//apple/Features:AlondraFeatures",
+        "//apple/Data/Feed:AlondraFeed",
+        "//apple/Data/Pairing:AlondraPairing",
         "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
     ],
 )
 
 swift_library(
     name = "AlondraNotificationServiceLib",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["iOSNotificationService/Sources/**/*.swift"]),
     module_name = "AlondraNotificationService",
-    deps = ["//apple/NotificationPayload:AlondraNotificationPayload", "//apple/Data/Notifications:AlondraViewsNotificationActions"],
+    deps = ["//apple/Data/Notifications:AlondraNotifications"],
 )
 
 ios_extension(

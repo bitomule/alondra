@@ -1,0 +1,20 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+swift_library(
+    name = "AlondraContract",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraContract",
+    visibility = ["//visibility:public"],
+)
+
+swift_test(
+    name = "AlondraContractTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Tests/**/*.swift"]),
+    data = ["//fixtures/views:all"],
+    deps = [
+        ":AlondraContract",
+    ],
+)

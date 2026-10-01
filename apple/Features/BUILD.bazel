@@ -1,0 +1,40 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+swift_library(
+    name = "AlondraFeatures",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Sources/**/*.swift"]),
+    module_name = "AlondraFeatures",
+    visibility = ["//visibility:public"],
+    deps = [
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Feed:AlondraFeed",
+        "//apple/Data/Attachments:AlondraAttachments",
+        "//apple/Design:AlondraDesign",
+        "//apple/Data/Transport:AlondraTransport",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_test(
+    name = "AlondraFeaturesTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["Tests/**/*.swift"]),
+    data = ["//fixtures/views:all"],
+    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
+    linkopts = ["-Wl,-export_dynamic"],
+    deps = [
+        ":AlondraFeatures",
+        "//apple/Contract:AlondraContract",
+        "//apple/Data/Feed:AlondraFeed",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+    ],
+)
+
+filegroup(
+    name = "sources",
+    srcs = glob(["Sources/ViewsUI/**/*.swift"]),
+    visibility = ["//apple:__pkg__"],
+)

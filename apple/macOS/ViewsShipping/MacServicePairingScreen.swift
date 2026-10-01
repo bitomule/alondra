@@ -1,10 +1,10 @@
-import AlondraCloudPairingFeature
+import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
 /// Connects this Mac, through the account, to Alondra running on another Mac.
 struct MacServicePairingScreen: View {
-    @Bindable var store: StoreOf<CloudPairingFeature>
+    @Bindable var store: StoreOf<SignInFeature>
 
     var body: some View {
         ScrollView {
@@ -49,7 +49,7 @@ private struct MacServicePairingHeader: View {
 }
 
 private struct MacServicePairingStep: View {
-    @Bindable var store: StoreOf<CloudPairingFeature>
+    @Bindable var store: StoreOf<SignInFeature>
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {

@@ -1,6 +1,6 @@
-import AlondraViews
-import AlondraViewsDependency
-import AlondraViewsWorkspaceFeature
+import AlondraContract
+import AlondraFeed
+import AlondraFeatures
 import Foundation
 import ComposableArchitecture
 import Testing

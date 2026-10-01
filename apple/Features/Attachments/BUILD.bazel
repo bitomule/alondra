@@ -1,8 +1,0 @@
-load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library", "swift_test")
-swift_library(
-    name = "AlondraViewsAttachmentsFeature",
-    module_name = "AlondraAttachmentsFeature",
-    srcs = glob(["ViewsSources/*.swift"]) + ["Sources/AttachmentPicker.swift"],
-    visibility = ["//visibility:public"],
-    deps = ["//apple/APIClient:AlondraViewsAPIClient", "@swiftpkg_swift_composable_architecture//:ComposableArchitecture"],
-)

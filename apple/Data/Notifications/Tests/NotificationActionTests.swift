@@ -1,6 +1,5 @@
-import AlondraNotificationActions
-import AlondraNotificationPayload
-import AlondraViews
+import AlondraNotifications
+import AlondraContract
 import Foundation
 import XCTest
 
