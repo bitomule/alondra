@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v297f46218cf4c754",
+  "version": "vd9f4fdc3945d6009",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -90,8 +90,8 @@
                 "tone": "neutral"
               },
               "state": {
-                "text": "Waiting for you",
-                "tone": "accent"
+                "text": "Waiting for an answer",
+                "tone": "warning"
               }
             },
             {

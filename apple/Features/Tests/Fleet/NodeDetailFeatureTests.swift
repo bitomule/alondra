@@ -50,7 +50,8 @@ final class NodeDetailFeatureTests: XCTestCase {
         let detail = NodeDetail(document: try document())
 
         XCTAssertEqual(detail.title, "Alondra · iOS")
-        XCTAssertEqual(detail.state, "Waiting for you")
+        XCTAssertEqual(detail.state, "Waiting for an answer")
+        XCTAssertEqual(detail.stateTone, .warning)
         XCTAssertEqual(detail.folder, "/demo/Demo Garden/ios")
         XCTAssertEqual(detail.waiting.count, 1)
         XCTAssertEqual(detail.needs?.text, "A decision on the welcome copy")

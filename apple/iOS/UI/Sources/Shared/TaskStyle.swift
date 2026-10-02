@@ -53,6 +53,33 @@ enum TaskStyle {
     }
 }
 
+/// A node's state as 8ccd131 drew it, from the tone the daemon gives each of its states.
+enum NodeStyle {
+    static func tint(tone: Tone?) -> Color {
+        switch tone {
+        case .info: Palette.sky
+        case .warning, .accent: Palette.dawn
+        case .yourTurn: Palette.ember
+        case .success: Palette.sage
+        case .critical, .unclear: Palette.rose
+        case nil, .neutral: Palette.slate
+        }
+    }
+
+    static func symbol(tone: Tone?) -> String {
+        switch tone {
+        case .info: "hammer.fill"
+        case .warning: "hand.raised.fill"
+        case .yourTurn: "hand.point.right.fill"
+        case .accent: "arrow.triangle.pull"
+        case .success: "checkmark"
+        case .unclear: "questionmark"
+        case .critical: "pause.circle"
+        case nil, .neutral: "hourglass"
+        }
+    }
+}
+
 struct StateChip: View {
     let label: String
     let tint: Color

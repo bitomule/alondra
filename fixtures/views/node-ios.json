@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v0330c5cc7119a871",
+  "version": "v79b78c9dee198259",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -69,7 +69,8 @@
           "items": [
             {
               "label": "State",
-              "value": "Waiting for you"
+              "value": "Waiting for an answer",
+              "tone": "warning"
             },
             {
               "label": "Folder",
@@ -114,8 +115,8 @@
                 "tone": "neutral"
               },
               "state": {
-                "text": "Waiting for you",
-                "tone": "accent"
+                "text": "Waiting for an answer",
+                "tone": "warning"
               }
             },
             {

@@ -13,13 +13,16 @@ struct NodeRow: View {
         VStack(alignment: .leading, spacing: 0) {
             Button { if let link = node.link { open(link) } } label: {
                 HStack(alignment: .top, spacing: 12) {
-                    Glyph(symbol: node.isOrchestrator ? "point.3.connected.trianglepath.dotted" : "desktopcomputer",
-                          tint: tint, size: .small)
+                    Glyph(symbol: node.isOrchestrator ? "point.3.connected.trianglepath.dotted" : NodeStyle.symbol(tone: node.state?.tone),
+                          tint: tint, size: .small, pulse: !node.isOrchestrator && node.state?.tone == .info)
                     VStack(alignment: .leading, spacing: 4) {
                         Text(node.title).font(.mono(.subheadline, weight: .semibold)).foregroundStyle(Palette.ink)
                             .lineLimit(1).truncationMode(.middle)
                         if let state = node.state {
-                            Text(state).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(2)
+                            Text(state.text).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
+                        }
+                        if let detail = node.detail {
+                            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }
                         if !node.badges.isEmpty {
                             Text(node.badges.map(\.text).joined(separator: " · "))
@@ -43,10 +46,16 @@ struct NodeRow: View {
             ForEach(node.tasks, id: \.id) { task in
                 Button { if let link = task.link { open(link) } } label: {
                     HStack(spacing: 8) {
-                        Glyph(symbol: task.struck ? "checkmark" : "circle.dashed", tint: Palette.slate, size: .tiny)
-                        Text(task.title).font(.subheadline.weight(.medium))
-                            .foregroundStyle(task.struck ? .secondary : Palette.ink)
-                            .strikethrough(task.struck).lineLimit(2).multilineTextAlignment(.leading)
+                        let taskTint = TaskStyle.tint(icon: task.icon, tone: task.badges.first?.tone)
+                        Glyph(symbol: TaskStyle.symbol(icon: task.icon, struck: task.struck), tint: taskTint, size: .tiny)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text(task.title).font(.subheadline.weight(.medium))
+                                .foregroundStyle(task.struck ? .secondary : Palette.ink)
+                                .strikethrough(task.struck).lineLimit(2).multilineTextAlignment(.leading)
+                            if let state = task.subtitle {
+                                Text(state).font(.caption.weight(.semibold)).foregroundStyle(taskTint).lineLimit(1)
+                            }
+                        }
                         Spacer(minLength: 0)
                     }
                     .padding(.horizontal, 14).padding(.bottom, 8)
@@ -71,11 +80,6 @@ struct NodeRow: View {
     }
 
     private var tint: Color {
-        if node.isOrchestrator { return Palette.ember }
-        return switch node.badges.first?.tone {
-        case .success: Palette.sky
-        case .critical: Palette.rose
-        default: Palette.sage
-        }
+        node.isOrchestrator ? Palette.ember : NodeStyle.tint(tone: node.state?.tone)
     }
 }

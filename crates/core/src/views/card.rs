@@ -178,12 +178,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                 text: project.clone(),
                 tone: Tone::Neutral,
             }),
-            state: node.and_then(|node| {
-                node.state_label.as_ref().map(|text| Label {
-                    text: text.clone(),
-                    tone: super::common::node_presentation(node.state_key.as_deref()).1,
-                })
-            }),
+            state: node.map(|_| super::fleet::node_state(agent_id, context)),
         });
     }
     if let Some(task_id) = &item.task_id {

@@ -119,14 +119,11 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         let live = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0);
         let project = live.and_then(|node| node.project.as_deref()).filter(|name| *name != "others")
             .unwrap_or(t!(context.lang, "Other", "Otros"));
-        let live_state = live.and_then(|node| node.state_key.as_deref());
-        let (icon, state_tone) = common::node_presentation(live_state);
-        let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), icon,
+        let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node,
             common::agent_label(&agent.id, context), None);
+        row.badges.push(super::fleet::node_state(&agent.id, context));
         if let Some(node) = live {
             let summary = node.summary.as_deref().unwrap_or("").lines().next().unwrap_or("");
-            let label = node.state_label.as_deref().unwrap_or("");
-            row.badges.push(Label { text: label.into(), tone: state_tone });
             row.subtitle = (!summary.is_empty()).then(|| summary.chars().take(140).collect::<String>());
             if let Some(text) = &node.background_badge {
                 row.badges.push(Label { text: text.clone(), tone: if node.background_suspect { Tone::Warning } else { Tone::Neutral } });

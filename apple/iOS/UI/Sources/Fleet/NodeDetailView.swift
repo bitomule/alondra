@@ -96,11 +96,12 @@ public struct NodeDetailView: View {
     private func header(_ detail: NodeDetail) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 10) {
-                Glyph(symbol: store.isOrchestrator ? "point.3.connected.trianglepath.dotted" : "desktopcomputer",
-                      tint: Palette.sky, size: .small)
+                let tint = store.isOrchestrator ? Palette.sky : NodeStyle.tint(tone: detail.stateTone)
+                Glyph(symbol: store.isOrchestrator ? "point.3.connected.trianglepath.dotted" : NodeStyle.symbol(tone: detail.stateTone),
+                      tint: tint, size: .small)
                 if let state = detail.state {
                     Text(state.prefix(1).uppercased() + state.dropFirst())
-                        .font(.subheadline.weight(.semibold)).foregroundStyle(Palette.sky)
+                        .font(.subheadline.weight(.semibold)).foregroundStyle(tint)
                 }
                 if let since = detail.since {
                     HStack(spacing: 4) {

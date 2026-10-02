@@ -109,20 +109,6 @@ pub(super) fn task_presentation(state: crate::domain_v2::TaskState) -> (super::I
     }
 }
 
-pub(super) fn node_presentation(state: Option<&str>) -> (super::Icon, super::Tone) {
-    use super::{Icon, Tone};
-    match state.unwrap_or("free") {
-        "working" | "busy" => (Icon::Node, Tone::Success),
-        "waiting_machine" => (Icon::Machine, Tone::Info),
-        "waiting_answer" => (Icon::Question, Tone::Accent),
-        "your_turn" => (Icon::Action, Tone::YourTurn),
-        "waiting_merge" => (Icon::Merge, Tone::Info),
-        "unclear" => (Icon::Notice, Tone::Unclear),
-        "stalled" => (Icon::Warning, Tone::Critical),
-        _ => (Icon::Node, Tone::Neutral),
-    }
-}
-
 pub(super) fn action(
     verb: Verb,
     subject: &str,
@@ -248,18 +234,10 @@ mod tests {
     use crate::views::Tone;
 
     #[test]
-    fn node_states_keep_their_0_2_9_tones() {
-        let tones: Vec<Tone> = ["waiting_answer", "your_turn", "unclear", "done"]
-            .iter().map(|state| node_presentation(Some(state)).1).collect();
-        assert_eq!(tones, [Tone::Accent, Tone::YourTurn, Tone::Unclear, Tone::Neutral]);
-    }
-
-    #[test]
-    fn your_turn_and_unclear_are_told_apart_in_every_tone_mapping() {
-        assert_ne!(node_presentation(Some("your_turn")).1, node_presentation(Some("unclear")).1);
+    fn your_turn_and_unclear_are_told_apart() {
         assert_ne!(state_tone("your_turn"), state_tone("unclear"));
-        assert_eq!(state_tone("your_turn"), node_presentation(Some("your_turn")).1);
-        assert_eq!(state_tone("unclear"), node_presentation(Some("unclear")).1);
+        assert_eq!(state_tone("your_turn"), Tone::YourTurn);
+        assert_eq!(state_tone("unclear"), Tone::Unclear);
     }
 }
 

@@ -4,7 +4,7 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "ios",
-  "version": "v06dfbcf3c9738d1a",
+  "version": "vecc14592f475599a",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -205,8 +205,8 @@
                 "tone": "neutral"
               },
               "state": {
-                "text": "Waiting for you",
-                "tone": "accent"
+                "text": "Waiting for an answer",
+                "tone": "warning"
               }
             },
             {

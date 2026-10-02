@@ -40,7 +40,9 @@ pub(crate) async fn gather(
         .filter_map(|node| {
             let agent = state.agents.get(&node.session_id.as_str().into())?;
             let project = node.project();
-            let state_key = if node.status == alondra_core::NodeStatus::Free {
+            let state_key = if node.state == alondra_core::NodeState::Stalled {
+                "stalled".to_owned()
+            } else if node.status == alondra_core::NodeStatus::Free {
                 "free".to_owned()
             } else if node.status == alondra_core::NodeStatus::Busy {
                 "busy".to_owned()
