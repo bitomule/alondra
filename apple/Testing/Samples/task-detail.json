@@ -41,11 +41,7 @@
             },
             {
               "label": "Request",
-              "value": "Polish the Alondra beta",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
+              "value": "Polish the Alondra beta"
             }
           ]
         }

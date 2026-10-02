@@ -197,7 +197,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                     "Misión · {title}",
                     title = request.title.as_deref().unwrap_or(&request.body)
                 ),
-                link: Some(Link::View {
+                link: (context.client != Client::Ios).then(|| Link::View {
                     key: format!("request:{request_id}"),
                 }),
                 chip: None,

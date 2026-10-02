@@ -4,7 +4,7 @@
   "view": "new_request",
   "key": "new_request",
   "client": "ios",
-  "version": "vddb955c6ea4c54e1",
+  "version": "vb73f21912752aa10",
   "cursor": "cursor-1",
   "title": "Ask for Something New",
   "status": {
@@ -198,10 +198,6 @@
         {
           "type": "row",
           "id": "r-9f2156b5a8894e53901f0af576dff6a2",
-          "link": {
-            "kind": "view",
-            "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-          },
           "icon": "request",
           "title": "Polish the Alondra beta",
           "badges": [

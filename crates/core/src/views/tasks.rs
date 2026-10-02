@@ -345,7 +345,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             .filter(|title: &String| !title.is_empty())
             .unwrap_or_else(|| t!(context.lang, "Request details unavailable", "Detalles de la solicitud no disponibles").into()),
         tone: None,
-        link: Some(super::Link::View {
+        link: (context.client != super::Client::Ios).then(|| super::Link::View {
             key: format!("request:{}", task.request_id),
         }),
     });

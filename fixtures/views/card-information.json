@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vb1a0aff098fd0037",
+  "version": "v7ddc0d9154799de2",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -88,11 +88,7 @@
             },
             {
               "icon": "mission",
-              "text": "Mission · Polish the Alondra beta",
-              "link": {
-                "kind": "view",
-                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-              }
+              "text": "Mission · Polish the Alondra beta"
             }
           ],
           "detail": "included",

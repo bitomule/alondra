@@ -134,29 +134,24 @@ public struct NewRequestView: View {
                     .foregroundStyle(.secondary)
                     .accessibilityAddTraits(.isHeader)
                 ForEach(store.recent, id: \.id) { row in
-                    Button {
-                        if let link = row.link { store.send(.open(link)) }
-                    } label: {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text(verbatim: row.title)
-                                .font(.subheadline)
-                                .foregroundStyle(Palette.ink)
-                                .lineLimit(4)
-                                .multilineTextAlignment(.leading)
-                            HStack(spacing: 6) {
-                                ForEach(row.badges, id: \.text) { badge in
-                                    StateChip(label: badge.text, tint: TaskStyle.tint(tone: badge.tone))
-                                }
-                                if let sent = row.trailing?.instant {
-                                    RelativeTime(date: sent).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                                }
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text(verbatim: row.title)
+                            .font(.subheadline)
+                            .foregroundStyle(Palette.ink)
+                            .lineLimit(4)
+                            .multilineTextAlignment(.leading)
+                        HStack(spacing: 6) {
+                            ForEach(row.badges, id: \.text) { badge in
+                                StateChip(label: badge.text, tint: TaskStyle.tint(tone: badge.tone))
+                            }
+                            if let sent = row.trailing?.instant {
+                                RelativeTime(date: sent).font(.caption.weight(.medium)).foregroundStyle(.secondary)
                             }
                         }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(14)
-                        .background(Palette.card.opacity(0.8), in: .rect(cornerRadius: 18, style: .continuous))
                     }
-                    .buttonStyle(PressStyle())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(Palette.card.opacity(0.8), in: .rect(cornerRadius: 18, style: .continuous))
                 }
             }
         }

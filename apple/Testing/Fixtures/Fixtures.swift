@@ -26,7 +26,7 @@ enum Fixtures {
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
     }
 
-    /// Every key a view in the fixtures links to, including the "show more" pages.
+    /// Every key a view in the iPhone fixtures links to, including the "show more" pages.
     static func linkedKeys() throws -> Set<String> {
         var keys = Set<String>()
         func walk(_ value: Any) {
@@ -38,7 +38,7 @@ enum Fixtures {
                 array.forEach(walk)
             }
         }
-        for url in try urls() { walk(try JSONSerialization.jsonObject(with: Data(contentsOf: url))) }
+        for url in try urls() where !url.lastPathComponent.hasSuffix("-tui.json") { walk(try JSONSerialization.jsonObject(with: Data(contentsOf: url))) }
         return keys
     }
 }

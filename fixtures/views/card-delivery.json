@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v247b522507543de0",
+  "version": "v4ac887bdf59582e2",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -88,11 +88,7 @@
             },
             {
               "icon": "mission",
-              "text": "Mission · Polish the Alondra beta",
-              "link": {
-                "kind": "view",
-                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-              }
+              "text": "Mission · Polish the Alondra beta"
             }
           ],
           "detail": "included",

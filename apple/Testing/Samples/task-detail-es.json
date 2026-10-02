@@ -41,11 +41,7 @@
             },
             {
               "label": "Solicitud",
-              "value": "Pulir la beta de Alondra",
-              "link": {
-                "kind": "view",
-                "key": "request:r-1"
-              }
+              "value": "Pulir la beta de Alondra"
             }
           ]
         }

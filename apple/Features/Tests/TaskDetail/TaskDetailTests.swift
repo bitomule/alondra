@@ -15,7 +15,7 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.node?.text, "Alondra · iOS")
         XCTAssertEqual(detail.node?.link, .view(key: "node:n-1"))
         XCTAssertEqual(detail.request?.text, "Polish the Alondra beta")
-        XCTAssertEqual(detail.request?.link, .view(key: "request:r-1"))
+        XCTAssertNil(detail.request?.link)
         XCTAssertEqual(detail.now?.text, "question: Restore the native review experience")
         XCTAssertEqual(detail.now?.link, .view(key: "card:i-1"))
         XCTAssertEqual(detail.waiting.title, "Waiting for You")
@@ -34,7 +34,7 @@ final class TaskDetailTests: XCTestCase {
 
         XCTAssertEqual(spanish.state, "Te necesita")
         XCTAssertEqual(spanish.node?.text, "Alondra · iOS")
-        XCTAssertEqual(spanish.request?.link, .view(key: "request:r-1"))
+        XCTAssertEqual(spanish.request?.text, "Pulir la beta de Alondra")
         XCTAssertEqual(spanish.waiting.title, "Te espera")
     }
 
@@ -162,7 +162,7 @@ final class TaskDetailTests: XCTestCase {
         let store = try await loaded()
         let detail = try XCTUnwrap(store.state.detail)
 
-        for link in [detail.request?.link, detail.node?.link, detail.waiting.elements.first?.link,
+        for link in [detail.node?.link, detail.waiting.elements.first?.link,
                      detail.pullRequests.elements.first?.link, detail.dependencies.elements.first?.link,
                      detail.documents.elements.first?.link] {
             let link = try XCTUnwrap(link)

@@ -75,7 +75,6 @@ public struct NewRequestFeature: Sendable {
         case optionsTapped
         case options(PresentationAction<RequestOptionsFeature.Action>)
         case send
-        case open(AlondraContract.Link)
         case screen(ScreenFeature.Action)
         case actions(ActionFeature.Action)
         case delegate(ScreenDelegate)
@@ -110,8 +109,6 @@ public struct NewRequestFeature: Sendable {
             case .send:
                 guard state.canSend else { return .none }
                 return .send(.actions(.submit))
-            case .open(let link):
-                return ScreenDelegate.opening(link).map { .send(.delegate($0)) } ?? .none
             case .actions(.delegate(.completed(let message))):
                 state.values["text"] = .string("")
                 guard let form = state.form else { return .send(.delegate(.completed(message))) }

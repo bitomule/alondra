@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v7cc01f082d1bd44e",
+  "version": "v0330c5cc7119a871",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -128,11 +128,7 @@
             },
             {
               "icon": "mission",
-              "text": "Mission · Polish the Alondra beta",
-              "link": {
-                "kind": "view",
-                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-              }
+              "text": "Mission · Polish the Alondra beta"
             }
           ],
           "detail": "reference"

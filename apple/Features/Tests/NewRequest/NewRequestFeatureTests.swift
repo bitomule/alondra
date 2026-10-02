@@ -167,17 +167,6 @@ final class NewRequestFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.optionsSummary, ["Review each one", "Auto"])
     }
 
-    @MainActor
-    func testARecentRequestOpensItsScreen() async throws {
-        let delegates = LockIsolated<[ScreenDelegate]>([])
-        let store = try await loaded(delegates: delegates)
-        let link = try XCTUnwrap(store.state.recent.first?.link)
-
-        await store.send(.open(link))
-
-        XCTAssertEqual(delegates.value, [.open(ViewKey(rawValue: "request:r-9f2156b5a8894e53901f0af576dff6a2"))])
-    }
-
     func testProjectsAreFilteredByEveryWordTyped() throws {
         let projects = try ContractCodec.decode([ChoiceItem].self, from: Data(
             #"[{"id":"","label":"The orchestrator picks the project"},{"id":"Demo Garden","label":"Demo Garden"},{"id":"Lumo","label":"Lumo"}]"#.utf8))

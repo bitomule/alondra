@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "va80927ade5913c96",
+  "version": "vbb7f2ca404e083de",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -88,11 +88,7 @@
             },
             {
               "icon": "mission",
-              "text": "Mission · Polish the Alondra beta",
-              "link": {
-                "kind": "view",
-                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-              }
+              "text": "Mission · Polish the Alondra beta"
             }
           ],
           "detail": "included",
@@ -125,11 +121,7 @@
                 },
                 {
                   "icon": "mission",
-                  "text": "Mission · Polish the Alondra beta",
-                  "link": {
-                    "kind": "view",
-                    "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-                  }
+                  "text": "Mission · Polish the Alondra beta"
                 }
               ],
               "detail": "included",
@@ -209,11 +201,7 @@
                 },
                 {
                   "icon": "mission",
-                  "text": "Mission · Polish the Alondra beta",
-                  "link": {
-                    "kind": "view",
-                    "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-                  }
+                  "text": "Mission · Polish the Alondra beta"
                 }
               ],
               "detail": "included",

@@ -1005,6 +1005,21 @@ fn a_request_row_links_to_its_most_recently_changed_task() {
 }
 
 #[test]
+fn only_the_iphone_gets_no_link_to_the_request_view() {
+    let state = fixture();
+    let request_fact_link = |client| {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "task:t-1", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Facts(facts) => facts.items.iter().find(|fact| fact.label == "Request").map(|fact| fact.link.clone()),
+            _ => None,
+        }).unwrap()
+    };
+    assert_eq!(request_fact_link(Client::Ios), None);
+    assert_eq!(request_fact_link(Client::Tui), Some(Link::View { key: "request:r-1".into() }));
+    assert_eq!(request_fact_link(Client::Mac), Some(Link::View { key: "request:r-1".into() }));
+}
+
+#[test]
 fn schedule_editor_resets_old_options_when_project_changes() {
     let mut state = fixture();
     let schedule: crate::domain_v2::Schedule = serde_json::from_value(serde_json::json!({

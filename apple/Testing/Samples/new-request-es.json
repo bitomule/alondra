@@ -198,10 +198,6 @@
         {
           "type": "row",
           "id": "r-9f2156b5a8894e53901f0af576dff6a2",
-          "link": {
-            "kind": "view",
-            "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-          },
           "icon": "request",
           "title": "Pulir la beta de Alondra",
           "badges": [

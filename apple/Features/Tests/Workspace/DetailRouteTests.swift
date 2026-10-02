@@ -6,9 +6,7 @@ final class DetailRouteTests: XCTestCase {
     func testEveryServerLinkInTheFixturesOpensAScreen() throws {
         let keys = try Fixtures.linkedKeys()
         XCTAssertFalse(keys.isEmpty, "the walker found no links")
-        let requestViewsOfTheMacAndTheTerminal = keys.filter { $0.hasPrefix("request:") }
-        let unrouted = keys.subtracting(requestViewsOfTheMacAndTheTerminal)
-            .filter { DetailRoute.State(key: ViewKey(rawValue: $0), owner: "test") == nil }
+        let unrouted = keys.filter { DetailRoute.State(key: ViewKey(rawValue: $0), owner: "test") == nil }
         XCTAssertEqual(unrouted, [], "a link the app cannot open")
     }
 
