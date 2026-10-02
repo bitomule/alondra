@@ -1,9 +1,9 @@
 use super::*;
-use crate::wake::WriteFailure;
+use crate::node_push::testing::Node;
 use alondra_core::domain_v2::{AttachmentRef, TaskState};
 use alondra_core::options::OptionsFile;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
 
@@ -11,7 +11,7 @@ struct Fixture {
     root: PathBuf,
     home: PathBuf,
     project: PathBuf,
-    domain: DomainRuntime,
+    domain: Arc<DomainRuntime>,
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
@@ -33,7 +33,7 @@ fn world() -> Fixture {
     let project = root.join("App");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
-    let domain = DomainRuntime::open(&home).unwrap();
+    let domain = Arc::new(DomainRuntime::open(&home).unwrap());
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into() });
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false });
     command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
@@ -192,85 +192,65 @@ async fn a_session_whose_mod_never_loads_is_stopped_and_the_launch_fails_without
     assert!(state.tasks[&TaskId::from("t")].agent_id.is_none(), "the task stays free for another launch");
 }
 
-struct Listed(Option<Session>);
-impl Sessions for Listed {
-    async fn find(&self, _: &str) -> Option<Session> {
-        self.0.clone()
-    }
-}
-
-#[derive(Default)]
-struct Typed(Mutex<Vec<(String, String)>>);
-impl Terminal for Typed {
-    fn write(&self, short: &str, text: &str) -> Result<(), WriteFailure> {
-        self.0.lock().unwrap().push((short.into(), text.into()));
-        Ok(())
-    }
-}
-
-fn background(short: &str) -> Listed {
-    Listed(Some(Session { short: short.into(), interactive: false }))
-}
-
 #[tokio::test]
 async fn a_message_about_a_task_nobody_works_on_gives_it_to_that_agent_and_a_cancelled_one_reopens() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
-    let terminal = Arc::new(Typed::default());
+    let node = Node::connect(&f.domain, "agent-b");
     let body = |text: &str| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": text, "task": "t"})).unwrap() };
-    let answer = send(&f.domain, &f.home, &actor, body("Take the editor colours"), &background("b1"), &terminal).await.unwrap();
+    let answer = send(&f.domain, &f.home, &actor, body("Take the editor colours")).await.unwrap();
     assert_eq!(answer["delivery_state"], "handed");
-    assert_eq!(terminal.0.lock().unwrap()[0], ("b1".to_string(), "[Task t “Editor colours”] Take the editor colours".to_string()));
+    assert_eq!(node.texts()[0], "[Task t “Editor colours”] Take the editor colours");
+    assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "the orchestrator's words reach the model as its own");
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id, Some(AgentId::from("agent-b")));
 
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
-    send(&f.domain, &f.home, &actor, body("Carry on after all"), &background("b1"), &terminal).await.unwrap();
+    send(&f.domain, &f.home, &actor, body("Carry on after all")).await.unwrap();
     assert_ne!(f.domain.state().unwrap().tasks[&TaskId::from("t")].state, TaskState::Cancelled);
 
     command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-c".into(), name: "Instance C".into() });
     let foreign: SendBody = serde_json::from_value(json!({"node": "agent-c", "text": "Mine now", "task": "t"})).unwrap();
-    assert_eq!(send(&f.domain, &f.home, &actor, foreign, &background("c1"), &terminal).await.unwrap_err().code, "conflict");
-    assert_eq!(terminal.0.lock().unwrap().len(), 2);
+    assert_eq!(send(&f.domain, &f.home, &actor, foreign).await.unwrap_err().code, "conflict");
+    assert_eq!(node.texts().len(), 2);
 }
 
 #[tokio::test]
 async fn a_node_on_a_task_takes_no_other_until_it_ends_but_still_gets_messages() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
-    let terminal = Arc::new(Typed::default());
+    let node = Node::connect(&f.domain, "agent-b");
     command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
     let body = |task: Option<&str>| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": task})).unwrap() };
-    send(&f.domain, &f.home, &actor, body(Some("t")), &background("b1"), &terminal).await.unwrap();
+    send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap();
 
-    let refused = send(&f.domain, &f.home, &actor, body(Some("t2")), &background("b1"), &terminal).await.unwrap_err();
+    let refused = send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap_err();
     assert_eq!(refused.code, "agent_busy");
     assert!(refused.message.contains("launch a new node for t2"), "{}", refused.message);
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, None);
-    send(&f.domain, &f.home, &actor, body(None), &background("b1"), &terminal).await.unwrap();
-    send(&f.domain, &f.home, &actor, body(Some("t")), &background("b1"), &terminal).await.unwrap();
-    assert_eq!(terminal.0.lock().unwrap().len(), 3, "the refused task typed nothing");
+    send(&f.domain, &f.home, &actor, body(None)).await.unwrap();
+    send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap();
+    assert_eq!(node.texts().len(), 3, "the refused task sent nothing");
 
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
-    send(&f.domain, &f.home, &actor, body(Some("t2")), &background("b1"), &terminal).await.unwrap();
+    send(&f.domain, &f.home, &actor, body(Some("t2"))).await.unwrap();
     assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, Some(AgentId::from("agent-b")), "a node whose task ended takes the next one");
-    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t")), &background("b1"), &terminal).await.unwrap_err().code, "agent_busy",
+    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t"))).await.unwrap_err().code, "agent_busy",
         "reopening its old task would give it two");
 }
 
 #[tokio::test]
-async fn an_interrupt_presses_esc_in_a_background_session_only() {
+async fn an_interrupt_is_a_line_for_the_connected_agent_and_is_refused_for_one_that_is_not() {
     let f = world();
-    let pressed = Arc::new(Mutex::new(vec![]));
-    let record = |pressed: Arc<Mutex<Vec<String>>>| move |short: &str| { pressed.lock().unwrap().push(short.to_owned()); Ok(()) };
-    let node = || -> NodeBody { serde_json::from_value(json!({"node": "agent-b"})).unwrap() };
-    let answer = interrupt(&f.domain, node(), &background("b1"), record(pressed.clone())).await.unwrap();
-    assert_eq!(answer, json!({"interrupted": "b1"}));
-    let terminal = interrupt(&f.domain, node(), &Listed(Some(Session { short: "b1".into(), interactive: true })), record(pressed.clone())).await;
-    assert_eq!(terminal.unwrap_err().code, "interactive_session");
-    let gone = interrupt(&f.domain, node(), &Listed(None), record(pressed.clone())).await;
-    assert_eq!(gone.unwrap_err().code, "session_unreachable");
-    assert_eq!(*pressed.lock().unwrap(), ["b1"]);
+    let node = Node::connect(&f.domain, "agent-b");
+    let named = || -> NodeBody { serde_json::from_value(json!({"node": "agent-b"})).unwrap() };
+    assert_eq!(interrupt(&f.domain, named()).unwrap(), json!({"interrupted": "agent-b"}));
+    tokio::task::yield_now().await;
+    assert_eq!(node.interrupts(), 1);
+    command(&f.domain, Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "Instance A".into() });
+    let gone: NodeBody = serde_json::from_value(json!({"node": "agent-a"})).unwrap();
+    assert_eq!(interrupt(&f.domain, gone).unwrap_err().code, "session_unreachable");
+    assert_eq!(node.interrupts(), 1);
 }
 
 #[test]

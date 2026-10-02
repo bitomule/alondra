@@ -4,7 +4,7 @@ type Run = { argv: readonly string[]; report: Record<string, unknown> }
 type Spawn = { argv: readonly string[]; hello: Record<string, unknown> }
 
 async function settle(): Promise<void> {
-  for (let i = 0; i < 100; i++) await Promise.resolve()
+  for (let i = 0; i < 2000; i++) await Promise.resolve()
 }
 
 test('session.start reports the session and opens the connection to alondrad', async ($, on) => {
@@ -137,4 +137,116 @@ test('turns, tool calls and measurements of the main loop are reported in order'
       cost_usd: 1.25,
     },
   ])
+})
+
+function pushed(...lines: Record<string, unknown>[]): AsyncGenerator<{ stream: 'stdout'; text: string }> {
+  return (async function* () {
+    yield { stream: 'stdout' as const, text: 'connected\n' }
+    for (const line of lines) yield { stream: 'stdout' as const, text: JSON.stringify(line) + '\n' }
+    await new Promise(() => {})
+  })()
+}
+
+test('a pushed message is submitted to the session and then acknowledged by id', async ($, on) => {
+  mock.clock(on)
+  const submits: Record<string, unknown>[] = []
+  const acks: { argv: readonly string[]; stdin: string }[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.287' } }))
+  on('process.run', ($, e) => {
+    if (e.argv.includes('ack')) acks.push({ argv: e.argv, stdin: e.init.stdin })
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('process.spawn', async function* () {
+    yield* pushed(
+      { id: 'o-1', text: 'David says hi', as_user: true },
+      { id: 'd-2', text: 'A notice', as_user: false },
+    )
+  })
+  on('prompt.submit', ($, e) => {
+    submits.push({ text: e.text, asUser: e.origin.asUser === true })
+    return { text: e.text }
+  })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await settle()
+
+  expect(submits).toEqual([
+    { text: 'David says hi', asUser: true },
+    { text: 'A notice', asUser: false },
+  ])
+  expect(acks.map((ack) => ack.argv.slice(-3))).toEqual([
+    ['node', 'ack', 'o-1'],
+    ['node', 'ack', 'd-2'],
+  ])
+  expect(JSON.parse(acks[0].stdin)).toEqual({ session_id: 'session-1' })
+})
+
+test('a message waiting for an idle session does not hold up the next one, and a resend is acknowledged without a second submit', async ($, on) => {
+  const clock = mock.clock(on)
+  let submits = 0
+  const acks: string[] = []
+  let connections = 0
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.287' } }))
+  on('process.run', ($, e) => {
+    if (e.argv.includes('ack')) acks.push(e.argv[e.argv.length - 1])
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('process.spawn', async function* () {
+    connections += 1
+    yield { stream: 'stdout' as const, text: 'connected\n{"id":"o-1","text":"first"}\n{"id":"o-2","te' }
+    yield { stream: 'stdout' as const, text: 'xt":"second"}\n' }
+    if (connections === 1) return { value: { code: 3, signal: null } }
+    yield { stream: 'stdout' as const, text: '{"id":"o-2","text":"second"}\n' }
+    await new Promise(() => {})
+  })
+  on('prompt.submit', async ($, e) => {
+    submits += 1
+    if (e.text === 'first') await new Promise(() => {})
+    return { text: e.text }
+  })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await settle()
+  expect(submits).toBe(2)
+  expect(acks).toEqual(['o-2'])
+
+  await clock.advance(1000)
+  await settle()
+  expect(submits).toBe(2)
+  expect(acks).toEqual(['o-2', 'o-2', 'o-2'])
+})
+
+test('an interrupt aborts the running turn by its id, and does nothing between turns', async ($, on) => {
+  mock.clock(on)
+  const aborts: unknown[] = []
+  let release: () => void = () => {}
+  const turnStarted = new Promise<void>((resolve) => (release = resolve))
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.287' } }))
+  on('process.run', () => ({ value: { exitCode: 0, stdout: '', stderr: '' } }))
+  on('process.spawn', async function* () {
+    yield { stream: 'stdout' as const, text: 'connected\n' }
+    yield { stream: 'stdout' as const, text: '{"interrupt":true}\n' }
+    await turnStarted
+    yield { stream: 'stdout' as const, text: '{"interrupt":true}\n' }
+    await new Promise(() => {})
+  })
+  on('turn.start', ($, e) => ({ turnId: e.turnId }))
+  on('turn.abort', ($, e) => {
+    aborts.push(e.turnId)
+    return {}
+  })
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await settle()
+  expect(aborts).toEqual([])
+  await $.turn.start({ text: 'go', turnId: 'turn-7' })
+  release()
+  await settle()
+  expect(aborts).toEqual(['turn-7'])
 })

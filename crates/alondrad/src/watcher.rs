@@ -168,7 +168,7 @@ fn mark_attaches(hub: &Hub) {
         v.nodes
             .values()
             .filter_map(|n| {
-                let now = attached.contains(n.short_id.as_str()) && !hub.is_own_attach(&n.short_id);
+                let now = attached.contains(n.short_id.as_str());
                 (now != n.attached).then(|| Event::AttachChanged { session_id: n.session_id.clone(), attached: now })
             })
             .collect()

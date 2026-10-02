@@ -37,6 +37,7 @@ mod machine;
 mod managed_orchestrator;
 mod markdown;
 mod mods_check;
+mod node_push;
 mod node_reports;
 mod notifier;
 mod options;
@@ -396,6 +397,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         state.attach_service(service.clone());
     }
     let domain = state.domain();
+    domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
     let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();
@@ -430,11 +432,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.home.clone(),
         config.wake,
     ));
-    let transport = tokio::spawn(domain_transport::run(
-        hooks,
-        domain.clone(),
-        config.home.clone(),
-    ));
+    let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
     tokio::spawn(watcher::run_live(domain.clone(), watcher::claude_home()));
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
         Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {

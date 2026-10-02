@@ -44,7 +44,6 @@ pub struct Hub {
     shown: Mutex<(u64, u64)>,
     holds: Mutex<HashMap<u64, oneshot::Sender<(Answer, u64)>>>,
     unclaimed: Mutex<Unclaimed>,
-    own_attaches: Mutex<HashSet<String>>,
     closing: Mutex<HashMap<String, usize>>,
     activity: Mutex<HashMap<String, i64>>,
     pub options: Mutex<Option<alondra_core::options::OptionsFile>>,
@@ -128,7 +127,6 @@ impl Hub {
             shown: Mutex::new((shown, 0)),
             holds: Mutex::new(HashMap::new()),
             unclaimed: Mutex::new(Unclaimed::default()),
-            own_attaches: Mutex::new(HashSet::new()),
             closing: Mutex::new(HashMap::new()),
             activity: Mutex::new(HashMap::new()),
             options: Mutex::new(None),
@@ -314,13 +312,6 @@ impl Hub {
         Ok(self.append_with(|_| Some(event))?.map(|(s, _)| s).unwrap_or(0))
     }
 
-    /// Marks that Alondra itself is attached to a node (to type into it or press Esc), so that
-    /// attach is not taken for the user watching.
-    pub fn own_attach(&self, short: &str) -> OwnAttach<'_> {
-        self.own_attaches.lock().expect("attaches lock poisoned").insert(short.to_string());
-        OwnAttach { hub: self, short: short.to_string() }
-    }
-
     /// The user did something in a client.
     pub fn touch(&self, client: &str) {
         self.activity.lock().expect("activity lock poisoned").insert(client.to_string(), now_millis());
@@ -329,10 +320,6 @@ impl Hub {
     /// When the user last did something in each client.
     pub fn activity(&self) -> HashMap<String, i64> {
         self.activity.lock().expect("activity lock poisoned").clone()
-    }
-
-    pub fn is_own_attach(&self, short: &str) -> bool {
-        self.own_attaches.lock().expect("attaches lock poisoned").contains(short)
     }
 
     /// Marks that Alondra is closing a node, whose process `claude rm` stops on the way: that
@@ -476,17 +463,6 @@ fn gauges_digest(m: &Machine, usage: Option<&alondra_core::usage::Usage>) -> u64
         (percent(u.week_percent), u.five_hour_percent.map(percent), u.today_spent.map(percent), u.over_pace).hash(&mut h);
     }
     h.finish()
-}
-
-pub struct OwnAttach<'a> {
-    hub: &'a Hub,
-    short: String,
-}
-
-impl Drop for OwnAttach<'_> {
-    fn drop(&mut self) {
-        self.hub.own_attaches.lock().expect("attaches lock poisoned").remove(&self.short);
-    }
 }
 
 pub struct Closing<'a> {

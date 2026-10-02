@@ -1,7 +1,9 @@
-//! The two commands the node mod runs: `event` hands alondrad one report of its session, and
-//! `connect` holds the session's connection to alondrad open for as long as both live. The open
-//! connection is what tells alondrad the node is reachable; this process sleeps in `read` and
-//! copies whatever alondrad writes down it to its standard output.
+//! The three commands the node mod runs: `event` hands alondrad one report of its session,
+//! `connect` holds the session's connection to alondrad open for as long as both live, and `ack`
+//! tells alondrad which of the messages it wrote down that connection the session has taken. The
+//! open connection is what tells alondrad the node is reachable; `connect` sleeps in `read` and
+//! copies whatever alondrad writes down it, one JSON line per message or interrupt, to its
+//! standard output.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
@@ -20,6 +22,8 @@ pub enum Cmd {
     Event,
     /// Opens the session's connection to alondrad and holds it until either side ends
     Connect,
+    /// Tells alondrad the session took these message ids; the session id is on standard input
+    Ack { ids: Vec<String> },
 }
 
 pub fn run(command: Cmd) -> Result<()> {
@@ -27,6 +31,11 @@ pub fn run(command: Cmd) -> Result<()> {
     let socket = crate::client::config().home.join("hooks.sock");
     match command {
         Cmd::Event => event(&socket, input),
+        Cmd::Ack { ids } => {
+            let mut frame = input;
+            frame["ids"] = json!(ids);
+            event_frame(&socket, json!({"node_ack": frame}))
+        }
         Cmd::Connect => {
             let mut stream = open(&socket, json!({"node_connect": input}))?;
             println!("connected");
@@ -48,7 +57,11 @@ fn stdin_json() -> Result<Value> {
 }
 
 fn event(socket: &Path, report: Value) -> Result<()> {
-    let mut stream = open(socket, json!({"node_event": report}))?;
+    event_frame(socket, json!({"node_event": report}))
+}
+
+fn event_frame(socket: &Path, frame: Value) -> Result<()> {
+    let mut stream = open(socket, frame)?;
     let mut rest = Vec::new();
     stream.read_to_end(&mut rest)?;
     Ok(())

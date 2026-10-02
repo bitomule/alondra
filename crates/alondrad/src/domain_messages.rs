@@ -1,17 +1,17 @@
-//! A message from the user to an Agent, typed straight into its Claude session the way the
-//! legacy `send` did: `claude attach` opens the background session, which also wakes one that
-//! was stopped. Nothing is recorded in the domain: no Interaction, no outbox row. Only marking
-//! an interaction read, when the user asks for it, is a domain command.
+//! A message from the user to an Agent, written down the connection its node mod holds open and
+//! submitted to its Claude session by the mod. Nothing is recorded in the domain: no
+//! Interaction, no outbox row. Only marking an interaction read, when the user asks for it, is a
+//! domain command.
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_transport::Terminal;
-use crate::wake::WriteFailure;
 use alondra_core::delivery::State;
 use alondra_core::domain_v2::{Actor, AgentId, AttachmentRef, Command, CommandEnvelope, DomainError, InteractionId, PrId, TaskId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::Arc;
 use std::time::Duration;
+
+/// How long a message waits for its acknowledgement before the answer says it is still on its way.
+const ACK_WAIT: Duration = Duration::from_millis(if cfg!(test) { 200 } else { 3000 });
 
 #[derive(Deserialize, Clone, Copy, Default, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
@@ -40,36 +40,6 @@ pub(crate) struct MessageBody {
     task_id: Option<TaskId>,
 }
 
-/// A Claude session as `claude agents --json --all` lists it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct Session {
-    pub short: String,
-    pub interactive: bool,
-}
-
-pub(crate) trait Sessions: Sync + Send {
-    fn find(&self, session_id: &str) -> impl Future<Output = Option<Session>> + Send;
-}
-
-pub(crate) struct ClaudeAgents;
-
-impl Sessions for ClaudeAgents {
-    async fn find(&self, session_id: &str) -> Option<Session> {
-        let out = tokio::time::timeout(Duration::from_secs(20), tokio::process::Command::new("claude")
-            .args(["agents", "--json", "--all"]).kill_on_drop(true).stdin(std::process::Stdio::null()).output())
-            .await.ok()?.ok()?;
-        session_in(&String::from_utf8_lossy(&out.stdout), session_id)
-    }
-}
-
-pub(crate) fn session_in(json: &str, session_id: &str) -> Option<Session> {
-    let Ok(Value::Array(list)) = serde_json::from_str::<Value>(json) else { return None };
-    list.iter().find(|s| s.get("sessionId").and_then(Value::as_str) == Some(session_id)).and_then(|s| Some(Session {
-        short: s.get("id")?.as_str()?.to_string(),
-        interactive: s.get("kind").and_then(Value::as_str) == Some("interactive"),
-    }))
-}
-
 fn refused(code: &str, message: impl Into<String>) -> DomainError {
     DomainError::new(code, message)
 }
@@ -96,11 +66,13 @@ fn wording(body: &MessageBody, task_title: Option<(&TaskId, &str)>, user: &str, 
     Ok(format!("{task}{lead}{}{}", body.text.trim(), crate::uploads::delivery_note(user, &files)))
 }
 
-/// Types the message into the Agent's session and answers how far it got: `handed` once it
-/// was submitted, `uncertain` when the write may have landed. A session that could not be
-/// reached is refused, so the user can send again.
+/// Writes the message down the Agent's connection and answers how far it got: `handed` once the
+/// session took it, `dispatching` while it is queued behind a turn in progress (the daemon keeps
+/// writing it until the session takes it). An Agent with no connection is refused, so the user
+/// can send again. `as_user` is for the user's own words; Alondra's notices go without it, so
+/// the model sees who sent them.
 pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, agent: &AgentId, body: MessageBody,
-    sessions: &impl Sessions, terminal: &Arc<impl Terminal>) -> Result<Value, DomainError> {
+    as_user: bool) -> Result<Value, DomainError> {
     if body.text.trim().is_empty() {
         return Err(refused("invalid_input", "message text is empty"));
     }
@@ -119,32 +91,18 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         None => None,
     };
     let text = wording(&body, task, name, home)?;
-    let short = match sessions.find(&agent.0).await {
-        Some(Session { interactive: true, .. }) => {
-            domain.held.lock().expect("held messages poisoned").entry(agent.clone()).or_default().push(text);
-            let name = &state.agents[agent].name;
-            let answer = json!({"interactive": true, "note": format!("{name} is an interactive terminal session, not a background job: \
-                Alondra cannot type into it, so the message reaches it when its current turn ends. If it is sitting idle at its \
-                prompt, it arrives after the next thing typed in its terminal.")});
-            return Ok(read_after(domain, user, &body, answer));
-        }
-        Some(session) => session.short,
-        None => crate::domain_transport::terminals(&state).remove(agent)
-            .ok_or_else(|| refused("session_unreachable", "no background session is known for this agent"))?,
-    };
-    let terminal = terminal.clone();
-    let delivered = match tokio::task::spawn_blocking(move || terminal.write(&short, &text)).await {
+    let acked = domain.live.pushes.message(&agent.0, &text, as_user)
+        .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
+    let delivered = match tokio::time::timeout(ACK_WAIT, acked).await {
         Ok(Ok(())) => State::Handed,
-        Ok(Err(WriteFailure::NotStarted)) => return Err(refused("session_unreachable", "the agent's session did not open; nothing was typed")),
-        Ok(Err(WriteFailure::Uncertain)) | Err(_) => State::Uncertain,
+        _ => State::Dispatching,
     };
     Ok(read_after(domain, user, &body, json!({"delivery_state": delivered})))
 }
 
-/// Asks the Agent that owns an open pull request to resolve its conflicts with its base, typed
-/// into its session like any other message about its Task.
-pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, pr_id: &PrId,
-    sessions: &impl Sessions, terminal: &Arc<impl Terminal>) -> Result<Value, DomainError> {
+/// Asks the Agent that owns an open pull request to resolve its conflicts with its base, sent
+/// to its session like any other message about its Task.
+pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, pr_id: &PrId) -> Result<Value, DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let pr = state.pull_requests.get(pr_id).ok_or_else(|| refused("not_found", "PR does not exist"))?;
     if pr.state != alondra_core::domain_v2::PrState::Open {
@@ -155,7 +113,7 @@ pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user:
     let text = conflicts_text(name, pr);
     let body = MessageBody { text, attachments: vec![], kind: Kind::Message, mark_read: false,
         interaction_id: None, pr_id: None, task_id: Some(pr.task_id.clone()) };
-    deliver(domain, home, user, name, &agent, body, sessions, terminal).await
+    deliver(domain, home, user, name, &agent, body, false).await
 }
 
 pub(crate) fn pr_url(pr: &alondra_core::domain_v2::PullRequest) -> String {
@@ -177,7 +135,7 @@ pub(crate) async fn relayed(domain: &DomainRuntime, home: &Path, sender: &str, a
         return json!({"status": 422, "body": refused("invalid_input", "invalid message")});
     };
     let user = Actor::User { user_id: format!("device:{sender}") };
-    match deliver(domain, home, &user, &user_name(), &agent, body, &ClaudeAgents, &Arc::new(crate::domain_transport::Tmux)).await {
+    match deliver(domain, home, &user, &user_name(), &agent, body, true).await {
         Ok(answer) => json!({"status": 200, "body": answer}),
         Err(error) => json!({"status": crate::domain_api::status_for(&error).as_u16(), "body": error}),
     }
@@ -217,7 +175,8 @@ fn mark_read(domain: &DomainRuntime, user: &Actor, interaction_id: InteractionId
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use crate::node_push::testing::Node;
+    use std::sync::Arc;
 
     struct Fixture(std::path::PathBuf);
     impl Drop for Fixture {
@@ -226,33 +185,14 @@ mod tests {
         }
     }
 
-    struct Listed(Option<Session>);
-    impl Sessions for Listed {
-        async fn find(&self, _: &str) -> Option<Session> {
-            self.0.clone()
-        }
-    }
-
-    #[derive(Default)]
-    struct Typed(Mutex<Vec<(String, String)>>, Mutex<Option<WriteFailure>>);
-    impl Terminal for Typed {
-        fn write(&self, short: &str, text: &str) -> Result<(), WriteFailure> {
-            if let Some(failure) = self.1.lock().unwrap().take() {
-                return Err(failure);
-            }
-            self.0.lock().unwrap().push((short.into(), text.into()));
-            Ok(())
-        }
-    }
-
     fn user() -> Actor {
         Actor::User { user_id: "device:d".into() }
     }
 
-    fn world() -> (Fixture, DomainRuntime) {
+    fn world() -> (Fixture, Arc<DomainRuntime>) {
         let home = std::env::temp_dir().join(format!("alondra-v2-messages-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let domain = DomainRuntime::open(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
             let envelope = CommandEnvelope { protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch,
@@ -271,12 +211,8 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
-    fn session(short: &str, interactive: bool) -> Listed {
-        Listed(Some(Session { short: short.into(), interactive }))
-    }
-
     #[tokio::test]
-    async fn conflicts_are_typed_to_the_agent_that_owns_an_open_pr_and_to_nobody_else() {
+    async fn conflicts_go_to_the_agent_that_owns_an_open_pr_and_to_nobody_else() {
         let (fixture, domain) = world();
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
@@ -288,88 +224,78 @@ mod tests {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7,
             head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
             allowed_methods: vec![alondra_core::domain_v2::MergeMethod::Squash] });
-        let terminal = Arc::new(Typed::default());
-        let answer = resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into(), &session("7c5dcf5d", false), &terminal).await.unwrap();
+        let node = Node::connect(&domain, "agent-a");
+        let answer = resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
-        let typed = terminal.0.lock().unwrap().clone();
-        assert_eq!(typed.len(), 1);
-        assert!(typed[0].1.starts_with("[Task t “Build it”] Ana asks you to resolve the conflicts of https://github.com/me/app/pull/7 with main: "), "{}", typed[0].1);
-        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"none".into(), &session("x", false), &terminal).await.unwrap_err().code, "not_found");
+        let sent = node.texts();
+        assert_eq!(sent.len(), 1);
+        assert!(sent[0].starts_with("[Task t “Build it”] Ana asks you to resolve the conflicts of https://github.com/me/app/pull/7 with main: "), "{}", sent[0]);
+        assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "a notice from Alondra is not the user's words");
+        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"none".into()).await.unwrap_err().code, "not_found");
         run(Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: "0123456789abcdef0123456789abcdef01234567".into(),
             base: "main".into(), state: alondra_core::domain_v2::PrState::Closed, merged_head: None });
-        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into(), &session("x", false), &terminal).await.unwrap_err().code, "pr_not_open");
-        assert_eq!(terminal.0.lock().unwrap().len(), 1, "a refusal types nothing");
+        assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap_err().code, "pr_not_open");
+        assert_eq!(node.texts().len(), 1, "a refusal sends nothing");
     }
 
     #[tokio::test]
-    async fn the_text_is_typed_into_the_agents_session_and_nothing_is_recorded() {
+    async fn the_text_is_written_down_the_agents_connection_and_nothing_is_recorded() {
         let (fixture, domain) = world();
-        let terminal = Arc::new(Typed::default());
+        let node = Node::connect(&domain, "agent-a");
         let before = domain.state().unwrap();
         let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Use the new API", "task_id": "t"})), &session("7c5dcf5d", false), &terminal).await.unwrap();
+            body(json!({"text": "Use the new API", "task_id": "t"})), true).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
-        assert_eq!(*terminal.0.lock().unwrap(), [("7c5dcf5d".to_string(), "[Task t “Build it”] Use the new API".to_string())]);
+        assert_eq!(node.texts(), ["[Task t “Build it”] Use the new API"]);
+        assert_eq!(node.lines.lock().unwrap()[0]["as_user"], true);
         assert_eq!(domain.state().unwrap(), before, "a message records nothing in the domain");
+    }
+
+    #[tokio::test]
+    async fn a_message_the_session_has_not_taken_yet_is_dispatching_and_is_resent_on_the_next_connection() {
+        let (fixture, domain) = world();
+        let node = Node::connect(&domain, "agent-a");
+        node.silent.store(true, std::sync::atomic::Ordering::Relaxed);
+        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap();
+        assert_eq!(answer, json!({"delivery_state": "dispatching"}));
+        domain.live.pushes.detach("agent-a", 1);
+        let again = Node::connect(&domain, "agent-a");
+        tokio::task::yield_now().await;
+        assert_eq!(again.texts(), ["hi"], "unacknowledged, so written again");
     }
 
     #[tokio::test]
     async fn a_reply_is_worded_for_its_interaction() {
         let (fixture, domain) = world();
-        let terminal = Arc::new(Typed::default());
+        let node = Node::connect(&domain, "agent-a");
         deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Yes", "kind": "reply", "interaction_id": "q-1"})), &session("s", false), &terminal).await.unwrap();
-        assert_eq!(terminal.0.lock().unwrap()[0].1, "[Reply to q-1] Yes");
+            body(json!({"text": "Yes", "kind": "reply", "interaction_id": "q-1"})), true).await.unwrap();
+        assert_eq!(node.texts()[0], "[Reply to q-1] Yes");
         let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Yes", "kind": "pr_changes"})), &session("s", false), &terminal).await.unwrap_err();
+            body(json!({"text": "Yes", "kind": "pr_changes"})), true).await.unwrap_err();
         assert_eq!(refused.code, "invalid_input");
     }
 
     #[tokio::test]
-    async fn refusals_type_nothing() {
+    async fn refusals_send_nothing() {
         let (fixture, domain) = world();
-        let terminal = Arc::new(Typed::default());
+        let node = Node::connect(&domain, "agent-a");
         let cases = [
-            ("agent-z", json!({"text": "hi"}), session("s", false), "not_found"),
-            ("agent-a", json!({"text": "  "}), session("s", false), "invalid_input"),
-            ("agent-b", json!({"text": "hi", "task_id": "t"}), session("s", false), "not_assigned"),
-            ("agent-a", json!({"text": "hi", "task_id": "missing"}), session("s", false), "not_found"),
-            ("agent-a", json!({"text": "hi"}), Listed(None), "session_unreachable"),
+            ("agent-z", json!({"text": "hi"}), "not_found"),
+            ("agent-a", json!({"text": "  "}), "invalid_input"),
+            ("agent-b", json!({"text": "hi", "task_id": "t"}), "not_assigned"),
+            ("agent-a", json!({"text": "hi", "task_id": "missing"}), "not_found"),
+            ("agent-b", json!({"text": "hi"}), "session_unreachable"),
         ];
-        for (agent, request, sessions, code) in cases {
-            let error = deliver(&domain, &fixture.0, &user(), "Ana", &agent.into(), body(request.clone()), &sessions, &terminal).await.unwrap_err();
+        for (agent, request, code) in cases {
+            let error = deliver(&domain, &fixture.0, &user(), "Ana", &agent.into(), body(request.clone()), true).await.unwrap_err();
             assert_eq!(error.code, code, "{agent} {request}");
         }
-        assert!(terminal.0.lock().unwrap().is_empty());
+        assert!(node.texts().is_empty());
     }
 
     #[tokio::test]
-    async fn a_session_in_the_users_terminal_holds_the_message_for_its_next_stop_hook() {
-        let (fixture, domain) = world();
-        let terminal = Arc::new(Typed::default());
-        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Use the new API", "task_id": "t"})), &session("s", true), &terminal).await.unwrap();
-        assert_eq!(answer["interactive"], true);
-        assert!(answer["note"].as_str().unwrap().starts_with("A is an interactive terminal session"));
-        assert!(terminal.0.lock().unwrap().is_empty(), "nothing is typed into the user's terminal");
-        assert_eq!(take_held(&domain, &"agent-a".into()), ["[Task t “Build it”] Use the new API"]);
-        assert!(take_held(&domain, &"agent-a".into()).is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_session_that_did_not_open_is_refused_and_a_partial_write_is_uncertain() {
-        let (fixture, domain) = world();
-        let terminal = Arc::new(Typed::default());
-        *terminal.1.lock().unwrap() = Some(WriteFailure::NotStarted);
-        let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), &session("s", false), &terminal).await.unwrap_err();
-        assert_eq!(error.code, "session_unreachable");
-        *terminal.1.lock().unwrap() = Some(WriteFailure::Uncertain);
-        let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), &session("s", false), &terminal).await.unwrap();
-        assert_eq!(answer["delivery_state"], "uncertain");
-    }
-
-    #[tokio::test]
-    async fn a_reply_that_reads_the_information_marks_it_read_after_typing() {
+    async fn a_reply_that_reads_the_information_marks_it_read_after_sending() {
         let (fixture, domain) = world();
         let state = domain.state().unwrap();
         domain.execute(&Actor::Agent { agent_id: "agent-a".into() }, &CommandEnvelope {
@@ -377,9 +303,9 @@ mod tests {
             expected_revision: state.revision, command: Command::PublishInformation { attachments: vec![], interaction_id: "info-1".into(),
                 scope: alondra_core::domain_v2::Scope::Task { task_id: "t".into() }, recipient: alondra_core::domain_v2::Recipient::User, body: "Done".into() },
         }, None, || Ok(())).unwrap();
-        let terminal = Arc::new(Typed::default());
+        let _node = Node::connect(&domain, "agent-a");
         let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Thanks", "kind": "reply", "interaction_id": "info-1", "mark_read": true})), &session("s", false), &terminal).await.unwrap();
+            body(json!({"text": "Thanks", "kind": "reply", "interaction_id": "info-1", "mark_read": true})), true).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         let read = &domain.state().unwrap().interactions[&InteractionId::from("info-1")].payload;
         assert!(matches!(read, alondra_core::domain_v2::InteractionPayload::Information { read_by } if !read_by.is_empty()), "{read:?}");
@@ -393,17 +319,17 @@ mod tests {
         std::fs::write(fixture.0.join("files/shot.png"), b"png").unwrap();
         let digest: String = sha2::Sha256::digest(b"png").iter().map(|b| format!("{b:02x}")).collect();
         let attachment = json!({"id": "att-1", "name": "shot.png", "content_digest": digest, "content_reference": "files/shot.png", "bytes": 3});
-        let terminal = Arc::new(Typed::default());
+        let node = Node::connect(&domain, "agent-a");
         deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Look", "attachments": [attachment]})), &session("s", false), &terminal).await.unwrap();
-        let typed = terminal.0.lock().unwrap()[0].1.clone();
-        assert!(typed.starts_with("Look\n\nAttached files:"), "{typed}");
-        assert!(typed.contains(&fixture.0.join("files/shot.png").display().to_string()), "{typed}");
+            body(json!({"text": "Look", "attachments": [attachment]})), true).await.unwrap();
+        let sent = node.texts()[0].clone();
+        assert!(sent.starts_with("Look\n\nAttached files:"), "{sent}");
+        assert!(sent.contains(&fixture.0.join("files/shot.png").display().to_string()), "{sent}");
         let forged = json!({"id": "att-1", "name": "shot.png", "content_digest": "0".repeat(64), "content_reference": "files/shot.png", "bytes": 3});
         let error = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
-            body(json!({"text": "Look", "attachments": [forged]})), &session("s", false), &terminal).await.unwrap_err();
+            body(json!({"text": "Look", "attachments": [forged]})), true).await.unwrap_err();
         assert_eq!(error.code, "invalid_input");
-        assert_eq!(terminal.0.lock().unwrap().len(), 1);
+        assert_eq!(node.texts().len(), 1);
     }
 
     #[tokio::test]
@@ -422,14 +348,5 @@ mod tests {
         assert_eq!((parsed.kind, parsed.pr_id), (Kind::PrChanges, Some("pr-1".into())));
         assert_eq!(parsed.attachments.len(), 1);
         assert_eq!(contract["message"]["response"], json!({"delivery_state": "handed"}));
-    }
-
-    #[test]
-    fn the_short_id_comes_from_claude_agents() {
-        let listed = r#"[{"id":"7c5dcf5d","kind":"background","sessionId":"7c5dcf5d-aaaa"},{"id":"11112222","kind":"interactive","sessionId":"1111-bbbb"}]"#;
-        assert_eq!(session_in(listed, "7c5dcf5d-aaaa"), Some(Session { short: "7c5dcf5d".into(), interactive: false }));
-        assert_eq!(session_in(listed, "1111-bbbb"), Some(Session { short: "11112222".into(), interactive: true }));
-        assert_eq!(session_in(listed, "other"), None);
-        assert_eq!(session_in("not json", "7c5dcf5d-aaaa"), None);
     }
 }
