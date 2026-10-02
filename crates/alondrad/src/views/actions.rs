@@ -255,17 +255,7 @@ async fn execute_external(
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
         Verb::NewRequest => "Solicitud enviada", _ => stamp,
     }} else { stamp };
-    let to_applied = |status: u16, body: Value| -> Value {
-        if (200..300).contains(&status) {
-            json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":state.revision,"detail":body})
-        } else if status == 404 || status == 409 {
-            no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This action is no longer available"))
-        } else {
-            let message = body.get("message").and_then(Value::as_str).unwrap_or("Action was rejected");
-            let code = body.get("code").and_then(Value::as_str).unwrap_or("action_rejected");
-            json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":rejection_message(lang, code, message),"code":code})
-        }
-    };
+    let to_applied = |status: u16, body: Value| -> Value { applied(action.verb, lang, stamp, state.revision, status, body) };
     match action.verb {
         Verb::Reply => {
             let interaction_id = InteractionId(action.subject.clone());
@@ -1043,6 +1033,29 @@ fn rejected_field(lang: Lang, field: &str, message: &str) -> Value {
     json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","field":field,"message":localize(lang, message)})
 }
 
+/// What a local reply's status and body mean to the client. A message the node has taken says so,
+/// one waiting on a busy node says that, and a node that is not connected is refused as such,
+/// not as an action that is no longer available.
+fn applied(verb: Verb, lang: Lang, stamp: &str, revision: u64, status: u16, body: Value) -> Value {
+    let code = body.get("code").and_then(Value::as_str);
+    if (200..300).contains(&status) {
+        let stamp = match (verb, body.get("delivery_state").and_then(Value::as_str), lang == Lang::Es) {
+            (Verb::Msg, Some("handed"), false) => "Message delivered",
+            (Verb::Msg, Some("handed"), true) => "Mensaje entregado",
+            (Verb::Msg, Some("dispatching"), false) => "Message queued: the node is busy and takes it when its turn ends",
+            (Verb::Msg, Some("dispatching"), true) => "Mensaje en cola: el nodo está ocupado y lo recibe cuando termine su turno",
+            _ => stamp,
+        };
+        json!({"protocol":VIEWS_PROTOCOL,"outcome":"applied","stamp":stamp,"revision":revision,"detail":body})
+    } else if status == 404 || (status == 409 && code != Some("session_unreachable")) {
+        no_longer_available(lang, body.get("message").and_then(Value::as_str).unwrap_or("This action is no longer available"))
+    } else {
+        let message = body.get("message").and_then(Value::as_str).unwrap_or("Action was rejected");
+        let code = code.unwrap_or("action_rejected");
+        json!({"protocol":VIEWS_PROTOCOL,"outcome":"rejected","message":rejection_message(lang, code, message),"code":code})
+    }
+}
+
 fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
     if lang != Lang::Es { return english.to_owned(); }
     match code {
@@ -1067,7 +1080,7 @@ fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
         "task_not_cancelled" => "La tarea todavía no está cancelada",
         "interactive_session" => "La sesión del nodo requiere interacción manual",
         "launch_failed" => "No se pudo iniciar la sesión del nodo",
-        "session_unreachable" => "No se puede acceder a la sesión del nodo",
+        "session_unreachable" => "El nodo no está conectado a Alondra: su sesión está parada o su mod de Claude Code no se está ejecutando. No se ha enviado nada",
         "unavailable" => "Esta acción no está disponible ahora mismo",
         "task_already_has_pr" => "Esta tarea ya tiene una PR asociada",
         "pr_owned_by_other_task" => "Esta PR ya pertenece a otra tarea",
@@ -1305,12 +1318,30 @@ mod tests {
             ("incompatible_protocol", "Actualiza Alondra para completar esta acción"),
             ("interactive_session", "La sesión del nodo requiere interacción manual"),
             ("launch_failed", "No se pudo iniciar la sesión del nodo"),
-            ("session_unreachable", "No se puede acceder a la sesión del nodo"),
+            ("session_unreachable", "El nodo no está conectado a Alondra: su sesión está parada o su mod de Claude Code no se está ejecutando. No se ha enviado nada"),
             ("unavailable", "Esta acción no está disponible ahora mismo"),
         ] {
             assert_eq!(rejection_message(Lang::Es, code, "domain detail"), expected, "{code}");
         }
         assert_eq!(rejection_message(Lang::Es, "revision_conflict", "legacy"), "No se pudo completar la acción");
+    }
+
+    #[test]
+    fn a_message_says_whether_the_node_took_it_is_busy_or_is_not_connected() {
+        let reply = |lang, status, body: Value| applied(Verb::Msg, lang, "Message sent", 7, status, body);
+        let handed = reply(Lang::En, 200, json!({"delivery_state": "handed"}));
+        assert_eq!((handed["outcome"].as_str(), handed["stamp"].as_str()), (Some("applied"), Some("Message delivered")));
+        assert_eq!(reply(Lang::Es, 200, json!({"delivery_state": "handed"}))["stamp"], "Mensaje entregado");
+        let busy = reply(Lang::En, 200, json!({"delivery_state": "dispatching"}));
+        assert_eq!(busy["stamp"], "Message queued: the node is busy and takes it when its turn ends");
+        assert!(reply(Lang::Es, 200, json!({"delivery_state": "dispatching"}))["stamp"].as_str().unwrap().starts_with("Mensaje en cola"));
+        let refused = reply(Lang::En, 409, json!({"code": "session_unreachable", "message": "the node is not connected to Alondra"}));
+        assert_eq!((refused["outcome"].as_str(), refused["code"].as_str(), refused["message"].as_str()),
+            (Some("rejected"), Some("session_unreachable"), Some("the node is not connected to Alondra")));
+        let es = reply(Lang::Es, 409, json!({"code": "session_unreachable", "message": "x"}));
+        assert!(es["message"].as_str().unwrap().starts_with("El nodo no está conectado a Alondra"), "{es}");
+        assert_eq!(reply(Lang::En, 409, json!({"code": "conflict", "message": "stale"}))["outcome"], "no_longer_available");
+        assert_eq!(applied(Verb::Reply, Lang::En, "Reply sent", 7, 200, json!({"delivery_state": "handed"}))["stamp"], "Reply sent");
     }
 
     #[test]

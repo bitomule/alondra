@@ -92,7 +92,7 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
     };
     let text = wording(&body, task, name, home)?;
     let acked = domain.live.pushes.message(&agent.0, &text, as_user)
-        .map_err(|_| refused("session_unreachable", "the agent's session is not connected to Alondra: its Claude Code mod is not running"))?;
+        .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     let delivered = match tokio::time::timeout(ACK_WAIT, acked).await {
         Ok(Ok(())) => State::Handed,
         _ => State::Dispatching,

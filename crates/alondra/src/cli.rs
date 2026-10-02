@@ -232,6 +232,9 @@ pub fn send(name: &str, text: &str) -> Result<()> {
     };
     let action = view_action(&view, |a| a.id.starts_with("msg:" )).context("Message action unavailable")?;
     let answer = submit(&client, &view, &action, None, serde_json::json!({"text":text}))?;
+    anyhow::ensure!(answer.get("outcome").and_then(Value::as_str) == Some("applied"), "{}",
+        answer.get("message").and_then(Value::as_str).map(str::to_owned)
+            .unwrap_or_else(|| trf!("The message was not sent to {name}", "El mensaje no se envió a {name}")));
     println!("{}", sent_notice(&answer, name));
     Ok(())
 }

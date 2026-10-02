@@ -221,7 +221,7 @@ pub(crate) fn interrupt(domain: &DomainRuntime, body: NodeBody) -> Result<Value,
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
     domain.live.pushes.interrupt(&agent_id.0)
-        .map_err(|_| DomainError::new("session_unreachable", "the agent's session is not connected to Alondra: its Claude Code mod is not running"))?;
+        .map_err(|_| DomainError::new("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     Ok(json!({"interrupted": agent_id.0}))
 }
 
