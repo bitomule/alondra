@@ -998,3 +998,55 @@ async fn a_node_the_daemon_never_heard_a_hook_from_shows_once_its_mod_connects()
     let fleet = view_json(&fixture, "fleet", "en").await;
     assert_eq!(badges(node_row(&fleet, "agent-b"))[0].0, "Working", "a restarted daemon learns the node is mid-turn from its reconnection");
 }
+
+#[tokio::test]
+async fn the_background_badges_come_from_the_mods_subagent_shell_and_end_of_turn_reports() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    let mods = &fixture.domain.live.mods;
+    let now = alondra_core::now_millis();
+    let report = |report: Value, at: i64| {
+        let mut report = report;
+        report["session_id"] = json!("agent-a");
+        mods.apply(serde_json::from_value(report).unwrap(), at);
+    };
+    let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
+    mods.connect(hello, now);
+    let badge = async |fixture: &Fixture| {
+        let fleet = view_json(fixture, "fleet", "en").await;
+        badges(node_row(&fleet, "agent-a")).into_iter().map(|(text, _)| text).collect::<Vec<_>>()
+    };
+    assert!(!badge(&fixture).await.iter().any(|text| text.contains("subagents") || text.contains("shells")));
+
+    report(json!({"event": "subagent.start", "id": "sa-1", "description": "Fix the parser"}), now);
+    report(json!({"event": "subagent.start", "id": "sa-2", "description": "Review it"}), now);
+    report(json!({"event": "shell.start", "id": "u1", "command": "until false; do sleep 5; done"}), now);
+    assert!(badge(&fixture).await.contains(&"2 subagents · 1 shells".to_owned()), "the same text as when the job state listed them");
+    assert_eq!(badge(&fixture).await[0], "Working", "a node with background work and no turn still works");
+
+    report(json!({"event": "subagent.end", "id": "sa-1"}), now);
+    assert!(badge(&fixture).await.contains(&"1 subagents · 1 shells".to_owned()));
+
+    report(json!({"event": "background", "tasks": [{"id": "b1", "type": "monitor", "description": "tail -f log"}]}), now);
+    assert!(badge(&fixture).await.contains(&"1 tasks".to_owned()), "the list at the end of a turn replaces what was reported before");
+
+    report(json!({"event": "background", "tasks": []}), now);
+    assert!(!badge(&fixture).await.iter().any(|text| text.contains("tasks")));
+}
+
+#[tokio::test]
+async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stops_counting_as_work() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let mods = &fixture.domain.live.mods;
+    let now = alondra_core::now_millis();
+    let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287"})).unwrap();
+    mods.connect(hello, now);
+    mods.apply(serde_json::from_value(json!({"session_id": "agent-b", "event": "shell.start", "id": "u1", "command": "sleep 99999"})).unwrap(),
+        now - 31 * 60 * 1000);
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    let shown = badges(node_row(&fleet, "agent-b"));
+    assert!(shown.contains(&("1 shells · hung?".into(), "warning".into())), "{shown:?}");
+    assert_ne!(shown[0].0, "Working", "a shell that has run this long with nothing else going on is not work");
+}

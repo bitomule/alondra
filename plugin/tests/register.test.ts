@@ -173,12 +173,70 @@ test('turns, tool calls and measurements of the main loop are reported in order'
     { event: 'turn.start', turn_id: 'turn-1' },
     { event: 'tool.start', tool: 'Bash', tool_use_id: 'tool-1', input: { command: 'cargo test' } },
     { event: 'tool.end', tool_use_id: 'tool-1' },
+    { event: 'subagent.end', id: 'sub-1' },
     { event: 'turn.complete', turn_id: 'turn-1', answer: 'Done.', aborted: true },
     {
       event: 'session.measure',
       context: { tokens: 54944, window: 1000000, percent: 5 },
       rate_limits: [{ kind: 'five_hour', percent_used: 10, resets_at: '2026-10-02T16:40:00Z' }],
       cost_usd: 1.25,
+    },
+  ])
+})
+
+test('subagents and background shells are reported when they start, and the list Claude Code gives at the end of a turn replaces them', async ($, on) => {
+  mock.clock(on)
+  const reports: Record<string, unknown>[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.287' } }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    const { session_id, ...report } = JSON.parse(e.init.stdin)
+    expect(session_id).toBe('session-1')
+    reports.push(report)
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('process.spawn', async function* () {
+    await new Promise(() => {})
+  })
+  on('agent.spawn', () => ({ model: 'sonnet', agentId: 'agent-1' }))
+  on('tool.call', () => ({ result: 'ok' }))
+  on('turn.complete', () => ({ text: '' }))
+  on('classic.Stop', () => ({}))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.agent.spawn({
+    tool_use_id: 'spawn-1',
+    prompt: 'Fix it',
+    description: 'Fix the parser',
+    subagentType: 'general-purpose',
+    provider: { plugin: 'engine', tier: 'core' },
+    parentModel: 'opus',
+    background: true,
+    fork: false,
+  })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'shell-1', command: 'until false; do sleep 5; done', run_in_background: true })
+  await $.tool.call({ tool: 'Bash', tool_use_id: 'shell-2', command: 'ls' })
+  await $.turn.complete({ turnId: 'sub-turn', answer: 'Fixed.', durationMs: 1, isAborted: false, reason: 'answer', agentId: 'agent-1', usage: null })
+  await $.classic.Stop({
+    session_id: 'session-1',
+    transcript_path: '/t',
+    cwd: '/work',
+    hook_event_name: 'Stop',
+    stop_hook_active: false,
+    background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Wait', command: 'until false; do sleep 5; done' }],
+  })
+  await settle()
+
+  expect(reports.filter((report) => !String(report.event).startsWith('tool.'))).toEqual([
+    { event: 'session.start', version: '2.1.287', cwd: '/work' },
+    { event: 'subagent.start', id: 'agent-1', description: 'Fix the parser' },
+    { event: 'shell.start', id: 'shell-1', command: 'until false; do sleep 5; done' },
+    { event: 'subagent.end', id: 'agent-1' },
+    {
+      event: 'background',
+      tasks: [{ id: 'b1', type: 'shell', description: 'Wait', command: 'until false; do sleep 5; done' }],
     },
   ])
 })

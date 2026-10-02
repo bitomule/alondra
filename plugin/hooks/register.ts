@@ -225,7 +225,30 @@ export const register: Register = (on) => {
         answer: e.answer.slice(0, ANSWER_LIMIT),
         aborted: e.isAborted,
       })
+    } else {
+      queue($, { event: 'subagent.end', id: e.agentId })
     }
+    return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (started.agentId !== undefined) {
+      queue($, { event: 'subagent.start', id: started.agentId, description: e.description })
+    }
+    return started
+  })
+
+  on('classic.Stop', async ($, e, next) => {
+    queue($, {
+      event: 'background',
+      tasks: (e.background_tasks ?? []).map((task) => ({
+        id: task.id,
+        type: task.type,
+        description: task.description,
+        command: task.command,
+      })),
+    })
     return next(e)
   })
 
@@ -233,7 +256,11 @@ export const register: Register = (on) => {
     if (e.agentId !== undefined) return next(e)
     queue($, { event: 'tool.start', tool: e.tool, tool_use_id: e.tool_use_id, input: summaryInput(e) })
     try {
-      return await next(e)
+      const result = await next(e)
+      if (e.tool === 'Bash' && e.run_in_background === true && !result.deny && !result.isError) {
+        queue($, { event: 'shell.start', id: e.tool_use_id, command: String(e.command) })
+      }
+      return result
     } finally {
       queue($, { event: 'tool.end', tool_use_id: e.tool_use_id })
     }

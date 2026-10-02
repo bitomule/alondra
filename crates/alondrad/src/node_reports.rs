@@ -6,7 +6,7 @@
 //! A session binds to its launch by the key of the settings file the launch gave it
 //! (`ALONDRA_DOMAIN_SETTINGS`), which its mod reports in `session.start`.
 use alondra_core::usage::{RateLimit, Usage};
-use alondra_core::{Millis, ToolInFlight};
+use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
 use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashMap;
@@ -43,6 +43,27 @@ pub(crate) enum Report {
     ToolStart { tool: String, #[serde(default)] tool_use_id: Option<String>, #[serde(default)] input: Value },
     #[serde(rename = "tool.end")]
     ToolEnd { #[serde(default)] tool_use_id: Option<String> },
+    /// Every background task Claude Code lists as in flight at the end of a turn (`classic.Stop`'s
+    /// `background_tasks`): the whole list, so a task that finished is no longer in it.
+    #[serde(rename = "background")]
+    Background { #[serde(default)] tasks: Vec<TaskIn> },
+    #[serde(rename = "subagent.start")]
+    SubagentStart { id: String, #[serde(default)] description: Option<String> },
+    #[serde(rename = "subagent.end")]
+    SubagentEnd { id: String },
+    #[serde(rename = "shell.start")]
+    ShellStart { id: String, command: String },
+}
+
+#[derive(Deserialize, Debug, PartialEq)]
+pub(crate) struct TaskIn {
+    id: String,
+    #[serde(rename = "type", default)]
+    kind: String,
+    #[serde(default)]
+    description: String,
+    #[serde(default)]
+    command: Option<String>,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -111,6 +132,19 @@ pub(crate) struct Reported {
     pub answer: Option<Answer>,
     pub context: Option<ContextReading>,
     pub cost_usd: Option<f64>,
+    /// The subagents and background shells the node has running, by the id Claude Code gives them.
+    pub background: Vec<(String, BackgroundItem)>,
+}
+
+const LABEL_LIMIT: usize = 80;
+
+fn short_label(text: &str) -> String {
+    let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.chars().count() <= LABEL_LIMIT {
+        return flat;
+    }
+    let cut: String = flat.chars().take(LABEL_LIMIT - 1).collect();
+    format!("{}…", cut.trim_end())
 }
 
 /// What a node does, as its mod's events and connection say it.
@@ -131,11 +165,20 @@ impl Reported {
             Activity::Unreachable
         } else if self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name)) {
             Activity::Stalled
-        } else if self.working_since.is_some() || self.tool.is_some() {
+        } else if self.working_since.is_some() || self.tool.is_some() || self.background_at(now).iter().any(|item| !item.suspect) {
             Activity::Working
         } else {
             Activity::Idle
         }
+    }
+
+    /// What the node has running in the background, each flagged when it has run long while the
+    /// node shows no other work, as it may be hung.
+    pub(crate) fn background_at(&self, now: Millis) -> Vec<BackgroundItem> {
+        let idle = self.working_since.is_none() && self.tool.is_none();
+        self.background.iter()
+            .map(|(_, item)| BackgroundItem { suspect: idle && now - item.started_at > alondra_core::states::BACKGROUND_SUSPECT_MS, ..item.clone() })
+            .collect()
     }
 
     /// The mod loaded and its session has not ended, yet its connection is closed.
@@ -192,6 +235,7 @@ impl Reports {
                 session.connection = None;
                 session.tool = None;
                 session.working_since = None;
+                session.background.clear();
             }
             Report::Measure { context, cost_usd, .. } => {
                 if let Some(context) = context {
@@ -208,6 +252,30 @@ impl Reports {
             Report::ToolStart { tool, tool_use_id, input } => {
                 let summary = crate::http::tool_summary(Some(&tool), Some(&input));
                 session.tool = Some(ToolInFlight { tool_use_id, name: tool, summary, since: now });
+            }
+            Report::Background { tasks } => {
+                let known = std::mem::take(&mut session.background);
+                session.background = tasks.into_iter().map(|task| {
+                    let started_at = known.iter().find(|(id, _)| *id == task.id).map_or(now, |(_, item)| item.started_at);
+                    let (kind, label) = match task.kind.as_str() {
+                        "subagent" => (BackgroundKind::Agent, task.description),
+                        "shell" => (BackgroundKind::Shell, task.command.unwrap_or(task.description)),
+                        _ => (BackgroundKind::Other, task.description),
+                    };
+                    (task.id, BackgroundItem { kind, label: short_label(&label), started_at, suspect: false })
+                }).collect();
+            }
+            Report::SubagentStart { id, description } => {
+                if !session.background.iter().any(|(known, _)| *known == id) {
+                    let label = short_label(description.as_deref().unwrap_or("subagent"));
+                    session.background.push((id, BackgroundItem { kind: BackgroundKind::Agent, label, started_at: now, suspect: false }));
+                }
+            }
+            Report::SubagentEnd { id } => session.background.retain(|(known, _)| *known != id),
+            Report::ShellStart { id, command } => {
+                if !session.background.iter().any(|(known, _)| *known == id) {
+                    session.background.push((id, BackgroundItem { kind: BackgroundKind::Shell, label: short_label(&command), started_at: now, suspect: false }));
+                }
             }
             Report::ToolEnd { tool_use_id } => {
                 if session.tool.as_ref().is_some_and(|tool| tool.tool_use_id == tool_use_id) {

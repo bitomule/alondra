@@ -85,9 +85,10 @@ pub(crate) async fn gather(
                 .or_else(|| node.daemon_detail.clone())
                 .or_else(|| answer.map(|answer| answer.text.clone()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
+            let background = reported.background_at(now);
             let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
                 alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
-                    let count = node.background.iter().filter(|item| item.kind == kind).count();
+                    let count = background.iter().filter(|item| item.kind == kind).count();
                     (count > 0).then(|| {
                         let noun = match (lang, kind) {
                             (Lang::En, alondra_core::BackgroundKind::Agent) => "subagents",
@@ -100,7 +101,7 @@ pub(crate) async fn gather(
                         format!("{count} {noun}")
                     })
                 }).collect::<Vec<_>>();
-            let background_suspect = node.background.iter().any(|item| item.suspect);
+            let background_suspect = background.iter().any(|item| item.suspect);
             let background_badge = (!counts.is_empty()).then(|| {
                 let mut text = counts.join(" · ");
                 if background_suspect { text.push_str(match lang { Lang::En => " · hung?", Lang::Es => " · ¿colgado?" }); }
@@ -116,7 +117,7 @@ pub(crate) async fn gather(
                 state_label: Some(state_label),
                 summary,
                 needs: node.daemon_needs.clone(),
-                background: node.background.iter().map(|item| LiveBackground {
+                background: background.iter().map(|item| LiveBackground {
                     kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
                     label: item.label.clone(),
                     since: timestamp(item.started_at),
