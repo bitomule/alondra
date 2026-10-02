@@ -267,7 +267,7 @@ impl Invocation<'_> {
             cmd.args(["--setting-sources", "user"]);
         }
         cmd.args(["--disallowedTools", "AskUserQuestion", "ExitPlanMode"])
-            .args(crate::plugins::orchestrator_flags(&self.plugins))
+            .args(crate::plugins::launch_flags(&self.plugins))
             .args([if self.resume { "--resume" } else { "--session-id" }, self.session])
             .env("ALONDRA_HOME", self.home)
             .env("ALONDRA_ORCHESTRATOR", "1")

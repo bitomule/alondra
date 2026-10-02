@@ -1,6 +1,6 @@
 use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, Style, Tone,
-    Trailing, View, action_id::Verb, common, text::t,
+    Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain_v2::{AgentId, TaskState};
 use std::collections::BTreeMap;
@@ -56,6 +56,45 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
     super::Label { text: text.into(), tone }
 }
 
+fn tokens(count: u64) -> String {
+    match count {
+        n if n >= 1_000_000 && n % 1_000_000 == 0 => format!("{}M", n / 1_000_000),
+        n if n >= 1_000 => format!("{}K", n / 1_000),
+        n => n.to_string(),
+    }
+}
+
+fn cost(cents: u64, lang: super::Lang) -> String {
+    let (units, rest) = (cents / 100, cents % 100);
+    tf!(lang, "${units}.{rest:02}", "{units},{rest:02} $", units = units, rest = rest)
+}
+
+fn context_label(percent: u32, lang: super::Lang) -> super::Label {
+    super::Label {
+        text: tf!(lang, "Context {percent}%", "Contexto {percent}%", percent = percent),
+        tone: if percent >= 80 { Tone::Warning } else { Tone::Neutral },
+    }
+}
+
+fn unreachable_text(lang: super::Lang) -> &'static str {
+    t!(lang, "Unreachable", "Sin conexión")
+}
+
+/// What the node mod reports beside the node's state: whether alondrad can reach it, how full
+/// its context is, what it has cost, and whether its last turn was interrupted.
+fn reported_badges(node: &super::LiveNode, lang: super::Lang) -> Vec<super::Label> {
+    let mut badges = vec![];
+    if node.unreachable {
+        badges.push(super::Label { text: unreachable_text(lang).into(), tone: Tone::Critical });
+    }
+    if node.last_turn_aborted && !node.working {
+        badges.push(super::Label { text: t!(lang, "Interrupted", "Interrumpido").into(), tone: Tone::Warning });
+    }
+    badges.extend(node.context_percent.map(|percent| context_label(percent, lang)));
+    badges.extend(node.cost_cents.map(|cents| super::Label { text: cost(cents, lang), tone: Tone::Neutral }));
+    badges
+}
+
 pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
     let live = context
         .live
@@ -70,6 +109,10 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
         None,
     );
     row.badges.push(node_state(&agent.id, context));
+    if let Some(node) = live {
+        row.subtitle = node.tool.clone();
+        row.badges.extend(reported_badges(node, context.lang));
+    }
     row.children = common::current_task(context.domain, &agent.id)
         .map(|task| super::tasks::task_row(task, context))
         .into_iter()
@@ -188,6 +231,32 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         tone: Some(state.tone),
         link: None,
     }];
+    let mut readings = vec![];
+    if let Some(node) = live {
+        let lang = context.lang;
+        if node.unreachable {
+            readings.push(Fact { label: t!(lang, "Connection", "Conexión").into(), value: unreachable_text(lang).into(),
+                tone: Some(Tone::Critical), link: None });
+        }
+        if let Some(tool) = &node.tool {
+            readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
+        }
+        if node.last_turn_aborted && !node.working {
+            readings.push(Fact { label: t!(lang, "Last turn", "Último turno").into(),
+                value: t!(lang, "Interrupted", "Interrumpido").into(), tone: Some(Tone::Warning), link: None });
+        }
+        if let Some(percent) = node.context_percent {
+            let label = context_label(percent, lang);
+            let value = match node.context_window {
+                Some(window) => tf!(lang, "{percent}% of {window} tokens", "{percent}% de {window} tokens", percent = percent, window = tokens(window)),
+                None => format!("{percent}%"),
+            };
+            readings.push(Fact { label: t!(lang, "Context", "Contexto").into(), value, tone: Some(label.tone), link: None });
+        }
+        if let Some(cents) = node.cost_cents {
+            readings.push(Fact { label: t!(lang, "Cost", "Coste").into(), value: cost(cents, lang), tone: None, link: None });
+        }
+    }
     if let Some(cwd) = live.and_then(|node| node.cwd.clone()) {
         facts.push(Fact {
             label: t!(context.lang, "Folder", "Carpeta").into(),
@@ -215,6 +284,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         None,
         vec![Item::Facts(Facts { items: facts })],
     ));
+    if !readings.is_empty() {
+        view.sections.push(common::section("readings", None, vec![Item::Facts(Facts { items: readings })]));
+    }
     if let Some(since) = live.and_then(|node| node.state_since.as_ref()) {
         let mut row = common::row("since", "node", Icon::History, t!(context.lang, "Since", "Desde").into(), None);
         row.link = None;

@@ -36,6 +36,8 @@ mod keeper;
 mod machine;
 mod managed_orchestrator;
 mod markdown;
+mod mods_check;
+mod node_reports;
 mod notifier;
 mod options;
 mod orchestrate;
@@ -55,7 +57,6 @@ mod start_guard;
 mod store;
 mod updates;
 mod uploads;
-mod usage;
 mod v2_client_routes;
 mod views;
 mod wake;
@@ -435,11 +436,19 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.home.clone(),
     ));
     tokio::spawn(watcher::run_live(domain.clone(), watcher::claude_home()));
+    match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
+        Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
+            Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),
+            Err(error) => log!("could not bring the node plugin up to date from {}: {error:#}", source.display()),
+        },
+        None => log!("Alondra's node plugin was not found: run `alondra setup`"),
+    }
+    tokio::spawn(mods_check::run(plugins::node()));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),
     ));
-    tokio::spawn(machine::run_v2(gauges));
+    tokio::spawn(machine::run_v2(gauges, state_domain.clone()));
     tokio::spawn(client.run(Arc::new(v2_client_routes::GhView)));
     let orchestrator = config.wake.then(|| {
         tokio::spawn(domain_orchestrator::run(

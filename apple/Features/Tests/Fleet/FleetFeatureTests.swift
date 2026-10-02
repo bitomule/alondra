@@ -41,7 +41,7 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(node.state?.text, "Waiting for an answer")
         XCTAssertEqual(node.state?.tone, .warning)
         XCTAssertNil(node.detail)
-        XCTAssertEqual(node.badges, [])
+        XCTAssertEqual(node.badges.map(\.text), ["Context 42%", "$1.25"], "what the node mod reports follows the state")
         XCTAssertEqual(overview.orchestrator?.state?.text, "Idle")
         XCTAssertEqual(node.pending, 1)
         XCTAssertEqual(node.lastMessage?.title, "The simulator pass completed successfully.")

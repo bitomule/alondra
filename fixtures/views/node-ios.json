@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "veb1767c604dfe19b",
+  "version": "vba26fb6fc02c905e",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -75,6 +75,26 @@
             {
               "label": "Folder",
               "value": "/demo/Demo Garden/ios"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "readings",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Context",
+              "value": "42% of 1M tokens",
+              "tone": "neutral"
+            },
+            {
+              "label": "Cost",
+              "value": "$1.25"
             }
           ]
         }

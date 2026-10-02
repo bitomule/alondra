@@ -102,7 +102,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
     if task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.connected) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
-    if let Some(reason) = crate::http::launch_blocked(launcher.usage().as_ref(), body.over_pace_ok) {
+    if let Some(reason) = crate::http::launch_blocked(domain.live.mods.usage(alondra_core::now_millis()).as_ref(), body.over_pace_ok) {
         return Err(conflict(reason));
     }
     if !Path::new(&body.cwd).is_dir() {
@@ -131,7 +131,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         text
     });
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id);
-    let settings = crate::domain_sessions::prepare(home, &format!("launch-{}", crate::auth::random_hex(8)), &[plugin.as_path()])
+    let settings = crate::domain_sessions::prepare(home, &format!("launch-{}", crate::auth::random_hex(8)))
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;
     let mut args: Vec<String> = ["--bg", "--name", &body.name, "--permission-mode", "auto"].map(String::from).into();
     args.extend(resolved.launch_flags(body.model.as_deref()));
@@ -153,6 +153,12 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         None => None,
     };
     let session = session.ok_or_else(|| discard(DomainError::new("launch_failed", "Claude did not list the launched session")))?;
+    if !domain.live.mods.wait_loaded(&session, launcher.mods_deadline()).await {
+        if let Some(short) = &short {
+            launcher.stop(short).await;
+        }
+        return Err(discard(DomainError::new("launch_failed", crate::node_reports::MODS_NOT_LOADED)));
+    }
     let agent_id = AgentId(session.clone());
     let name = body.title.clone().unwrap_or_else(|| body.name.clone());
     match run(domain, &Actor::System, Command::RegisterAgent { agent_id: agent_id.clone(), name }) {

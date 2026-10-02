@@ -515,6 +515,10 @@ fn golden_live() -> LiveSnapshot {
         last_message: Some("The simulator pass completed successfully.".into()),
         state_since: None,
         last_message_at: Some("2026-09-30T09:58:00Z".into()),
+        context_percent: Some(42),
+        context_window: Some(1_000_000),
+        cost_cents: Some(125),
+        ..Default::default()
     });
     live.pull_requests.push(LivePullRequest {
         id: "github.com/example/repo#12".into(),
@@ -1201,7 +1205,7 @@ fn task_message_keeps_task_context_and_node_attach_uses_live_short_id() {
         state_key: None,
         state_label: None, summary: None, needs: None, background: vec![],
         background_badge: None, background_suspect: false, working: true,
-        waiting: false, state_since: None, last_message: None, last_message_at: None,
+        waiting: false, state_since: None, last_message: None, last_message_at: None, ..Default::default()
     });
     let node = render(&state, &live, Client::Tui, Lang::En,
         "node:a-1", "2026-09-30T10:00:00Z");
@@ -1425,7 +1429,7 @@ fn node_quote_filters_raw_tool_calls() {
         waiting: false,
         last_message: Some(" mcp__tools__call ".into()),
         state_since: None,
-        last_message_at: None,
+        last_message_at: None, ..Default::default()
     });
     let hidden = render(
         &state,
@@ -1656,7 +1660,7 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
         working: false, waiting: false,
         last_message: Some("Ready for review".into()),
         state_since: None,
-        last_message_at: Some("2026-09-30T09:58:00Z".into()),
+        last_message_at: Some("2026-09-30T09:58:00Z".into()), ..Default::default()
     });
     let view = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
     let section = view.sections.iter().find(|section| section.id == "last_message").unwrap();
@@ -1717,7 +1721,7 @@ fn node_detail_names_its_state_and_since_when() {
         waiting: false,
         state_since: Some("2026-09-30T09:55:00Z".into()),
         last_message: None,
-        last_message_at: None,
+        last_message_at: None, ..Default::default()
     });
     let view = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "2026-09-30T10:00:00Z");
     let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {

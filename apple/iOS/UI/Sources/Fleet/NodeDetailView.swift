@@ -118,6 +118,19 @@ public struct NodeDetailView: View {
                 Text(folder.replacing(/^\/Users\/[^\/]+\//, with: "~/"))
                     .font(.mono(.caption)).foregroundStyle(.secondary).lineLimit(2)
             }
+            if !detail.readings.isEmpty {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(Array(detail.readings.enumerated()), id: \.offset) { _, reading in
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(reading.label).foregroundStyle(.secondary)
+                            Text(reading.value)
+                                .foregroundStyle(reading.tone.map { NodeStyle.tint(tone: $0) } ?? Palette.ink)
+                                .lineLimit(2)
+                        }
+                        .font(.caption)
+                    }
+                }
+            }
         }
     }
 

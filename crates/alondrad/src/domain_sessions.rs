@@ -16,13 +16,12 @@ const AGENT_ENV: &str = "ALONDRA_DOMAIN_AGENT";
 
 /// The settings a launch passes before its session exists: Alondra's launch settings, the v2
 /// protocol and where the bearer will be written.
-pub(crate) fn prepare(home: &Path, key: &str, plugins: &[&Path]) -> Result<PathBuf> {
+pub(crate) fn prepare(home: &Path, key: &str) -> Result<PathBuf> {
     anyhow::ensure!(!key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "invalid session settings key");
     let dir = home.join(DIR);
     std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&dir)?;
     let path = dir.join(format!("{key}.json"));
-    let bin = plugins.first().map(|p| p.join("bin/alondra"));
-    let mut settings: Value = serde_json::from_str(&alondra_core::launch_settings(bin.as_deref()))?;
+    let mut settings: Value = serde_json::from_str(&alondra_core::launch_settings())?;
     let env = settings["env"].as_object_mut().context("launch settings have no env")?;
     env.insert("ALONDRA_DOMAIN_PROTOCOL".into(), json!("2"));
     env.insert(SETTINGS_ENV.into(), json!(path.display().to_string()));
@@ -97,14 +96,13 @@ mod tests {
     fn the_bearer_joins_a_private_settings_file_that_goes_with_its_agent() {
         let home = std::env::temp_dir().join(format!("alondra-session-settings-{}", crate::auth::random_hex(8)));
         std::fs::create_dir_all(&home).unwrap();
-        let path = prepare(&home, "run-1", &[Path::new("/r/plugin")]).unwrap();
+        let path = prepare(&home, "run-1").unwrap();
         assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
         assert_eq!(std::fs::metadata(home.join(DIR)).unwrap().permissions().mode() & 0o777, 0o700);
         let settings: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
         assert_eq!(settings["env"]["ALONDRA_DOMAIN_PROTOCOL"], "2");
         assert_eq!(settings["env"][SETTINGS_ENV], json!(path.display().to_string()));
         assert_eq!(settings["env"][alondra_core::LAUNCHED_ENV], "1");
-        assert!(settings["statusLine"]["command"].as_str().unwrap().contains("/r/plugin/bin/alondra"));
         assert!(settings["env"].get("ALONDRA_DOMAIN_CAPABILITY").is_none(), "no bearer before the session is bound");
         assert_eq!(flags(&[Path::new("/r/plugin")], &path), ["--plugin-dir", "/r/plugin", "--settings", path.to_str().unwrap()]);
 

@@ -30,6 +30,8 @@ public struct NodeDetail: Equatable, Sendable {
     public var close: WireAction?
     public var orchestratorActions: [WireAction] = []
     public var facts: [Fact] = []
+    /// What the node mod reports: reachability, the tool it runs, its last turn, context and cost.
+    public var readings: [Fact] = []
 
     public init(document: ViewDocument) {
         title = document.title ?? ""
@@ -41,6 +43,7 @@ public struct NodeDetail: Equatable, Sendable {
                 state = facts.first?.value
                 stateTone = facts.first?.tone
                 folder = facts.dropFirst().first { $0.value.hasPrefix("/") }?.value
+            case "readings": readings = items.facts
             case "since":
                 since = Self.rows(items).compactMap(\.time).first?.at
             case "waiting": waiting = items.cards

@@ -361,7 +361,7 @@ fn is_human_prompt(line: &str) -> bool {
     }
 }
 
-fn parse_rfc3339_millis(s: &str) -> Option<i64> {
+pub(crate) fn parse_rfc3339_millis(s: &str) -> Option<i64> {
     let (date, time) = s.split_once('T')?;
     let mut d = date.split('-').map(|x| x.parse::<i64>().ok());
     let (y, m, day) = (d.next()??, d.next()??, d.next()??);

@@ -169,7 +169,8 @@ async fn daemon(
     };
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "update": crate::updates::status(&state.home),
-        "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage}),
+        "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage,
+        "mods": crate::mods_check::status()}),
     )
     .into_response()
 }

@@ -63,10 +63,16 @@ pub(crate) async fn gather(
                     alondra_core::NodeState::Stalled => "parado",
                 }.to_owned(),
             };
-            let summary = node.tool.as_ref().map(|tool| tool.summary.clone().unwrap_or_else(|| tool.name.clone()))
+            let reported = client.domain.live.mods.session(&node.session_id).unwrap_or_default();
+            let tool = reported.tool.as_ref().map(|tool| match &tool.summary {
+                Some(summary) => format!("{}: {summary}", tool.name),
+                None => tool.name.clone(),
+            });
+            let answer = reported.answer.as_ref().filter(|answer| !answer.text.trim().is_empty());
+            let summary = tool.clone()
                 .or_else(|| node.daemon_needs.clone())
                 .or_else(|| node.daemon_detail.clone())
-                .or_else(|| node.last_message.clone())
+                .or_else(|| answer.map(|answer| answer.text.clone()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
             let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
                 alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
@@ -112,8 +118,14 @@ pub(crate) async fn gather(
                     alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
                     alondra_core::NodeState::WaitingMachine),
                 state_since: Some(timestamp(node.state_since)),
-                last_message: node.last_message,
-                last_message_at: node.last_message_at.map(timestamp),
+                last_message: answer.map(|answer| answer.text.clone()),
+                last_message_at: answer.map(|answer| timestamp(answer.at)),
+                last_turn_aborted: answer.is_some_and(|answer| answer.aborted),
+                tool: tool.map(|tool| tool.chars().take(141).collect()),
+                context_percent: reported.context.as_ref().and_then(|context| context.percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
+                context_window: reported.context.as_ref().map(|context| context.window),
+                cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
+                unreachable: reported.unreachable(),
             })
         })
         .collect();
@@ -621,6 +633,23 @@ fn gauges(
                 level,
             });
         }
+        if let Some(percent) = usage.five_hour_percent {
+            out.push(Gauge {
+                id: "claude_five_hours".into(),
+                label: match lang {
+                    Lang::En => "Claude 5 h",
+                    Lang::Es => "Claude 5 h",
+                }
+                .into(),
+                value: percent / 100.0,
+                text: format!("{}%", percent.round()),
+                detail: usage.five_hour_resets_at.map(|at| match lang {
+                    Lang::En => format!("5-hour limit resets {}", timestamp(at)),
+                    Lang::Es => format!("El límite de 5 horas se reinicia {}", timestamp(at)),
+                }),
+                level: if percent >= 85.0 { Level::Hot } else { Level::Calm },
+            });
+        }
     }
     if let Some(free) = machine.memory_free_percent {
         let used = 100 - free.min(100);
@@ -778,12 +807,15 @@ mod tests {
             memory_free_percent: Some(50), load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
             disk_total: 100, disk_available: 50, unreliable: false };
         let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
-            today_spent: Some(41.0), today_share: Some(18.0), over_pace: true, ..Default::default() };
+            today_spent: Some(41.0), today_share: Some(18.0), over_pace: true,
+            five_hour_percent: Some(10.0), five_hour_resets_at: Some(1_790_959_200_000), ..Default::default() };
         let result = gauges(&machine, Some(&usage), Lang::En);
         assert!(result[0].detail.as_deref().unwrap().contains("resets"));
         assert_eq!(result[1].text, "41/18%");
         assert!(result[1].label.contains('!'));
         assert!(result[1].detail.as_deref().unwrap().contains("faster"));
+        assert_eq!((result[2].id.as_str(), result[2].text.as_str()), ("claude_five_hours", "10%"));
+        assert!(result[2].detail.as_deref().unwrap().starts_with("5-hour limit resets 2026-10-02"));
     }
 }
 

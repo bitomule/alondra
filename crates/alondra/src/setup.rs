@@ -643,7 +643,7 @@ pub fn has_marketplace(context: &crate::claude_auth::ContextEnv) -> bool {
         .is_some_and(|a| a.iter().any(|m| m.get("name").and_then(Value::as_str) == Some(MARKETPLACE)))
 }
 
-fn marketplace_path(context: &crate::claude_auth::ContextEnv) -> Option<PathBuf> {
+pub fn marketplace_path(context: &crate::claude_auth::ContextEnv) -> Option<PathBuf> {
     claude_output(context, &["plugin", "marketplace", "list", "--json"])
         .and_then(|t| serde_json::from_str::<Value>(&t).ok())
         .and_then(|v| v.as_array().cloned())

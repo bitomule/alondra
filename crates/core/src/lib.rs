@@ -8,6 +8,7 @@ pub mod event;
 pub mod issues;
 pub mod keeper;
 pub mod model;
+pub mod mods;
 pub mod options;
 pub mod orchestrator;
 pub mod pr;
@@ -42,17 +43,11 @@ pub const LAUNCHED_HEADER: &str = "x-alondra-launched";
 /// Alondra's plugins as a global install enables them in every session.
 pub const GLOBAL_PLUGINS: [&str; 2] = ["alondra@alondra", "alondra-orchestrator@alondra"];
 
-/// The `--settings` of every session Alondra launches: the mark, any global install of Alondra's
-/// plugins off, since the session loads them with `--plugin-dir`, and `alondra statusline`, which
-/// tells Alondra how full the session's context is and then shows the user's own status line.
-pub fn launch_settings(alondra: Option<&std::path::Path>) -> String {
+/// The `--settings` of every session Alondra launches: the mark, and any global install of
+/// Alondra's plugins off, since the session loads them with `--plugin-dir`.
+pub fn launch_settings() -> String {
     let off: serde_json::Map<String, serde_json::Value> = GLOBAL_PLUGINS.iter().map(|id| (id.to_string(), false.into())).collect();
-    let mut settings = serde_json::json!({"enabledPlugins": off, "env": {LAUNCHED_ENV: "1"}});
-    if let Some(bin) = alondra {
-        let quoted = format!("'{}'", bin.display().to_string().replace('\'', r"'\''"));
-        settings["statusLine"] = serde_json::json!({"type": "command", "command": format!("{quoted} statusline")});
-    }
-    settings.to_string()
+    serde_json::json!({"enabledPlugins": off, "env": {LAUNCHED_ENV: "1"}}).to_string()
 }
 
 pub fn now_millis() -> Millis {
