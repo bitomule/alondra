@@ -21,29 +21,55 @@ fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> 
     Some(action)
 }
 
+/// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
+/// then what waits for the user on it, then where its tasks stand.
+pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
+    let lang = context.lang;
+    let live = context.live.nodes.iter().find(|node| node.agent_id == agent.0);
+    let key = live.and_then(|node| node.state_key.as_deref());
+    let inbox = context.domain.projection().inbox;
+    let waiting = |kinds: &[&str]| inbox.iter()
+        .any(|item| item.pending && item.agent_id.as_ref() == Some(agent) && kinds.contains(&item.kind.as_str()));
+    let tasks: Vec<TaskState> = context.domain.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.archived)
+        .map(|task| task.state)
+        .collect();
+    let (text, tone) = if waiting(&["question", "permission", "plan"]) {
+        (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning)
+    } else if key == Some("stalled") {
+        (t!(lang, "Stalled", "Parado"), Tone::Critical)
+    } else if live.is_some_and(|node| node.working) {
+        (t!(lang, "Working", "Trabajando"), Tone::Info)
+    } else if key == Some("waiting_machine") {
+        (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral)
+    } else if waiting(&["action_request"]) || tasks.contains(&TaskState::NeedsYou) {
+        (t!(lang, "Your turn", "Te toca"), Tone::YourTurn)
+    } else if waiting(&["pull_request", "document_review"]) || tasks.contains(&TaskState::InReview) {
+        (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent)
+    } else if waiting(&["delivery"]) {
+        (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success)
+    } else if !tasks.is_empty() && tasks.iter().all(|state| matches!(state, TaskState::Done | TaskState::Closing | TaskState::Cancelled)) {
+        (t!(lang, "Done", "Terminado"), Tone::Success)
+    } else {
+        (t!(lang, "Unclear what it wants", "No sé qué quiere"), Tone::Unclear)
+    };
+    super::Label { text: text.into(), tone }
+}
+
 pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
     let live = context
         .live
         .nodes
         .iter()
         .find(|node| node.agent_id == agent.id.0);
-    let (icon, tone) = common::node_presentation(live.and_then(|node| node.state_key.as_deref()));
     let mut row = common::row(
         &agent.id.0,
         &format!("node:{}", agent.id),
-        icon,
+        Icon::Node,
         common::agent_label(&agent.id, context),
-        Some(
-            if live.is_some_and(|node| node.working) {
-                t!(context.lang, "Working", "Trabajando")
-            } else if agent.connected {
-                t!(context.lang, "Connected", "Conectado")
-            } else {
-                t!(context.lang, "Offline", "Desconectado")
-            }
-            .into(),
-        ),
+        None,
     );
+    row.badges.push(node_state(&agent.id, context));
     row.children = common::current_task(context.domain, &agent.id)
         .map(|task| super::tasks::task_row(task, context))
         .into_iter()
@@ -70,13 +96,10 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
             .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
             .count() as u32,
     });
-    if let Some(live) = live {
-        if let Some(label) = &live.state_label {
-            row.badges.push(super::Label { text: label.clone(), tone });
-        }
-        if let Some(text) = &live.background_badge {
-            row.badges.push(super::Label { text: text.clone(), tone: if live.background_suspect { Tone::Warning } else { Tone::Neutral } });
-        }
+    if let Some(live) = live
+        && let Some(text) = &live.background_badge
+    {
+        row.badges.push(super::Label { text: text.clone(), tone: if live.background_suspect { Tone::Warning } else { Tone::Neutral } });
     }
     row
 }
@@ -140,15 +163,6 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
     view
 }
 
-fn occupancy_label(node: &super::live::LiveNode, lang: super::Lang) -> Option<&'static str> {
-    match node.state_key.as_deref()? {
-        "free" => Some(t!(lang, "Free", "Libre")),
-        "busy" => Some(t!(lang, "Busy", "Ocupado")),
-        "waiting_machine" => Some(t!(lang, "Waiting for the machine", "Esperando máquina")),
-        _ => None,
-    }
-}
-
 pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
     if id == "orchestrator" {
@@ -167,13 +181,11 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         context,
         vec![],
     );
+    let state = node_state(&agent.id, context);
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
-        value: live.and_then(|node| occupancy_label(node, context.lang).map(str::to_owned))
-            .or_else(|| live.and_then(|node| node.state_label.clone()))
-            .unwrap_or_else(||
-                if agent.connected { t!(context.lang, "Connected", "Conectado") } else { t!(context.lang, "Offline", "Desconectado") }.into()),
-        tone: None,
+        value: state.text,
+        tone: Some(state.tone),
         link: None,
     }];
     if let Some(cwd) = live.and_then(|node| node.cwd.clone()) {

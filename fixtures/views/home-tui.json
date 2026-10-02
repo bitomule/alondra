@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v868d002d6897c43f",
+  "version": "v2c82ff9b2cf9a1ba",
   "cursor": "cursor-1",
   "status": {
     "version": "v47edd097e99cb5fc",
@@ -182,8 +182,8 @@
                 "tone": "neutral"
               },
               "state": {
-                "text": "Waiting for you",
-                "tone": "accent"
+                "text": "Waiting for an answer",
+                "tone": "warning"
               }
             },
             {

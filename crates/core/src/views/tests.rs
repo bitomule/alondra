@@ -1028,6 +1028,59 @@ fn a_fleet_node_shows_the_one_task_it_is_on_not_the_ones_it_finished() {
 }
 
 #[test]
+fn each_fleet_node_shows_one_state_derived_from_its_task_never_its_connection() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let template = state.tasks.remove(&"t-1".into()).unwrap();
+    for (agent, connected, task, task_state) in [
+        ("one-task", true, "t-one-task-per-node", TaskState::InReview),
+        ("recent-queue", false, "t-recent-requests-queue", TaskState::Done),
+        ("home-zero", true, "t-home-counters-zero", TaskState::Done),
+        ("claude-mods", true, "t-claude-mods-analysis", TaskState::Done),
+        ("busy", true, "t-busy", TaskState::Running),
+        ("idle", true, "t-idle", TaskState::Running),
+    ] {
+        state.agents.insert(agent.into(), Agent { id: agent.into(), name: agent.into(), connected });
+        let mut row = template.clone();
+        row.id = task.into();
+        row.agent_id = Some(agent.into());
+        row.state = task_state;
+        state.tasks.insert(task.into(), row);
+    }
+    let mut live = LiveSnapshot::default();
+    for (agent, key, working) in [
+        ("one-task", "free", false), ("recent-queue", "free", false), ("home-zero", "free", false),
+        ("busy", "busy", true), ("idle", "free", false),
+    ] {
+        live.nodes.push(LiveNode {
+            agent_id: agent.into(), name: agent.into(), state_key: Some(key.into()),
+            state_label: Some("no sé qué quiere".into()), working, ..LiveNode::default()
+        });
+    }
+    let view = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
+    let node = |id: &str| view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+        if let Item::Row(row) = item && row.id == id { Some(row.clone()) } else { None }
+    }).unwrap();
+    for (agent, text, tone) in [
+        ("one-task", "Espera tu revisión", Tone::Accent),
+        ("recent-queue", "Terminado", Tone::Success),
+        ("home-zero", "Terminado", Tone::Success),
+        ("claude-mods", "Terminado", Tone::Success),
+        ("busy", "Trabajando", Tone::Info),
+        ("idle", "No sé qué quiere", Tone::Unclear),
+    ] {
+        let row = node(agent);
+        assert_eq!(row.subtitle, None, "{agent}");
+        assert_eq!(row.badges, vec![Label { text: text.into(), tone }], "{agent}");
+    }
+    let detail = render(&state, &live, Client::Ios, Lang::Es, "node:recent-queue", "");
+    let Item::Facts(facts) = &detail.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
+        panic!("header facts")
+    };
+    assert_eq!(facts.items[0].value, "Terminado");
+}
+
+#[test]
 fn schedule_editor_includes_selected_projects_launch_options() {
     let state = fixture();
     let mut live = LiveSnapshot::default();
@@ -1644,7 +1697,7 @@ fn task_detail_has_no_now_line_while_the_node_just_works() {
 }
 
 #[test]
-fn node_detail_names_the_occupancy_and_since_when() {
+fn node_detail_names_its_state_and_since_when() {
     let state = fixture();
     let mut live = LiveSnapshot::default();
     live.nodes.push(live::LiveNode {
@@ -1670,20 +1723,21 @@ fn node_detail_names_the_occupancy_and_since_when() {
     let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
         panic!("header facts")
     };
-    assert_eq!(facts.items[0].value, "Libre");
+    assert_eq!(facts.items[0].value, "Esperando respuesta");
     let since = view.sections.iter().find(|section| section.id == "since").expect("since section");
     let Item::Row(row) = &since.items[0] else { panic!("since row") };
     assert!(matches!(&row.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:55:00Z"));
 }
 
 #[test]
-fn node_detail_without_live_data_keeps_the_connection_state() {
-    let state = fixture();
+fn node_detail_without_live_data_names_its_state_not_its_connection() {
+    let mut state = fixture();
+    state.agents.get_mut(&"a-1".into()).unwrap().connected = false;
     let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "2026-09-30T10:00:00Z");
     let Item::Facts(facts) = &view.sections.iter().find(|section| section.id == "header").unwrap().items[0] else {
         panic!("header facts")
     };
-    assert_eq!(facts.items[0].value, "Connected");
+    assert_eq!(facts.items[0].value, "Waiting for an answer");
     assert!(view.sections.iter().all(|section| section.id != "since"));
 }
 
@@ -2032,7 +2086,7 @@ fn card_node_line_carries_the_node_state_next_to_the_project() {
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");
     let node = card_of(&view).context.iter().find(|line| line.icon == Icon::Node).unwrap();
     let state = node.state.as_ref().expect("node state");
-    assert_eq!((state.text.as_str(), state.tone), ("Waiting for you", Tone::Accent));
+    assert_eq!((state.text.as_str(), state.tone), ("Waiting for an answer", Tone::Warning));
     assert_eq!(node.chip.as_ref().map(|chip| chip.text.as_str()), Some("Demo Garden"));
     let bare = render(&golden_fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En,
         "card:a98d034b-249e-4487-a89b-57de38c26372", "");

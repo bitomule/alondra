@@ -134,10 +134,25 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
             "permissionDecision": "allow", "permissionDecisionReason": "Alondra tool"}})));
     }
     let agent_id = AgentId(session_id.clone());
-    if !domain.state()?.agents.contains_key(&agent_id) {
+    let Some(was_connected) = domain.state()?.agents.get(&agent_id).map(|agent| agent.connected) else {
         return Ok(Reply::Plain(json!({})));
-    }
+    };
     domain.live.observe(payload);
+    // A SessionStart that arrives before the launch registers the Agent is dropped, so any
+    // later hook proves the session alive, as every hook did in 8ccd131.
+    let connected = match event.as_str() {
+        "SessionStart" => Some(true),
+        "SessionEnd" => Some(false),
+        _ => (!was_connected).then_some(true),
+    };
+    if let Some(connected) = connected {
+        let event_id = format!("{event}-{session_id}-{}", crate::auth::random_hex(8));
+        lifecycle::observe_instance(domain, &agent_id, connected, &lifecycle::prepare_event(domain, &event_id)?)?;
+        if !connected {
+            domain.revoke_agent(&session_id)?;
+            crate::domain_sessions::remove_for(domain.home(), &agent_id)?;
+        }
+    }
     if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {
         start_assigned(domain, &agent_id)?;
     }
@@ -145,17 +160,7 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
         return Ok(Reply::Held(held));
     }
     match event.as_str() {
-        "SessionStart" | "SessionEnd" => {
-            let connected = event == "SessionStart";
-            let event_id = format!("{event}-{session_id}-{}", crate::auth::random_hex(8));
-            let event = lifecycle::prepare_event(domain, &event_id)?;
-            lifecycle::observe_instance(domain, &agent_id, connected, &event)?;
-            if !connected {
-                domain.revoke_agent(&session_id)?;
-                crate::domain_sessions::remove_for(domain.home(), &agent_id)?;
-            }
-            Ok(Reply::Plain(json!({})))
-        }
+        "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
         "Stop" => {
             let held = crate::domain_messages::take_held(domain, &agent_id);
             let batch = claim_batch(domain, &agent_id)?;
@@ -875,6 +880,22 @@ mod tests {
         let (reply, _) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PreToolUse",
             "tool_name": "mcp__plugin_alondra_alondra__publish_information"}), Some(6)).await;
         assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "allow");
+    }
+
+    #[tokio::test]
+    async fn a_session_whose_start_hook_beat_its_registration_connects_on_its_next_hook() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        hook(&domain, json!({"session_id": "session-a", "hook_event_name": "SessionStart"}), Some(6)).await.1.unwrap();
+        command(&domain, Actor::System, "register", Command::RegisterAgent {
+            agent_id: "session-a".into(), name: "A".into(),
+        });
+        assert!(!domain.state().unwrap().agents[&"session-a".into()].connected);
+        hook(&domain, json!({"session_id": "session-a", "hook_event_name": "UserPromptSubmit"}), Some(6)).await.1.unwrap();
+        assert!(domain.state().unwrap().agents[&"session-a".into()].connected);
+        let revision = domain.state().unwrap().revision;
+        hook(&domain, json!({"session_id": "session-a", "hook_event_name": "PostToolUse", "tool_name": "Bash"}), Some(6)).await.1.unwrap();
+        assert_eq!(domain.state().unwrap().revision, revision, "a connected Agent's hooks record nothing more");
     }
 
     #[tokio::test]

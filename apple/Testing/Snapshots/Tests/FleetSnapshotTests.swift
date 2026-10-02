@@ -34,6 +34,44 @@ final class FleetSnapshotTests: XCTestCase {
         assertScreenVariants { view }
     }
 
+    func test_fleet_nodesInReviewWorkingAndDone() throws {
+        func node(_ id: String, _ title: String, _ state: (String, String), task: (String, String, String)) -> [String: Any] {
+            [
+                "type": "row", "id": id, "icon": "node", "title": title, "depth": 0, "struck": false,
+                "link": ["kind": "view", "key": "node:\(id)"],
+                "badges": [["text": state.0, "tone": state.1]],
+                "trailing": ["kind": "count", "value": 0],
+                "children": [[
+                    "id": "t-\(id)", "icon": task.1, "title": task.0, "subtitle": task.2, "depth": 0, "struck": false,
+                    "link": ["kind": "view", "key": "task:t-\(id)"],
+                    "badges": [["text": task.2, "tone": task.1 == "check" ? "success" : "info"]],
+                ]],
+            ]
+        }
+        let document = try ScreenFixtures.document("fleet-ios") { object in
+            guard var sections = object["sections"] as? [[String: Any]] else { return }
+            sections[1]["count"] = 4
+            sections[1]["items"] = [
+                node("one-task", "One node, one task", ("Waiting for your review", "accent"),
+                     task: ("One node, one task", "pull_request", "In Review")),
+                node("recent-queue", "Real queue in recent requests", ("Done", "success"),
+                     task: ("Real queue in recent requests", "check", "Done")),
+                node("home-zero", "Home shows everything at 0", ("Working", "info"),
+                     task: ("Home shows everything at 0", "mission", "Running")),
+                node("claude-mods", "Claude Code mods in Alondra", ("Unclear what it wants", "unclear"),
+                     task: ("Analyze Claude Code mods for Alondra", "check", "Done")),
+            ]
+            object["sections"] = sections
+        }
+        var state = FleetFeature.State()
+        state.screen.document = document
+        state.screen.phase = .loaded
+        let view = FleetView(store: Store(initialState: state) { FleetFeature() } withDependencies: {
+            idleViewsClient(&$0.viewsClient)
+        })
+        assertScreenVariants { view }
+    }
+
     func test_fleet_showingSavedDataWhileOffline() throws {
         let view = try fleet(phase: .failed("Couldn’t load this from your Mac. Try again."))
         assertScreenVariants { view }

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "vbb7f2ca404e083de",
+  "version": "va4e9fd0edabde851",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -187,8 +187,8 @@
                     "tone": "neutral"
                   },
                   "state": {
-                    "text": "Waiting for you",
-                    "tone": "accent"
+                    "text": "Waiting for an answer",
+                    "tone": "warning"
                   }
                 },
                 {
