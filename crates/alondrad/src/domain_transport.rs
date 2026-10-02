@@ -1402,7 +1402,7 @@ mod tests {
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
         let (first, _) = held_card(&domain, ask("agent-a"), "o0", None).await;
-        let again = answered_without_a_card(&domain, ask("agent-a"), true).await;
+        let again = answered_without_a_card(&domain, ask("agent-a")).await;
         assert_eq!(again, first);
     }
 
