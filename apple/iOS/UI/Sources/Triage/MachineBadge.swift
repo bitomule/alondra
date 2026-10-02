@@ -2,9 +2,27 @@ import AlondraContract
 import AlondraDesign
 import SwiftUI
 
+/// The pill shares the navigation bar with Settings. A toolbar item wider than its slot is folded,
+/// with Settings, into a "…" menu, so the pill gives up numbers before it outgrows the slot: first
+/// the RAM and CPU figures, then every figure, keeping each reading's bar.
 struct MachineBadge: View {
     let gauges: [AlondraContract.Gauge]
+    let width: CGFloat
+
+    static let reservedBarWidth: CGFloat = 120
+
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            pill { _ in true }
+            pill { !Self.machineLoad.contains($0.id) }
+            pill { _ in false }
+        }
+        .modifier(ProposedWidth(width: max(width - Self.reservedBarWidth, 0)))
+    }
+
+    private static let machineLoad: Set<String> = ["memory", "cpu"]
+
+    private func pill(showsText: @escaping (AlondraContract.Gauge) -> Bool) -> some View {
         HStack(spacing: 6) {
             Circle().fill(Palette.sage).frame(width: 8, height: 8)
                 .shadow(color: Palette.sage.opacity(0.8), radius: 4)
@@ -12,12 +30,16 @@ struct MachineBadge: View {
             ForEach(gauges.filter { $0.id != "disk" }, id: \.id) { gauge in
                 HStack(spacing: 3) {
                     ReadingBar(value: gauge.value, tint: gauge.level.tint)
-                    Text(gauge.text).font(.caption2.monospacedDigit().weight(.medium))
-                        .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink.opacity(0.65))
-                        .contentTransition(.numericText())
+                    if showsText(gauge) {
+                        Text(gauge.text).font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink.opacity(0.65))
+                            .contentTransition(.numericText())
+                    }
                 }
             }
-        }.foregroundStyle(Palette.ink.opacity(0.65))
+        }
+        .fixedSize()
+        .foregroundStyle(Palette.ink.opacity(0.65))
     }
 }
 
@@ -35,6 +57,25 @@ struct MachineDetail: View {
                 }
             }
         }.font(.subheadline).padding(20).frame(minWidth: 260, alignment: .leading)
+    }
+}
+
+/// A toolbar measures its items without a width, which would let `ViewThatFits` always pick its
+/// widest choice; this hands the content the slot's width instead.
+private struct ProposedWidth: ViewModifier {
+    let width: CGFloat
+    func body(content: Content) -> some View { WidthLayout(width: width) { content } }
+}
+
+private struct WidthLayout: Layout {
+    let width: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        subviews.first?.sizeThatFits(ProposedViewSize(width: min(proposal.width ?? width, width), height: proposal.height)) ?? .zero
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        subviews.first?.place(at: bounds.origin, proposal: ProposedViewSize(width: bounds.width, height: bounds.height))
     }
 }
 

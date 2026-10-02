@@ -12,6 +12,7 @@ public struct TriageView: View {
     @State private var drag: CGFloat = 0
     @State private var frontHeight: CGFloat?
     @State private var keyboardVisible = false
+    @State private var screenWidth: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     public init(store: StoreOf<TriageFeature>, zoom: Namespace.ID) {
@@ -48,11 +49,12 @@ public struct TriageView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         .background(DawnBackground())
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { screenWidth = $0 }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .topBarLeading) {
                 Button { store.send(.machinePresented(true)) } label: {
-                    MachineBadge(gauges: gauges)
+                    MachineBadge(gauges: gauges, width: screenWidth)
                 }
                 .popover(isPresented: Binding(get: { store.machinePresented }, set: { store.send(.machinePresented($0)) })) {
                     MachineDetail(gauges: gauges)
