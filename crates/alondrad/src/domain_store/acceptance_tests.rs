@@ -23,6 +23,7 @@ fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
         ("V18", 1) => Some("stale_head"),
         ("V21", 1) => Some("acceptance_missing"),
         ("V23", 0) => Some("not_assigned"),
+        ("V24", 0) => Some("agent_busy"),
         ("V45", 1) => Some("acceptance_missing"),
         _ => None,
     }
@@ -522,7 +523,7 @@ fn measured(
     for (id, task) in &state.tasks {
         tasks.insert(
             id.0.clone(),
-            json!({"status":task.state,"current_final_id":task.final_presentation}),
+            json!({"status":task.state,"current_final_id":task.final_presentation,"agent_id":task.agent_id}),
         );
     }
     let mut interactions = serde_json::Map::new();
@@ -675,17 +676,6 @@ fn shared_catalog_domain_and_sql_cases() {
                 assert!(
                     !store.load().unwrap().interactions[&InteractionId::from("question-1")]
                         .blocking
-                );
-            } else if field(arrangement, "set") == "tasks.task-2.agent_id" {
-                let agent_id = string(field(arrangement, "value"));
-                setup_command(
-                    &mut store,
-                    &format!("{case_id}-arrange-assign"),
-                    actor("user-a"),
-                    Command::AssignTask {
-                        task_id: "task-2".into(),
-                        agent_id: agent_id.into(),
-                    },
                 );
             } else {
                 panic!("{case_id}: unsupported arrangement {arrangement}");

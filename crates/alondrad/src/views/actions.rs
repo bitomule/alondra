@@ -992,6 +992,7 @@ fn rejection_message(lang: Lang, code: &str, english: &str) -> String {
         "withdrawn" => "La persona autora retiró esta pregunta",
         "dependency_not_done" => "Completa primero la tarea dependiente",
         "not_assigned" => "La tarea ya no está asignada a este nodo",
+        "agent_busy" => "Ese nodo está en otra tarea hasta que acabe: lanza un nodo nuevo para esta",
         "invalid_action_for_kind" => "Esta acción no se puede aplicar a este elemento",
         "acceptance_missing" => "Autoriza primero la fusión de la PR presentada",
         "subject_already_linked" => "Este elemento ya está vinculado a otra tarea",

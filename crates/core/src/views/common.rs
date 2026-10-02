@@ -241,6 +241,14 @@ mod tests {
     }
 }
 
+/// The Task a node is on: its open one, else the last it had. A node works on one Task at a time;
+/// state saved before that rule may still give it several open ones, and the newest stands for it.
+pub(super) fn current_task<'a>(domain: &'a crate::domain_v2::DomainState, agent_id: &crate::domain_v2::AgentId) -> Option<&'a crate::domain_v2::Task> {
+    let mine = || domain.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent_id) && !task.archived);
+    mine().filter(|task| !task.state.terminal()).max_by_key(|task| task.revision)
+        .or_else(|| mine().max_by_key(|task| task.revision))
+}
+
 pub(super) fn agent_label(agent_id: &crate::domain_v2::AgentId, context: &RenderContext<'_>) -> String {
     let domain = context.domain;
     let name = domain.agents.get(agent_id).map(|agent| agent.name.as_str());
@@ -256,8 +264,6 @@ pub(super) fn agent_label(agent_id: &crate::domain_v2::AgentId, context: &Render
             .or_else(|| domain.schedule.schedules.get(&run.schedule_id).map(|schedule| schedule.title.clone()))
     });
     schedule_title
-        .or_else(|| domain.tasks.values()
-            .find(|task| task.agent_id.as_ref() == Some(agent_id))
-            .map(|task| task.title.clone()))
+        .or_else(|| current_task(domain, agent_id).map(|task| task.title.clone()))
         .unwrap_or_else(|| t!(context.lang, "Node", "Nodo").into())
 }

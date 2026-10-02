@@ -496,6 +496,7 @@ pub fn refusal(error: &DomainError) -> String {
         "stale_revision" | "stale_epoch" => tr!("It changed since you saw it: check it and try again", "Ha cambiado desde que lo viste: revísalo y vuelve a intentarlo").into(),
         "not_found" => tr!("Alondra no longer has it", "Alondra ya no lo tiene").into(),
         "task_not_active" => tr!("The task is no longer active", "La tarea ya no está activa").into(),
+        "agent_busy" => tr!("That node is on another task until it ends: launch a new node for this one", "Ese nodo está en otra tarea hasta que acabe: lanza un nodo nuevo para esta").into(),
         "incompatible_protocol" => tr!("This alondrad does not accept this domain request", "Este alondrad no acepta esta petición del dominio").into(),
         _ => {
             let (code, why) = (&error.code, &error.message);

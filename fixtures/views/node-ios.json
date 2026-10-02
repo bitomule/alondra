@@ -4,7 +4,7 @@
   "view": "node",
   "key": "node:d887a34b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v79b78c9dee198259",
+  "version": "veb1767c604dfe19b",
   "cursor": "cursor-1",
   "title": "Alondra · iOS",
   "status": {
@@ -75,10 +75,6 @@
             {
               "label": "Folder",
               "value": "/demo/Demo Garden/ios"
-            },
-            {
-              "label": "Tasks",
-              "value": "0"
             }
           ]
         }

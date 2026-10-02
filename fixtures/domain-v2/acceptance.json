@@ -1698,7 +1698,7 @@
         "R02",
         "R15"
       ],
-      "title": "One agent with two tasks has isolated effects",
+      "title": "An agent with an open task takes no second one until it ends",
       "layers": [
         "C",
         "A",
@@ -1708,13 +1708,18 @@
       "arrange": [
         {
           "fixture": "unaccepted-text-final"
-        },
-        {
-          "set": "tasks.task-2.agent_id",
-          "value": "agent-a"
         }
       ],
       "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "assign_task",
+            "task_id": "task-2",
+            "agent_id": "agent-a"
+          }
+        },
         {
           "type": "command",
           "actor": "user-a",
@@ -1728,6 +1733,15 @@
               }
             ]
           }
+        },
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "assign_task",
+            "task_id": "task-2",
+            "agent_id": "agent-a"
+          }
         }
       ],
       "assert": [
@@ -1740,6 +1754,11 @@
           "path": "tasks.task-2.status",
           "op": "eq",
           "value": "running"
+        },
+        {
+          "path": "tasks.task-2.agent_id",
+          "op": "eq",
+          "value": "agent-a"
         },
         {
           "path": "agents.agent-a.connected",

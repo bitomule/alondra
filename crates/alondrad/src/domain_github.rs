@@ -459,6 +459,7 @@ mod tests {
                 auto_merge: false,
             },
         );
+        command(&domain, Actor::System, "agent-b", Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() });
         command(
             &domain,
             Actor::User { user_id: "u".into() },
@@ -467,7 +468,7 @@ mod tests {
                 task_id: "t-2".into(),
                 request_id: "r-2".into(),
                 title: "Second task".into(),
-                agent_id: Some("a".into()),
+                agent_id: Some("b".into()),
                 review_prs: false,
                 dependencies: BTreeSet::new(),
                 stack: None,
@@ -475,7 +476,7 @@ mod tests {
         );
         command(
             &domain,
-            Actor::Agent { agent_id: "a".into() },
+            Actor::Agent { agent_id: "b".into() },
             "pr-2",
             Command::RegisterPr {
                 task_id: "t-2".into(),

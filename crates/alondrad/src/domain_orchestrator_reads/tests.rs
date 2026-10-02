@@ -94,16 +94,22 @@ fn a_node_is_found_by_name_or_id_with_its_questions_results_and_undelivered_mess
 }
 
 #[test]
-fn candidates_are_the_live_agents_tied_to_the_task_or_its_project() {
+fn candidates_are_the_free_live_agents_tied_to_the_task_or_its_project() {
     let f = world();
     let for_t2 = candidates(&f.1, Some("t2"), None).unwrap();
-    let list = for_t2["candidates"].as_array().unwrap();
-    assert_eq!(list.len(), 1);
-    assert_eq!(list[0]["node"], "Instance A");
-    assert_eq!(list[0]["why"], json!(["works on t1 “Title t1”, which t2 builds on"]));
-    assert_eq!(list[0]["tasks"][0]["id"], "t1");
+    assert_eq!(for_t2["candidates"], json!([]), "Instance A is on t1 until it ends");
+    let busy = for_t2["busy"].as_array().unwrap();
+    assert_eq!((busy.len(), busy[0]["node"].as_str()), (1, Some("Instance A")));
+    assert_eq!(busy[0]["why"], json!(["works on t1 “Title t1”, which t2 builds on"]));
+    assert_eq!(busy[0]["task"]["id"], "t1");
+    assert_eq!(candidates(&f.1, Some("t1"), None).unwrap()["candidates"][0]["node"], "Instance A", "its own Task does not make it busy");
     let by_repo = candidates(&f.1, None, Some("me/App")).unwrap();
-    assert_eq!(by_repo["candidates"][0]["why"], json!(["works in project App"]));
+    assert_eq!((by_repo["candidates"].clone(), by_repo["busy"][0]["why"].clone()), (json!([]), json!(["works in project App"])));
+    run(&f.1, user(), Command::CancelTask { task_id: "t1".into() });
+    let free = candidates(&f.1, Some("t2"), None).unwrap();
+    assert_eq!(free["busy"], json!([]));
+    assert_eq!(free["candidates"][0]["node"], "Instance A", "a node whose Task ended takes the next one");
+    assert_eq!(free["candidates"][0]["why"], json!(["worked on t1 “Title t1”, which t2 builds on"]));
     assert!(candidates(&f.1, None, Some("Web")).unwrap()["candidates"].as_array().unwrap().is_empty());
     assert_eq!(candidates(&f.1, Some("missing"), None).unwrap_err().code, "not_found");
     assert_eq!(candidates(&f.1, None, None).unwrap_err().code, "invalid_input");

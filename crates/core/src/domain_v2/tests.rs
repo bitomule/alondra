@@ -10,6 +10,14 @@ fn agent() -> Actor {
         agent_id: "a".into(),
     }
 }
+fn agent_b() -> Actor {
+    Actor::Agent {
+        agent_id: "b".into(),
+    }
+}
+fn register_b(s: &mut DomainState) {
+    exec(s, Actor::System, Command::RegisterAgent { agent_id: "b".into(), name: "Instance B".into() }).unwrap();
+}
 fn exec(s: &mut DomainState, a: Actor, c: Command) -> Result<CommandOutcome, DomainError> {
     s.execute(
         &a,
@@ -1093,6 +1101,7 @@ fn a_task_left_closing_by_an_older_daemon_completes_with_the_next_command() {
 fn cross_task_delivery_and_dependency_cycle_roll_back() {
     let mut s = fixture();
     present(&mut s, "d", text());
+    register_b(&mut s);
     exec(
         &mut s,
         user(),
@@ -1100,7 +1109,7 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
             task_id: "t2".into(),
             request_id: "r".into(),
             title: "Other".into(),
-            agent_id: Some("a".into()),
+            agent_id: Some("b".into()),
             review_prs: false,
             dependencies: BTreeSet::from(["t".into()]),
             stack: None,
@@ -1119,7 +1128,7 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
     );
     reject_unchanged(
         &mut s,
-        agent(),
+        agent_b(),
         Command::CompleteTask {
             task_id: "t2".into(),
             presentation_id: "d".into(),
@@ -1128,12 +1137,53 @@ fn cross_task_delivery_and_dependency_cycle_roll_back() {
     );
     reject_unchanged(
         &mut s,
-        agent(),
+        agent_b(),
         Command::StartTask {
             task_id: "t2".into(),
         },
         "dependency_not_done",
     );
+}
+fn second(agent_id: Option<&str>) -> Command {
+    Command::CreateTask {
+        task_id: "t2".into(),
+        request_id: "r".into(),
+        title: "Second".into(),
+        agent_id: agent_id.map(Into::into),
+        review_prs: false,
+        dependencies: BTreeSet::new(),
+        stack: None,
+    }
+}
+#[test]
+fn an_agent_works_on_one_task_until_it_ends() {
+    let mut s = fixture();
+    reject_unchanged(&mut s, user(), second(Some("a")), "agent_busy");
+    exec(&mut s, user(), second(None)).unwrap();
+    let take = Command::AssignTask { task_id: "t2".into(), agent_id: "a".into() };
+    reject_unchanged(&mut s, user(), take.clone(), "agent_busy");
+    exec(&mut s, user(), Command::AssignTask { task_id: "t".into(), agent_id: "a".into() }).unwrap();
+    exec(&mut s, user(), Command::CancelTask { task_id: "t".into() }).unwrap();
+    exec(&mut s, user(), take).unwrap();
+    assert_eq!(s.tasks[&"t2".into()].agent_id, Some("a".into()), "a node whose task ended takes the next one");
+    exec(&mut s, user(), Command::ReopenTask { task_id: "t".into() }).unwrap();
+    assert_eq!(
+        (s.tasks[&"t".into()].state, s.tasks[&"t".into()].agent_id.clone()),
+        (TaskState::Running, None),
+        "a reopened task whose node moved on waits for another node"
+    );
+    assert_eq!(s.busy_with(&"a".into(), &"t".into()).map(|t| t.id.0.as_str()), Some("t2"));
+}
+#[test]
+fn state_saved_with_several_open_tasks_on_one_agent_still_loads() {
+    let mut s = fixture();
+    exec(&mut s, user(), second(None)).unwrap();
+    s.tasks.get_mut(&"t2".into()).unwrap().agent_id = Some("a".into());
+    s.validate().unwrap();
+    exec(&mut s, agent(), Command::StartTask { task_id: "t2".into() }).unwrap();
+    exec(&mut s, user(), Command::CreateTask { task_id: "t3".into(), request_id: "r".into(), title: "Third".into(),
+        agent_id: None, review_prs: false, dependencies: BTreeSet::new(), stack: None }).unwrap();
+    reject_unchanged(&mut s, user(), Command::AssignTask { task_id: "t3".into(), agent_id: "a".into() }, "agent_busy");
 }
 #[test]
 fn old_epoch_revision_generation_and_actor_rejected() {
@@ -1725,6 +1775,7 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
 fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() {
     let mut s = fixture();
     register(&mut s);
+    register_b(&mut s);
     present(&mut s, "d", pr_targets());
     let stack = StackDependency {
         upstream_task: "t".into(),
@@ -1739,7 +1790,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
             task_id: "down".into(),
             request_id: "r".into(),
             title: "Downstream".into(),
-            agent_id: Some("a".into()),
+            agent_id: Some("b".into()),
             review_prs: true,
             dependencies: BTreeSet::new(),
             stack: Some(stack),
@@ -1748,7 +1799,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     .unwrap();
     reject_unchanged(
         &mut s,
-        agent(),
+        agent_b(),
         Command::StartTask {
             task_id: "down".into(),
         },
@@ -1768,7 +1819,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     .unwrap();
     exec(
         &mut s,
-        agent(),
+        agent_b(),
         Command::StartTask {
             task_id: "down".into(),
         },
@@ -1776,7 +1827,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     .unwrap();
     exec(
         &mut s,
-        agent(),
+        agent_b(),
         Command::RegisterPr {
             task_id: "down".into(),
             pr_id: "pr-down".into(),
@@ -1791,7 +1842,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     .unwrap();
     exec(
         &mut s,
-        agent(),
+        agent_b(),
         Command::PresentResult {
             attachments: vec![],
             task_id: "down".into(),
@@ -1823,7 +1874,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
         remote_base: "upstream-branch".into(),
         base_verified: true,
     };
-    reject_unchanged(&mut s, agent(), claim.clone(), "stack_not_ready");
+    reject_unchanged(&mut s, agent_b(), claim.clone(), "stack_not_ready");
     authorize(&mut s);
     exec(
         &mut s,
@@ -1837,7 +1888,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
         },
     )
     .unwrap();
-    reject_unchanged(&mut s, agent(), claim, "stack_not_ready");
+    reject_unchanged(&mut s, agent_b(), claim, "stack_not_ready");
     exec(
         &mut s,
         Actor::System,
@@ -1856,7 +1907,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     );
     exec(
         &mut s,
-        agent(),
+        agent_b(),
         Command::ClaimMergeAuthorization {
             authorization_id: "auth-down".into(),
             remote_head: "head-down".into(),

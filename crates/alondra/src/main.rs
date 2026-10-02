@@ -270,8 +270,6 @@ fn hook() -> Result<()> {
     let event = payload.get("hook_event_name").and_then(serde_json::Value::as_str).map(str::to_string);
     let critical = matches!(event.as_deref(), Some("SessionStart" | "PreToolUse" | "PermissionRequest" | "Elicitation"));
     let launched = std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty());
-    let subagent = event.as_deref() == Some("PreToolUse")
-        && payload.get("tool_name").and_then(serde_json::Value::as_str) == Some("Agent");
     let body = serde_json::to_vec(&json!({"launched": launched, "payload": payload}))?;
     match send_hook(&body) {
         HookReply::Answered => Ok(()),
@@ -280,13 +278,6 @@ fn hook() -> Result<()> {
             std::process::exit(2);
         }
         HookReply::Refused(reason) => Err(anyhow::anyhow!(reason)),
-        // Only a subagent of a launched session needs Alondra now: without its task token,
-        // every tool it runs is refused as soon as Alondra is back.
-        HookReply::Unreachable(_) if launched && subagent => {
-            let output = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "Alondra is not answering, so this subagent cannot receive its task token. Launch it again in a moment, or do the work in this thread."}});
-            println!("{output}");
-            Ok(())
-        }
         HookReply::Unreachable(error) => {
             eprintln!("Alondra did not answer; continuing without it: {error:#}");
             Ok(())
