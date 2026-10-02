@@ -40,9 +40,17 @@ public actor FeedSession {
     private var feedTask: Task<Void, Never>?
     private var subscribers: [UUID: AsyncStream<FeedSnapshot>.Continuation] = [:]
     private var eventSubscribers: [UUID: AsyncStream<FeedEvent>.Continuation] = [:]
+    private let retryDelay: @Sendable (Int) async throws -> Void
 
-    public init(transport: any ViewTransport, client: ViewClient, lang: String) {
-        self.transport = transport; self.client = client; self.lang = lang
+    public init(transport: any ViewTransport, client: ViewClient, lang: String,
+                retryDelay: @escaping @Sendable (Int) async throws -> Void = FeedSession.backoff) {
+        self.transport = transport; self.client = client; self.lang = lang; self.retryDelay = retryDelay
+    }
+
+    /// Capped exponential backoff with full jitter: up to 1, 2, 4, 8, 16, then 30 seconds.
+    public static func backoff(_ attempt: Int) async throws {
+        let ceiling = min(30, pow(2, Double(min(max(attempt, 1), 6) - 1)))
+        try await Task.sleep(for: .seconds(Double.random(in: 0...ceiling)))
     }
 
     public func snapshots() -> AsyncStream<FeedSnapshot> {
@@ -198,6 +206,7 @@ public actor FeedSession {
     }
 
     private func runFeed(generation current: UInt64) async {
+        var failures = 0
         while !Task.isCancelled, generation == current, !openKeys.isEmpty,
               (!subscribers.isEmpty || !eventSubscribers.isEmpty) {
             do {
@@ -223,13 +232,38 @@ public actor FeedSession {
                 }
                 let missing = openKeys.filter { versions[$0] == nil }.sorted()
                 if !missing.isEmpty { try await refresh(missing, generation: current) }
+                failures = 0
             } catch is CancellationError { return }
             catch {
-                guard !Task.isCancelled, generation == current else { return }
-                // Ending the feed leaves the last complete views visible. The owning app can call
-                // reconnect() after its ordinary connection recovery path succeeds.
-                return
+                // The cursor is kept, so the next poll resumes where this one stopped, or is
+                // answered with a reset when the Mac's data changed meanwhile. Only a refusal
+                // that retrying cannot fix ends the feed; reconnect() starts it again.
+                guard !Task.isCancelled, generation == current, Self.isTransient(error) else { return }
+                failures += 1
+                do { try await retryDelay(failures) } catch { return }
             }
+        }
+    }
+
+    static func isTransient(_ error: any Error) -> Bool {
+        func retryable(_ status: Int) -> Bool { status == 408 || status == 429 || status >= 500 }
+        switch error {
+        case is URLError, OperationError.outcomeUnknown, FeedError.unexpectedUnchanged:
+            return true
+        case let error as APIError:
+            switch error {
+            case .conflict, .unavailable: return true
+            case let .server(status, _, _, _), let .unexpected(status): return retryable(status)
+            case .unauthorized, .forbidden: return false
+            }
+        case let error as RelayWireError:
+            switch error {
+            case .outcomeUnknown, .conflict: return true
+            case let .server(status): return retryable(status)
+            default: return false
+            }
+        default:
+            return false
         }
     }
 

@@ -1073,28 +1073,35 @@ impl Service {
             );
         }
         self.require_device_approval(&e.sender, &device)?;
+        // A read interrupted by a crash or restart has no effect to protect, so it runs
+        // again; an interrupted command stays uncertain and is never applied twice.
+        let interrupted_read = matches!(disposition, Disposition::Executing)
+            && request.method == "GET"
+            && request.body.is_none();
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
                 self.execute_atomic_local(e, &device, &request, &digest)
                     .await?
             }
-            Disposition::Executing => {
+            Disposition::Executing if !interrupted_read => {
                 let bytes = self.encode_response(e, &device, &json!({"status":409,"error":"uncertain","detail":"execution was interrupted; inspect the Mac before retrying this action"}), &request)?;
                 self.journal.complete(&e.sender, &e.request_id, &bytes)?;
                 bytes
             }
-            Disposition::Accepted => {
+            Disposition::Accepted | Disposition::Executing => {
                 // Receipt upload can wait on the relay; re-read durable local
                 // approval and enrollment immediately before loopback dispatch.
                 self.require_device_approval(&e.sender, &device)?;
-                if self.atomic_local(&request) {
+                if !interrupted_read && self.atomic_local(&request) {
                     self.journal
                         .executing_local(&e.sender, &e.request_id, &digest)?;
                     self.execute_atomic_local(e, &device, &request, &digest)
                         .await?
                 } else {
-                    self.journal.executing(&e.sender, &e.request_id, &digest)?;
+                    if !interrupted_read {
+                        self.journal.executing(&e.sender, &e.request_id, &digest)?;
+                    }
                     let result = if guard.saturated {
                         json!({"status":429,"error":"changes_busy"})
                     } else {
@@ -5011,16 +5018,14 @@ agreement_key = "{}"
         .unwrap()
         .unwrap();
         restarted.relay = service.relay.clone();
+        release.add_permits(1);
         restarted.handle(interrupted, &epoch).await.unwrap();
         assert_eq!(
-            opened_results(&service, &phone, &responses).last().unwrap()["error"],
-            "uncertain"
+            opened_results(&service, &phone, &responses).last().unwrap(),
+            &json!({"status":200,"body":{"tick":42}}),
+            "a read the old process left executing is answered, not reported uncertain"
         );
-        assert_eq!(
-            reads.load(Ordering::SeqCst),
-            2,
-            "restart preserves durable uncertainty without dispatch"
-        );
+        assert_eq!(reads.load(Ordering::SeqCst), 3, "the restarted daemon runs the read again");
         local_server.abort();
         relay_server.abort();
         std::fs::remove_dir_all(&service.home).unwrap();
