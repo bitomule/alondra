@@ -5,7 +5,7 @@
 //! the same command path as the resource API.
 
 use alondra_core::domain_v2::{
-    Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError,
+    Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold,
     InteractionId, InteractionPayload, MergeMethod, Revision, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, VIEWS_PROTOCOL};
@@ -783,6 +783,10 @@ fn map_domain_action(
         }
         Verb::Accept => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
+            if held_plan(state, interaction) && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. }) {
+                return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: Hold::APPROVE.into(),
+                    inputs: Default::default(), attachments: vec![] }, stamp("Approved", "Aprobado")));
+            }
             let InteractionPayload::Delivery { targets, acceptance: None, .. } = &interaction.payload else { return None; };
             Some((Command::AcceptDelivery { presentation_id: interaction.id.clone(), targets: targets.clone() }, stamp("Accepted", "Aceptada")))
         }
@@ -803,15 +807,27 @@ fn map_domain_action(
             } else {
                 (state.interactions.get(&InteractionId(action.subject.clone()))?, None)
             };
+            let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
+            let body = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
+            if body.trim().is_empty() && request.input.comments.is_empty() { return None; }
+            if let InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } = &interaction.payload {
+                let option_id = if held_plan(state, interaction) {
+                    Hold::REQUEST_CHANGES.to_owned()
+                } else if matches!(interaction.subject, Some(alondra_core::domain_v2::InteractionSubject::DocumentReview { .. })) {
+                    String::new()
+                } else {
+                    return None;
+                };
+                let inputs = std::collections::BTreeMap::from([(Hold::NOTE.to_owned(), alondra_core::domain_v2::InputValue::Text(body))]);
+                return Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id,
+                    inputs, attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")));
+            }
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
             if let Some(head) = pr_head.as_deref() {
                 if !targets.iter().any(|target| matches!(target, alondra_core::domain_v2::DeliveryTarget::PullRequest { head: target_head, .. } if target_head == head)) {
                     return None;
                 }
             }
-            let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
-            let body = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
-            if body.trim().is_empty() && request.input.comments.is_empty() { return None; }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(), body,
                 attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")))
         }
@@ -871,6 +887,10 @@ fn map_domain_action(
         }
         _ => None,
     }
+}
+
+fn held_plan(state: &alondra_core::domain_v2::DomainState, interaction: &alondra_core::domain_v2::Interaction) -> bool {
+    state.holds.get(&interaction.id) == Some(&Hold::Plan)
 }
 
 fn changed_pr_head(
@@ -1296,6 +1316,74 @@ mod tests {
             map_domain_action(&state, &action, &blank, &[], Lang::En) else { panic!("option answer") };
         assert_eq!(option_id, "yes");
         assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn requesting_changes_on_a_document_question_answers_it_with_the_block_comments() {
+        use alondra_core::domain_v2::{Author, InputValue, Interaction, InteractionSubject, QuestionOption, Recipient, Scope};
+        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        state.interactions.insert("q-1".into(), Interaction {
+            attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
+            author: Author::Agent { agent_id: "a-1".into() }, recipient: Recipient::User, body: "Approve the plan?".into(),
+            blocking: true, subject: Some(InteractionSubject::DocumentReview {
+                document_id: "plan".into(), revision_id: "plan-r1".into() }),
+            payload: InteractionPayload::Question {
+                options: vec![QuestionOption { id: "approve".into(), label: "Approve".into(), description: None, inputs: vec![] }],
+                answer: None,
+            }, revision: 1, order: 1, withdrawn: false,
+        });
+        let request = ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "ios".into(), lang: "es".into(),
+            action_id: String::new(), option_id: None,
+            input: ActionInput { text: Some("Split it in two PRs".into()),
+                comments: vec![Comment { anchor: "p-2".into(), text: "Drop this step".into(), quote: None }],
+                ..Default::default() },
+        };
+        let changes = ActionId::new(Verb::Changes, "q-1", 1, None).unwrap();
+        let Some((Command::AnswerQuestion { interaction_id, option_id, inputs, .. }, stamp)) =
+            map_domain_action(&state, &changes, &request, &[], Lang::Es) else { panic!("changes answer the question") };
+        assert_eq!((interaction_id.0.as_str(), option_id.as_str(), stamp.as_str()), ("q-1", "", "Cambios solicitados"));
+        assert_eq!(inputs.get("text"), Some(&InputValue::Text(
+            "I reviewed your code and have the following comments. Please address them.\n\n1. `p-2` - Drop this step\n\nSplit it in two PRs".into())));
+        state.interactions.get_mut(&"q-1".into()).unwrap().subject = None;
+        assert!(map_domain_action(&state, &changes, &request, &[], Lang::Es).is_none(),
+            "a question about no document is answered, not reviewed");
+    }
+
+    #[test]
+    fn a_held_plan_is_approved_or_sent_back_with_the_comments_on_its_blocks() {
+        use alondra_core::domain_v2::{Author, InputValue, Interaction, Recipient, Scope};
+        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        state.interactions.insert("hold-1".into(), Interaction {
+            attachments: vec![], id: "hold-1".into(), scope: Scope::Task { task_id: "t-1".into() },
+            author: Author::System, recipient: Recipient::User, body: "# Plan\n\n1. Split the lexer".into(),
+            blocking: true, subject: None,
+            payload: InteractionPayload::Question { options: Hold::Plan.options(), answer: None },
+            revision: 1, order: 1, withdrawn: false,
+        });
+        state.holds.insert("hold-1".into(), Hold::Plan);
+        let request = ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "ios".into(), lang: "en".into(),
+            action_id: String::new(), option_id: None,
+            input: ActionInput { comments: vec![Comment { anchor: "p-1".into(), text: "Keep the lexer".into(), quote: None }],
+                ..Default::default() },
+        };
+        let changes = ActionId::new(Verb::Changes, "hold-1", 1, None).unwrap();
+        let Some((Command::AnswerQuestion { option_id, inputs, .. }, _)) =
+            map_domain_action(&state, &changes, &request, &[], Lang::En) else { panic!("changes answer the plan") };
+        assert_eq!(option_id, Hold::REQUEST_CHANGES);
+        assert_eq!(inputs.get(Hold::NOTE), Some(&InputValue::Text(
+            "I reviewed your code and have the following comments. Please address them.\n\n1. `p-1` - Keep the lexer".into())));
+        let approve = ActionId::new(Verb::Accept, "hold-1", 1, None).unwrap();
+        let Some((Command::AnswerQuestion { option_id, inputs, .. }, stamp)) =
+            map_domain_action(&state, &approve, &request, &[], Lang::En) else { panic!("approve answers the plan") };
+        assert_eq!((option_id.as_str(), stamp.as_str()), (Hold::APPROVE, "Approved"));
+        assert!(inputs.is_empty());
+        state.holds.clear();
+        assert!(map_domain_action(&state, &approve, &request, &[], Lang::En).is_none(), "only a held plan is approved");
+        assert!(map_domain_action(&state, &changes, &request, &[], Lang::En).is_none());
     }
 
     #[test]

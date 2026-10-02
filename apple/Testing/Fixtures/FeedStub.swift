@@ -170,6 +170,67 @@ extension Fixtures {
         }
     }
 
+    /// A plan Claude's plan mode held, as the daemon renders it: the whole plan, its Approve and
+    /// Request changes options, and the same two in the bar with block comments.
+    static func heldPlanCard() throws -> ViewDocument {
+        try document("card-question") { object in
+            object["key"] = "card:hold-1"
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
+            items[0]["id"] = "hold-1"
+            items[0]["icon"] = "document"
+            items[0]["link"] = ["kind": "view", "key": "card:hold-1"]
+            items[0]["title"] = "Ship the parser"
+            items[0]["body"] = ["text": "# Ship the parser\n\n1. Split the lexer\n2. Add tests", "truncated": false,
+                                "commentable": false]
+            items[0]["actions"] = [
+                ["id": "ans:hold-1@1", "label": "Answer", "style": "primary", "presentation": "options",
+                 "options": [["id": "approve", "label": "Approve", "style": "primary", "input": ["kind": "none"]],
+                             ["id": "request_changes", "label": "Request changes", "style": "secondary",
+                              "input": ["kind": "text", "placeholder": "Write what to change", "required": false,
+                                        "multiline": true]]],
+                 "input": ["kind": "none"], "attachments": false, "enabled": true, "stamp": "Answered"],
+                ["id": "changes:hold-1@1", "label": "Request changes", "style": "secondary", "presentation": "button",
+                 "input": ["kind": "text", "placeholder": "Describe the changes", "required": true, "multiline": true],
+                 "attachments": true, "comments": ["kind": "blocks"], "enabled": true, "stamp": "Changes requested"],
+                ["id": "accept:hold-1@1", "label": "Approve", "style": "primary", "presentation": "button",
+                 "input": ["kind": "none"], "attachments": false, "enabled": true, "stamp": "Approved"],
+            ]
+            sections[0]["items"] = items
+            object["sections"] = sections
+        }
+    }
+
+    /// A plan the node asked about: the document review card, with the plan behind a content ref, the
+    /// node's options and Request changes with block comments.
+    static func planQuestionCard() throws -> ViewDocument {
+        try document("card-question") { object in
+            object["key"] = "card:plan-r1"
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
+            items[0]["id"] = "plan-r1"
+            items[0]["icon"] = "document"
+            items[0]["link"] = ["kind": "view", "key": "card:plan-r1"]
+            items[0]["title"] = "Plan: one task per node"
+            items[0]["body"] = nil
+            items[0]["actions"] = [
+                ["id": "ans:q-1@1", "label": "Answer", "style": "primary", "presentation": "options",
+                 "options": [["id": "separate", "label": "Approve; messaging in its own PR", "style": "primary",
+                              "input": ["kind": "none"]]],
+                 "input": ["kind": "none"], "attachments": false, "enabled": true, "stamp": "Answered"],
+                ["id": "changes:q-1@1", "label": "Request changes", "style": "secondary", "presentation": "button",
+                 "input": ["kind": "text", "placeholder": "Describe the changes", "required": true, "multiline": true],
+                 "attachments": true, "comments": ["kind": "blocks"], "enabled": true, "stamp": "Changes requested"],
+            ]
+            sections[0]["items"] = items
+            sections.append(["id": "body", "collapsed": false, "items": [[
+                "type": "content_ref", "kind": "document", "title": "Plan: one task per node", "size": 0,
+                "digest": "plan-digest", "fetch": "/document-revisions/plan-r1/content", "commentable": true,
+            ]]])
+            object["sections"] = sections
+        }
+    }
+
     /// A plan to approve or open for review: a document card with its text behind a content ref.
     static func planCard() throws -> ViewDocument {
         try document("card-delivery") { object in

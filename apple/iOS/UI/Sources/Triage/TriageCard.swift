@@ -292,7 +292,7 @@ struct TriageCard: View {
 
     private var controls: some View {
         VStack(spacing: 8) {
-            if isQuestion {
+            if isQuestion || (card.icon == .document && !card.actions.contains { verb($0) == "accept" }) {
                 ForEach(card.actions.filter { $0.presentation == .options }, id: \.label) { action in
                     actionControl(action)
                 }
