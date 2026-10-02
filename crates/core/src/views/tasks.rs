@@ -101,6 +101,9 @@ fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
         .filter_map(|node| node.project.as_deref()).find(|project| *project != "others") {
         row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
     }
+    row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View {
+        key: format!("task:{}", task.id),
+    });
     row.children = task_tree(&tasks, context);
     row
 }

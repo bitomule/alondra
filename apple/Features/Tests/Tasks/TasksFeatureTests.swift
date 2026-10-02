@@ -69,7 +69,7 @@ final class TasksFeatureTests: XCTestCase {
             for index in sections.indices where sections[index]["id"] as? String == "finished" {
                 sections[index]["items"] = [[
                     "type": "row", "id": "r-9", "icon": "mission", "title": "Older request", "depth": 0, "struck": false,
-                    "subtitle": "Finished", "link": ["kind": "view", "key": "request:r-9"],
+                    "subtitle": "Finished", "link": ["kind": "view", "key": "task:t-9"],
                 ]]
                 sections[index]["more"] = ["key": "tasks?section=finished&after=40", "remaining": 2]
             }

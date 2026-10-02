@@ -6,14 +6,16 @@ final class DetailRouteTests: XCTestCase {
     func testEveryServerLinkInTheFixturesOpensAScreen() throws {
         let keys = try Fixtures.linkedKeys()
         XCTAssertFalse(keys.isEmpty, "the walker found no links")
-        let unrouted = keys.filter { DetailRoute.State(key: ViewKey(rawValue: $0), owner: "test") == nil }
+        let requestViewsOfTheMacAndTheTerminal = keys.filter { $0.hasPrefix("request:") }
+        let unrouted = keys.subtracting(requestViewsOfTheMacAndTheTerminal)
+            .filter { DetailRoute.State(key: ViewKey(rawValue: $0), owner: "test") == nil }
         XCTAssertEqual(unrouted, [], "a link the app cannot open")
     }
 
     func testEachKindOfKeyHasItsScreen() {
         let expected: [(String, DetailRoute.Kind)] = [
             ("card:i-1", .card), ("card:github.com/o/r#1", .card), ("document:rev-1", .document),
-            ("pull_request:github.com/o/r#1", .pullRequest), ("task:t-1", .task), ("request:r-1", .request),
+            ("pull_request:github.com/o/r#1", .pullRequest), ("task:t-1", .task),
             ("node:a-1", .node), ("node:orchestrator", .node), ("schedules", .schedules),
             ("schedule:new", .schedule), ("schedule:s-1", .schedule), ("tasks?section=finished&after=20", .tasksPage),
         ]
@@ -31,7 +33,6 @@ final class DetailRouteTests: XCTestCase {
             guard case .review = try route(key) else { return XCTFail("\(key) must open the review") }
         }
         guard case .taskDetail = try route("task:t-1") else { return XCTFail("task") }
-        guard case .requestDetail = try route("request:r-1") else { return XCTFail("request") }
         guard case .schedules = try route("schedules") else { return XCTFail("schedules") }
         guard case .scheduleEditor = try route("schedule:new") else { return XCTFail("new schedule") }
         guard case .scheduleEditor = try route("schedule:s-1") else { return XCTFail("schedule") }
@@ -46,13 +47,13 @@ final class DetailRouteTests: XCTestCase {
     }
 
     func testTheKeyOfARebuiltScreenIsTheKeyItWasOpenedWith() throws {
-        for key in ["card:i-1", "document:rev-1", "task:t-1", "request:r-1", "schedules", "schedule:new", "schedule:s-1", "pull_request:github.com/o/r#1", "node:a-1"] {
+        for key in ["card:i-1", "document:rev-1", "task:t-1", "schedules", "schedule:new", "schedule:s-1", "pull_request:github.com/o/r#1", "node:a-1"] {
             XCTAssertEqual(DetailRoute.State(key: ViewKey(rawValue: key), owner: "test")?.key.rawValue, key)
         }
     }
 
     func testAKeyOutsideTheTableOpensNothing() {
-        for key in ["", "home", "tasks", "fleet", "new_request", "cards:i-1", "taskz:1", "scheduled", "unknown:1"] {
+        for key in ["", "home", "tasks", "fleet", "new_request", "cards:i-1", "request:r-1", "taskz:1", "scheduled", "unknown:1"] {
             XCTAssertNil(DetailRoute.State(key: ViewKey(rawValue: key), owner: "test"), key)
         }
     }

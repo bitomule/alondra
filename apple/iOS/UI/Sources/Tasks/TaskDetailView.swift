@@ -72,15 +72,10 @@ public struct TaskDetailView: View {
                 .foregroundStyle(Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
             if let request = detail.request {
-                Button {
-                    open(request.link)
-                } label: {
-                    Text("from “\(request.text)”")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.leading)
-                }
-                .buttonStyle(.plain)
+                Text("from “\(request.text)”")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.leading)
             }
             if let node = detail.node {
                 Button {

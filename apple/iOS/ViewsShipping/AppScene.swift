@@ -203,8 +203,6 @@ struct RootView<AccountContent: View>: View {
             ViewsScreenView(store: screen, openView: { store.send(.open(tab, $0)) })
         case .taskDetail(let screen):
             TaskDetailView(store: screen)
-        case .requestDetail(let screen):
-            RequestDetailView(store: screen)
         case .schedules(let screen):
             SchedulesView(store: screen)
         case .scheduleEditor(let screen):
