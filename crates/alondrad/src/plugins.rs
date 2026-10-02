@@ -25,19 +25,8 @@ pub fn launch_flags(plugins: &[&Path]) -> Vec<String> {
     for p in plugins {
         out.extend(["--plugin-dir".to_string(), p.display().to_string()]);
     }
-    let bin = plugins.first().map(|p| p.join("bin/alondra"));
-    out.extend(["--settings".to_string(), alondra_core::launch_settings(bin.as_deref())]);
+    out.extend(["--settings".to_string(), alondra_core::launch_settings()]);
     out
-}
-
-/// Print-mode keeps plugin hooks/MCP but has no terminal status line.
-pub fn orchestrator_flags(plugins: &[&Path]) -> Vec<String> {
-    let mut flags = launch_flags(plugins);
-    let last = flags.last_mut().expect("launch settings");
-    let mut settings: Value = serde_json::from_str(last).expect("generated settings");
-    settings.as_object_mut().expect("settings object").remove("statusLine");
-    *last = settings.to_string();
-    flags
 }
 
 #[cfg(test)]
@@ -72,6 +61,6 @@ mod tests {
         assert_eq!(settings["env"][alondra_core::LAUNCHED_ENV], "1");
         assert_eq!(settings["enabledPlugins"]["alondra@alondra"], false);
         assert_eq!(settings["enabledPlugins"]["alondra-orchestrator@alondra"], false);
-        assert_eq!(settings["statusLine"]["command"], "'/r/plugin/bin/alondra' statusline", "the status line reports the context");
+        assert!(settings.get("statusLine").is_none(), "the session keeps the user's own status line");
     }
 }

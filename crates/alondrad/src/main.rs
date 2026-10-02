@@ -36,6 +36,8 @@ mod keeper;
 mod machine;
 mod managed_orchestrator;
 mod markdown;
+mod mods_check;
+mod node_reports;
 mod notifier;
 mod options;
 mod orchestrate;
@@ -55,7 +57,6 @@ mod start_guard;
 mod store;
 mod updates;
 mod uploads;
-mod usage;
 mod v2_client_routes;
 mod views;
 mod wake;
@@ -435,11 +436,12 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.home.clone(),
     ));
     tokio::spawn(watcher::run_live(domain.clone(), watcher::claude_home()));
+    tokio::spawn(mods_check::run(plugins::dir(&watcher::claude_home(), plugins::NODE)));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),
     ));
-    tokio::spawn(machine::run_v2(gauges));
+    tokio::spawn(machine::run_v2(gauges, state_domain.clone()));
     tokio::spawn(client.run(Arc::new(v2_client_routes::GhView)));
     let orchestrator = config.wake.then(|| {
         tokio::spawn(domain_orchestrator::run(

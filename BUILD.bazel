@@ -1,5 +1,12 @@
 exports_files(["Cargo.toml", "Cargo.lock"])
 
+# What Claude Code writes beside a mod it loads with --plugin-dir: never part of the plugin.
+MOD_TYPES = [
+    "plugin/.gitignore",
+    "plugin/tsconfig.json",
+    "plugin/.claude-plugin/types/**",
+]
+
 filegroup(
     name = "plugin_files",
     srcs = glob(
@@ -8,7 +15,17 @@ filegroup(
             "plugin/**",
             "plugin-orchestrator/**",
         ],
-        exclude = ["plugin-orchestrator/bin/**"],
+        exclude = ["plugin-orchestrator/bin/**"] + MOD_TYPES,
     ),
     visibility = ["//deploy/brew:__pkg__"],
+)
+
+sh_test(
+    name = "plugin_mod_test",
+    srcs = ["tools/plugin-mod-test.sh"],
+    args = ["$(rootpath plugin/.claude-plugin/plugin.json)"],
+    data = glob(["plugin/**"], exclude = MOD_TYPES),
+    env_inherit = ["PATH"],
+    size = "small",
+    tags = ["local"],
 )

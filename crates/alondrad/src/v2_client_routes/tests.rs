@@ -881,3 +881,70 @@ async fn resolving_conflicts_is_refused_before_anything_is_typed_when_it_cannot_
     assert_eq!(parse_write(path), Some(Write::ResolveConflicts("pr-1".into())));
     assert!(!atomic_write_path(path), "typing into a session is never replayed");
 }
+
+async fn view_json(fixture: &Fixture, key: &str, lang: &str) -> Value {
+    let path = format!("/views/{key}?protocol={}&client=ios&lang={lang}", alondra_core::views::VIEWS_PROTOCOL);
+    let response = crate::views::routes::relay(&fixture.client, "device:test", &path).await;
+    assert_eq!(response.status(), StatusCode::OK, "{path}");
+    serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap()).unwrap()
+}
+
+fn node_row<'a>(view: &'a Value, agent: &str) -> &'a Value {
+    view["sections"].as_array().unwrap().iter()
+        .flat_map(|section| section["items"].as_array().unwrap())
+        .find(|item| item["id"] == agent)
+        .unwrap_or_else(|| panic!("no row for {agent} in {view}"))
+}
+
+fn badges(row: &Value) -> Vec<(String, String)> {
+    row["badges"].as_array().unwrap().iter()
+        .map(|badge| (badge["text"].as_str().unwrap().to_owned(), badge["tone"].as_str().unwrap().to_owned()))
+        .collect()
+}
+
+#[tokio::test]
+async fn fleet_and_node_views_show_what_the_node_mods_report() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    let mods = &fixture.domain.live.mods;
+    let report = |session: &str, report: Value| {
+        let mut report = report;
+        report["session_id"] = json!(session);
+        mods.apply(serde_json::from_value(report).unwrap(), alondra_core::now_millis());
+    };
+    let hello = |session: &str| serde_json::from_value(json!({"session_id": session, "version": "2.1.287"})).unwrap();
+    mods.connect(hello("agent-a"), 1);
+    report("agent-a", json!({"event": "turn.start", "turn_id": "t1"}));
+    report("agent-a", json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1",
+        "input": {"command": "bazel test //crates/..."}}));
+    report("agent-a", json!({"event": "session.measure", "context": {"tokens": 850000, "window": 1000000, "percent": 85},
+        "rate_limits": [], "cost_usd": 0.42}));
+    let b = mods.connect(hello("agent-b"), 2);
+    report("agent-b", json!({"event": "turn.complete", "turn_id": "t2", "answer": "Stopped halfway through the parser", "aborted": true}));
+    mods.disconnect("agent-b", b);
+
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    let a = node_row(&fleet, "agent-a");
+    assert_eq!(a["subtitle"], "Bash: bazel test //crates/...", "the tool the node runs now");
+    let a_badges = badges(a);
+    assert!(a_badges.contains(&("Context 85%".into(), "warning".into())), "{a_badges:?}");
+    assert!(a_badges.contains(&("$0.42".into(), "neutral".into())), "{a_badges:?}");
+    assert!(!a_badges.iter().any(|(text, _)| text == "Unreachable"));
+    let b_badges = badges(node_row(&fleet, "agent-b"));
+    assert!(b_badges.contains(&("Unreachable".into(), "critical".into())), "{b_badges:?}");
+    assert!(b_badges.contains(&("Interrupted".into(), "warning".into())), "{b_badges:?}");
+
+    let node = view_json(&fixture, "node:agent-b", "en").await;
+    let facts = node["sections"].as_array().unwrap().iter().find(|section| section["id"] == "readings").unwrap()["items"][0]["items"].as_array().unwrap();
+    assert!(facts.iter().any(|fact| fact["label"] == "Connection" && fact["value"] == "Unreachable" && fact["tone"] == "critical"), "{facts:?}");
+    assert!(facts.iter().any(|fact| fact["label"] == "Last turn" && fact["value"] == "Interrupted"), "{facts:?}");
+    let said = node["sections"].as_array().unwrap().iter().find(|section| section["id"] == "last_message").unwrap();
+    assert_eq!(said["items"][0]["text"], "Stopped halfway through the parser", "the answer is the mod's, not the Stop hook's");
+
+    let node = view_json(&fixture, "node:agent-a", "es").await;
+    let facts = node["sections"].as_array().unwrap().iter().find(|section| section["id"] == "readings").unwrap()["items"][0]["items"].as_array().unwrap();
+    assert!(facts.iter().any(|fact| fact["label"] == "Contexto" && fact["value"] == "85% de 1M tokens"), "{facts:?}");
+    assert!(facts.iter().any(|fact| fact["label"] == "Coste" && fact["value"] == "0,42 $"), "{facts:?}");
+    assert!(facts.iter().any(|fact| fact["label"] == "Ejecutando" && fact["value"] == "Bash: bazel test //crates/..."), "{facts:?}");
+}

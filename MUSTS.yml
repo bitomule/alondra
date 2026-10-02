@@ -38,12 +38,17 @@ checks:
       - "apple/push_keychain_group_test.py"
       - "apple/**/*.entitlements"
       - "apple/**/Info.plist"
+      - "plugin/**"
+      - "tools/plugin-mod-test.sh"
+      - "deploy/brew/**"
     with:
       targets:
         - //crates/...
         - //apple:no_sleep_wording_test
         - //apple:spanish_catalog_test
         - //apple:push_keychain_group_test
+        - //:plugin_mod_test
+        - //deploy/brew:plugin_payload_test
 
   apple-tests:
     uses: bazel/test

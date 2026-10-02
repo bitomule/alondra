@@ -18,6 +18,7 @@ TARGETS = ('aarch64-apple-darwin',)
 PUBLIC_FILES = {
     'alondra', 'alondrad', '.claude-plugin/marketplace.json',
     'plugin/bin/alondra', 'plugin/.mcp.json', 'plugin/hooks/hooks.json',
+    'plugin/hooks/register.ts', 'plugin/tests/register.test.ts',
     'plugin/.claude-plugin/plugin.json', 'plugin/skills/alondra/SKILL.md',
     'plugin-orchestrator/.mcp.json', 'plugin-orchestrator/.claude-plugin/plugin.json',
     'plugin-orchestrator/skills/alondra-orchestrator/SKILL.md',

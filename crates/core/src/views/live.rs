@@ -72,6 +72,19 @@ pub struct LiveNode {
     pub state_since: Option<String>,
     pub last_message: Option<String>,
     pub last_message_at: Option<String>,
+    /// The rest is what the node mod reports.
+    #[serde(default)]
+    pub last_turn_aborted: bool,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub context_percent: Option<u32>,
+    #[serde(default)]
+    pub context_window: Option<u64>,
+    #[serde(default)]
+    pub cost_cents: Option<u64>,
+    #[serde(default)]
+    pub unreachable: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePullRequest {

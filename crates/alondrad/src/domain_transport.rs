@@ -61,7 +61,14 @@ async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background:
     }
     let mut input = vec![0; len as usize];
     stream.read_exact(&mut input).await?;
-    let envelope: Envelope = serde_json::from_slice(&input).context("invalid local hook envelope")?;
+    let mut frame: Value = serde_json::from_slice(&input).context("invalid local hook envelope")?;
+    if let Some(report) = frame.get_mut("node_event").map(Value::take) {
+        return node_event(stream, domain, report).await;
+    }
+    if let Some(hello) = frame.get_mut("node_connect").map(Value::take) {
+        return node_connection(stream, domain, hello).await;
+    }
+    let envelope: Envelope = serde_json::from_value(frame).context("invalid local hook envelope")?;
     let reply = respond(domain, &envelope.payload, background)?;
     let (body, claims) = match reply {
         Reply::Plain(body) => (body, vec![]),
@@ -100,6 +107,49 @@ async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background:
     };
     finish_all(domain, &claims, state, reason)?;
     sent
+}
+
+async fn refuse(mut stream: UnixStream, reason: String) -> Result<()> {
+    stream.write_all(&400u16.to_be_bytes()).await?;
+    stream.write_all(reason.as_bytes()).await?;
+    stream.shutdown().await?;
+    bail!(reason)
+}
+
+/// One report of a node mod, as `alondra node event` hands it over.
+async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Value) -> Result<()> {
+    let envelope: crate::node_reports::Envelope = match serde_json::from_value(report) {
+        Ok(envelope) => envelope,
+        Err(error) => return refuse(stream, format!("invalid node report: {error}")).await,
+    };
+    domain.live.mods.apply(envelope, alondra_core::now_millis());
+    stream.write_all(&200u16.to_be_bytes()).await?;
+    stream.write_all(b"{}").await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+/// The connection a node mod holds open for its session's life. Nothing travels down it yet:
+/// while it is open the node is reachable, and the moment it closes, from either side, it is not.
+async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: Value) -> Result<()> {
+    let hello: crate::node_reports::Hello = match serde_json::from_value(hello) {
+        Ok(hello) => hello,
+        Err(error) => return refuse(stream, format!("invalid node connection: {error}")).await,
+    };
+    let session = hello.session_id.clone();
+    let number = domain.live.mods.connect(hello, alondra_core::now_millis());
+    let held = async {
+        stream.write_all(&200u16.to_be_bytes()).await?;
+        let mut buffer = [0u8; 256];
+        while stream.read(&mut buffer).await? > 0 {}
+        Ok::<(), std::io::Error>(())
+    }
+    .await;
+    domain.live.mods.disconnect(&session, number);
+    held.or_else(|error| match error.kind() {
+        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe => Ok(()),
+        _ => Err(error.into()),
+    })
 }
 
 enum Reply {

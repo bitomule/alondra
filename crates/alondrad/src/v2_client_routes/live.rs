@@ -1,6 +1,6 @@
-//! What the daemon observes of each Claude session through its hooks. The domain never
-//! records it: it is the live state a client shows next to the projection, kept in memory
-//! with the legacy reducer so a node keeps the shape every client already reads.
+//! What the daemon observes of each Claude session through its hooks and its node mod. The
+//! domain never records it: it is the live state a client shows next to the projection, kept in
+//! memory with the legacy reducer so a node keeps the shape every client already reads.
 use alondra_core::{Event, HookEvent, Node, View, now_millis};
 use serde_json::{Value, json};
 use std::collections::HashMap;
@@ -11,6 +11,7 @@ pub(crate) struct Live {
     view: Mutex<View>,
     sequence: AtomicU64,
     presence: Mutex<HashMap<String, i64>>,
+    pub(crate) mods: crate::node_reports::Reports,
 }
 
 impl Live {

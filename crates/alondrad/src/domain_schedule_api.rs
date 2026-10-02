@@ -369,7 +369,7 @@ mod tests {
         async fn session_of(&self, _: &str) -> Option<String> {
             Some("ab1234cd-0000-4000-8000-000000000000".into())
         }
-        fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
+        async fn stop(&self, _: &str) {}
         fn plugin(&self) -> Option<std::path::PathBuf> { Some("/synthetic/plugin".into()) }
     }
 
@@ -406,6 +406,7 @@ mod tests {
         let detail = read(&fixture.domain, &path);
         assert_eq!(detail["body"]["schedule"]["status"], "launching");
         assert_eq!(detail["body"]["schedule"]["revision"], 2);
+        fixture.domain.live.mods.loaded_in("ab1234cd-0000-4000-8000-000000000000");
         crate::domain_schedule_runner::run_cycle(&fixture.domain, &fixture.home, false, &FakeClaude).await.unwrap();
         let finished = fixture.domain.state().unwrap();
         assert_eq!(finished.schedule.runs[&d::ScheduleRunId(run_id.into())].state, d::ScheduleRunState::Sent);

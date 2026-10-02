@@ -642,7 +642,7 @@ mod tests {
                 Ok("started".into())
             }
 
-            fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
+            async fn stop(&self, _: &str) {}
             fn plugin(&self) -> Option<std::path::PathBuf> { Some("/tmp/alondra-test-plugin".into()) }
         }
 
@@ -690,7 +690,7 @@ mod tests {
             async fn run(&self, _cwd: &str, _args: &[String]) -> Result<String, crate::orchestrate::Refusal> {
                 Err((StatusCode::BAD_GATEWAY, "launcher unavailable".into()))
             }
-            fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
+            async fn stop(&self, _: &str) {}
             fn plugin(&self) -> Option<std::path::PathBuf> { Some("/tmp/alondra-test-plugin".into()) }
         }
 

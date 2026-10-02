@@ -53,6 +53,8 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertEqual(detail.state, "Waiting for an answer")
         XCTAssertEqual(detail.stateTone, .warning)
         XCTAssertEqual(detail.folder, "/demo/Demo Garden/ios")
+        XCTAssertEqual(detail.readings.map(\.label), ["Context", "Cost"])
+        XCTAssertEqual(detail.readings.map(\.value), ["42% of 1M tokens", "$1.25"])
         XCTAssertEqual(detail.waiting.count, 1)
         XCTAssertEqual(detail.needs?.text, "A decision on the welcome copy")
         XCTAssertEqual(detail.lastMessage?.text, "The simulator pass completed successfully.")

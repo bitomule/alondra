@@ -5,24 +5,20 @@ use std::time::Duration;
 use alondra_core::{Machine, now_millis};
 use sysinfo::{Disks, System};
 
-use crate::hub::Hub;
-
 const UNRELIABLE_LOAD: f64 = 50.0;
-
-pub async fn run(hub: Arc<Hub>) {
-    sample_loop(|machine, usage| hub.set_machine(machine, usage)).await
-}
 
 /// The latest gauges of the resource API daemon, read by `/daemon` for the TUI header.
 pub(crate) type Gauges = Arc<std::sync::Mutex<Option<(Machine, Option<alondra_core::usage::Usage>)>>>;
 
-pub(crate) async fn run_v2(gauges: Gauges) {
-    sample_loop(|machine, usage| {
-        *gauges.lock().expect("machine gauges poisoned") = Some((machine, usage.cloned()));
+/// The plan's limits travel with the machine's gauges, read from what the node mods measured.
+pub(crate) async fn run_v2(gauges: Gauges, domain: Arc<crate::domain_runtime::DomainRuntime>) {
+    sample_loop(|machine| {
+        let usage = domain.live.mods.usage(machine.at);
+        *gauges.lock().expect("machine gauges poisoned") = Some((machine, usage));
     }).await
 }
 
-async fn sample_loop(mut publish: impl FnMut(Machine, Option<&alondra_core::usage::Usage>)) {
+async fn sample_loop(mut publish: impl FnMut(Machine)) {
     let mut sys = System::new();
     let mut disks = Disks::new_with_refreshed_list();
     let mut pressure: Option<u32> = None;
@@ -52,8 +48,7 @@ async fn sample_loop(mut publish: impl FnMut(Machine, Option<&alondra_core::usag
             disk_available: root.map(|d| d.available_space()).unwrap_or(0),
             unreliable: load.one > UNRELIABLE_LOAD,
         };
-        let usage = crate::usage::current(&crate::watcher::claude_home());
-        publish(machine, usage.as_ref());
+        publish(machine);
         round += 1;
         tokio::time::sleep(Duration::from_secs(10)).await;
     }

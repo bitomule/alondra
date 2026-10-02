@@ -277,9 +277,37 @@ fn notification_checks(home: &Path) -> Vec<Check> {
 }
 
 pub fn claude_version_check(out: Option<&str>) -> Check {
+    let min = alondra_core::mods::CLAUDE_MIN_TEXT;
     match out.map(str::trim).filter(|v| !v.is_empty()) {
-        Some(v) => check("claude", Status::Pass, v.to_string(), ""),
+        Some(v) if alondra_core::mods::runs_mods(v) => check("claude", Status::Pass, v.to_string(), ""),
+        Some(v) => check("claude", Status::Fail,
+            trf!("{v} cannot run Alondra's node mod: nodes need Claude Code {min} or later",
+                "{v} no puede ejecutar el mod de nodo de Alondra: los nodos necesitan Claude Code {min} o posterior"),
+            "claude update"),
         None => check("claude", Status::Fail, tr!("Claude Code (`claude`) is not on PATH", "Claude Code (`claude`) no está en el PATH"), "https://docs.claude.com/claude-code"),
+    }
+}
+
+/// The node plugin's mod as Claude Code reads it: `claude plugin validate --strict` and its own
+/// tests under `claude plugin test`, which also fail when hooks modules are turned off.
+pub fn mods_check(plugin: Option<&Path>, validate: Option<(bool, String)>, test: Option<(bool, String)>) -> Check {
+    let Some(plugin) = plugin else {
+        return check("mods", Status::Fail, tr!("Alondra's node plugin was not found", "No se encuentra el plugin de nodo de Alondra"), "alondra setup");
+    };
+    let p = plugin.display();
+    let (validate_fix, test_fix) = (format!("claude plugin validate --strict {p}"), format!("claude plugin test {p}"));
+    match (validate, test) {
+        (None, _) => check("mods", Status::Fail, tr!("claude plugin validate did not finish", "claude plugin validate no terminó"), validate_fix),
+        (Some((false, text)), _) => {
+            let why = alondra_core::mods::tail(&text);
+            check("mods", Status::Fail, trf!("the node mod does not validate: {why}", "el mod de nodo no pasa la validación: {why}"), validate_fix)
+        }
+        (_, None) => check("mods", Status::Fail, tr!("claude plugin test did not finish", "claude plugin test no terminó"), test_fix),
+        (_, Some((false, text))) => {
+            let why = alondra_core::mods::tail(&text);
+            check("mods", Status::Fail, trf!("the node mod's tests fail: {why}", "las pruebas del mod de nodo fallan: {why}"), test_fix)
+        }
+        _ => check("mods", Status::Pass, tr!("the node mod validates and its tests pass", "el mod de nodo pasa la validación y sus pruebas"), ""),
     }
 }
 
@@ -381,6 +409,19 @@ pub fn run(json_out: bool) -> Result<()> {
     let plugins = context.as_ref().ok().and_then(setup::plugin_list);
     let marketplace = context.as_ref().is_ok_and(setup::has_marketplace);
     checks.push(plugin_check(plugins.as_ref(), marketplace, repo.as_deref()));
+    let node_plugin = context.as_ref().ok().and_then(setup::marketplace_path).map(|root| root.join("plugin"))
+        .filter(|dir| dir.join(".claude-plugin/plugin.json").is_file());
+    let claude_on = |args: &[&str], timeout: Duration| context.as_ref().ok().and_then(|c| c.command().ok())
+        .and_then(|mut cmd| { cmd.args(args); command_output(cmd, timeout) });
+    let (validate, test) = match &node_plugin {
+        Some(dir) => {
+            let dir = dir.display().to_string();
+            (claude_on(&["plugin", "validate", "--strict", &dir], Duration::from_secs(60)),
+                claude_on(&["plugin", "test", &dir], Duration::from_secs(120)))
+        }
+        None => (None, None),
+    };
+    checks.push(mods_check(node_plugin.as_deref(), validate, test));
 
     let tmux = output("tmux", &["-V"], Duration::from_secs(5)).filter(|(ok, _)| *ok).map(|(_, t)| t);
     checks.push(tmux_check(tmux.as_deref(), local.wake));
@@ -507,7 +548,25 @@ mod tests {
         assert_eq!(hooks_port_check(47897).map(|c| c.status), Some(Status::Warn));
         assert_eq!(tmux_check(None, true).status, Status::Fail);
         assert_eq!(tmux_check(None, false).status, Status::Warn);
-        assert_eq!(claude_version_check(Some("2.1.280 (Claude Code)\n")).detail, "2.1.280 (Claude Code)");
+        assert_eq!(claude_version_check(Some("2.1.287 (Claude Code)\n")).detail, "2.1.287 (Claude Code)");
+        let old = claude_version_check(Some("2.1.280 (Claude Code)\n"));
+        assert_eq!((old.status, old.fix.as_str()), (Status::Fail, "claude update"), "nodes need mods");
+        assert!(old.detail.contains("2.1.287"), "{}", old.detail);
+    }
+
+    #[test]
+    fn the_node_mod_must_validate_and_pass_its_tests() {
+        let plugin = Path::new("/r/plugin");
+        let ok = || Some((true, String::new()));
+        assert_eq!(mods_check(Some(plugin), ok(), ok()).status, Status::Pass);
+        let invalid = mods_check(Some(plugin), Some((false, "❯ author: No author\n✘ Validation failed".into())), ok());
+        assert_eq!((invalid.status, invalid.fix.as_str()), (Status::Fail, "claude plugin validate --strict /r/plugin"));
+        assert!(invalid.detail.contains("Validation failed"), "{}", invalid.detail);
+        let off = mods_check(Some(plugin), ok(), Some((false, "claude plugin test: hooks modules are turned off: disableAllHooks".into())));
+        assert_eq!((off.status, off.fix.as_str()), (Status::Fail, "claude plugin test /r/plugin"));
+        assert!(off.detail.contains("hooks modules are turned off"), "{}", off.detail);
+        assert_eq!(mods_check(Some(plugin), ok(), None).status, Status::Fail);
+        assert_eq!(mods_check(None, ok(), ok()).fix, "alondra setup");
     }
 
     #[test]

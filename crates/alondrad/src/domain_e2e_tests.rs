@@ -108,6 +108,18 @@ fn hook(home: &Path, payload: Value) -> Value {
     if text.trim().is_empty() { json!({}) } else { serde_json::from_str(text.trim()).unwrap() }
 }
 
+/// The fake session's node mod: what `plugin/hooks/register.ts` runs for each report.
+fn node_event(home: &Path, report: Value) {
+    let mut child = Process::new(alondra_binary())
+        .args(["node", "event"])
+        .env("ALONDRA_HOME", home)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().unwrap();
+    child.stdin.as_mut().unwrap().write_all(report.to_string().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
 const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
 
 struct CapturingLauncher(Mutex<Vec<Vec<String>>>);
@@ -119,7 +131,7 @@ impl crate::orchestrate::Launcher for CapturingLauncher {
     async fn session_of(&self, short: &str) -> Option<String> {
         (short == "ab1234").then(|| SESSION.to_owned())
     }
-    fn usage(&self) -> Option<alondra_core::usage::Usage> { None }
+    async fn stop(&self, _: &str) {}
     fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
 }
 
@@ -151,6 +163,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
         now: alondra_core::now_millis(), next_after_now: None, expected_schedule_revision: None,
     });
     let launcher = CapturingLauncher(Mutex::new(vec![]));
+    node_event(&home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work"}));
     crate::domain_schedule_runner::run_cycle(&daemon.domain, &home, false, &launcher).await.unwrap();
     let args = launcher.0.lock().unwrap().pop().expect("one launch");
     let settings = args.windows(2).find(|pair| pair[0] == "--settings").unwrap()[1].clone();
@@ -220,6 +233,86 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     assert!(refused && text.contains("forbidden"), "{text}");
     assert!(!daemon.domain.state().unwrap().agents[&AgentId(session.clone())].connected);
     assert!(!Path::new(&settings).exists(), "the session's settings file goes with it");
+    daemon.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+/// The node mod's connection: the real `alondra node connect`, holding the hook socket open.
+fn connect(home: &Path) -> (std::process::Child, std::io::BufReader<std::process::ChildStdout>) {
+    let mut child = Process::new(alondra_binary())
+        .args(["node", "connect"])
+        .env("ALONDRA_HOME", home)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null())
+        .spawn().unwrap();
+    let hello = json!({"session_id": SESSION, "version": "2.1.287", "cwd": "/work"});
+    child.stdin.take().unwrap().write_all(hello.to_string().as_bytes()).unwrap();
+    let mut stdout = std::io::BufReader::new(child.stdout.take().unwrap());
+    let mut line = String::new();
+    std::io::BufRead::read_line(&mut stdout, &mut line).unwrap();
+    assert_eq!(line, "connected\n");
+    (child, stdout)
+}
+
+async fn eventually(what: &str, condition: impl Fn() -> bool) {
+    for _ in 0..500 {
+        if condition() {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    panic!("never happened: {what}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liveness() {
+    let root = std::env::temp_dir().join(format!("alondra-v2-mods-{}", crate::auth::random_hex(8)));
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let daemon = Daemon::start(&home).await;
+    let mods = &daemon.domain.live.mods;
+
+    let (mut held, _) = connect(&home);
+    eventually("the connection is registered", || mods.session(SESSION).is_some_and(|s| s.connection.is_some())).await;
+    let session = mods.session(SESSION).unwrap();
+    assert_eq!(session.version.as_deref(), Some("2.1.287"), "a connection says the mod loaded");
+    assert!(!session.unreachable());
+
+    for report in [
+        json!({"event": "turn.start", "turn_id": "t1"}),
+        json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "cargo test"}}),
+        json!({"event": "session.measure", "context": {"tokens": 54944, "window": 1000000, "percent": 5},
+            "rate_limits": [{"kind": "seven_day", "percent_used": 78, "resets_at": "2026-10-05T00:00:00Z"}], "cost_usd": 1.25}),
+    ] {
+        let mut report = report;
+        report["session_id"] = json!(SESSION);
+        node_event(&home, report);
+    }
+    let session = mods.session(SESSION).unwrap();
+    assert_eq!(session.tool.as_ref().and_then(|tool| tool.summary.as_deref()), Some("cargo test"));
+    assert_eq!(session.context.as_ref().and_then(|context| context.percent), Some(5.0));
+    assert_eq!(session.cost_usd, Some(1.25));
+    assert_eq!(mods.usage(alondra_core::now_millis()).map(|usage| usage.week_percent), Some(78.0));
+
+    held.kill().unwrap();
+    held.wait().unwrap();
+    eventually("the closed connection makes the node unreachable", || mods.session(SESSION).unwrap().unreachable()).await;
+
+    let (mut again, _) = connect(&home);
+    eventually("a new connection makes it reachable again", || !mods.session(SESSION).unwrap().unreachable()).await;
+    node_event(&home, json!({"session_id": SESSION, "event": "session.end"}));
+    assert!(!mods.session(SESSION).unwrap().unreachable(), "an ended session is not unreachable");
+    again.kill().unwrap();
+    again.wait().unwrap();
+
+    let mut bad = Process::new(alondra_binary())
+        .args(["node", "event"])
+        .env("ALONDRA_HOME", &home)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().unwrap();
+    bad.stdin.take().unwrap().write_all(br#"{"session_id": "s", "event": "turn.started"}"#).unwrap();
+    let refused = bad.wait_with_output().unwrap();
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("invalid node report"), "{}", String::from_utf8_lossy(&refused.stderr));
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }

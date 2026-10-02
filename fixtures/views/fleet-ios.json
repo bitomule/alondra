@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v74b48873f3459da7",
+  "version": "vf242127b57f952cb",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -107,6 +107,14 @@
             {
               "text": "Waiting for an answer",
               "tone": "warning"
+            },
+            {
+              "text": "Context 42%",
+              "tone": "neutral"
+            },
+            {
+              "text": "$1.25",
+              "tone": "neutral"
             }
           ],
           "trailing": {

@@ -15,8 +15,8 @@ mod service_client;
 mod client_pair;
 mod runtime;
 mod setup;
+mod node;
 mod setup_projects;
-mod statusline;
 mod state;
 mod tui;
 mod update;
@@ -136,9 +136,12 @@ enum Cmd {
     /// Orchestrator MCP server, started by its separate plugin.
     #[command(hide = true)]
     McpOrchestrator,
-    /// Status line of the sessions Alondra launches: reports their context, then shows the user's own
+    /// What the node mod runs to report a session to alondrad and to hold its connection open.
     #[command(hide = true)]
-    Statusline,
+    Node {
+        #[command(subcommand)]
+        command: node::Cmd,
+    },
     /// Retired: sessions started with an older plugin still call it from their Stop hook
     #[command(hide = true)]
     Inbox,
@@ -207,7 +210,7 @@ fn main() -> Result<()> {
         Some(Cmd::McpNode) => mcp::serve_node(),
         Some(Cmd::McpOrchestrator) => mcp::serve_orchestrator(),
         Some(Cmd::Hook) => hook(),
-        Some(Cmd::Statusline) => statusline::run(),
+        Some(Cmd::Node { command }) => node::run(command),
         Some(Cmd::Inbox) => Ok(()),
         Some(Cmd::Keys) => keys_probe(),
     }

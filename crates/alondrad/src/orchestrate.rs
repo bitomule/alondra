@@ -36,9 +36,12 @@ pub trait Launcher: Sync {
         async { Err((StatusCode::SERVICE_UNAVAILABLE, "this launcher cannot carry a producer capability".into())) }
     }
 
-    /// The subscription's usage, which can refuse a launch.
-    fn usage(&self) -> Option<alondra_core::usage::Usage> {
-        crate::usage::current(&crate::watcher::claude_home())
+    /// Stops a launched session whose node mod never loaded, so it does not work unseen.
+    fn stop(&self, short: &str) -> impl Future<Output = ()> + Send;
+
+    /// How long a launched session has to say its node mod loaded.
+    fn mods_deadline(&self) -> std::time::Duration {
+        crate::node_reports::MODS_DEADLINE
     }
 
     /// The node plugin every launched session loads.
@@ -77,6 +80,17 @@ impl Launcher for ClaudeCli {
             Err(_) => Err((StatusCode::GATEWAY_TIMEOUT, format!("claude --bg did not respond within {} s", alondra_core::LAUNCH_TIMEOUT.as_secs()))),
         }
     }
+
+    async fn stop(&self, short: &str) {
+        let stop = tokio::process::Command::new("claude").args(["stop", short]).kill_on_drop(true)
+            .stdin(std::process::Stdio::null()).output();
+        match tokio::time::timeout(std::time::Duration::from_secs(20), stop).await {
+            Ok(Ok(out)) if out.status.success() => (),
+            Ok(Ok(out)) => log!("claude stop {short} failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
+            Ok(Err(error)) => log!("claude stop {short} failed: {error}"),
+            Err(_) => log!("claude stop {short} did not answer in 20 s"),
+        }
+    }
 }
 
 pub struct Launch {
@@ -95,7 +109,7 @@ pub struct Launch {
 
 /// Launches a node and records the launch; with `task`, the node takes that task.
 pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Value, Refusal> {
-    if let Some(reason) = crate::http::launch_blocked(launcher.usage().as_ref(), l.over_pace_ok) {
+    if let Some(reason) = crate::http::launch_blocked(None, l.over_pace_ok) {
         return Err((StatusCode::CONFLICT, reason));
     }
     if !Path::new(&l.cwd).is_dir() {
@@ -747,9 +761,7 @@ mod tests {
             Ok(self.printed.unwrap_or("started").into())
         }
 
-        fn usage(&self) -> Option<alondra_core::usage::Usage> {
-            None
-        }
+        async fn stop(&self, _: &str) {}
 
         fn plugin(&self) -> Option<std::path::PathBuf> {
             Some("/Users/x/Projects/alondra/plugin".into())
