@@ -2,18 +2,25 @@ use std::io::{Read, Write};
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};
 
-#[test]
-fn managed_sessions_redirect_cron_create_to_alondra_schedules() {
-    let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
-        .arg("hook")
-        .env("ALONDRA_LAUNCHED", "1")
-        .stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
+fn cron_create_refusal(orchestrator: bool) -> String {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_alondra"));
+    command.arg("hook").env("ALONDRA_LAUNCHED", "1").env_remove("ALONDRA_ORCHESTRATOR_EXECUTION");
+    if orchestrator { command.env("ALONDRA_ORCHESTRATOR_EXECUTION", "run-1"); }
+    let mut child = command.stdin(Stdio::piped()).stdout(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(br#"{"hook_event_name":"PreToolUse","tool_name":"CronCreate","tool_input":{"cron":"0 9 * * 1"}}"#).unwrap();
     let output = child.wait_with_output().unwrap();
     assert!(output.status.success());
     let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
-    assert!(reply["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("schedule_create"));
+    reply["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().to_owned()
+}
+
+#[test]
+fn the_orchestrator_is_sent_to_schedule_create_and_a_node_to_the_orchestrator() {
+    assert!(cron_create_refusal(true).contains("schedule_create"));
+    let node = cron_create_refusal(false);
+    assert!(!node.contains("schedule_create"), "{node}");
+    assert!(node.contains("ask") && node.contains("orchestrator"), "{node}");
 }
 
 #[test]

@@ -253,7 +253,12 @@ fn hook() -> Result<()> {
         && payload.get("tool_name").and_then(serde_json::Value::as_str) == Some("CronCreate")
         && !short_session_poll(&payload)
     {
-        let output = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": "This session is managed by Alondra. Use the alondra schedule_create tool for a durable task visible in Alondra. CronCreate only lives inside this Claude session and expires after seven days."}});
+        let reason = if std::env::var("ALONDRA_ORCHESTRATOR_EXECUTION").is_ok() {
+            "This session is managed by Alondra. Use the alondra schedule_create tool for a durable task visible in Alondra. CronCreate only lives inside this Claude session and expires after seven days."
+        } else {
+            "This session is managed by Alondra. CronCreate only lives inside this Claude session and expires after seven days. If this work should run on a schedule, ask the orchestrator for a durable Alondra schedule: Alondra's ask tool with recipient kind orchestrator."
+        };
+        let output = json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason}});
         println!("{output}");
         return Ok(());
     }
