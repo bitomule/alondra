@@ -192,14 +192,76 @@ final class FleetFeatureTests: XCTestCase {
         await store.send(.follow(.url(url: "https://example.com")))
     }
 
-    func testPullingToRefreshObservesAgainOnlyWhatIsOpen() async throws {
-        let observed = LockIsolated<[ViewKey]>([])
-        let store = store(observed: observed)
+    private func observingStore(
+        load: @escaping @Sendable (ViewKey, String?) async throws -> ViewFetch
+    ) throws -> TestStoreOf<FleetFeature> {
+        let first = try Fixtures.document("fleet-ios")
+        let open = LockIsolated<[AsyncThrowingStream<ViewFetch, any Error>.Continuation]>([])
+        let store = TestStore(initialState: FleetFeature.State()) { FleetFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = { _ in
+                AsyncThrowingStream { continuation in
+                    open.withValue { $0.append(continuation) }
+                    continuation.yield(.document(first))
+                }
+            }
+            $0.viewsClient.load = load
+        }
+        store.exhaustivity = .off
+        return store
+    }
 
-        await store.send(.refresh)
-        await store.skipReceivedActions()
-        await store.finish()
+    func testPullToRefreshFinishesWhileTheFleetStaysObserved() async throws {
+        let fresh = try Fixtures.document("fleet-ios") { $0["version"] = "vfleet-fresh" }
+        let loads = LockIsolated<[ViewKey]>([])
+        let store = try observingStore { key, known in
+            XCTAssertNil(known, "a refresh never asks for 'unchanged'")
+            loads.withValue { $0.append(key) }
+            return .document(fresh)
+        }
+        await store.send(.task)
+        await store.receive(\.screen.loaded)
 
-        XCTAssertEqual(observed.value, [.fleet])
+        let refresh = await store.send(.refresh)
+        await refresh.finish(timeout: .seconds(2))
+
+        await store.receive(\.screen.loaded)
+        XCTAssertEqual(store.state.screen.document?.version, "vfleet-fresh")
+        XCTAssertEqual(loads.value, [.fleet])
+        await store.send(.screen(.stop))
+    }
+
+    func testPullToRefreshAlsoReloadsAnOpenSearch() async throws {
+        let fleet = try Fixtures.document("fleet-ios") { $0["version"] = "vfleet-fresh" }
+        let search = try Fixtures.document("fleet-ios") { $0["key"] = "search?q=ios"; $0["version"] = "vsearch-fresh" }
+        let loads = LockIsolated<[ViewKey]>([])
+        let store = try observingStore { key, _ in
+            loads.withValue { $0.append(key) }
+            return .document(key == .fleet ? fleet : search)
+        }
+        await store.send(.queryChanged("ios"))
+        await clock.advance(by: .milliseconds(250))
+        await store.receive(\.searchStarted)
+
+        let refresh = await store.send(.refresh)
+        await refresh.finish(timeout: .seconds(2))
+
+        await store.receive(\.search.loaded)
+        XCTAssertEqual(loads.value, [.fleet, .search("ios")])
+        XCTAssertEqual(store.state.search?.document?.version, "vsearch-fresh")
+        await store.send(.search(.stop))
+    }
+
+    func testAFailedPullToRefreshFinishesAndIsReported() async throws {
+        let store = try observingStore { _, _ in throw ViewsClientError.notInstalled }
+        await store.send(.task)
+        await store.receive(\.screen.loaded)
+
+        let refresh = await store.send(.refresh)
+        await refresh.finish(timeout: .seconds(2))
+
+        await store.receive(\.delegate.screen.failed)
+        XCTAssertEqual(store.state.screen.phase, .loaded, "the saved fleet stays on screen")
+        await store.send(.screen(.stop))
     }
 }
