@@ -16,3 +16,5 @@ __pycache__/
 .musts/state.sqlite-*
 .musts/.lock
 .musts/evidence/
+
+/.bazel-test-tmp/
