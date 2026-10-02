@@ -33,11 +33,22 @@ struct Direct {
     acked: Option<oneshot::Sender<()>>,
 }
 
-#[derive(Default)]
 pub(crate) struct Pushes {
     links: Mutex<HashMap<String, Link>>,
     direct: Mutex<HashMap<String, BTreeMap<u64, Direct>>>,
     counter: AtomicU64,
+}
+
+/// Direct message ids start from the clock (a thousand per millisecond), not from zero: the mod remembers the ids it already
+/// submitted for the life of its session, so a restarted daemon must never reuse one.
+impl Default for Pushes {
+    fn default() -> Self {
+        Pushes {
+            links: Default::default(),
+            direct: Default::default(),
+            counter: AtomicU64::new(alondra_core::now_millis().max(0) as u64 * 1000),
+        }
+    }
 }
 
 impl Pushes {
@@ -165,6 +176,20 @@ mod tests {
         assert!(acked.try_recv().is_ok());
         let mut third = pushes.attach("s", 3);
         assert!(third.try_recv().is_err(), "acknowledged: not resent");
+    }
+
+    #[test]
+    fn a_restarted_daemon_never_reuses_a_direct_message_id() {
+        let id_of = |pushes: &Pushes, session: &str| {
+            let mut link = pushes.attach(session, 1);
+            let _acked = pushes.message(session, "hi", true).unwrap();
+            serde_json::from_str::<serde_json::Value>(&link.try_recv().unwrap()).unwrap()["id"].as_str().unwrap().to_owned()
+        };
+        let before = Pushes::default();
+        let first = id_of(&before, "s");
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert_ne!(first, id_of(&Pushes::default(), "s"), "ids of two daemon runs differ");
+        assert_ne!(first, id_of(&before, "t"), "and so do two messages of one run");
     }
 
     #[test]

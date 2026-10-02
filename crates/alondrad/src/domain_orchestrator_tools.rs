@@ -7,7 +7,6 @@ use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, DomainEr
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
-use std::sync::Arc;
 
 /// What the user chose when asking for a Request: its project, options, issue and files.
 pub(crate) type Choices = crate::domain_store::RequestLaunch;

@@ -374,3 +374,36 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_message_after_a_daemon_restart_reaches_the_reconnected_node_under_an_id_the_mod_has_not_seen() {
+    let root = std::env::temp_dir().join(format!("alondra-v2-restart-{}", crate::auth::random_hex(8)));
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let patience = std::time::Duration::from_secs(10);
+    let daemon = Daemon::start(&home).await;
+    let (mut helper, reader) = connect(&home);
+    let mut reader = Some(reader);
+    let first = daemon.domain.live.pushes.message(SESSION, "first", true).unwrap();
+    let line = next_line(&mut reader, patience).expect("the first message is written");
+    let first_id = line["id"].as_str().unwrap().to_owned();
+    node_ack(&home, &[&first_id]);
+    tokio::time::timeout(patience, first).await.unwrap().unwrap();
+
+    helper.kill().unwrap();
+    helper.wait().unwrap();
+    daemon.stop().await;
+    let daemon = Daemon::start(&home).await;
+    let (mut helper, reader) = connect(&home);
+    let mut reader = Some(reader);
+    let mods = &daemon.domain.live.mods;
+    eventually("the helper is connected to the new daemon", || mods.session(SESSION).is_some_and(|s| s.connection.is_some())).await;
+    let _again = daemon.domain.live.pushes.message(SESSION, "AGAIN", true).unwrap();
+    let line = next_line(&mut reader, patience).expect("the message after the restart is written");
+    assert_eq!(line["text"], "AGAIN");
+    assert_ne!(line["id"].as_str().unwrap(), first_id, "the mod would take the reused id for a resend and never submit it");
+    helper.kill().unwrap();
+    helper.wait().unwrap();
+    daemon.stop().await;
+    std::fs::remove_dir_all(root).unwrap();
+}
