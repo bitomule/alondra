@@ -46,7 +46,7 @@ pub trait Launcher: Sync {
 
     /// The node plugin every launched session loads.
     fn plugin(&self) -> Option<std::path::PathBuf> {
-        crate::plugins::dir(&crate::watcher::claude_home(), crate::plugins::NODE)
+        crate::plugins::node()
     }
 
     /// The session id behind the short id `claude --bg` printed, which it chose itself.

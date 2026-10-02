@@ -19,9 +19,9 @@ if curl -s --max-time 2 "http://127.0.0.1:$port/v1/health" >/dev/null 2>&1; then
 	exit 1
 fi
 
-# Restarting on the same dir keeps the plugin folder probe nodes loaded with --plugin-dir: deleting
-# it unloads their mod for good. Files are replaced in place, never over a running binary.
-mkdir -p "$dir/bin" "$dir/plugin"
+# Binaries are replaced by rename, never over a running one. The daemon itself keeps $dir/plugin
+# up to date from this checkout's plugin, in place, as it does from the marketplace in production.
+mkdir -p "$dir/bin"
 for bin in alondrad alondra; do
 	source_bin=$daemon
 	[ "$bin" = alondra ] && source_bin=$cli
@@ -29,9 +29,7 @@ for bin in alondrad alondra; do
 	chmod 755 "$dir/bin/$bin.next"
 	mv -f "$dir/bin/$bin.next" "$dir/bin/$bin"
 done
-cp -R "$repo/plugin/." "$dir/plugin/"
-printf '#!/bin/sh\nALONDRA_HOME="%s" ALONDRA_PORT="%s" exec "%s/bin/alondra" "$@"\n' "$dir" "$port" "$dir" >"$dir/plugin/bin/alondra"
-chmod 755 "$dir/plugin/bin/alondra"
+printf 'port = %s\n' "$port" >"$dir/config.toml"
 printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$dir/settings.json"
 printf 'export ALONDRA_HOME="%s"\nexport ALONDRA_PORT="%s"\n' "$dir" "$port" >"$dir/env"
 
@@ -51,4 +49,4 @@ See its inbox, or run the CLI against it:
 Close the probe with 'claude rm <id>' when done, then Ctrl-C here.
 EOF
 
-ALONDRA_HOME="$dir" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 exec "$dir/bin/alondrad"
+ALONDRA_HOME="$dir" ALONDRA_PORT="$port" ALONDRA_SANDBOX=1 ALONDRA_WAKE=0 ALONDRA_PLUGIN_SOURCE="$repo/plugin" exec "$dir/bin/alondrad"
