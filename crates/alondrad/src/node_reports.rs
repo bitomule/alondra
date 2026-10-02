@@ -7,9 +7,10 @@
 //! (`ALONDRA_DOMAIN_SETTINGS`), which its mod reports in `session.start`.
 use alondra_core::usage::{RateLimit, Usage};
 use alondra_core::{BackgroundItem, BackgroundKind, Millis, ToolInFlight};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::time::Duration;
 
@@ -184,7 +185,9 @@ impl Reported {
     }
 }
 
-#[derive(Default)]
+pub(crate) const USAGE_FILE: &str = "usage.json";
+
+#[derive(Default, Serialize, Deserialize)]
 struct Limits {
     windows: Vec<RateLimit>,
     measured_at: Millis,
@@ -197,11 +200,31 @@ pub(crate) struct Reports {
     sessions: Mutex<HashMap<String, Reported>>,
     launches: Mutex<HashMap<String, String>>,
     limits: Mutex<Limits>,
+    /// Where the plan's limits are kept so a restart still knows the last reading and the day's start.
+    saved_in: Option<PathBuf>,
     connections: std::sync::atomic::AtomicU64,
     started: tokio::sync::Notify,
 }
 
 impl Reports {
+    /// Reports that keep the plan's limits in `home`'s `usage.json` and start from what it holds.
+    pub(crate) fn persisted_in(home: &Path) -> Self {
+        let file = home.join(USAGE_FILE);
+        let limits = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        Self { limits: Mutex::new(limits), saved_in: Some(file), ..Self::default() }
+    }
+
+    fn save(&self, limits: &Limits) {
+        let Some(file) = &self.saved_in else { return };
+        let next = file.with_extension("next");
+        let written = serde_json::to_vec(limits).map_err(std::io::Error::from)
+            .and_then(|bytes| std::fs::write(&next, bytes))
+            .and_then(|()| std::fs::rename(&next, file));
+        if let Err(error) = written {
+            log!("could not save {}: {error}", file.display());
+        }
+    }
+
     pub(crate) fn apply(&self, envelope: Envelope, now: Millis) {
         self.apply_on(envelope, now, &local_day(now));
     }
@@ -298,6 +321,7 @@ impl Reports {
         }
         limits.windows = windows;
         limits.measured_at = now;
+        self.save(&limits);
     }
 
     pub(crate) fn connect(&self, hello: Hello, now: Millis) -> u64 {
@@ -493,6 +517,41 @@ mod tests {
         drop(limits);
         reports.apply_on(measure(31.0, 2.0), now + 2, "2026-10-03");
         assert_eq!(reports.limits.lock().unwrap().day_start.as_ref().map(|d| d.2), Some(31.0), "a new day starts from its own first measurement");
+    }
+
+    #[test]
+    fn the_last_reading_and_the_days_start_survive_a_restart() {
+        let home = std::env::temp_dir().join(format!("alondra-usage-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        let measure = |week: f64| report(json!({"session_id": "s", "event": "session.measure",
+            "rate_limits": [{"kind": "five_hour", "percent_used": 10, "resets_at": "2026-10-02T16:40:00Z"},
+                            {"kind": "seven_day", "percent_used": week, "resets_at": "2026-10-05T00:00:00Z"}]}));
+        let now = 1_790_950_000_000;
+        let before = Reports::persisted_in(&home);
+        assert!(before.usage(now).is_none(), "nothing measured yet");
+        before.apply_on(measure(20.0), now, &local_day(now));
+        before.apply_on(measure(30.0), now + 1, &local_day(now));
+        let expected = before.usage(now + 2).unwrap();
+        drop(before);
+
+        let after = Reports::persisted_in(&home);
+        let restored = after.usage(now + 2).unwrap();
+        assert_eq!(restored, expected);
+        assert_eq!((restored.week_percent, restored.today_spent, restored.measured_at), (30.0, Some(10.0), now + 1));
+        assert_eq!((restored.five_hour_percent, restored.five_hour_resets_at), (Some(10.0), Some(1_790_959_200_000)));
+        after.apply_on(measure(35.0), now + 3, &local_day(now));
+        assert_eq!(after.usage(now + 3).unwrap().today_spent, Some(15.0), "the restored day start still anchors today");
+        std::fs::remove_dir_all(&home).unwrap();
+    }
+
+    #[test]
+    fn a_missing_or_broken_usage_file_starts_empty() {
+        let home = std::env::temp_dir().join(format!("alondra-usage-broken-{}", std::process::id()));
+        std::fs::create_dir_all(&home).unwrap();
+        assert!(Reports::persisted_in(&home).usage(1).is_none());
+        std::fs::write(home.join(USAGE_FILE), "{not json").unwrap();
+        assert!(Reports::persisted_in(&home).usage(1).is_none());
+        std::fs::remove_dir_all(&home).unwrap();
     }
 
     #[tokio::test]

@@ -23,6 +23,10 @@ pub(crate) struct Live {
 }
 
 impl Live {
+    pub(crate) fn persisted_in(home: &std::path::Path) -> Self {
+        Self { mods: crate::node_reports::Reports::persisted_in(home), ..Self::default() }
+    }
+
     /// The user closed the session: it is not brought back.
     pub(crate) fn mark_closed(&self, session_id: &str) {
         self.closed.lock().expect("revivals poisoned").insert(session_id.to_owned());
