@@ -156,6 +156,13 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
     if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {
         start_assigned(domain, &agent_id)?;
     }
+    if event == "PreToolUse"
+        && let Some(reason) = forbidden_for_nodes(tool.as_deref(), payload.get("tool_input"))
+    {
+        log!("blocked {session_id} from acting as the user: {reason}");
+        return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+            "permissionDecision": "deny", "permissionDecisionReason": reason}})));
+    }
     if let Some(held) = crate::domain_holds::hold(domain, payload, background(&session_id))? {
         return Ok(Reply::Held(held));
     }
@@ -176,6 +183,34 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
             Ok(Reply::Delivery { body, claims })
         }
         _ => Ok(Reply::Plain(json!({}))),
+    }
+}
+
+const USER_KEY_FILE: &str = "tui-key.pem";
+const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices", "orchestrator-retry", "orchestrator-cancel", "orchestrator-acknowledge"];
+
+/// Nodes share the user's account, so they could run the CLI that signs as the user. The
+/// plugin's hook refuses it; a determined node could still hide the command, which is why
+/// the phone and the Mac app keep their keys in the Secure Enclave.
+pub(crate) fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
+    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(Value::as_str).unwrap_or("");
+    let touches_key = |s: &str| s.contains(USER_KEY_FILE) || (s.contains("Application Support") && s.to_lowercase().contains("alondra"));
+    match tool? {
+        "Bash" => {
+            let command = field("command");
+            let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
+            let runs_user_command = words
+                .windows(2)
+                .any(|w| (w[0] == "alondra" || w[0].ends_with("/alondra")) && USER_ONLY_COMMANDS.contains(&w[1]));
+            if runs_user_command {
+                return Some("Nodes cannot run `alondra answer`, `send`, `pair` or `devices`: they act as the user. Use your Alondra MCP tools (ask, present_result) instead.".into());
+            }
+            touches_key(command).then(|| "Nodes cannot touch the user's signing key.".into())
+        }
+        _ => ["file_path", "path", "pattern", "notebook_path"]
+            .iter()
+            .any(|k| touches_key(field(k)))
+            .then(|| "Nodes cannot touch the user's signing key.".into()),
     }
 }
 
@@ -913,6 +948,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_node_cannot_act_as_the_user_and_a_session_alondra_does_not_follow_is_untouched() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        command(&domain, Actor::System, "register", Command::RegisterAgent { agent_id: "session-a".into(), name: "A".into() });
+        let pre = |session: &str, tool: &str, input: &Value| json!({"session_id": session, "hook_event_name": "PreToolUse",
+            "tool_name": tool, "tool_input": input});
+        for (tool, input) in [
+            ("Bash", json!({"command": "alondra answer 55 Merge"})),
+            ("Bash", json!({"command": "cd /tmp && ~/.local/bin/alondra orchestrator-retry"})),
+            ("Read", json!({"file_path": "/Users/x/.alondra/tui-key.pem"})),
+        ] {
+            let (reply, result) = hook(&domain, pre("session-a", tool, &input), None).await;
+            result.unwrap();
+            assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny", "{input}");
+            assert_eq!(hook(&domain, pre("stranger", tool, &input), None).await.0, json!({}), "{input}");
+        }
+        assert_eq!(hook(&domain, pre("session-a", "Bash", &json!({"command": "alondra status"})), None).await.0, json!({}));
+    }
+
+    #[tokio::test]
     async fn an_ordinary_hook_hangs_up_after_its_reply_without_waiting_for_an_acknowledgement() {
         let fixture = Fixture::new();
         let domain = fixture.open();
@@ -1314,5 +1369,31 @@ mod tests {
         let state = reopened.state().unwrap();
         assert!(state.interactions[&orphan.id].withdrawn);
         assert!(state.projection().inbox.iter().all(|item| !item.pending || !matches!(item.kind.as_str(), "permission" | "plan")));
+    }
+}
+
+#[cfg(test)]
+mod node_guard_tests {
+    use super::*;
+
+    fn bash(c: &str) -> Option<String> {
+        forbidden_for_nodes(Some("Bash"), Some(&json!({"command": c})))
+    }
+
+    #[test]
+    fn nodes_cannot_answer_as_the_user() {
+        assert!(bash("alondra answer 55 Mergea").is_some());
+        assert!(bash("cd /tmp && ~/.local/bin/alondra send orquestador hola").is_some());
+        assert!(bash("cat ~/.alondra/tui-key.pem").is_some());
+        assert!(bash("ls ~/Library/'Application Support'/com.bitomule.alondra.mac").is_some());
+        assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/Users/x/.alondra/tui-key.pem"}))).is_some());
+    }
+
+    #[test]
+    fn ordinary_commands_pass() {
+        assert!(bash("alondra status").is_none());
+        assert!(bash("alondra doctor --json").is_none());
+        assert!(bash("git commit -m 'answer the question'").is_none());
+        assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/tmp/x.md"}))).is_none());
     }
 }
