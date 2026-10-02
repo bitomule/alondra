@@ -113,10 +113,13 @@ public struct TriageCardFeature: Sendable {
                       case .none = option.input else { return .none }
                 return .send(.actions(.present(reply)))
             case .optionPicked(let action, let optionID):
-                return .concatenate(
+                let pick: Effect<Action> = .concatenate(
                     state.selected?.id == action.id ? .none : .send(.actions(.present(action))),
                     .send(.actions(.chooseOption(optionID)))
                 )
+                guard let option = action.options.first(where: { $0.id == optionID }),
+                      case .none = option.input else { return pick }
+                return .concatenate(pick, .send(.actions(.textChanged(""))), .send(.submit))
             case .menuOptionPicked(let action, let optionID):
                 return .concatenate(
                     .send(.actions(.present(action))), .send(.actions(.chooseOption(optionID))), .send(.submit)
