@@ -3123,7 +3123,7 @@ agreement_key = "{}"
             |_| None,
             || Some("Synthetic".into()),
         );
-        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         service = service.with_hub(hub);
         let responses = Arc::new(Mutex::new(Vec::<Vec<u8>>::new()));
         let sent = responses.clone();
@@ -3182,7 +3182,7 @@ agreement_key = "{}"
             |_| None,
             || Some("David".into()),
         );
-        let hub = Arc::new(crate::hub::Hub::open(config.clone(), false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config.clone()).unwrap());
         hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {
             session_id: "atomic-session".into(),
             event: "UserPromptSubmit".into(),
@@ -3254,7 +3254,7 @@ agreement_key = "{}"
             .unwrap();
         drop(service);
         drop(hub);
-        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap()
@@ -3334,7 +3334,7 @@ agreement_key = "{}"
                     |_| None,
                     || Some("David".into()),
                 );
-                let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+                let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
                 hub.append(Event::Hook(HookEvent {
                     session_id: "s".into(),
                     event: "UserPromptSubmit".into(),
@@ -3459,7 +3459,7 @@ agreement_key = "{}"
                 |_| None,
                 || Some("David".into()),
             );
-            let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+            let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
             hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {
                 session_id: "s".into(),
                 event: "UserPromptSubmit".into(),
@@ -3556,7 +3556,7 @@ agreement_key = "{}"
             |_| None,
             || Some("David".into()),
         );
-        let hub = Arc::new(crate::hub::Hub::open(config.clone(), false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config.clone()).unwrap());
         hub.append(alondra_core::Event::Hook(alondra_core::HookEvent {
             session_id: "atomic-session".into(),
             event: "UserPromptSubmit".into(),
@@ -3636,7 +3636,7 @@ agreement_key = "{}"
             .unwrap();
         drop(service);
         drop(hub);
-        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap()
@@ -3681,7 +3681,7 @@ agreement_key = "{}"
             |_| None,
             || Some("David".into()),
         );
-        let hub = Arc::new(crate::hub::Hub::open(config.clone(), false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config.clone()).unwrap());
         let projects = home.join("projects");
         std::fs::create_dir(&projects).unwrap();
         let options = alondra_core::options::OptionsFile {
@@ -3741,7 +3741,7 @@ agreement_key = "{}"
             .unwrap();
         drop(service);
         drop(hub);
-        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         let mut service = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap()
@@ -4453,7 +4453,7 @@ agreement_key = "{}"
             |_| None,
             || Some("Fixture".into()),
         );
-        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         let service = service.with_hub(hub);
         let work = changes_work(
             &service,
@@ -5095,7 +5095,7 @@ agreement_key = "{}"
             |_| None,
             || Some("Synthetic".into()),
         );
-        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         service = service.with_hub(hub);
         let attacker = SigningKey::from_slice(&[71; 32]).unwrap();
         let trusted = SigningKey::from_slice(&[33; 32]).unwrap();
@@ -5670,7 +5670,7 @@ agreement_key = "{}"
             |_| None,
             || Some("Fixture".into()),
         );
-        let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+        let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {
             session_id: "nd".into(),
             short_id: "nd".into(),
@@ -5812,7 +5812,7 @@ agreement_key = "{}"
                 .execute_batch("DROP TRIGGER cut_receipt")
                 .unwrap();
         }
-        let reopened_hub = crate::hub::Hub::open(hub.config.clone(), false).unwrap();
+        let reopened_hub = crate::hub::Hub::open(hub.config.clone()).unwrap();
         if merge {
             assert_eq!(
                 reopened_hub.read(|v| v.prs[&1].state),

@@ -74,13 +74,13 @@ mod tests {
     fn durable_digest_survives_restart_without_losing_or_repeating_reports() {
         let home = std::env::temp_dir().join(format!("alondra-notifier-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_|None, ||Some("Ana".into()));
-        let hub = Hub::open(config.clone(), false).unwrap();
+        let hub = Hub::open(config.clone()).unwrap();
         hub.append(Event::Orchestrator(Transition::Enabled {session_id:None})).unwrap();
         hub.append(Event::ReportPosted(alondra_core::Report { id:1, session_id:"worker".into(), node_name:Some("worker".into()), title:"Result delivered".into(), body:None, links:vec![], attachments:vec![], kind:alondra_core::ReportKind::Final, created_at:now_millis(), read:false, to_orchestrator:true, mission:None, looks_like_question:false, task:None })).unwrap();
         enqueue(&hub, &[]).unwrap();
         assert_eq!(hub.read(|v|v.pending_messages(alondra_core::orchestrator::NODE_ID).count()),1);
         drop(hub);
-        let reopened = Hub::open(config, false).unwrap();
+        let reopened = Hub::open(config).unwrap();
         let seq = reopened.read(|v|v.seq);
         enqueue(&reopened, &[]).unwrap();
         assert_eq!(reopened.read(|v|v.seq),seq);
@@ -92,7 +92,7 @@ mod tests {
     fn enabling_the_orchestrator_does_not_resend_reports_it_already_had() {
         let home = std::env::temp_dir().join(crate::orchestrator_process::uuid().unwrap());
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         let report = |id, title: &str| alondra_core::Report { id, session_id: "worker".into(), node_name: Some("worker".into()), title: title.into(), body: None, links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Final, created_at: 1, read: false, to_orchestrator: false, mission: None, looks_like_question: false, task: None };
         for title in ["Old one", "Old two"] {
             hub.append_with(|v| Some(Event::ReportPosted(report(v.next_report_id(), title)))).unwrap();
@@ -111,7 +111,7 @@ mod tests {
     fn report_ids_and_handoffs_advance_after_retention_and_snapshot_restart() {
         let home = std::env::temp_dir().join(crate::orchestrator_process::uuid().unwrap());
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
-        let hub = Hub::open(config.clone(), false).unwrap();
+        let hub = Hub::open(config.clone()).unwrap();
         hub.append(Event::Orchestrator(Transition::Enabled { session_id: None })).unwrap();
         let report = |id, title: &str| alondra_core::Report { id, session_id: "worker".into(), node_name: Some("worker".into()), title: title.into(), body: None, links: vec![], attachments: vec![], kind: alondra_core::ReportKind::Final, created_at: 1, read: false, to_orchestrator: true, mission: None, looks_like_question: false, task: None };
         hub.append_with(|v| Some(Event::ReportPosted(report(v.next_report_id(), "First handoff")))).unwrap();
@@ -120,7 +120,7 @@ mod tests {
         hub.compact(Duration::ZERO).unwrap();
         assert!(hub.read(|v| v.reports.is_empty()));
         drop(hub);
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         assert_eq!(hub.read(|v| v.next_report_id()), 2);
         hub.append_with(|v| Some(Event::ReportPosted(report(v.next_report_id(), "Second handoff")))).unwrap();
         enqueue(&hub, &[]).unwrap();

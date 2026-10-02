@@ -775,7 +775,7 @@ mod tests {
 
     fn hub_at(home: &Path) -> Arc<Hub> {
         let config = alondra_core::config::Config::resolve(home.to_path_buf(), &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
-        Arc::new(Hub::open(config, false).unwrap())
+        Arc::new(Hub::open(config).unwrap())
     }
 
     fn seen(sid: &str, name: &str) -> Event {
@@ -1003,7 +1003,7 @@ mod tests {
         assert_eq!(typeable("s3"), 1);
 
         let off = alondra_core::config::Config::resolve(home.join("off"), &alondra_core::config::FileConfig::default(), |k| (k == "ALONDRA_COMPACT_IDLE_NODES_AT").then(|| "off".to_string()), || Some("Ana".into()));
-        let hub = Arc::new(Hub::open(off, false).unwrap());
+        let hub = Arc::new(Hub::open(off).unwrap());
         hub.append(seen("s0", "app/old")).unwrap();
         hub.append(Event::ContextMeasured { session_id: "s0".into(), percent: 90.0, window: 200_000 }).unwrap();
         let options = alondra_core::options::OptionsFile::default().orchestrator_defaults(Some("app"), None);

@@ -346,7 +346,7 @@ mod tests {
     fn the_sweep_nudges_the_orchestrator_once_about_a_request_left_defining() {
         let home = std::env::temp_dir().join(format!("alondra-sentinel-defining-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("Ana".into()));
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         let hook = |event: &str| Event::Hook(HookEvent { session_id: "o".into(), event: event.into(), prompt: Some("go".into()), ..Default::default() });
         hub.append(Event::MarkedOrchestrator { session_id: "o".into() }).unwrap();
         hub.append(hook("SessionStart")).unwrap();
@@ -687,7 +687,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("alondra-sentinel-idle-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
         assert_eq!(config.close_free_nodes_after, Some(Duration::from_secs(7 * 86_400)), "a week unless set");
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         for sid in ["clean", "unpushed", "tasked", "orch"] {
             hub.append(seen(sid)).unwrap();
         }
@@ -742,7 +742,7 @@ mod tests {
         use alondra_core::{MessageAbout, Report, ReportKind};
         let home = std::env::temp_dir().join(format!("alondra-sentinel-merges-{}-{}", std::process::id(), now_millis()));
         let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         let u = "a7e1d69b";
         let hook = |event: &str| Event::Hook(HookEvent { session_id: u.into(), event: event.into(), ..Default::default() });
         let task = |id: &str, depends_on: &[&str]| {

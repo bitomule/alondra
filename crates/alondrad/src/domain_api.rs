@@ -1555,7 +1555,7 @@ mod tests {
             |_| None,
             || Some("Fixture".into()),
         );
-        let hub = Arc::new(Hub::open(config, false).unwrap());
+        let hub = Arc::new(Hub::open(config).unwrap());
         seeded(&hub);
         (home, hub)
     }

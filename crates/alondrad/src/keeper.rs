@@ -187,7 +187,7 @@ mod tests {
     fn fixture(body: &str) -> (Hub, PathBuf, PathBuf, PathBuf, Ownership) {
         let home = std::env::temp_dir().join(process::uuid().unwrap());
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Test".into()));
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         transition(&hub, Transition::Enabled { session_id: None }).unwrap();
         let claude_home = home.join("claude-home");
         let repo = home.join("assets");
@@ -273,7 +273,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         enqueue(&hub, 1);
         execute_tick(&hub, &ch, &dir, &lock, &exe).await.unwrap();
         hub.read(|v| assert_eq!(v.orchestrator.as_ref().unwrap().phase, Phase::Failed));
-        let restarted = Hub::open(hub.config.clone(), false).unwrap();
+        let restarted = Hub::open(hub.config.clone()).unwrap();
         recover(&restarted, false).await.unwrap();
         assert!(restarted.read(|v| !orchestrator::can_start(v, now_millis())),
             "a failure inside one daemon life still waits for the user");
@@ -301,7 +301,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let (hub, _, _, _, _) = fixture(SUCCESS);
         enqueue(&hub, 1);
         transition(&hub, Transition::Started { run_id: "interrupted".into(), kind: RunKind::Work, message_ids: vec![1] }).unwrap();
-        let restarted = Hub::open(hub.config.clone(), false).unwrap();
+        let restarted = Hub::open(hub.config.clone()).unwrap();
         recover(&restarted, true).await.unwrap();
         restarted.read(|v| {
             assert!(orchestrator::can_start(v, now_millis()));

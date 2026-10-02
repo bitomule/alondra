@@ -18,35 +18,6 @@ use std::time::{Duration, Instant};
 
 const RETRY_BACKOFF: Duration = Duration::from_secs(120);
 
-pub async fn run(hub: Arc<Hub>, push: Arc<Push>, service: Option<Arc<Service>>) {
-    let mut changed = hub.domain.subscribe();
-    let mut retry_after: HashMap<i64, Instant> = HashMap::new();
-    loop {
-        retry_after.retain(|_, at| at.elapsed() < RETRY_BACKOFF);
-        let pending = {
-            let store = hub.domain.store.lock().expect("domain store poisoned");
-            store.pending_messages()
-        };
-        match pending {
-            Ok(messages) => {
-                for message in ready_messages(messages, &retry_after) {
-                    let id = message.id;
-                    if let Err(error) = deliver_one(&hub, &push, service.as_deref(), message).await
-                    {
-                        log!("domain v2 outbox dispatch failed: {error:#}");
-                    }
-                    retry_after.insert(id, Instant::now());
-                }
-            }
-            Err(error) => log!("domain v2 outbox read failed: {error:#}"),
-        }
-        tokio::select! {
-            _ = changed.changed() => {},
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {},
-        }
-    }
-}
-
 /// V2-only dispatcher: all receipts live in the active domain database. User hints are sent
 /// here; the orchestrator executor and producer transport own producer messages.
 pub async fn run_v2(
@@ -607,7 +578,7 @@ mod tests {
             |_| None,
             || Some("Fixture".into()),
         );
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         command(
             &hub,
             Actor::System,

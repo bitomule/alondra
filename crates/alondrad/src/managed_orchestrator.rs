@@ -93,7 +93,7 @@ mod tests {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     fn hub() -> Hub {
         let home = std::env::temp_dir().join(format!("alondra-migration-{}-{}", std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)));
-        Hub::open(Config::resolve(home, &Default::default(), |_| None, || Some("Test".into())), false).unwrap()
+        Hub::open(Config::resolve(home, &Default::default(), |_| None, || Some("Test".into()))).unwrap()
     }
     fn append(hub: &Hub, e: Event) { hub.append_with(|_| Some(e)).unwrap(); }
     fn legacy(hub: &Hub) {
@@ -128,7 +128,7 @@ mod tests {
             assert!(v.removed.contains_key("old-session"));
             assert!(v.integrity_issues().is_empty());
         });
-        let reopened = Hub::open(h.config.clone(), false).unwrap();
+        let reopened = Hub::open(h.config.clone()).unwrap();
         assert!(prepare_with(&reopened, Path::new("/does/not/exist")).await.unwrap());
     }
     #[cfg(unix)]
@@ -137,7 +137,7 @@ mod tests {
         let h = hub(); legacy(&h);
         assert!(prepare_with(&h, &fake(&h, false)).await.is_err());
         assert!(h.read(|v| v.orchestrator.is_none() && v.orchestrator_migration.is_some()));
-        let reopened = Hub::open(h.config.clone(), false).unwrap();
+        let reopened = Hub::open(h.config.clone()).unwrap();
         assert!(prepare_with(&reopened, &fake(&h, true)).await.unwrap());
     }
     #[cfg(unix)]

@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn a_legacy_home_is_refused_without_the_lock_and_left_alone() {
         let (home, config) = home("legacy");
-        let hub = crate::hub::Hub::open(config.clone(), false).unwrap();
+        let hub = crate::hub::Hub::open(config.clone()).unwrap();
         hub.append(alondra_core::Event::Joined {
             session_id: "s1".into(),
         })
