@@ -1678,7 +1678,7 @@ pub(crate) fn seal_push(
 /// The generic alert that stands in for content too large to push, keeping the
 /// `alondra` reference (kind, id, cursor) the app needs to fetch it.
 fn minimal_push(payload: &Value) -> Value {
-    let mut aps = json!({"alert": {"title": "Alondra", "body": "New activity in Alondra"}});
+    let mut aps = json!({"alert": {"title": "Alondra"}});
     for key in ["sound", "category", "interruption-level", "thread-id"] {
         if let Some(value) = payload.pointer(&format!("/aps/{key}")) {
             aps[key] = value.clone();
@@ -3928,8 +3928,9 @@ agreement_key = "{}"
         )
         .unwrap();
         assert_eq!(
-            opened["payload"]["aps"]["alert"]["body"],
-            "New activity in Alondra"
+            opened["payload"]["aps"]["alert"],
+            json!({"title": "Alondra"}),
+            "the phone words the generic line in its own language"
         );
         assert_eq!(opened["payload"]["aps"]["category"], "ALONDRA_QUESTION");
         assert_eq!(

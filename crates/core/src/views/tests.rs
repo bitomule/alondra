@@ -2387,3 +2387,19 @@ fn a_node_reads_merging_from_the_claim_of_its_merge_authorization_until_the_merg
     state.pull_requests.get_mut(&"pr-1".into()).unwrap().state = PrState::Merged;
     assert_ne!(state_of(&state, Lang::En), "Merging", "the merge was observed");
 }
+
+#[test]
+fn a_push_shows_what_the_card_asks_not_a_generic_line() {
+    use crate::domain_v2::Hold;
+    let alert = |state: &DomainState| push_content(state, "i-1", Lang::En).unwrap().alert.unwrap();
+    let permission = alert(&held_fixture(Hold::Permission, "Bash: clean the build\n\n```\nrm -rf build\n```"));
+    assert_eq!(permission, PushAlert { title: "Bash: clean the build".into(), body: Some("rm -rf build".into()) });
+    let plan = alert(&held_fixture(Hold::Plan, "# Ship the parser\n\n1. Split the lexer\n2. Add tests"));
+    assert_eq!(plan, PushAlert { title: "Ship the parser".into(), body: Some("1. Split the lexer".into()) });
+
+    let mut state = fixture();
+    state.interactions.get_mut(&"i-1".into()).unwrap().body = format!("Should I {}?", "really ".repeat(60));
+    let long = alert(&state);
+    assert_eq!(long.body.as_ref().unwrap().chars().count(), PUSH_BODY_CHARS);
+    assert!(long.body.unwrap().ends_with('…'));
+}
