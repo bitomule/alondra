@@ -124,6 +124,21 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
     Ok(Some(Held { id, hold, input }))
 }
 
+/// A card Alondra itself puts to the user about the session's open task, with the options it
+/// gives; `None` when the session has no open task.
+pub(crate) fn ask(domain: &DomainRuntime, session_id: &str, body: String, options: Vec<QuestionOption>) -> Result<Option<InteractionId>> {
+    let agent_id = AgentId(session_id.to_owned());
+    let state = domain.state()?;
+    let Some(task) = state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent_id) && !task.state.terminal()) else {
+        return Ok(None);
+    };
+    let id = InteractionId(format!("hold-{}", crate::auth::random_hex(16)));
+    execute(domain, &state, Command::HoldHook {
+        interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold: Hold::Question, body, options,
+    })?;
+    Ok(Some(id))
+}
+
 /// The user's answer, or `None` once the card can no longer be answered.
 pub(crate) async fn wait(domain: &DomainRuntime, id: &InteractionId) -> Result<Option<Answer>> {
     let mut changed = domain.subscribe();

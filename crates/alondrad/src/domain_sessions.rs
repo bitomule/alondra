@@ -1,5 +1,6 @@
 //! How a background Claude session receives its domain v2 bearer. `claude --bg` keeps none of the
-//! launcher's environment and chooses its own session id, so the protocol and the bearer travel
+//! launcher's environment and chooses its own session id, which the session's mod reports with
+//! the key of this file (`node_reports::Reports::wait_launched`). The protocol and the bearer travel
 //! in a private settings file passed with `--settings`: its `env` block reaches the session. The
 //! bearer is written into that file once the launched session's real id is known and bound;
 //! `alondra mcp` reads it from the file the `env` block names. The file goes when the session ends.
@@ -71,13 +72,6 @@ pub(crate) fn remove(path: &Path) {
     let _ = std::fs::remove_file(path);
 }
 
-/// The session id `claude agents --json` lists for a short id.
-pub(crate) fn session_of_short(listing: &str, short: &str) -> Option<String> {
-    let Ok(Value::Array(list)) = serde_json::from_str::<Value>(listing) else { return None };
-    list.iter().find(|s| s.get("id").and_then(Value::as_str) == Some(short))
-        .and_then(|s| s.get("sessionId")?.as_str().map(str::to_owned))
-}
-
 fn write_private(path: &Path, value: &Value) -> Result<()> {
     let next = path.with_extension("next");
     let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&next)?;
@@ -115,13 +109,5 @@ mod tests {
         remove_for(&home, &"session-real".into()).unwrap();
         assert!(!path.exists());
         std::fs::remove_dir_all(home).unwrap();
-    }
-
-    #[test]
-    fn the_real_session_id_comes_from_claude_agents() {
-        let listing = r#"[{"id":"ab1234","sessionId":"ab1234cd-0000-4000-8000-000000000000","kind":"background"}]"#;
-        assert_eq!(session_of_short(listing, "ab1234").as_deref(), Some("ab1234cd-0000-4000-8000-000000000000"));
-        assert_eq!(session_of_short(listing, "other"), None);
-        assert_eq!(session_of_short("warning: text", "ab1234"), None);
     }
 }

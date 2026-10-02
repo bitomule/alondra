@@ -59,21 +59,25 @@ fn hard_choices() -> Choices {
 
 struct FakeClaude {
     calls: Mutex<Vec<(String, Vec<String>)>>,
-    listed: bool,
+    loads_mod_in: Option<Arc<DomainRuntime>>,
     stopped: Mutex<Vec<String>>,
 }
 impl FakeClaude {
-    fn new(listed: bool) -> Self {
-        Self { calls: Mutex::new(vec![]), listed, stopped: Mutex::new(vec![]) }
+    fn loading(domain: &Arc<DomainRuntime>) -> Self {
+        Self { calls: Mutex::new(vec![]), loads_mod_in: Some(domain.clone()), stopped: Mutex::new(vec![]) }
+    }
+
+    fn without_mod() -> Self {
+        Self { calls: Mutex::new(vec![]), loads_mod_in: None, stopped: Mutex::new(vec![]) }
     }
 }
 impl crate::orchestrate::Launcher for FakeClaude {
     async fn run(&self, cwd: &str, args: &[String]) -> Result<String, crate::orchestrate::Refusal> {
         self.calls.lock().unwrap().push((cwd.into(), args.to_vec()));
+        if let Some(domain) = &self.loads_mod_in {
+            domain.live.mods.loaded_by(SESSION, args);
+        }
         Ok("backgrounded · ab1234 · editor".into())
-    }
-    async fn session_of(&self, short: &str) -> Option<String> {
-        (self.listed && short == "ab1234").then(|| SESSION.to_owned())
     }
     async fn stop(&self, short: &str) {
         self.stopped.lock().unwrap().push(short.into());
@@ -112,8 +116,7 @@ fn only_a_current_orchestrator_bearer_calls_the_tools() {
 async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_task() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
-    let claude = FakeClaude::new(true);
-    f.domain.live.mods.loaded_in(SESSION);
+    let claude = FakeClaude::loading(&f.domain);
     let choices = hard_choices();
     let asked = Mutex::new(None);
     let answer = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"effort": "light", "title": "Editor colours"})),
@@ -146,8 +149,7 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
 async fn without_choices_the_orchestrators_effort_applies_and_the_prompt_can_be_given() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
-    let claude = FakeClaude::new(true);
-    f.domain.live.mods.loaded_in(SESSION);
+    let claude = FakeClaude::loading(&f.domain);
     launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"effort": "light", "prompt": "Only the dark theme"})), |_| None, &claude).await.unwrap();
     let args = claude.calls.lock().unwrap()[0].1.clone();
     assert!(args.windows(2).any(|pair| pair == ["--model", "sonnet"]), "{args:?}");
@@ -155,10 +157,10 @@ async fn without_choices_the_orchestrators_effort_applies_and_the_prompt_can_be_
 }
 
 #[tokio::test]
-async fn a_launch_is_refused_for_a_closed_or_taken_task_and_an_unlisted_session_leaves_nothing() {
+async fn a_launch_is_refused_for_a_closed_or_taken_task_and_a_session_without_its_mod_leaves_nothing() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
-    let unlisted = FakeClaude::new(false);
+    let unlisted = FakeClaude::without_mod();
     let error = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &unlisted).await.unwrap_err();
     assert_eq!(error.code, "launch_failed");
     assert!(settings_files(&f.home).is_empty());
@@ -168,7 +170,7 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task_and_an_unlisted_session_
     command(&f.domain, actor.clone(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into() });
     crate::domain_agent_lifecycle::observe_instance(&f.domain, &"agent-b".into(), true,
         &crate::domain_agent_lifecycle::prepare_event(&f.domain, "start-b").unwrap()).unwrap();
-    let claude = FakeClaude::new(true);
+    let claude = FakeClaude::loading(&f.domain);
     let taken = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
     assert_eq!(taken.code, "conflict");
     command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
@@ -181,7 +183,7 @@ async fn a_launch_is_refused_for_a_closed_or_taken_task_and_an_unlisted_session_
 async fn a_session_whose_mod_never_loads_is_stopped_and_the_launch_fails_without_an_agent() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
-    let claude = FakeClaude::new(true);
+    let claude = FakeClaude::without_mod();
     let error = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
     assert_eq!(error.code, "launch_failed");
     assert!(error.message.contains("mods did not load") && error.message.contains("not trusted"), "{}", error.message);

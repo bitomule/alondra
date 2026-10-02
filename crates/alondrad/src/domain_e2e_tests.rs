@@ -156,9 +156,6 @@ impl crate::orchestrate::Launcher for CapturingLauncher {
         self.0.lock().unwrap().push(args.to_vec());
         Ok("backgrounded · ab1234 · scheduled/run".into())
     }
-    async fn session_of(&self, short: &str) -> Option<String> {
-        (short == "ab1234").then(|| SESSION.to_owned())
-    }
     async fn stop(&self, _: &str) {}
     fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
 }
@@ -191,7 +188,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
         now: alondra_core::now_millis(), next_after_now: None, expected_schedule_revision: None,
     });
     let launcher = CapturingLauncher(Mutex::new(vec![]));
-    node_event(&home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work"}));
+    node_event(&home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work", "launch_key": "run-1"}));
     crate::domain_schedule_runner::run_cycle(&daemon.domain, &home, false, &launcher).await.unwrap();
     let args = launcher.0.lock().unwrap().pop().expect("one launch");
     let settings = args.windows(2).find(|pair| pair[0] == "--settings").unwrap()[1].clone();
@@ -317,7 +314,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     eventually("the connection is registered", || mods.session(SESSION).is_some_and(|s| s.connection.is_some())).await;
     let session = mods.session(SESSION).unwrap();
     assert_eq!(session.version.as_deref(), Some("2.1.287"), "a connection says the mod loaded");
-    assert!(!session.unreachable());
+    assert!(!session.connection_lost());
 
     let patience = std::time::Duration::from_secs(10);
     let acked = daemon.domain.live.pushes.message(SESSION, "Use the new API", true).unwrap();
@@ -353,12 +350,12 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
 
     held.kill().unwrap();
     held.wait().unwrap();
-    eventually("the closed connection makes the node unreachable", || mods.session(SESSION).unwrap().unreachable()).await;
+    eventually("the closed connection makes the node unreachable", || mods.session(SESSION).unwrap().connection_lost()).await;
 
     let (mut again, _) = connect(&home);
-    eventually("a new connection makes it reachable again", || !mods.session(SESSION).unwrap().unreachable()).await;
+    eventually("a new connection makes it reachable again", || !mods.session(SESSION).unwrap().connection_lost()).await;
     node_event(&home, json!({"session_id": SESSION, "event": "session.end"}));
-    assert!(!mods.session(SESSION).unwrap().unreachable(), "an ended session is not unreachable");
+    assert!(!mods.session(SESSION).unwrap().connection_lost(), "an ended session is not unreachable");
     again.kill().unwrap();
     again.wait().unwrap();
 

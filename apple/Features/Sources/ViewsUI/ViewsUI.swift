@@ -76,7 +76,6 @@ public enum SidebarTint {
         case .warning: .yellow
         case .critical: .red
         case .yourTurn: .pink
-        case .unclear: .purple
         }
     }
 
@@ -89,7 +88,6 @@ public enum SidebarTint {
         case .warning: .orange
         case .critical: .red
         case .yourTurn: .pink
-        case .unclear: .purple
         }
     }
 }
@@ -103,7 +101,6 @@ private func toneColor(_ tone: Tone) -> Color {
     case .warning: ViewPalette.ember
     case .critical: ViewPalette.rose
     case .yourTurn: ViewPalette.ember
-    case .unclear: ViewPalette.rose
     }
 }
 

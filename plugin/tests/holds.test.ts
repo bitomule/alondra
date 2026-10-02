@@ -20,6 +20,7 @@ async function startWithHolds(
   on('session.start', () => ({ cwd: '/work' }))
   on('session.id', () => ({ value: 'session-1' }))
   on('session.version', () => ({ value: { version: '2.1.287' } }))
+  on('env.get', () => ({ value: undefined }))
   on('process.spawn', async function* () {
     await new Promise(() => {})
   })

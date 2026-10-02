@@ -39,6 +39,7 @@ mod markdown;
 mod mods_check;
 mod node_push;
 mod node_reports;
+mod node_revival;
 mod notifier;
 mod options;
 mod orchestrate;
@@ -433,7 +434,6 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.wake,
     ));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
-    tokio::spawn(watcher::run_live(domain.clone(), watcher::claude_home()));
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
         Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
             Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),
@@ -442,6 +442,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         None => log!("Alondra's node plugin was not found: run `alondra setup`"),
     }
     tokio::spawn(mods_check::run(plugins::node()));
+    tokio::spawn(node_revival::run(state_domain.clone()));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),

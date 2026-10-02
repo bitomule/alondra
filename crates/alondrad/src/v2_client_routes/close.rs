@@ -162,6 +162,7 @@ impl Client {
         let event = crate::domain_agent_lifecycle::prepare_event(&self.domain, &event_id).map_err(|e| anyhow::anyhow!("{e}"))?;
         crate::domain_agent_lifecycle::observe_instance(&self.domain, agent, false, &event).map_err(|e| anyhow::anyhow!("{e}"))?;
         self.domain.revoke_agent(&agent.0)?;
+        self.domain.live.mark_closed(&agent.0);
         self.domain.live.apply(&Event::NodeRemoved { session_id: agent.0.clone() });
         Ok(())
     }

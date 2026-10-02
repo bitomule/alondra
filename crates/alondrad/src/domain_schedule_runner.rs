@@ -132,7 +132,7 @@ async fn invoke_claimed(
     key: &str,
     usage: Option<alondra_core::usage::Usage>,
     launcher: &impl crate::orchestrate::Launcher,
-) -> Result<(Option<String>, PathBuf), crate::orchestrate::Refusal> {
+) -> Result<(String, PathBuf), crate::orchestrate::Refusal> {
     if let Some(reason) = crate::http::launch_blocked(usage.as_ref(), false) {
         return Err((StatusCode::CONFLICT, reason));
     }
@@ -171,7 +171,7 @@ async fn invoke_claimed(
     args.push("--".into());
     args.push(producer_prompt(&launch.prompt, &resolved, task));
     match launcher.run(&launch.cwd, &args).await {
-        Ok(output) => Ok((alondra_core::sessions::launched_short(&output), settings)),
+        Ok(output) => Ok((output, settings)),
         Err(refusal) => {
             crate::domain_sessions::remove(&settings);
             Err(refusal)
@@ -353,7 +353,7 @@ async fn dispatch_pending(
         Err(error) if ordinary_conflict(&error) => return Ok(()),
         Err(error) => return Err(error.into()),
     }
-    let (short, settings) =
+    let (output, settings) =
         match invoke_claimed(&intent, &task, &policy, home, &run_id.0, domain.live.mods.usage(alondra_core::now_millis()), launcher).await {
             Ok(launched) => launched,
             Err((_, reason)) => {
@@ -361,28 +361,14 @@ async fn dispatch_pending(
                 return Ok(());
             }
         };
-    // `claude --bg` picks the session id, so the Agent is the session Claude lists.
-    let session = match &short {
-        Some(short) => launcher.session_of(short).await,
-        None => None,
-    };
-    let Some(session) = session else {
-        crate::domain_sessions::remove(&settings);
-        fail_run(
-            domain,
-            run_id,
-            "Claude did not list the launched session".into(),
-        )?;
-        return Ok(());
-    };
-    if !domain.live.mods.wait_loaded(&session, launcher.mods_deadline()).await {
-        if let Some(short) = &short {
-            launcher.stop(short).await;
+    let Some(session) = domain.live.mods.wait_launched(&run_id.0, launcher.mods_deadline()).await else {
+        if let Some(short) = alondra_core::sessions::launched_short(&output) {
+            launcher.stop(&short).await;
         }
         crate::domain_sessions::remove(&settings);
         fail_run(domain, run_id, crate::node_reports::MODS_NOT_LOADED.into())?;
         return Ok(());
-    }
+    };
     let agent_id = AgentId(session.clone());
     match execute_system(
         domain,
@@ -419,7 +405,7 @@ async fn dispatch_pending(
         domain,
         Command::RecordScheduleLaunchHanded {
             run_id: run_id.clone(),
-            session_id: short,
+            session_id: Some(session.clone()),
             agent_id: Some(agent_id),
             finished_at: alondra_core::now_millis(),
         },
@@ -821,7 +807,7 @@ mod tests {
         .unwrap();
         let fake = FakeLauncher(Mutex::new(vec![]));
         let home = root.join("home");
-        let (short, settings) = invoke_claimed(
+        let (_, settings) = invoke_claimed(
             &intent,
             &TaskId::from("task-1"),
             &definition.disallowed_tools,
@@ -832,7 +818,6 @@ mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(short.as_deref(), Some("ab1234"));
         let calls = fake.0.lock().unwrap();
         assert_eq!(calls.len(), 1);
         assert_eq!(calls[0].0, project.to_str().unwrap());
@@ -1030,9 +1015,6 @@ mod tests {
                 Ok("backgrounded · ab1234 · scheduled/run".into())
             }
         }
-        async fn session_of(&self, short: &str) -> Option<String> {
-            (short == "ab1234").then(|| SESSION.to_owned())
-        }
         async fn stop(&self, _: &str) {}
         fn plugin(&self) -> Option<PathBuf> {
             Some("/synthetic/plugin".into())
@@ -1060,7 +1042,7 @@ mod tests {
             calls: Mutex::new(0),
             fail: false,
         };
-        fixture.domain.live.mods.loaded_in(SESSION);
+        fixture.domain.live.mods.loaded_for(SESSION, Some("manual-1"));
         let (left, right) = tokio::join!(
             run_cycle(&fixture.domain, &fixture.home, false, &launcher),
             run_cycle(&fixture.domain, &fixture.home, false, &launcher),
@@ -1128,7 +1110,7 @@ mod tests {
             calls: Mutex::new(0),
             fail: false,
         };
-        reopened.live.mods.loaded_in(SESSION);
+        reopened.live.mods.loaded_for(SESSION, Some("pending"));
         run_cycle(&reopened, &fixture.home, false, &launcher)
             .await
             .unwrap();
@@ -1200,38 +1182,6 @@ mod tests {
         );
     }
 
-    struct Unlisted;
-    impl crate::orchestrate::Launcher for Unlisted {
-        async fn run(
-            &self,
-            _: &str,
-            _: &[String],
-        ) -> std::result::Result<String, crate::orchestrate::Refusal> {
-            Ok("backgrounded · ab1234 · scheduled/run".into())
-        }
-        async fn session_of(&self, _: &str) -> Option<String> {
-            None
-        }
-        async fn stop(&self, _: &str) {}
-        fn plugin(&self) -> Option<PathBuf> {
-            Some("/synthetic/plugin".into())
-        }
-    }
-
-    #[tokio::test]
-    async fn a_session_claude_does_not_list_fails_the_run_without_an_agent() {
-        let fixture = Fixture::new();
-        fixture.claim("unlisted");
-        run_cycle(&fixture.domain, &fixture.home, false, &Unlisted)
-            .await
-            .unwrap();
-        let state = fixture.domain.state().unwrap();
-        let run = &state.schedule.runs[&ScheduleRunId::from("unlisted")];
-        assert_eq!(run.state, ScheduleRunState::Failed);
-        assert!(state.agents.is_empty());
-        assert!(settings_files(&fixture.home).is_empty());
-    }
-
     struct WithoutMods(Mutex<Vec<String>>);
     impl crate::orchestrate::Launcher for WithoutMods {
         async fn run(
@@ -1240,9 +1190,6 @@ mod tests {
             _: &[String],
         ) -> std::result::Result<String, crate::orchestrate::Refusal> {
             Ok("backgrounded · ab1234 · scheduled/run".into())
-        }
-        async fn session_of(&self, short: &str) -> Option<String> {
-            (short == "ab1234").then(|| SESSION.to_owned())
         }
         async fn stop(&self, short: &str) {
             self.0.lock().unwrap().push(short.into());

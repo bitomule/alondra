@@ -674,8 +674,8 @@ mod tests {
             async move { response_json(handle(&client, "device-wait", &query, Transport::Loopback).await).await }
         });
         tokio::task::yield_now().await;
-        // The commit advances domain revision but adds no live hook or open view.
-        fixture.register_agent("unrelated-change");
+        // The commit advances domain revision but adds no live node, hook or open view.
+        fixture.create_request("unrelated-change", "Unrelated request");
         assert!(tokio::time::timeout(Duration::from_millis(50), &mut pending).await.is_err(),
             "a domain commit alone must not answer an unchanged open feed");
         // Supersede the parked request to leave no waiter behind in the fixture.

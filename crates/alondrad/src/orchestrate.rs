@@ -36,8 +36,16 @@ pub trait Launcher: Sync {
         async { Err((StatusCode::SERVICE_UNAVAILABLE, "this launcher cannot carry a producer capability".into())) }
     }
 
-    /// Stops a launched session whose node mod never loaded, so it does not work unseen.
+    /// Stops a launched session whose node mod never loaded, so it does not work unseen. It is the
+    /// one thing that still reads the short id `claude --bg` prints: a session that never reported
+    /// has no other handle.
     fn stop(&self, short: &str) -> impl Future<Output = ()> + Send;
+
+    /// Restarts a background session whose connection to Alondra is gone (`claude respawn <id>`).
+    fn respawn(&self, short: &str) -> impl Future<Output = Result<(), String>> + Send {
+        let _ = short;
+        async { Err("this launcher cannot restart sessions".into()) }
+    }
 
     /// How long a launched session has to say its node mod loaded.
     fn mods_deadline(&self) -> std::time::Duration {
@@ -47,17 +55,6 @@ pub trait Launcher: Sync {
     /// The node plugin every launched session loads.
     fn plugin(&self) -> Option<std::path::PathBuf> {
         crate::plugins::node()
-    }
-
-    /// The session id behind the short id `claude --bg` printed, which it chose itself.
-    fn session_of(&self, short: &str) -> impl Future<Output = Option<String>> + Send {
-        let short = short.to_owned();
-        async move {
-            let out = tokio::time::timeout(std::time::Duration::from_secs(20), tokio::process::Command::new("claude")
-                .args(["agents", "--json", "--all"]).kill_on_drop(true).stdin(std::process::Stdio::null()).output())
-                .await.ok()?.ok()?;
-            crate::domain_sessions::session_of_short(&String::from_utf8_lossy(&out.stdout), &short)
-        }
     }
 }
 
@@ -81,6 +78,10 @@ impl Launcher for ClaudeCli {
         }
     }
 
+    async fn respawn(&self, short: &str) -> Result<(), String> {
+        Self::respawn_session(short).await
+    }
+
     async fn stop(&self, short: &str) {
         let stop = tokio::process::Command::new("claude").args(["stop", short]).kill_on_drop(true)
             .stdin(std::process::Stdio::null()).output();
@@ -89,6 +90,19 @@ impl Launcher for ClaudeCli {
             Ok(Ok(out)) => log!("claude stop {short} failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
             Ok(Err(error)) => log!("claude stop {short} failed: {error}"),
             Err(_) => log!("claude stop {short} did not answer in 20 s"),
+        }
+    }
+}
+
+impl ClaudeCli {
+    async fn respawn_session(short: &str) -> Result<(), String> {
+        let respawn = tokio::process::Command::new("claude").args(["respawn", short]).kill_on_drop(true)
+            .stdin(std::process::Stdio::null()).output();
+        match tokio::time::timeout(std::time::Duration::from_secs(60), respawn).await {
+            Ok(Ok(out)) if out.status.success() => Ok(()),
+            Ok(Ok(out)) => Err(String::from_utf8_lossy(&out.stderr).trim().to_owned()),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_) => Err("claude respawn did not answer in 60 s".into()),
         }
     }
 }

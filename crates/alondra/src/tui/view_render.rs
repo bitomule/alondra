@@ -517,7 +517,7 @@ fn label_style(label: &Label) -> Style {
         alondra_core::views::Tone::Info => Color::Cyan,
         alondra_core::views::Tone::Accent => ACCENT,
         alondra_core::views::Tone::Success => Color::LightGreen,
-        alondra_core::views::Tone::Warning | alondra_core::views::Tone::YourTurn | alondra_core::views::Tone::Unclear => Color::Yellow,
+        alondra_core::views::Tone::Warning | alondra_core::views::Tone::YourTurn => Color::Yellow,
         alondra_core::views::Tone::Critical => Color::LightRed,
     })
 }

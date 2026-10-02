@@ -116,7 +116,7 @@ fn group_row(id: &str, title: &str, children: Vec<super::Row>) -> super::Row {
 fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
     let mut projects: BTreeMap<String, Vec<super::Row>> = BTreeMap::new();
     for agent in context.domain.agents.values() {
-        if agent.id.0 == "orchestrator" { continue; }
+        if !super::fleet::in_fleet(agent, context) { continue; }
         let live = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0);
         let project = live.and_then(|node| node.project.as_deref()).filter(|name| *name != "others")
             .unwrap_or(t!(context.lang, "Other", "Otros"));

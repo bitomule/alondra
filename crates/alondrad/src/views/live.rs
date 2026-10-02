@@ -1,8 +1,9 @@
-use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId};
+use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LiveCheck, LivePullRequest, LiveSnapshot, Notice, Tone,
 };
+use crate::node_reports::Activity;
 use serde_json::Value;
 use sha2::Digest;
 use std::{collections::{BTreeMap, HashMap}, sync::Mutex};
@@ -24,6 +25,32 @@ impl LiveReadCache {
     }
 }
 
+/// The project a node was launched for, which a restart cannot lose: its task's request, or the
+/// project its name starts with.
+fn launched_project(
+    state: &DomainState,
+    agent: &alondra_core::domain_v2::Agent,
+    launches: &BTreeMap<alondra_core::domain_v2::RequestId, (Option<String>, Option<String>)>,
+) -> Option<String> {
+    state.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
+        .find_map(|task| launches.get(&task.request_id).and_then(|(project, _)| project.clone()))
+        .or_else(|| agent.name.split_once('/').map(|(project, _)| project.to_owned()).filter(|project| !project.is_empty()))
+}
+
+fn node_label(key: &str, lang: Lang) -> String {
+    match (key, lang) {
+        ("stalled", Lang::En) => "stalled",
+        ("stalled", Lang::Es) => "parado",
+        ("busy", Lang::En) => "working",
+        ("busy", Lang::Es) => "trabajando",
+        ("waiting_machine", Lang::En) => "waiting for the machine",
+        ("waiting_machine", Lang::Es) => "esperando máquina",
+        (_, Lang::En) => "idle",
+        (_, Lang::Es) => "inactivo",
+    }.to_owned()
+}
+
 pub(crate) async fn gather(
     client: &crate::v2_client_routes::Client,
     state: &DomainState,
@@ -32,38 +59,40 @@ pub(crate) async fn gather(
     allow_issue_refresh: bool,
     clock_only: bool,
 ) -> LiveSnapshot {
-    let nodes = client
-        .domain
-        .live
-        .nodes()
-        .into_iter()
-        .filter_map(|node| {
-            let agent = state.agents.get(&node.session_id.as_str().into())?;
-            let project = node.project();
-            let state_key = if node.state == alondra_core::NodeState::Stalled {
-                "stalled".to_owned()
-            } else if node.status == alondra_core::NodeStatus::Free {
-                "free".to_owned()
-            } else if node.status == alondra_core::NodeStatus::Busy {
-                "busy".to_owned()
+    let now = alondra_core::now_millis();
+    let launches = client.domain.store.lock().expect("domain store poisoned")
+        .request_launch_summaries().unwrap_or_default();
+    let nodes = state
+        .agents
+        .values()
+        .filter_map(|agent| {
+            let session_id = agent.id.0.clone();
+            let reported = client.domain.live.mods.session(&session_id).unwrap_or_default();
+            let open_task = state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived
+                && !matches!(task.state, TaskState::Done | TaskState::Closing | TaskState::Cancelled));
+            let node = match client.domain.live.node(&session_id) {
+                Some(node) => node,
+                None if reported.started_at.is_some() || agent.connected || open_task => {
+                    let mut node = alondra_core::Node::new(&session_id, now);
+                    node.cwd = reported.cwd.clone();
+                    node
+                }
+                None => return None,
+            };
+            let project = if node.cwd.is_some() || node.is_orchestrator {
+                node.project()
             } else {
-                serde_json::to_value(node.state).ok()?.as_str()?.to_owned()
+                launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
             };
-            let state_label = match lang {
-                Lang::En => node.state.label().to_owned(),
-                Lang::Es => match node.state {
-                    alondra_core::NodeState::Working => "trabajando",
-                    alondra_core::NodeState::WaitingAnswer => "esperando respuesta",
-                    alondra_core::NodeState::YourTurn => "te toca",
-                    alondra_core::NodeState::WaitingMerge => "espera tu revisión",
-                    alondra_core::NodeState::Delivered => "entrega resultado",
-                    alondra_core::NodeState::WaitingMachine => "esperando máquina",
-                    alondra_core::NodeState::Done => "terminado",
-                    alondra_core::NodeState::Unclear => "no sé qué quiere",
-                    alondra_core::NodeState::Stalled => "parado",
-                }.to_owned(),
+            let activity = reported.activity(now);
+            let reconnecting = client.domain.live.is_reconnecting(&session_id);
+            let state_key = match activity {
+                Activity::Stalled => "stalled",
+                Activity::Working => "busy",
+                Activity::Idle if node.status == alondra_core::NodeStatus::WaitingMachine => "waiting_machine",
+                Activity::Idle => "free",
             };
-            let reported = client.domain.live.mods.session(&node.session_id).unwrap_or_default();
+            let state_label = node_label(state_key, lang);
             let tool = reported.tool.as_ref().map(|tool| match &tool.summary {
                 Some(summary) => format!("{}: {summary}", tool.name),
                 None => tool.name.clone(),
@@ -74,9 +103,10 @@ pub(crate) async fn gather(
                 .or_else(|| node.daemon_detail.clone())
                 .or_else(|| answer.map(|answer| answer.text.clone()))
                 .map(|summary| summary.lines().next().unwrap_or("").chars().take(141).collect());
+            let background = reported.background_at(now);
             let counts = [alondra_core::BackgroundKind::Agent, alondra_core::BackgroundKind::Shell,
                 alondra_core::BackgroundKind::Other].into_iter().filter_map(|kind| {
-                    let count = node.background.iter().filter(|item| item.kind == kind).count();
+                    let count = background.iter().filter(|item| item.kind == kind).count();
                     (count > 0).then(|| {
                         let noun = match (lang, kind) {
                             (Lang::En, alondra_core::BackgroundKind::Agent) => "subagents",
@@ -89,7 +119,7 @@ pub(crate) async fn gather(
                         format!("{count} {noun}")
                     })
                 }).collect::<Vec<_>>();
-            let background_suspect = node.background.iter().any(|item| item.suspect);
+            let background_suspect = background.iter().any(|item| item.suspect);
             let background_badge = (!counts.is_empty()).then(|| {
                 let mut text = counts.join(" · ");
                 if background_suspect { text.push_str(match lang { Lang::En => " · hung?", Lang::Es => " · ¿colgado?" }); }
@@ -101,11 +131,11 @@ pub(crate) async fn gather(
                 cwd: node.cwd.clone(),
                 name: agent.name.clone(),
                 project: Some(project),
-                state_key: Some(state_key),
+                state_key: Some(state_key.to_owned()),
                 state_label: Some(state_label),
                 summary,
                 needs: node.daemon_needs.clone(),
-                background: node.background.iter().map(|item| LiveBackground {
+                background: background.iter().map(|item| LiveBackground {
                     kind: serde_json::to_value(item.kind).ok().and_then(|value| value.as_str().map(str::to_owned)).unwrap_or_else(|| "other".into()),
                     label: item.label.clone(),
                     since: timestamp(item.started_at),
@@ -113,7 +143,7 @@ pub(crate) async fn gather(
                 }).collect(),
                 background_badge,
                 background_suspect,
-                working: node.busy || node.status == alondra_core::NodeStatus::Busy,
+                working: matches!(activity, Activity::Working | Activity::Stalled),
                 waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
                     alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
                     alondra_core::NodeState::WaitingMachine),
@@ -125,7 +155,7 @@ pub(crate) async fn gather(
                 context_percent: reported.context.as_ref().and_then(|context| context.percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
-                unreachable: reported.unreachable(),
+                reconnecting,
             })
         })
         .collect();
@@ -240,8 +270,6 @@ pub(crate) async fn gather(
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
         .collect() };
-    let launches = client.domain.store.lock().expect("domain store poisoned")
-        .request_launch_summaries().unwrap_or_default();
     let task_options = state.tasks.values().map(|task| {
         let (project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { project, effort })

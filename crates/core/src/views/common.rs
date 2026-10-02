@@ -68,7 +68,6 @@ pub(super) fn state_tone(state: &str) -> super::Tone {
     match state {
         "needs_you" | "stalled" => Tone::Warning,
         "your_turn" => Tone::YourTurn,
-        "unclear" => Tone::Unclear,
         "in_review" | "waiting_merge" | "waiting_machine"
         | "waiting_dependency" | "closing" | "defining" => Tone::Info,
         "running" | "working" | "busy" | "free" | "waiting_answer" => Tone::Accent,
@@ -246,10 +245,9 @@ mod tests {
     use crate::views::Tone;
 
     #[test]
-    fn your_turn_and_unclear_are_told_apart() {
-        assert_ne!(state_tone("your_turn"), state_tone("unclear"));
+    fn your_turn_has_its_own_tone() {
+        assert_ne!(state_tone("your_turn"), state_tone("idle"));
         assert_eq!(state_tone("your_turn"), Tone::YourTurn);
-        assert_eq!(state_tone("unclear"), Tone::Unclear);
     }
 }
 

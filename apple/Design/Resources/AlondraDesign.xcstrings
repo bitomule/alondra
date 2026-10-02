@@ -885,16 +885,6 @@
         }
       }
     },
-    "unclear what it wants": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "no sé qué quiere"
-          }
-        }
-      }
-    },
     "unknown": {
       "localizations": {
         "es": {
@@ -1371,6 +1361,16 @@
           "stringUnit": {
             "state": "translated",
             "value": "definiendo"
+          }
+        }
+      }
+    },
+    "idle": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "inactivo"
           }
         }
       }

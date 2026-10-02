@@ -45,11 +45,7 @@ pub(crate) async fn serve(listener: UnixListener, domain: Arc<DomainRuntime>) ->
     }
 }
 
-async fn handle(stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
-    handle_with(stream, domain, |session| crate::watcher::is_background_session(&crate::watcher::claude_home(), session)).await
-}
-
-async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background: impl Fn(&str) -> bool) -> Result<()> {
+async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
     let len = stream.read_u32().await? as u64;
     if len > MAX_HOOK_BYTES {
         bail!("hook input exceeds {MAX_HOOK_BYTES} bytes");
@@ -67,10 +63,10 @@ async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background:
         return node_ack(stream, domain, ack).await;
     }
     if let Some(card) = frame.get_mut("node_hold").map(Value::take) {
-        return node_hold(stream, domain, card, background).await;
+        return node_hold(stream, domain, card).await;
     }
     let envelope: Envelope = serde_json::from_value(frame).context("invalid local hook envelope")?;
-    let reply = respond(domain, &envelope.payload, background)?;
+    let reply = respond(domain, &envelope.payload)?;
     let body = match reply {
         Reply::Plain(body) => body,
         Reply::Held(held) => {
@@ -111,7 +107,11 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
         Report::ToolEnd { tool_use_id: Some(call) } => crate::domain_holds::release_call(domain, &envelope.session_id, call)?,
         _ => {}
     }
+    let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
     domain.live.mods.apply(envelope, alondra_core::now_millis());
+    if let Some(session) = ended {
+        domain.live.losses.report(&session);
+    }
     stream.write_all(&200u16.to_be_bytes()).await?;
     stream.write_all(b"{}").await?;
     stream.shutdown().await?;
@@ -120,12 +120,12 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
 
 /// A card the node mod puts to the user, answered on the same connection. A helper that goes away
 /// leaves the card open: the mod's wait was cut, not the question, and its next post finds the card.
-async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value, background: impl Fn(&str) -> bool) -> Result<()> {
+async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) -> Result<()> {
     let card: crate::domain_holds::Card = match serde_json::from_value(card) {
         Ok(card) => card,
         Err(error) => return refuse(stream, format!("invalid hold: {error}")).await,
     };
-    let reply = match crate::domain_holds::post(domain, &card, background(&card.session_id))? {
+    let reply = match crate::domain_holds::post(domain, &card, domain.live.mods.is_node(&card.session_id))? {
         None => json!({"held": false}),
         Some(id) => {
             let answer = tokio::select! {
@@ -187,7 +187,9 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
     }
     .await;
     domain.live.pushes.detach(&session, number);
-    domain.live.mods.disconnect(&session, number);
+    if domain.live.mods.disconnect(&session, number) {
+        domain.live.losses.report(&session);
+    }
     held.or_else(|error: anyhow::Error| match error.downcast_ref::<std::io::Error>().map(std::io::Error::kind) {
         Some(std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => Ok(()),
         _ => Err(error),
@@ -291,7 +293,7 @@ fn text(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
-fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) -> bool) -> Result<Reply> {
+fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     let Some(session_id) = text(payload, "session_id") else {
         return Ok(Reply::Plain(json!({})));
     };
@@ -331,7 +333,7 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
         return Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse",
             "permissionDecision": "deny", "permissionDecisionReason": reason}})));
     }
-    if let Some(held) = crate::domain_holds::hold_elicitation(domain, payload, background(&session_id))? {
+    if let Some(held) = crate::domain_holds::hold_elicitation(domain, payload, domain.live.mods.is_node(&session_id))? {
         return Ok(Reply::Held(held));
     }
     match event.as_str() {
@@ -1136,17 +1138,25 @@ mod tests {
         let fixture = Fixture::new();
         let domain = Arc::new(fixture.open());
         answered_question(&domain, "session-b");
+        let mut lost = domain.live.losses.take().unwrap();
         let mut older = connect(&domain, "session-a").await;
         assert!(older.nothing_arrives().await);
         let mut newer = connect(&domain, "session-a").await;
         assert!(older.line().await.is_none(), "the older connection is closed by the daemon");
         domain.live.pushes.interrupt("session-a").unwrap();
         assert_eq!(newer.line().await.unwrap(), json!({"interrupt": true}));
+        assert!(lost.try_recv().is_err(), "a connection the daemon replaced is not a lost one");
         newer.close().await;
-        assert!(domain.live.mods.session("session-a").unwrap().unreachable());
+        assert!(domain.live.mods.session("session-a").unwrap().connection_lost());
+        assert_eq!(lost.recv().await.as_deref(), Some("session-a"), "the current connection closing is reported for revival");
     }
 
     fn working_agent(domain: &DomainRuntime, agent: &str) {
+        working_agent_without_mod(domain, agent);
+        domain.live.mods.loaded_in(agent);
+    }
+
+    fn working_agent_without_mod(domain: &DomainRuntime, agent: &str) {
         let user = || Actor::User { user_id: "u".into() };
         command(domain, Actor::System, &format!("register-{agent}"), Command::RegisterAgent { agent_id: agent.into(), name: agent.into() });
         command(domain, user(), &format!("request-{agent}"),
@@ -1215,7 +1225,7 @@ mod tests {
     async fn held(domain: &DomainRuntime, frame: Value, option: &str, note: Option<&str>) -> (Value, InteractionId) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &frame).await;
-        let handler = handle_with(server, domain, |_| true);
+        let handler = handle(server, domain);
         tokio::pin!(handler);
         let id = tokio::select! {
             id = open_hold(domain) => id,
@@ -1286,24 +1296,26 @@ mod tests {
         }
     }
 
-    async fn answered_without_a_card(domain: &DomainRuntime, card: Value, background: bool) -> Value {
+    async fn answered_without_a_card(domain: &DomainRuntime, card: Value) -> Value {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_hold": card})).await;
-        let (result, body) = tokio::join!(handle_with(server, domain, move |_| background), reply(&mut client));
+        let (result, body) = tokio::join!(handle(server, domain), reply(&mut client));
         result.unwrap();
         body
     }
 
     #[tokio::test]
-    async fn only_a_background_agent_with_a_task_is_held() {
+    async fn only_a_node_whose_mod_loaded_and_has_a_task_is_held() {
         let fixture = Fixture::new();
         let domain = fixture.open();
-        working_agent(&domain, "agent-a");
+        working_agent_without_mod(&domain, "no-mod");
         command(&domain, Actor::System, "register-idle", Command::RegisterAgent { agent_id: "idle".into(), name: "idle".into() });
-        for (card, background) in [(permission("agent-a"), false), (permission("idle"), true), (permission("stranger"), true)] {
-            assert_eq!(answered_without_a_card(&domain, card.clone(), background).await, json!({"held": false}), "{card}");
+        domain.live.mods.loaded_in("idle");
+        domain.live.mods.loaded_in("stranger");
+        for card in [permission("no-mod"), permission("idle"), permission("stranger")] {
+            assert_eq!(answered_without_a_card(&domain, card.clone()).await, json!({"held": false}), "{card}");
         }
-        assert!(matches!(respond(&domain, &elicitation("agent-a"), |_| false).unwrap(), Reply::Plain(body) if body == json!({})));
+        assert!(matches!(respond(&domain, &elicitation("no-mod")).unwrap(), Reply::Plain(body) if body == json!({})));
         assert!(domain.state().unwrap().holds.is_empty());
     }
 
@@ -1334,7 +1346,7 @@ mod tests {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"launched": true, "payload": elicitation("agent-a")})).await;
         let id = {
-            let handler = handle_with(server, &domain, |_| true);
+            let handler = handle(server, &domain);
             tokio::pin!(handler);
             let id = tokio::select! {
                 id = open_hold(&domain) => id,
@@ -1345,7 +1357,7 @@ mod tests {
             id
         };
         assert!(domain.state().unwrap().interactions[&id].withdrawn);
-        let Reply::Held(orphan) = respond(&domain, &elicitation("agent-a"), |_| true).unwrap() else { panic!("held") };
+        let Reply::Held(orphan) = respond(&domain, &elicitation("agent-a")).unwrap() else { panic!("held") };
         drop(domain);
         let reopened = fixture.open();
         crate::domain_holds::release_orphans(&reopened).unwrap();
@@ -1360,7 +1372,7 @@ mod tests {
         let (mut helper, server) = UnixStream::pair().unwrap();
         send(&mut helper, &json!({"node_hold": plan("agent-a")})).await;
         let id = {
-            let handler = handle_with(server, &domain, |_| true);
+            let handler = handle(server, &domain);
             tokio::pin!(handler);
             let id = tokio::select! {
                 id = open_hold(&domain) => id,
@@ -1380,7 +1392,7 @@ mod tests {
 
         let (mut again, server) = UnixStream::pair().unwrap();
         send(&mut again, &json!({"node_hold": plan("agent-a")})).await;
-        let handler = handle_with(server, &reopened, |_| true);
+        let handler = handle(server, &reopened);
         tokio::pin!(handler);
         tokio::select! {
             _ = open_hold(&reopened) => {},
@@ -1399,14 +1411,14 @@ mod tests {
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
         let (first, _) = held_card(&domain, ask("agent-a"), "o0", None).await;
-        let again = answered_without_a_card(&domain, ask("agent-a"), true).await;
+        let again = answered_without_a_card(&domain, ask("agent-a")).await;
         assert_eq!(again, first);
     }
 
     async fn report(domain: &DomainRuntime, report: Value) {
         let (mut client, server) = UnixStream::pair().unwrap();
         send(&mut client, &json!({"node_event": report})).await;
-        let (result, _) = tokio::join!(handle_with(server, domain, |_| true), reply(&mut client));
+        let (result, _) = tokio::join!(handle(server, domain), reply(&mut client));
         result.unwrap();
     }
 
@@ -1418,7 +1430,7 @@ mod tests {
             report(domain, ended).await;
             (reply(&mut client).await, id)
         };
-        let (result, out) = tokio::join!(handle_with(server, domain, |_| true), driver);
+        let (result, out) = tokio::join!(handle(server, domain), driver);
         result.unwrap();
         out
     }
@@ -1451,7 +1463,7 @@ mod tests {
             answer(&domain, &id, Hold::APPROVE, None);
             reply(&mut helper).await
         };
-        let (result, body) = tokio::join!(handle_with(server, &domain, |_| true), driver);
+        let (result, body) = tokio::join!(handle(server, &domain), driver);
         result.unwrap();
         assert_eq!(body, json!({"held": true, "approved": true}));
     }

@@ -9,7 +9,7 @@ const SUMMARY_LIMIT = 300
 
 const HOLD_RUN_MS = 600_000
 
-type Session = { id: string; alondra: string; hello: string }
+type Session = { id: string; alondra: string; version: string; cwd: string; launchKey?: string }
 
 type Card = { id: string; kind: 'question' | 'plan' | 'permission'; tool?: string; input: Record<string, unknown> }
 type Answer = {
@@ -32,6 +32,22 @@ const submitting = new Set<string>()
 const submitted = new Set<string>()
 
 type Push = { id?: string; text?: string; as_user?: boolean; interrupt?: boolean }
+
+function hello(current: Session): string {
+  return JSON.stringify({
+    session_id: current.id,
+    version: current.version,
+    cwd: current.cwd,
+    launch_key: current.launchKey,
+    working: turnId !== undefined,
+  })
+}
+
+async function launchKey($: EngineInterface): Promise<string | undefined> {
+  const settings = await $.env.get('ALONDRA_DOMAIN_SETTINGS')
+  const file = settings?.split('/').pop()
+  return file ? file.replace(/\.json$/, '') : undefined
+}
 
 async function send($: EngineInterface, report: Record<string, unknown>): Promise<void> {
   if (!session) return
@@ -133,7 +149,7 @@ async function connect($: EngineInterface): Promise<void> {
   let ended: ProcessSpawnResult = { code: null, signal: null }
   let pending = ''
   try {
-    const helper = $.process.spawn({ argv: [session.alondra, 'node', 'connect'], input: session.hello })
+    const helper = $.process.spawn({ argv: [session.alondra, 'node', 'connect'], input: hello(session) })
     for (;;) {
       const step = await helper.next()
       if (step.done) {
@@ -167,12 +183,9 @@ export const register: Register = (on) => {
     const id = await $.session.id()
     stopping = false
     retryMs = FIRST_RETRY_MS
-    session = {
-      id,
-      alondra: $.plugin.root + '/bin/alondra',
-      hello: JSON.stringify({ session_id: id, version, cwd: e.cwd }),
-    }
-    queue($, { event: 'session.start', version, cwd: e.cwd })
+    const key = await launchKey($)
+    session = { id, alondra: $.plugin.root + '/bin/alondra', version, cwd: e.cwd, launchKey: key }
+    queue($, { event: 'session.start', version, cwd: e.cwd, launch_key: key })
     void connect($)
     return started
   })
@@ -212,7 +225,30 @@ export const register: Register = (on) => {
         answer: e.answer.slice(0, ANSWER_LIMIT),
         aborted: e.isAborted,
       })
+    } else {
+      queue($, { event: 'subagent.end', id: e.agentId })
     }
+    return next(e)
+  })
+
+  on('agent.spawn', async ($, e, next) => {
+    const started = await next(e)
+    if (started.agentId !== undefined) {
+      queue($, { event: 'subagent.start', id: started.agentId, description: e.description })
+    }
+    return started
+  })
+
+  on('classic.Stop', async ($, e, next) => {
+    queue($, {
+      event: 'background',
+      tasks: (e.background_tasks ?? []).map((task) => ({
+        id: task.id,
+        type: task.type,
+        description: task.description,
+        command: task.command,
+      })),
+    })
     return next(e)
   })
 
@@ -220,7 +256,11 @@ export const register: Register = (on) => {
     if (e.agentId !== undefined) return next(e)
     queue($, { event: 'tool.start', tool: e.tool, tool_use_id: e.tool_use_id, input: summaryInput(e) })
     try {
-      return await next(e)
+      const result = await next(e)
+      if (e.tool === 'Bash' && e.run_in_background === true && !result.deny && !result.isError) {
+        queue($, { event: 'shell.start', id: e.tool_use_id, command: String(e.command) })
+      }
+      return result
     } finally {
       queue($, { event: 'tool.end', tool_use_id: e.tool_use_id })
     }
