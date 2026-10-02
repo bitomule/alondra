@@ -134,6 +134,7 @@ fn feedback(store: &mut DomainStore) -> CommandEnvelope {
                 text: "The answer".into(),
             }],
             body: "Shorter, please".into(),
+            reason: FeedbackReason::Changes,
         },
     )
 }
@@ -916,6 +917,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
                 text: "Result".into(),
             }],
             body: "Please revise".into(),
+            reason: FeedbackReason::Changes,
             attachments: vec![attachment("feedback-file")],
         },
     );
@@ -1281,6 +1283,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
                 text: "Another answer".into(),
             }],
             body: "Not quite".into(),
+            reason: FeedbackReason::Changes,
         },
     );
     let withdrawn = store.execute_authenticated(&user(), &feedback, None).unwrap();

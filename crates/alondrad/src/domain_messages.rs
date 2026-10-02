@@ -147,20 +147,28 @@ pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user:
     sessions: &impl Sessions, terminal: &Arc<impl Terminal>) -> Result<Value, DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let pr = state.pull_requests.get(pr_id).ok_or_else(|| refused("not_found", "PR does not exist"))?;
-    let url = format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number);
     if pr.state != alondra_core::domain_v2::PrState::Open {
-        return Err(refused("pr_not_open", format!("{url} is no longer open")));
+        return Err(refused("pr_not_open", format!("{} is no longer open", pr_url(pr))));
     }
     let agent = state.tasks.get(&pr.task_id).and_then(|task| task.agent_id.clone())
         .ok_or_else(|| refused("not_assigned", "the PR's task has no agent to ask"))?;
-    let text = format!(
-        "{name} asks you to resolve the conflicts of {url} with {base}: bring {base} into the branch, resolve them, \
-         run the tests and push. The PR card goes back to {name} once GitHub can merge it.",
-        base = pr.base
-    );
+    let text = conflicts_text(name, pr);
     let body = MessageBody { text, attachments: vec![], kind: Kind::Message, mark_read: false,
         interaction_id: None, pr_id: None, task_id: Some(pr.task_id.clone()) };
     deliver(domain, home, user, name, &agent, body, sessions, terminal).await
+}
+
+pub(crate) fn pr_url(pr: &alondra_core::domain_v2::PullRequest) -> String {
+    format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)
+}
+
+/// What the Agent of a conflicting PR is told, whether the user asked or Alondra noticed.
+pub(crate) fn conflicts_text(name: &str, pr: &alondra_core::domain_v2::PullRequest) -> String {
+    format!(
+        "{name} asks you to resolve the conflicts of {url} with {base}: bring {base} into the branch, resolve them, \
+         run the tests, push and present the PR again with its new head. If you cannot resolve them, ask {name}.",
+        url = pr_url(pr), base = pr.base
+    )
 }
 
 /// The same message relayed from a paired device, answered as a local response.

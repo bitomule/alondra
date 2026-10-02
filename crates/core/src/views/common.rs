@@ -95,6 +95,25 @@ pub(super) fn effort_label(effort: &str, lang: super::Lang) -> Option<&'static s
     })
 }
 
+/// A Task's state in words; a working Task whose delivery went back to its node says why.
+pub(super) fn task_state_label(task: &crate::domain_v2::Task, domain: &crate::domain_v2::DomainState, lang: super::Lang) -> &'static str {
+    use crate::domain_v2::{FeedbackReason, TaskState};
+    match task.state {
+        TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
+        TaskState::Running => match domain.task_handed_back(&task.id) {
+            Some(FeedbackReason::Changes) => t!(lang, "Changes requested", "Cambios solicitados"),
+            Some(FeedbackReason::Conflicts) => t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
+            _ => t!(lang, "Working", "Trabajando"),
+        },
+        TaskState::NeedsYou => t!(lang, "Needs you", "Te necesita"),
+        TaskState::InReview => t!(lang, "In review", "En revisión"),
+        TaskState::WaitingDependency => t!(lang, "Waiting", "Esperando"),
+        TaskState::Closing => t!(lang, "Closing", "Cerrando"),
+        TaskState::Done => t!(lang, "Finished", "Terminado"),
+        TaskState::Cancelled => t!(lang, "Cancelled", "Cancelado"),
+    }
+}
+
 pub(super) fn task_presentation(state: crate::domain_v2::TaskState) -> (super::Icon, super::Tone) {
     use crate::domain_v2::TaskState as S;
     use super::{Icon, Tone};

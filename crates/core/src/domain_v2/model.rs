@@ -287,6 +287,18 @@ pub struct Feedback {
     pub user_id: String,
     pub body: String,
     pub at_revision: Revision,
+    #[serde(default)]
+    pub reason: FeedbackReason,
+}
+/// Why a delivery went back to its Agent. Each one takes the card out of the user's queue until
+/// the Agent presents again; a message also comes back with the Agent's next word to the user.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FeedbackReason {
+    #[default]
+    Changes,
+    Message,
+    Conflicts,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]

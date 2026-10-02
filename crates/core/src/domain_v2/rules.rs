@@ -562,8 +562,7 @@ impl DomainState {
                                 if self.completable(t, targets).is_ok() => TaskState::Done,
                             _ => TaskState::Closing,
                         }
-                    } else if matches!(&p.payload, InteractionPayload::Delivery { acceptance, feedback, .. }
-                        if feedback.last().is_some_and(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))) {
+                    } else if self.handed_back(p).is_some() {
                         TaskState::Running
                     } else {
                         TaskState::InReview
@@ -1686,8 +1685,12 @@ impl DomainState {
                 presentation_id,
                 targets,
                 body,
+                reason,
             } => {
-                let u = user(actor)?;
+                let u = match (actor, reason) {
+                    (Actor::System, FeedbackReason::Conflicts) => "alondra".to_owned(),
+                    _ => user(actor)?,
+                };
                 content(body, attachments)?;
                 let (_, t, current) = self.presentation(presentation_id)?;
                 if current != targets {
@@ -1702,6 +1705,7 @@ impl DomainState {
                         user_id: u,
                         body: body.clone(),
                         at_revision: self.revision + 1,
+                        reason: *reason,
                     });
                 }
                 p.revision = self.revision + 1;

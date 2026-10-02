@@ -10,6 +10,15 @@ public enum CardActionPresentation {
         card.icon == .delivery && carriesDocumentComments(action) && carriesArtifact(card)
     }
 
+    /// The buttons under the reply field. The field already sends `reply`; on a document that
+    /// action stays as a button to open its comments, but on a pull request, as in 8ccd131, the
+    /// field is Request changes and its line comments open from the card.
+    public static func showsAsControl(_ action: Action, in card: Card, reply: Action?) -> Bool {
+        guard action.presentation != .options else { return false }
+        guard action.id == reply?.id else { return true }
+        return card.icon != .pullRequest && action.comments != nil && action.id?.hasPrefix("reply:") != true
+    }
+
     public static func isOpenOnGitHub(_ action: Action) -> Bool {
         guard action.id?.isEmpty ?? true, case .url = action.link else { return false }
         return true

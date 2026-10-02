@@ -313,7 +313,10 @@ impl Client {
     pub(crate) async fn run(self: Arc<Self>, source: Arc<dyn PrView>) {
         loop {
             match self.domain.state() {
-                Ok(state) => self.details.refresh(&state, &*source).await,
+                Ok(state) => {
+                    self.details.refresh(&state, &*source).await;
+                    pr_details::hand_back_conflicts(&self.domain, &self.details, &crate::domain_messages::user_name());
+                }
                 Err(error) => log!("could not read pull requests for their details: {error:#}"),
             }
             tokio::time::sleep(DETAILS_INTERVAL).await;

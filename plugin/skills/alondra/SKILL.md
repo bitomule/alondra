@@ -75,6 +75,10 @@ why; retry an uncertain call with exactly the same arguments.
   authorization: check the PR's head and base, call `claim_merge_authorization`, and only then
   run the approved method against that PR and head, for example
   `gh pr merge <number> --match-head-commit <head> --squash`. Never merge without that claim.
+- When the user requests changes or asks about the PR, or Alondra asks you to resolve its
+  conflicts, its card leaves the user's queue. Answer a question with `publish_information`;
+  after you push, present the PR again with its new head, the only thing that brings the card
+  back. If you cannot do what was asked, `ask`.
 - With auto-merge chosen for the work, register and present the PR the same way and merge it as
   your mission says once its checks pass.
 - A task that builds on another names the branch to start from and to open your PR against.
