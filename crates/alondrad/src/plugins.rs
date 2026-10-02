@@ -50,15 +50,17 @@ pub fn install_node(home: &Path, source: &Path, alondra: &Path) -> anyhow::Resul
 /// The CLI next to this daemon, by the path that survives an upgrade: Homebrew's `opt` link
 /// instead of the versioned keg.
 pub fn own_cli() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let cli = exe.with_file_name("alondra");
-    let keg = cli.parent()?.parent()?;
-    let rack = keg.parent()?;
-    let cellar = rack.parent()?;
-    if cellar.file_name()? == "Cellar" && rack.file_name()? == "alondra" {
-        return Some(cellar.parent()?.join("opt/alondra/bin/alondra"));
+    Some(cli_beside(&std::env::current_exe().ok()?))
+}
+
+fn cli_beside(daemon: &Path) -> PathBuf {
+    let cli = daemon.with_file_name("alondra");
+    let rack = cli.ancestors().nth(3);
+    let cellar = cli.ancestors().nth(4);
+    match (rack.and_then(Path::file_name), cellar.and_then(Path::file_name), cli.ancestors().nth(5)) {
+        (Some(rack), Some(cellar), Some(prefix)) if rack == "alondra" && cellar == "Cellar" => prefix.join("opt/alondra/bin/alondra"),
+        _ => cli,
     }
-    Some(cli)
 }
 
 fn quoted(path: &Path) -> String {
@@ -156,6 +158,15 @@ mod tests {
         assert_eq!(dir(&root.join("claude"), NODE), Some(repo.join("plugin")));
 
         std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn nodes_run_the_cli_beside_the_daemon_by_the_path_an_upgrade_keeps() {
+        assert_eq!(cli_beside(Path::new("/opt/homebrew/Cellar/alondra/0.2.23/bin/alondrad")),
+            Path::new("/opt/homebrew/opt/alondra/bin/alondra"));
+        assert_eq!(cli_beside(Path::new("/tmp/alondra-sandbox/bin/alondrad")), Path::new("/tmp/alondra-sandbox/bin/alondra"),
+            "a sandbox near the root of the disk");
+        assert_eq!(cli_beside(Path::new("/Users/me/.local/bin/alondrad")), Path::new("/Users/me/.local/bin/alondra"));
     }
 
     #[test]
