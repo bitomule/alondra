@@ -184,11 +184,33 @@ final class TriageCardFeatureTests: XCTestCase {
         let store = try await store(Fixtures.deliveryID, feed: feed, loaded: try Fixtures.liveDelivery())
         let rescue = try action(store, verb: "changes")
         XCTAssertEqual(rescue.comments?.kind, .blocks)
+        XCTAssertEqual(try action(store, verb: "reply").id, store.state.replyAction?.id)
 
         await store.send(.actionTapped(rescue))
         await store.receive(\.opened, .card(Fixtures.deliveryID))
         await store.receive(\.delegate.open, .card(Fixtures.deliveryID))
         XCTAssertEqual(feed.requests, [])
+    }
+
+    @MainActor
+    func testADeliveryWithoutADocumentRepliesToTheNodeAndNeverRescuesComments() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.deliveryID, feed: feed, loaded: try Fixtures.livePlainDelivery())
+        let reply = try XCTUnwrap(store.state.replyAction)
+        XCTAssertEqual(reply.id, try action(store, verb: "reply").id)
+        XCTAssertNil(reply.comments)
+        XCTAssertNil(store.state.allActions.first { $0.id?.hasPrefix("changes:") == true })
+        guard case let .text(placeholder, _, _) = reply.input else { return XCTFail("reply input is text") }
+        XCTAssertEqual(placeholder, "Reply to this node…")
+        let card = try XCTUnwrap(store.state.card)
+        XCTAssertFalse(CardActionPresentation.isRescueComments(card: card, action: reply))
+
+        await store.send(.replyChanged("Looks good, one more pass"))
+        await store.send(.replySent(reply))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.first?.actionId, reply.id)
+        XCTAssertEqual(feed.requests.first?.input.text, "Looks good, one more pass")
+        XCTAssertEqual(feed.requests.count, 1)
     }
 
     @MainActor

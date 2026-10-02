@@ -617,21 +617,7 @@ fn pr_detail(
                 input: Input::None,
                 attachments: false,
                 comments: None,
-                confirm: Some(super::Confirm {
-                    title: t!(
-                        context.lang,
-                        "Merge pull request?",
-                        "¿Fusionar la solicitud de cambios?"
-                    )
-                    .into(),
-                    message: tf!(
-                        context.lang,
-                        "Merge PR #{number}?",
-                        "¿Fusionar la PR #{number}?",
-                        number = pr.number
-                    ),
-                    button: t!(context.lang, "Merge", "Fusionar").into(),
-                }),
+                confirm: Some(merge_confirm(pr, context)),
                 enabled: available.enabled && stacked.is_none(),
                 disabled_reason: stacked.map(|id| context.domain.pull_requests.get(&crate::domain_v2::PrId(id.into()))
                     .map_or_else(
@@ -697,18 +683,25 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
                     (
                         Verb::Ctx,
                         t!(context.lang, "Need more context", "Necesito más contexto"),
-                        t!(context.lang, "What is missing?", "¿Qué falta?"),
+                        t!(context.lang, "What is missing?", "¿Qué falta?").to_owned(),
                         "c",
                     )
                 }
                 InteractionPayload::Information { .. } => (
                     Verb::Reply,
                     t!(context.lang, "Reply", "Responder"),
-                    t!(context.lang, "Write a reply", "Escribe una respuesta"),
+                    t!(context.lang, "Write a reply", "Escribe una respuesta").to_owned(),
                     "r",
+                ),
+                InteractionPayload::Delivery { .. } if item.pending => (
+                    Verb::Reply,
+                    t!(context.lang, "Send", "Enviar"),
+                    reply_placeholder(item, context),
+                    "w",
                 ),
                 _ => return Ok(out),
             };
+            let delivery = matches!(interaction.payload, InteractionPayload::Delivery { .. });
             if let Some(id) = action_id(verb, &interaction_id.0, interaction.revision, None) {
                 out.push(Action {
                     id: id.to_string(),
@@ -722,13 +715,13 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
                         multiline: true,
                     },
                     attachments: verb == Verb::Reply,
-                    comments: (verb == Verb::Reply).then_some(CommentSpec {
+                    comments: (verb == Verb::Reply && !delivery).then_some(CommentSpec {
                         kind: super::CommentKind::Blocks,
                     }),
                     confirm: None,
                     enabled: true,
                     disabled_reason: None,
-                    stamp: None,
+                    stamp: delivery.then(|| t!(context.lang, "Sent", "Enviado").into()),
                     key: (context.client != Client::Ios).then(|| key.into()),
                     link: None,
                 });
@@ -775,7 +768,7 @@ fn action_for(
             Input::None,
             Some("v"),
         ),
-        "submit_feedback" => (
+        "submit_feedback" if carries_artifact(item) || is_document_review(item, context.domain) => (
             Verb::Changes,
             t!(context.lang, "Request changes", "Pedir cambios"),
             Style::Secondary,
@@ -788,6 +781,7 @@ fn action_for(
             },
             Some("r"),
         ),
+        "submit_feedback" => return Ok(None),
         "authorize_merge" => (
             Verb::Merge,
             t!(context.lang, "Merge", "Fusionar"),
@@ -821,8 +815,8 @@ fn action_for(
     } else {
         vec![]
     };
-    let options = if verb == Verb::Merge {
-        let pr = match &item.subject {
+    let merge_pr = if verb == Verb::Merge {
+        match &item.subject {
             InboxSubject::Interaction { interaction_id } => context
                 .domain
                 .interactions
@@ -842,9 +836,12 @@ fn action_for(
                     _ => None,
                 }),
             _ => None,
-        };
-        pr.map(|pr| {
-            pr.allowed_methods
+        }
+    } else {
+        None
+    };
+    let options = if let Some(pr) = merge_pr {
+        pr.allowed_methods
                 .iter()
                 .enumerate()
                 .map(|(index, method)| {
@@ -864,26 +861,10 @@ fn action_for(
                     }
                 })
                 .collect()
-        })
-        .unwrap_or_default()
     } else {
         options
     };
-    let confirm = (verb == Verb::Merge).then(|| super::Confirm {
-        title: t!(
-            context.lang,
-            "Merge pull request?",
-            "¿Fusionar la solicitud de cambios?"
-        )
-        .into(),
-        message: t!(
-            context.lang,
-            "This will merge the pull request.",
-            "Esto integrará la solicitud de cambios."
-        )
-        .into(),
-        button: t!(context.lang, "Merge", "Fusionar").into(),
-    });
+    let confirm = merge_pr.map(|pr| merge_confirm(pr, context));
     let stamp = match verb {
         Verb::Ans => Some(t!(context.lang, "Answered", "Respondida")),
         Verb::Read => Some(t!(context.lang, "Read", "Leída")),
@@ -918,6 +899,33 @@ fn action_for(
         key: key.map(str::to_owned),
         link: None,
     }))
+}
+
+fn merge_confirm(pr: &crate::domain_v2::PullRequest, context: &RenderContext<'_>) -> super::Confirm {
+    let summary = context
+        .live
+        .pull_requests
+        .iter()
+        .find(|detail| detail.id == pr.id.0)
+        .and_then(|detail| detail.title.clone())
+        .unwrap_or_else(|| pr.repository.clone());
+    super::Confirm {
+        title: tf!(context.lang, "Merge PR #{number}?", "¿Fusionar la PR #{number}?", number = pr.number),
+        message: summary,
+        button: t!(context.lang, "Merge", "Fusionar").into(),
+    }
+}
+
+fn carries_artifact(item: &InboxItem) -> bool {
+    !crate::artifact::urls_in(item.body.as_deref().unwrap_or_default()).is_empty()
+}
+
+fn reply_placeholder(item: &InboxItem, context: &RenderContext<'_>) -> String {
+    let node = item.agent_id.as_ref().map_or_else(
+        || t!(context.lang, "this node", "este nodo").to_owned(),
+        |agent_id| super::common::agent_label(agent_id, context),
+    );
+    tf!(context.lang, "Reply to {node}…", "Responder a {node}…", node = node)
 }
 
 fn is_document_review(item: &InboxItem, domain: &DomainState) -> bool {

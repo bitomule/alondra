@@ -40,6 +40,19 @@ public struct ActionFeature: Sendable {
             let subject = id.split(separator: "@").first?.split(separator: ":").last
             return subject.map(String.init)
         }
+
+        /// The confirm button, naming the option the action runs with: "Merge (squash)".
+        public var confirmationButton: String? {
+            guard let confirmation else { return nil }
+            guard let id = selectedOptionID, let option = action?.options.first(where: { $0.id == id }) else {
+                return confirmation.button
+            }
+            return "\(confirmation.button) (\(option.label))"
+        }
+
+        public var confirmationIsDestructive: Bool {
+            action?.id?.hasPrefix("merge:") != true
+        }
     }
 
     public enum Action {
