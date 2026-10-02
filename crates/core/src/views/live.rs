@@ -9,6 +9,8 @@ use std::collections::BTreeMap;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct LiveSnapshot {
     #[serde(default)]
+    pub closed_nodes: Vec<String>,
+    #[serde(default)]
     pub nodes: Vec<LiveNode>,
     #[serde(default)]
     pub pull_requests: Vec<LivePullRequest>,

@@ -50,9 +50,10 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
 /// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
 /// then what waits for the user on it, then where its tasks stand.
 /// A node is in Fleet while it is connected, has a task, or is live; one that finished and left
-/// is not.
+/// is not, and neither is one the user closed.
 pub(super) fn in_fleet(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
+        && !context.live.closed_nodes.contains(&agent.id.0)
         && (agent.connected || common::current_task(context.domain, &agent.id).is_some()
             || context.live.nodes.iter().any(|node| node.agent_id == agent.id.0))
 }

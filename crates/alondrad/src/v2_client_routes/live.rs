@@ -6,6 +6,8 @@ use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::sync::{Mutex, atomic::{AtomicU64, Ordering}};
 
+const CLOSED_FILE: &str = "closed-sessions.json";
+
 #[derive(Default)]
 pub(crate) struct Live {
     view: Mutex<View>,
@@ -19,17 +21,38 @@ pub(crate) struct Live {
     pub(crate) losses: crate::node_revival::Losses,
     watching: Mutex<std::collections::HashSet<String>>,
     reconnecting: Mutex<std::collections::HashSet<String>>,
-    closed: Mutex<std::collections::HashSet<String>>,
+    closed: Mutex<std::collections::BTreeSet<String>>,
+    closed_file: Option<std::path::PathBuf>,
 }
 
 impl Live {
     pub(crate) fn persisted_in(home: &std::path::Path) -> Self {
-        Self { mods: crate::node_reports::Reports::persisted_in(home), ..Self::default() }
+        let file = home.join(CLOSED_FILE);
+        let closed = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
+        Self {
+            mods: crate::node_reports::Reports::persisted_in(home),
+            closed: Mutex::new(closed),
+            closed_file: Some(file),
+            ..Self::default()
+        }
     }
 
-    /// The user closed the session: it is not brought back.
+    /// The user closed the session: it is not brought back and leaves Fleet, also after a restart.
     pub(crate) fn mark_closed(&self, session_id: &str) {
-        self.closed.lock().expect("revivals poisoned").insert(session_id.to_owned());
+        let mut closed = self.closed.lock().expect("revivals poisoned");
+        closed.insert(session_id.to_owned());
+        let Some(file) = &self.closed_file else { return };
+        let next = file.with_extension("next");
+        let written = serde_json::to_vec(&*closed).map_err(std::io::Error::from)
+            .and_then(|bytes| std::fs::write(&next, bytes))
+            .and_then(|()| std::fs::rename(&next, file));
+        if let Err(error) = written {
+            log!("could not save {}: {error}", file.display());
+        }
+    }
+
+    pub(crate) fn closed_sessions(&self) -> Vec<String> {
+        self.closed.lock().expect("revivals poisoned").iter().cloned().collect()
     }
 
     pub(crate) fn is_closed(&self, session_id: &str) -> bool {
