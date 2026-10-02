@@ -435,6 +435,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         domain.clone(),
         config.home.clone(),
     ));
+    tokio::spawn(watcher::run_live(domain.clone(), watcher::claude_home()));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),

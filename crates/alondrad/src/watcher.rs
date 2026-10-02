@@ -111,6 +111,54 @@ pub async fn run(hub: Arc<Hub>, claude_home: PathBuf) {
     }
 }
 
+/// Domain v2 keeps what each Agent is doing in memory, in `domain.live`: its hooks and what
+/// Claude's own daemon writes of its background session. With hooks alone, every restart of
+/// alondrad empties the fleet until each node sends another hook.
+pub(crate) async fn run_live(domain: Arc<crate::domain_runtime::DomainRuntime>, claude_home: PathBuf) {
+    let mut seen = HashMap::new();
+    loop {
+        if let Ok(state) = domain.state() {
+            let known = |session_id: &str| state.agents.contains_key(&session_id.into());
+            for event in scan_live(&claude_home, &mut seen, known) {
+                domain.live.apply(&event);
+            }
+        }
+        tokio::time::sleep(SCAN_EVERY).await;
+    }
+}
+
+/// What changed since the last scan for the sessions `known` admits, and the removal of those
+/// whose job is gone.
+fn scan_live(claude_home: &Path, seen: &mut HashMap<String, (i64, DaemonObservation)>, known: impl Fn(&str) -> bool) -> Vec<Event> {
+    let roster = read_roster(&claude_home.join("daemon/roster.json"));
+    let dirs = job_dirs(&claude_home.join("jobs"));
+    let mut events = vec![];
+    seen.retain(|short, (_, obs)| {
+        let present = dirs.iter().any(|(_, s)| s == short);
+        if !present {
+            events.push(Event::NodeRemoved { session_id: obs.session_id.clone() });
+        }
+        present
+    });
+    for (dir, short) in &dirs {
+        let state_path = dir.join("state.json");
+        let Some(mtime) = mtime_millis(&state_path) else { continue };
+        let pid = roster.get(short).copied();
+        if seen.get(short).is_some_and(|(at, obs)| *at == mtime && obs.pid == pid) {
+            continue;
+        }
+        let Some(mut obs) = read_state(&state_path, short) else { continue };
+        if !known(&obs.session_id) {
+            continue;
+        }
+        obs.pid = pid;
+        obs.updated_at = Some(mtime);
+        events.push(Event::DaemonSeen(obs.clone()));
+        seen.insert(short.clone(), (mtime, obs));
+    }
+    events
+}
+
 /// A `claude attach <id>` running on this Mac that Alondra did not open is the user watching
 /// that node. An attach from inside `claude agents` leaves no process and is not seen.
 fn mark_attaches(hub: &Hub) {
@@ -601,5 +649,75 @@ mod background_tests {
         assert!(!is_background_session(&home, "99999999-0000-0000-0000-000000000000"));
         assert!(!is_background_session(&home, "corto"));
         std::fs::remove_dir_all(&home).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod live_tests {
+    use super::*;
+    use alondra_core::domain_v2::{Actor, Command, CommandEnvelope};
+    use alondra_core::views::{Client, Lang, Transport};
+    use std::fs;
+
+    fn job(claude_home: &Path, session_id: &str, state: &str, tempo: &str) {
+        let dir = claude_home.join("jobs").join(&session_id[..8]);
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("state.json"), serde_json::json!({
+            "sessionId": session_id, "name": session_id, "state": state, "tempo": tempo,
+        }).to_string()).unwrap();
+    }
+
+    async fn counts(client: &crate::v2_client_routes::Client) -> HashMap<String, u32> {
+        let state = client.domain.state().unwrap();
+        let live = crate::views::live::gather(client, &state, Lang::En, &["home".into()], false, false).await;
+        let home = client.views.render("home", &state, &live, Client::Ios, Lang::En, Transport::Relay).unwrap();
+        home.status.counts.into_iter().map(|count| (count.id, count.value)).collect()
+    }
+
+    #[tokio::test]
+    async fn after_a_restart_the_home_counts_the_nodes_claude_runs_before_any_hook() {
+        let home = std::env::temp_dir().join(format!("alondra-live-scan-{}", crate::auth::random_hex(8)));
+        let claude_home = home.join("claude");
+        fs::create_dir_all(claude_home.join("daemon")).unwrap();
+        let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Arc::new(std::sync::Mutex::new(None)));
+        let (working, idle, stranger) = ("aaaaaaaa-0001", "bbbbbbbb-0002", "cccccccc-0003");
+        for id in [working, idle] {
+            let state = domain.state().unwrap();
+            domain.execute(&Actor::System, &CommandEnvelope {
+                protocol_version: 2, data_epoch: state.data_epoch,
+                command_id: format!("register-{id}").into(), expected_revision: state.revision,
+                command: Command::RegisterAgent { agent_id: id.into(), name: id.into() },
+            }, None, || Ok(())).unwrap();
+        }
+        job(&claude_home, working, "working", "active");
+        job(&claude_home, idle, "idle", "idle");
+        job(&claude_home, stranger, "working", "active");
+        let pid = std::process::id();
+        fs::write(claude_home.join("daemon/roster.json"), serde_json::json!({"workers": {
+            "aaaaaaaa": {"pid": pid}, "bbbbbbbb": {"pid": pid}, "cccccccc": {"pid": pid},
+        }}).to_string()).unwrap();
+
+        let mut seen = HashMap::new();
+        let state = domain.state().unwrap();
+        let known = |session_id: &str| state.agents.contains_key(&session_id.into());
+        for event in scan_live(&claude_home, &mut seen, known) {
+            domain.live.apply(&event);
+        }
+        let shown = counts(&client).await;
+        assert_eq!(shown["agents"], 2, "{shown:?}");
+        assert_eq!(shown["working"], 1, "{shown:?}");
+        assert!(scan_live(&claude_home, &mut seen, known).is_empty(), "an unchanged job is not observed again");
+
+        fs::remove_dir_all(claude_home.join("jobs").join(&working[..8])).unwrap();
+        for event in scan_live(&claude_home, &mut seen, known) {
+            domain.live.apply(&event);
+        }
+        let shown = counts(&client).await;
+        assert_eq!(shown["agents"], 1, "{shown:?}");
+        assert_eq!(shown["working"], 0, "{shown:?}");
+        drop(client);
+        drop(domain);
+        fs::remove_dir_all(home).unwrap();
     }
 }
