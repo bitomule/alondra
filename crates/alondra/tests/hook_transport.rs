@@ -231,3 +231,42 @@ fn post_tool_hook_sends_only_the_last_stdout_line() {
     assert!(output.status.success());
     std::fs::remove_dir_all(home).unwrap();
 }
+
+/// The node mod starts its helper again unless it ended by SIGTERM: a daemon that goes away, or
+/// one that is not there yet, must end the helper with an exit code, never a signal.
+#[test]
+fn node_connect_ends_with_an_exit_code_when_the_daemon_goes_away_or_is_not_there() {
+    use std::os::unix::process::ExitStatusExt;
+    let home = std::env::temp_dir().join(format!("alondra-cli-connect-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let connect = || {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+            .args(["node", "connect"])
+            .env("ALONDRA_HOME", &home)
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().unwrap();
+        child.stdin.take().unwrap().write_all(br#"{"session_id":"s","version":"2.1.287"}"#).unwrap();
+        child
+    };
+
+    let absent = connect().wait_with_output().unwrap();
+    assert_eq!((absent.status.code(), absent.status.signal()), (Some(1), None), "no daemon yet");
+
+    let listener = UnixListener::bind(home.join("hooks.sock")).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut size = [0; 4];
+        stream.read_exact(&mut size).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(size) as usize];
+        stream.read_exact(&mut bytes).unwrap();
+        let sent: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(sent["node_connect"]["session_id"], "s");
+        stream.write_all(&200u16.to_be_bytes()).unwrap();
+    });
+    let held = connect().wait_with_output().unwrap();
+    daemon.join().unwrap();
+    assert_eq!(String::from_utf8_lossy(&held.stdout), "connected\n");
+    assert_eq!((held.status.code(), held.status.signal()), (Some(3), None), "the daemon went away");
+    std::fs::remove_dir_all(home).unwrap();
+}

@@ -19,12 +19,17 @@ if curl -s --max-time 2 "http://127.0.0.1:$port/v1/health" >/dev/null 2>&1; then
 	exit 1
 fi
 
-mkdir -p "$dir/bin"
-cp "$daemon" "$dir/bin/alondrad"
-cp "$cli" "$dir/bin/alondra"
-chmod 755 "$dir/bin/alondrad" "$dir/bin/alondra"
-rm -rf "$dir/plugin"
-cp -R "$repo/plugin" "$dir/plugin"
+# Restarting on the same dir keeps the plugin folder probe nodes loaded with --plugin-dir: deleting
+# it unloads their mod for good. Files are replaced in place, never over a running binary.
+mkdir -p "$dir/bin" "$dir/plugin"
+for bin in alondrad alondra; do
+	source_bin=$daemon
+	[ "$bin" = alondra ] && source_bin=$cli
+	cp "$source_bin" "$dir/bin/$bin.next"
+	chmod 755 "$dir/bin/$bin.next"
+	mv -f "$dir/bin/$bin.next" "$dir/bin/$bin"
+done
+cp -R "$repo/plugin/." "$dir/plugin/"
 printf '#!/bin/sh\nALONDRA_HOME="%s" ALONDRA_PORT="%s" exec "%s/bin/alondra" "$@"\n' "$dir" "$port" "$dir" >"$dir/plugin/bin/alondra"
 chmod 755 "$dir/plugin/bin/alondra"
 printf '{"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {"ALONDRA_LAUNCHED": "1"}}\n' >"$dir/settings.json"
