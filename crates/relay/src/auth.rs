@@ -454,13 +454,34 @@ impl Auth {
     }
 
     /// Store token and binding atomically with device state; an old binding cannot remain after revoke.
+    /// A token belongs to one app install, which holds one pairing per Mac: re-pairing with the
+    /// same Mac supersedes the older pairing's registration, whose keys the phone no longer has.
     pub fn register_push(&self, device_id: &str, registration: PushRegistration) -> Result<()> {
         self.ensure_registry_ready()?;
         crate::push::validate_registration(&registration)?;
         let mut registry = self.devices.lock().unwrap();
-        if !registry.devices.contains_key(device_id) || registry.revoked_ids.contains(device_id) {
+        let Some(owner) = registry.devices.get(device_id).map(|d| d.owner_sub.clone()) else {
+            bail!("unknown or revoked device");
+        };
+        if registry.revoked_ids.contains(device_id) {
             bail!("unknown or revoked device");
         }
+        let mac = registry.phone_macs.get(device_id).cloned();
+        let superseded: Vec<String> = registry
+            .push
+            .iter()
+            .filter(|(id, old)| {
+                id.as_str() != device_id
+                    && old.token == registration.token
+                    && registry.phone_macs.get(id.as_str()) == mac.as_ref()
+                    && registry.devices.get(id.as_str()).map(|d| &d.owner_sub) == Some(&owner)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        let removed: Vec<(String, PushRegistration)> = superseded
+            .into_iter()
+            .filter_map(|id| registry.push.remove(&id).map(|old| (id, old)))
+            .collect();
         let old = registry.push.insert(device_id.to_owned(), registration);
         if let Err(e) = self.persist_registry(&registry) {
             if let Some(old) = old {
@@ -468,6 +489,7 @@ impl Auth {
             } else {
                 registry.push.remove(device_id);
             }
+            registry.push.extend(removed);
             return Err(e);
         }
         Ok(())

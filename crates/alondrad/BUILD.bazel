@@ -18,6 +18,7 @@ rust_test(
         "//crates/core:fixtures/quill.jsonl",
         "//crates/core:src/domain_v2/tests.rs",
         "//fixtures/client-v2",
+        "//fixtures/push",
         "//fixtures/views:all",
         "//fixtures/domain-v2:acceptance.json",
     ],

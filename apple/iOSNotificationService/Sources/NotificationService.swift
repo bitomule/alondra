@@ -17,11 +17,8 @@ final class NotificationService: UNNotificationServiceExtension {
         // A service push is opaque until the Mac signature, recipient, expiry and
         // current binding have all been verified. No plaintext push may create actions.
         guard let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String,
-              let raw = try? JSONSerialization.data(withJSONObject: content.userInfo),
-              let hint = try? NotificationDecoder.bindingHint(raw),
-              let context = try? NotificationDecryptionStore(accessGroup: group).load(binding: hint),
-              let decrypted = try? NotificationDecoder.decrypt(raw, context: context),
-              var payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [String: Any],
+              var payload = NotificationDecoder.open(userInfo: content.userInfo,
+                                                     store: NotificationDecryptionStore(accessGroup: group)),
               let binding = NotificationPayload.Binding(userInfo: payload),
               let aps = payload["aps"] as? [String: Any] else {
             delivery.update { content in

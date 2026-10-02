@@ -14,7 +14,7 @@ rust_binary(
 
 rust_test(
     name = "alondra_relay_test",
-    compile_data = glob(["tests/fixtures/**"]),
+    compile_data = glob(["tests/fixtures/**"]) + ["//fixtures/push"],
     crate = ":alondra-relay",
     edition = "2024",
     deps = all_crate_deps(normal_dev = True),

@@ -808,7 +808,94 @@ mod tests {
         let fixture: Value =
             serde_json::from_str(include_str!("../../../fixtures/views/push-payloads.json"))
                 .unwrap();
-        let mut state = DomainState::new(fixture["data_epoch"].as_str().unwrap());
+        let state = push_fixture_state(fixture["data_epoch"].as_str().unwrap());
+        let cases = fixture["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 5);
+        for case in cases {
+            let id = case["id"].as_str().unwrap();
+            let name = case["interaction"].as_str().unwrap();
+            assert_eq!(
+                user_push_payload(&state, Some(id), Lang::En),
+                case["payload"],
+                "{name}"
+            );
+        }
+        let english = user_push_payload(&state, Some(push_fixture_id("question")), Lang::En);
+        let spanish = user_push_payload(&state, Some(push_fixture_id("question")), Lang::Es);
+        assert!(english["alondra"].get("actions_es").is_none());
+        assert_eq!(english["alondra"]["actions"][2]["label"], "Need more context");
+        assert_eq!(spanish["alondra"]["actions"][2]["label"], "Necesito más contexto");
+    }
+
+    const ENCRYPTED_PUSH_FIXTURE: &str = "fixtures/push/encrypted.json";
+
+    /// The Apple notification service extension decrypts this fixture in
+    /// NotificationDecoderTests. Regenerate it after a push format change with
+    /// `ALONDRA_WRITE_PUSH_FIXTURE=1 bazelisk run //crates/alondrad:alondrad_test -- encrypted_push_fixture`.
+    #[test]
+    fn encrypted_push_fixture_is_what_the_daemon_sends() {
+        use p256::{SecretKey, ecdsa::SigningKey, elliptic_curve::sec1::ToSec1Point};
+        let mac_signing = SigningKey::from_slice(&[0x51; 32]).unwrap();
+        let phone_agreement = SecretKey::from_slice(&[0x52; 32]).unwrap();
+        let (mac_id, device_id) = ("mac-fixture", "phone-fixture");
+        let binding = base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, [7u8; 32]);
+        let state = push_fixture_state("fixture-epoch");
+        let payload = user_push_payload(&state, Some(push_fixture_id("question")), Lang::Es);
+        let body: Value = serde_json::from_slice(
+            &crate::service::seal_push(mac_id, &mac_signing, device_id, &phone_agreement.public_key(),
+                &binding, &payload, false).unwrap(),
+        ).unwrap();
+        let encode = |bytes: &[u8]| base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes);
+        let point = mac_signing.verifying_key().to_sec1_point(false);
+        let generated = json!({
+            "mac_id": mac_id,
+            "device_id": device_id,
+            "mac_signing_public_key": encode(&point.as_bytes()[1..]),
+            "device_agreement_private_key": encode(&phone_agreement.to_bytes()),
+            "payload": payload,
+            "apns": {
+                "aps": {"alert": {"title": "Alondra", "body": "Nueva actividad"}, "mutable-content": 1},
+                "alondra": {"envelope": body["envelope"], "push_binding": binding},
+            },
+        });
+        if std::env::var_os("ALONDRA_WRITE_PUSH_FIXTURE").is_some() {
+            let root = std::env::var("BUILD_WORKSPACE_DIRECTORY").expect("run through bazelisk run");
+            let mut text = serde_json::to_string_pretty(&generated).unwrap();
+            text.push('\n');
+            std::fs::write(Path::new(&root).join(ENCRYPTED_PUSH_FIXTURE), text).unwrap();
+            return;
+        }
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/push/encrypted.json")).unwrap();
+        let stale = "push format changed: regenerate fixtures/push/encrypted.json";
+        for key in ["mac_id", "device_id", "mac_signing_public_key", "device_agreement_private_key", "payload"] {
+            assert_eq!(fixture[key], generated[key], "{stale} ({key})");
+        }
+        let mut outer = fixture["apns"].clone();
+        let envelope: alondra_e2e::EnvelopeV1 =
+            serde_json::from_value(outer["alondra"]["envelope"].take()).unwrap();
+        let mut expected_outer = generated["apns"].clone();
+        expected_outer["alondra"]["envelope"].take();
+        assert_eq!(outer, expected_outer, "{stale} (APNs wrapper)");
+        let current: alondra_e2e::EnvelopeV1 =
+            serde_json::from_value(body["envelope"].clone()).unwrap();
+        assert_eq!(
+            (&envelope.v, &envelope.route, &envelope.sender, &envelope.recipient, &envelope.kind),
+            (&current.v, &current.route, &current.sender, &current.recipient, &current.kind),
+            "{stale} (envelope context)"
+        );
+        let open = |envelope: &alondra_e2e::EnvelopeV1| -> Value {
+            let plaintext = envelope
+                .open(mac_signing.verifying_key(), &phone_agreement, mac_id, device_id, mac_id,
+                    envelope.expires_at_ms)
+                .unwrap();
+            serde_json::from_slice(&plaintext).unwrap()
+        };
+        assert_eq!(open(&envelope), open(&current), "{stale} (plaintext)");
+    }
+
+    fn push_fixture_state(data_epoch: &str) -> DomainState {
+        let mut state = DomainState::new(data_epoch);
         let options = vec![
             QuestionOption {
                 id: "yes".into(),
@@ -898,22 +985,7 @@ mod tests {
                 },
             );
         }
-        let cases = fixture["cases"].as_array().unwrap();
-        assert_eq!(cases.len(), 5);
-        for case in cases {
-            let id = case["id"].as_str().unwrap();
-            let name = case["interaction"].as_str().unwrap();
-            assert_eq!(
-                user_push_payload(&state, Some(id), Lang::En),
-                case["payload"],
-                "{name}"
-            );
-        }
-        let english = user_push_payload(&state, Some(push_fixture_id("question")), Lang::En);
-        let spanish = user_push_payload(&state, Some(push_fixture_id("question")), Lang::Es);
-        assert!(english["alondra"].get("actions_es").is_none());
-        assert_eq!(english["alondra"]["actions"][2]["label"], "Need more context");
-        assert_eq!(spanish["alondra"]["actions"][2]["label"], "Necesito más contexto");
+        state
     }
 
     fn push_fixture_id(name: &str) -> &'static str {

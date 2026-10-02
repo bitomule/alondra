@@ -18,7 +18,7 @@ swift_test(
     name = "AlondraNotificationsTests",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     srcs = glob(["Tests/**/*.swift"]),
-    data = ["//fixtures/views:all"],
+    data = ["//fixtures/push", "//fixtures/views:all"],
     deps = [
         ":AlondraNotifications",
         "//apple/Data/Transport:AlondraTransport",

@@ -1609,39 +1609,53 @@ impl Service {
         payload: &Value,
         with_sound: bool,
     ) -> Result<Vec<u8>> {
-        let plaintext = serde_json::to_vec(&json!({
-            "push_binding": binding,
-            "payload": payload,
-            "with_sound": with_sound,
-        }))?;
-        if plaintext.len() > MAX_PUSH_PLAINTEXT {
-            bail!("content exceeds encrypted APNs budget");
-        }
-        let mut id_bytes = [0u8; 16];
-        SystemRandom::new()
-            .fill(&mut id_bytes)
-            .map_err(|_| anyhow!("OS randomness failed"))?;
-        let request_id = URL_SAFE_NO_PAD.encode(id_bytes);
-        let envelope = EnvelopeV1::seal_random(
-            EnvelopeContext {
-                route: &self.mac_id,
-                sender: &self.mac_id,
-                recipient: id,
-                request_id: &request_id,
-                kind: "push",
-                expires_at_ms: now_ms() + 600_000,
-            },
-            &plaintext,
-            &self.signing,
-            &device.agreement,
-        )
-        .map_err(|error| anyhow!("seal push: {error}"))?;
-        let body = serde_json::to_vec(&json!({"device_id":id,"envelope":envelope}))?;
-        if body.len() > MAX_PUSH_BODY {
-            bail!("envelope exceeds APNs budget");
-        }
-        Ok(body)
+        seal_push(&self.mac_id, &self.signing, id, &device.agreement, binding, payload, with_sound)
     }
+}
+
+/// The `/v1/mac/push` body: the relay forwards `envelope` to APNs and the phone's
+/// notification service extension opens it with the pairing's agreement key.
+pub(crate) fn seal_push(
+    mac_id: &str,
+    signing: &SigningKey,
+    device_id: &str,
+    agreement: &PublicKey,
+    binding: &str,
+    payload: &Value,
+    with_sound: bool,
+) -> Result<Vec<u8>> {
+    let plaintext = serde_json::to_vec(&json!({
+        "push_binding": binding,
+        "payload": payload,
+        "with_sound": with_sound,
+    }))?;
+    if plaintext.len() > MAX_PUSH_PLAINTEXT {
+        bail!("content exceeds encrypted APNs budget");
+    }
+    let mut id_bytes = [0u8; 16];
+    SystemRandom::new()
+        .fill(&mut id_bytes)
+        .map_err(|_| anyhow!("OS randomness failed"))?;
+    let request_id = URL_SAFE_NO_PAD.encode(id_bytes);
+    let envelope = EnvelopeV1::seal_random(
+        EnvelopeContext {
+            route: mac_id,
+            sender: mac_id,
+            recipient: device_id,
+            request_id: &request_id,
+            kind: "push",
+            expires_at_ms: now_ms() + 600_000,
+        },
+        &plaintext,
+        signing,
+        agreement,
+    )
+    .map_err(|error| anyhow!("seal push: {error}"))?;
+    let body = serde_json::to_vec(&json!({"device_id":device_id,"envelope":envelope}))?;
+    if body.len() > MAX_PUSH_BODY {
+        bail!("envelope exceeds APNs budget");
+    }
+    Ok(body)
 }
 
 /// The generic alert that stands in for content too large to push, keeping the
