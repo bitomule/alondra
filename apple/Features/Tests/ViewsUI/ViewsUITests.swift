@@ -149,28 +149,52 @@ final class ScheduleEditorRulesTests: XCTestCase {
 }
 
 final class CardActionPresentationTests: XCTestCase {
-    private func card(named name: String, replacingIcon icon: String? = nil) throws -> Card {
+    private func card(
+        named name: String, replacingIcon icon: String? = nil, linkingArtifact: Bool = false
+    ) throws -> Card {
         let root = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
             .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
             .appendingPathComponent("fixtures/views/\(name).json")
         var text = try String(contentsOf: root, encoding: .utf8)
         if let icon { text = text.replacingOccurrences(of: "\"icon\": \"delivery\"", with: "\"icon\": \"\(icon)\"") }
+        if linkingArtifact { text = text.replacingOccurrences(of: "ready for your final approval.", with: "ready: https://claude.ai/artifact/abc123") }
         let document = try ContractCodec.decode(ViewDocument.self, from: Data(text.utf8))
         return try XCTUnwrap(document.sections.lazy.flatMap(\.items).compactMap { item -> Card? in
             if case let .card(card) = item { card } else { nil }
         }.first)
     }
 
-    func testDeliveryRequestChangesIsRescueComments() throws {
-        let delivery = try card(named: "card-delivery")
+    private func addingRequestChanges(_ card: Card) throws -> Card {
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(card)) as? [String: Any])
+        var actions = try XCTUnwrap(json["actions"] as? [[String: Any]])
+        actions.append([
+            "id": "changes:\(card.id)@1", "label": "Request changes", "style": "secondary", "presentation": "button",
+            "input": ["kind": "none"], "attachments": false, "enabled": true, "comments": ["kind": "blocks"],
+        ])
+        json["actions"] = actions
+        return try ContractCodec.decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
+    func testDeliveryWithAnArtifactRequestChangesIsRescueComments() throws {
+        let delivery = try addingRequestChanges(card(named: "card-delivery", linkingArtifact: true))
         let changes = try XCTUnwrap(delivery.actions.first { $0.id?.hasPrefix("changes:") == true })
         XCTAssertTrue(CardActionPresentation.isRescueComments(card: delivery, action: changes))
+        XCTAssertTrue(CardActionPresentation.isDocumentReview(delivery))
         let accept = try XCTUnwrap(delivery.actions.first { $0.id?.hasPrefix("accept:") == true })
         XCTAssertFalse(CardActionPresentation.isRescueComments(card: delivery, action: accept))
     }
 
+    func testDeliveryWithoutAnArtifactNeverRescuesComments() throws {
+        let plain = try card(named: "card-delivery")
+        XCTAssertFalse(plain.actions.contains { CardActionPresentation.isRescueComments(card: plain, action: $0) })
+        XCTAssertFalse(CardActionPresentation.isDocumentReview(plain))
+        let withoutLink = try addingRequestChanges(plain)
+        let commented = try XCTUnwrap(withoutLink.actions.first { $0.id?.hasPrefix("changes:") == true })
+        XCTAssertFalse(CardActionPresentation.isRescueComments(card: withoutLink, action: commented))
+    }
+
     func testOtherDocumentsKeepTheirReviewActions() throws {
-        let document = try card(named: "card-delivery", replacingIcon: "document")
+        let document = try addingRequestChanges(card(named: "card-delivery", replacingIcon: "document", linkingArtifact: true))
         let changes = try XCTUnwrap(document.actions.first { $0.id?.hasPrefix("changes:") == true })
         XCTAssertFalse(CardActionPresentation.isRescueComments(card: document, action: changes))
     }

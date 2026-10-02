@@ -47,7 +47,7 @@ public struct TriageCardFeature: Sendable {
         public var replyAction: WireAction? {
             guard let card else { return nil }
             let preferred: [String] = switch card.icon {
-            case .pullRequest, .document: ["changes", "reply", "ans", "ask_pr"]
+            case .pullRequest: ["changes", "reply", "ans", "ask_pr"]
             default: ["ans", "reply", "changes", "ask_pr"]
             }
             for verb in preferred {

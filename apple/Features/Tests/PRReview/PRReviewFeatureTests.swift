@@ -30,7 +30,7 @@ final class PRReviewFeatureTests: XCTestCase {
      "options":[{"id":"merge","label":"Merge commit","style":"secondary","input":{"kind":"none"}},
                 {"id":"squash","label":"squash","style":"secondary","input":{"kind":"none"}}],
      "input":{"kind":"none"},"attachments":false,
-     "confirm":{"title":"Merge pull request?","message":"Merge PR #12?","button":"Merge"},"enabled":true}
+     "confirm":{"title":"Merge PR #12?","message":"Add the compact schedule editor","button":"Merge"},"enabled":true}
     """
 
     private static let conflictsAction = """
@@ -222,7 +222,9 @@ final class PRReviewFeatureTests: XCTestCase {
         await store.send(.perform(merge, optionID: "squash"))
         await store.skipReceivedActions()
 
-        XCTAssertEqual(store.state.actions.confirmation?.title, "Merge pull request?")
+        XCTAssertEqual(store.state.actions.confirmation?.title, "Merge PR #12?")
+        XCTAssertEqual(store.state.actions.confirmationButton, "Merge (squash)")
+        XCTAssertFalse(store.state.actions.confirmationIsDestructive)
         XCTAssertFalse(store.state.isComposing)
         XCTAssertTrue(requests.value.isEmpty, "nothing is sent before the confirmation")
 

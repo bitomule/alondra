@@ -23,7 +23,9 @@ private struct ActionDialogs: ViewModifier {
                 ),
                 titleVisibility: .visible
             ) {
-                Button(store.confirmation?.button ?? "", role: .destructive) { store.send(.confirm) }
+                Button(store.confirmationButton ?? "", role: store.confirmationIsDestructive ? .destructive : nil) {
+                    store.send(.confirm)
+                }
             } message: {
                 Text(verbatim: store.confirmation?.message ?? "")
             }

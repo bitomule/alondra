@@ -742,6 +742,84 @@ fn document_review_card_exposes_revision_content_and_review_actions() {
     assert!(card.actions.iter().any(|action| action.label == "Request changes"));
 }
 
+fn delivery_card_actions(state: &DomainState, lang: Lang, key: &str) -> Vec<Action> {
+    let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, key, "");
+    let Item::Card(card) = &view.sections[0].items[0] else { panic!("delivery card") };
+    card.actions.clone()
+}
+
+fn reply_to_node(actions: &[Action]) -> &Action {
+    let reply = actions
+        .iter()
+        .find(|action| action.id.starts_with("reply:"))
+        .expect("every delivery can be answered to its node");
+    assert!(reply.comments.is_none());
+    reply
+}
+
+fn attach_document(state: &mut DomainState) {
+    state.documents.insert("document-1".into(), Document {
+        id: "document-1".into(), title: "Design notes".into(), current_revision: "revision-1".into(),
+    });
+    state.document_revisions.insert("revision-1".into(), DocumentRevision {
+        id: "revision-1".into(), document_id: "document-1".into(), number: 1,
+        content_digest: "b".repeat(64), content_reference: "stored/design".into(),
+    });
+    if let InteractionPayload::Delivery { targets, .. } = &mut state.interactions.get_mut(&"i-3".into()).unwrap().payload {
+        *targets = vec![crate::domain_v2::DeliveryTarget::DocumentRevision {
+            document_id: "document-1".into(), revision_id: "revision-1".into(),
+        }];
+    }
+}
+
+#[test]
+fn plain_delivery_offers_accept_and_a_reply_to_the_node_only() {
+    let mut state = fixture();
+    state.interactions.get_mut(&"i-3".into()).unwrap().author = Author::Agent { agent_id: "a-1".into() };
+    let actions = delivery_card_actions(&state, Lang::En, "card:i-3");
+    assert!(actions.iter().any(|action| action.label == "Accept" && action.style == Style::Primary));
+    assert!(actions.iter().all(|action| !action.id.starts_with("changes:")), "{actions:?}");
+    let reply = reply_to_node(&actions);
+    assert_eq!(reply.label, "Send");
+    assert!(matches!(&reply.input, Input::Text { placeholder, required: true, .. } if placeholder == "Reply to Node One…"));
+    assert_eq!(reply.stamp.as_deref(), Some("Sent"));
+}
+
+#[test]
+fn delivery_reply_placeholder_is_localized_and_falls_back_to_this_node() {
+    let state = fixture();
+    let spanish = delivery_card_actions(&state, Lang::Es, "card:i-3");
+    let reply = reply_to_node(&spanish);
+    assert_eq!(reply.label, "Enviar");
+    assert!(matches!(&reply.input, Input::Text { placeholder, .. } if placeholder == "Responder a este nodo…"));
+    let english = delivery_card_actions(&state, Lang::En, "card:i-3");
+    assert!(matches!(&reply_to_node(&english).input, Input::Text { placeholder, .. } if placeholder == "Reply to this node…"));
+}
+
+#[test]
+fn delivery_with_a_document_offers_the_review_with_comments_beside_the_reply() {
+    let mut state = fixture();
+    attach_document(&mut state);
+    let actions = delivery_card_actions(&state, Lang::En, "card:revision-1");
+    assert!(actions.iter().any(|action| action.label == "Approve" && action.style == Style::Primary));
+    let changes = actions.iter().find(|action| action.id.starts_with("changes:")).expect("review feedback");
+    assert!(changes.comments.is_some());
+    reply_to_node(&actions);
+}
+
+#[test]
+fn delivery_carrying_a_claude_artifact_offers_request_changes_beside_the_reply() {
+    let mut state = fixture();
+    state.interactions.get_mut(&"i-3".into()).unwrap().body =
+        "Plan ready: https://claude.ai/artifact/abc123".into();
+    let actions = delivery_card_actions(&state, Lang::En, "card:i-3");
+    let changes = actions.iter().find(|action| action.label == "Request changes").expect("request changes");
+    assert!(changes.comments.is_some());
+    assert!(matches!(&changes.input, Input::Text { placeholder, .. } if placeholder == "Describe the changes"));
+    assert!(actions.iter().any(|action| action.label == "Accept" && action.style == Style::Primary));
+    reply_to_node(&actions);
+}
+
 #[test]
 fn pull_request_card_exposes_the_diff_and_read_actions_stay_primary() {
     let state = golden_fixture();
@@ -1310,7 +1388,7 @@ fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
     let mut live = LiveSnapshot::default();
     live.pull_requests.push(LivePullRequest {
         id: "pr-1".into(),
-        title: None,
+        title: Some("Add the schedule editor".into()),
         body: None,
         head_ref: None,
         base_ref: None,
@@ -1332,6 +1410,15 @@ fn stacked_pr_merge_names_upstream_number_and_keeps_canonical_link() {
         })
         .expect("merge action");
     assert!(!merge.enabled);
+    let confirm = merge.confirm.as_ref().expect("merge confirmation");
+    assert_eq!(
+        (confirm.title.as_str(), confirm.message.as_str(), confirm.button.as_str()),
+        ("Merge PR #12?", "Add the schedule editor", "Merge")
+    );
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "card:pr-1", "");
+    let Item::Card(spanish_card) = &spanish.sections[0].items[0] else { panic!("PR card") };
+    let spanish_confirm = spanish_card.actions.iter().find_map(|action| action.confirm.as_ref()).expect("confirmation");
+    assert_eq!(spanish_confirm.title, "¿Fusionar la PR #12?");
     assert_eq!(merge.disabled_reason.as_deref(), Some("Merge #153 first"));
     assert!(card.facts.as_ref().is_some_and(|facts| {
         facts.items.iter().any(|fact| {

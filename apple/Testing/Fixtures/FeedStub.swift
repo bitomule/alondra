@@ -110,8 +110,8 @@ extension Fixtures {
         }
     }
 
-    /// The delivery as the daemon renders it while its actions are live.
-    static func liveDelivery() throws -> ViewDocument {
+    /// A delivery with no Claude artifact, as the daemon renders it while its actions are live: a reply field and Accept.
+    static func livePlainDelivery() throws -> ViewDocument {
         try card("card-delivery") { item in
             var actions = try XCTUnwrap(item["actions"] as? [[String: Any]])
             for index in actions.indices {
@@ -120,6 +120,31 @@ extension Fixtures {
             }
             item["actions"] = actions
         }
+    }
+
+    /// A delivery that links a Claude artifact, as the daemon renders it while its actions are live: Rescue Comments and Approve.
+    static func liveDelivery() throws -> ViewDocument {
+        try card("card-delivery") { item in
+            var actions = try XCTUnwrap(item["actions"] as? [[String: Any]])
+            for index in actions.indices {
+                actions[index]["enabled"] = true
+                actions[index]["disabled_reason"] = nil
+            }
+            asArtifactReview(&actions)
+            item["actions"] = actions
+            var body = try XCTUnwrap(item["body"] as? [String: Any])
+            body["text"] = "\(try XCTUnwrap(body["text"] as? String))\n\nhttps://claude.ai/artifact/abc123"
+            item["body"] = body
+        }
+    }
+
+    /// The feedback action a delivery with an artifact or a document carries: request changes with block comments.
+    static func asArtifactReview(_ actions: inout [[String: Any]]) {
+        actions.append([
+            "id": "changes:\(deliveryID)@1", "label": "Request changes", "style": "secondary", "presentation": "button",
+            "input": ["kind": "text", "placeholder": "Describe the changes", "required": true, "multiline": true],
+            "attachments": true, "comments": ["kind": "blocks"], "enabled": true, "stamp": "Changes requested",
+        ])
     }
 
     /// A tool-permission prompt: the command in a code block, Allow and Deny to pick from.

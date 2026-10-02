@@ -31,7 +31,7 @@ struct TriageCard: View {
     }
     private var stamp: String? { store.stamp }
     private var isQuestion: Bool { card.icon == .question || card.icon == .action }
-    private var isDocumentReview: Bool { card.icon == .document || card.icon == .delivery }
+    private var isDocumentReview: Bool { CardActionPresentation.isDocumentReview(card) }
     private func verb(_ action: AlondraContract.Action) -> String {
         action.id?.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
     }

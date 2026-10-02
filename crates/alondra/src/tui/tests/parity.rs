@@ -964,7 +964,7 @@ fn detail_hides_the_disabled_accept_action() {
     let visible = crate::tui::draw::visible_detail_actions(&document);
 
     assert!(!visible.iter().any(|action| action.id.starts_with("accept:")));
-    assert!(visible.iter().any(|action| action.id.starts_with("changes:")));
+    assert!(visible.iter().any(|action| action.id.starts_with("reply:")));
 }
 
 fn question_card() -> alondra_core::views::View {

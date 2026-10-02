@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v964a18755eba223b",
+  "version": "v247b522507543de0",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -117,24 +117,19 @@
               "key": "v"
             },
             {
-              "id": "changes:hf-weekly-2026-09-30@1",
-              "label": "Request changes",
+              "id": "reply:hf-weekly-2026-09-30@1",
+              "label": "Send",
               "style": "secondary",
               "presentation": "button",
               "input": {
                 "kind": "text",
-                "placeholder": "Describe the changes",
+                "placeholder": "Reply to this node…",
                 "required": true,
                 "multiline": true
               },
               "attachments": true,
-              "comments": {
-                "kind": "blocks"
-              },
-              "enabled": false,
-              "disabled_reason": "This card has changed",
-              "stamp": "Changes requested",
-              "key": "r"
+              "enabled": true,
+              "stamp": "Sent"
             }
           ]
         }
