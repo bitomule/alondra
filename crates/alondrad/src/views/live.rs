@@ -1,4 +1,4 @@
-use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId};
+use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LiveCheck, LivePullRequest, LiveSnapshot, Notice, Tone,
@@ -72,9 +72,11 @@ pub(crate) async fn gather(
         .filter_map(|agent| {
             let session_id = agent.id.0.clone();
             let reported = client.domain.live.mods.session(&session_id).unwrap_or_default();
+            let open_task = state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived
+                && !matches!(task.state, TaskState::Done | TaskState::Closing | TaskState::Cancelled));
             let node = match client.domain.live.node(&session_id) {
                 Some(node) => node,
-                None if reported.started_at.is_some() || agent.connected => {
+                None if reported.started_at.is_some() || agent.connected || open_task => {
                     let mut node = alondra_core::Node::new(&session_id, now);
                     node.cwd = reported.cwd.clone();
                     node
@@ -86,7 +88,7 @@ pub(crate) async fn gather(
             } else {
                 launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
             };
-            let activity = if reported.started_at.is_none() && agent.connected {
+            let activity = if reported.connection.is_none() && (agent.connected || open_task) {
                 Activity::Unreachable
             } else {
                 reported.activity(now)

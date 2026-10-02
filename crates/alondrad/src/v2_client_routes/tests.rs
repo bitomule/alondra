@@ -1078,3 +1078,36 @@ async fn a_node_that_never_reconnects_after_a_restart_reads_unreachable_and_keep
     let fleet = view_json(&fixture, "fleet", "es").await;
     assert_eq!(badges(node_row(&fleet, "ghost"))[0].0, "Sin conexión", "a closed connection reads unreachable in the state, not as 'no sé qué quiere'");
 }
+
+#[tokio::test]
+async fn a_stopped_node_with_an_open_task_reads_unreachable_under_its_project_though_its_session_ended() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let domain = &fixture.domain;
+    let run = |actor: Actor, id: &str, command: Command| {
+        let state = domain.state().unwrap();
+        domain.execute(&actor, &CommandEnvelope {
+            protocol_version: 2, data_epoch: state.data_epoch, command_id: id.into(), expected_revision: state.revision, command,
+        }, None, || Ok(())).unwrap();
+    };
+    let user = || Actor::User { user_id: "u".into() };
+    run(Actor::System, "register-stopped", Command::RegisterAgent { agent_id: "stopped".into(), name: "alondra/stopped".into() });
+    run(user(), "request-stopped", Command::CreateRequest { request_id: "request-stopped".into(), body: "Probe".into(), auto_merge: false });
+    run(user(), "task-stopped", Command::CreateTask {
+        task_id: "task-stopped".into(), request_id: "request-stopped".into(), title: "Probe".into(), agent_id: Some("stopped".into()),
+        review_prs: false, dependencies: Default::default(), stack: None,
+    });
+    let mods = &domain.live.mods;
+    let connection = mods.connect(serde_json::from_value(json!({"session_id": "stopped", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
+    mods.apply(serde_json::from_value(json!({"session_id": "stopped", "event": "session.end"})).unwrap(), alondra_core::now_millis());
+    mods.disconnect("stopped", connection);
+    crate::domain_agent_lifecycle::observe_instance(domain, &"stopped".into(), false,
+        &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
+    assert!(!domain.state().unwrap().agents[&"stopped".into()].connected, "SessionEnd fired");
+
+    let fleet = view_json(&fixture, "fleet", "es").await;
+    let section = fleet["sections"].as_array().unwrap().iter()
+        .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "stopped")).unwrap();
+    assert_eq!(section["id"], "project:alondra");
+    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("Sin conexión".into(), "critical".into()));
+}
