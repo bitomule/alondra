@@ -1,3 +1,4 @@
+use alondra_core::Millis;
 use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
@@ -256,8 +257,8 @@ pub(crate) async fn gather(
     let gauges = if let Some((machine, usage)) = sample {
         let mut published = client.views_gauges.lock().expect("published views gauges poisoned");
         published_gauges(&mut published, std::time::Instant::now(), lang, || (
-            gauges(&machine, usage.as_ref(), Lang::En),
-            gauges(&machine, usage.as_ref(), Lang::Es),
+            gauges(&machine, usage.as_ref(), Lang::En, machine.at),
+            gauges(&machine, usage.as_ref(), Lang::Es, machine.at),
         ))
     } else { vec![] };
     let request_times = if clock_only { BTreeMap::new() } else { client
@@ -602,13 +603,36 @@ fn same_visible_gauges(left: &[Gauge], right: &[Gauge]) -> bool {
         })
 }
 
+/// A reading older than this is shown with its age: turns refresh it every few minutes while a
+/// node works, so an hour without one means no node has run, and the 5-hour window can have moved
+/// by tens of points.
+const STALE_READING_MS: Millis = 60 * 60 * 1000;
+
+fn reading_age(measured_at: Millis, now: Millis, lang: Lang) -> Option<String> {
+    let age = now - measured_at;
+    if age <= STALE_READING_MS {
+        return None;
+    }
+    let hours = (age as f64 / STALE_READING_MS as f64).round() as i64;
+    let (amount, unit) = if hours >= 48 { (hours / 24, "d") } else { (hours, "h") };
+    Some(match lang {
+        Lang::En => format!("measured {amount} {unit} ago"),
+        Lang::Es => format!("medido hace {amount} {unit}"),
+    })
+}
+
 fn gauges(
     machine: &alondra_core::Machine,
     usage: Option<&alondra_core::usage::Usage>,
     lang: Lang,
+    now: Millis,
 ) -> Vec<Gauge> {
     let mut out = Vec::new();
     if let Some(usage) = usage {
+        let aged = |detail: String| Some(match reading_age(usage.measured_at, now, lang) {
+            Some(age) => format!("{detail} · {age}"),
+            None => detail,
+        });
         out.push(Gauge {
             id: "claude_week".into(),
             label: match lang {
@@ -618,7 +642,7 @@ fn gauges(
             .into(),
             value: usage.week_percent / 100.0,
             text: format!("{}%", usage.week_percent.round()),
-            detail: Some(match lang {
+            detail: aged(match lang {
                 Lang::En => format!("Weekly limit resets {}", timestamp(usage.week_resets_at)),
                 Lang::Es => format!("El límite semanal se reinicia {}", timestamp(usage.week_resets_at)),
             }),
@@ -647,7 +671,7 @@ fn gauges(
                 .into(),
                 value: spent / share.max(0.1),
                 text: format!("{}/{}%", spent.round(), share.round()),
-                detail: Some(if usage.over_pace {
+                detail: aged(if usage.over_pace {
                     match lang {
                         Lang::En => "Spending faster than today's share; confirm new launches".into(),
                         Lang::Es => "Ritmo superior a la cuota diaria; confirma nuevos lanzamientos".into(),
@@ -671,10 +695,10 @@ fn gauges(
                 .into(),
                 value: percent / 100.0,
                 text: format!("{}%", percent.round()),
-                detail: usage.five_hour_resets_at.map(|at| match lang {
+                detail: usage.five_hour_resets_at.and_then(|at| aged(match lang {
                     Lang::En => format!("5-hour limit resets {}", timestamp(at)),
                     Lang::Es => format!("El límite de 5 horas se reinicia {}", timestamp(at)),
-                }),
+                })),
                 level: if percent >= 85.0 { Level::Hot } else { Level::Calm },
             });
         }
@@ -809,15 +833,15 @@ mod tests {
         let mut machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
             memory_free_percent: Some(50), load: [0.0; 3], cpus: 8, cpu_usage: 34.4,
             disk_total: 100, disk_available: 50, unreliable: false };
-        let english = gauges(&machine, None, Lang::En);
+        let english = gauges(&machine, None, Lang::En, 0);
         assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["memory", "cpu", "disk"]);
         let cpu = &english[1];
         assert_eq!((cpu.label.as_str(), cpu.text.as_str(), cpu.level), ("CPU", "34%", Level::Calm));
         machine.cpu_usage = 90.0;
-        assert_eq!(gauges(&machine, None, Lang::En)[1].level, Level::Warm);
+        assert_eq!(gauges(&machine, None, Lang::En, 0)[1].level, Level::Warm);
         machine.cpu_usage = 10.0;
         machine.unreliable = true;
-        assert_eq!(gauges(&machine, None, Lang::En)[1].level, Level::Hot);
+        assert_eq!(gauges(&machine, None, Lang::En, 0)[1].level, Level::Hot);
     }
 
     #[test]
@@ -837,13 +861,33 @@ mod tests {
         let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
             today_spent: Some(41.0), today_share: Some(18.0), over_pace: true,
             five_hour_percent: Some(10.0), five_hour_resets_at: Some(1_790_959_200_000), ..Default::default() };
-        let result = gauges(&machine, Some(&usage), Lang::En);
+        let result = gauges(&machine, Some(&usage), Lang::En, 0);
         assert!(result[0].detail.as_deref().unwrap().contains("resets"));
         assert_eq!(result[1].text, "41/18%");
         assert!(result[1].label.contains('!'));
         assert!(result[1].detail.as_deref().unwrap().contains("faster"));
         assert_eq!((result[2].id.as_str(), result[2].text.as_str()), ("claude_five_hours", "10%"));
         assert!(result[2].detail.as_deref().unwrap().starts_with("5-hour limit resets 2026-10-02"));
+    }
+
+    #[test]
+    fn an_old_reading_says_how_old_it_is_in_both_languages() {
+        let machine = alondra_core::Machine { at: 0, memory_total: 100, memory_available: 50,
+            memory_free_percent: Some(50), load: [0.0; 3], cpus: 8, cpu_usage: 0.0,
+            disk_total: 100, disk_available: 50, unreliable: false };
+        let usage = alondra_core::usage::Usage { week_percent: 53.0, week_resets_at: 1_790_553_600_000,
+            today_spent: Some(3.0), today_share: Some(10.0), five_hour_percent: Some(10.0),
+            five_hour_resets_at: Some(1_790_959_200_000), measured_at: 1_000, ..Default::default() };
+        let two_hours = 1_000 + 2 * 3_600_000;
+        let details = |lang, now| gauges(&machine, Some(&usage), lang, now).iter().take(3)
+            .map(|gauge| gauge.detail.clone().unwrap()).collect::<Vec<_>>();
+        assert!(details(Lang::En, 1_000 + 3_600_000).iter().all(|detail| !detail.contains("measured")), "within the hour it is current");
+        assert!(details(Lang::En, two_hours).iter().all(|detail| detail.ends_with(" · measured 2 h ago")));
+        assert!(details(Lang::Es, two_hours).iter().all(|detail| detail.ends_with(" · medido hace 2 h")));
+        assert!(details(Lang::Es, 1_000 + 3 * 86_400_000)[1].starts_with("Gastado 3% de la cuota diaria del 10%"));
+        assert!(details(Lang::Es, 1_000 + 3 * 86_400_000)[1].ends_with("medido hace 3 d"));
+        let today = gauges(&machine, Some(&usage), Lang::Es, two_hours);
+        assert_eq!((today[0].label.as_str(), today[1].label.as_str(), today[1].text.as_str()), ("Claude semana", "Claude hoy", "3/10%"));
     }
 }
 

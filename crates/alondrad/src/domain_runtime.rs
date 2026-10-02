@@ -52,7 +52,7 @@ impl DomainRuntime {
             changed,
             schedule_changed,
             reads: Default::default(),
-            live: Default::default(),
+            live: crate::v2_client_routes::Live::persisted_in(home),
             held: Default::default(),
             nudged: Default::default(),
         })

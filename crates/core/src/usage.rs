@@ -1,7 +1,8 @@
 //! The Claude plan's limits as the node mod measures them after each turn (`session.measure`):
 //! the 5-hour and 7-day windows, how much of each is used and when each resets. Today's slice of
 //! the week is what was left at the day's first measurement, split over the days left until the
-//! reset, the same rule the usage guard warns with.
+//! reset, the same rule the usage guard warns with. A window whose reset has passed no longer
+//! describes the plan, so it is left out.
 
 use serde::{Deserialize, Serialize};
 
@@ -44,11 +45,11 @@ const DAY_MILLIS: f64 = 86_400_000.0;
 pub fn compute(limits: &[RateLimit], day_start: Option<f64>, measured_at: Millis, now: Millis) -> Option<Usage> {
     let window = |kind: &str| limits.iter().find(|limit| limit.kind == kind);
     let week = window(SEVEN_DAY)?;
-    let resets_at = week.resets_at?;
+    let resets_at = week.resets_at.filter(|reset| *reset > now)?;
     let days_left = ((resets_at - now).max(0) as f64 / DAY_MILLIS).ceil().max(1.0);
     let today_spent = day_start.map(|start| (week.percent_used - start).max(0.0));
     let today_share = day_start.map(|start| ((100.0 - start) / days_left).max(0.1));
-    let five = window(FIVE_HOUR);
+    let five = window(FIVE_HOUR).filter(|limit| limit.resets_at.is_none_or(|reset| reset > now));
     Some(Usage {
         week_percent: week.percent_used,
         week_resets_at: resets_at,
@@ -98,5 +99,15 @@ mod tests {
         let unknown = compute(&limits, None, now, now).unwrap();
         assert_eq!((unknown.today_spent, unknown.over_pace), (None, false));
         assert!(compute(&limits[..1], Some(12.0), now, now).is_none(), "no week window, no usage");
+    }
+
+    #[test]
+    fn a_window_whose_reset_has_passed_is_left_out() {
+        let (limits, now) = today();
+        let after_five_hours = 1_790_202_000_001;
+        let usage = compute(&limits, Some(12.0), now, after_five_hours).unwrap();
+        assert_eq!(usage.five_hour_percent, None, "the 5-hour window reset");
+        assert_eq!(usage.week_percent, 53.0);
+        assert!(compute(&limits, Some(12.0), now, 1_790_553_600_001).is_none(), "the week reset");
     }
 }
