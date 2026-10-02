@@ -1,7 +1,7 @@
 use super::*;
 use crate::domain_v2::{
     Agent, Author, Document, DocumentRevision, DomainState, Interaction, InteractionPayload,
-    InteractionSubject, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
+    InteractionSubject, MergeAttemptState, MergeAuthorization, MergeMethod, PrState, PullRequest, QuestionOption, Recipient, Request, Scope, Task,
     TaskState,
 };
 use std::collections::{BTreeMap, BTreeSet};
@@ -1058,7 +1058,7 @@ fn each_fleet_node_shows_one_state_derived_from_its_task_never_its_connection() 
     ] {
         live.nodes.push(LiveNode {
             agent_id: agent.into(), name: agent.into(), state_key: Some(key.into()),
-            state_label: Some("no sé qué quiere".into()), working, ..LiveNode::default()
+            state_label: Some("inactivo".into()), working, ..LiveNode::default()
         });
     }
     let view = render(&state, &live, Client::Ios, Lang::Es, "fleet", "");
@@ -1071,7 +1071,7 @@ fn each_fleet_node_shows_one_state_derived_from_its_task_never_its_connection() 
         ("home-zero", "Terminado", Tone::Success),
         ("claude-mods", "Terminado", Tone::Success),
         ("busy", "Trabajando", Tone::Info),
-        ("idle", "No sé qué quiere", Tone::Unclear),
+        ("idle", "Inactivo", Tone::Neutral),
     ] {
         let row = node(agent);
         assert_eq!(row.subtitle, None, "{agent}");
@@ -2357,4 +2357,33 @@ fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() 
         assert!(task(&state, Lang::En).contains(english), "{instruction:?}");
         assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
     }
+}
+
+#[test]
+fn a_node_reads_merging_from_the_claim_of_its_merge_authorization_until_the_merge_is_observed() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.keys().next().unwrap().clone();
+    state.tasks.get_mut(&task).unwrap().agent_id = Some("a-1".into());
+    state.pull_requests.insert("pr-1".into(), PullRequest {
+        id: "pr-1".into(), task_id: task.clone(), host: "github.com".into(), repository: "me/app".into(), number: 7,
+        head: "abc".into(), base: "main".into(), state: PrState::Open, merged_head: None, allowed_methods: vec![], review: None,
+    });
+    let authorization = |attempt| MergeAuthorization {
+        id: "auth-1".into(), task_id: task.clone(), pr_id: "pr-1".into(), presentation_id: "presentation".into(), head: "abc".into(),
+        method: MergeMethod::Merge, user_id: "u".into(), valid: true, attempt, claimed_by: Some("a-1".into()), at_revision: 1,
+    };
+    let state_of = |state: &DomainState, lang| {
+        let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, "fleet", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            if let Item::Row(row) = item && row.id == "a-1" { Some(row.badges[0].text.clone()) } else { None }
+        }).unwrap()
+    };
+    state.merge_authorizations.insert("auth-1".into(), authorization(MergeAttemptState::Unclaimed));
+    assert_ne!(state_of(&state, Lang::En), "Merging", "an authorization nobody claimed yet is not a merge");
+    state.merge_authorizations.insert("auth-1".into(), authorization(MergeAttemptState::Claimed));
+    assert_eq!(state_of(&state, Lang::En), "Merging");
+    assert_eq!(state_of(&state, Lang::Es), "Fusionando");
+    state.pull_requests.get_mut(&"pr-1".into()).unwrap().state = PrState::Merged;
+    assert_ne!(state_of(&state, Lang::En), "Merging", "the merge was observed");
 }

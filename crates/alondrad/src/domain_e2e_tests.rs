@@ -314,7 +314,7 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     eventually("the connection is registered", || mods.session(SESSION).is_some_and(|s| s.connection.is_some())).await;
     let session = mods.session(SESSION).unwrap();
     assert_eq!(session.version.as_deref(), Some("2.1.287"), "a connection says the mod loaded");
-    assert!(!session.unreachable());
+    assert!(!session.connection_lost());
 
     let patience = std::time::Duration::from_secs(10);
     let acked = daemon.domain.live.pushes.message(SESSION, "Use the new API", true).unwrap();
@@ -350,12 +350,12 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
 
     held.kill().unwrap();
     held.wait().unwrap();
-    eventually("the closed connection makes the node unreachable", || mods.session(SESSION).unwrap().unreachable()).await;
+    eventually("the closed connection makes the node unreachable", || mods.session(SESSION).unwrap().connection_lost()).await;
 
     let (mut again, _) = connect(&home);
-    eventually("a new connection makes it reachable again", || !mods.session(SESSION).unwrap().unreachable()).await;
+    eventually("a new connection makes it reachable again", || !mods.session(SESSION).unwrap().connection_lost()).await;
     node_event(&home, json!({"session_id": SESSION, "event": "session.end"}));
-    assert!(!mods.session(SESSION).unwrap().unreachable(), "an ended session is not unreachable");
+    assert!(!mods.session(SESSION).unwrap().connection_lost(), "an ended session is not unreachable");
     again.kill().unwrap();
     again.wait().unwrap();
 

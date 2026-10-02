@@ -58,7 +58,7 @@ final class FleetSnapshotTests: XCTestCase {
                      task: ("Real queue in recent requests", "check", "Done")),
                 node("home-zero", "Home shows everything at 0", ("Working", "info"),
                      task: ("Home shows everything at 0", "mission", "Running")),
-                node("claude-mods", "Claude Code mods in Alondra", ("Unclear what it wants", "unclear"),
+                node("claude-mods", "Claude Code mods in Alondra", ("Idle", "neutral"),
                      task: ("Analyze Claude Code mods for Alondra", "check", "Done")),
             ]
             object["sections"] = sections

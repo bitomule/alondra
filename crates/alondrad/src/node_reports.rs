@@ -155,15 +155,11 @@ pub(crate) enum Activity {
     /// One tool call has run far longer than such a call can.
     Stalled,
     Idle,
-    /// The mod loaded and its connection is closed: what it last reported may no longer hold.
-    Unreachable,
 }
 
 impl Reported {
     pub(crate) fn activity(&self, now: Millis) -> Activity {
-        if self.unreachable() {
-            Activity::Unreachable
-        } else if self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name)) {
+        if self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name)) {
             Activity::Stalled
         } else if self.working_since.is_some() || self.tool.is_some() || self.background_at(now).iter().any(|item| !item.suspect) {
             Activity::Working
@@ -181,8 +177,9 @@ impl Reported {
             .collect()
     }
 
-    /// The mod loaded and its session has not ended, yet its connection is closed.
-    pub(crate) fn unreachable(&self) -> bool {
+    /// The mod loaded and its session has not ended, yet its connection is closed: what brings
+    /// the node back (`node_revival`), never something Fleet shows as the node's state.
+    pub(crate) fn connection_lost(&self) -> bool {
         self.started_at.is_some() && !self.ended && self.connection.is_none()
     }
 }
@@ -323,14 +320,21 @@ impl Reports {
         number
     }
 
-    /// Only the connection the session holds now can make it unreachable: one it replaced
-    /// closing later changes nothing.
-    pub(crate) fn disconnect(&self, session_id: &str, number: u64) {
-        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id)
-            && session.connection == Some(number)
-        {
-            session.connection = None;
+    /// Only the connection the session holds now can lose it: one it replaced closing later
+    /// changes nothing. True when this was the current connection.
+    pub(crate) fn disconnect(&self, session_id: &str, number: u64) -> bool {
+        let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        match sessions.get_mut(session_id) {
+            Some(session) if session.connection == Some(number) => {
+                session.connection = None;
+                true
+            }
+            _ => false,
         }
+    }
+
+    pub(crate) fn connected(&self, session_id: &str) -> bool {
+        self.sessions.lock().expect("node reports poisoned").get(session_id).is_some_and(|session| session.connection.is_some())
     }
 
     /// What a session whose mod loaded reports first, for tests that launch through a fake Claude.
@@ -385,6 +389,23 @@ impl Reports {
         .ok()
     }
 
+    /// Whether the session holds a connection within `deadline`.
+    pub(crate) async fn wait_connected(&self, session_id: &str, deadline: Duration) -> bool {
+        tokio::time::timeout(deadline, async {
+            loop {
+                let started = self.started.notified();
+                tokio::pin!(started);
+                started.as_mut().enable();
+                if self.connected(session_id) {
+                    return;
+                }
+                started.await;
+            }
+        })
+        .await
+        .is_ok()
+    }
+
     pub(crate) fn usage(&self, now: Millis) -> Option<Usage> {
         let limits = self.limits.lock().expect("plan limits poisoned");
         let start = limits.day_start.as_ref().filter(|(day, _, _)| *day == local_day(now)).map(|(_, _, start)| *start);
@@ -420,13 +441,13 @@ mod tests {
         assert_ne!(first, second);
         reports.disconnect("s", first);
         assert_eq!(reports.session("s").unwrap().connection, Some(second), "the replaced connection closing late changes nothing");
-        assert!(!reports.session("s").unwrap().unreachable());
+        assert!(!reports.session("s").unwrap().connection_lost());
         reports.disconnect("s", second);
-        assert!(reports.session("s").unwrap().unreachable(), "the current connection closed: the node is unreachable");
+        assert!(reports.session("s").unwrap().connection_lost(), "the current connection closed: the node is unreachable");
         reports.connect(hello("s"), 3);
-        assert!(!reports.session("s").unwrap().unreachable());
+        assert!(!reports.session("s").unwrap().connection_lost());
         reports.apply(report(json!({"session_id": "s", "event": "session.end"})), 4);
-        assert!(!reports.session("s").unwrap().unreachable(), "an ended session is not unreachable, it is gone");
+        assert!(!reports.session("s").unwrap().connection_lost(), "an ended session is not unreachable, it is gone");
     }
 
     #[test]

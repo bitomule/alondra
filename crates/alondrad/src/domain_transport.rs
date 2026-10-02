@@ -107,7 +107,11 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
         Report::ToolEnd { tool_use_id: Some(call) } => crate::domain_holds::release_call(domain, &envelope.session_id, call)?,
         _ => {}
     }
+    let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
     domain.live.mods.apply(envelope, alondra_core::now_millis());
+    if let Some(session) = ended {
+        domain.live.losses.report(&session);
+    }
     stream.write_all(&200u16.to_be_bytes()).await?;
     stream.write_all(b"{}").await?;
     stream.shutdown().await?;
@@ -183,7 +187,9 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
     }
     .await;
     domain.live.pushes.detach(&session, number);
-    domain.live.mods.disconnect(&session, number);
+    if domain.live.mods.disconnect(&session, number) {
+        domain.live.losses.report(&session);
+    }
     held.or_else(|error: anyhow::Error| match error.downcast_ref::<std::io::Error>().map(std::io::Error::kind) {
         Some(std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => Ok(()),
         _ => Err(error),
@@ -1132,14 +1138,17 @@ mod tests {
         let fixture = Fixture::new();
         let domain = Arc::new(fixture.open());
         answered_question(&domain, "session-b");
+        let mut lost = domain.live.losses.take().unwrap();
         let mut older = connect(&domain, "session-a").await;
         assert!(older.nothing_arrives().await);
         let mut newer = connect(&domain, "session-a").await;
         assert!(older.line().await.is_none(), "the older connection is closed by the daemon");
         domain.live.pushes.interrupt("session-a").unwrap();
         assert_eq!(newer.line().await.unwrap(), json!({"interrupt": true}));
+        assert!(lost.try_recv().is_err(), "a connection the daemon replaced is not a lost one");
         newer.close().await;
-        assert!(domain.live.mods.session("session-a").unwrap().unreachable());
+        assert!(domain.live.mods.session("session-a").unwrap().connection_lost());
+        assert_eq!(lost.recv().await.as_deref(), Some("session-a"), "the current connection closing is reported for revival");
     }
 
     fn working_agent(domain: &DomainRuntime, agent: &str) {

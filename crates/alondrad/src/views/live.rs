@@ -38,21 +38,17 @@ fn launched_project(
         .or_else(|| agent.name.split_once('/').map(|(project, _)| project.to_owned()).filter(|project| !project.is_empty()))
 }
 
-fn node_label(state: alondra_core::NodeState, lang: Lang) -> String {
-    match lang {
-        Lang::En => state.label().to_owned(),
-        Lang::Es => match state {
-            alondra_core::NodeState::Working => "trabajando",
-            alondra_core::NodeState::WaitingAnswer => "esperando respuesta",
-            alondra_core::NodeState::YourTurn => "te toca",
-            alondra_core::NodeState::WaitingMerge => "espera tu revisión",
-            alondra_core::NodeState::Delivered => "entrega resultado",
-            alondra_core::NodeState::WaitingMachine => "esperando máquina",
-            alondra_core::NodeState::Done => "terminado",
-            alondra_core::NodeState::Unclear => "no sé qué quiere",
-            alondra_core::NodeState::Stalled => "parado",
-        }.to_owned(),
-    }
+fn node_label(key: &str, lang: Lang) -> String {
+    match (key, lang) {
+        ("stalled", Lang::En) => "stalled",
+        ("stalled", Lang::Es) => "parado",
+        ("busy", Lang::En) => "working",
+        ("busy", Lang::Es) => "trabajando",
+        ("waiting_machine", Lang::En) => "waiting for the machine",
+        ("waiting_machine", Lang::Es) => "esperando máquina",
+        (_, Lang::En) => "idle",
+        (_, Lang::Es) => "inactivo",
+    }.to_owned()
 }
 
 pub(crate) async fn gather(
@@ -88,22 +84,15 @@ pub(crate) async fn gather(
             } else {
                 launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
             };
-            let activity = if reported.connection.is_none() && (agent.connected || open_task) {
-                Activity::Unreachable
-            } else {
-                reported.activity(now)
+            let activity = reported.activity(now);
+            let reconnecting = client.domain.live.is_reconnecting(&session_id);
+            let state_key = match activity {
+                Activity::Stalled => "stalled",
+                Activity::Working => "busy",
+                Activity::Idle if node.status == alondra_core::NodeStatus::WaitingMachine => "waiting_machine",
+                Activity::Idle => "free",
             };
-            let (state_key, state_label) = match activity {
-                Activity::Stalled => ("stalled", node_label(alondra_core::NodeState::Stalled, lang)),
-                Activity::Working => ("busy", node_label(alondra_core::NodeState::Working, lang)),
-                Activity::Idle | Activity::Unreachable if node.status == alondra_core::NodeStatus::WaitingMachine => {
-                    ("waiting_machine", node_label(alondra_core::NodeState::WaitingMachine, lang))
-                }
-                Activity::Idle | Activity::Unreachable => {
-                    let idle = if node.state == alondra_core::NodeState::Working { alondra_core::NodeState::Unclear } else { node.state };
-                    ("free", node_label(idle, lang))
-                }
-            };
+            let state_label = node_label(state_key, lang);
             let tool = reported.tool.as_ref().map(|tool| match &tool.summary {
                 Some(summary) => format!("{}: {summary}", tool.name),
                 None => tool.name.clone(),
@@ -166,7 +155,7 @@ pub(crate) async fn gather(
                 context_percent: reported.context.as_ref().and_then(|context| context.percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
-                unreachable: activity == Activity::Unreachable,
+                reconnecting,
             })
         })
         .collect();

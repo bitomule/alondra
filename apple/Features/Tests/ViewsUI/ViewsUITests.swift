@@ -11,10 +11,8 @@ final class ViewsUITests: XCTestCase {
         }
         XCTAssertEqual(SidebarTint.node(try tone("accent")), .orange)
         XCTAssertEqual(SidebarTint.node(try tone("your_turn")), .pink)
-        XCTAssertEqual(SidebarTint.node(try tone("unclear")), .purple)
         XCTAssertEqual(SidebarTint.node(try tone("neutral")), .gray)
         XCTAssertEqual(SidebarTint.task(try tone("your_turn")), .pink)
-        XCTAssertEqual(SidebarTint.task(try tone("unclear")), .purple)
     }
 
     func testGoldenComponentDocumentsCanBeComposedBySharedRenderers() throws {

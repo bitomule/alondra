@@ -34,7 +34,7 @@ enum TaskStyle {
         case .info: Palette.sky
         case .accent, .warning: Palette.dawn
         case .success: Palette.sage
-        case .critical, .unclear: Palette.rose
+        case .critical: Palette.rose
         case .yourTurn: Palette.ember
         }
     }
@@ -47,7 +47,7 @@ enum TaskStyle {
         case .info: "arrow.triangle.pull"
         case .success: "checkmark"
         case .yourTurn: "hand.point.right.fill"
-        case .critical, .unclear: "questionmark"
+        case .critical: "questionmark"
         case nil, .neutral: "circle.dashed"
         }
     }
@@ -61,7 +61,7 @@ enum NodeStyle {
         case .warning, .accent: Palette.dawn
         case .yourTurn: Palette.ember
         case .success: Palette.sage
-        case .critical, .unclear: Palette.rose
+        case .critical: Palette.rose
         case nil, .neutral: Palette.slate
         }
     }
@@ -73,7 +73,6 @@ enum NodeStyle {
         case .yourTurn: "hand.point.right.fill"
         case .accent: "arrow.triangle.pull"
         case .success: "checkmark"
-        case .unclear: "questionmark"
         case .critical: "pause.circle"
         case nil, .neutral: "hourglass"
         }

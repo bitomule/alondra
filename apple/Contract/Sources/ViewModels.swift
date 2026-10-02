@@ -40,7 +40,7 @@ public enum ViewFetch: Decodable, Equatable, Sendable {
 
 public enum Tone: String, Codable, Equatable, Sendable {
     case neutral, info, accent, success, warning, critical
-    case yourTurn = "your_turn", unclear
+    case yourTurn = "your_turn"
 }
 public enum Level: String, Codable, Equatable, Sendable { case calm, warm, hot }
 public enum Icon: String, Codable, Equatable, Sendable {

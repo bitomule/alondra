@@ -930,14 +930,13 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
     let a_badges = badges(a);
     assert!(a_badges.contains(&("Context 85%".into(), "warning".into())), "{a_badges:?}");
     assert!(a_badges.contains(&("$0.42".into(), "neutral".into())), "{a_badges:?}");
-    assert!(!a_badges.iter().any(|(text, _)| text == "Unreachable"));
     let b_badges = badges(node_row(&fleet, "agent-b"));
-    assert!(b_badges.contains(&("Unreachable".into(), "critical".into())), "{b_badges:?}");
+    assert!(!b_badges.iter().any(|(text, _)| text.contains("Unreachable") || text.contains("conexión")), "a closed connection is never a node state: {b_badges:?}");
     assert!(b_badges.contains(&("Interrupted".into(), "warning".into())), "{b_badges:?}");
 
     let node = view_json(&fixture, "node:agent-b", "en").await;
     let facts = node["sections"].as_array().unwrap().iter().find(|section| section["id"] == "readings").unwrap()["items"][0]["items"].as_array().unwrap();
-    assert!(facts.iter().any(|fact| fact["label"] == "Connection" && fact["value"] == "Unreachable" && fact["tone"] == "critical"), "{facts:?}");
+    assert!(!facts.iter().any(|fact| fact["label"] == "Connection"), "{facts:?}");
     assert!(facts.iter().any(|fact| fact["label"] == "Last turn" && fact["value"] == "Interrupted"), "{facts:?}");
     let said = node["sections"].as_array().unwrap().iter().find(|section| section["id"] == "last_message").unwrap();
     assert_eq!(said["items"][0]["text"], "Stopped halfway through the parser", "the answer is the mod's, not the Stop hook's");
@@ -984,8 +983,15 @@ async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_
     mods.disconnect("agent-a", connection);
     let fleet = view_json(&fixture, "fleet", "en").await;
     let row = node_row(&fleet, "agent-a");
-    assert!(badges(row).contains(&("Unreachable".into(), "critical".into())), "the open connection closing is what makes a node unreachable");
-    assert_ne!(badges(row)[0].0, "Working", "what a node whose connection closed last reported is not claimed as working");
+    assert_eq!(badges(row)[0].0, "Working", "a node whose connection closed keeps its last factual state while the daemon brings it back");
+    domain_live_reconnecting(&fixture, "agent-a", true);
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    assert_eq!(badges(node_row(&fleet, "agent-a"))[0].0, "Reconnecting", "and says so only while a restart of its session runs");
+    domain_live_reconnecting(&fixture, "agent-a", false);
+}
+
+fn domain_live_reconnecting(fixture: &Fixture, session: &str, on: bool) {
+    fixture.domain.live.set_reconnecting(session, on);
 }
 
 #[tokio::test]
@@ -1052,7 +1058,7 @@ async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stop
 }
 
 #[tokio::test]
-async fn a_node_that_never_reconnects_after_a_restart_reads_unreachable_and_keeps_its_project() {
+async fn a_node_that_has_not_reconnected_after_a_restart_keeps_its_project_and_never_reads_disconnected() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let domain = &fixture.domain;
@@ -1065,22 +1071,15 @@ async fn a_node_that_never_reconnects_after_a_restart_reads_unreachable_and_keep
         &crate::domain_agent_lifecycle::prepare_event(domain, "start-ghost").unwrap()).unwrap();
     assert!(domain.live.node("ghost").is_none() && domain.live.mods.session("ghost").is_none(), "nothing live: the daemon just restarted");
 
-    let fleet = view_json(&fixture, "fleet", "en").await;
+    let fleet = view_json(&fixture, "fleet", "es").await;
     let project = fleet["sections"].as_array().unwrap().iter()
         .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "ghost")).unwrap();
     assert_eq!(project["id"], "project:alondra", "its project comes from its launch, not from a live connection");
-    assert_eq!(badges(node_row(&fleet, "ghost"))[0], ("Unreachable".into(), "critical".into()));
-
-    let connection = domain.live.mods.connect(serde_json::from_value(json!({"session_id": "ghost", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
-    let fleet = view_json(&fixture, "fleet", "en").await;
-    assert_ne!(badges(node_row(&fleet, "ghost"))[0].0, "Unreachable", "its mod reconnected");
-    domain.live.mods.disconnect("ghost", connection);
-    let fleet = view_json(&fixture, "fleet", "es").await;
-    assert_eq!(badges(node_row(&fleet, "ghost"))[0].0, "Sin conexión", "a closed connection reads unreachable in the state, not as 'no sé qué quiere'");
+    assert_eq!(badges(node_row(&fleet, "ghost"))[0], ("Inactivo".into(), "neutral".into()), "a connected node whose turn ended is idle");
 }
 
 #[tokio::test]
-async fn a_stopped_node_with_an_open_task_reads_unreachable_under_its_project_though_its_session_ended() {
+async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_a_factual_state() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let domain = &fixture.domain;
@@ -1103,11 +1102,26 @@ async fn a_stopped_node_with_an_open_task_reads_unreachable_under_its_project_th
     mods.disconnect("stopped", connection);
     crate::domain_agent_lifecycle::observe_instance(domain, &"stopped".into(), false,
         &crate::domain_agent_lifecycle::prepare_event(domain, "end-stopped").unwrap()).unwrap();
-    assert!(!domain.state().unwrap().agents[&"stopped".into()].connected, "SessionEnd fired");
 
     let fleet = view_json(&fixture, "fleet", "es").await;
     let section = fleet["sections"].as_array().unwrap().iter()
         .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "stopped")).unwrap();
     assert_eq!(section["id"], "project:alondra");
-    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("Sin conexión".into(), "critical".into()));
+    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("Inactivo".into(), "neutral".into()));
+}
+
+#[tokio::test]
+async fn an_agent_with_no_connection_no_task_and_nothing_live_has_left_fleet() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let domain = &fixture.domain;
+    let state = domain.state().unwrap();
+    domain.execute(&Actor::System, &CommandEnvelope {
+        protocol_version: 2, data_epoch: state.data_epoch, command_id: "register-bare".into(), expected_revision: state.revision,
+        command: Command::RegisterAgent { agent_id: "bare".into(), name: "test/bare".into() },
+    }, None, || Ok(())).unwrap();
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    let listed = fleet["sections"].as_array().unwrap().iter()
+        .flat_map(|section| section["items"].as_array().unwrap()).any(|item| item["id"] == "bare");
+    assert!(!listed, "a node that left with nothing open is not a row of Fleet");
 }

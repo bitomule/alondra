@@ -84,7 +84,7 @@ pub struct LiveNode {
     #[serde(default)]
     pub cost_cents: Option<u64>,
     #[serde(default)]
-    pub unreachable: bool,
+    pub reconnecting: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePullRequest {

@@ -39,6 +39,7 @@ mod markdown;
 mod mods_check;
 mod node_push;
 mod node_reports;
+mod node_revival;
 mod notifier;
 mod options;
 mod orchestrate;
@@ -441,6 +442,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         None => log!("Alondra's node plugin was not found: run `alondra setup`"),
     }
     tokio::spawn(mods_check::run(plugins::node()));
+    tokio::spawn(node_revival::run(state_domain.clone()));
     let github = tokio::spawn(domain_github::run(
         domain,
         Arc::new(domain_github::GhCli::new()),

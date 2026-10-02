@@ -226,7 +226,7 @@ pub(super) fn state_color(s: NodeState) -> Color {
         NodeState::WaitingAnswer => Color::Yellow,
         NodeState::YourTurn => Color::LightYellow,
         NodeState::WaitingMerge => Color::LightGreen,
-        NodeState::Unclear => Color::Magenta,
+        NodeState::Unclear => Color::DarkGray,
         NodeState::Stalled => Color::LightRed,
         NodeState::Delivered => Color::Cyan,
         NodeState::WaitingMachine => Color::LightRed,

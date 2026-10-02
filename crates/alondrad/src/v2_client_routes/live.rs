@@ -16,9 +16,41 @@ pub(crate) struct Live {
     /// A sandbox daemon registers the Agent of any session whose mod connects, so a hand-launched
     /// probe node can be sent to.
     pub(crate) sandbox: std::sync::atomic::AtomicBool,
+    pub(crate) losses: crate::node_revival::Losses,
+    watching: Mutex<std::collections::HashSet<String>>,
+    reconnecting: Mutex<std::collections::HashSet<String>>,
+    closed: Mutex<std::collections::HashSet<String>>,
 }
 
 impl Live {
+    /// The user closed the session: it is not brought back.
+    pub(crate) fn mark_closed(&self, session_id: &str) {
+        self.closed.lock().expect("revivals poisoned").insert(session_id.to_owned());
+    }
+
+    pub(crate) fn is_closed(&self, session_id: &str) -> bool {
+        self.closed.lock().expect("revivals poisoned").contains(session_id)
+    }
+
+    /// False when something is watching the session's connection back already.
+    pub(crate) fn begin_watch(&self, session_id: &str) -> bool {
+        self.watching.lock().expect("revivals poisoned").insert(session_id.to_owned())
+    }
+
+    pub(crate) fn end_watch(&self, session_id: &str) {
+        self.watching.lock().expect("revivals poisoned").remove(session_id);
+    }
+
+    /// A restart of the session is running.
+    pub(crate) fn set_reconnecting(&self, session_id: &str, on: bool) {
+        let mut sessions = self.reconnecting.lock().expect("revivals poisoned");
+        if on { sessions.insert(session_id.to_owned()); } else { sessions.remove(session_id); }
+    }
+
+    pub(crate) fn is_reconnecting(&self, session_id: &str) -> bool {
+        self.reconnecting.lock().expect("revivals poisoned").contains(session_id)
+    }
+
     pub(crate) fn observe(&self, payload: &Value) {
         let Some(event) = hook_event(payload) else { return };
         let session_id = event.session_id.clone();

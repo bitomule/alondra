@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain_v2::{AgentId, TaskState};
+use crate::domain_v2::{AgentId, MergeAttemptState, PrState, TaskState};
 use std::collections::BTreeMap;
 
 fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
@@ -23,6 +23,14 @@ fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> 
 
 /// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
 /// then what waits for the user on it, then where its tasks stand.
+/// A node is in Fleet while it is connected, has a task, or is live; one that finished and left
+/// is not.
+pub(super) fn in_fleet(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> bool {
+    agent.id.0 != "orchestrator"
+        && (agent.connected || common::current_task(context.domain, &agent.id).is_some()
+            || context.live.nodes.iter().any(|node| node.agent_id == agent.id.0))
+}
+
 pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super::Label {
     let lang = context.lang;
     let live = context.live.nodes.iter().find(|node| node.agent_id == agent.0);
@@ -34,10 +42,17 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.archived)
         .map(|task| task.state)
         .collect();
+    let merging = context.domain.merge_authorizations.values().any(|authorization| {
+        authorization.claimed_by.as_ref() == Some(agent)
+            && matches!(authorization.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
+            && context.domain.pull_requests.get(&authorization.pr_id).is_some_and(|pr| pr.state == PrState::Open)
+    });
     let (text, tone) = if waiting(&["question", "permission", "plan"]) {
         (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning)
-    } else if live.is_some_and(|node| node.unreachable) {
-        (unreachable_text(lang), Tone::Critical)
+    } else if live.is_some_and(|node| node.reconnecting) {
+        (t!(lang, "Reconnecting", "Reconectando"), Tone::Info)
+    } else if merging {
+        (t!(lang, "Merging", "Fusionando"), Tone::Info)
     } else if key == Some("stalled") {
         (t!(lang, "Stalled", "Parado"), Tone::Critical)
     } else if live.is_some_and(|node| node.working) {
@@ -53,7 +68,7 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
     } else if !tasks.is_empty() && tasks.iter().all(|state| matches!(state, TaskState::Done | TaskState::Closing | TaskState::Cancelled)) {
         (t!(lang, "Done", "Terminado"), Tone::Success)
     } else {
-        (t!(lang, "Unclear what it wants", "No sé qué quiere"), Tone::Unclear)
+        (t!(lang, "Idle", "Inactivo"), Tone::Neutral)
     };
     super::Label { text: text.into(), tone }
 }
@@ -76,10 +91,6 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
         text: tf!(lang, "Context {percent}%", "Contexto {percent}%", percent = percent),
         tone: if percent >= 80 { Tone::Warning } else { Tone::Neutral },
     }
-}
-
-fn unreachable_text(lang: super::Lang) -> &'static str {
-    t!(lang, "Unreachable", "Sin conexión")
 }
 
 /// What the node mod reports beside the node's state: how full
@@ -191,7 +202,7 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         vec![Item::Row(orchestrator)],
     ));
     let mut projects: BTreeMap<String, Vec<Item>> = BTreeMap::new();
-    for agent in context.domain.agents.values().filter(|agent| agent.id.0 != "orchestrator") {
+    for agent in context.domain.agents.values().filter(|agent| in_fleet(agent, context)) {
         let project = context.live.nodes.iter().find(|node| node.agent_id == agent.id.0)
             .and_then(|node| node.project.as_deref()).filter(|project| *project != "others")
             .unwrap_or(t!(context.lang, "Other", "Otros"));
@@ -233,9 +244,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let mut readings = vec![];
     if let Some(node) = live {
         let lang = context.lang;
-        if node.unreachable {
-            readings.push(Fact { label: t!(lang, "Connection", "Conexión").into(), value: unreachable_text(lang).into(),
-                tone: Some(Tone::Critical), link: None });
+        if node.reconnecting {
+            readings.push(Fact { label: t!(lang, "Connection", "Conexión").into(), value: t!(lang, "Reconnecting", "Reconectando").into(),
+                tone: Some(Tone::Info), link: None });
         }
         if let Some(tool) = &node.tool {
             readings.push(Fact { label: t!(lang, "Running", "Ejecutando").into(), value: tool.clone(), tone: None, link: None });
