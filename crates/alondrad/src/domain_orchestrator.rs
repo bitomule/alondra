@@ -161,7 +161,7 @@ impl Executor {
         let state = self.domain.state()?;
         let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
         if !runtime.pending_resolutions.is_empty() {
-            text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded.\n");
+            text.push_str("\nDURABLE RESOLUTION: Previous interrupted inbox batches have already been resolved and are NOT replayed. Do not repeat or continue any of them unless a NEW User message explicitly authorizes it. This does not mean their business actions succeeded. An open Request below with no Task of its own was not turned into work: handle it now, unless fleet shows an open question about it.\n");
         }
         if !resume {
             text.push_str("This is a new conversation. Call fleet before acting; do not infer that existing tasks need to be started again.\n");
@@ -195,7 +195,7 @@ impl Executor {
                 if fits { size += message.message.len(); }
                 fits
             }).collect();
-        if pending.is_empty() {
+        if pending.is_empty() && runtime.pending_resolutions.is_empty() {
             return Ok(());
         }
         let (Some(orchestrator_plugin), Some(node_plugin)) = (
@@ -221,7 +221,7 @@ impl Executor {
                 }
             }
         }
-        if claimed.is_empty() {
+        if claimed.is_empty() && runtime.pending_resolutions.is_empty() {
             return Ok(());
         }
         let run = Run {
@@ -649,6 +649,39 @@ mod tests {
         assert_eq!(recovered.pending_resolutions[0].run_id, "interrupted");
         assert!(outbox(domain).is_empty(), "the interrupted batch is not replayed");
         assert!(attempts(domain).iter().any(|(id, state, _)| *id == claim.message.id && state == "discarded"));
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_batch_is_not_replayed_but_one_fresh_run_sees_its_open_request() {
+        let f = fixture(SUCCESS);
+        let domain = &f.executor.domain;
+        command(domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "bc2466f2".into(), body: "Make the editor readable".into(), auto_merge: false,
+        });
+        let pending = outbox(domain)[0].0;
+        let claim = domain.store.lock().unwrap().claim_message(pending).unwrap().unwrap();
+        save(&f.executor.home, &Runtime {
+            session_id: Some("session".into()),
+            active_run: Some(Run { id: "interrupted".into(), message_ids: vec![claim.message.id],
+                attempts: vec![(claim.attempt_id, claim.version)], started_at: 1, spawned: true }),
+            ..Runtime::default()
+        }).unwrap();
+        f.executor.recover().unwrap();
+        assert!(outbox(domain).is_empty(), "the interrupted batch is not replayed");
+
+        f.executor.tick(&f.ownership).await.unwrap();
+        let dir = f.executor.home.join("runtime/orchestrator");
+        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1);
+        let prompt = std::fs::read_to_string(dir.join("received-prompt")).unwrap();
+        assert!(prompt.contains("Previous interrupted inbox batches have already been resolved")
+            && prompt.contains("An open Request below with no Task of its own was not turned into work")
+            && prompt.contains("request bc2466f2: Make the editor readable\n")
+            && !prompt.contains("The user created Request"), "{prompt}");
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.pending_resolutions.is_empty() && runtime.active_run.is_none() && runtime.last_error.is_none());
+
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(std::fs::read_to_string(dir.join("starts")).unwrap().lines().count(), 1, "one fresh run, not a loop");
     }
 
     #[test]
