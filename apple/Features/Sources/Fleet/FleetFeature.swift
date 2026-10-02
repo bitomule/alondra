@@ -45,6 +45,7 @@ public struct FleetFeature: Sendable {
     }
 
     @Dependency(\.continuousClock) var clock
+    @Dependency(\.viewsClient) var viewsClient
     private enum CancelID { case debounce }
     static let searchDelay = Duration.milliseconds(250)
 
@@ -56,7 +57,21 @@ public struct FleetFeature: Sendable {
             case .task:
                 return .send(.screen(.task))
             case .refresh:
-                return .merge(.send(.screen(.retry)), state.search == nil ? .none : .send(.search(.retry)))
+                let search = state.search?.key
+                return .run { [viewsClient] send in
+                    do {
+                        if let document = try await viewsClient.document(.fleet) {
+                            await send(.screen(.loaded(document)))
+                        }
+                        if let search, let document = try await viewsClient.document(search) {
+                            await send(.search(.loaded(document)))
+                        }
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        await send(.delegate(.screen(.failed(String(localized: "Couldn’t load this from your Mac. Try again.")))))
+                    }
+                }
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
                 return .none
