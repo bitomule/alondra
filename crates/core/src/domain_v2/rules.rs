@@ -490,6 +490,55 @@ impl DomainState {
                 )
         })
     }
+    /// What still keeps a Task with a settled final delivery from being done.
+    fn completable(&self, t: &Task, targets: &[DeliveryTarget]) -> Result<()> {
+        if self.blockers(&t.id) {
+            return fail(
+                "blocking_interaction",
+                "Task has an unanswered blocking Interaction",
+            );
+        };
+        for dep in &t.dependencies {
+            if self.task(dep)?.state != TaskState::Done {
+                return fail("dependency_not_done", "Objective dependency incomplete");
+            }
+        }
+        for target in targets {
+            if let DeliveryTarget::PullRequest { pr_id, head } = target {
+                let pr = &self.pull_requests[pr_id];
+                if pr.state != PrState::Merged || pr.merged_head.as_ref() != Some(head) {
+                    return fail(
+                        "merge_not_confirmed",
+                        "Presented head is not confirmed merged",
+                    );
+                };
+                // User conformity for the exact final delivery is mandatory. A PR
+                // merged externally can be explicitly accepted after observation;
+                // observation itself never grants that conformity.
+            }
+        }
+        if let Some(pr_id) = &t.pr_id {
+            let presented = targets
+                .iter()
+                .any(|x| matches!(x, DeliveryTarget::PullRequest { pr_id: p, .. } if p == pr_id));
+            match self.pull_requests[pr_id].state {
+                PrState::Open => {
+                    return fail(
+                        "merge_not_confirmed",
+                        "The Task's registered PR is still open",
+                    );
+                }
+                PrState::Merged if !presented => {
+                    return fail(
+                        "acceptance_missing",
+                        "The merged PR was never presented for acceptance",
+                    );
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
     /// Waiting and activity states are always recomputed from the facts; an
     /// import runs this once so the first live command never rewrites every Task.
     pub fn derive_states(&mut self) {
@@ -508,7 +557,11 @@ impl DomainState {
                     .and_then(|p| self.interactions.get(p))
                 {
                     if self.accepted(p) {
-                        TaskState::Closing
+                        match &p.payload {
+                            InteractionPayload::Delivery { targets, .. }
+                                if self.completable(t, targets).is_ok() => TaskState::Done,
+                            _ => TaskState::Closing,
+                        }
                     } else if matches!(&p.payload, InteractionPayload::Delivery { acceptance, feedback, .. }
                         if feedback.last().is_some_and(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))) {
                         TaskState::Running
@@ -1659,11 +1712,10 @@ impl DomainState {
                 targets,
             } => {
                 let u = user(actor)?;
-                let (_, t, current) = self.presentation(presentation_id)?;
+                let (_, _, current) = self.presentation(presentation_id)?;
                 if current != targets {
                     return fail("acceptance_stale", "Delivery targets changed");
                 };
-                let task = t.id.clone();
                 for target in targets {
                     if let DeliveryTarget::PullRequest { pr_id, head } = target {
                         let pr = &self.pull_requests[pr_id];
@@ -1684,12 +1736,6 @@ impl DomainState {
                     }
                 }
                 self.accept(presentation_id, &u)?;
-                self.notify(
-                    &task,
-                    Some(presentation_id.clone()),
-                    "Delivery accepted. Please declare the Task complete when your work is finished.",
-                    effects,
-                )?;
             }
             Command::AuthorizeMerge {
                 authorization_id,
@@ -1952,51 +1998,7 @@ impl DomainState {
                         "Current delivery needs valid user acceptance",
                     );
                 };
-                if self.blockers(task_id) {
-                    return fail(
-                        "blocking_interaction",
-                        "Task has an unanswered blocking Interaction",
-                    );
-                };
-                for dep in &t.dependencies {
-                    if self.task(dep)?.state != TaskState::Done {
-                        return fail("dependency_not_done", "Objective dependency incomplete");
-                    }
-                }
-                for target in targets {
-                    if let DeliveryTarget::PullRequest { pr_id, head } = target {
-                        let pr = &self.pull_requests[pr_id];
-                        if pr.state != PrState::Merged || pr.merged_head.as_ref() != Some(head) {
-                            return fail(
-                                "merge_not_confirmed",
-                                "Presented head is not confirmed merged",
-                            );
-                        };
-                        // User conformity for the exact final delivery is mandatory. A PR
-                        // merged externally can be explicitly accepted after observation;
-                        // observation itself never grants that conformity.
-                    }
-                }
-                if let Some(pr_id) = &t.pr_id {
-                    let presented = targets
-                        .iter()
-                        .any(|x| matches!(x, DeliveryTarget::PullRequest { pr_id: p, .. } if p == pr_id));
-                    match self.pull_requests[pr_id].state {
-                        PrState::Open => {
-                            return fail(
-                                "merge_not_confirmed",
-                                "The Task's registered PR is still open",
-                            );
-                        }
-                        PrState::Merged if !presented => {
-                            return fail(
-                                "acceptance_missing",
-                                "The merged PR was never presented for acceptance",
-                            );
-                        }
-                        _ => {}
-                    }
-                }
+                self.completable(t, targets)?;
                 self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
             }
             Command::CancelTask { task_id } => {

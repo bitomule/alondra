@@ -1152,9 +1152,6 @@ mod tests {
                 presentation_id: delivery_id.clone().into(),
                 targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
             });
-            apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, &format!("finish-{task_id}"), Command::CompleteTask {
-                task_id: task_id.into(), presentation_id: delivery_id.into(),
-            });
         }
 
         let before = domain.state().unwrap();

@@ -279,13 +279,6 @@ async fn http_producer_answer_and_document_are_persisted() {
         json!({"kind":"accept_delivery", "presentation_id":"answer-delivery",
         "targets":[text]}),
     );
-    fixture
-        .producer(
-            false,
-            json!({"kind":"complete_task", "task_id":"answer-task",
-        "presentation_id":"answer-delivery"}),
-        )
-        .await;
     assert_eq!(
         fixture.domain.state().unwrap().tasks[&"answer-task".into()].state,
         TaskState::Done
@@ -327,24 +320,13 @@ async fn http_producer_answer_and_document_are_persisted() {
             false,
             json!({"kind":"present_result", "task_id":"doc-task",
         "interaction_id":"doc-delivery", "body":"Document ready",
-        "targets":[document.clone()], "is_final":true}),
+        "targets":[document], "is_final":true}),
         )
         .await;
     fixture.user(
         json!({"kind":"decide_document_review", "task_id":"doc-task",
         "document_id":"doc-1", "revision_id":"doc-v1", "accepted":true}),
     );
-    fixture.user(
-        json!({"kind":"accept_delivery", "presentation_id":"doc-delivery",
-        "targets":[document]}),
-    );
-    fixture
-        .producer(
-            false,
-            json!({"kind":"complete_task", "task_id":"doc-task",
-        "presentation_id":"doc-delivery"}),
-        )
-        .await;
     assert_eq!(fixture.domain.state().unwrap().tasks[&"doc-task".into()].state, TaskState::Done);
     let reopened = DomainRuntime::open(&fixture.home).unwrap();
     let persisted = reopened.state().unwrap();
@@ -463,8 +445,6 @@ async fn http_merge_claim_is_admitted_only_with_github_confirmation_and_the_merg
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.merge_authorizations[&"auth-7".into()].attempt, MergeAttemptState::Confirmed);
     assert_eq!(state.pull_requests[&"pr-7".into()].merged_head.as_deref(), Some(head));
-    assert_ne!(state.tasks[&"claim-task".into()].state, TaskState::Done);
-    fixture.producer(false, json!({"kind":"complete_task", "task_id":"claim-task", "presentation_id":"delivery-7"})).await;
-    assert_eq!(fixture.domain.state().unwrap().tasks[&"claim-task".into()].state, TaskState::Done);
+    assert_eq!(state.tasks[&"claim-task".into()].state, TaskState::Done, "the confirmed merge of the authorized head completes it");
     fixture.finish().await;
 }

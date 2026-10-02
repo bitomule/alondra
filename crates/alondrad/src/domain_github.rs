@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn reconcile_records_remote_reality_with_the_merged_pr_head_and_never_completes() {
+    async fn reconcile_records_remote_reality_and_the_authorized_merge_completes_the_task() {
         let (_fixture, domain) = open("reconcile");
         authorized(&domain);
         let observer = FakeObserver::new();
@@ -521,11 +521,7 @@ mod tests {
         assert_eq!(pr.state, PrState::Merged);
         assert_eq!(pr.merged_head.as_deref(), Some(HEAD), "the merged head is the PR head, not a merge commit");
         assert_eq!(state.merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Confirmed);
-        assert_ne!(state.tasks[&"t".into()].state, TaskState::Done, "observation never completes");
-        command(&domain, Actor::Agent { agent_id: "a".into() }, "complete", Command::CompleteTask {
-            task_id: "t".into(), presentation_id: "d".into(),
-        });
-        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, TaskState::Done);
+        assert_eq!(state.tasks[&"t".into()].state, TaskState::Done, "the merge of the authorized head completes the Task");
     }
 
     #[tokio::test]

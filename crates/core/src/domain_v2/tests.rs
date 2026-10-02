@@ -413,7 +413,7 @@ fn information_read_is_not_a_reply_or_acceptance() {
     assert_eq!(s.projection().counts.unread_information, 0);
 }
 #[test]
-fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
+fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
     let mut s = fixture();
     present(&mut s, "delivery", text());
     reject_unchanged(
@@ -428,15 +428,6 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
     exec(
         &mut s,
         user(),
-        Command::AcceptDelivery {
-            presentation_id: "delivery".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
-    exec(
-        &mut s,
-        user(),
         Command::SubmitFeedback {
             attachments: vec![],
             presentation_id: "delivery".into(),
@@ -446,24 +437,6 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
     )
     .unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
-    reject_unchanged(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "delivery".into(),
-        },
-        "acceptance_stale",
-    );
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "delivery".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
     exec(
         &mut s,
         Actor::System,
@@ -473,52 +446,33 @@ fn explicit_acceptance_then_agent_completion_and_feedback_revocation() {
         },
     )
     .unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
     exec(
+        &mut s,
+        user(),
+        Command::AcceptDelivery {
+            presentation_id: "delivery".into(),
+            targets: text(),
+        },
+    )
+    .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    reject_unchanged(
         &mut s,
         agent(),
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "delivery".into(),
         },
-    )
-    .unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+        "task_not_active",
+    );
 }
 #[test]
-fn reaccepted_feedback_then_reassignment_needs_fresh_acceptance() {
+fn reassigning_a_task_waiting_for_its_merge_needs_fresh_acceptance() {
     let mut s = fixture();
-    present(&mut s, "delivery", text());
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "delivery".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
-    exec(
-        &mut s,
-        user(),
-        Command::SubmitFeedback {
-            attachments: vec![],
-            presentation_id: "delivery".into(),
-            targets: text(),
-            body: "Please revise".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "delivery".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
     exec(
         &mut s,
         Actor::System,
@@ -538,15 +492,14 @@ fn reaccepted_feedback_then_reassignment_needs_fresh_acceptance() {
     )
     .unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    merged_by_someone_else(&mut s);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
     reject_unchanged(
         &mut s,
         Actor::Agent {
             agent_id: "b".into(),
         },
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "delivery".into(),
-        },
+        complete(),
         "acceptance_missing",
     );
 }
@@ -617,6 +570,7 @@ fn typed_option_ids_and_open_question_guard() {
         },
     )
     .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
     reject_unchanged(
         &mut s,
         agent(),
@@ -660,15 +614,7 @@ fn typed_option_ids_and_open_question_guard() {
     )
     .unwrap();
     assert_eq!(out.effects.len(), 1);
-    exec(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-    )
-    .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "answering the last blocker completes an accepted Task");
 }
 fn register(s: &mut DomainState) {
     exec(
@@ -784,17 +730,7 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
         },
     )
     .unwrap();
-    assert_ne!(s.tasks[&"t".into()].state, TaskState::Done);
-    exec(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the observed merge of the authorized head completes it");
 }
 #[test]
 fn head_push_invalidates_authorization_and_merge_external_does_not_accept() {
@@ -1005,15 +941,6 @@ fn document_revision_invalidates_entire_joint_delivery() {
     );
     exec(
         &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets,
-        },
-    )
-    .unwrap();
-    exec(
-        &mut s,
         agent(),
         Command::ReviseDocument {
             task_id: "t".into(),
@@ -1026,14 +953,15 @@ fn document_revision_invalidates_entire_joint_delivery() {
     .unwrap();
     reject_unchanged(
         &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
+        user(),
+        Command::AcceptDelivery {
             presentation_id: "d".into(),
+            targets,
         },
         "acceptance_stale",
     );
     assert_eq!(s.document_revisions.len(), 2);
+    assert_ne!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]
 fn only_a_manager_can_link_another_tasks_document() {
@@ -1136,34 +1064,30 @@ fn sole_document_review_accepts_exact_final_delivery() {
         },
     )
     .unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
-    exec(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-    )
-    .unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 
 #[test]
-fn accepting_delivery_keeps_the_agents_completion_declaration_step() {
+fn accepting_a_final_delivery_completes_the_task_without_asking_the_agent() {
     let mut state = fixture();
     present(&mut state, "final", text());
     let accepted = exec(&mut state, user(), Command::AcceptDelivery {
         presentation_id: "final".into(), targets: text(),
     }).unwrap();
-    let message = accepted.effects.iter().find_map(|effect| match effect {
-        DomainEffect::NotifyAgent { message, .. } => Some(message.as_str()),
-        _ => None,
-    }).expect("acceptance must notify the assigned Agent");
-    assert!(message.contains("declare the Task complete"));
-    assert!(!message.contains("data_epoch") && !message.contains("revision"));
-    assert_eq!(state.tasks[&"t".into()].state, TaskState::Closing,
-        "acceptance still waits for the Agent to declare completion");
+    assert!(!accepted.effects.iter().any(|effect| matches!(effect, DomainEffect::NotifyAgent { .. })),
+        "the Agent has nothing left to do");
+    assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
+}
+#[test]
+fn a_task_left_closing_by_an_older_daemon_completes_with_the_next_command() {
+    let mut state = fixture();
+    present(&mut state, "final", text());
+    exec(&mut state, user(), Command::AcceptDelivery {
+        presentation_id: "final".into(), targets: text(),
+    }).unwrap();
+    state.tasks.get_mut(&"t".into()).unwrap().state = TaskState::Closing;
+    exec(&mut state, Actor::System, Command::ObserveAgent { agent_id: "a".into(), connected: true }).unwrap();
+    assert_eq!(state.tasks[&"t".into()].state, TaskState::Done);
 }
 #[test]
 fn cross_task_delivery_and_dependency_cycle_roll_back() {
@@ -1412,16 +1336,6 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
         },
     )
     .unwrap();
-    let accepted = s.projection();
-    exec(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-    )
-    .unwrap();
     let completed = s.projection();
     let mut s = fixture();
     register(&mut s);
@@ -1460,7 +1374,6 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
     let fixtures = BTreeMap::from([
         ("information", information),
         ("question", question),
-        ("accepted", accepted),
         ("completed", completed),
         ("pr_question", pr_question),
     ]);
@@ -1576,16 +1489,9 @@ fn recipient_scope_and_generation_preserve_logical_coordination() {
 #[test]
 fn reassign_fences_old_agent_and_preserves_historical_author() {
     let mut s = fixture();
-    present(&mut s, "d", text());
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
     exec(
         &mut s,
         Actor::System,
@@ -1677,15 +1583,6 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
     present(&mut s, "d", text());
     exec(
         &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets: text(),
-        },
-    )
-    .unwrap();
-    exec(
-        &mut s,
         agent(),
         Command::PresentResult {
             attachments: vec![],
@@ -1714,13 +1611,14 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
     assert_eq!(s.tasks[&"t".into()].final_presentation, Some("d".into()));
     exec(
         &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
+        user(),
+        Command::AcceptDelivery {
             presentation_id: "d".into(),
+            targets: text(),
         },
     )
     .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 
 #[test]
@@ -1967,10 +1865,10 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
         },
     )
     .unwrap();
-    assert_ne!(
+    assert_eq!(
         s.tasks[&"t".into()].state,
         TaskState::Done,
-        "readiness and merge do not complete upstream"
+        "the observed merge of its authorized delivery completes upstream"
     );
 }
 
@@ -2240,8 +2138,8 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
         },
     )
     .unwrap();
-    complete(&mut s).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    assert_eq!(complete(&mut s).unwrap_err().code, "task_not_active");
 }
 #[test]
 fn authorization_covers_pr_and_text_but_not_a_document_only_package() {
@@ -2365,16 +2263,7 @@ fn complete_task_requires_registered_pr_merged_and_presented_or_closed() {
         },
     )
     .unwrap();
-    exec(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-    )
-    .unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "closing the unpresented PR completes the accepted Task");
 }
 #[test]
 fn answer_reaches_the_current_assignee_after_reassignment() {
@@ -2454,7 +2343,6 @@ fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
     .unwrap();
     present(&mut s, "d", text());
     exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: text() }).unwrap();
-    exec(&mut s, agent(), Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() }).unwrap();
     assert_eq!(s.projection().counts.unread_information, 1);
     exec(&mut s, user(), Command::ArchiveTask { task_id: "t".into(), archived: true }).unwrap();
     let projection = s.projection();
@@ -2882,15 +2770,7 @@ fn external_merge_requires_explicit_delivery_acceptance_not_retroactive_authoriz
     )
     .unwrap();
     assert!(s.merge_authorizations.is_empty());
-    exec(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-    )
-    .unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 
 #[test]

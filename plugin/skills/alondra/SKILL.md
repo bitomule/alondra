@@ -36,8 +36,10 @@ why; retry an uncertain call with exactly the same arguments.
   what you deliver: `text`, a document revision you created, or the PR you registered with its
   exact head. The user accepts it in Alondra. A file sent another way or a final message left in
   this session is not a delivery.
-- `complete_task`: after the user accepted your final result (and, for a PR, its merge is
-  confirmed), close the task with that presentation's id.
+- When the user accepts your final result, Alondra closes the task itself (for a PR, once its
+  merge is confirmed); there is nothing left to call.
+- `complete_task`: only under auto-merge, after you merged the PR yourself, with the final
+  presentation's id.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files
   folder (`$ALONDRA_HOME/files/`) and pass that path with its
   SHA256; each revision is reviewed as it is.

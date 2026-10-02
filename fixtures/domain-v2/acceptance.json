@@ -144,7 +144,7 @@
     "accepted-text-final": {
       "extends": "unaccepted-text-final",
       "accepted": true,
-      "task_status": "closing"
+      "task_status": "done"
     },
     "document-v1": {
       "task_id": "task-1",
@@ -174,7 +174,7 @@
     "accepted-document-v1": {
       "extends": "document-v1",
       "accepted": true,
-      "task_status": "closing"
+      "task_status": "done"
     },
     "mixed-text-document-final": {
       "extends": "document-v1",
@@ -559,7 +559,7 @@
         "R03",
         "R13"
       ],
-      "title": "Final text needs acceptance and agent declaration",
+      "title": "Accepting a final text completes its task",
       "layers": [
         "C",
         "A",
@@ -602,15 +602,6 @@
                 "text": "Synthetic answer"
               }
             ]
-          }
-        },
-        {
-          "type": "command",
-          "actor": "agent-a",
-          "command": {
-            "kind": "complete_task",
-            "task_id": "task-1",
-            "presentation_id": "final-1"
           }
         }
       ],
@@ -712,10 +703,21 @@
       "base": "synthetic-base",
       "arrange": [
         {
-          "fixture": "accepted-document-v1"
+          "fixture": "mixed-text-document-final"
         }
       ],
       "steps": [
+        {
+          "type": "command",
+          "actor": "user-a",
+          "command": {
+            "kind": "decide_document_review",
+            "task_id": "task-1",
+            "document_id": "doc-1",
+            "revision_id": "docrev-1",
+            "accepted": true
+          }
+        },
         {
           "type": "command",
           "actor": "agent-a",
@@ -879,28 +881,6 @@
               }
             ]
           }
-        },
-        {
-          "type": "command",
-          "actor": "agent-a",
-          "command": {
-            "kind": "present_result",
-            "task_id": "task-1",
-            "targets": [
-              {
-                "kind": "text",
-                "text": "Changed"
-              },
-              {
-                "kind": "document_revision",
-                "revision_id": "docrev-1",
-                "document_id": "doc-1"
-              }
-            ],
-            "interaction_id": "final-2",
-            "is_final": true,
-            "body": "Changed"
-          }
         }
       ],
       "assert": [
@@ -912,22 +892,12 @@
         {
           "path": "presentations.final-1.acceptance_valid",
           "op": "eq",
-          "value": false
+          "value": true
         },
         {
-          "path": "presentations.final-2.acceptance_recorded",
+          "path": "tasks.task-1.status",
           "op": "eq",
-          "value": false
-        },
-        {
-          "path": "presentations.final-2.acceptance_valid",
-          "op": "eq",
-          "value": false
-        },
-        {
-          "path": "tasks.task-1.current_final_id",
-          "op": "eq",
-          "value": "final-2"
+          "value": "done"
         }
       ],
       "execution_status": "store_runner"
@@ -1525,7 +1495,7 @@
         "R14",
         "R15"
       ],
-      "title": "Observed merge waits for declaration",
+      "title": "Observed merge of an authorized head completes its task",
       "layers": [
         "C",
         "A",
@@ -1556,7 +1526,7 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "closing"
+          "value": "done"
         }
       ],
       "execution_status": "store_runner"
@@ -1635,7 +1605,7 @@
         "R13",
         "R15"
       ],
-      "title": "Absent agent leaves accepted task open",
+      "title": "An accepted text final completes without its agent",
       "layers": [
         "C",
         "A",
@@ -1667,20 +1637,15 @@
         {
           "path": "tasks.task-1.status",
           "op": "eq",
-          "value": "closing"
+          "value": "done"
         },
         {
           "path": "agents.agent-a.connected",
           "op": "eq",
           "value": false
-        },
-        {
-          "path": "tasks.task-1.operational_reason",
-          "op": "eq",
-          "value": "agent_unavailable"
         }
       ],
-      "cs_evidence": ["domain_v2::tests::explicit_acceptance_then_agent_completion_and_feedback_revocation"],
+      "cs_evidence": ["domain_v2::tests::explicit_acceptance_completes_the_task_and_feedback_revokes_it_first"],
       "cs_evidence_status": "passed",
       "execution_status": "test_evidence"
     },
@@ -1698,7 +1663,7 @@
       "base": "synthetic-base",
       "arrange": [
         {
-          "fixture": "accepted-text-final"
+          "fixture": "unaccepted-text-final"
         }
       ],
       "steps": [
@@ -1742,7 +1707,7 @@
       "base": "synthetic-base",
       "arrange": [
         {
-          "fixture": "accepted-text-final"
+          "fixture": "unaccepted-text-final"
         },
         {
           "set": "tasks.task-2.agent_id",
@@ -1752,11 +1717,16 @@
       "steps": [
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "user-a",
           "command": {
-            "kind": "complete_task",
-            "task_id": "task-1",
-            "presentation_id": "final-1"
+            "kind": "accept_delivery",
+            "presentation_id": "final-1",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Synthetic answer"
+              }
+            ]
           }
         }
       ],
@@ -2881,7 +2851,7 @@
         "R08",
         "R13"
       ],
-      "title": "Feedback invalidates acceptance without head change",
+      "title": "Feedback on a final keeps its task running without acceptance",
       "layers": [
         "C",
         "S",
@@ -2891,7 +2861,7 @@
       "base": "synthetic-base",
       "arrange": [
         {
-          "fixture": "accepted-text-final"
+          "fixture": "unaccepted-text-final"
         }
       ],
       "steps": [
@@ -2924,17 +2894,7 @@
         {
           "path": "last_error.code",
           "op": "eq",
-          "value": "acceptance_stale"
-        },
-        {
-          "path": "presentations.final-1.acceptance_recorded",
-          "op": "eq",
-          "value": true
-        },
-        {
-          "path": "presentations.final-1.acceptance_valid",
-          "op": "eq",
-          "value": false
+          "value": "acceptance_missing"
         },
         {
           "path": "last_rejected.delta.rows",
@@ -3245,7 +3205,7 @@
         "R13",
         "R14"
       ],
-      "title": "Same approved presentation completes after merge",
+      "title": "Same approved presentation completes on its observed merge",
       "layers": [
         "C",
         "A",
@@ -3264,15 +3224,6 @@
           "parameters": {
             "pr_id": "pr-1",
             "head": "head-a"
-          }
-        },
-        {
-          "type": "command",
-          "actor": "agent-a",
-          "command": {
-            "kind": "complete_task",
-            "task_id": "task-1",
-            "presentation_id": "final-1"
           }
         }
       ],
@@ -3315,7 +3266,7 @@
       "base": "synthetic-base",
       "arrange": [
         {
-          "fixture": "accepted-text-final"
+          "fixture": "unaccepted-text-final"
         },
         {
           "set": "tasks.task-2.agent_id",
@@ -3450,7 +3401,7 @@
         "R13",
         "R15"
       ],
-      "title": "Blocking question blocks completion but unread information does not",
+      "title": "A blocking question holds an accepted task open but unread information does not",
       "layers": [
         "C",
         "A",
@@ -3459,7 +3410,7 @@
       "base": "synthetic-base",
       "arrange": [
         {
-          "fixture": "accepted-text-final"
+          "fixture": "unaccepted-text-final"
         }
       ],
       "steps": [
@@ -3472,11 +3423,16 @@
         },
         {
           "type": "command",
-          "actor": "agent-a",
+          "actor": "user-a",
           "command": {
-            "kind": "complete_task",
-            "task_id": "task-1",
-            "presentation_id": "final-1"
+            "kind": "accept_delivery",
+            "presentation_id": "final-1",
+            "targets": [
+              {
+                "kind": "text",
+                "text": "Synthetic answer"
+              }
+            ]
           }
         },
         {
@@ -3488,22 +3444,13 @@
             "option_id": "yes",
             "inputs": {}
           }
-        },
-        {
-          "type": "command",
-          "actor": "agent-a",
-          "command": {
-            "kind": "complete_task",
-            "task_id": "task-1",
-            "presentation_id": "final-1"
-          }
         }
       ],
       "assert": [
         {
-          "path": "first_complete.error",
+          "path": "after_accept.status",
           "op": "eq",
-          "value": "blocking_interaction"
+          "value": "needs_you"
         },
         {
           "path": "tasks.task-1.status",
