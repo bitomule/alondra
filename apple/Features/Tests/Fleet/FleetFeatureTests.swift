@@ -40,11 +40,12 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(node.title, "Alondra · iOS")
         XCTAssertEqual(node.state?.text, "Waiting for an answer")
         XCTAssertEqual(node.state?.tone, .warning)
-        XCTAssertNil(node.detail)
-        XCTAssertEqual(node.badges.map(\.text), ["Context 42%", "$1.25"], "what the node mod reports follows the state")
+        XCTAssertNil(node.subtitle)
+        XCTAssertEqual(node.badges, [], "context and cost stay on the node's screen")
         XCTAssertEqual(overview.orchestrator?.state?.text, "Idle")
         XCTAssertEqual(node.pending, 1)
-        XCTAssertEqual(node.lastMessage?.title, "The simulator pass completed successfully.")
+        XCTAssertEqual(node.activity, "The simulator pass completed successfully.")
+        XCTAssertEqual(node.activityAt, "2026-09-30T09:58:00Z")
         XCTAssertEqual(node.link, .view(key: "node:d887a34b-249e-4487-a89b-57de38c26372"))
         XCTAssertTrue(node.close?.id?.hasPrefix("close:") == true)
         XCTAssertNil(overview.orchestrator?.close)
@@ -138,7 +139,7 @@ final class FleetFeatureTests: XCTestCase {
         await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
         let close = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.close)
 
-        await store.send(.close(close))
+        await store.send(.perform(close))
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.actions.confirmation?.title, "Close Node")
         XCTAssertTrue(requests.value.isEmpty, "nothing is sent before the confirmation")
@@ -149,12 +150,47 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(requests.value.map(\.actionId), [close.id])
     }
 
+    func testInterruptingAWorkingNodeConfirmsThenSendsTheDaemonsAction() async throws {
+        let requests = LockIsolated<[ActionRequest]>([])
+        let store = store(requests: requests)
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(Fixtures.document("fleet-ios"))) as? [String: Any])
+        var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+        var items = try XCTUnwrap(sections[1]["items"] as? [[String: Any]])
+        let interrupt: [String: Any] = [
+            "id": "interrupt:d887a34b-249e-4487-a89b-57de38c26372@0", "label": "Interrupt", "style": "secondary",
+            "presentation": "button", "input": ["kind": "none"], "attachments": false,
+            "confirm": ["title": "Interrupt", "message": "Stop what this node is doing now?", "button": "Interrupt"], "enabled": true,
+        ]
+        items[0]["actions"] = [interrupt] + (items[0]["actions"] as? [[String: Any]] ?? [])
+        sections[1]["items"] = items
+        object["sections"] = sections
+        let document = try JSONDecoder().decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))
+        await store.send(.screen(.loaded(document)))
+        let node = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first)
+        let action = try XCTUnwrap(node.interrupt)
+        XCTAssertEqual(node.close?.id?.hasPrefix("close:"), true)
+
+        await store.send(.perform(action))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.actions.confirmation?.title, "Interrupt")
+        XCTAssertTrue(requests.value.isEmpty, "nothing is sent before the confirmation")
+
+        await store.send(.actions(.confirm))
+        await store.skipReceivedActions()
+        XCTAssertEqual(requests.value.map(\.actionId), [action.id])
+    }
+
+    func testANodeThatIsNotWorkingOffersNoInterrupt() throws {
+        let node = try XCTUnwrap(FleetOverview(document: try Fixtures.document("fleet-ios")).groups.first?.nodes.first)
+        XCTAssertNil(node.interrupt)
+    }
+
     func testARefusedCloseReportsTheReasonForTheAlert() async throws {
         let store = store(reply: #"{"protocol":1,"outcome":"rejected","message":"It is working"}"#)
         await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
         let close = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.close)
 
-        await store.send(.close(close))
+        await store.send(.perform(close))
         await store.send(.actions(.confirm))
         await store.receive(\.delegate.closeRefused, "It is working")
     }

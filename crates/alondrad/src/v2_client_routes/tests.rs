@@ -926,13 +926,13 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
 
     let fleet = view_json(&fixture, "fleet", "en").await;
     let a = node_row(&fleet, "agent-a");
-    assert_eq!(a["subtitle"], "Bash: bazel test //crates/...", "the tool the node runs now");
+    let activity = a["children"].as_array().unwrap().iter().find(|child| child["id"] == "activity").unwrap();
+    assert_eq!(activity["title"], "Bash: bazel test //crates/...", "the tool the node runs now");
     let a_badges = badges(a);
-    assert!(a_badges.contains(&("Context 85%".into(), "warning".into())), "{a_badges:?}");
-    assert!(a_badges.contains(&("$0.42".into(), "neutral".into())), "{a_badges:?}");
+    assert!(!a_badges.iter().any(|(text, _)| text.contains("Context") || text.contains('$')),
+        "context and cost stay on the node's screen: {a_badges:?}");
     let b_badges = badges(node_row(&fleet, "agent-b"));
     assert!(!b_badges.iter().any(|(text, _)| text.contains("Unreachable") || text.contains("conexión")), "a closed connection is never a node state: {b_badges:?}");
-    assert!(b_badges.contains(&("Interrupted".into(), "warning".into())), "{b_badges:?}");
 
     let node = view_json(&fixture, "node:agent-b", "en").await;
     let facts = node["sections"].as_array().unwrap().iter().find(|section| section["id"] == "readings").unwrap()["items"][0]["items"].as_array().unwrap();

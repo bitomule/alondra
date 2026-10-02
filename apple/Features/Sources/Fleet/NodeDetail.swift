@@ -27,6 +27,7 @@ public struct NodeDetail: Equatable, Sendable {
     public var now: [Activity] = []
     public var background: [Activity] = []
     public var message: WireAction?
+    public var interrupt: WireAction?
     public var close: WireAction?
     public var orchestratorActions: [WireAction] = []
     public var facts: [Fact] = []
@@ -68,6 +69,7 @@ public struct NodeDetail: Equatable, Sendable {
         for action in actions {
             switch action.id?.prefix(while: { $0 != ":" }) {
             case "msg": message = action
+            case "interrupt": interrupt = action
             case "close": close = action
             case "orch_retry", "orch_ack", "orch_stop": orchestratorActions.append(action)
             default: break

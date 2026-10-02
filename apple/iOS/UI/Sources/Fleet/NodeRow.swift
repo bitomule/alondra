@@ -3,80 +3,74 @@ import AlondraDesign
 import AlondraFeatures
 import SwiftUI
 
-/// One node in the Fleet list: its state, what it last said, the tasks under it, and how many
-/// things wait for you on it.
+/// One Fleet card: a node and its one task. The state leads, then the task's title, the node's
+/// name when it adds something, and what it does now or said last.
 struct NodeRow: View {
     let node: FleetOverview.Node
     let open: (AlondraContract.Link) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Button { if let link = node.link { open(link) } } label: {
-                HStack(alignment: .top, spacing: 12) {
+        Button { if let link = node.link { open(link) } } label: {
+            VStack(alignment: .leading, spacing: 6) {
+                HStack(spacing: 8) {
                     Glyph(symbol: node.isOrchestrator ? "point.3.connected.trianglepath.dotted" : NodeStyle.symbol(tone: node.state?.tone),
                           tint: tint, size: .small, pulse: !node.isOrchestrator && node.state?.tone == .info)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(node.title).font(.mono(.subheadline, weight: .semibold)).foregroundStyle(Palette.ink)
-                            .lineLimit(1).truncationMode(.middle)
-                        if let state = node.state {
-                            Text(state.text).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
-                        }
-                        if let detail = node.detail {
-                            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                        }
-                        if !node.badges.isEmpty {
-                            Text(node.badges.map(\.text).joined(separator: " · "))
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        }
+                    if let state = node.state {
+                        Text(state.text).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
                     }
-                    Spacer(minLength: 0)
-                    if node.pending > 0 {
-                        Text(node.pending, format: .number)
-                            .font(.caption.weight(.bold).monospacedDigit())
-                            .foregroundStyle(Palette.onAccent)
-                            .frame(minWidth: 22, minHeight: 22)
-                            .background(Palette.dawn, in: .capsule)
+                    Spacer(minLength: 8)
+                    if node.pending > 0 { WaitingBadge(count: Int(node.pending)) }
+                }
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(node.title).font(.body.weight(.semibold)).foregroundStyle(Palette.ink)
+                        .lineLimit(3).multilineTextAlignment(.leading)
+                    if let subtitle = node.subtitle {
+                        Text(subtitle).font(.mono(.caption)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     }
                 }
-                .padding(.horizontal, 14).padding(.vertical, 10)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(.rect)
+                activity
+                badges
             }
-            .buttonStyle(.plain)
-            ForEach(node.tasks, id: \.id) { task in
-                Button { if let link = task.link { open(link) } } label: {
-                    HStack(spacing: 8) {
-                        let taskTint = TaskStyle.tint(icon: task.icon, tone: task.badges.first?.tone)
-                        Glyph(symbol: TaskStyle.symbol(icon: task.icon, struck: task.struck), tint: taskTint, size: .tiny)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(task.title).font(.subheadline.weight(.medium))
-                                .foregroundStyle(task.struck ? .secondary : Palette.ink)
-                                .strikethrough(task.struck).lineLimit(2).multilineTextAlignment(.leading)
-                            if let state = task.subtitle {
-                                Text(state).font(.caption.weight(.semibold)).foregroundStyle(taskTint).lineLimit(1)
-                            }
-                        }
-                        Spacer(minLength: 0)
-                    }
-                    .padding(.horizontal, 14).padding(.bottom, 8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(.rect)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var activity: some View {
+        if node.activity != nil || node.activityAt != nil {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                if let text = node.activity {
+                    Text(text).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
                 }
-                .buttonStyle(.plain)
-            }
-            if let last = node.lastMessage {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(last.title).font(.caption).foregroundStyle(.secondary).lineLimit(2)
-                    Spacer(minLength: 0)
-                    if case .time(let at, let format)? = last.trailing {
-                        TimeText(raw: at, format: format).font(.caption2).foregroundStyle(.tertiary)
-                    }
+                Spacer(minLength: 4)
+                if let at = node.activityAt {
+                    TimeText(raw: at).font(.caption).foregroundStyle(.tertiary).fixedSize()
                 }
-                .padding(.horizontal, 14).padding(.bottom, 12)
-                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder private var badges: some View {
+        if !node.badges.isEmpty {
+            HStack(spacing: 6) {
+                ForEach(Array(node.badges.enumerated()), id: \.offset) { _, badge in
+                    let tint = badge.tone == .warning ? Palette.ember : Palette.slate
+                    HStack(spacing: 4) {
+                        Image(systemName: badge.tone == .warning ? "exclamationmark.triangle.fill" : "square.stack.3d.up")
+                            .accessibilityHidden(true)
+                        Text(badge.text)
+                    }
+                    .font(.caption.weight(.semibold)).foregroundStyle(tint)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background(tint.opacity(0.12), in: .capsule)
+                    .lineLimit(1)
+                }
+            }
+            .padding(.top, 2)
+        }
     }
 
     private var tint: Color {

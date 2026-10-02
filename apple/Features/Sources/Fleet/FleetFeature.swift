@@ -4,7 +4,7 @@ import ComposableArchitecture
 import Foundation
 
 /// The Fleet tab: the orchestrator, every node grouped by project, a search the daemon answers,
-/// and closing a node from its row.
+/// and the actions the daemon offers on each node: interrupting it while it works, closing it.
 @Reducer
 public struct FleetFeature: Sendable {
     public init() {}
@@ -32,7 +32,7 @@ public struct FleetFeature: Sendable {
         case search(ScreenFeature.Action)
         case queryChanged(String)
         case searchStarted(String)
-        case close(WireAction)
+        case perform(WireAction)
         case actions(ActionFeature.Action)
         case follow(AlondraContract.Link)
         case delegate(Delegate)
@@ -92,7 +92,7 @@ public struct FleetFeature: Sendable {
                 guard query == state.query, state.isSearching else { return .none }
                 state.search = ScreenFeature.State(key: .search(query.trimmingCharacters(in: .whitespaces)))
                 return .send(.search(.task))
-            case .close(let wire):
+            case .perform(let wire):
                 return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
             case .actions(.response(let response)) where response.outcome == .rejected && state.actions.action?.id?.hasPrefix("close:") == true:
                 return .send(.delegate(.closeRefused(response.message ?? String(localized: "Couldn’t close the node"))))

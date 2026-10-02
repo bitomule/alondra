@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vf242127b57f952cb",
+  "version": "vbff6801234064fe8",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -107,14 +107,6 @@
             {
               "text": "Waiting for an answer",
               "tone": "warning"
-            },
-            {
-              "text": "Context 42%",
-              "tone": "neutral"
-            },
-            {
-              "text": "$1.25",
-              "tone": "neutral"
             }
           ],
           "trailing": {
@@ -125,7 +117,7 @@
           "struck": false,
           "children": [
             {
-              "id": "last_message",
+              "id": "activity",
               "icon": "notice",
               "title": "The simulator pass completed successfully.",
               "trailing": {

@@ -21,6 +21,32 @@ fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> 
     Some(action)
 }
 
+fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
+    let mut action = common::action(Verb::Msg, id, context.domain.revision,
+        t!(context.lang, "Message", "Mensaje"), Style::Primary)?;
+    action.input = super::Input::Text {
+        placeholder: format!("{} {}…", t!(context.lang, "Write to", "Escribe a"), common::agent_label(&AgentId(id.into()), context)),
+        required: true,
+        multiline: true,
+    };
+    action.attachments = true;
+    Some(action)
+}
+
+/// Stopping a node's current turn, offered only while it works.
+fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
+    context.live.nodes.iter().find(|node| node.agent_id == id).filter(|node| node.working)?;
+    let mut action = common::action(Verb::Interrupt, id, context.domain.revision,
+        t!(context.lang, "Interrupt", "Interrumpir"), Style::Secondary)?;
+    action.confirm = Some(Confirm {
+        title: action.label.clone(),
+        message: t!(context.lang, "Stop what this node is doing now? It keeps its task and waits for you.",
+            "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.").into(),
+        button: action.label.clone(),
+    });
+    Some(action)
+}
+
 /// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
 /// then what waits for the user on it, then where its tasks stand.
 /// A node is in Fleet while it is connected, has a task, or is live; one that finished and left
@@ -93,51 +119,42 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
     }
 }
 
-/// What the node mod reports beside the node's state: how full
-/// its context is, what it has cost, and whether its last turn was interrupted.
-fn reported_badges(node: &super::LiveNode, lang: super::Lang) -> Vec<super::Label> {
-    let mut badges = vec![];
-    if node.last_turn_aborted && !node.working {
-        badges.push(super::Label { text: t!(lang, "Interrupted", "Interrumpido").into(), tone: Tone::Warning });
-    }
-    badges.extend(node.context_percent.map(|percent| context_label(percent, lang)));
-    badges.extend(node.cost_cents.map(|cents| super::Label { text: cost(cents, lang), tone: Tone::Neutral }));
-    badges
+/// What the node runs now while it works, otherwise what it said last, with when.
+fn activity(node: &super::LiveNode) -> Option<super::Row> {
+    let message = || node.last_message.as_deref().map(str::trim)
+        .filter(|text| !text.is_empty() && !text.starts_with("mcp__"))
+        .map(|text| (text.lines().next().unwrap_or_default().to_owned(), node.last_message_at.clone()));
+    let (text, at) = node.tool.clone().filter(|_| node.working)
+        .map(|tool| (tool, node.state_since.clone()))
+        .or_else(message)?;
+    let mut row = common::row("activity", "node", Icon::Notice, text, None);
+    row.link = None;
+    row.trailing = at.map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
+    Some(row)
 }
 
+/// A node and its one task as one Fleet item. On iOS it reads as the task, names the node only
+/// when the name adds something, and says what it does now; the TUI lists the task under the node.
 pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
     let live = context
         .live
         .nodes
         .iter()
         .find(|node| node.agent_id == agent.id.0);
-    let mut row = common::row(
-        &agent.id.0,
-        &format!("node:{}", agent.id),
-        Icon::Node,
-        common::agent_label(&agent.id, context),
-        None,
-    );
+    let name = common::agent_label(&agent.id, context);
+    let task = common::current_task(context.domain, &agent.id);
+    let mut row = common::row(&agent.id.0, &format!("node:{}", agent.id), Icon::Node, name.clone(), None);
     row.badges.push(node_state(&agent.id, context));
-    if let Some(node) = live {
-        row.subtitle = node.tool.clone();
-        row.badges.extend(reported_badges(node, context.lang));
-    }
-    row.children = common::current_task(context.domain, &agent.id)
-        .map(|task| super::tasks::task_row(task, context))
-        .into_iter()
-        .collect();
-    if context.client == super::Client::Ios
-        && let Some(node) = live
-        && let Some(message) = node.last_message.as_ref().filter(|text| !text.trim().starts_with("mcp__") && !text.trim().is_empty())
-    {
-        let mut last = common::row("last_message", "node", Icon::Notice,
-            message.trim().lines().next().unwrap_or("").into(), None);
-        last.link = None;
-        last.trailing = node.last_message_at.as_ref().map(|at| Trailing::Time {
-            at: at.clone(), format: super::TimeFormat::Relative,
-        });
-        row.children.push(last);
+    if context.client == super::Client::Ios {
+        if let Some(task) = task {
+            row.title = task.title.clone();
+            row.subtitle = (task.title != name).then_some(name);
+        }
+        row.children.extend(live.and_then(activity));
+        row.actions.extend(interrupt_action(&agent.id.0, context));
+    } else {
+        row.subtitle = live.and_then(|node| node.tool.clone());
+        row.children.extend(task.map(|task| super::tasks::task_row(task, context)));
     }
     row.actions.extend(close_action(&agent.id.0, context));
     row.trailing = Some(Trailing::Count {
@@ -416,26 +433,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             rows,
         ));
     }
-    let mut actions = vec![];
-    if let Some(mut action) = common::action(
-        Verb::Msg,
-        id,
-        context.domain.revision,
-        t!(context.lang, "Message", "Mensaje"),
-        Style::Primary,
-    ) {
-        action.input = super::Input::Text {
-            placeholder: format!(
-                "{} {}…",
-                t!(context.lang, "Write to", "Escribe a"),
-                common::agent_label(&agent.id, context)
-            ),
-            required: true,
-            multiline: true,
-        };
-        action.attachments = true;
-        actions.push(action);
-    }
+    let mut actions: Vec<_> = message_action(id, context).into_iter().collect();
+    actions.extend(interrupt_action(id, context));
     actions.extend(close_action(id, context));
     if !actions.is_empty() {
         view.sections.push(common::section(

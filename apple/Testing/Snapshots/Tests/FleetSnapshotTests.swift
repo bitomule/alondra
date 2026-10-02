@@ -34,41 +34,59 @@ final class FleetSnapshotTests: XCTestCase {
         assertScreenVariants { view }
     }
 
-    func test_fleet_nodesInReviewWorkingAndDone() throws {
-        func node(_ id: String, _ title: String, _ state: (String, String), task: (String, String, String)) -> [String: Any] {
-            [
+    private func fleetWithEveryState() throws -> some View {
+        func node(_ id: String, _ title: String, name: String? = nil, _ state: (String, String),
+                  activity: (String, String)? = nil, pending: Int = 0, badges: [[String: Any]] = []) -> [String: Any] {
+            var row: [String: Any] = [
                 "type": "row", "id": id, "icon": "node", "title": title, "depth": 0, "struck": false,
                 "link": ["kind": "view", "key": "node:\(id)"],
-                "badges": [["text": state.0, "tone": state.1]],
-                "trailing": ["kind": "count", "value": 0],
-                "children": [[
-                    "id": "t-\(id)", "icon": task.1, "title": task.0, "subtitle": task.2, "depth": 0, "struck": false,
-                    "link": ["kind": "view", "key": "task:t-\(id)"],
-                    "badges": [["text": task.2, "tone": task.1 == "check" ? "success" : "info"]],
-                ]],
+                "badges": [["text": state.0, "tone": state.1]] + badges,
+                "trailing": ["kind": "count", "value": pending],
             ]
+            if let name { row["subtitle"] = name }
+            if let activity {
+                row["children"] = [[
+                    "id": "activity", "icon": "notice", "title": activity.0, "depth": 0, "struck": false,
+                    "trailing": ["kind": "time", "at": activity.1, "format": "relative"],
+                ]]
+            }
+            return row
         }
         let document = try ScreenFixtures.document("fleet-ios") { object in
             guard var sections = object["sections"] as? [[String: Any]] else { return }
-            sections[1]["count"] = 4
-            sections[1]["items"] = [
-                node("one-task", "One node, one task", ("Waiting for your review", "accent"),
-                     task: ("One node, one task", "pull_request", "In Review")),
-                node("recent-queue", "Real queue in recent requests", ("Done", "success"),
-                     task: ("Real queue in recent requests", "check", "Done")),
-                node("home-zero", "Home shows everything at 0", ("Working", "info"),
-                     task: ("Home shows everything at 0", "mission", "Running")),
-                node("claude-mods", "Claude Code mods in Alondra", ("Idle", "neutral"),
-                     task: ("Analyze Claude Code mods for Alondra", "check", "Done")),
+            var alondra = sections[1]
+            alondra["id"] = "project:alondra"
+            alondra["title"] = "alondra"
+            alondra["count"] = 3
+            alondra["items"] = [
+                node("smoke", "Smoke test mods 0.2.26", ("Done", "success"), activity: ("OK", "2026-09-30T09:52:00Z")),
+                node("home-zero", "Home shows everything at 0", name: "alondra-ios", ("Working", "info"),
+                     activity: ("xcodebuild test -scheme Alondra", "2026-09-30T09:57:00Z"),
+                     badges: [["text": "2 subagents", "tone": "neutral"]]),
+                node("one-task", "One node, one task", ("Waiting for your review", "accent"), activity: ("PR #612 is ready", "2026-09-30T09:31:00Z"), pending: 1),
             ]
+            sections[1]["count"] = 3
+            sections[1]["items"] = [
+                node("question", "Welcome copy for the beta", ("Waiting for an answer", "warning"),
+                     activity: ("Which tone should the welcome use?", "2026-09-30T09:58:00Z"), pending: 1),
+                node("stalled", "Import lists from Notes", name: "notes-import", ("Stalled", "critical"),
+                     activity: ("swift build", "2026-09-30T08:40:00Z"),
+                     badges: [["text": "1 shell · possibly hung", "tone": "warning"]]),
+                node("idle", "Claude Code mods in Alondra", ("Idle", "neutral")),
+            ]
+            sections.insert(alondra, at: 1)
             object["sections"] = sections
         }
         var state = FleetFeature.State()
         state.screen.document = document
         state.screen.phase = .loaded
-        let view = FleetView(store: Store(initialState: state) { FleetFeature() } withDependencies: {
+        return FleetView(store: Store(initialState: state) { FleetFeature() } withDependencies: {
             idleViewsClient(&$0.viewsClient)
         })
+    }
+
+    func test_fleet_nodesInReviewWorkingAndDone() throws {
+        let view = try fleetWithEveryState()
         assertScreenVariants { view }
     }
 

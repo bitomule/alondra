@@ -26,6 +26,9 @@ public struct NodeDetailView: View {
             if let close = store.detail?.close {
                 ToolbarItem(placement: .topBarTrailing) {
                     Menu {
+                        if let interrupt = store.detail?.interrupt {
+                            Button { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
+                        }
                         Button(role: .destructive) { store.send(.perform(close)) } label: {
                             Label("Close Node", systemImage: "xmark.bin")
                         }

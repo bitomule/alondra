@@ -56,6 +56,7 @@ public struct FleetView: View {
                 }
             }
         }
+        .listRowSpacing(10)
         .overlay {
             if overview.isEmpty, let empty = overview.empty {
                 ContentUnavailableView(empty.text, systemImage: "circle.hexagongrid")
@@ -66,16 +67,23 @@ public struct FleetView: View {
     private func row(_ node: FleetOverview.Node) -> some View {
         NodeRow(node: node, open: { store.send(.follow($0)) })
             .listRowBackground(Palette.card.opacity(0.85))
-            .swipeActions(edge: .trailing) {
+            .swipeActions(edge: .trailing, allowsFullSwipe: false) {
                 if let close = node.close {
-                    Button { store.send(.close(close)) } label: { Label("Close Node", systemImage: "xmark.bin") }
+                    Button { store.send(.perform(close)) } label: { Label(close.label, systemImage: "xmark.bin") }
                         .tint(Palette.rose)
+                }
+                if let interrupt = node.interrupt {
+                    Button { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
+                        .tint(Palette.dawn)
                 }
             }
             .contextMenu {
+                if let interrupt = node.interrupt {
+                    Button { store.send(.perform(interrupt)) } label: { Label(interrupt.label, systemImage: "stop.circle") }
+                }
                 if let close = node.close {
-                    Button(role: .destructive) { store.send(.close(close)) } label: {
-                        Label("Close Node", systemImage: "xmark.bin")
+                    Button(role: .destructive) { store.send(.perform(close)) } label: {
+                        Label(close.label, systemImage: "xmark.bin")
                     }
                 }
             }
@@ -92,6 +100,7 @@ public struct FleetView: View {
                     }
                 }
             }
+            .listRowSpacing(10)
             .overlay {
                 if results.groups.isEmpty { ContentUnavailableView.search(text: store.query) }
             }
