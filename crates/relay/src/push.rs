@@ -217,23 +217,25 @@ impl Apns {
     }
 }
 
-/// APNs refused a push. Carries only Apple's status, reason and apns-id, never token or payload.
+/// APNs refused a push. Carries only Apple's status, reason, apns-id and, for a dead token,
+/// when Apple stopped accepting it; never the token or payload.
 #[derive(Debug, PartialEq)]
 pub struct ApnsRejection {
     pub status: u16,
     pub reason: Option<String>,
     pub apns_id: Option<String>,
+    pub inactive_since_ms: Option<u64>,
 }
 
 impl ApnsRejection {
     pub fn new(status: u16, apns_id: Option<&str>, body: &[u8]) -> Self {
-        let reason = serde_json::from_slice::<Value>(body)
-            .ok()
-            .and_then(|value| value["reason"].as_str().and_then(log_safe));
+        let body = serde_json::from_slice::<Value>(body).ok();
+        let field = |key: &str| body.as_ref().map(|value| &value[key]);
         Self {
             status,
-            reason,
+            reason: field("reason").and_then(Value::as_str).and_then(log_safe),
             apns_id: apns_id.and_then(log_safe),
+            inactive_since_ms: field("timestamp").and_then(Value::as_u64),
         }
     }
 
@@ -265,7 +267,11 @@ impl std::fmt::Display for ApnsRejection {
             self.status,
             self.reason.as_deref().unwrap_or("none"),
             self.apns_id.as_deref().unwrap_or("none")
-        )
+        )?;
+        match self.inactive_since_ms {
+            Some(at) => write!(f, " inactive-since-ms={at}"),
+            None => Ok(()),
+        }
     }
 }
 
@@ -336,6 +342,11 @@ mod tests {
         );
         let injected = ApnsRejection::new(400, Some("id\nforged"), br#"{"reason":"Bad\nline"}"#);
         assert_eq!((injected.reason, injected.apns_id), (None, None));
+        assert_eq!(
+            ApnsRejection::new(410, None, br#"{"reason":"Unregistered","timestamp":1759398000000}"#)
+                .to_string(),
+            "APNs rejected encrypted push with HTTP 410 reason=Unregistered apns-id=none inactive-since-ms=1759398000000"
+        );
     }
 
     #[test]

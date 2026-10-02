@@ -104,6 +104,7 @@ private struct ApprovedServiceScene: View {
     let notifications: NotificationRuntime
     @Environment(\.scenePhase) private var phase
     @State private var context = SceneContext()
+    @State private var returningFromBackground = false
 
     var body: some View {
         Group {
@@ -132,6 +133,11 @@ private struct ApprovedServiceScene: View {
             context.consumeNotification(notifications, services: services, active: phase == .active)
         }
         .onChange(of: phase) { _, phase in
+            if phase == .background { returningFromBackground = true }
+            if phase == .active && returningFromBackground {
+                returningFromBackground = false
+                notifications.push.reregisterOnReturn()
+            }
             context.consumeNotification(notifications, services: services, active: phase == .active)
         }
     }

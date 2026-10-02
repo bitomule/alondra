@@ -438,6 +438,18 @@ async fn send_push(
             "alondra-relay: APNs delivery to device {} failed: {failure:#}",
             request.device_id
         );
+        if failure
+            .downcast_ref::<push::ApnsRejection>()
+            .is_some_and(push::ApnsRejection::registration_is_dead)
+            && let Err(forget) = server
+                .auth
+                .forget_dead_push(&request.device_id, &registration.token)
+        {
+            eprintln!(
+                "alondra-relay: could not forget the dead push registration of device {}: {forget:#}",
+                request.device_id
+            );
+        }
         return Err(apns_failure_response(&failure));
     }
     Ok(StatusCode::ACCEPTED.into_response())
@@ -1672,6 +1684,35 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn a_dead_token_does_not_erase_the_token_the_phone_registered_after_it() {
+        let mac_sign = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let (_url, server, task) = test_server_with_apns(&mac_sign, None).await;
+        let phone = SigningKey::from_slice(&[50u8; 32]).unwrap();
+        server
+            .auth
+            .enroll(
+                &auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+                PhoneDevice {
+                    device_id: "phone-1".into(),
+                    owner_sub: "owner".into(),
+                    signing_key: key_bytes(&phone),
+                },
+            )
+            .unwrap();
+        let registration = |token: &str| PushRegistration {
+            token: token.repeat(32),
+            environment: "sandbox".into(),
+            push_binding: URL_SAFE_NO_PAD.encode([1u8; 32]),
+        };
+        server.auth.register_push("phone-1", registration("cd")).unwrap();
+        server.auth.forget_dead_push("phone-1", &"ab".repeat(32)).unwrap();
+        assert_eq!(server.auth.push_registration("phone-1"), Some(registration("cd")));
+        server.auth.forget_dead_push("phone-1", &"cd".repeat(32)).unwrap();
+        assert!(server.auth.push_registration("phone-1").is_none());
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn encrypted_push_requires_both_identities_and_purges_registration_on_revoke() {
         use std::sync::Mutex;
         let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -2013,6 +2054,15 @@ mod http_tests {
         .unwrap();
         assert_eq!(gone.status(), StatusCode::GONE, "a dead APNs token is not an outage");
         assert_eq!(gone.json::<Value>().await.unwrap()["error"], "push_registration_gone");
+        assert!(
+            server.auth.push_registration("phone-push").is_none(),
+            "Apple never delivers to a dead token again; the phone has to register a live one"
+        );
+        let stored: Value = serde_json::from_slice(
+            &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
+        )
+        .unwrap();
+        assert!(stored["push"].get("phone-push").is_none());
 
         server
             .auth

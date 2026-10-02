@@ -64,6 +64,10 @@ public final class PushRegistrationCoordinator {
         }
     }
 
+    /// The relay drops a registration once APNs calls its token dead, so a registration this
+    /// process already sent may no longer exist: the next update sends every binding again.
+    public func expireRegistrations() { registered = [:] }
+
     public func clear() {
         generation += 1
         clients = [:]; registered = [:]

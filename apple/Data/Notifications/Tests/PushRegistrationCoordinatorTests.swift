@@ -57,6 +57,23 @@ private func registrationClient(_ n: UInt8, recorder: RegistrationRecorder) -> N
     }
 }
 
+@Test @MainActor func anExpiredRegistrationIsSentAgainWithTheSameToken() async throws {
+    let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let coordinator = PushRegistrationCoordinator(preferences: PushPreferencesLedger(file: directory.appendingPathComponent("ledger.json")))
+    let recorder = RegistrationRecorder()
+    let a = registrationClient(1, recorder: recorder)
+    try coordinator.update(clients: [a], token: "token-a", environment: "sandbox", quietStart: nil, quietEnd: nil)
+    await coordinator.waitForPendingRegistration()
+    coordinator.expireRegistrations()
+    try coordinator.update(clients: [a], token: "token-a", environment: "sandbox", quietStart: nil, quietEnd: nil)
+    await coordinator.waitForPendingRegistration()
+    let calls = await recorder.calls
+    #expect(calls.map(\.token) == ["token-a", "token-a"])
+    #expect(calls.map(\.revision) == [1, 1])
+    #expect(coordinator.state == .registered)
+}
+
 @Test @MainActor func logoutAndReplacementRejectLateRegistrationCompletion() async throws {
     let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
     defer { try? FileManager.default.removeItem(at: directory) }
