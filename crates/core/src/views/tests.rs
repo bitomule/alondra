@@ -1074,7 +1074,8 @@ fn each_fleet_node_shows_one_state_derived_from_its_task_never_its_connection() 
         ("idle", "Inactivo", Tone::Neutral),
     ] {
         let row = node(agent);
-        assert_eq!(row.subtitle, None, "{agent}");
+        assert_eq!(row.title, "Build a feature", "{agent}");
+        assert_eq!(row.subtitle.as_deref(), Some(agent), "{agent}");
         assert_eq!(row.badges, vec![Label { text: text.into(), tone }], "{agent}");
     }
     let detail = render(&state, &live, Client::Ios, Lang::Es, "node:recent-queue", "");
@@ -1671,12 +1672,53 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
     let node = fleet.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }
     }).unwrap();
-    assert!(node.children.iter().any(|child| child.id == "last_message"
+    assert!(node.children.iter().any(|child| child.id == "activity"
         && child.title == "Ready for review"
         && matches!(&child.trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:58:00Z")));
     let search = render(&state, &live, Client::Ios, Lang::En, "search?q=Node", "");
     let Item::Row(result) = &search.sections[0].items[0] else { panic!("search result") };
-    assert!(result.children.iter().any(|child| child.id == "last_message"));
+    assert!(result.children.iter().any(|child| child.id == "activity"));
+}
+
+#[test]
+fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
+    let mut state = fixture();
+    state.interactions.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    state.agents.get_mut(&"a-1".into()).unwrap().name = "Build a feature".into();
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode {
+        agent_id: "a-1".into(), name: "Build a feature".into(), working: true,
+        tool: Some("cargo test".into()), state_since: Some("2026-09-30T09:55:00Z".into()),
+        last_message: Some("Earlier note".into()), last_message_at: Some("2026-09-30T09:50:00Z".into()),
+        context_percent: Some(6), context_window: Some(1_000_000), cost_cents: Some(27), last_turn_aborted: true,
+        background_badge: Some("2 subagents".into()),
+        ..Default::default()
+    });
+    let item = |state: &DomainState, live: &LiveSnapshot| {
+        render(state, live, Client::Ios, Lang::Es, "fleet", "").sections.iter().flat_map(|section| &section.items)
+            .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap()
+    };
+    let working = item(&state, &live);
+    assert_eq!(working.title, "Build a feature");
+    assert_eq!(working.subtitle, None, "a node named after its task does not repeat the title");
+    assert_eq!(working.badges.iter().map(|badge| badge.text.as_str()).collect::<Vec<_>>(), ["Trabajando", "2 subagents"],
+        "context, cost and interruptions stay on the node's screen");
+    assert_eq!(working.children.len(), 1, "the task is the item, not a row under it");
+    assert_eq!(working.children[0].title, "cargo test");
+    assert!(matches!(&working.children[0].trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:55:00Z"));
+
+    live.nodes[0].working = false;
+    state.agents.get_mut(&"a-1".into()).unwrap().name = "alondra-ios".into();
+    let resting = item(&state, &live);
+    assert_eq!(resting.subtitle.as_deref(), Some("alondra-ios"), "a node name that adds something stays");
+    assert_eq!(resting.children[0].title, "Earlier note");
+    assert!(matches!(&resting.children[0].trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:50:00Z"));
+
+    let tui = render(&state, &live, Client::Tui, Lang::En, "fleet", "");
+    let tui_row = tui.sections.iter().flat_map(|section| &section.items)
+        .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }).unwrap();
+    assert!(tui_row.badges.iter().all(|badge| !badge.text.contains("Context") && !badge.text.contains('$')));
 }
 
 #[test]
