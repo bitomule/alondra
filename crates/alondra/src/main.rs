@@ -276,7 +276,7 @@ fn hook() -> Result<()> {
         payload["_alondra_run"] = json!(run);
     }
     let event = payload.get("hook_event_name").and_then(serde_json::Value::as_str).map(str::to_string);
-    let critical = matches!(event.as_deref(), Some("SessionStart" | "PreToolUse" | "PermissionRequest" | "Elicitation"));
+    let critical = matches!(event.as_deref(), Some("SessionStart" | "PreToolUse" | "Elicitation"));
     let launched = std::env::var("ALONDRA_LAUNCHED").is_ok_and(|s| !s.is_empty());
     let body = serde_json::to_vec(&json!({"launched": launched, "payload": payload}))?;
     match send_hook(&body) {
