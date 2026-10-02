@@ -1050,3 +1050,31 @@ async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stop
     assert!(shown.contains(&("1 shells · hung?".into(), "warning".into())), "{shown:?}");
     assert_ne!(shown[0].0, "Working", "a shell that has run this long with nothing else going on is not work");
 }
+
+#[tokio::test]
+async fn a_node_that_never_reconnects_after_a_restart_reads_unreachable_and_keeps_its_project() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let domain = &fixture.domain;
+    let state = domain.state().unwrap();
+    domain.execute(&Actor::System, &CommandEnvelope {
+        protocol_version: 2, data_epoch: state.data_epoch, command_id: "register-ghost".into(), expected_revision: state.revision,
+        command: Command::RegisterAgent { agent_id: "ghost".into(), name: "alondra/ghost".into() },
+    }, None, || Ok(())).unwrap();
+    crate::domain_agent_lifecycle::observe_instance(domain, &"ghost".into(), true,
+        &crate::domain_agent_lifecycle::prepare_event(domain, "start-ghost").unwrap()).unwrap();
+    assert!(domain.live.node("ghost").is_none() && domain.live.mods.session("ghost").is_none(), "nothing live: the daemon just restarted");
+
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    let project = fleet["sections"].as_array().unwrap().iter()
+        .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "ghost")).unwrap();
+    assert_eq!(project["id"], "project:alondra", "its project comes from its launch, not from a live connection");
+    assert_eq!(badges(node_row(&fleet, "ghost"))[0], ("Unreachable".into(), "critical".into()));
+
+    let connection = domain.live.mods.connect(serde_json::from_value(json!({"session_id": "ghost", "version": "2.1.287"})).unwrap(), alondra_core::now_millis());
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    assert_ne!(badges(node_row(&fleet, "ghost"))[0].0, "Unreachable", "its mod reconnected");
+    domain.live.mods.disconnect("ghost", connection);
+    let fleet = view_json(&fixture, "fleet", "es").await;
+    assert_eq!(badges(node_row(&fleet, "ghost"))[0].0, "Sin conexión", "a closed connection reads unreachable in the state, not as 'no sé qué quiere'");
+}

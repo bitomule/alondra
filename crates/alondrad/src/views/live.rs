@@ -25,6 +25,19 @@ impl LiveReadCache {
     }
 }
 
+/// The project a node was launched for, which a restart cannot lose: its task's request, or the
+/// project its name starts with.
+fn launched_project(
+    state: &DomainState,
+    agent: &alondra_core::domain_v2::Agent,
+    launches: &BTreeMap<alondra_core::domain_v2::RequestId, (Option<String>, Option<String>)>,
+) -> Option<String> {
+    state.tasks.values()
+        .filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
+        .find_map(|task| launches.get(&task.request_id).and_then(|(project, _)| project.clone()))
+        .or_else(|| agent.name.split_once('/').map(|(project, _)| project.to_owned()).filter(|project| !project.is_empty()))
+}
+
 fn node_label(state: alondra_core::NodeState, lang: Lang) -> String {
     match lang {
         Lang::En => state.label().to_owned(),
@@ -51,6 +64,8 @@ pub(crate) async fn gather(
     clock_only: bool,
 ) -> LiveSnapshot {
     let now = alondra_core::now_millis();
+    let launches = client.domain.store.lock().expect("domain store poisoned")
+        .request_launch_summaries().unwrap_or_default();
     let nodes = state
         .agents
         .values()
@@ -59,11 +74,23 @@ pub(crate) async fn gather(
             let reported = client.domain.live.mods.session(&session_id).unwrap_or_default();
             let node = match client.domain.live.node(&session_id) {
                 Some(node) => node,
-                None if reported.started_at.is_some() => alondra_core::Node::new(&session_id, now),
+                None if reported.started_at.is_some() || agent.connected => {
+                    let mut node = alondra_core::Node::new(&session_id, now);
+                    node.cwd = reported.cwd.clone();
+                    node
+                }
                 None => return None,
             };
-            let project = node.project();
-            let activity = reported.activity(now);
+            let project = if node.cwd.is_some() || node.is_orchestrator {
+                node.project()
+            } else {
+                launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
+            };
+            let activity = if reported.started_at.is_none() && agent.connected {
+                Activity::Unreachable
+            } else {
+                reported.activity(now)
+            };
             let (state_key, state_label) = match activity {
                 Activity::Stalled => ("stalled", node_label(alondra_core::NodeState::Stalled, lang)),
                 Activity::Working => ("busy", node_label(alondra_core::NodeState::Working, lang)),
@@ -252,8 +279,6 @@ pub(crate) async fn gather(
         .into_iter()
         .map(|(id, at)| (id.0, timestamp(at)))
         .collect() };
-    let launches = client.domain.store.lock().expect("domain store poisoned")
-        .request_launch_summaries().unwrap_or_default();
     let task_options = state.tasks.values().map(|task| {
         let (project, effort) = launches.get(&task.request_id).cloned().unwrap_or_default();
         (task.id.0.clone(), alondra_core::views::live::LiveTaskOptions { project, effort })

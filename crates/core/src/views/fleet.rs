@@ -36,6 +36,8 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         .collect();
     let (text, tone) = if waiting(&["question", "permission", "plan"]) {
         (t!(lang, "Waiting for an answer", "Esperando respuesta"), Tone::Warning)
+    } else if live.is_some_and(|node| node.unreachable) {
+        (unreachable_text(lang), Tone::Critical)
     } else if key == Some("stalled") {
         (t!(lang, "Stalled", "Parado"), Tone::Critical)
     } else if live.is_some_and(|node| node.working) {
@@ -80,13 +82,10 @@ fn unreachable_text(lang: super::Lang) -> &'static str {
     t!(lang, "Unreachable", "Sin conexión")
 }
 
-/// What the node mod reports beside the node's state: whether alondrad can reach it, how full
+/// What the node mod reports beside the node's state: how full
 /// its context is, what it has cost, and whether its last turn was interrupted.
 fn reported_badges(node: &super::LiveNode, lang: super::Lang) -> Vec<super::Label> {
     let mut badges = vec![];
-    if node.unreachable {
-        badges.push(super::Label { text: unreachable_text(lang).into(), tone: Tone::Critical });
-    }
     if node.last_turn_aborted && !node.working {
         badges.push(super::Label { text: t!(lang, "Interrupted", "Interrumpido").into(), tone: Tone::Warning });
     }
