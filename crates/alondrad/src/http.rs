@@ -98,424 +98,6 @@ pub(crate) fn named_task(tool: Option<&str>, input: Option<&Value>) -> Option<St
     input?.get("task")?.as_str().map(str::trim).filter(|t| !t.is_empty()).map(str::to_string)
 }
 
-/// The parent owns the decision about which task it delegates. For a main thread with several
-/// tasks it must put this exact marker on the first line of Agent's prompt. A bound subagent
-/// inherits its own task; a node with one open task has only one possible choice.
-fn agent_spawn_task(v: &View, h: &HookEvent, input: &Value) -> Result<Option<String>, String> {
-    if h.event != "PreToolUse" || h.tool_name.as_deref() != Some("Agent") {
-        return Ok(None);
-    }
-    if let Some(id) = h.tool_use_id.as_deref()
-        && v.spawn_reservations.contains_key(&format!("{}:{id}", h.session_id))
-    {
-        return Err("This Agent tool call already has a task reservation. Start a fresh Agent call.".into());
-    }
-    let tasks = v.hook_task_ids(&h.session_id, h.agent_id.as_deref(), None);
-    if tasks.is_empty() {
-        return Ok(None);
-    }
-    let prompt = input.pointer("/tool_input/prompt").and_then(Value::as_str).unwrap_or("");
-    let first = prompt.lines().next().unwrap_or("").trim();
-    let marked = first.strip_prefix("Alondra task: ").map(str::trim);
-    let conflicts = |selected: &str| input.pointer("/tool_input/description").and_then(Value::as_str)
-        .is_some_and(|description| alondra_core::tasks::marked_tasks(description).iter().any(|task| *task != selected));
-    if let Some(agent) = h.agent_id.as_deref()
-        && let Some(bound) = v
-            .nodes
-            .get(&h.session_id)
-            .and_then(|n| n.ledger.bound(agent))
-    {
-        if marked.is_some_and(|task| task != bound) || conflicts(bound) {
-            return Err(format!("This subagent is bound to {bound}; it cannot launch a child for another task."));
-        }
-        return Ok(Some(bound.to_string()));
-    }
-    if tasks.len() == 1 {
-        if marked.is_some_and(|task| task != tasks[0]) || conflicts(&tasks[0]) {
-            return Err(format!("The Agent prompt names a task other than this node's only open task {}.", tasks[0]));
-        }
-        return Ok(Some(tasks[0].clone()));
-    }
-    let Some(task) = marked else {
-        return Err(format!(
-            "This node has several tasks ({}). Start the Agent prompt with `Alondra task: t-…` naming the task delegated to this subagent.",
-            tasks.join(", ")
-        ));
-    };
-    if !tasks.iter().any(|candidate| candidate == task) {
-        return Err(format!(
-            "Task {task} is not an open task assigned to this node. Choose one of: {}.",
-            tasks.join(", ")
-        ));
-    }
-    if conflicts(task) {
-        return Err("Agent description and prompt name different Alondra tasks.".into());
-    }
-    Ok(Some(task.to_string()))
-}
-
-/// The plugin's hooks send `ALONDRA_LAUNCHED` in this header: set in the sessions Alondra
-/// launches, empty in any other.
-fn launched_mark(headers: &axum::http::HeaderMap) -> bool {
-    headers.get(alondra_core::LAUNCHED_HEADER).is_some_and(|v| !v.as_bytes().is_empty())
-}
-
-/// Reasons to deny a tool before it can be confused with another task's work.
-fn hook_denial(v: &View, h: &HookEvent, input: &Value) -> Option<String> {
-    if h.event == "PreToolUse"
-        && let Some(reason) = crate::domain_transport::forbidden_for_nodes(h.tool_name.as_deref(), input.get("tool_input"))
-    {
-        return Some(reason);
-    }
-    if h.event == "PreToolUse"
-        && h.agent_id.is_some()
-        && h.tool_name.as_deref().is_some_and(|t| t.ends_with("__focus"))
-    {
-        return Some("Only the node's main thread may set its focus; subagents have their own task binding.".into());
-    }
-    if h.event == "PreToolUse"
-        && h.tool_name
-            .as_deref()
-            .is_some_and(|t| t.ends_with("__claim_task"))
-        && h.agent_id.is_none()
-    {
-        return Some(
-            "claim_task must be called inside the child subagent, not by its parent.".into(),
-        );
-    }
-    let agent = h.agent_id.as_deref()?;
-    if h.event == "PreToolUse"
-        && h.tool_name
-            .as_deref()
-            .is_some_and(|t| t.ends_with("__claim_task"))
-    {
-        let token = input
-            .pointer("/tool_input/token")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let Some(reservation) = v.spawn_reservations.get(token).filter(|r| !r.claimed) else {
-            return Some("Unknown or already claimed Alondra spawn token. Ask the parent to launch a new Agent.".into());
-        };
-        if reservation.session_id != h.session_id
-            || !v
-                .board
-                .tasks
-                .get(&reservation.task)
-                .is_some_and(|t| t.is_assigned_to(&h.session_id) && !t.state.finished())
-        {
-            return Some("This spawn token no longer belongs to an open task on this node.".into());
-        }
-        if let Some(assigned) = v.tasks_of(&h.session_id).find(|t| {
-            t.assignee.as_ref().and_then(|a| a.agent_id.as_deref()) == Some(agent)
-                && !t.state.finished()
-        }) && assigned.id != reservation.task
-        {
-            return Some(format!("This subagent is assigned to task {}; it cannot claim task {}.", assigned.id, reservation.task));
-        }
-        if let Some(bound) = v
-            .nodes
-            .get(&h.session_id)
-            .and_then(|n| n.ledger.bound(agent))
-        {
-            return Some(format!(
-                "This subagent is already bound to task {bound}; it cannot claim another spawn token."
-            ));
-        }
-        return None;
-    }
-    if matches!(h.event.as_str(), "PreToolUse" | "PermissionRequest")
-        && let Some(bound) = v
-            .nodes
-            .get(&h.session_id)
-            .and_then(|n| n.ledger.bound(agent))
-        && !v
-            .board
-            .tasks
-            .get(bound)
-            .is_some_and(|t| t.is_assigned_to(&h.session_id) && !t.state.finished())
-    {
-        return Some(format!(
-            "This subagent was bound to task {bound}, which is no longer open and assigned to this session. Start a new subagent for current work."
-        ));
-    }
-    if h.event == "PreToolUse"
-        && let Some(requested) = h.task.as_deref()
-        && let Some(bound) = v
-            .nodes
-            .get(&h.session_id)
-            .and_then(|n| n.ledger.bound(agent))
-        && bound != requested
-    {
-        return Some(format!(
-            "This subagent is bound to Alondra task {bound}; it cannot use task {requested}. Start a separate subagent for the other task."
-        ));
-    }
-    if !matches!(h.event.as_str(), "PreToolUse" | "PermissionRequest") {
-        return None;
-    }
-    if v.nodes.get(&h.session_id).is_some_and(|n| n.is_orchestrator)
-        || !v.tasks_of(&h.session_id).any(|t| !t.state.finished())
-    {
-        return None;
-    }
-    if v.nodes
-        .get(&h.session_id)
-        .and_then(|n| n.ledger.bound(agent))
-        .is_some()
-    {
-        return None;
-    }
-    if h.event == "PermissionRequest" {
-        Some("This subagent must claim its parent's Alondra task token before requesting permission.".into())
-    } else {
-        Some(format!(
-            "This subagent is not bound to a task. Call Alondra claim_task with the token in your Agent prompt before using {}. If the prompt has no token, ask the parent to launch a new Agent for the task.",
-            h.tool_name.as_deref().unwrap_or("this tool")
-        ))
-    }
-}
-
-/// A hook from a session Alondra does not follow ends at once with no effect: nothing is
-/// recorded and nothing is held, so Claude Code's own menus show.
-pub(crate) async fn hook(state: State<AppState>, headers: axum::http::HeaderMap, body: Json<Value>) -> Response {
-    hook_with_ack(state,headers,body,false).await
-}
-
-pub(crate) async fn hook_with_ack(State(hub): State<AppState>, headers: axum::http::HeaderMap, Json(mut p): Json<Value>, has_ack:bool) -> Response {
-    let Some(actual_session_id) = str_field(&p, "session_id") else {
-        return Json(json!({})).into_response();
-    };
-    if hub.read(|v| v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == actual_session_id)) {
-        return err(StatusCode::CONFLICT, "legacy orchestrator migration is in progress");
-    }
-    let managed_run = str_field(&p, "_alondra_run");
-    // Unix hooks bypass the HTTP router, so they participate in the same lifecycle barrier.
-    let _lease = if managed_run.is_some() { Some(hub.orchestrator_commands.read().await) } else { None };
-    let managed = managed_run.is_some();
-    let session_id = if let Some(run) = managed_run.as_deref() {
-        if !hub.read(|v| managed_execution(v, run, Some(&actual_session_id))) {
-            return err(StatusCode::CONFLICT, "stale orchestrator execution");
-        }
-        p["session_id"] = json!(alondra_core::orchestrator::NODE_ID);
-        p.as_object_mut().map(|o| o.remove("cwd"));
-        alondra_core::orchestrator::NODE_ID.to_string()
-    } else { actual_session_id.clone() };
-    let event = str_field(&p, "hook_event_name").unwrap_or_default();
-    // MessageDisplay is invoked for each rendered batch, synchronously with the UI. The
-    // final batch is a reliable once-per-message liveness signal without flooding the log.
-    if event == "MessageDisplay" && p.get("final") != Some(&Value::Bool(true)) {
-        return Json(json!({})).into_response();
-    }
-    let tool = str_field(&p, "tool_name");
-    let mut h = HookEvent {
-        session_id: session_id.clone(),
-        event: event.clone(),
-        tool_name: tool.clone(),
-        tool_use_id: str_field(&p, "tool_use_id"),
-        tool_summary: tool_summary(tool.as_deref(), p.get("tool_input")),
-        last_message: str_field(&p, "last_assistant_message"),
-        notification_type: str_field(&p, "notification_type"),
-        error_type: str_field(&p, "error_type").or_else(|| str_field(&p, "error")),
-        cwd: str_field(&p, "cwd"),
-        agent_id: str_field(&p, "agent_id"),
-        agent_type: str_field(&p, "agent_type"),
-        task: named_task(tool.as_deref(), p.get("tool_input")),
-        task_id: None,
-        task_ids: vec![],
-        spawn_token: None,
-        spawn_task: None,
-        claim_token: None,
-        local_denial: false,
-        detail: hook_detail(&event, &p),
-        prompt: str_field(&p, "prompt").map(|t| t.chars().take(2000).collect()),
-    };
-    match hub.admit(&session_id, launched_mark(&headers)) {
-        Ok(true) => {}
-        Ok(false) => {
-            hub.hold_unclaimed(h);
-            return Json(json!({})).into_response();
-        }
-        Err(e) => {
-            log!("hook lost: {e}");
-            return err(StatusCode::SERVICE_UNAVAILABLE, format!("hook admission failed: {e}"));
-        }
-    }
-    let mut denied = None;
-    let mut updated_agent_input = None;
-    let recorded = hub.append_all(|v| {
-        if managed_run.as_deref().is_some_and(|run| !managed_execution(v, run, Some(&actual_session_id))) {
-            denied = Some("stale orchestrator execution".to_string());
-            return Ok::<_, ()>(vec![]);
-        }
-        if v.orchestrator_migration.as_ref().is_some_and(|m| m.session_id == session_id) {
-            denied = Some("legacy orchestrator migration is in progress".into());
-            return Ok::<_, ()>(vec![]);
-        }
-        denied = hook_denial(v, &h, &p);
-        if denied.is_none() && event == "PreToolUse" && tool.as_deref() == Some("Agent") {
-            match agent_spawn_task(v, &h, &p) {
-                Ok(Some(task)) => {
-                    if let Some(id) = h.tool_use_id.as_deref()
-                        && let Some(mut input) =
-                            p.get("tool_input").and_then(Value::as_object).cloned()
-                        && let Some(prompt) = input.get("prompt").and_then(Value::as_str)
-                    {
-                        let token = format!("{session_id}:{id}");
-                        input.insert(
-                            "prompt".into(),
-                            Value::String(format!("Alondra claim token: {token}\n{prompt}")),
-                        );
-                        updated_agent_input = Some(Value::Object(input));
-                        h.spawn_token = Some(token);
-                        h.spawn_task = Some(task.clone());
-                        h.task = Some(task);
-                    } else {
-                        denied = Some(
-                            "Cannot launch a task subagent without Agent prompt and tool_use_id."
-                                .into(),
-                        );
-                    }
-                }
-                Ok(None) => {}
-                Err(reason) => denied = Some(reason),
-            }
-        }
-        if event == "PostToolUse"
-            && h.agent_id.is_some()
-            && tool.as_deref().is_some_and(|t| t.ends_with("__claim_task"))
-        {
-            h.claim_token = p
-                .pointer("/tool_input/token")
-                .and_then(Value::as_str)
-                .map(str::to_string);
-            if let Some(reservation) = h
-                .claim_token
-                .as_ref()
-                .and_then(|t| v.spawn_reservations.get(t))
-                .filter(|r| !r.claimed)
-                && reservation.session_id == session_id
-                && v.board
-                    .tasks
-                    .get(&reservation.task)
-                    .is_some_and(|t| t.is_assigned_to(&session_id) && !t.state.finished())
-            {
-                h.task = Some(reservation.task.clone());
-            } else {
-                h.claim_token = None;
-            }
-        }
-        if event == "PostToolUse"
-            && tool.as_deref() == Some("Agent")
-            && let Some(reservation) = h
-                .tool_use_id
-                .as_ref()
-                .and_then(|id| v.spawn_reservations.get(&format!("{session_id}:{id}")))
-        {
-            h.task = Some(reservation.task.clone());
-        }
-        let mut events = vec![Event::Hook(h.clone())];
-        if let Some(reason) = &denied {
-            events.push(Event::Hook(HookEvent {
-                session_id: h.session_id.clone(),
-                event: "PermissionDenied".into(),
-                tool_name: h.tool_name.clone(),
-                tool_use_id: h.tool_use_id.clone(),
-                agent_id: h.agent_id.clone(),
-                agent_type: h.agent_type.clone(),
-                task: h.task.clone(),
-                detail: Some(reason.clone()),
-                local_denial: true,
-                ..Default::default()
-            }));
-        }
-        Ok::<_, ()>(events)
-    });
-    if let Err(e) = recorded {
-        log!("hook lost: {e}");
-        return err(StatusCode::SERVICE_UNAVAILABLE, format!("hook could not be recorded: {e}"));
-    }
-    if let Some(reason) = denied {
-        return match event.as_str() {
-            "PermissionRequest" => Json(json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
-                "decision": {"behavior": "deny", "message": reason}}})).into_response(),
-            _ => Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "deny",
-                "permissionDecisionReason": reason}})).into_response(),
-        };
-    }
-    if let Some(input) = updated_agent_input {
-        return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": input}})).into_response();
-    }
-    if event == "PostToolUse"
-        && let Some(command) = p.pointer("/tool_input/command").and_then(Value::as_str).filter(|c| crate::prs::runs_pr_create(c))
-        && let Some(url) = p.get("tool_response").and_then(crate::prs::created_pr)
-    {
-        let task = hub.read(|v| v.pr_task_for(&session_id, h.agent_id.as_deref(), &[command], now_millis()));
-        let (hub, session_id) = (hub.clone(), session_id.clone());
-        tokio::spawn(async move {
-            crate::prs::open_confirmed(&hub, &session_id, vec![url.clone()], task).await;
-            if let Err(e) = hub.append_with(|v| v.pr_task_question(&url, now_millis()).map(Event::MessageQueued)) {
-                log!("could not ask {session_id} which task {url} is for: {e}");
-            }
-        });
-    }
-    if event == "Stop"
-        && let Some(r) = hand_over_at_turn_end(&hub, &session_id)
-    {
-        if !has_ack {
-            if let Some(id)=r.headers().get("x-alondra-delivery-attempt").and_then(|v|v.to_str().ok()).and_then(|v|v.parse::<u64>().ok()) {
-                if let Err(e)=crate::delivery::finish(&hub,id,crate::delivery::Outcome::Uncertain("hook_transport_has_no_ack")) {
-                    log!("hook delivery remains blocked: {e}");
-                }
-            }
-        }
-        return r;
-    }
-    if event == "Stop" {
-        let user = hub.config.name.clone();
-        let moved = hub.append_with(|v| v.nodes.get(&session_id).and_then(|n| states::stall_message(v, n, &user, now_millis())).map(Event::MessageQueued));
-        if let Err(e) = moved {
-            log!("could not act on a stalled node: {e}");
-        }
-    }
-    if event == "SubagentStart" {
-        let unbound = h.agent_id.as_deref().is_some_and(|agent| {
-            hub.read(|v| {
-                v.nodes.get(&session_id).is_some_and(|n| !n.is_orchestrator && n.ledger.bound(agent).is_none())
-                    && v.tasks_of(&session_id).any(|t| !t.state.finished())
-            })
-        });
-        if unbound {
-            return Json(json!({"hookSpecificOutput": {"hookEventName": "SubagentStart",
-                "additionalContext": "Before any work or other tool, call Alondra claim_task with the exact `Alondra claim token` in your Agent prompt. That token binds you to the task your parent delegated. If no token is in your prompt, stop and ask the parent to relaunch you for a task."}})).into_response();
-        }
-    }
-    if event == "PreToolUse"
-        && tool
-            .as_deref()
-            .is_some_and(|t| t.starts_with("mcp__plugin_alondra"))
-    {
-        return Json(json!({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
-            "permissionDecisionReason": "Alondra tool"}})).into_response();
-    }
-    if managed && (matches!(tool.as_deref(), Some("AskUserQuestion" | "ExitPlanMode")) || matches!(event.as_str(), "PermissionRequest" | "Elicitation")) {
-        return err(StatusCode::CONFLICT, "The orchestrator must use Alondra ask; terminal prompts are unavailable");
-    }
-    let only_parent_may_ask = h.agent_id.is_some() && !matches!(event.as_str(), "PermissionRequest" | "Elicitation");
-    if hub.read(|v| v.nodes.get(&session_id).is_some_and(|n| states::watching(v, n, now_millis()))) {
-        return Json(json!({})).into_response();
-    }
-    if !hub.hold_enabled || only_parent_may_ask || !crate::watcher::is_background_session(&hub.claude_home, &session_id) {
-        return Json(json!({})).into_response();
-    }
-    match (event.as_str(), tool.as_deref()) {
-        ("PreToolUse", Some("AskUserQuestion")) => hold(hub.clone(), p, h, QuestionOrigin::AskUserQuestion, has_ack).await,
-        ("PreToolUse", Some("ExitPlanMode")) => hold(hub.clone(), p, h, QuestionOrigin::Plan, has_ack).await,
-        ("PermissionRequest", _) => hold(hub.clone(), p, h, QuestionOrigin::Permission, has_ack).await,
-        ("Elicitation", _) => hold(hub.clone(), p, h, QuestionOrigin::Elicitation, has_ack).await,
-        _ => Json(json!({})).into_response(),
-    }
-}
-
 /// Keep enough context to explain lifecycle hooks without storing arbitrary tool input or
 /// streaming message text. The source event name and task IDs are stored separately.
 pub(crate) fn hook_detail(event: &str, input: &Value) -> Option<String> {
@@ -538,21 +120,6 @@ pub(crate) fn hook_detail(event: &str, input: &Value) -> Option<String> {
         format!("{key}={}", value.chars().take(160).collect::<String>())
     })).collect();
     (!parts.is_empty()).then(|| parts.join(" · "))
-}
-
-/// An interactive session gets what was queued for it when its turn ends: the Stop hook's
-/// `additionalContext` keeps the turn going with the messages (code.claude.com/docs/en/hooks,
-/// "Stop decision control"). Background jobs get theirs typed in by `wake`.
-fn hand_over_at_turn_end(hub: &Hub, session_id: &str) -> Option<Response> {
-    if hub.read(|v| v.nodes.get(session_id).is_some_and(|n| n.is_orchestrator)) { return None; }
-    let attempt=match crate::delivery::claim(hub,session_id,alondra_core::delivery::Channel::HookStop) {
-        Ok(Some(attempt))=>attempt, Ok(None)=>return None,
-        Err(e)=>{log!("could not claim hook delivery: {e}");return None;}
-    };
-    let text=hub.read(|v|v.message_batch_text(&attempt.message_ids,&hub.config.name));
-    let mut response=Json(json!({"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":text}})).into_response();
-    response.headers_mut().insert("x-alondra-delivery-attempt",attempt.id.to_string().parse().unwrap());
-    Some(response)
 }
 
 struct HoldGuard {
@@ -705,30 +272,6 @@ pub(crate) fn permission_detail(input: &Value, summary: Option<&str>) -> Option<
         return Some(format!("{lines}\n\n```\n{command}\n```"));
     }
     summary.map(str::to_string).or_else(|| (!input.is_null()).then(|| input.to_string()))
-}
-
-async fn hold(hub: Arc<Hub>, p: Value, h: HookEvent, origin: QuestionOrigin, has_ack: bool) -> Response {
-    let (id, rx) = match hub.register_question_hold(|v| held_question(v, &p, &h, origin)) {
-        Ok(registered) => registered,
-        Err(e) => return internal(e),
-    };
-    let mut guard = HoldGuard { hub: hub.clone(), id, completed: false };
-    let Ok((answer, attempt)) = rx.await else {
-        return Json(json!({})).into_response();
-    };
-    // The answer and any follow-up were committed before the oneshot wakeup.
-    // Only the local socket's stdout acknowledgement may confirm the handoff.
-    if !has_ack {
-        if let Err(e) = crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Uncertain("hook_transport_has_no_ack")) {
-            return internal(e);
-        }
-    }
-    let input = p.get(if origin == QuestionOrigin::Elicitation { "requested_schema" } else { "tool_input" }).cloned().unwrap_or(Value::Null);
-    let mut response = Json(hold_decision(origin, &answer, input, &hub.config.name)).into_response();
-    response.headers_mut().insert("x-alondra-delivery-attempt", attempt.to_string().parse().expect("numeric attempt"));
-    response.headers_mut().insert("x-alondra-hold-id", id.to_string().parse().expect("numeric hold id is an HTTP header"));
-    guard.completed = true;
-    response
 }
 
 fn hold_decision(origin: QuestionOrigin, answer: &Answer, input: Value, user: &str) -> Value {
@@ -2013,62 +1556,6 @@ async fn new_task(State(hub): State<AppState>, Json(b): Json<NewTaskBody>) -> Re
     }
 }
 
-#[derive(Deserialize)]
-struct FocusBody {
-    #[serde(flatten)]
-    caller: Caller,
-    task: String,
-    #[serde(default)]
-    minutes: Option<u32>,
-}
-
-/// Why a node cannot focus on the task it named, if it cannot: it must be an open task of its own.
-fn focus_refusal(v: &View, sid: &str, task: &str) -> Option<(StatusCode, String)> {
-    if v.nodes.get(sid).is_some_and(|n| n.is_orchestrator) {
-        return Some((StatusCode::FORBIDDEN, "The orchestrator works on no task of its own. Nothing was recorded.".into()));
-    }
-    match v.board.tasks.get(task) {
-        None => Some((StatusCode::NOT_FOUND, format!("task: {task} does not exist. Nothing was recorded."))),
-        Some(t) if !t.is_assigned_to(sid) => Some((StatusCode::FORBIDDEN, format!("task: {task} is not yours. Nothing was recorded."))),
-        Some(t) if t.state.finished() => {
-            Some((StatusCode::UNPROCESSABLE_ENTITY, format!("task: {task} is {}; focus on one of your open tasks. Nothing was recorded.", t.state.label())))
-        }
-        Some(_) => None,
-    }
-}
-
-/// A node says which of its tasks it works on now. Until the focus expires or another replaces
-/// it, what its threads do with no task of their own, and its PRs and cards that name none, count
-/// for that task.
-async fn focus(State(hub): State<AppState>, Json(b): Json<FocusBody>) -> Response {
-    use alondra_core::activity::{FOCUS_DEFAULT_MINUTES, FOCUS_MAX_MINUTES};
-    if let Some(r) = outside_caller(&hub, &b.caller) {
-        return r;
-    }
-    let Some((sid, _)) = hub.read(|v| resolve_caller(v, &b.caller)) else {
-        return err(StatusCode::BAD_REQUEST, "unknown node: session_id is missing and no pid matches");
-    };
-    let task = b.task.trim().to_string();
-    let minutes = b.minutes.unwrap_or(FOCUS_DEFAULT_MINUTES).clamp(1, FOCUS_MAX_MINUTES);
-    let mut refused = None;
-    let recorded = hub.append_with(|v| match focus_refusal(v, &sid, &task) {
-        Some(why) => {
-            refused = Some(why);
-            None
-        }
-        None => Some(Event::Focused { session_id: sid.clone(), task: task.clone(), minutes }),
-    });
-    match (recorded, refused) {
-        (Ok(Some(_)), _) => {
-            let until = hub.read(|v| v.nodes.get(&sid).and_then(|n| n.ledger.focus.as_ref()).map(|f| f.until));
-            Json(json!({"task": task, "minutes": minutes, "until": until})).into_response()
-        }
-        (Ok(None), Some((status, why))) => err(status, why),
-        (Ok(None), None) => err(StatusCode::BAD_REQUEST, "unknown node: session_id is missing and no pid matches"),
-        (Err(e), _) => internal(e),
-    }
-}
-
 /// A card Alondra built from the node's terminal that still stands for its task: the node's own
 /// question replaces it, since its own words win.
 fn terminal_card_of(v: &View, task: &str) -> Option<u64> {
@@ -2198,13 +1685,6 @@ async fn answer(state: State<AppState>, signed: Option<Extension<crate::auth::Si
     }).await
 }
 
-#[cfg(test)]
-pub(crate) async fn answer_held_for_test(hub: Arc<Hub>, id: u64) -> Response {
-    answer(State(hub), None, Path(id), Json(AnswerBody {
-        text: "Allow".into(), option: Some("Allow".into()), by: None, attachments: vec![],
-    })).await
-}
-
 async fn answer_with_discard<F, Fut>(State(hub): State<AppState>, signed: Option<Extension<crate::auth::Signed>>, Path(id): Path<u64>, Json(mut b): Json<AnswerBody>, discard: F) -> Response
 where F: FnOnce(Arc<Hub>, String) -> Fut + Send + 'static,
       Fut: Future<Output = Response> + Send + 'static,
@@ -2215,7 +1695,7 @@ where F: FnOnce(Arc<Hub>, String) -> Fut + Send + 'static,
         return err(StatusCode::NOT_FOUND, format!("question #{id} does not exist"));
     };
     if !q.status.is_open() {
-        if crate::menus::is_menu_card(&q) || upkeep::is_idle_close(&q) && q.answer.as_ref().is_some_and(|a| a.option.as_deref() == Some(upkeep::DISCARD)) {
+        if upkeep::is_idle_close(&q) && q.answer.as_ref().is_some_and(|a| a.option.as_deref() == Some(upkeep::DISCARD)) {
             if let Some(attempt) = hub.read(|v| v.delivery_attempts.values().rev().find(|a| a.question_id == Some(id)).cloned()) {
                 if !q.answer.as_ref().is_some_and(|a| a.option == b.option) {
                     return refused(StatusCode::CONFLICT, "question_closed", "This menu already has another recorded decision.");
@@ -2233,12 +1713,6 @@ where F: FnOnce(Arc<Hub>, String) -> Fut + Send + 'static,
         Ok(a) => a,
         Err(r) => return r,
     };
-    if crate::menus::is_menu_card(&q) {
-        if !attachments.is_empty() {
-            return err(StatusCode::UNPROCESSABLE_ENTITY, "This card is a menu in the node's terminal: it takes an option, not attachments. Send the files in a message to the node.");
-        }
-        return answer_menu(hub, q, b.option.as_deref(), signed.map(|s| s.name)).await;
-    }
     let device = signed.as_ref().map_or_else(|| "local".to_string(), |s| s.name.clone());
     let provenance = match &signed {
         Some(s) => format!("via {} (signature verified)", s.name),
@@ -2387,53 +1861,6 @@ pub(crate) fn launch_blocked(usage: Option<&alondra_core::usage::Usage>, over_pa
         u.week_percent,
         u.per_day_left
     ))
-}
-
-/// A menu card is answered by picking the option in the node's terminal.
-async fn answer_menu(hub: AppState, q: Question, option: Option<&str>, device: Option<String>) -> Response {
-    let Some(label) = option.filter(|o| q.options.iter().any(|x| x.label == *o)).map(str::to_string) else {
-        return err(StatusCode::UNPROCESSABLE_ENTITY, "This card is a menu in the node's terminal: pick one of its options, or open the session to answer it there.");
-    };
-    let Some(short) = hub.read(|v| v.nodes.get(&q.session_id).map(|n| n.short_id.clone())) else {
-        return err(StatusCode::NOT_FOUND, "the node is gone");
-    };
-    let answer = Answer { text: label.clone(), option: Some(label.clone()), by: Some(hub.config.name.clone()), device: Some(device.unwrap_or_else(|| "local".into())), at: now_millis() };
-    let attempt = match crate::delivery::claim_menu(&hub, q.id, answer) {
-        Ok(Some(attempt)) => attempt,
-        Ok(None) => return refused(StatusCode::CONFLICT, "delivery_blocked", "Question changed or another delivery requires resolution; refresh before deciding."),
-        Err(error) => return internal(error),
-    };
-    let expected = crate::menus::Menu { title: q.title.clone(), detail: q.detail.clone().unwrap_or_default(),
-        options: q.options.iter().map(|o| o.label.clone()).collect(), selected: None };
-    let target = hub.clone();
-    let question = q.id;
-    let attempt_id = attempt.id;
-    // The blocking worker owns finalization: cancelling the HTTP future cannot
-    // abandon an in-flight terminal write without recording its outcome.
-    let pressed = tokio::task::spawn_blocking(move || {
-        let own = target.own_attach(&short);
-        let result = crate::wake::press(&short, &label, &expected, || {
-            target.read(|v| v.delivery_attempts.get(&attempt_id).is_some_and(|a| a.state == alondra_core::delivery::State::Dispatching)
-                && v.questions.get(&question).is_some_and(|q| q.status == QuestionStatus::Answered))
-        });
-        drop(own);
-        let outcome = match result {
-            Ok(()) => crate::delivery::Outcome::Handed,
-            Err(crate::wake::WriteFailure::NotStarted) => crate::delivery::Outcome::NotStarted("menu_changed_before_write"),
-            Err(crate::wake::WriteFailure::Uncertain) => crate::delivery::Outcome::Uncertain("menu_write_uncertain"),
-        };
-        crate::delivery::finish(&target, attempt_id, outcome)
-    }).await;
-    let finished = match pressed {
-        Ok(result) => result,
-        Err(_) => crate::delivery::finish(&hub, attempt.id, crate::delivery::Outcome::Uncertain("menu_worker_failed")),
-    };
-    if let Err(error) = finished { return internal(error); }
-    let current = hub.read(|v| v.delivery_attempts[&attempt.id].clone());
-    let mut response = json!({"id": q.id, "delivery_state": current.state, "delivery_attempt": current.id,
-        "delivery_version": current.version});
-    if current.state == alondra_core::delivery::State::Handed { response["delivered"] = json!("terminal"); }
-    Json(response).into_response()
 }
 
 /// `asker` is `None` for a client acting as the user, `Some(None)` for a node Alondra cannot place.
@@ -2901,12 +2328,6 @@ async fn retry_orchestrator(State(hub): State<AppState>, Json(body): Json<RetryO
         alondra_core::orchestrator::Transition::RetryApproved { run_id: body.run_id })))
 }
 
-async fn cancel_orchestrator(State(hub): State<AppState>, Json(body): Json<RetryOrchestratorBody>) -> Response {
-    let _lease = hub.orchestrator_commands.write().await;
-    local_mutation_response(local_mutation(&hub, None, LocalMutation::Orchestrator(
-        alondra_core::orchestrator::Transition::CancelRequested { run_id: body.run_id })))
-}
-
 struct OptionsQuery {
     project: Option<String>,
 }
@@ -3151,64 +2572,6 @@ async fn search(State(hub): State<AppState>, Query(sq): Query<SearchQuery>) -> J
     Json(json!({"via": "local", "sessions": matches}))
 }
 
-/// A task whole, with the brief, history and anomalies the overview leaves out, and every report
-/// of it Alondra still keeps: the overview carries only the newest reports of the fleet.
-#[derive(Deserialize)]
-struct ClaimTaskBody {
-    token: String,
-    #[serde(flatten)]
-    caller: Caller,
-}
-
-/// Resolve the opaque token inserted into one Agent prompt to the task selected by its parent.
-/// The successful PostToolUse hook records the binding for that child's agent_id.
-async fn claim_task(State(hub): State<AppState>, Json(body): Json<ClaimTaskBody>) -> Response {
-    if let Some(response) = outside_caller(&hub, &body.caller) {
-        return response;
-    }
-    let result = hub.read(|v| {
-        let (sid, _) = resolve_caller(v, &body.caller).ok_or((
-            StatusCode::FORBIDDEN,
-            "caller session is unknown".to_string(),
-        ))?;
-        let reservation = v
-            .spawn_reservations
-            .get(body.token.trim())
-            .filter(|r| !r.claimed)
-            .ok_or((
-                StatusCode::NOT_FOUND,
-                "unknown or already claimed spawn token".to_string(),
-            ))?;
-        if reservation.session_id != sid {
-            return Err((
-                StatusCode::FORBIDDEN,
-                "spawn token belongs to another session".into(),
-            ));
-        }
-        let task = v.board.tasks.get(&reservation.task).ok_or((
-            StatusCode::NOT_FOUND,
-            "reserved task no longer exists".to_string(),
-        ))?;
-        if !task.is_assigned_to(&sid) {
-            return Err((
-                StatusCode::FORBIDDEN,
-                format!("task {} is not assigned to this session", task.id),
-            ));
-        }
-        if task.state.finished() {
-            return Err((
-                StatusCode::CONFLICT,
-                format!("task {} is already finished", task.id),
-            ));
-        }
-        Ok(task.id.clone())
-    });
-    match result {
-        Ok(task) => Json(json!({"task": task})).into_response(),
-        Err((status, reason)) => err(status, reason),
-    }
-}
-
 async fn task_detail(State(hub): State<AppState>, Path(id): Path<String>) -> Response {
     let found = hub.read(|v| {
         let t = v.board.tasks.get(&id)?;
@@ -3402,28 +2765,6 @@ async fn task_candidates(State(hub): State<AppState>, Query(q): Query<Candidates
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[tokio::test]
-    async fn menu_duplicate_same_option_reports_uncertainty_but_changed_option_conflicts() {
-        let hub=temp_hub("menu-duplicate");
-        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {session_id:"menu".into(),short_id:"menu".into(),..Default::default()})).unwrap();
-        hub.append(Event::QuestionAsked(serde_json::from_value(json!({
-            "id":42,"session_id":"menu","node_name":null,"title":"Permission","detail":"Operation",
-            "options":[{"label":"Accept"},{"label":"Decline"}],"blocking":true,"origin":"ask",
-            "tool_use_id":"menu:permission","status":"open","asked_at":1
-        })).unwrap())).unwrap();
-        let chosen=Answer {text:"Accept".into(),option:Some("Accept".into()),by:None,device:Some("phone-a".into()),at:1};
-        let attempt=crate::delivery::claim_menu(&hub,42,chosen).unwrap().unwrap();
-        crate::delivery::finish(&hub,attempt.id,crate::delivery::Outcome::Uncertain("test_write_unknown")).unwrap();
-        let duplicate=answer(State(hub.clone()),None,Path(42),Json(AnswerBody {text:"historically ignored menu text".into(),option:Some("Accept".into()),by:None,attachments:vec![]})).await;
-        assert_eq!(duplicate.status(),StatusCode::OK);
-        let value:Value=serde_json::from_slice(&axum::body::to_bytes(duplicate.into_body(),65536).await.unwrap()).unwrap();
-        assert_eq!(value["delivery_state"],"uncertain");
-        assert_eq!(value["delivery_attempt"],attempt.id);
-        let other=answer(State(hub.clone()),None,Path(42),Json(AnswerBody {text:"Decline".into(),option:Some("Decline".into()),by:None,attachments:vec![]})).await;
-        assert_eq!(other.status(),StatusCode::CONFLICT);
-        assert_eq!(hub.read(|v|v.delivery_attempts.len()),1);
-    }
 
     fn answered(text: &str, option: Option<&str>) -> Answer {
         let mut b = AnswerBody { text: text.into(), option: option.map(Into::into), by: None, attachments: vec![] };
@@ -3716,8 +3057,6 @@ mod tests {
         assert_eq!(risks("rm a; rm b").len(), 1, "one line per kind of risk");
     }
 
-
-
     /// #218 (blurcamera/redaccion-fase2-puerta): a handoff for the orchestrator landed in the
     /// user's own inbox as a question, indistinguishable from a real one. `open_questions` (an
     /// `ask`) and `news` (a `report`) must never carry a `to_orchestrator` item.
@@ -3853,468 +3192,6 @@ mod tests {
         assert_eq!(hub.read(|v| v.prs_awaiting_user().map(|p| p.id).collect::<Vec<_>>()), vec![1, 2], "both cards stay in the inbox");
     }
 
-
-
-
-    /// The MCP call does not say which subagent makes it; its `PreToolUse`, which reaches Alondra
-    /// first, does.
-    #[tokio::test]
-    async fn a_subagents_card_without_task_goes_to_the_task_it_bound_itself_to() {
-        use alondra_core::tasks::{NewTask, TaskOptions};
-        let hub = started("bound", &["s"]);
-        let (status, said) = status_and_body(
-            report(
-                State(hub.clone()),
-                Json(report_body("s", ReportKind::Notice, &[])),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        hub.append(Event::TaskCreated(NewTask {
-            id: "t-other".into(),
-            request: "r-s".into(),
-            title: "Other".into(),
-            brief: None,
-            depends_on: vec![],
-            options: TaskOptions::default(),
-            session_id: Some("s".into()),
-            launched: false,
-            launched_as: None,
-            start: None,
-        }))
-        .unwrap();
-        let ask_tool = |agent: &str, event: &str, id: &str, task: Option<&str>| json!({"session_id": "s", "hook_event_name": event, "agent_id": agent, "tool_name": "mcp__plugin_alondra_alondra__ask", "tool_use_id": id, "tool_input": {"task": task, "title": "¿Sigo?"}});
-        let agent_call = json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "spawn-card",
-            "tool_input": {"prompt": "Alondra task: t-other\nHandle the question", "description": "Handle the question"}});
-        let (_, response) =
-            status_and_body(hook(State(hub.clone()), launched(), Json(agent_call)).await).await;
-        let token = response["hookSpecificOutput"]["updatedInput"]["prompt"]
-            .as_str()
-            .unwrap()
-            .lines()
-            .next()
-            .unwrap()
-            .strip_prefix("Alondra claim token: ")
-            .unwrap();
-        let claim_tool = |event: &str| {
-            json!({"session_id": "s", "hook_event_name": event, "agent_id": "a1",
-            "tool_name": "mcp__plugin_alondra_alondra__claim_task", "tool_use_id": "claim-card", "tool_input": {"token": token}})
-        };
-        hook(
-            State(hub.clone()),
-            launched(),
-            Json(claim_tool("PreToolUse")),
-        )
-        .await;
-        let (status, _) = status_and_body(
-            claim_task(
-                State(hub.clone()),
-                Json(ClaimTaskBody {
-                    token: token.into(),
-                    caller: Caller {
-                        orchestrator_run: None,
-                        session_id: Some("s".into()),
-                        pids: vec![],
-                        launched: true,
-                    },
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        hook(
-            State(hub.clone()),
-            launched(),
-            Json(claim_tool("PostToolUse")),
-        )
-        .await;
-        let asked = |hub: Arc<Hub>, agent: &'static str, id: &'static str| async move {
-            hook(
-                State(hub.clone()),
-                launched(),
-                Json(ask_tool(agent, "PreToolUse", id, None)),
-            )
-            .await;
-            let answer = status_and_body(
-                ask(State(hub.clone()), Json(ask_body("s", "¿Sigo con esto?"))).await,
-            )
-            .await;
-            hook(
-                State(hub.clone()),
-                launched(),
-                Json(ask_tool(agent, "PostToolUse", id, None)),
-            )
-            .await;
-            answer
-        };
-        let (status, said) = asked(hub.clone(), "a1", "c1").await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        let task = hub.read(|v| {
-            v.questions
-                .values()
-                .next_back()
-                .and_then(|q| q.task.clone())
-        });
-        assert_eq!(
-            task.as_deref(),
-            Some("t-other"),
-            "the subagent's own task, although the node has two open"
-        );
-        let (status, said) = asked(hub.clone(), "a2", "d1").await;
-        assert_eq!(
-            status,
-            StatusCode::UNPROCESSABLE_ENTITY,
-            "a subagent that never named its task still has to: {said}"
-        );
-    }
-
-    #[tokio::test]
-    async fn simultaneous_subagents_claim_their_parents_task_before_tools() {
-        use alondra_core::tasks::{CardTask, NewTask, TaskOptions};
-        let hub = started("strict-subagents", &["s"]);
-        let (status, _) = status_and_body(
-            report(
-                State(hub.clone()),
-                Json(report_body("s", ReportKind::Notice, &[])),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(status, StatusCode::OK);
-        hub.append(Event::TaskCreated(NewTask {
-            id: "t-other".into(),
-            request: "r-s".into(),
-            title: "Other".into(),
-            brief: None,
-            depends_on: vec![],
-            options: TaskOptions::default(),
-            session_id: Some("s".into()),
-            launched: false,
-            launched_as: None,
-            start: None,
-        }))
-        .unwrap();
-        let agent_hook = |agent: &str, event: &str, tool: &str, id: &str, task: Option<&str>| {
-            json!({"session_id": "s", "hook_event_name": event, "agent_id": agent, "agent_type": "Explore",
-                "tool_name": tool, "tool_use_id": id, "tool_input": {"task": task, "command": "cargo test"}})
-        };
-        let start = json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "Explore"});
-        let (_, context) =
-            status_and_body(hook(State(hub.clone()), launched(), Json(start)).await).await;
-        assert!(
-            context["hookSpecificOutput"]["additionalContext"]
-                .as_str()
-                .unwrap()
-                .contains("claim_task")
-        );
-        let bash = |agent: &str, id: &str| agent_hook(agent, "PreToolUse", "Bash", id, None);
-        let (_, denied) =
-            status_and_body(hook(State(hub.clone()), launched(), Json(bash("a1", "u1"))).await)
-                .await;
-        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert!(
-            hub.read(|v| v.nodes["s"]
-                .ledger
-                .threads
-                .iter()
-                .find(|t| t.agent_id.as_deref() == Some("a1"))
-                .unwrap()
-                .tool
-                .is_none()),
-            "a denied tool must not remain in flight"
-        );
-        let permission = agent_hook("a2", "PermissionRequest", "Bash", "u2", None);
-        let (_, denied) =
-            status_and_body(hook(State(hub.clone()), launched(), Json(permission)).await).await;
-        assert_eq!(denied["hookSpecificOutput"]["decision"]["behavior"], "deny");
-        assert!(hub.read(|v| v.questions.is_empty()));
-        let permission_hook = |agent: &str| HookEvent {
-            session_id: "s".into(),
-            event: "PermissionRequest".into(),
-            agent_id: Some(agent.into()),
-            tool_name: Some("Bash".into()),
-            ..Default::default()
-        };
-        assert_eq!(
-            hub.read(|v| held_question(
-                v,
-                &json!({"tool_input": {"command": "cargo test"}}),
-                &permission_hook("a1"),
-                QuestionOrigin::Permission
-            )
-            .task),
-            None,
-            "an unbound subagent's permission cannot block an arbitrary task"
-        );
-        let (_, missing_marker) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "no-task",
-            "tool_input": {"prompt": "Do work", "description": "Work"}
-        }))).await).await;
-        assert_eq!(
-            missing_marker["hookSpecificOutput"]["permissionDecision"],
-            "deny"
-        );
-        let (_, contradictory) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "contradictory",
-            "tool_input": {"prompt": "Alondra task: t-s\nDo work", "description": "Alondra task: t-other"}
-        }))).await).await;
-        assert_eq!(contradictory["hookSpecificOutput"]["permissionDecision"], "deny");
-        let mut tokens = Vec::new();
-        for (id, task) in [("spawn-a", "t-s"), ("spawn-b", "t-other")] {
-            let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-                "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": id,
-                "tool_input": {"prompt": format!("Alondra task: {task}\nDo work"), "description": "Work", "subagent_type": "Explore"}
-            }))).await).await;
-            let prompt = response["hookSpecificOutput"]["updatedInput"]["prompt"]
-                .as_str()
-                .unwrap();
-            let token = prompt
-                .lines()
-                .next()
-                .unwrap()
-                .strip_prefix("Alondra claim token: ")
-                .unwrap()
-                .to_string();
-            assert!(prompt.contains(&format!("Alondra task: {task}")));
-            tokens.push(token);
-        }
-        assert_ne!(tokens[0], tokens[1]);
-        let (_, duplicate) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "spawn-a",
-            "tool_input": {"prompt": "Alondra task: t-other\nDo the other task", "description": "Other"}
-        }))).await).await;
-        assert_eq!(duplicate["hookSpecificOutput"]["permissionDecision"], "deny");
-        hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_use_id": "spawn-b"
-        }))).await;
-        assert!(hub.read(|v| v.spawn_reservations.contains_key(&tokens[1])), "a background Agent may finish before its child claims");
-        let (status, _) = status_and_body(
-            claim_task(
-                State(hub.clone()),
-                Json(ClaimTaskBody {
-                    token: "missing".into(),
-                    caller: Caller {
-                        orchestrator_run: None,
-                        session_id: Some("s".into()),
-                        pids: vec![],
-                        launched: true,
-                    },
-                }),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
-        for (agent, token) in [("a2", &tokens[1]), ("a1", &tokens[0])] {
-            let tool = "mcp__plugin_alondra_alondra__claim_task";
-            for event in ["PreToolUse", "PostToolUse"] {
-                let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-                    "session_id": "s", "hook_event_name": event, "agent_id": agent, "agent_type": "Explore",
-                    "tool_name": tool, "tool_use_id": format!("bind-{agent}"), "tool_input": {"token": token}
-                }))).await).await;
-                assert_ne!(
-                    response["hookSpecificOutput"]["permissionDecision"], "deny",
-                    "{agent} {event}: {response}"
-                );
-                if event == "PreToolUse" {
-                    let (status, _) = status_and_body(
-                        claim_task(
-                            State(hub.clone()),
-                            Json(ClaimTaskBody {
-                                token: token.to_string(),
-                                caller: Caller {
-                        orchestrator_run: None,
-                                    session_id: Some("s".into()),
-                                    pids: vec![],
-                                    launched: true,
-                                },
-                            }),
-                        )
-                        .await,
-                    )
-                    .await;
-                    assert_eq!(status, StatusCode::OK);
-                }
-            }
-            let (_, response) = status_and_body(
-                hook(
-                    State(hub.clone()),
-                    launched(),
-                    Json(bash(agent, &format!("work-{agent}"))),
-                )
-                .await,
-            )
-            .await;
-            assert_ne!(
-                response["hookSpecificOutput"]["permissionDecision"], "deny",
-                "{agent}: {response}"
-            );
-        }
-        assert!(!hub.read(|v| v.spawn_reservations.contains_key(&tokens[1])), "background reservation is removed after the child claims");
-        hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PostToolUse", "tool_name": "Agent", "tool_use_id": "spawn-a"
-        }))).await;
-        assert!(!hub.read(|v| v.spawn_reservations.contains_key(&tokens[0])), "foreground reservation is removed after Agent finishes");
-        let (_, repeated_claim) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a3",
-            "tool_name": "mcp__plugin_alondra_alondra__claim_task", "tool_use_id": "again", "tool_input": {"token": tokens[0]}
-        }))).await).await;
-        assert_eq!(repeated_claim["hookSpecificOutput"]["permissionDecision"], "deny");
-        let (_, wrong_child) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1",
-            "tool_name": "Agent", "tool_use_id": "nested-wrong",
-            "tool_input": {"prompt": "Alondra task: t-other\nDo the other task", "description": "Other"}
-        }))).await).await;
-        assert_eq!(wrong_child["hookSpecificOutput"]["permissionDecision"], "deny");
-        hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "spawn-failed",
-            "tool_input": {"prompt": "Alondra task: t-other\nTry", "description": "Try"}
-        }))).await;
-        assert!(hub.read(|v| v.spawn_reservations.contains_key("s:spawn-failed")));
-        hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PermissionDenied", "tool_name": "Agent", "tool_use_id": "spawn-failed"
-        }))).await;
-        assert!(!hub.read(|v| v.spawn_reservations.contains_key("s:spawn-failed")), "a real Agent denial clears the reservation");
-        let mut seen = Vec::new();
-        crate::store::Store::open(&hub.home.join("alondra.db"))
-            .unwrap()
-            .replay(0, |_, _, event| {
-                if let Event::Hook(h) = event
-                    && h.event == "PreToolUse"
-                    && h.tool_name.as_deref() == Some("Bash")
-                    && h.tool_use_id
-                        .as_deref()
-                        .is_some_and(|id| id.starts_with("work-"))
-                {
-                    seen.push((h.agent_id.unwrap(), h.task_id.unwrap()));
-                }
-            })
-            .unwrap();
-        assert_eq!(
-            seen,
-            [("a2".into(), "t-other".into()), ("a1".into(), "t-s".into())]
-        );
-        assert_eq!(
-            hub.read(|v| held_question(
-                v,
-                &json!({"tool_input": {"command": "cargo test"}}),
-                &permission_hook("a1"),
-                QuestionOrigin::Permission
-            )
-            .task),
-            Some("t-s".into())
-        );
-        assert_eq!(
-            hub.read(|v| held_question(
-                v,
-                &json!({"tool_input": {"command": "cargo test"}}),
-                &permission_hook("a2"),
-                QuestionOrigin::Permission
-            )
-            .task),
-            Some("t-other".into())
-        );
-        let (_, denied) = status_and_body(
-            hook(
-                State(hub.clone()),
-                launched(),
-                Json(agent_hook(
-                    "a1",
-                    "PreToolUse",
-                    "mcp__plugin_alondra_alondra__report",
-                    "wrong",
-                    Some("t-other"),
-                )),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
-        assert_eq!(
-            hub.read(|v| v.card_task("s", Some("t-other"), Some("a1"))),
-            Err(CardTask::BoundElsewhere {
-                bound: "t-s".into(),
-                requested: "t-other".into()
-            })
-        );
-        hub.append(Event::TaskAssigned {
-            task: "t-s".into(),
-            session_id: "another-session".into(),
-            agent_id: None,
-        })
-        .unwrap();
-        let (_, denied) = status_and_body(
-            hook(
-                State(hub.clone()),
-                launched(),
-                Json(bash("a1", "after-reassignment")),
-            )
-            .await,
-        )
-        .await;
-        assert_eq!(
-            denied["hookSpecificOutput"]["permissionDecision"], "deny",
-            "a stale binding must never fall back to the other task"
-        );
-        assert_eq!(hub.read(|v| v.fact_task("s", Some("a1"))), None);
-    }
-
-    #[tokio::test]
-    async fn orchestrator_subagents_do_not_need_a_task_claim() {
-        let hub = started("orchestrator-agents", &["s"]);
-        hub.append(Event::MarkedOrchestrator { session_id: "s".into() }).unwrap();
-        let (_, response) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "agent_id": "a1",
-            "tool_name": "Bash", "tool_use_id": "work", "tool_input": {"command": "true"}
-        }))).await).await;
-        assert_ne!(response["hookSpecificOutput"]["permissionDecision"], "deny");
-    }
-
-    /// A focus names the main thread's task and replays; an Agent marker alone never binds a child.
-    #[tokio::test]
-    async fn a_marked_launch_and_a_focus_reach_the_log_and_name_the_task_of_what_names_none() {
-        use alondra_core::tasks::{NewTask, TaskOptions};
-        let hub = started("tie", &["s"]);
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(report_body("s", ReportKind::Notice, &[]))).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        hub.append(Event::TaskCreated(NewTask {
-            id: "t-other".into(), request: "r-s".into(), title: "Other".into(), brief: None, depends_on: vec![], options: TaskOptions::default(),
-            session_id: Some("s".into()), launched: false, launched_as: None, start: None,
-        }))
-        .unwrap();
-        let payloads = [
-            json!({"session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m1", "tool_input": {"description": "Fix the cron", "prompt": "Alondra task: t-other\n\nFix it."}}),
-            json!({"session_id": "s", "hook_event_name": "SubagentStart", "agent_id": "a1", "agent_type": "general-purpose"}),
-        ];
-        for p in payloads {
-            hook(State(hub.clone()), launched(), Json(p)).await;
-        }
-        let ledger = |hub: &Hub| hub.read(|v| v.nodes["s"].ledger.clone());
-        assert!(ledger(&hub).bound.is_empty(), "SubagentStart alone cannot prove which Agent call spawned it");
-        let (_, denied) = status_and_body(hook(State(hub.clone()), launched(), Json(json!({
-            "session_id": "s", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_use_id": "m2",
-            "tool_input": {"description": "Ambiguous", "prompt": "Both tasks"}
-        }))).await).await;
-        assert_eq!(denied["hookSpecificOutput"]["permissionDecision"], "deny");
-
-        let (status, said) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo?"))).await).await;
-        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "several open tasks and no focus: {said}");
-        let focus_on = |task: &str, minutes: Option<u32>| FocusBody { caller: Caller { orchestrator_run: None, session_id: Some("s".into()), pids: vec![], launched: false }, task: task.into(), minutes };
-        let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-missing", None))).await).await;
-        assert_eq!(status, StatusCode::NOT_FOUND, "{said}");
-        let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-other", Some(1000)))).await).await;
-        assert_eq!((status, said["minutes"].as_u64()), (StatusCode::OK, Some(240)), "{said}");
-        let (status, said) = status_and_body(focus(State(hub.clone()), Json(focus_on("t-s", None))).await).await;
-        assert_eq!((status, said["task"].as_str(), said["minutes"].as_u64()), (StatusCode::OK, Some("t-s"), Some(30)), "{said}");
-
-        let (status, said) = status_and_body(ask(State(hub.clone()), Json(ask_body("s", "¿Sigo?"))).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        assert_eq!(hub.read(|v| v.questions.values().next_back().and_then(|q| q.task.clone())).as_deref(), Some("t-s"), "the focus names its task");
-        assert_eq!(ledger(&hub_at_home_of(&hub)), ledger(&hub), "the log replays into the same ledger");
-    }
-
     fn ask_body(sid: &str, title: &str) -> AskBody {
         AskBody {
             caller: Caller { orchestrator_run: None, session_id: Some(sid.into()), pids: vec![], launched: false }, title: title.into(), detail: Some("Contexto".into()), options: vec![], links: vec![],
@@ -4350,7 +3227,7 @@ mod tests {
         db.execute_batch("DROP TRIGGER fail_answer_outbox").unwrap();
         assert_eq!(answer(State(hub.clone()), None, Path(1), Json(body())).await.status(), StatusCode::OK);
         assert_eq!(hub.read(|v| v.messages.values().filter(|m| m.answers_question == Some(1)).count()), 1);
-        let reopened = Arc::new(Hub::open(hub.config.clone(), false).unwrap());
+        let reopened = Arc::new(Hub::open(hub.config.clone()).unwrap());
         let (_, reply) = status_and_body(answer(State(reopened.clone()), None, Path(1), Json(body())).await).await;
         assert_eq!(reply["already"], true);
         assert_eq!(reopened.read(|v| v.messages.values().filter(|m| m.answers_question == Some(1)).count()), 1);
@@ -4423,7 +3300,7 @@ mod tests {
             assert_eq!(v.delivery_attempts[&attempt].state, alondra_core::delivery::State::Dispatching);
             assert!(v.messages.values().all(|m| m.handed_at.is_none()));
         });
-        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let reopened = Hub::open(hub.config.clone()).unwrap();
         assert_eq!(reopened.read(|v| v.delivery_attempts[&attempt].state), alondra_core::delivery::State::Uncertain);
         assert!(crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
         assert!(reopened.read(|v| v.messages.values().any(|m| m.answers_question.is_none() && m.text == "Use the staging environment")));
@@ -4476,7 +3353,7 @@ mod tests {
     async fn answer_durable_ack_keeps_followup_independent_across_restart() {
         let (hub, id, _, attempt) = committed_held_denial("answer-followup-ack").await;
         crate::delivery::finish(&hub, attempt, crate::delivery::Outcome::Handed).unwrap();
-        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let reopened = Hub::open(hub.config.clone()).unwrap();
         assert_eq!(reopened.read(|v| v.questions[&id].status), QuestionStatus::Delivered);
         let followup = crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().unwrap();
         reopened.read(|v| {
@@ -4486,7 +3363,7 @@ mod tests {
             assert_eq!(message.text, "Use staging instead");
         });
         crate::delivery::finish(&reopened, followup.id, crate::delivery::Outcome::Handed).unwrap();
-        let restarted = Hub::open(hub.config.clone(), false).unwrap();
+        let restarted = Hub::open(hub.config.clone()).unwrap();
         assert!(crate::delivery::claim(&restarted, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
     }
 
@@ -4504,12 +3381,12 @@ mod tests {
             // A late waiter cancellation cannot undo the user's recorded choice.
             crate::delivery::cancel_held_question(&hub, id, "late_waiter").unwrap();
             assert_eq!(hub.read(|v| v.delivery_attempts[&attempt].state), if retry { alondra_core::delivery::State::Retryable } else { alondra_core::delivery::State::Discarded });
-            let reopened = Hub::open(hub.config.clone(), false).unwrap();
+            let reopened = Hub::open(hub.config.clone()).unwrap();
             let next = crate::delivery::claim(&reopened, "s", alondra_core::delivery::Channel::HookStop).unwrap().unwrap();
             assert_eq!(next.message_ids.len(), if retry { 2 } else { 1 });
             assert_eq!(reopened.read(|v| next.message_ids.iter().filter(|mid| v.messages.get(*mid).is_some_and(|m| m.answers_question == Some(id))).count()), usize::from(retry));
             crate::delivery::finish(&reopened, next.id, crate::delivery::Outcome::Handed).unwrap();
-            let restarted = Hub::open(hub.config.clone(), false).unwrap();
+            let restarted = Hub::open(hub.config.clone()).unwrap();
             assert!(crate::delivery::claim(&restarted, "s", alondra_core::delivery::Channel::HookStop).unwrap().is_none());
         }
     }
@@ -4798,7 +3675,7 @@ mod tests {
 
     fn hub_at_home_of(hub: &Hub) -> Arc<Hub> {
         let config = alondra_core::config::Config::resolve(hub.home.clone(), &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
-        Arc::new(Hub::open(config, false).unwrap())
+        Arc::new(Hub::open(config).unwrap())
     }
 
     /// The overview left out when a task last changed, so a client showing its history could not
@@ -5101,7 +3978,6 @@ mod tests {
         assert_eq!(status, StatusCode::NOT_FOUND);
     }
 
-
     /// BlurCamera #150 (23 Sep): David asked about the PR with «request changes», and the card
     /// left his inbox until a push.
 
@@ -5188,7 +4064,6 @@ mod tests {
         }
     }
 
-
     /// alondra/retry-queue, 24 Sep: the iPhone kept a merge "pending" forever because alondrad
     /// answered gh's refusal with a 502, which clients read as "alondrad is down".
     #[tokio::test]
@@ -5217,7 +4092,6 @@ mod tests {
             }
         }
     }
-
 
     /// Q#116 "¿Arranco las capturas del iPhone Duo?" and, a minute later, Q#117 "Apple no exige
     /// capturas del iPhone Duo… ¿Las hago igual?" (ios27/rc-y-duo, 23 Sep): the second replaced the
@@ -5352,13 +4226,6 @@ mod tests {
         hub_with(tag, false)
     }
 
-    /// The headers of a hook from a session Alondra launched.
-    pub(super) fn launched() -> axum::http::HeaderMap {
-        let mut h = axum::http::HeaderMap::new();
-        h.insert(alondra_core::LAUNCHED_HEADER, "1".parse().unwrap());
-        h
-    }
-
     fn hub_with(tag: &str, sandbox: bool) -> Arc<Hub> {
         hub_on(tag, sandbox, FakeGithub::default())
     }
@@ -5367,7 +4234,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("alondra-http-{tag}-{}-{}", std::process::id(), now_millis()));
         let env = move |k: &str| (sandbox && k == "ALONDRA_SANDBOX").then(|| "1".to_string());
         let config = alondra_core::config::Config::resolve(home, &alondra_core::config::FileConfig::default(), env, || Some("Ana".into()));
-        Arc::new(Hub::open(config, false).unwrap().with_github(github))
+        Arc::new(Hub::open(config).unwrap().with_github(github))
     }
 
     /// GitHub as the tests see it: every PR exists but the `missing` ones.
@@ -5404,54 +4271,6 @@ mod tests {
         hub.read(|v| v.prs.values().map(|p| p.url.clone()).collect())
     }
 
-    async fn post_tool_use(hub: &Arc<Hub>, command: &str, stdout: &str) {
-        let p = json!({
-            "hook_event_name": "PostToolUse", "session_id": "s", "tool_name": "Bash",
-            "tool_input": {"command": command}, "tool_response": {"stdout": stdout, "stderr": "", "interrupted": false},
-        });
-        hook(State(hub.clone()), launched(), Json(p)).await;
-        for _ in 0..50 {
-            tokio::task::yield_now().await;
-        }
-    }
-
-    /// 24 Sep, seq 29139-29143: a node's grep for 'gh pr create' printed Alondra's own test code,
-    /// and a/b#7, #24 and #54, its fixture PRs, became cards in David's inbox.
-    #[tokio::test]
-    async fn only_a_pr_that_gh_pr_create_made_and_github_knows_gets_a_card_from_the_hook() {
-        const GREP: &str = "sed -n 680,715p crates/alondrad/src/http.rs; grep -rn 'fn pr_url\\|pull/\\|gh pr create' crates/";
-        let grep_out = format!(
-            "crates/alondrad/src/http.rs:3031:        hub.append(Event::PrOpened {{ url: \"{FIXTURE}\".into(), session_id: \"s\".into() }}).unwrap();\n\
-             crates/alondrad/src/http.rs:2533:        hub.append(Event::PrOpened {{ url: \"https://github.com/a/b/pull/54\".into(), session_id: \"s\".into() }}).unwrap();\n"
-        );
-        let cases: &[(&str, &str, &str, &[&str], &[&str])] = &[
-            ("a grep for gh pr create", GREP, &grep_out, &[], &[]),
-            ("a grep whose output ends in a lone PR URL", GREP, &format!("{FIXTURE}\n"), &[], &[]),
-            ("an echo", "echo gh pr create", "gh pr create\n", &[], &[]),
-            ("a PR made", "gh pr create --title x --body \"see https://github.com/a/b/pull/7\"", "https://github.com/o/r/pull/12\n", &["https://github.com/o/r/pull/12"], &["https://github.com/o/r/pull/12"]),
-            ("a PR made after cd", "cd x && gh pr create --fill", "https://github.com/o/r/pull/13\n", &["https://github.com/o/r/pull/13"], &["https://github.com/o/r/pull/13"]),
-            ("a PR GitHub does not know", "gh pr create --fill", &format!("{FIXTURE}\n"), &[FIXTURE], &[]),
-        ];
-        for &(what, command, stdout, asked, cards) in cases {
-            let github = FakeGithub { missing: vec![FIXTURE], ..Default::default() };
-            let hub = hub_on("hook-pr", false, github.clone());
-            post_tool_use(&hub, command, stdout).await;
-            assert_eq!(*github.asked.lock().unwrap(), asked, "{what}");
-            assert_eq!(card_urls(&hub), cards, "{what}");
-        }
-    }
-
-    #[tokio::test]
-    async fn github_is_not_asked_again_soon_about_a_pr_it_did_not_know() {
-        let github = FakeGithub { missing: vec![FIXTURE], ..Default::default() };
-        let hub = hub_on("hook-pr-cache", false, github.clone());
-        for _ in 0..3 {
-            post_tool_use(&hub, "gh pr create --fill", FIXTURE).await;
-        }
-        assert_eq!(github.asked.lock().unwrap().len(), 1);
-        assert!(card_urls(&hub).is_empty());
-    }
-
     /// Node s with its own task, and with t-2 too when `second`: what the orchestrator gave it later.
     fn node_with_tasks(tag: &str, second: bool) -> Arc<Hub> {
         let hub = started(tag, &["s"]);
@@ -5468,63 +4287,8 @@ mod tests {
         hub
     }
 
-    async fn main_thread_calls(hub: &Arc<Hub>, event: &str, tool: &str, input: Value) {
-        let p = json!({"hook_event_name": event, "session_id": "s", "tool_name": tool, "tool_use_id": "q", "tool_input": input});
-        hook(State(hub.clone()), launched(), Json(p)).await;
-    }
-
-    fn alondra_told(hub: &Hub) -> Vec<String> {
-        hub.read(|v| v.messages.values().filter(|m| m.session_id == "s" && m.from == MessageFrom::Alondra).map(|m| m.text.clone()).collect())
-    }
-
-    fn pr_task_of(hub: &Hub, id: u64) -> Option<String> {
-        hub.read(|v| v.pr_task_of(&v.prs[&id]).map(|t| t.id.clone()))
-    }
-
     fn task_state(hub: &Hub, id: &str) -> alondra_core::tasks::TaskState {
         hub.read(|v| v.board.tasks[id].state)
-    }
-
-    /// 25 Sep 00:01, events 45820-45839: the main thread of 7e661a50 had asked once about
-    /// t-44370, then opened #98 and #99 for its own review, and both went to t-44370.
-    #[tokio::test]
-    async fn a_pr_the_main_thread_opens_among_several_tasks_is_asked_about_not_guessed() {
-        use alondra_core::tasks::TaskState::{InReview, Running};
-        const ASK: &str = "mcp__plugin_alondra_alondra__ask";
-        const PR98: &str = "https://github.com/o/r/pull/98";
-        let hub = node_with_tasks("attribution", true);
-        main_thread_calls(&hub, "PreToolUse", ASK, json!({"task": "t-2"})).await;
-        let (status, said) = status_and_body(ask(State(hub.clone()), Json(AskBody { task: Some("t-2".into()), ..ask_body("s", "¿Rediseño el TUI así?") })).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        main_thread_calls(&hub, "PostToolUse", ASK, json!({"task": "t-2"})).await;
-        hub.append(Event::QuestionAnswered { id: 1, answer: answered("Sí", None) }).unwrap();
-
-        post_tool_use(&hub, "gh pr create --title 'Review fixes' --body 'What the review found'", &format!("{PR98}\n")).await;
-        assert_eq!(pr_task_of(&hub, 1), None, "the card opens with no task");
-        assert_eq!((task_state(&hub, "t-2"), task_state(&hub, "t-s")), (Running, Running));
-        let told = alondra_told(&hub);
-        assert_eq!(told.len(), 1, "{told:?}");
-        assert!(told[0].starts_with("[Alondra] PR #98: which task is it for?") && told[0].contains("- t-2: Otra") && told[0].contains("- t-s: "), "{}", told[0]);
-
-        let (status, said) = status_and_body(report(State(hub.clone()), Json(ReportBody { task: Some("t-s".into()), ..report_body("s", ReportKind::Notice, &[PR98]) })).await).await;
-        assert_eq!(status, StatusCode::OK, "{said}");
-        assert_eq!((pr_task_of(&hub, 1).as_deref(), task_state(&hub, "t-s"), task_state(&hub, "t-2")), (Some("t-s"), InReview, Running), "the node's report says which");
-    }
-
-    #[tokio::test]
-    async fn a_pr_goes_to_the_task_its_text_names_or_to_the_only_open_one_without_a_word() {
-        let cases: &[(&str, bool, &str, &str)] = &[
-            ("two tasks, the body names one", true, "gh pr create --title Fix --body \"Fixes.\n\nAlondra task: t-s\"", "t-s"),
-            ("two tasks, the branch names one", true, "gh pr create --head redesign/t-2-tui --fill", "t-2"),
-            ("one task, nothing named", false, "gh pr create --fill", "t-s"),
-        ];
-        for &(what, second, command, task) in cases {
-            let hub = node_with_tasks("pr-named", second);
-            post_tool_use(&hub, command, "https://github.com/o/r/pull/12\n").await;
-            assert_eq!(pr_task_of(&hub, 1).as_deref(), Some(task), "{what}");
-            assert_eq!(task_state(&hub, task), alondra_core::tasks::TaskState::InReview, "{what}");
-            assert!(alondra_told(&hub).is_empty(), "{what}: nothing to ask");
-        }
     }
 
     /// The repair for 25 Sep 00:01: #98 and #99 go back to the review's task, t-44370 goes back
@@ -5556,7 +4320,7 @@ mod tests {
         let (status, said) = status_and_body(move_pr(2, "t-s").await).await;
         assert_eq!((status, said["from"].as_str(), hub.read(|v| v.seq)), (StatusCode::OK, Some("t-s"), seq), "already there: nothing recorded");
 
-        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let reopened = Hub::open(hub.config.clone()).unwrap();
         assert_eq!(reopened.read(|v| v.board.clone()), hub.read(|v| v.board.clone()));
     }
 
@@ -5673,35 +4437,6 @@ mod tests {
             }
             assert_eq!(hub.read(|v| v.nodes.contains_key("orch")), !closed, "{case}");
         }
-    }
-
-    #[tokio::test]
-    /// lumo/permiso-camara and hive/servidor-colmena, 24 Sep: messages for interactive sessions sat
-    /// in the queue forever, because `wake` only types into background jobs.
-    async fn a_message_for_an_interactive_session_arrives_when_its_turn_ends() {
-        let hub = temp_hub("send");
-        hub.append(Event::Hook(HookEvent { session_id: "interactive".into(), event: "UserPromptSubmit".into(), ..Default::default() })).unwrap();
-        hub.append(Event::DaemonSeen(alondra_core::DaemonObservation { session_id: "job".into(), short_id: "job".into(), ..Default::default() })).unwrap();
-        let send = |key: &str| send_message(State(hub.clone()), Path(key.to_string()), Json(MessageBody { text: "go on".into(), from: None, attachments: vec![], task: None }));
-        let (status, body) = status_and_body(send("interactive").await).await;
-        assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["interactive"], true);
-        assert!(body["note"].as_str().unwrap().contains("when its current turn ends"), "{body}");
-        let (status, body) = status_and_body(send("job").await).await;
-        assert_eq!((status, body.get("interactive")), (StatusCode::OK, None));
-        assert_eq!(status_and_body(send("nobody").await).await.0, StatusCode::NOT_FOUND);
-
-        let stop = |sid: &str| hook(State(hub.clone()), launched(), Json(json!({"hook_event_name": "Stop", "session_id": sid})));
-        let (_, said) = status_and_body(stop("interactive").await).await;
-        let context = said["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_string();
-        assert_eq!(said["hookSpecificOutput"]["hookEventName"], "Stop", "{said}");
-        assert!(context.contains("From Ana:\ngo on"), "{said}");
-        assert_eq!(hub.read(|v| v.held_for_turn_end("interactive")), 0);
-        let (_, again) = status_and_body(stop("interactive").await).await;
-        assert!(again.get("hookSpecificOutput").is_none(), "handed once, not on every stop: {again}");
-        let (_, job) = status_and_body(stop("job").await).await;
-        assert!(job.get("hookSpecificOutput").is_none(), "wake types into background jobs: {job}");
-        assert_eq!(hub.read(|v| v.pending_messages("job").count()), 1);
     }
 
     fn composed_fixture(tag: &str) -> Arc<Hub> {
@@ -6427,13 +5162,12 @@ mod archive_tests {
         hub.read(|v| v.board.tasks.values().filter(|t| t.archived_at.is_some()).map(|t| t.id.clone()).collect())
     }
 
-
     #[tokio::test]
     async fn finished_and_archived_tasks_outlive_compaction_and_a_restart() {
         let hub = with_tasks("archive-compact");
         status_and_body(archive_tasks(State(hub.clone()), named(&["t-done"])).await).await;
         hub.compact(Duration::ZERO).unwrap();
-        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let reopened = Hub::open(hub.config.clone()).unwrap();
         let kept = reopened.read(|v| v.board.tasks.values().filter(|t| t.state.finished()).map(|t| (t.id.clone(), t.archived_at.is_some())).collect::<Vec<_>>());
         assert_eq!(kept, [("t-done".to_string(), true), ("t-gone".to_string(), false)], "archived within its days, and finished waiting to be archived");
         assert_eq!(archived(&reopened), ["t-done"]);
@@ -6442,173 +5176,9 @@ mod archive_tests {
 }
 
 #[cfg(test)]
-mod owned_session_tests {
-    use super::tests::{launched, status_and_body};
-    use super::*;
-    use alondra_core::DaemonObservation;
-
-    const EXTERNAL: &str = "eacfc103-4d1e-4b43-9d0a-cron00000001";
-    const NEW: &str = "4e5f6a7b-1111-4222-8333-944445555666";
-    const OWN: &str = "7e661a50-a308-4859-a2e1-003554431ff7";
-    const ORCHESTRATOR: &str = "0100014c-8803-469d-ba89-ae6fd660c420";
-
-    fn home(tag: &str) -> PathBuf {
-        std::env::temp_dir().join(format!("alondra-owned-{tag}-{}-{}", std::process::id(), now_millis()))
-    }
-
-    /// A hub that holds permissions, with Claude Code's home in `home/claude` where every session
-    /// the test names is a background job, as a cron's `claude --bg` is.
-    fn hub_at(home: &std::path::Path) -> Arc<Hub> {
-        for sid in [EXTERNAL, NEW, OWN, ORCHESTRATOR] {
-            let job = home.join("claude/jobs").join(&sid[..8]);
-            std::fs::create_dir_all(&job).unwrap();
-            std::fs::write(job.join("state.json"), json!({"sessionId": sid}).to_string()).unwrap();
-        }
-        let config = alondra_core::config::Config::resolve(home.to_path_buf(), &alondra_core::config::FileConfig::default(), |_| None, || Some("Ana".into()));
-        Arc::new(Hub::open(config, true).unwrap().with_claude_home(home.join("claude")))
-    }
-
-    async fn send(hub: &Arc<Hub>, headers: axum::http::HeaderMap, payload: Value) -> Value {
-        let answered = tokio::time::timeout(Duration::from_secs(2), hook(State(hub.clone()), headers, Json(payload))).await;
-        status_and_body(answered.expect("the hook held instead of answering at once")).await.1
-    }
-
-    fn caller(sid: &str, launched: bool) -> Caller {
-        Caller { orchestrator_run: None, session_id: Some(sid.into()), pids: vec![], launched }
-    }
-
-    fn question(sid: &str) -> AskBody {
-        AskBody {
-            caller: caller(sid, false),
-            title: "¿Mergeo?".into(),
-            detail: Some("Contexto".into()),
-            options: vec![],
-            links: vec![],
-            attachments: vec![],
-            blocking: true,
-            to_orchestrator: false,
-            steps: vec![],
-            related: None,
-            replaces: None, about_pr: None,
-            task: None,
-        }
-    }
-
-    #[tokio::test]
-    async fn a_session_alondra_did_not_launch_is_not_followed_and_its_hooks_do_nothing() {
-        let hub = hub_at(&home("external"));
-        let seq = hub.read(|v| v.seq);
-        for payload in [
-            json!({"session_id": EXTERNAL, "hook_event_name": "SessionStart", "cwd": "/Users/x/Projects/MealScale"}),
-            json!({"session_id": EXTERNAL, "hook_event_name": "PermissionRequest", "tool_name": "Bash", "tool_input": {"command": "gh pr create"}}),
-            json!({"session_id": EXTERNAL, "hook_event_name": "PreToolUse", "tool_name": "AskUserQuestion", "tool_input": {"questions": [{"question": "Ship it?"}]}}),
-            json!({"session_id": EXTERNAL, "hook_event_name": "UserPromptSubmit", "prompt": "weekly sweep"}),
-        ] {
-            assert_eq!(send(&hub, axum::http::HeaderMap::new(), payload).await, json!({}), "Claude Code's own menu shows");
-        }
-        assert_eq!(hub.holds_count(), 0, "nothing is held");
-        assert_eq!(hub.read(|v| v.seq), seq, "nothing is recorded");
-        assert!(hub.timeline(EXTERNAL, 10, None).unwrap().is_empty());
-        assert!(hub.read(|v| v.nodes.is_empty() && v.board.requests.is_empty()), "no node and no request in Fleet or Tasks");
-
-        let (status, said) = status_and_body(ask(State(hub.clone()), Json(question(EXTERNAL))).await).await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{said}");
-        assert!(said["error"].as_str().unwrap().contains("does not belong to Alondra"), "{said}");
-        let report_body = ReportBody {
-            caller: caller(EXTERNAL, false),
-            title: "Hecho".into(),
-            body: Some("Detalle".into()),
-            kind: Some(ReportKind::Final),
-            links: vec![],
-            attachments: vec![],
-            related: None,
-            to_orchestrator: false,
-            task: None,
-        };
-        assert_eq!(status_and_body(report(State(hub.clone()), Json(report_body)).await).await.0, StatusCode::FORBIDDEN);
-        assert_eq!(hub.read(|v| v.seq), seq, "the tools created nothing");
-    }
-
-    #[tokio::test]
-    async fn a_session_alondra_launched_is_followed_from_its_first_hook() {
-        let hub = hub_at(&home("marked"));
-        send(&hub, launched(), json!({"session_id": NEW, "hook_event_name": "SessionStart", "cwd": "/Users/x/Projects/app"})).await;
-        send(&hub, launched(), json!({"session_id": NEW, "hook_event_name": "UserPromptSubmit", "prompt": "Fix the menu"})).await;
-        let kinds: Vec<String> = hub
-            .timeline(NEW, 10, None)
-            .unwrap()
-            .into_iter()
-            .rev()
-            .map(|(_, _, body)| serde_json::from_str::<Value>(&body).unwrap()["type"].as_str().unwrap().to_string())
-            .collect();
-        assert_eq!(kinds, ["joined", "hook", "hook"], "it joins with its very first hook");
-        assert_eq!(hub.read(|v| v.nodes[NEW].last_prompt.clone()).as_deref(), Some("Fix the menu"));
-    }
-
-    #[tokio::test]
-    async fn the_hooks_a_launched_session_sends_before_its_launch_returns_are_kept() {
-        let hub = hub_at(&home("early"));
-        let under_way = hub.launching();
-        send(&hub, axum::http::HeaderMap::new(), json!({"session_id": NEW, "hook_event_name": "SessionStart"})).await;
-        send(&hub, axum::http::HeaderMap::new(), json!({"session_id": NEW, "hook_event_name": "UserPromptSubmit", "prompt": "Fix the menu"})).await;
-        assert!(hub.read(|v| !v.nodes.contains_key(NEW)), "not Alondra's until its launch says so");
-        hub.append(Event::Launched { name: "app/fix".into(), request_id: None, auto_merge: false, task: None, title: None, session: Some(NEW[..8].into()) }).unwrap();
-        hub.admit_launched(&NEW[..8]).unwrap();
-        drop(under_way);
-        assert_eq!(hub.read(|v| v.nodes[NEW].last_prompt.clone()).as_deref(), Some("Fix the menu"), "its first prompt is not lost");
-        send(&hub, axum::http::HeaderMap::new(), json!({"session_id": NEW, "hook_event_name": "Stop"})).await;
-        assert!(hub.read(|v| v.nodes[NEW].last_stop_at.is_some()));
-    }
-
-    #[tokio::test]
-    async fn the_orchestrator_and_the_nodes_alondra_launched_before_the_mark_stay_and_the_rest_leave() {
-        let home = home("upgrade");
-        std::fs::create_dir_all(&home).unwrap();
-        {
-            let mut store = crate::store::Store::open(&home.join("alondra.db")).unwrap();
-            let seen = |sid: &str, name: &str| Event::DaemonSeen(DaemonObservation { session_id: sid.into(), short_id: sid[..8].into(), name: Some(name.into()), pid: Some(1), ..Default::default() });
-            let hook = |sid: &str, e: &str| Event::Hook(HookEvent { session_id: sid.into(), event: e.into(), ..Default::default() });
-            let options = alondra_core::options::Resolved { project: None, auto_merge: false, effort: "auto".into(), flags: Default::default(), picked: vec![], issue: None };
-            let start = now_millis() - 60_000;
-            let before = [
-                Event::RequestSent { request_id: "r-1790263152254".into(), options, text: Some("¿Estados por tarea?".into()), attachments: vec![] },
-                Event::Launched { name: "alondra/estados-por-tarea".into(), request_id: Some("r-1790263152254".into()), auto_merge: false, task: None, title: None, session: None },
-                seen(OWN, "alondra/estados-por-tarea"),
-                hook(OWN, "SessionStart"),
-                Event::MarkedOrchestrator { session_id: ORCHESTRATOR.into() },
-                hook(ORCHESTRATOR, "SessionStart"),
-                seen(EXTERNAL, "MealScale · mejora semanal"),
-                hook(EXTERNAL, "UserPromptSubmit"),
-            ];
-            for (i, e) in before.iter().enumerate() {
-                store.append(start + i as i64 * 1000, e).unwrap();
-            }
-        }
-        let hub = hub_at(&home);
-        let nodes = hub.read(|view| {
-            let mut nodes: Vec<_> = view.nodes.values().collect();
-            nodes.sort_by_key(|node| fleet_order_key(node));
-            nodes.into_iter().map(|node| node.session_id.clone()).collect::<Vec<_>>()
-        });
-        assert_eq!(nodes, [ORCHESTRATOR, OWN], "the cron leaves Fleet");
-        let requests = hub.read(|view| view.board.requests.keys().cloned().collect::<Vec<_>>());
-        assert_eq!(requests, ["r-1790263152254"], "the cron's single-node request leaves Tasks");
-
-        for sid in [OWN, ORCHESTRATOR, EXTERNAL] {
-            let payload = json!({"session_id": sid, "hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_use_id": "u1", "tool_input": {"command": "cargo test"}});
-            send(&hub, axum::http::HeaderMap::new(), payload).await;
-        }
-        assert!(hub.read(|v| v.nodes[OWN].tool.is_some() && v.nodes[ORCHESTRATOR].tool.is_some()), "running Alondra sessions need no mark");
-        assert!(hub.read(|v| !v.nodes.contains_key(EXTERNAL)));
-        let (status, said) = status_and_body(ask(State(hub.clone()), Json(question(OWN))).await).await;
-        assert_eq!(status, StatusCode::OK, "its tools still reach David: {said}");
-    }
-}
-
-#[cfg(test)]
 mod managed_orchestrator_tests {
     use super::*;
-    use super::tests::{temp_hub, launched, status_and_body};
+    use super::tests::temp_hub;
     use alondra_core::orchestrator::{NODE_ID, Transition, RunKind, Outcome};
 
     fn enabled(tag: &str) -> Arc<Hub> {
@@ -6622,31 +5192,6 @@ mod managed_orchestrator_tests {
         hub.append(Event::Orchestrator(Transition::Started { run_id: "run-1".into(), kind: RunKind::Work, message_ids: ids })).unwrap();
         hub.append(Event::Orchestrator(Transition::SessionBound { run_id: "run-1".into(), session_id: "claude-1".into() })).unwrap();
     }
-        #[tokio::test]
-    async fn managed_hooks_bind_actual_session_to_logical_identity_and_fence_old_runs() {
-        let hub = enabled("managed-hooks"); start(&hub);
-        let payload = |run: &str, session: &str, event: &str| json!({"session_id":session, "_alondra_run":run, "hook_event_name":event, "cwd":"/private/internal/path"});
-        assert_eq!(hook_with_ack(State(hub.clone()), launched(), Json(payload("run-1", "claude-1", "SessionStart")), false).await.status(), StatusCode::OK);
-        assert!(hub.read(|v| v.nodes[NODE_ID].cwd.is_none() && !v.nodes.contains_key("claude-1")));
-        let (status, stop) = status_and_body(hook_with_ack(State(hub.clone()), launched(), Json(payload("run-1", "claude-1", "Stop")), true).await).await;
-        assert_eq!(status, StatusCode::OK); assert!(stop.get("hookSpecificOutput").is_none());
-        assert_eq!(hub.read(|v| v.pending_messages(NODE_ID).count()), 1, "Stop must not consume the executor's claim");
-        let seq = hub.read(|v| v.seq);
-        for (run, session) in [("old", "claude-1"), ("run-1", "wrong")] {
-            assert_eq!(hook_with_ack(State(hub.clone()), launched(), Json(payload(run, session, "PreToolUse")), false).await.status(), StatusCode::CONFLICT);
-        }
-        assert_eq!(hub.read(|v| v.seq), seq);
-        let c = Caller { session_id: Some(NODE_ID.into()), orchestrator_run: Some("run-1".into()), pids: vec![], launched: true };
-        assert!(outside_caller(&hub, &c).is_none());
-        cancel_orchestrator(State(hub.clone()), Json(RetryOrchestratorBody { run_id: "run-1".into() })).await;
-        assert!(outside_caller(&hub, &c).is_some(), "cancel immediately revokes authority");
-        hub.append(Event::Orchestrator(Transition::Finished { run_id:"run-1".into(), outcome:Outcome::Ambiguous, context:None, error:Some("cancelled".into()), retry_at:None, compact_pending:false })).unwrap();
-        let payload = hub.read(public_orchestrator);
-        assert_eq!(payload["phase"], "failed");
-        assert_eq!(payload["cancel_requested"], false, "a stopped process cannot keep displaying stopping");
-        assert_eq!(payload["can_retry"], true);
-
-    }
     #[tokio::test]
     async fn service_retry_receipt_and_transition_commit_once_and_replay_after_restart() {
         let hub = enabled("managed-retry"); start(&hub);
@@ -6655,7 +5200,7 @@ mod managed_orchestrator_tests {
         let first = atomic_local_request(&hub, "phone", "retry-command", &[7;32], "/v1/orchestrator/retry", Some(&body), ||Ok(())).await.unwrap();
         assert_eq!(first["status"], 200);
         let seq = hub.read(|v| v.seq);
-        let reopened = Hub::open(hub.config.clone(), false).unwrap();
+        let reopened = Hub::open(hub.config.clone()).unwrap();
         let again = atomic_local_request(&reopened, "phone", "retry-command", &[7;32], "/v1/orchestrator/retry", Some(&body), ||Ok(())).await.unwrap();
         assert_eq!(again, first); assert_eq!(reopened.read(|v| v.seq), seq);
         assert_eq!(retry_orchestrator(State(hub), Json(RetryOrchestratorBody {run_id:"run-1".into()})).await.status(), StatusCode::CONFLICT);

@@ -648,7 +648,7 @@ mod tests {
 
         let home = std::env::temp_dir().join(format!("schedule-e2e-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
-        let hub = Arc::new(Hub::open(config, false).unwrap());
+        let hub = Arc::new(Hub::open(config).unwrap());
         fixture_projects(&hub);
         #[cfg(unix)] {
             use std::os::unix::fs::PermissionsExt;
@@ -696,7 +696,7 @@ mod tests {
 
         let home = std::env::temp_dir().join(format!("schedule-failure-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
-        let hub = Arc::new(Hub::open(config.clone(), false).unwrap());
+        let hub = Arc::new(Hub::open(config.clone()).unwrap());
         fixture_projects(&hub);
         let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 9, minute: 0,
@@ -711,7 +711,7 @@ mod tests {
         assert_eq!(after.last_error.as_deref(), Some("launcher unavailable"));
         assert!(hub.read(|v| v.messages.is_empty()));
         drop(hub);
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         assert!(crate::orchestrate::start_due(&hub, &RefusingLauncher, &crate::prs::GhCli, &mut Default::default()).await.is_empty());
         std::fs::remove_dir_all(home).unwrap();
     }
@@ -720,7 +720,7 @@ mod tests {
     async fn a_due_run_creates_only_one_task_without_an_orchestrator() {
         let home = std::env::temp_dir().join(format!("schedule-retry-{}", crate::auth::random_hex(6)));
         let config = alondra_core::config::Config::resolve(home.clone(), &Default::default(), |_| None, || Some("Tester".into()));
-        let hub = Arc::new(Hub::open(config, false).unwrap());
+        let hub = Arc::new(Hub::open(config).unwrap());
         fixture_projects(&hub);
         let draft = Draft { title: "Review".into(), text: "Review the project".into(), project: None, disallowed_tools: vec![],
             options: Default::default(), frequency: Frequency::Daily, hour: 9, minute: 0,

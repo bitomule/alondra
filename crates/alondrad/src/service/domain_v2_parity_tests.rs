@@ -130,7 +130,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         |_| None,
         || Some("Fixture".into()),
     );
-    let hub = Arc::new(crate::hub::Hub::open(config, false).unwrap());
+    let hub = Arc::new(crate::hub::Hub::open(config).unwrap());
     execute(
         &hub,
         Actor::System,

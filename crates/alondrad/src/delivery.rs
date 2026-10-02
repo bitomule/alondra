@@ -154,25 +154,6 @@ pub fn claim(hub: &Hub, sid: &str, channel: Channel) -> Result<Option<Attempt>> 
     }))
 }
 
-/// Menu selection and durable claim share one writer transaction across all request IDs.
-pub fn claim_menu(hub: &Hub, question: u64, answer: alondra_core::Answer) -> Result<Option<Attempt>> {
-    let rows = hub.append_all(|v| {
-        let Some(q) = v.questions.get(&question) else { return Err(()); };
-        if !q.status.is_open() || !crate::menus::is_menu_card(q) || v.delivery_blocked(&q.session_id)
-            || !q.options.iter().any(|o| Some(&o.label) == answer.option.as_ref()) {
-            return Err(());
-        }
-        let Some(node) = v.nodes.get(&q.session_id) else { return Err(()); };
-        if !node.in_daemon || node.is_orchestrator { return Err(()); }
-        let mut attempt = new_attempt(v.seq + 1, &q.session_id, Channel::MenuDecision, vec![]);
-        attempt.question_id = Some(question);
-        Ok(vec![Event::QuestionAnswered { id: question, answer }, Event::DeliveryAttemptRecorded(attempt)])
-    })?;
-    Ok(rows.ok().and_then(|rows| rows.into_iter().find_map(|(_,event)| match event {
-        Event::DeliveryAttemptRecorded(a) => Some(a), _ => None,
-    })))
-}
-
 pub enum Outcome {
     Handed,
     NotStarted(&'static str),
@@ -454,7 +435,7 @@ mod tests {
             |_| None,
             || Some("Test".into()),
         );
-        let hub = Arc::new(Hub::open(config, false).unwrap());
+        let hub = Arc::new(Hub::open(config).unwrap());
         hub.append(Event::DaemonSeen(alondra_core::DaemonObservation {
             session_id: "s".into(),
             short_id: "s".into(),
@@ -478,81 +459,8 @@ mod tests {
         }
         hub
     }
-    fn menu_fixture() -> Arc<Hub> {
-        let hub = fixture();
-        let question = serde_json::from_value::<alondra_core::Question>(json!({
-            "id":9,"session_id":"s","node_name":null,"title":"Permission","detail":"Expected operation",
-            "options":[{"label":"Accept"},{"label":"Decline"}],"blocking":true,
-            "origin":"ask","tool_use_id":"menu:permission","status":"open","asked_at":1
-        })).unwrap();
-        hub.append(Event::QuestionAsked(question)).unwrap();
-        hub
-    }
-    fn menu_answer(device: &str) -> alondra_core::Answer {
-        alondra_core::Answer { text:"Accept".into(), option:Some("Accept".into()), by:None, device:Some(device.into()), at:1 }
-    }
-    #[test]
-    fn menu_claim_failure_rolls_back_answer_before_any_external_effect() {
-        let hub=menu_fixture();
-        let db=rusqlite::Connection::open(hub.home.join("alondra.db")).unwrap();
-        db.execute_batch("CREATE TRIGGER reject_menu BEFORE INSERT ON event_log WHEN NEW.body LIKE '%menu_decision%' BEGIN SELECT RAISE(ABORT,'injected menu intent failure'); END;").unwrap();
-        assert!(claim_menu(&hub,9,menu_answer("phone-a")).is_err());
-        assert!(hub.read(|v| v.questions[&9].status.is_open() && v.delivery_attempts.is_empty()));
-        db.execute_batch("DROP TRIGGER reject_menu;").unwrap();
-        assert!(claim_menu(&hub,9,menu_answer("phone-b")).unwrap().is_some());
-    }
-    #[test]
-    fn menu_concurrent_distinct_clients_have_one_durable_winner() {
-        let hub=menu_fixture();
-        let barrier=Arc::new(std::sync::Barrier::new(3));
-        let threads=(0..2).map(|i| { let hub=hub.clone();let barrier=barrier.clone();
-            std::thread::spawn(move || {barrier.wait();claim_menu(&hub,9,menu_answer(&format!("client-{i}"))).unwrap().is_some()})
-        }).collect::<Vec<_>>();
-        barrier.wait();
-        assert_eq!(threads.into_iter().map(|t|t.join().unwrap() as usize).sum::<usize>(),1);
-        assert_eq!(hub.read(|v| v.delivery_attempts.values().filter(|a| a.question_id==Some(9)).count()),1);
-    }
-    #[test]
-    fn menu_restart_retains_uncertainty_and_explicit_retry_never_queues_text() {
-        let hub=menu_fixture();let config=hub.config.clone();
-        let attempt=claim_menu(&hub,9,menu_answer("first")).unwrap().unwrap();
-        // A key may have reached Claude, but no completion was committed.
-        drop(hub);let hub=Arc::new(Hub::open(config,false).unwrap());
-        let current=hub.read(|v|v.delivery_attempts[&attempt.id].clone());
-        assert_eq!(current.state,State::Uncertain);
-        assert!(claim_menu(&hub,9,menu_answer("new-request-id")).unwrap().is_none());
-        let before=hub.read(|v|v.messages.len());
-        resolve(&hub,None,attempt.id,true,decision(current.version)).unwrap();
-        assert!(hub.read(|v|v.questions[&9].status.is_open()));
-        assert_eq!(hub.read(|v|v.messages.len()),before);
-        let next=claim_menu(&hub,9,menu_answer("explicit-retry")).unwrap().unwrap();
-        finish(&hub,next.id,Outcome::Uncertain("write_unknown")).unwrap();
-        let version=hub.read(|v|v.delivery_attempts[&next.id].version);
-        resolve(&hub,None,next.id,false,decision(version)).unwrap();
-        assert!(claim_menu(&hub,9,menu_answer("after-discard")).unwrap().is_none());
-    }
-    #[test]
-    fn menu_safe_failure_reopens_but_cancellation_is_not_undone() {
-        let hub=menu_fixture();
-        let first=claim_menu(&hub,9,menu_answer("first")).unwrap().unwrap();
-        finish(&hub,first.id,Outcome::NotStarted("menu_changed")).unwrap();
-        assert!(hub.read(|v|v.questions[&9].status.is_open()));
-        let second=claim_menu(&hub,9,menu_answer("retry")).unwrap().unwrap();
-        hub.append(Event::QuestionClosed {id:9,status:alondra_core::QuestionStatus::Withdrawn,note:None}).unwrap();
-        finish(&hub,second.id,Outcome::NotStarted("cancelled")).unwrap();
-        assert_eq!(hub.read(|v|v.questions[&9].status),alondra_core::QuestionStatus::Withdrawn);
-        assert_eq!(hub.read(|v|v.delivery_attempts[&second.id].state),State::Discarded);
-        assert!(claim_menu(&hub,9,menu_answer("new")).unwrap().is_none());
-    }
-    #[test]
-    fn menu_retention_keeps_uncertain_question_without_a_message() {
-        let hub=menu_fixture();let attempt=claim_menu(&hub,9,menu_answer("first")).unwrap().unwrap();
-        finish(&hub,attempt.id,Outcome::Uncertain("write_unknown")).unwrap();
-        hub.append(Event::Pruned {before:now_millis()+1}).unwrap();
-        assert!(hub.read(|v|v.questions.contains_key(&9) && v.delivery_attempts.contains_key(&attempt.id)));
-    }
     fn reopen(hub: &Hub) -> Arc<Hub> {
-        Arc::new(Hub::open(hub.config.clone(), false).unwrap())
+        Arc::new(Hub::open(hub.config.clone()).unwrap())
     }
     fn decision(version: u64) -> Resolution {
         Resolution {
@@ -957,7 +865,7 @@ mod tests {
             |_| None,
             || Some("Test".into()),
         );
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         assert_eq!(hub.read(|v| v.delivery_attempts.len()), 2);
         assert!(hub.read(|v| {
             v.delivery_attempts

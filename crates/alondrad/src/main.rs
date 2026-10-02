@@ -36,7 +36,6 @@ mod keeper;
 mod machine;
 mod managed_orchestrator;
 mod markdown;
-mod menus;
 mod notifier;
 mod options;
 mod orchestrate;

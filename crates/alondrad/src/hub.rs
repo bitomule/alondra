@@ -11,11 +11,6 @@ use tokio::sync::{oneshot, watch};
 
 use crate::store::Store;
 
-/// While a launch is under way, the hooks of this many unknown sessions are held, this many each,
-/// in case the launch turns out to be theirs.
-const HELD_SESSIONS: usize = 32;
-const HELD_HOOKS: usize = 20;
-
 /// Hooks of sessions Alondra does not follow, held while launches are under way.
 #[derive(Default)]
 struct Unclaimed {
@@ -55,10 +50,7 @@ pub struct Hub {
     pub options: Mutex<Option<alondra_core::options::OptionsFile>>,
     pub issues: tokio::sync::Mutex<Option<crate::issues::IssueList>>,
     pub home: PathBuf,
-    /// Claude Code's home, where it keeps its background sessions.
-    pub claude_home: PathBuf,
     pub config: Config,
-    pub hold_enabled: bool,
     pub pr_lookup: crate::prs::Lookup,
     /// Held while a task is being started, so it is never started twice.
     pub starts: tokio::sync::Mutex<()>,
@@ -71,7 +63,7 @@ pub struct Hub {
 }
 
 impl Hub {
-    pub fn open(config: Config, hold_enabled: bool) -> Result<Self> {
+    pub fn open(config: Config) -> Result<Self> {
         let home = config.home.clone();
         std::fs::create_dir_all(home.join("files"))?;
         #[cfg(unix)] {
@@ -142,9 +134,7 @@ impl Hub {
             options: Mutex::new(None),
             issues: tokio::sync::Mutex::new(None),
             home,
-            claude_home: crate::watcher::claude_home(),
             config,
-            hold_enabled,
             pr_lookup: crate::prs::Lookup::new(crate::prs::GhCli),
             starts: tokio::sync::Mutex::new(()),
             orchestrator_commands: tokio::sync::RwLock::new(()),
@@ -157,11 +147,6 @@ impl Hub {
     #[cfg(test)]
     pub fn with_github(self, gh: impl crate::prs::FindsPrs + 'static) -> Self {
         Hub { pr_lookup: crate::prs::Lookup::new(gh), ..self }
-    }
-
-    #[cfg(test)]
-    pub fn with_claude_home(self, claude_home: PathBuf) -> Self {
-        Hub { claude_home, ..self }
     }
 
     /// Records an event, and around it the task events it takes: the task a session's first card
@@ -298,19 +283,6 @@ impl Hub {
         Launching(self)
     }
 
-    /// Holds a hook of a session Alondra does not follow while a launch is under way: its short
-    /// id is known only once `claude --bg` returns, and the session may already be talking.
-    pub fn hold_unclaimed(&self, h: HookEvent) {
-        let mut u = self.unclaimed.lock().expect("unclaimed lock poisoned");
-        if u.launches == 0 || (u.hooks.len() >= HELD_SESSIONS && !u.hooks.contains_key(&h.session_id)) {
-            return;
-        }
-        let held = u.hooks.entry(h.session_id.clone()).or_default();
-        if held.len() < HELD_HOOKS {
-            held.push(h);
-        }
-    }
-
     /// A launch printed this short id: the session it names joins if it already spoke.
     pub fn admit_launched(&self, short: &str) -> Result<()> {
         let waiting: Vec<String> = self.unclaimed.lock().expect("unclaimed lock poisoned").hooks.keys().filter(|s| s.starts_with(short)).cloned().collect();
@@ -376,10 +348,6 @@ impl Hub {
 
     pub fn read<T>(&self, f: impl FnOnce(&View) -> T) -> T {
         f(&self.view.read().expect("view lock poisoned"))
-    }
-
-    pub fn timeline(&self, session: &str, limit: usize, before: Option<u64>) -> Result<Vec<(u64, i64, String)>> {
-        self.writer.lock().expect("writer lock poisoned").session_timeline(session, limit, before)
     }
 
     /// A machine sample, with the subscription's usage read with it. Clients hear of it only when
@@ -465,10 +433,6 @@ impl Hub {
         self.holds.lock().expect("holds lock poisoned").remove(&question);
     }
 
-    pub fn holds_count(&self) -> usize {
-        self.holds.lock().expect("holds lock poisoned").len()
-    }
-
 }
 
 async fn wait_past(counter: &watch::Sender<u64>, after: u64, wait: Duration) -> u64 {
@@ -551,7 +515,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("alondra-hub-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let config = Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
-        Arc::new(Hub::open(config, false).unwrap())
+        Arc::new(Hub::open(config).unwrap())
     }
 
     fn prompt(session: &str) -> Event {
@@ -572,7 +536,7 @@ mod tests {
         assert!(blocked(&hub));
         let config = hub.config.clone();
         drop(hub);
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         assert!(!blocked(&hub));
         assert!(hub.read(|v| v.questions.values().all(|q| q.status == alondra_core::QuestionStatus::Orphaned)));
     }
@@ -599,7 +563,7 @@ mod tests {
             |_| Ok(vec![prompt("local-command")]),
             |v, _| serde_json::json!({"status":200,"body":{"seq":v.seq}})).unwrap();
         let committed = hub.read(Clone::clone);
-        let restarted = Hub::open(hub.config.clone(), false).unwrap();
+        let restarted = Hub::open(hub.config.clone()).unwrap();
         let recovered = restarted.local_command(Some(("client-a", "operation-1", &[1u8;32])),
             |_| panic!("recovery must not rebuild the command"), |_,_| panic!("recovery must not recalculate result")).unwrap();
         assert_eq!(recovered, result);
@@ -621,7 +585,7 @@ mod tests {
         assert!(hub.local_command(Some(("client-a", "operation-1", &[1u8;32])),
             |_| Ok(vec![prompt("rolled-back")]), |_,_| serde_json::json!({"status":200})).is_err());
         assert_eq!(hub.read(Clone::clone), before);
-        assert_eq!(Hub::open(hub.config.clone(), false).unwrap().read(Clone::clone), before);
+        assert_eq!(Hub::open(hub.config.clone()).unwrap().read(Clone::clone), before);
         db.execute_batch("DROP TRIGGER fail_result;").unwrap();
         hub.local_command(Some(("client-a", "operation-1", &[1u8;32])),
             |_| Ok(vec![prompt("committed")]), |_,_| serde_json::json!({"status":200})).unwrap();
@@ -682,7 +646,7 @@ mod tests {
     fn replay_a_copy_of_the_real_database_passes_integrity() {
         let home = std::path::PathBuf::from(std::env::var("ALONDRA_REPLAY_HOME").unwrap());
         let config = Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
-        let hub = Hub::open(config, false).unwrap();
+        let hub = Hub::open(config).unwrap();
         assert!(hub.read(|v| v.integrity_issues().is_empty()));
     }
 

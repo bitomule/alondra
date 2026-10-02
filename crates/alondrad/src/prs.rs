@@ -619,7 +619,7 @@ mod tests {
         let home = std::env::temp_dir().join(format!("alondra-train-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&home);
         let config = alondra_core::config::Config::resolve(home, &Default::default(), |_| None, || Some("David".into()));
-        Hub::open(config, false).unwrap()
+        Hub::open(config).unwrap()
     }
 
     #[tokio::test]
