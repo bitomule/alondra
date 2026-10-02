@@ -21,6 +21,9 @@ use std::{
 
 const APNS_MAX_BYTES: usize = 4096;
 const APNS_TIMEOUT: Duration = Duration::from_secs(5);
+/// Apple: refresh the provider token no more than once every 20 minutes and no less than
+/// once every 60; a newer one sooner is rejected with 429 TooManyProviderTokenUpdates.
+const PROVIDER_TOKEN_LIFETIME_SECS: u64 = 40 * 60;
 
 #[derive(Clone, Deserialize)]
 pub struct ApnsConfig {
@@ -37,6 +40,7 @@ pub struct Apns {
     topic: String,
     private_key: EcdsaKeyPair,
     client: reqwest::Client,
+    provider_token: std::sync::Mutex<Option<(u64, String)>>,
     #[cfg(test)]
     test_endpoint: Option<String>,
 }
@@ -109,6 +113,7 @@ impl Apns {
             topic: config.topic,
             private_key,
             client,
+            provider_token: Default::default(),
             #[cfg(test)]
             test_endpoint: None,
         })
@@ -127,12 +132,28 @@ impl Apns {
             topic: "com.bitomule.alondra".into(),
             private_key,
             client: Self::http_client().unwrap(),
+            provider_token: Default::default(),
             test_endpoint: Some(endpoint),
         }
     }
 
     fn bearer(&self) -> Result<String> {
-        let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs();
+        self.bearer_at(SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs())
+    }
+
+    fn bearer_at(&self, now: u64) -> Result<String> {
+        let mut cached = self.provider_token.lock().unwrap();
+        if let Some((issued, token)) = cached.as_ref()
+            && now.saturating_sub(*issued) < PROVIDER_TOKEN_LIFETIME_SECS
+        {
+            return Ok(token.clone());
+        }
+        let token = self.sign_provider_token(now)?;
+        *cached = Some((now, token.clone()));
+        Ok(token)
+    }
+
+    fn sign_provider_token(&self, now: u64) -> Result<String> {
         let header = URL_SAFE_NO_PAD.encode(serde_json::to_vec(
             &json!({"alg":"ES256","kid":self.key_id}),
         )?);
@@ -253,6 +274,17 @@ impl std::error::Error for ApnsRejection {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn provider_token_is_reused_until_it_ages() {
+        let apns = Apns::test("http://127.0.0.1:1".into());
+        let first = apns.bearer_at(1_000).unwrap();
+        assert_eq!(apns.bearer_at(1_001).unwrap(), first, "a new token per push gets 429 TooManyProviderTokenUpdates");
+        assert_eq!(apns.bearer_at(1_000 + 39 * 60).unwrap(), first);
+        let refreshed = apns.bearer_at(1_000 + 40 * 60).unwrap();
+        assert_ne!(refreshed, first, "APNs rejects a token older than an hour");
+        assert_eq!(apns.bearer_at(1_000 + 41 * 60).unwrap(), refreshed);
+    }
 
     #[test]
     fn apns_payload_matches_the_cross_language_fixture() {
