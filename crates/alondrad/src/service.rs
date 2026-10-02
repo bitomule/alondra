@@ -755,9 +755,11 @@ impl Service {
             }
             // Record one attempt before any network write. A relay-side revocation must
             // survive retries and restarts; a new approval needs a new device ID.
+            let (owned, key) = (id.clone(), device.signing.to_sec1_bytes());
             match self
                 .journal
-                .reserve_enrollment(id, &device.signing.to_sec1_bytes())?
+                .off_runtime(move |journal| journal.reserve_enrollment(&owned, &key))
+                .await?
             {
                 EnrollmentDecision::New => {}
                 EnrollmentDecision::Pending => {
@@ -774,10 +776,15 @@ impl Service {
             self.signed(Method::POST, "/v1/devices", body, epoch)
                 .await?
                 .error_for_status()?;
+            let owned = id.clone();
             if self.auth.approved_key_matches(id, &device.signing) {
-                self.journal.activate_enrollment(id)?;
+                self.journal
+                    .off_runtime(move |journal| journal.activate_enrollment(&owned))
+                    .await?;
             } else {
-                self.journal.revoke_enrollment(id)?;
+                self.journal
+                    .off_runtime(move |journal| journal.revoke_enrollment(&owned))
+                    .await?;
                 let path = format!("/v1/devices/{id}");
                 self.signed(Method::DELETE, &path, Vec::new(), epoch)
                     .await?
@@ -799,7 +806,10 @@ impl Service {
             if approved && state == "active" {
                 continue;
             }
-            self.journal.revoke_enrollment(&id)?;
+            let owned = id.clone();
+            self.journal
+                .off_runtime(move |journal| journal.revoke_enrollment(&owned))
+                .await?;
             if synced.contains(&id) {
                 continue;
             }
@@ -1965,10 +1975,20 @@ enum EnrollmentDecision {
     Active,
     Revoked,
 }
+#[derive(Clone)]
 struct Journal {
     path: PathBuf,
 }
 impl Journal {
+    /// Exclusive approval leases wait for shared leases that other tasks hold
+    /// across relay awaits, so they must never block a runtime worker.
+    async fn off_runtime<T: Send + 'static>(
+        &self,
+        operation: impl FnOnce(&Journal) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let journal = self.clone();
+        tokio::task::spawn_blocking(move || operation(&journal)).await?
+    }
     fn open(path: PathBuf) -> Result<Self> {
         // Resolve only the parent (macOS temporary roots may themselves be
         // aliases). Never canonicalize the final filename: that would erase
@@ -5855,6 +5875,98 @@ agreement_key = "{}"
     async fn close_external_success_before_node_removed_recovers_without_replay() {
         external_cut_recovery(false, true).await;
         external_cut_recovery(false, false).await;
+    }
+
+    #[test]
+    fn revocation_waits_for_in_flight_delivery_without_stalling_the_runtime() {
+        let home = std::env::temp_dir().join(format!(
+            "alondra-revoke-during-delivery-{}-{}",
+            std::process::id(),
+            now_ms()
+        ));
+        std::fs::create_dir_all(&home).unwrap();
+        let (done_tx, done_rx) = std::sync::mpsc::channel();
+        let scenario_home = home.clone();
+        std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap();
+            let outcome = runtime.block_on(async move {
+                let deletions = Arc::new(AtomicUsize::new(0));
+                let counted = deletions.clone();
+                let relay = axum::Router::new().route(
+                    "/v1/devices/{id}",
+                    delete(move || {
+                        let counted = counted.clone();
+                        async move {
+                            counted.fetch_add(1, Ordering::SeqCst);
+                            StatusCode::NO_CONTENT
+                        }
+                    }),
+                );
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let port = listener.local_addr().unwrap().port();
+                tokio::spawn(axum::serve(listener, relay).into_future());
+                let service = Service {
+                    relay: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+                    client: Client::new(),
+                    mac_id: "mac-1".into(),
+                    owner_sub: "owner".into(),
+                    signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
+                    agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
+                    devices: HashMap::new().into(),
+                    resync: AtomicBool::new(false),
+                    wake: tokio::sync::Notify::new(),
+                    home: scenario_home.clone(),
+                    transfers: Arc::default(),
+                    inflight: Arc::default(),
+                    hub: None,
+                    domain: None,
+                    routes: None,
+                    auth: Arc::new(Auth::open(&scenario_home).unwrap()),
+                    journal: Journal::open(scenario_home.join("service-receipts.sqlite")).unwrap(),
+                    local_port: 0,
+                };
+                service.journal.reserve_enrollment("phone-gone", &[1u8; 33]).unwrap();
+                service.journal.activate_enrollment("phone-gone").unwrap();
+                let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+                let delivered = Arc::new(AtomicBool::new(false));
+                let delivery_flag = delivered.clone();
+                let delivery_home = scenario_home.clone();
+                let delivery = tokio::spawn(async move {
+                    approval_bound_delivery(
+                        &delivery_home,
+                        || Ok(()),
+                        || async move {
+                            entered_tx.send(()).unwrap();
+                            tokio::time::sleep(Duration::from_millis(200)).await;
+                            delivery_flag.store(true, Ordering::SeqCst);
+                            Ok(())
+                        },
+                    )
+                    .await
+                });
+                entered_rx.await.unwrap();
+                service
+                    .sync_revocations(&[3u8; 16], &mut HashSet::new())
+                    .await
+                    .unwrap();
+                assert!(
+                    delivered.load(Ordering::SeqCst),
+                    "revocation completed while a delivery still held its approval lease"
+                );
+                delivery.await.unwrap().unwrap();
+                assert!(service.journal.enrollment_revoked("phone-gone").unwrap());
+                deletions.load(Ordering::SeqCst)
+            });
+            done_tx.send(outcome).unwrap();
+        });
+        let deletions = done_rx
+            .recv_timeout(Duration::from_secs(10))
+            .expect("revocation deadlocked the runtime behind an in-flight delivery");
+        assert_eq!(deletions, 1);
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]

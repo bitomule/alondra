@@ -213,7 +213,13 @@ async fn service_approve_device(
     let Ok(body) = serde_json::from_slice::<ServiceApproveBody>(&body) else {
         return (StatusCode::BAD_REQUEST, "invalid service approval").into_response();
     };
-    if let Err(error) = state.auth.approve_service(&body.device_id, &body.name, &body.signing_key) {
+    let auth = state.auth.clone();
+    let approved = tokio::task::spawn_blocking(move || {
+        auth.approve_service(&body.device_id, &body.name, &body.signing_key)
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.to_string()));
+    if let Err(error) = approved {
         return (StatusCode::CONFLICT, error).into_response();
     }
     match state.reload_service_devices() {
@@ -256,10 +262,13 @@ async fn pair(
             "invalid pairing request",
         ));
     };
-    match state
-        .auth
-        .pair(&body.code, &body.device_name, &body.public_key)
-    {
+    let auth = state.auth.clone();
+    let paired = tokio::task::spawn_blocking(move || {
+        auth.pair(&body.code, &body.device_name, &body.public_key)
+    })
+    .await
+    .unwrap_or_else(|error| Err(error.to_string()));
+    match paired {
         Ok(device) => Json(json!({"device_id": device.id})).into_response(),
         Err(message) => (
             StatusCode::UNAUTHORIZED,
@@ -292,9 +301,10 @@ async fn revoke_device(
     if let Some(refused) = local_only(&peer, &headers) {
         return refused;
     }
-    let revoked = match state.auth.revoke(&id) {
-        Ok(revoked) => revoked,
-        Err(_) => return storage(),
+    let auth = state.auth.clone();
+    let revoked = match tokio::task::spawn_blocking(move || auth.revoke(&id)).await {
+        Ok(Ok(revoked)) => revoked,
+        _ => return storage(),
     };
     if state.reload_service_devices().is_err() {
         return storage();
