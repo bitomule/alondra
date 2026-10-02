@@ -1296,8 +1296,12 @@ fn generate_goldens() {
         ("schedules-ios.json", "schedules", Client::Ios, Lang::En),
         ("schedule-new-ios.json", "schedule:new", Client::Ios, Lang::En),
     ];
+    let mut with_pending = state.clone();
+    let pending = Request::new("r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d".into(), "Import lists from Notes".into());
+    with_pending.requests.insert(pending.id.clone(), pending);
     for (filename, key, client, lang) in cases {
-        let view = render(&state, &live, client, lang, key, "2026-09-30T10:00:00Z");
+        let state = if key == "new_request" { &with_pending } else { &state };
+        let view = render(state, &live, client, lang, key, "2026-09-30T10:00:00Z");
         std::fs::write(
             format!("{dir}/{filename}"),
             format!("{}\n", serde_json::to_string_pretty(&view).unwrap()),
@@ -1755,6 +1759,36 @@ fn the_sent_history_strips_the_prefix() {
     }).collect();
     assert!(titles.contains(&"Fix the login bug"), "{titles:?}");
     assert!(!titles.iter().any(|title| title.contains("[Alondra]")));
+}
+
+#[test]
+fn the_pending_list_shows_only_requests_the_orchestrator_has_not_handled() {
+    let pending = |state: &DomainState| -> Vec<(String, Vec<String>)> {
+        let view = render(state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "new_request", "");
+        let section = view.sections.iter().find(|section| section.id == "sent").unwrap();
+        assert_eq!(section.title.as_deref(), Some("Solicitudes pendientes"));
+        section.items.iter().filter_map(|item| {
+            if let Item::Row(row) = item { Some((row.id.clone(), row.badges.iter().map(|badge| badge.text.clone()).collect())) } else { None }
+        }).collect()
+    };
+    let mut state = fixture();
+    let mut answered = Request::new("r-answered".into(), "What is left?".into());
+    answered.closed = true;
+    state.requests.insert("r-answered".into(), answered);
+    let mut withdrawn = Request::new("r-withdrawn".into(), "Never mind".into());
+    (withdrawn.closed, withdrawn.withdrawn) = (true, true);
+    state.requests.insert("r-withdrawn".into(), withdrawn);
+    state.requests.insert("r-new".into(), Request::new("r-new".into(), "Fix the login bug".into()));
+    assert_eq!(pending(&state), [("r-new".to_string(), vec!["En cola".to_string()])]);
+
+    let mut defined = state.tasks[&"t-1".into()].clone();
+    (defined.id, defined.request_id, defined.state) = ("t-2".into(), "r-new".into(), TaskState::NotStarted);
+    state.tasks.insert("t-2".into(), defined);
+    assert!(pending(&state).is_empty(), "defining a request into tasks takes it out of the queue");
+
+    state.tasks.remove(&"t-2".into());
+    state.requests.get_mut(&"r-new".into()).unwrap().closed = true;
+    assert!(pending(&state).is_empty(), "closing a request takes it out of the queue");
 }
 
 #[test]

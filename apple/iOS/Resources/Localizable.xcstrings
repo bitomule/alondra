@@ -11,7 +11,7 @@
     "About": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acerca de"}}}},
     "Link another Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vincular otro Mac"}}}},
     "Mac %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mac %@"}}}},
-    "Recent Requests": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Solicitudes recientes"}}}},
+    "Pending Requests": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Solicitudes pendientes"}}}},
     "Selected": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Seleccionado"}}}},
     "Version": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Versión"}}}},
     "What do you want done?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Qué quieres que se haga?"}}}},
