@@ -164,7 +164,6 @@ final class TriageFeatureTests: XCTestCase {
         let action = try XCTUnwrap(store.state.cards[id: id]?.card?.actions.first { $0.presentation == .options })
         let option = try XCTUnwrap(action.options.first)
         await store.send(.cards(.element(id: id, action: .optionPicked(action, optionID: option.id))))
-        await store.send(.cards(.element(id: id, action: .replySent(action))))
         await store.skipReceivedActions()
         return action
     }
