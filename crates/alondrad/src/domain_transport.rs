@@ -8,6 +8,7 @@
 //! Agent, a Task or a decision. The one transition they make is the one a
 //! session's own activity proves: its assigned Task has started.
 use crate::domain_agent_lifecycle as lifecycle;
+use crate::domain_messages::{ClaudeAgents, Session, Sessions};
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::{DeliveryClaim, OutboxMessage};
 use crate::wake::WriteFailure;
@@ -19,7 +20,7 @@ use alondra_core::domain_v2::{
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -388,16 +389,38 @@ impl Terminal for Tmux {
     }
 }
 
-/// One pass over every launched session with pending messages. A session
-/// whose last write failed is left alone for a while; a terminal that was not
-/// ready stays retryable, and a write that may have landed is uncertain.
-pub(crate) async fn deliver_terminals(domain: &DomainRuntime, home: &Path,
+/// Agents with messages waiting, however their session was launched.
+fn waiting_agents(domain: &DomainRuntime) -> Result<BTreeSet<AgentId>> {
+    Ok(domain.store.lock().expect("domain store poisoned").pending_messages()?.into_iter()
+        .filter(|message| message.recipient_kind == "agent")
+        .filter_map(|message| message.agent_id.map(AgentId))
+        .collect())
+}
+
+/// One pass over every background session with pending messages: a Schedule
+/// launch knows its terminal, any other session is found in `claude agents`.
+/// An interactive session gets its messages from its next Stop hook. A session
+/// whose last write failed, that could not be found or that is interactive is
+/// left alone for a while; a terminal that was not ready stays retryable, and
+/// a write that may have landed is uncertain.
+pub(crate) async fn deliver_terminals(domain: &DomainRuntime, home: &Path, sessions: &impl Sessions,
     terminal: &Arc<impl Terminal>, backoff: &mut Backoff) -> Result<()> {
     let state = domain.state()?;
-    for (agent, short) in terminals(&state) {
+    let mut known = terminals(&state);
+    for agent in waiting_agents(domain)? {
         if !backoff.ready(&agent) {
             continue;
         }
+        let short = match known.remove(&agent) {
+            Some(short) => short,
+            None => match sessions.find(&agent.0).await {
+                Some(Session { interactive: false, short }) => short,
+                _ => {
+                    backoff.outcome(&agent, false);
+                    continue;
+                }
+            },
+        };
         let Some(batch) = claim_batch(domain, &agent)? else { continue };
         let typed: Vec<(u64, String, Option<u64>)> = batch.claims.iter()
             .map(|claim| (claim.message.id as u64, render(&state, &claim.message), None))
@@ -437,7 +460,7 @@ pub(crate) async fn run_terminals(domain: Arc<DomainRuntime>, home: PathBuf) -> 
     let mut backoff = Backoff::default();
     let mut changed = domain.subscribe();
     loop {
-        deliver_terminals(&domain, &home, &terminal, &mut backoff).await?;
+        deliver_terminals(&domain, &home, &ClaudeAgents, &terminal, &mut backoff).await?;
         tokio::select! {
             _ = changed.changed() => {},
             _ = tokio::time::sleep(Duration::from_secs(10)) => {},
@@ -449,7 +472,6 @@ pub(crate) async fn run_terminals(domain: Arc<DomainRuntime>, home: PathBuf) -> 
 mod tests {
     use super::*;
     use alondra_core::domain_v2::*;
-    use std::collections::BTreeSet;
     use std::sync::Mutex;
 
     struct Fixture(PathBuf);
@@ -962,6 +984,14 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct Listed(BTreeMap<String, Session>);
+    impl Sessions for Listed {
+        async fn find(&self, session_id: &str) -> Option<Session> {
+            self.0.get(session_id).cloned()
+        }
+    }
+
     fn launched_by_schedule(domain: &DomainRuntime, agent: &str, short: &str) {
         let now = alondra_core::now_millis();
         command(domain, Actor::System, "schedule", Command::CreateSchedule { schedule: Schedule {
@@ -1002,13 +1032,13 @@ mod tests {
         answered_question(&domain, "session-a");
         let terminal = Arc::new(FakeTerminal { writes: Mutex::new(vec![]), outcome: Mutex::new(Ok(())) });
         let mut backoff = Backoff::default();
-        deliver_terminals(&domain, &fixture.0, &terminal, &mut backoff).await.unwrap();
+        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut Backoff::default()).await.unwrap();
         assert!(terminal.writes.lock().unwrap().is_empty(), "a session without a known terminal is not typed into");
         assert_eq!(agent_outbox(&domain, "session-a").len(), 1);
 
         launched_by_schedule(&domain, "session-a", "ab1234");
         let id = agent_outbox(&domain, "session-a")[0].0;
-        deliver_terminals(&domain, &fixture.0, &terminal, &mut backoff).await.unwrap();
+        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
         let writes = terminal.writes.lock().unwrap().clone();
         assert_eq!(writes.len(), 1);
         assert_eq!(writes[0].0, "ab1234");
@@ -1017,7 +1047,7 @@ mod tests {
             && !writes[0].1.contains("interaction_id="), "{}", writes[0].1);
         assert!(agent_outbox(&domain, "session-a").is_empty());
         assert!(attempts(&domain).contains(&(id, "handed".into(), None)));
-        deliver_terminals(&domain, &fixture.0, &terminal, &mut backoff).await.unwrap();
+        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
         assert_eq!(terminal.writes.lock().unwrap().len(), 1, "nothing pending, nothing typed");
 
         command(&domain, Actor::Agent { agent_id: "session-a".into() }, "question-2", Command::AskQuestion {
@@ -1031,18 +1061,39 @@ mod tests {
         });
         let second = agent_outbox(&domain, "session-a")[0].0;
         *terminal.outcome.lock().unwrap() = Err(WriteFailure::NotStarted);
-        deliver_terminals(&domain, &fixture.0, &terminal, &mut backoff).await.unwrap();
+        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
         assert_eq!(agent_outbox(&domain, "session-a"), vec![(second, "retryable".into())]);
-        deliver_terminals(&domain, &fixture.0, &terminal, &mut backoff).await.unwrap();
+        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
         assert_eq!(terminal.writes.lock().unwrap().len(), 2, "a failed session backs off");
         let mut fresh = Backoff::default();
         *terminal.outcome.lock().unwrap() = Err(WriteFailure::Uncertain);
-        deliver_terminals(&domain, &fixture.0, &terminal, &mut fresh).await.unwrap();
+        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut fresh).await.unwrap();
         assert!(agent_outbox(&domain, "session-a").is_empty());
         assert!(attempts(&domain).contains(&(second, "uncertain".into(), Some("terminal_write_uncertain".into()))));
         drop(domain);
         let reopened = fixture.open();
         assert!(agent_outbox(&reopened, "session-a").is_empty(), "an uncertain write is not retyped after restart");
+    }
+
+    #[tokio::test]
+    async fn a_node_launched_for_a_request_gets_its_pending_messages_typed_into_its_background_session() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        answered_question(&domain, "launched");
+        answered_question(&domain, "interactive");
+        answered_question(&domain, "gone");
+        let sessions = Listed(BTreeMap::from([
+            ("launched".to_string(), Session { short: "fe12d68c".into(), interactive: false }),
+            ("interactive".to_string(), Session { short: "ab12cd34".into(), interactive: true }),
+        ]));
+        let terminal = Arc::new(FakeTerminal { writes: Mutex::new(vec![]), outcome: Mutex::new(Ok(())) });
+        let id = agent_outbox(&domain, "launched")[0].0;
+        deliver_terminals(&domain, &fixture.0, &sessions, &terminal, &mut Backoff::default()).await.unwrap();
+        assert_eq!(*terminal.writes.lock().unwrap(), [("fe12d68c".to_string(), "Yes.".to_string())]);
+        assert!(agent_outbox(&domain, "launched").is_empty());
+        assert!(attempts(&domain).contains(&(id, "handed".into(), None)));
+        assert_eq!(agent_outbox(&domain, "interactive").len(), 1, "an interactive session takes its messages at its next Stop hook");
+        assert_eq!(agent_outbox(&domain, "gone").len(), 1, "a session Claude no longer lists keeps its messages");
     }
 
     fn working_agent(domain: &DomainRuntime, agent: &str) {
