@@ -38,9 +38,9 @@ final class NotificationService: UNNotificationServiceExtension {
             payload["alondra"] = item
         }
         delivery.update { content in
-            let alert = aps["alert"] as? [String: Any]
-            content.title = alert?["title"] as? String ?? "Alondra"
-            content.body = String(localized: "New activity in Alondra")
+            let alert = NotificationAlert(aps: aps)
+            content.title = alert.title
+            content.body = alert.body ?? String(localized: "New activity in Alondra")
             content.categoryIdentifier = aps["category"] as? String ?? ""
             content.badge = aps["badge"] as? NSNumber
             content.sound = aps["sound"] as? String == "default" ? .default : nil

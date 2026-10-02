@@ -222,8 +222,7 @@ async fn deliver_user_runtime(
 fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: Lang) -> Value {
     let mut alondra = json!({"protocol": views::VIEWS_PROTOCOL, "data_epoch": state.data_epoch,
         "actions": []});
-    let mut aps = json!({"alert": {"title": "Alondra", "body": "New activity in Alondra"},
-        "sound": "default", "mutable-content": 1});
+    let mut aps = json!({"alert": {"title": "Alondra"}, "sound": "default", "mutable-content": 1});
     if let Some(id) = interaction_id {
         alondra["card"] = json!(id);
         if let Some(interaction) = state.interactions.get(&InteractionId::from(id)) {
@@ -234,10 +233,17 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
                 InteractionPayload::Delivery { .. } => "delivery",
             };
             alondra["kind"] = json!(kind);
-            let actions = views::push_actions(state, id, lang).unwrap_or_else(|error| {
-                log!("could not render push actions for card {id}: {error:?}");
-                vec![]
+            let content = views::push_content(state, id, lang).unwrap_or_else(|error| {
+                log!("could not render push content for card {id}: {error:?}");
+                views::PushContent { alert: None, actions: vec![] }
             });
+            if let Some(alert) = content.alert {
+                aps["alert"]["title"] = json!(alert.title);
+                if let Some(body) = alert.body {
+                    aps["alert"]["body"] = json!(body);
+                }
+            }
+            let actions = content.actions;
             if !actions.is_empty() {
                 alondra["actions"] = json!(actions);
                 // The extension replaces this bootstrap category with a per-card
@@ -867,6 +873,12 @@ mod tests {
 
     fn push_fixture_state(data_epoch: &str) -> DomainState {
         let mut state = DomainState::new(data_epoch);
+        state.tasks.insert("task-a".into(), Task {
+            id: "task-a".into(), request_id: "request-a".into(), agent_id: None,
+            title: "Split the parser".into(), state: TaskState::NeedsYou, revision: 1,
+            started: true, review_prs: false, final_presentation: None, pr_id: None,
+            dependencies: BTreeSet::new(), stack: None, documents: Default::default(), archived: false,
+        });
         let options = vec![
             QuestionOption {
                 id: "yes".into(),
@@ -946,7 +958,7 @@ mod tests {
                     },
                     author: Author::System,
                     recipient: Recipient::User,
-                    body: "Body".into(),
+                    body: format!("Merge the {name} parser?\n\nThe lexer split is ready and its tests pass."),
                     blocking: false,
                     subject: None,
                     payload,

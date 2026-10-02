@@ -58,6 +58,16 @@ struct EncryptedPushFixtureTests {
         #expect(item.actions.map(\.text) == [false, true, true])
         #expect(NotificationPayload.Binding(userInfo: payload)?.value == (try binding))
         #expect((payload["aps"] as? [String: Any])?["sound"] == nil, "with_sound false strips the sound")
+        let alert = NotificationAlert(aps: try #require(payload["aps"] as? [String: Any]))
+        #expect(alert.title == "Split the parser")
+        #expect(alert.body == "Merge the question parser?",
+                "the lock screen shows the card's question, not a generic line")
+    }
+
+    @Test func aPushWithoutTextFallsBackToTheExtensionsOwnLine() {
+        #expect(NotificationAlert(aps: ["alert": ["title": "Alondra"]]).body == nil)
+        #expect(NotificationAlert(aps: ["alert": ["title": " ", "body": "  "]]) == NotificationAlert(aps: [:]))
+        #expect(NotificationAlert(aps: [:]).title == "Alondra")
     }
 
     @Test func aPushForAReplacedPairingCannotBeOpened() throws {

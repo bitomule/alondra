@@ -99,11 +99,36 @@ pub struct PushAction {
     pub open: bool,
 }
 
+/// What the lock screen shows for a card: its title, and the first line of its body or,
+/// without one, the kind of card it is.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushAlert {
+    pub title: String,
+    pub body: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PushContent {
+    pub alert: Option<PushAlert>,
+    pub actions: Vec<PushAction>,
+}
+
+pub const PUSH_TITLE_CHARS: usize = 80;
+pub const PUSH_BODY_CHARS: usize = 180;
+
 pub fn push_actions(
     domain: &DomainState,
     card_id: &str,
     lang: Lang,
 ) -> Result<Vec<PushAction>, BuildError> {
+    Ok(push_content(domain, card_id, lang)?.actions)
+}
+
+pub fn push_content(
+    domain: &DomainState,
+    card_id: &str,
+    lang: Lang,
+) -> Result<PushContent, BuildError> {
     let live = LiveSnapshot::default();
     let view = build(&format!("card:{card_id}"), RenderContext {
         domain, live: &live, client: Client::Ios, lang, transport: Transport::Relay,
@@ -111,9 +136,10 @@ pub fn push_actions(
     })?;
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
-    }) else { return Ok(vec![]) };
+    }) else { return Ok(PushContent { alert: None, actions: vec![] }) };
+    let alert = push_alert(card);
     if let Some(hold) = domain.holds.get(&crate::domain_v2::InteractionId(card_id.into())) {
-        return Ok(held_push_actions(*hold, card, lang));
+        return Ok(PushContent { alert, actions: held_push_actions(*hold, card, lang) });
     }
     let mut pushed = Vec::new();
     for action in &card.actions {
@@ -135,7 +161,29 @@ pub fn push_actions(
         }
         if pushed.len() == 4 { break; }
     }
-    Ok(pushed)
+    Ok(PushContent { alert, actions: pushed })
+}
+
+fn push_alert(card: &Card) -> Option<PushAlert> {
+    let title = one_line(&card.title, PUSH_TITLE_CHARS)?;
+    let excerpt = card.body.as_ref().and_then(|body| {
+        body.text.lines()
+            .map(str::trim)
+            .filter(|line| !line.starts_with("```"))
+            .map(|line| line.trim_start_matches(['#', '>', '-', '*']).trim())
+            .find(|line| !line.is_empty() && *line != title)
+            .and_then(|line| one_line(line, PUSH_BODY_CHARS))
+    });
+    let body = excerpt.or_else(|| card.eyebrow.as_ref().and_then(|label| one_line(&label.text, PUSH_BODY_CHARS)));
+    Some(PushAlert { title, body })
+}
+
+fn one_line(text: &str, limit: usize) -> Option<String> {
+    let line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if line.is_empty() { return None; }
+    if line.chars().count() <= limit { return Some(line); }
+    let cut: String = line.chars().take(limit - 1).collect();
+    Some(format!("{}…", cut.trim_end()))
 }
 
 /// 8ccd131's notification buttons: Allow and Deny answer a permission from the lock screen;
