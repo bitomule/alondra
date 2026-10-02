@@ -123,6 +123,20 @@ fn acceptance(store: &mut DomainStore) -> CommandEnvelope {
         },
     )
 }
+fn feedback(store: &mut DomainStore) -> CommandEnvelope {
+    envelope(
+        store,
+        "feedback",
+        Command::SubmitFeedback {
+            attachments: vec![],
+            presentation_id: "delivery-1".into(),
+            targets: vec![DeliveryTarget::Text {
+                text: "The answer".into(),
+            }],
+            body: "Shorter, please".into(),
+        },
+    )
+}
 fn count(store: &DomainStore, table: &str) -> i64 {
     store
         .conn
@@ -167,7 +181,7 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
     assert_eq!(count(&store, "domain_outbox"), 1);
     assert_eq!(count(&store, "delivery_attempts"), 0);
     present(&mut store);
-    let e = acceptance(&mut store);
+    let e = feedback(&mut store);
     let committed = store
         .execute_authenticated(&user(), &e, Some(("phone", "request-x", &[1; 32])))
         .unwrap();
@@ -224,7 +238,7 @@ fn receipt_failure_rolls_back_decision_audit_outbox_and_revision() {
     let receipts = count(&store, "semantic_receipts");
     let transport_receipts = count(&store, "local_command_results");
     let pending = store.pending_messages().unwrap();
-    let e = acceptance(&mut store);
+    let e = feedback(&mut store);
     store.conn.execute_batch("CREATE TRIGGER fail_receipt BEFORE INSERT ON local_command_results BEGIN SELECT RAISE(ABORT,'injected receipt failure'); END;").unwrap();
     assert!(matches!(
         store.execute_authenticated(&user(), &e, Some(("phone", "op", &[1; 32]))),
@@ -299,7 +313,7 @@ fn two_connections_compete_by_revision_and_domain_rejection_writes_nothing() {
     seeded(&mut first);
     present(&mut first);
     let mut second = DomainStore::open(&fixture.path()).unwrap();
-    let e = acceptance(&mut first);
+    let e = feedback(&mut first);
     let mut competing = e.clone();
     competing.command_id = "other-command".into();
     first.execute_authenticated(&user(), &e, None).unwrap();
@@ -385,7 +399,7 @@ fn claimed_delivery_restart_is_uncertain_until_explicit_reconciliation() {
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     present(&mut store);
-    let e = acceptance(&mut store);
+    let e = feedback(&mut store);
     store.execute_authenticated(&user(), &e, None).unwrap();
     let pending = store.pending_messages().unwrap();
     assert_eq!(pending.len(), 2);
@@ -434,7 +448,7 @@ fn encrypted_resolution_has_a_durable_receipt_and_fences_stale_or_changed_decisi
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
     present(&mut store);
-    let e = acceptance(&mut store);
+    let e = feedback(&mut store);
     store.execute_authenticated(&user(), &e, None).unwrap();
     let agent_message = store.pending_messages().unwrap().into_iter()
         .find(|message| message.recipient_kind == "agent").unwrap();
@@ -1188,6 +1202,21 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
     let fixture = Fixture::new();
     let mut store = DomainStore::open(&fixture.path()).unwrap();
     seeded(&mut store);
+    execute(
+        &mut store,
+        &agent(),
+        "pr-still-open",
+        Command::RegisterPr {
+            task_id: "task-1".into(),
+            pr_id: "pr-1".into(),
+            host: "github.com".into(),
+            repository: "owner/repository".into(),
+            number: 1,
+            head: "aaa".into(),
+            base: "main".into(),
+            allowed_methods: vec![MergeMethod::Squash],
+        },
+    );
     present(&mut store);
     let e = acceptance(&mut store);
     let accepted_at = store

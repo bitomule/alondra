@@ -23,7 +23,7 @@ fn expected_rejection(case_id: &str, step: usize) -> Option<&'static str> {
         ("V18", 1) => Some("stale_head"),
         ("V21", 1) => Some("acceptance_missing"),
         ("V23", 0) => Some("not_assigned"),
-        ("V45", 1) => Some("acceptance_stale"),
+        ("V45", 1) => Some("acceptance_missing"),
         _ => None,
     }
 }

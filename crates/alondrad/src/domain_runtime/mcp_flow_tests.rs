@@ -99,7 +99,7 @@ fn domain_code(error: StoreError) -> String {
 }
 
 #[test]
-fn existing_mcp_producers_cover_pr_document_and_answer_without_implicit_completion() {
+fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_acceptance_completes() {
     let mut fixture = Fixture::new();
 
     fixture.task("pr-task", true);
@@ -128,13 +128,9 @@ fn existing_mcp_producers_cover_pr_document_and_answer_without_implicit_completi
         "revision_id":"doc-v1"});
     fixture.agent(json!({"kind":"present_result", "task_id":"doc-task",
         "interaction_id":"doc-delivery", "body":"Document ready",
-        "targets":[doc_target.clone()], "is_final":true})).unwrap();
+        "targets":[doc_target], "is_final":true})).unwrap();
     fixture.user(json!({"kind":"decide_document_review", "task_id":"doc-task",
         "document_id":"doc-1", "revision_id":"doc-v1", "accepted":true})).unwrap();
-    fixture.user(json!({"kind":"accept_delivery", "presentation_id":"doc-delivery",
-        "targets":[doc_target]})).unwrap();
-    fixture.agent(json!({"kind":"complete_task", "task_id":"doc-task",
-        "presentation_id":"doc-delivery"})).unwrap();
     assert_eq!(fixture.runtime.state().unwrap().tasks[&"doc-task".into()].state, TaskState::Done);
 
     fixture.task("answer-task", false);
@@ -153,8 +149,6 @@ fn existing_mcp_producers_cover_pr_document_and_answer_without_implicit_completi
         "acceptance_missing");
     fixture.user(json!({"kind":"accept_delivery", "presentation_id":"answer-delivery",
         "targets":[answer_target]})).unwrap();
-    fixture.agent(json!({"kind":"complete_task", "task_id":"answer-task",
-        "presentation_id":"answer-delivery"})).unwrap();
     let state = fixture.runtime.state().unwrap();
     assert_eq!(state.tasks[&"answer-task".into()].state, TaskState::Done);
     assert!(state.interactions.contains_key(&"question-1".into()));
