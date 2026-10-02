@@ -14,6 +14,7 @@ public struct NodeDetail: Equatable, Sendable {
 
     public var title: String
     public var state: String?
+    public var stateTone: Tone?
     public var folder: String?
     public var since: String?
     public var waiting: [Card] = []
@@ -38,6 +39,7 @@ public struct NodeDetail: Equatable, Sendable {
             case "header":
                 facts = items.facts
                 state = facts.first?.value
+                stateTone = facts.first?.tone
                 folder = facts.dropFirst().first { $0.value.hasPrefix("/") }?.value
             case "since":
                 since = Self.rows(items).compactMap(\.time).first?.at

@@ -7,7 +7,9 @@ public struct FleetOverview: Equatable, Sendable {
     public struct Node: Equatable, Sendable, Identifiable {
         public var id: String
         public var title: String
-        public var state: String?
+        /// The node's one state, first among the row's badges.
+        public var state: AlondraContract.Label?
+        public var detail: String?
         public var badges: [AlondraContract.Label]
         public var pending: UInt32
         public var link: AlondraContract.Link?
@@ -19,8 +21,9 @@ public struct FleetOverview: Equatable, Sendable {
         init(row: Row) {
             id = row.id
             title = row.title
-            state = row.subtitle
-            badges = row.badges
+            state = row.badges.first
+            detail = row.subtitle
+            badges = Array(row.badges.dropFirst())
             if case .count(let value)? = row.trailing { pending = value } else { pending = 0 }
             link = row.link
             isOrchestrator = row.icon == .orchestrator

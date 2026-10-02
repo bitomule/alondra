@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v7048278a7048293a",
+  "version": "v74b48873f3459da7",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -101,13 +101,12 @@
             "kind": "view",
             "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
           },
-          "icon": "question",
+          "icon": "node",
           "title": "Alondra · iOS",
-          "subtitle": "Connected",
           "badges": [
             {
-              "text": "Waiting for you",
-              "tone": "accent"
+              "text": "Waiting for an answer",
+              "tone": "warning"
             }
           ],
           "trailing": {
