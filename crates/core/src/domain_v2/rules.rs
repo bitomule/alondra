@@ -1685,10 +1685,9 @@ impl DomainState {
                 presentation_id,
                 targets,
                 body,
-                reason,
             } => {
-                let u = match (actor, reason) {
-                    (Actor::System, FeedbackReason::Conflicts) => "alondra".to_owned(),
+                let u = match actor {
+                    Actor::System => Feedback::ALONDRA.to_owned(),
                     _ => user(actor)?,
                 };
                 content(body, attachments)?;
@@ -1705,7 +1704,6 @@ impl DomainState {
                         user_id: u,
                         body: body.clone(),
                         at_revision: self.revision + 1,
-                        reason: *reason,
                     });
                 }
                 p.revision = self.revision + 1;

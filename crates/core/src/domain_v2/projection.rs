@@ -137,22 +137,16 @@ impl DomainState {
             expected_head: head,
         }
     }
-    /// Why a delivery waits on its Agent rather than on the user: the feedback given since its
-    /// acceptance. A message stops holding it once the Agent says anything new to the user.
+    /// Why a delivery waits on its Agent rather than on the user: feedback given since its
+    /// acceptance. Only the Agent presenting again puts it back in front of the user.
     pub fn handed_back(&self, presentation: &Interaction) -> Option<FeedbackReason> {
         let InteractionPayload::Delivery { acceptance, feedback, .. } = &presentation.payload else {
             return None;
         };
-        let last = feedback
+        feedback
             .last()
-            .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))?;
-        let answered = last.reason == FeedbackReason::Message
-            && self.interactions.values().any(|i| {
-                i.scope == presentation.scope
-                    && i.recipient == Recipient::User
-                    && i.order > last.at_revision
-            });
-        (!answered).then_some(last.reason)
+            .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
+            .map(Feedback::reason)
     }
     /// The same for an active Task, through its current final delivery.
     pub fn task_handed_back(&self, task_id: &TaskId) -> Option<FeedbackReason> {
@@ -246,7 +240,6 @@ impl DomainState {
                             presentation_id: i.id.clone(),
                             targets: targets.clone(),
                             body: "feedback".into(),
-                            reason: FeedbackReason::Changes,
                         },
                         Some(i.id.clone()),
                         None,

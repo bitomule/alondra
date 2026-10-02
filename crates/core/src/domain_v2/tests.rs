@@ -433,7 +433,6 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
             presentation_id: "delivery".into(),
             targets: text(),
             body: "One correction".into(),
-            reason: FeedbackReason::Changes,
         },
     )
     .unwrap();
@@ -2108,7 +2107,6 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
             presentation_id: "d".into(),
             targets: targets.clone(),
             body: "Tighten the summary".into(),
-            reason: FeedbackReason::Changes,
         },
     )
     .unwrap();
@@ -2596,7 +2594,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
             is_final: true }, false),
         (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
-            targets: text(), body: "Change".into(), reason: FeedbackReason::Changes }, false),
+            targets: text(), body: "Change".into() }, false),
         (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
         (Command::AuthorizeMerge { authorization_id: "fresh-auth".into(),
             presentation_id: ids.interaction.into(), pr_id: ids.pr.into(),
@@ -2849,9 +2847,9 @@ fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox(
     assert!(matches!(ordinary.effects[..], [DomainEffect::NotifyAgent { .. }]));
 }
 
-fn hand_back(s: &mut DomainState, actor: Actor, reason: FeedbackReason) -> Result<CommandOutcome, DomainError> {
+fn hand_back(s: &mut DomainState, actor: Actor, body: &str) -> Result<CommandOutcome, DomainError> {
     exec(s, actor, Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
-        body: "Back to you".into(), reason })
+        body: body.into() })
 }
 
 fn waiting(s: &DomainState, id: &str) -> bool {
@@ -2860,51 +2858,38 @@ fn waiting(s: &DomainState, id: &str) -> bool {
 
 #[test]
 fn a_handed_back_delivery_waits_on_its_agent_until_it_presents_again() {
-    for reason in [FeedbackReason::Changes, FeedbackReason::Conflicts] {
+    let question = Feedback::question(&"pr".into(), "Why a new table?");
+    for (actor, body, reason) in [
+        (user(), "Shorter, please", FeedbackReason::Changes),
+        (user(), question.as_str(), FeedbackReason::Message),
+        (Actor::System, "Resolve the conflicts", FeedbackReason::Conflicts),
+    ] {
         let mut s = fixture();
         register(&mut s);
         present(&mut s, "d", pr_targets());
         assert!(waiting(&s, "d"));
-        let actor = if reason == FeedbackReason::Conflicts { Actor::System } else { user() };
-        let outcome = hand_back(&mut s, actor, reason).unwrap();
-        assert!(matches!(&outcome.effects[..], [DomainEffect::NotifyAgent { message, .. }] if message == "Back to you"));
+        let outcome = hand_back(&mut s, actor, body).unwrap();
+        assert!(matches!(&outcome.effects[..], [DomainEffect::NotifyAgent { message, .. }] if message == body));
         assert!(!waiting(&s, "d"), "{reason:?}");
         assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(reason)));
         exec(&mut s, agent(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
-            scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Working on it".into() }).unwrap();
-        assert!(!waiting(&s, "d"), "{reason:?} waits for a new presentation, not for any word");
+            scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into() }).unwrap();
+        assert!(!waiting(&s, "d"), "{reason:?}: another word from the Agent never brings the delivery back");
+        assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
         present(&mut s, "d2", pr_targets());
         assert!(waiting(&s, "d2"));
-        assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+        assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::InReview, None));
     }
 }
 
 #[test]
-fn a_message_on_a_delivery_brings_it_back_with_the_agents_next_word() {
+fn only_alondra_or_the_user_hands_a_delivery_back_and_alondra_only_for_conflicts() {
     let mut s = fixture();
     register(&mut s);
     present(&mut s, "d", pr_targets());
-    hand_back(&mut s, user(), FeedbackReason::Message).unwrap();
-    assert!(!waiting(&s, "d"));
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Running);
-    exec(&mut s, agent(), Command::PublishInformation { attachments: vec![], interaction_id: "answer".into(),
-        scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into() }).unwrap();
-    assert!(waiting(&s, "d"));
-    assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::InReview, None));
-}
-
-#[test]
-fn only_alondra_hands_a_delivery_back_without_the_user_and_only_for_its_conflicts() {
-    let mut s = fixture();
-    register(&mut s);
-    present(&mut s, "d", pr_targets());
-    for (actor, reason) in [(Actor::System, FeedbackReason::Changes), (Actor::System, FeedbackReason::Message),
-        (agent(), FeedbackReason::Conflicts)] {
-        let before = s.clone();
-        assert_eq!(hand_back(&mut s, actor, reason).unwrap_err().code, "forbidden");
-        assert_eq!(s, before);
-    }
-    hand_back(&mut s, Actor::System, FeedbackReason::Conflicts).unwrap();
+    reject_unchanged(&mut s, agent(), Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(),
+        targets: pr_targets(), body: "Mine".into() }, "forbidden");
+    hand_back(&mut s, Actor::System, "Resolve the conflicts").unwrap();
     let InteractionPayload::Delivery { feedback, .. } = &s.interactions[&"d".into()].payload else { unreachable!() };
-    assert_eq!((feedback[0].user_id.as_str(), feedback[0].reason), ("alondra", FeedbackReason::Conflicts));
+    assert_eq!((feedback[0].user_id.as_str(), feedback[0].reason()), (Feedback::ALONDRA, FeedbackReason::Conflicts));
 }

@@ -88,14 +88,13 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
         let envelope = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
-            command_id: format!("conflicts-{}-{}", pr.id, pr.head).into(),
+            command_id: crate::views::actions::conflicts_command_id(pr),
             expected_revision: state.revision,
             command: Command::SubmitFeedback {
                 attachments: vec![],
                 presentation_id: presentation.id.clone(),
                 targets: targets.clone(),
                 body: crate::domain_messages::conflicts_text(name, pr),
-                reason: FeedbackReason::Conflicts,
             },
         };
         if let Err(error) = domain.execute(&Actor::System, &envelope, None, || Ok(())) {
@@ -107,7 +106,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
 fn conflicts_sent(state: &DomainState, pr: &alondra_core::domain_v2::PullRequest) -> bool {
     state.interactions.values().any(|interaction| matches!(&interaction.payload,
         InteractionPayload::Delivery { targets, feedback, .. }
-            if feedback.iter().any(|f| f.reason == FeedbackReason::Conflicts)
+            if feedback.iter().any(|f| f.reason() == FeedbackReason::Conflicts)
                 && targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id, head }
                     if pr_id == &pr.id && head == &pr.head))))
 }
@@ -158,7 +157,7 @@ mod tests {
     fn conflicts_told(domain: &crate::domain_runtime::DomainRuntime) -> Vec<(String, String)> {
         domain.state().unwrap().interactions.values().flat_map(|interaction| match &interaction.payload {
             InteractionPayload::Delivery { feedback, .. } => feedback.iter()
-                .filter(|f| f.reason == FeedbackReason::Conflicts)
+                .filter(|f| f.reason() == FeedbackReason::Conflicts)
                 .map(|f| (interaction.id.0.clone(), f.body.clone())).collect(),
             _ => vec![],
         }).collect()

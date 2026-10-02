@@ -287,19 +287,35 @@ pub struct Feedback {
     pub user_id: String,
     pub body: String,
     pub at_revision: Revision,
-    #[serde(default)]
-    pub reason: FeedbackReason,
 }
-/// Why a delivery went back to its Agent. Each one takes the card out of the user's queue until
-/// the Agent presents again; a message also comes back with the Agent's next word to the user.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// Why a delivery went back to its Agent, read from the feedback itself: Alondra gives
+/// feedback only to have a PR's conflicts resolved, and a reply or a question carries its lead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FeedbackReason {
-    #[default]
     Changes,
     Message,
     Conflicts,
 }
+impl Feedback {
+    pub const ALONDRA: &'static str = "alondra";
+    pub fn reason(&self) -> FeedbackReason {
+        if self.user_id == Self::ALONDRA {
+            FeedbackReason::Conflicts
+        } else if self.body.starts_with(REPLY_LEAD) || self.body.starts_with(QUESTION_LEAD) {
+            FeedbackReason::Message
+        } else {
+            FeedbackReason::Changes
+        }
+    }
+    pub fn reply(presentation: &InteractionId, text: &str) -> String {
+        format!("{REPLY_LEAD}{presentation}] {text}")
+    }
+    pub fn question(pr: &PrId, text: &str) -> String {
+        format!("{QUESTION_LEAD}{pr}] {text}")
+    }
+}
+const REPLY_LEAD: &str = "[Reply to ";
+const QUESTION_LEAD: &str = "[Question about ";
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum InteractionPayload {

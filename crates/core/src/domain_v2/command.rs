@@ -223,9 +223,6 @@ pub enum Command {
         presentation_id: InteractionId,
         targets: Vec<DeliveryTarget>,
         body: String,
-        /// Only Alondra itself hands a delivery back for its conflicts without the user.
-        #[serde(default)]
-        reason: FeedbackReason,
     },
     AcceptDelivery {
         presentation_id: InteractionId,
