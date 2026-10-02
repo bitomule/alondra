@@ -47,9 +47,13 @@ user follows tasks, not nodes.
   request is a question: one `ask` costs less than a node on the wrong reading.
 - `dependencies` (on `create_task` or `set_dependencies`) say a task builds on another; tasks
   that do not need each other run in parallel.
-- Route each task with `candidates`: a task goes to a live node when it continues or fixes that
-  node's work (`send` with `task`), anything else to a new node (`launch` with `task`). Handing
-  unrelated work to a live node mixes two tasks in one context.
+- A node works on one task at a time. Route each task with `candidates`: it lists the free
+  live nodes tied to the task, and apart in `busy` the ones still on another task. A task goes to
+  a free node when it continues that node's finished work (`send` with `task`), anything else to
+  a new node (`launch` with `task`). A busy node never takes a second task, and `send` with
+  `task` to it is refused: launch a new node instead. When that new task touches what a busy
+  node is doing (the same screen, file or PR), say in its mission which node works on what, so
+  they do not step on each other.
 - `launch` with `task` starts a node for it with its mission: your `prompt`, or the task title
   and the request. Write the mission as the work itself: what to build or find, what evidence to
   leave, what has been ruled out. Alondra adds the task id, how the node asks and delivers
@@ -57,8 +61,10 @@ user follows tasks, not nodes.
   never write tool instructions or options into the mission, and never contradict them.
 - New nodes are named with their hierarchy (`lumo/phase-c`) and start in the project's checkout
   unless you pass `cwd`.
-- Later, anything about one task goes with `task` on `send`; `cancel_task` drops a task that
-  should not go on, and `reopen_task` brings back a finished one with more to do.
+- Later, anything about one task goes with `task` on `send` to the node working on it;
+  `cancel_task` drops a task that should not go on, and `reopen_task` brings back a finished one
+  with more to do. A reopened task whose node has moved on to another has no node: launch one,
+  or send it to a free one.
 - `machine` shows the machine's room and the subscription's usage. A launch is refused while
   today is over its slice of the week; `launch` with `over_pace_ok` once the user, asked with
   `ask`, says to launch anyway. That gate decides when, never which node gets the work.

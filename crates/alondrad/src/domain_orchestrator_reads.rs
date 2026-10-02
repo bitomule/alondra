@@ -149,8 +149,10 @@ fn repo_name(repo: &str) -> &str {
     repo.rsplit('/').next().unwrap_or(repo)
 }
 
-/// `candidates`: the live Agents a Task, or work in a project or repo, could go to, with why and
-/// whether they are free, as 8ccd131 ranked them.
+/// `candidates`: the live Agents a Task, or work in a project or repo, could go to, with why, as
+/// 8ccd131 ranked them. An Agent works on one Task at a time, so only the free ones are candidates;
+/// the busy ones tied to the work come apart in `busy`, with the Task they are on, so the
+/// orchestrator can tell the node it launches what they are doing.
 pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Option<&str>) -> Result<Value, DomainError> {
     let state = state(domain)?;
     let task = match task.map(str::trim).filter(|t| !t.is_empty()) {
@@ -163,46 +165,57 @@ pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Optio
     }
     let asked = task.and_then(|t| domain.request_launch(&t.request_id).ok().flatten()).and_then(|launch| launch.project);
     let project = repo.map(repo_name).map(str::to_owned).or(asked);
-    let mut out: Vec<(usize, bool, String, Value)> = domain.live.nodes().iter()
-        .filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon))
-        .filter_map(|n| {
-            let agent = state.agents.get(&AgentId(n.session_id.clone()))?;
-            let mine: Vec<_> = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id)).collect();
-            let mut why = vec![];
-            if let Some(p) = project.as_deref().filter(|p| same(p, &n.project())) {
-                why.push(format!("works in project {p}"));
+    let none = TaskId::from("");
+    let mut free: Vec<(usize, bool, String, Value)> = vec![];
+    let mut busy: Vec<(usize, bool, String, Value)> = vec![];
+    for n in domain.live.nodes().iter().filter(|n| !n.is_orchestrator && (n.alive || n.in_daemon)) {
+        let Some(agent) = state.agents.get(&AgentId(n.session_id.clone())) else { continue };
+        let mine: Vec<_> = state.tasks.values().filter(|t| t.agent_id.as_ref() == Some(&agent.id)).collect();
+        let mut why = vec![];
+        if let Some(p) = project.as_deref().filter(|p| same(p, &n.project())) {
+            why.push(format!("works in project {p}"));
+        }
+        if let Some(p) = project.as_deref() {
+            for pr in state.pull_requests.values().filter(|pr| pr.state == PrState::Open && same(repo_name(&pr.repository), p)
+                && mine.iter().any(|t| t.id == pr.task_id)) {
+                why.push(format!("has PR #{} open in {}", pr.number, pr.repository));
             }
-            if let Some(p) = project.as_deref() {
-                for pr in state.pull_requests.values().filter(|pr| pr.state == PrState::Open && same(repo_name(&pr.repository), p)
-                    && mine.iter().any(|t| t.id == pr.task_id)) {
-                    why.push(format!("has PR #{} open in {}", pr.number, pr.repository));
+        }
+        if let Some(t) = task {
+            if t.agent_id.as_ref() == Some(&agent.id) {
+                why.push(format!("works on {} itself", t.id));
+            }
+            for m in mine.iter().filter(|m| m.id != t.id) {
+                let did = if m.state.terminal() { "worked on" } else { "works on" };
+                if t.dependencies.contains(&m.id) {
+                    why.push(format!("{did} {} “{}”, which {} builds on", m.id, m.title, t.id));
+                } else if m.dependencies.contains(&t.id) {
+                    why.push(format!("{did} {} “{}”, which builds on {}", m.id, m.title, t.id));
+                } else if m.request_id == t.request_id {
+                    why.push(format!("{did} {} “{}” of the same request", m.id, m.title));
                 }
             }
-            if let Some(t) = task {
-                if t.agent_id.as_ref() == Some(&agent.id) {
-                    why.push(format!("works on {} itself", t.id));
-                }
-                for m in mine.iter().filter(|m| m.id != t.id) {
-                    if t.dependencies.contains(&m.id) {
-                        why.push(format!("works on {} “{}”, which {} builds on", m.id, m.title, t.id));
-                    } else if m.dependencies.contains(&t.id) {
-                        why.push(format!("works on {} “{}”, which builds on {}", m.id, m.title, t.id));
-                    } else if m.request_id == t.request_id {
-                        why.push(format!("works on {} “{}” of the same request", m.id, m.title));
-                    }
-                }
+        }
+        if why.is_empty() {
+            continue;
+        }
+        let name = n.name.clone().unwrap_or_else(|| agent.name.clone());
+        let mut row = json!({"node": name, "session_id": agent.id, "short_id": n.short_id, "project": n.project(),
+            "status": wire(&n.status), "why": why});
+        let key = (why.len(), n.status != NodeStatus::Free, name);
+        match state.busy_with(&agent.id, task.map_or(&none, |t| &t.id)) {
+            Some(current) => {
+                row["task"] = json!({"id": current.id, "title": current.title, "state": wire(&current.state)});
+                busy.push((key.0, key.1, key.2, row));
             }
-            (!why.is_empty()).then(|| {
-                let open: Vec<Value> = mine.iter().filter(|m| !m.state.terminal())
-                    .map(|m| json!({"id": m.id, "title": m.title, "state": wire(&m.state)})).collect();
-                let name = n.name.clone().unwrap_or_else(|| agent.name.clone());
-                (why.len(), n.status != NodeStatus::Free, name.clone(), json!({"node": name, "session_id": agent.id,
-                    "short_id": n.short_id, "project": n.project(), "status": wire(&n.status), "tasks": open, "why": why}))
-            })
-        })
-        .collect();
-    out.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
-    Ok(json!({"candidates": out.into_iter().map(|(_, _, _, row)| row).collect::<Vec<_>>()}))
+            None => free.push((key.0, key.1, key.2, row)),
+        }
+    }
+    let ranked = |mut rows: Vec<(usize, bool, String, Value)>| {
+        rows.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        rows.into_iter().map(|(_, _, _, row)| row).collect::<Vec<_>>()
+    };
+    Ok(json!({"candidates": ranked(free), "busy": ranked(busy)}))
 }
 
 #[cfg(test)]

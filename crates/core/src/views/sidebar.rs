@@ -135,7 +135,7 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
         let pending = context.domain.projection().inbox.iter()
             .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id)).count();
         row.trailing = Some(Trailing::Count { value: pending as u32 });
-        row.children = context.domain.tasks.values().filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
+        row.children = common::current_task(context.domain, &agent.id).into_iter()
             .map(|task| {
                 let (icon, tone) = common::task_presentation(task.state);
                 let mut child = common::row(&task.id.0, &format!("task:{}", task.id), icon,

@@ -86,6 +86,16 @@ impl DomainState {
             Ok(t)
         }
     }
+    /// An Agent works on one Task at a time: the other non-terminal Task it holds, if any.
+    pub fn busy_with(&self, agent: &AgentId, except: &TaskId) -> Option<&Task> {
+        self.tasks.values().find(|t| &t.id != except && t.agent_id.as_ref() == Some(agent) && !t.state.terminal())
+    }
+    fn free(&self, agent: &AgentId, task: &TaskId) -> Result<()> {
+        match self.busy_with(agent, task) {
+            Some(other) => fail("agent_busy", &format!("Agent {} already works on Task {}: launch a new node for this Task", agent.0, other.id.0)),
+            None => Ok(()),
+        }
+    }
     fn assigned(&self, actor: &Actor, task: &TaskId) -> Result<&Task> {
         let t = self.active(task)?;
         match actor {
@@ -1084,6 +1094,9 @@ impl DomainState {
                 {
                     return fail("not_found", "Agent missing");
                 };
+                if let Some(agent) = agent_id {
+                    self.free(agent, task_id)?;
+                }
                 self.tasks.insert(
                     task_id.clone(),
                     Task {
@@ -1118,6 +1131,7 @@ impl DomainState {
                     return fail("not_found", "Agent missing");
                 };
                 if self.task(task_id)?.agent_id.as_ref() != Some(agent_id) {
+                    self.free(agent_id, task_id)?;
                     self.invalidate(task_id);
                     self.tasks.get_mut(task_id).unwrap().agent_id = Some(agent_id.clone());
                 }
@@ -2020,11 +2034,15 @@ impl DomainState {
                 {
                     return fail("not_found", "Open Request required to reopen Task");
                 }
+                let released = task.agent_id.as_ref().is_some_and(|a| self.busy_with(a, task_id).is_some());
                 self.invalidate(task_id);
                 let t = self.tasks.get_mut(task_id).unwrap();
                 t.state = TaskState::Running;
                 t.started = true;
                 t.archived = false;
+                if released {
+                    t.agent_id = None;
+                }
             }
             Command::ArchiveTask { task_id, archived } => {
                 user(actor)?;

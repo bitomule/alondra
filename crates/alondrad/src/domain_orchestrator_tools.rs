@@ -183,13 +183,17 @@ pub(crate) struct SendBody {
 }
 
 /// Types the orchestrator's text into an Agent's session. With a Task, the Agent is told which
-/// one; a Task nobody works on becomes this Agent's, and a closed one is reopened.
+/// one; a Task nobody works on becomes this Agent's, and a closed one is reopened. An Agent works
+/// on one Task at a time, so a Task for an Agent busy with another is refused.
 pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody,
     sessions: &impl Sessions, terminal: &Arc<impl Terminal>) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
     if let Some(task_id) = &body.task {
         let task = current.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
+        if let Some(other) = current.busy_with(&agent_id, task_id) {
+            return Err(DomainError::new("agent_busy", format!("{} works on {} until it ends: launch a new node for {task_id}, and tell it what {} is doing if they touch the same thing", body.node, other.id.0, body.node)));
+        }
         match &task.agent_id {
             None => run(domain, actor, Command::AssignTask { task_id: task_id.clone(), agent_id: agent_id.clone() })?,
             Some(other) if other != &agent_id => return Err(DomainError::new("conflict", format!("{task_id} belongs to another agent"))),

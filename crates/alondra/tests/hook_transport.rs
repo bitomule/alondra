@@ -186,19 +186,12 @@ fn a_complete_reply_is_printed_and_acknowledged_before_the_daemon_closes() {
 }
 
 #[test]
-fn a_launched_subagent_waits_for_alondra_to_get_its_task_token() {
-    let output = run_hook("agent", Daemon::Missing, true, AGENT);
-    assert_eq!(output.status.code(), Some(0));
-    let reply: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(reply["hookSpecificOutput"]["permissionDecision"], "deny");
-    assert!(reply["hookSpecificOutput"]["permissionDecisionReason"].as_str().unwrap().contains("not answering"));
-}
-
-#[test]
-fn a_subagent_outside_alondra_runs_without_it() {
-    let output = run_hook("agent-own", Daemon::Missing, false, AGENT);
-    assert_eq!(output.status.code(), Some(0));
-    assert!(output.stdout.is_empty());
+fn a_subagent_runs_without_alondra_whether_or_not_alondra_launched_its_session() {
+    for (name, launched) in [("agent", true), ("agent-own", false)] {
+        let output = run_hook(name, Daemon::Missing, launched, AGENT);
+        assert_eq!(output.status.code(), Some(0));
+        assert!(output.stdout.is_empty(), "it works on its node's one task and needs no task token");
+    }
 }
 
 #[test]

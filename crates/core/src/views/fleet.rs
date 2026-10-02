@@ -44,9 +44,9 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
             .into(),
         ),
     );
-    row.children = context.domain.tasks.values()
-        .filter(|task| task.agent_id.as_ref() == Some(&agent.id) && !task.archived)
+    row.children = common::current_task(context.domain, &agent.id)
         .map(|task| super::tasks::task_row(task, context))
+        .into_iter()
         .collect();
     if context.client == super::Client::Ios
         && let Some(node) = live
@@ -190,12 +190,14 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .values()
         .filter(|task| task.agent_id.as_ref() == Some(&agent.id))
         .collect();
-    facts.push(Fact {
-        label: t!(context.lang, "Tasks", "Tareas").into(),
-        value: tasks.len().to_string(),
-        tone: None,
-        link: None,
-    });
+    if let Some(task) = common::current_task(context.domain, &agent.id).filter(|task| !task.state.terminal()) {
+        facts.push(Fact {
+            label: t!(context.lang, "Task", "Tarea").into(),
+            value: task.title.clone(),
+            tone: None,
+            link: None,
+        });
+    }
     view.sections.push(common::section(
         "header",
         None,

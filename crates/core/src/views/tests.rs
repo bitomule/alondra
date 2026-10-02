@@ -1001,6 +1001,33 @@ fn fleet_node_rows_keep_their_assigned_task_rows() {
 }
 
 #[test]
+fn a_fleet_node_shows_the_one_task_it_is_on_not_the_ones_it_finished() {
+    let mut state = fixture();
+    let mut earlier = state.tasks[&"t-1".into()].clone();
+    earlier.id = "t-0".into();
+    earlier.title = "Earlier work".into();
+    earlier.state = TaskState::Done;
+    state.tasks.insert(earlier.id.clone(), earlier);
+    for task in state.tasks.values_mut() {
+        task.agent_id = Some("a-1".into());
+    }
+    let node_row = |state: &DomainState| {
+        let view = render(state, &LiveSnapshot::default(), Client::Tui, Lang::En, "fleet", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            if let Item::Row(row) = item && row.id == "a-1" { Some(row.children.iter().map(|task| task.id.clone()).collect::<Vec<_>>()) } else { None }
+        }).unwrap()
+    };
+    assert_eq!(node_row(&state), ["t-1"]);
+    let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "");
+    assert!(header_facts(&detail).iter().any(|fact| fact.label == "Task" && fact.value == "Build a feature"));
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let idle = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "");
+    assert!(header_facts(&idle).iter().all(|fact| fact.label != "Task"), "a node between tasks is on none");
+    state.tasks.get_mut(&"t-1".into()).unwrap().revision = 2;
+    assert_eq!(node_row(&state), ["t-1"], "between tasks a node shows the last one it had");
+}
+
+#[test]
 fn schedule_editor_includes_selected_projects_launch_options() {
     let state = fixture();
     let mut live = LiveSnapshot::default();

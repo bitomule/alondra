@@ -12,9 +12,9 @@ answers are typed into this session. Alondra sees on its own that you are workin
 ## Your task
 
 The work you were launched for is an Alondra task; its id (`t-…`) is in your mission. Pass it as
-`task_id` (or in `scope`) on every call about it. Work only on tasks assigned to you. Alondra shows
-the task as working from your first step; `start_task` is only needed for a task you were given
-later and have not touched yet.
+`task_id` (or in `scope`) on every call about it. A node works on one task at a time: work only
+on the task assigned to you. Alondra shows the task as working from your first step; `start_task`
+is only needed for a task the orchestrator hands you after your previous one ended.
 
 Each call needs a new unique `interaction_id` (or `pr_id`, `document_id`, `revision_id`) that you
 choose, for example `t-12-result-1`. When a call fails, nothing was recorded and the reply says
@@ -79,11 +79,11 @@ why; retry an uncertain call with exactly the same arguments.
   your mission says once its checks pass.
 - A task that builds on another names the branch to start from and to open your PR against.
 
-## Several tasks
+## One task at a time
 
-If you are given a second task, work each in a subagent of its own whose prompt starts with
-`Alondra task: t-…`, in its own worktree when it needs another branch, and name the task on
-every call. Pass the user's answers about one task to that task's subagent only.
+Your subagents work on your task; they need no task of their own. Something new the user asks
+for that is not part of your task goes to the orchestrator (`ask` with kind `orchestrator`): it
+launches another node for it.
 
 ## Probes and end-to-end tests
 

@@ -208,6 +208,31 @@ async fn a_message_about_a_task_nobody_works_on_gives_it_to_that_agent_and_a_can
 }
 
 #[tokio::test]
+async fn a_node_on_a_task_takes_no_other_until_it_ends_but_still_gets_messages() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let terminal = Arc::new(Typed::default());
+    command(&f.domain, user(), Command::CreateTask { task_id: "t2".into(), request_id: "r".into(), title: "Editor fonts".into(),
+        agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
+    let body = |task: Option<&str>| -> SendBody { serde_json::from_value(json!({"node": "Instance B", "text": "Go", "task": task})).unwrap() };
+    send(&f.domain, &f.home, &actor, body(Some("t")), &background("b1"), &terminal).await.unwrap();
+
+    let refused = send(&f.domain, &f.home, &actor, body(Some("t2")), &background("b1"), &terminal).await.unwrap_err();
+    assert_eq!(refused.code, "agent_busy");
+    assert!(refused.message.contains("launch a new node for t2"), "{}", refused.message);
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, None);
+    send(&f.domain, &f.home, &actor, body(None), &background("b1"), &terminal).await.unwrap();
+    send(&f.domain, &f.home, &actor, body(Some("t")), &background("b1"), &terminal).await.unwrap();
+    assert_eq!(terminal.0.lock().unwrap().len(), 3, "the refused task typed nothing");
+
+    command(&f.domain, user(), Command::CancelTask { task_id: "t".into() });
+    send(&f.domain, &f.home, &actor, body(Some("t2")), &background("b1"), &terminal).await.unwrap();
+    assert_eq!(f.domain.state().unwrap().tasks[&TaskId::from("t2")].agent_id, Some(AgentId::from("agent-b")), "a node whose task ended takes the next one");
+    assert_eq!(send(&f.domain, &f.home, &actor, body(Some("t")), &background("b1"), &terminal).await.unwrap_err().code, "agent_busy",
+        "reopening its old task would give it two");
+}
+
+#[tokio::test]
 async fn an_interrupt_presses_esc_in_a_background_session_only() {
     let f = world();
     let pressed = Arc::new(Mutex::new(vec![]));
