@@ -36,7 +36,9 @@ pub trait Launcher: Sync {
         async { Err((StatusCode::SERVICE_UNAVAILABLE, "this launcher cannot carry a producer capability".into())) }
     }
 
-    /// Stops a launched session whose node mod never loaded, so it does not work unseen.
+    /// Stops a launched session whose node mod never loaded, so it does not work unseen. It is the
+    /// one thing that still reads the short id `claude --bg` prints: a session that never reported
+    /// has no other handle.
     fn stop(&self, short: &str) -> impl Future<Output = ()> + Send;
 
     /// How long a launched session has to say its node mod loaded.
@@ -47,17 +49,6 @@ pub trait Launcher: Sync {
     /// The node plugin every launched session loads.
     fn plugin(&self) -> Option<std::path::PathBuf> {
         crate::plugins::node()
-    }
-
-    /// The session id behind the short id `claude --bg` printed, which it chose itself.
-    fn session_of(&self, short: &str) -> impl Future<Output = Option<String>> + Send {
-        let short = short.to_owned();
-        async move {
-            let out = tokio::time::timeout(std::time::Duration::from_secs(20), tokio::process::Command::new("claude")
-                .args(["agents", "--json", "--all"]).kill_on_drop(true).stdin(std::process::Stdio::null()).output())
-                .await.ok()?.ok()?;
-            crate::domain_sessions::session_of_short(&String::from_utf8_lossy(&out.stdout), &short)
-        }
     }
 }
 

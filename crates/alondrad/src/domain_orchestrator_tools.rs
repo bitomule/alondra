@@ -128,7 +128,8 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         text
     });
     let prompt = crate::domain_schedule_runner::producer_prompt(&mission, &resolved, &task.id);
-    let settings = crate::domain_sessions::prepare(home, &format!("launch-{}", crate::auth::random_hex(8)))
+    let key = format!("launch-{}", crate::auth::random_hex(8));
+    let settings = crate::domain_sessions::prepare(home, &key)
         .map_err(|error| DomainError::new("storage_unavailable", format!("could not write the session's settings: {error}")))?;
     let mut args: Vec<String> = ["--bg", "--name", &body.name, "--permission-mode", "auto"].map(String::from).into();
     args.extend(resolved.launch_flags(body.model.as_deref()));
@@ -144,18 +145,12 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         error
     };
     let output = launcher.run(&body.cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;
-    let short = alondra_core::sessions::launched_short(&output);
-    let session = match &short {
-        Some(short) => launcher.session_of(short).await,
-        None => None,
-    };
-    let session = session.ok_or_else(|| discard(DomainError::new("launch_failed", "Claude did not list the launched session")))?;
-    if !domain.live.mods.wait_loaded(&session, launcher.mods_deadline()).await {
-        if let Some(short) = &short {
-            launcher.stop(short).await;
+    let Some(session) = domain.live.mods.wait_launched(&key, launcher.mods_deadline()).await else {
+        if let Some(short) = alondra_core::sessions::launched_short(&output) {
+            launcher.stop(&short).await;
         }
         return Err(discard(DomainError::new("launch_failed", crate::node_reports::MODS_NOT_LOADED)));
-    }
+    };
     let agent_id = AgentId(session.clone());
     let name = body.title.clone().unwrap_or_else(|| body.name.clone());
     match run(domain, &Actor::System, Command::RegisterAgent { agent_id: agent_id.clone(), name }) {
@@ -173,7 +168,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         let _ = domain.revoke_agent(&session);
         return Err(discard(error));
     }
-    Ok(json!({"agent_id": agent_id, "short_id": short, "task": task.id}))
+    Ok(json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id}))
 }
 
 #[derive(Deserialize)]

@@ -156,9 +156,6 @@ impl crate::orchestrate::Launcher for CapturingLauncher {
         self.0.lock().unwrap().push(args.to_vec());
         Ok("backgrounded · ab1234 · scheduled/run".into())
     }
-    async fn session_of(&self, short: &str) -> Option<String> {
-        (short == "ab1234").then(|| SESSION.to_owned())
-    }
     async fn stop(&self, _: &str) {}
     fn plugin(&self) -> Option<PathBuf> { Some("/synthetic/plugin".into()) }
 }
@@ -191,7 +188,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
         now: alondra_core::now_millis(), next_after_now: None, expected_schedule_revision: None,
     });
     let launcher = CapturingLauncher(Mutex::new(vec![]));
-    node_event(&home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work"}));
+    node_event(&home, json!({"session_id": SESSION, "event": "session.start", "version": "2.1.287", "cwd": "/work", "launch_key": "run-1"}));
     crate::domain_schedule_runner::run_cycle(&daemon.domain, &home, false, &launcher).await.unwrap();
     let args = launcher.0.lock().unwrap().pop().expect("one launch");
     let settings = args.windows(2).find(|pair| pair[0] == "--settings").unwrap()[1].clone();

@@ -948,3 +948,53 @@ async fn fleet_and_node_views_show_what_the_node_mods_report() {
     assert!(facts.iter().any(|fact| fact["label"] == "Coste" && fact["value"] == "0,42 $"), "{facts:?}");
     assert!(facts.iter().any(|fact| fact["label"] == "Ejecutando" && fact["value"] == "Bash: bazel test //crates/..."), "{facts:?}");
 }
+
+#[tokio::test]
+async fn a_nodes_state_comes_from_its_mods_events_and_connection_not_from_hooks_or_job_files() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    let mods = &fixture.domain.live.mods;
+    let now = alondra_core::now_millis();
+    let report = |report: Value, at: i64| {
+        let mut report = report;
+        report["session_id"] = json!("agent-a");
+        mods.apply(serde_json::from_value(report).unwrap(), at);
+    };
+    let state = async |fixture: &Fixture| {
+        let fleet = view_json(fixture, "fleet", "en").await;
+        badges(node_row(&fleet, "agent-a")).first().cloned().unwrap().0
+    };
+    let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
+    assert_ne!(state(&fixture).await, "Working", "recent hooks alone do not make a node work: only its mod says so");
+
+    let connection = mods.connect(hello, now);
+    report(json!({"event": "turn.start", "turn_id": "t1"}), now);
+    assert_eq!(state(&fixture).await, "Working");
+
+    report(json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "sleep 99999"}}), now - 46 * 60 * 1000);
+    assert_eq!(state(&fixture).await, "Stalled", "one call far past the time a call can take");
+    report(json!({"event": "tool.end", "tool_use_id": "u1"}), now);
+    assert_eq!(state(&fixture).await, "Working");
+
+    report(json!({"event": "turn.complete", "turn_id": "t1", "answer": "Done."}), now);
+    assert_ne!(state(&fixture).await, "Working", "the turn ended: the node is idle");
+
+    report(json!({"event": "turn.start", "turn_id": "t2"}), now);
+    mods.disconnect("agent-a", connection);
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    let row = node_row(&fleet, "agent-a");
+    assert!(badges(row).contains(&("Unreachable".into(), "critical".into())), "the open connection closing is what makes a node unreachable");
+    assert_ne!(badges(row)[0].0, "Working", "what a node whose connection closed last reported is not claimed as working");
+}
+
+#[tokio::test]
+async fn a_node_the_daemon_never_heard_a_hook_from_shows_once_its_mod_connects() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "working": true})).unwrap();
+    assert!(fixture.domain.live.node("agent-b").is_none());
+    fixture.domain.live.mods.connect(hello, alondra_core::now_millis());
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    assert_eq!(badges(node_row(&fleet, "agent-b"))[0].0, "Working", "a restarted daemon learns the node is mid-turn from its reconnection");
+}

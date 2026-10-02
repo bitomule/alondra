@@ -3,6 +3,7 @@ use alondra_core::views::{
     Gauge, InboxTime, Lang, Level, LiveActivity, LiveBackground, LiveHistoryStep, LiveNode, LiveOrchestrator,
     LiveCheck, LivePullRequest, LiveSnapshot, Notice, Tone,
 };
+use crate::node_reports::Activity;
 use serde_json::Value;
 use sha2::Digest;
 use std::{collections::{BTreeMap, HashMap}, sync::Mutex};
@@ -24,6 +25,23 @@ impl LiveReadCache {
     }
 }
 
+fn node_label(state: alondra_core::NodeState, lang: Lang) -> String {
+    match lang {
+        Lang::En => state.label().to_owned(),
+        Lang::Es => match state {
+            alondra_core::NodeState::Working => "trabajando",
+            alondra_core::NodeState::WaitingAnswer => "esperando respuesta",
+            alondra_core::NodeState::YourTurn => "te toca",
+            alondra_core::NodeState::WaitingMerge => "espera tu revisión",
+            alondra_core::NodeState::Delivered => "entrega resultado",
+            alondra_core::NodeState::WaitingMachine => "esperando máquina",
+            alondra_core::NodeState::Done => "terminado",
+            alondra_core::NodeState::Unclear => "no sé qué quiere",
+            alondra_core::NodeState::Stalled => "parado",
+        }.to_owned(),
+    }
+}
+
 pub(crate) async fn gather(
     client: &crate::v2_client_routes::Client,
     state: &DomainState,
@@ -32,38 +50,31 @@ pub(crate) async fn gather(
     allow_issue_refresh: bool,
     clock_only: bool,
 ) -> LiveSnapshot {
-    let nodes = client
-        .domain
-        .live
-        .nodes()
-        .into_iter()
-        .filter_map(|node| {
-            let agent = state.agents.get(&node.session_id.as_str().into())?;
+    let now = alondra_core::now_millis();
+    let nodes = state
+        .agents
+        .values()
+        .filter_map(|agent| {
+            let session_id = agent.id.0.clone();
+            let reported = client.domain.live.mods.session(&session_id).unwrap_or_default();
+            let node = match client.domain.live.node(&session_id) {
+                Some(node) => node,
+                None if reported.started_at.is_some() => alondra_core::Node::new(&session_id, now),
+                None => return None,
+            };
             let project = node.project();
-            let state_key = if node.state == alondra_core::NodeState::Stalled {
-                "stalled".to_owned()
-            } else if node.status == alondra_core::NodeStatus::Free {
-                "free".to_owned()
-            } else if node.status == alondra_core::NodeStatus::Busy {
-                "busy".to_owned()
-            } else {
-                serde_json::to_value(node.state).ok()?.as_str()?.to_owned()
+            let activity = reported.activity(now);
+            let (state_key, state_label) = match activity {
+                Activity::Stalled => ("stalled", node_label(alondra_core::NodeState::Stalled, lang)),
+                Activity::Working => ("busy", node_label(alondra_core::NodeState::Working, lang)),
+                Activity::Idle | Activity::Unreachable if node.status == alondra_core::NodeStatus::WaitingMachine => {
+                    ("waiting_machine", node_label(alondra_core::NodeState::WaitingMachine, lang))
+                }
+                Activity::Idle | Activity::Unreachable => {
+                    let idle = if node.state == alondra_core::NodeState::Working { alondra_core::NodeState::Unclear } else { node.state };
+                    ("free", node_label(idle, lang))
+                }
             };
-            let state_label = match lang {
-                Lang::En => node.state.label().to_owned(),
-                Lang::Es => match node.state {
-                    alondra_core::NodeState::Working => "trabajando",
-                    alondra_core::NodeState::WaitingAnswer => "esperando respuesta",
-                    alondra_core::NodeState::YourTurn => "te toca",
-                    alondra_core::NodeState::WaitingMerge => "espera tu revisión",
-                    alondra_core::NodeState::Delivered => "entrega resultado",
-                    alondra_core::NodeState::WaitingMachine => "esperando máquina",
-                    alondra_core::NodeState::Done => "terminado",
-                    alondra_core::NodeState::Unclear => "no sé qué quiere",
-                    alondra_core::NodeState::Stalled => "parado",
-                }.to_owned(),
-            };
-            let reported = client.domain.live.mods.session(&node.session_id).unwrap_or_default();
             let tool = reported.tool.as_ref().map(|tool| match &tool.summary {
                 Some(summary) => format!("{}: {summary}", tool.name),
                 None => tool.name.clone(),
@@ -101,7 +112,7 @@ pub(crate) async fn gather(
                 cwd: node.cwd.clone(),
                 name: agent.name.clone(),
                 project: Some(project),
-                state_key: Some(state_key),
+                state_key: Some(state_key.to_owned()),
                 state_label: Some(state_label),
                 summary,
                 needs: node.daemon_needs.clone(),
@@ -113,7 +124,7 @@ pub(crate) async fn gather(
                 }).collect(),
                 background_badge,
                 background_suspect,
-                working: node.busy || node.status == alondra_core::NodeStatus::Busy,
+                working: matches!(activity, Activity::Working | Activity::Stalled),
                 waiting: matches!(node.state, alondra_core::NodeState::WaitingAnswer |
                     alondra_core::NodeState::YourTurn | alondra_core::NodeState::WaitingMerge |
                     alondra_core::NodeState::WaitingMachine),
@@ -125,7 +136,7 @@ pub(crate) async fn gather(
                 context_percent: reported.context.as_ref().and_then(|context| context.percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
-                unreachable: reported.unreachable(),
+                unreachable: activity == Activity::Unreachable,
             })
         })
         .collect();

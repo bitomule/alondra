@@ -433,7 +433,6 @@ async fn run_domain(config: &Config) -> Result<()> {
         config.wake,
     ));
     let transport = tokio::spawn(domain_transport::run(hooks, domain.clone()));
-    tokio::spawn(watcher::run_live(domain.clone(), watcher::claude_home()));
     match plugins::node_source(&watcher::claude_home()).zip(plugins::own_cli()) {
         Some((source, cli)) => match plugins::install_node(&config.home, &source, &cli) {
             Ok(dir) => log!("node plugin {} brought up to date from {}", dir.display(), source.display()),

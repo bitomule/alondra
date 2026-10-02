@@ -3,6 +3,8 @@
 //! memory beside the hooks' live view; the domain never records it. The open connection the mod
 //! holds (`alondra node connect`) is the node's liveness: a newer connection from the same
 //! session replaces the older one, and only the current one closing makes the node unreachable.
+//! A session binds to its launch by the key of the settings file the launch gave it
+//! (`ALONDRA_DOMAIN_SETTINGS`), which its mod reports in `session.start`.
 use alondra_core::usage::{RateLimit, Usage};
 use alondra_core::{Millis, ToolInFlight};
 use serde::Deserialize;
@@ -21,7 +23,7 @@ pub(crate) const MODS_NOT_LOADED: &str =
 #[serde(tag = "event")]
 pub(crate) enum Report {
     #[serde(rename = "session.start")]
-    SessionStart { version: String, #[serde(default)] cwd: Option<String> },
+    SessionStart { version: String, #[serde(default)] cwd: Option<String>, #[serde(default)] launch_key: Option<String> },
     #[serde(rename = "session.end")]
     SessionEnd,
     #[serde(rename = "session.measure")]
@@ -76,6 +78,10 @@ pub(crate) struct Hello {
     pub version: String,
     #[serde(default)]
     pub cwd: Option<String>,
+    #[serde(default)]
+    pub launch_key: Option<String>,
+    #[serde(default)]
+    pub working: bool,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -107,7 +113,31 @@ pub(crate) struct Reported {
     pub cost_usd: Option<f64>,
 }
 
+/// What a node does, as its mod's events and connection say it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Activity {
+    /// Inside a turn, or a tool call is running within the time such a call can take.
+    Working,
+    /// One tool call has run far longer than such a call can.
+    Stalled,
+    Idle,
+    /// The mod loaded and its connection is closed: what it last reported may no longer hold.
+    Unreachable,
+}
+
 impl Reported {
+    pub(crate) fn activity(&self, now: Millis) -> Activity {
+        if self.unreachable() {
+            Activity::Unreachable
+        } else if self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name)) {
+            Activity::Stalled
+        } else if self.working_since.is_some() || self.tool.is_some() {
+            Activity::Working
+        } else {
+            Activity::Idle
+        }
+    }
+
     /// The mod loaded and its session has not ended, yet its connection is closed.
     pub(crate) fn unreachable(&self) -> bool {
         self.started_at.is_some() && !self.ended && self.connection.is_none()
@@ -125,6 +155,7 @@ struct Limits {
 #[derive(Default)]
 pub(crate) struct Reports {
     sessions: Mutex<HashMap<String, Reported>>,
+    launches: Mutex<HashMap<String, String>>,
     limits: Mutex<Limits>,
     connections: std::sync::atomic::AtomicU64,
     started: tokio::sync::Notify,
@@ -141,10 +172,14 @@ impl Reports {
         {
             self.measured(rate_limits, now, today);
         }
+        let id = session_id.clone();
         let mut sessions = self.sessions.lock().expect("node reports poisoned");
         let session = sessions.entry(session_id).or_default();
         match report {
-            Report::SessionStart { version, cwd } => {
+            Report::SessionStart { version, cwd, launch_key } => {
+                if let Some(key) = launch_key {
+                    self.launches.lock().expect("launch keys poisoned").insert(key, id);
+                }
                 session.version = Some(version);
                 session.cwd = cwd;
                 session.started_at = Some(now);
@@ -203,9 +238,15 @@ impl Reports {
     pub(crate) fn connect(&self, hello: Hello, now: Millis) -> u64 {
         let number = self.connections.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
         let mut sessions = self.sessions.lock().expect("node reports poisoned");
+        if let Some(key) = hello.launch_key {
+            self.launches.lock().expect("launch keys poisoned").insert(key, hello.session_id.clone());
+        }
         let session = sessions.entry(hello.session_id).or_default();
         session.connection = Some(number);
         session.ended = false;
+        if hello.working {
+            session.working_since.get_or_insert(now);
+        }
         session.version = Some(hello.version);
         session.cwd = hello.cwd.or(session.cwd.take());
         session.started_at.get_or_insert(now);
@@ -227,7 +268,21 @@ impl Reports {
     /// What a session whose mod loaded reports first, for tests that launch through a fake Claude.
     #[cfg(test)]
     pub(crate) fn loaded_in(&self, session_id: &str) {
-        let report = Report::SessionStart { version: "2.1.287".into(), cwd: None };
+        self.loaded_for(session_id, None);
+    }
+
+    /// A fake Claude's launch whose mod loads: the session reports the key of the settings file
+    /// the launch passed with `--settings`, as the real mod reports `ALONDRA_DOMAIN_SETTINGS`.
+    #[cfg(test)]
+    pub(crate) fn loaded_by(&self, session_id: &str, launch_args: &[String]) {
+        let settings = launch_args.windows(2).find(|pair| pair[0] == "--settings").expect("a launch passes --settings");
+        let key = std::path::Path::new(&settings[1]).file_stem().and_then(|stem| stem.to_str()).expect("a settings file name");
+        self.loaded_for(session_id, Some(key));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn loaded_for(&self, session_id: &str, launch_key: Option<&str>) {
+        let report = Report::SessionStart { version: "2.1.287".into(), cwd: None, launch_key: launch_key.map(str::to_owned) };
         self.apply(Envelope { session_id: session_id.into(), report }, alondra_core::now_millis());
     }
 
@@ -235,25 +290,31 @@ impl Reports {
         self.sessions.lock().expect("node reports poisoned").get(session_id).cloned()
     }
 
-    fn loaded(&self, session_id: &str) -> bool {
+    /// Whether the session's mod said it loaded: only Alondra's launches carry the node mod.
+    pub(crate) fn is_node(&self, session_id: &str) -> bool {
         self.sessions.lock().expect("node reports poisoned").get(session_id).is_some_and(|session| session.started_at.is_some())
     }
 
-    /// Whether the session's mod said it loaded within `deadline`.
-    pub(crate) async fn wait_loaded(&self, session_id: &str, deadline: Duration) -> bool {
+    fn launched(&self, key: &str) -> Option<String> {
+        self.launches.lock().expect("launch keys poisoned").get(key).cloned()
+    }
+
+    /// The session whose mod reported the launch's key within `deadline`: the id Claude chose
+    /// for it, which is how a launch binds to its session.
+    pub(crate) async fn wait_launched(&self, key: &str, deadline: Duration) -> Option<String> {
         tokio::time::timeout(deadline, async {
             loop {
                 let started = self.started.notified();
                 tokio::pin!(started);
                 started.as_mut().enable();
-                if self.loaded(session_id) {
-                    return;
+                if let Some(session) = self.launched(key) {
+                    return session;
                 }
                 started.await;
             }
         })
         .await
-        .is_ok()
+        .ok()
     }
 
     pub(crate) fn usage(&self, now: Millis) -> Option<Usage> {
@@ -346,18 +407,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_launch_waits_for_the_mod_and_gives_up_after_the_deadline() {
+    async fn a_launch_binds_to_the_session_whose_mod_reports_its_key_and_gives_up_after_the_deadline() {
         let reports = std::sync::Arc::new(Reports::default());
-        assert!(!reports.wait_loaded("silent", Duration::from_millis(20)).await, "no session.start before the deadline");
+        assert_eq!(reports.wait_launched("silent", Duration::from_millis(20)).await, None, "no session.start before the deadline");
         let waiting = tokio::spawn({
             let reports = reports.clone();
-            async move { reports.wait_loaded("s", MODS_DEADLINE).await }
+            async move { reports.wait_launched("launch-1", MODS_DEADLINE).await }
         });
         tokio::task::yield_now().await;
-        reports.apply(report(json!({"session_id": "s", "event": "session.start", "version": "2.1.287"})), 1);
-        assert!(waiting.await.unwrap());
-        assert!(reports.wait_loaded("s", Duration::ZERO).await, "a session that already reported does not wait");
-        reports.connect(hello("reconnected"), 2);
-        assert!(reports.wait_loaded("reconnected", Duration::ZERO).await, "a connection says the mod loaded too");
+        reports.apply(report(json!({"session_id": "other", "event": "session.start", "version": "2.1.287", "launch_key": "launch-2"})), 1);
+        reports.apply(report(json!({"session_id": "real-session-id", "event": "session.start", "version": "2.1.287", "launch_key": "launch-1"})), 2);
+        assert_eq!(waiting.await.unwrap().as_deref(), Some("real-session-id"), "the id is Claude's, with no banner and no listing");
+        assert_eq!(reports.wait_launched("launch-1", Duration::ZERO).await.as_deref(), Some("real-session-id"), "a session that already reported does not wait");
+        let mut reconnected = hello("after-a-restart");
+        reconnected.launch_key = Some("launch-3".into());
+        reports.connect(reconnected, 3);
+        assert_eq!(reports.wait_launched("launch-3", Duration::ZERO).await.as_deref(), Some("after-a-restart"), "a connection carries the key too");
+        assert!(reports.is_node("after-a-restart") && !reports.is_node("stranger"));
+    }
+
+    #[test]
+    fn a_reconnection_says_whether_the_session_is_inside_a_turn() {
+        let reports = Reports::default();
+        let mut busy = hello("s");
+        busy.working = true;
+        reports.connect(busy, 5);
+        assert_eq!(reports.session("s").unwrap().working_since, Some(5), "a daemon that restarted mid-turn learns it from the reconnection");
+        reports.apply(report(json!({"session_id": "s", "event": "turn.complete", "turn_id": "t", "answer": "Done."})), 6);
+        reports.connect(hello("s"), 7);
+        assert_eq!(reports.session("s").unwrap().working_since, None);
     }
 }
