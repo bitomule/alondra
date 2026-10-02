@@ -294,7 +294,7 @@ async fn execute_external(
             if action.verb == Verb::Reply && note.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let (kind, text, mark_read) = if action.verb == Verb::Ctx {
                 ("more_context", context_request(note), false)
-            } else { ("reply", note.to_owned(), true) };
+            } else { ("reply", note.to_owned(), matches!(interaction.payload, InteractionPayload::Information { .. })) };
             let body = json!({"text":text,"attachments":attachments,"kind":kind,
                 "mark_read":mark_read,"interaction_id":interaction_id,"task_id":task_id});
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
