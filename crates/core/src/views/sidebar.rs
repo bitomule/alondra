@@ -57,7 +57,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         }
     }
     let defining: Vec<_> = context.domain.requests.values()
-        .filter(|request| !request.closed && !context.domain.tasks.values().any(|task| task.request_id == request.id))
+        .filter(|request| context.domain.is_defining(request))
         .map(|request| {
             let title = request.title.clone().unwrap_or_else(|| request.body.lines().next().unwrap_or("").chars().take(80).collect());
             let mut row = common::row(&request.id.0, &format!("request:{}", request.id), Icon::Mission, title, None);
@@ -79,7 +79,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
         rows.push(group_row("archived", t!(context.lang, "Archived", "Archivadas"), archived));
     }
     let open_count = context.domain.tasks.values().filter(|task| !task.archived && !task.state.terminal()).count()
-        + context.domain.requests.values().filter(|request| !request.closed && !context.domain.tasks.values().any(|task| task.request_id == request.id)).count();
+        + context.domain.requests.values().filter(|request| context.domain.is_defining(request)).count();
     let mut section = common::section("tasks", Some(t!(context.lang, "Tasks", "Tareas").into()),
         std::iter::once(Item::Row(common::row("schedules", "schedules", Icon::Schedule,
             t!(context.lang, "Scheduled Tasks", "Tareas programadas").into(), None)))
