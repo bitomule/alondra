@@ -137,19 +137,19 @@ impl DomainState {
             expected_head: head,
         }
     }
-    /// Why a delivery waits on its Agent rather than on the user: feedback given since its
-    /// acceptance. Only the Agent presenting again puts it back in front of the user.
-    pub fn handed_back(&self, presentation: &Interaction) -> Option<FeedbackReason> {
+    /// The instruction a delivery went back to its Agent with, since its acceptance. Only the
+    /// Agent presenting again puts it back in front of the user.
+    pub fn handed_back(&self, presentation: &Interaction) -> Option<Instruction> {
         let InteractionPayload::Delivery { acceptance, feedback, .. } = &presentation.payload else {
             return None;
         };
         feedback
             .last()
             .filter(|f| acceptance.as_ref().is_none_or(|a| f.at_revision > a.at_revision))
-            .map(Feedback::reason)
+            .map(|f| f.instruction)
     }
     /// The same for an active Task, through its current final delivery.
-    pub fn task_handed_back(&self, task_id: &TaskId) -> Option<FeedbackReason> {
+    pub fn task_handed_back(&self, task_id: &TaskId) -> Option<Instruction> {
         let task = self.tasks.get(task_id).filter(|t| !t.state.terminal())?;
         self.handed_back(self.interactions.get(task.final_presentation.as_ref()?)?)
     }
@@ -240,6 +240,7 @@ impl DomainState {
                             presentation_id: i.id.clone(),
                             targets: targets.clone(),
                             body: "feedback".into(),
+                            instruction: Instruction::Changes,
                         },
                         Some(i.id.clone()),
                         None,

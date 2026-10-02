@@ -5,6 +5,22 @@ use super::{
 use crate::domain_v2::{DomainState, Request, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
+fn state(task: &Task, domain: &DomainState, lang: super::Lang) -> &'static str {
+    if let Some(label) = common::instruction_label(task, domain, lang) {
+        return label;
+    }
+    match task.state {
+        TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
+        TaskState::Running => t!(lang, "Working", "Trabajando"),
+        TaskState::NeedsYou => t!(lang, "Needs you", "Te necesita"),
+        TaskState::InReview => t!(lang, "In review", "En revisión"),
+        TaskState::WaitingDependency => t!(lang, "Waiting", "Esperando"),
+        TaskState::Closing => t!(lang, "Closing", "Cerrando"),
+        TaskState::Done => t!(lang, "Finished", "Terminado"),
+        TaskState::Cancelled => t!(lang, "Cancelled", "Cancelado"),
+    }
+}
+
 fn effort_label(effort: &str, lang: super::Lang) -> String {
     common::effort_label(effort, lang).unwrap_or(effort).into()
 }
@@ -16,10 +32,10 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
         &format!("task:{}", task.id),
         icon,
         task.title.clone(),
-        Some(common::task_state_label(task, context.domain, context.lang).into()),
+        Some(state(task, context.domain, context.lang).into()),
     );
     row.struck = task.state == TaskState::Cancelled;
-    row.badges.push(super::Label { text: common::task_state_label(task, context.domain, context.lang).into(), tone });
+    row.badges.push(super::Label { text: state(task, context.domain, context.lang).into(), tone });
     row.trailing = Some(Trailing::Count {
         value: context
             .domain
@@ -310,7 +326,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let request = context.domain.requests.get(&task.request_id);
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
-        value: common::task_state_label(task, context.domain, context.lang).into(),
+        value: state(task, context.domain, context.lang).into(),
         tone: Some(common::task_presentation(task.state).1),
         link: None,
     }];

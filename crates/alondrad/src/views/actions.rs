@@ -5,7 +5,7 @@
 //! the same command path as the resource API.
 
 use alondra_core::domain_v2::{
-    Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Feedback, Hold,
+    Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
     InteractionId, InteractionPayload, MergeMethod, Revision, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, VIEWS_PROTOCOL};
@@ -792,23 +792,23 @@ fn map_domain_action(
             let text = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
             if text.trim().is_empty() { return None; }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(),
-                body: Feedback::reply(&interaction.id, &text), attachments: attachments.to_vec() },
+                body: text, attachments: attachments.to_vec(), instruction: Instruction::Reply },
                 stamp("Reply sent", "Respuesta enviada")))
         }
         Verb::AskPr | Verb::Conflicts => {
             let pr = state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))?;
             let presentation = pr_presentation(state, pr)?;
             let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
-            let (body, attachments, stamp) = if action.verb == Verb::AskPr {
+            let (body, attachments, instruction, stamp) = if action.verb == Verb::AskPr {
                 let text = request.input.text.as_deref().unwrap_or_default().trim();
                 if text.is_empty() { return None; }
-                (Feedback::question(&pr.id, text), attachments.to_vec(), stamp("Question sent", "Pregunta enviada"))
+                (text.to_owned(), attachments.to_vec(), Instruction::Question, stamp("Question sent", "Pregunta enviada"))
             } else {
                 (crate::domain_messages::conflicts_text(&crate::domain_messages::user_name(), pr), vec![],
-                    stamp("Conflicts requested", "Conflictos comunicados"))
+                    Instruction::Conflicts, stamp("Conflicts requested", "Conflictos comunicados"))
             };
             Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: targets.clone(),
-                body, attachments }, stamp))
+                body, attachments, instruction }, stamp))
         }
         Verb::Read => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
@@ -862,7 +862,7 @@ fn map_domain_action(
                 }
             }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(), body,
-                attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")))
+                attachments: attachments.to_vec(), instruction: Instruction::Changes }, stamp("Changes requested", "Cambios solicitados")))
         }
         Verb::Merge => {
             let (interaction, target_pr) = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
@@ -1590,9 +1590,9 @@ mod tests {
 
     #[tokio::test]
     async fn resolving_conflicts_or_asking_about_a_presented_pr_hands_it_back_to_its_node() {
-        use alondra_core::domain_v2::FeedbackReason;
-        for (verb, text, reason) in [(Verb::Conflicts, None, FeedbackReason::Conflicts),
-            (Verb::AskPr, Some("Why a new table?"), FeedbackReason::Message)] {
+        use alondra_core::domain_v2::{Feedback, Instruction};
+        for (verb, text, author, instruction) in [(Verb::Conflicts, None, Feedback::ALONDRA, Instruction::Conflicts),
+            (Verb::AskPr, Some("Why a new table?"), "device:test-device", Instruction::Question)] {
             let (home, domain, client) = action_home();
             presented_pr(&domain);
             assert!(waits_for_the_user(&domain));
@@ -1603,8 +1603,8 @@ mod tests {
             assert_eq!(applied["outcome"], "applied", "{applied}");
             let state = domain.state().unwrap();
             let InteractionPayload::Delivery { feedback, .. } = &state.interactions[&"result".into()].payload else { unreachable!() };
-            assert_eq!(feedback.iter().map(|f| f.reason()).collect::<Vec<_>>(), [reason]);
-            assert_eq!(state.task_handed_back(&"task".into()), Some(reason));
+            assert_eq!(feedback.iter().map(|f| (f.user_id.as_str(), f.instruction)).collect::<Vec<_>>(), [(author, instruction)]);
+            assert_eq!(state.task_handed_back(&"task".into()), Some(instruction));
             assert!(!waits_for_the_user(&domain), "{verb:?} takes the card out of Waiting for You");
         }
     }

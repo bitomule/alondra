@@ -166,7 +166,7 @@ pub(crate) fn pr_url(pr: &alondra_core::domain_v2::PullRequest) -> String {
 pub(crate) fn conflicts_text(name: &str, pr: &alondra_core::domain_v2::PullRequest) -> String {
     format!(
         "{name} asks you to resolve the conflicts of {url} with {base}: bring {base} into the branch, resolve them, \
-         run the tests, push and present the PR again with its new head. If you cannot resolve them, ask {name}.",
+         run the tests and push. When you finish, present the PR again with present_result and its new head. If you cannot resolve them, ask {name}.",
         url = pr_url(pr), base = pr.base
     )
 }

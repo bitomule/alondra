@@ -76,8 +76,9 @@ why; retry an uncertain call with exactly the same arguments.
   run the approved method against that PR and head, for example
   `gh pr merge <number> --match-head-commit <head> --squash`. Never merge without that claim.
 - When the user requests changes or asks about the PR, or Alondra asks you to resolve its
-  conflicts, its card leaves the user's queue. Answer a question with `publish_information`;
-  after you push, present the PR again with its new head, the only thing that brings the card
+  conflicts, its card leaves the user's queue and the task shows what Alondra asked of you. Do
+  it (answer a question with `publish_information`), then present the result again with
+  `present_result`, for a PR with its new head: that is the only thing that brings the card
   back. If you cannot do what was asked, `ask`.
 - With auto-merge chosen for the work, register and present the PR the same way and merge it as
   your mission says once its checks pass.

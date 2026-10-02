@@ -2303,26 +2303,27 @@ fn execute(state: &mut DomainState, actor: crate::domain_v2::Actor, command: cra
 }
 
 #[test]
-fn a_pr_handed_back_leaves_waiting_for_you_and_its_task_says_why() {
-    use crate::domain_v2::{Actor, Command, DeliveryTarget, Feedback, FeedbackReason};
+fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() {
+    use crate::domain_v2::{Actor, Command, DeliveryTarget, Instruction};
     let live = LiveSnapshot::default();
     let home = |state: &DomainState| render(state, &live, Client::Ios, Lang::En, "home", "").sections[0].card_ids.clone();
-    let label = |state: &DomainState, lang| serde_json::to_string(&render(state, &live, Client::Tui, lang, "task:t", "")).unwrap();
+    let task = |state: &DomainState, lang| serde_json::to_string(&render(state, &live, Client::Tui, lang, "task:t", "")).unwrap();
     let presented = presented_pr();
     assert_eq!(home(&presented), ["pr"]);
-    let question = Feedback::question(&"pr".into(), "Why?");
-    for (actor, body, reason, english, spanish) in [
-        (Actor::System, "Resolve them", FeedbackReason::Conflicts, "Resolving conflicts", "Resolviendo conflictos"),
-        (Actor::User { user_id: "u".into() }, "Shorter", FeedbackReason::Changes, "Changes requested", "Cambios solicitados"),
-        (Actor::User { user_id: "u".into() }, question.as_str(), FeedbackReason::Message, "Working", "Trabajando"),
+    let user = Actor::User { user_id: "u".into() };
+    for (actor, instruction, english, spanish) in [
+        (Actor::System, Instruction::Conflicts, "Resolving conflicts", "Resolviendo conflictos"),
+        (user.clone(), Instruction::Changes, "Changes requested", "Cambios solicitados"),
+        (user.clone(), Instruction::Question, "Answering your question", "Respondiendo a tu pregunta"),
+        (user.clone(), Instruction::Reply, "Acting on your reply", "Atendiendo tu respuesta"),
     ] {
         let mut state = presented.clone();
         execute(&mut state, actor, Command::SubmitFeedback {
-            attachments: vec![], presentation_id: "d".into(), body: body.into(),
+            attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
         });
-        assert!(home(&state).is_empty(), "{reason:?} takes the card out of Waiting for You");
-        assert!(label(&state, Lang::En).contains(english), "{reason:?}");
-        assert!(label(&state, Lang::Es).contains(spanish), "{reason:?}");
+        assert!(home(&state).is_empty(), "{instruction:?} takes the card out of Waiting for You");
+        assert!(task(&state, Lang::En).contains(english), "{instruction:?}");
+        assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
     }
 }

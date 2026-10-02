@@ -2,7 +2,7 @@
 //! title, checks and whether it merges cleanly. Refreshed in the background and read from
 //! memory, so a client's poll never waits on `gh`.
 use alondra_core::domain_v2::{
-    Actor, Command, CommandEnvelope, DeliveryTarget, DomainState, FeedbackReason, InteractionPayload, PrState,
+    Actor, Command, CommandEnvelope, DeliveryTarget, DomainState, Instruction, InteractionPayload, PrState,
     PROTOCOL_VERSION,
 };
 use alondra_core::pr::Check;
@@ -95,6 +95,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
                 presentation_id: presentation.id.clone(),
                 targets: targets.clone(),
                 body: crate::domain_messages::conflicts_text(name, pr),
+                instruction: Instruction::Conflicts,
             },
         };
         if let Err(error) = domain.execute(&Actor::System, &envelope, None, || Ok(())) {
@@ -106,7 +107,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
 fn conflicts_sent(state: &DomainState, pr: &alondra_core::domain_v2::PullRequest) -> bool {
     state.interactions.values().any(|interaction| matches!(&interaction.payload,
         InteractionPayload::Delivery { targets, feedback, .. }
-            if feedback.iter().any(|f| f.reason() == FeedbackReason::Conflicts)
+            if feedback.iter().any(|f| f.instruction == Instruction::Conflicts)
                 && targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { pr_id, head }
                     if pr_id == &pr.id && head == &pr.head))))
 }
@@ -133,7 +134,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
 mod tests {
     use super::{Details, PrDetails, hand_back_conflicts, parse};
     use alondra_core::domain_v2::{
-        Actor, Command, CommandEnvelope, DeliveryTarget, FeedbackReason, InteractionPayload, MergeMethod, PrState,
+        Actor, Command, CommandEnvelope, DeliveryTarget, Instruction, InteractionPayload, MergeMethod, PrState,
     };
     use serde_json::json;
 
@@ -157,7 +158,7 @@ mod tests {
     fn conflicts_told(domain: &crate::domain_runtime::DomainRuntime) -> Vec<(String, String)> {
         domain.state().unwrap().interactions.values().flat_map(|interaction| match &interaction.payload {
             InteractionPayload::Delivery { feedback, .. } => feedback.iter()
-                .filter(|f| f.reason() == FeedbackReason::Conflicts)
+                .filter(|f| f.instruction == Instruction::Conflicts)
                 .map(|f| (interaction.id.0.clone(), f.body.clone())).collect(),
             _ => vec![],
         }).collect()

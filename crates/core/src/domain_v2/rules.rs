@@ -1685,9 +1685,10 @@ impl DomainState {
                 presentation_id,
                 targets,
                 body,
+                instruction,
             } => {
-                let u = match actor {
-                    Actor::System => Feedback::ALONDRA.to_owned(),
+                let u = match (actor, instruction) {
+                    (Actor::System, Instruction::Conflicts) => Feedback::ALONDRA.to_owned(),
                     _ => user(actor)?,
                 };
                 content(body, attachments)?;
@@ -1704,10 +1705,11 @@ impl DomainState {
                         user_id: u,
                         body: body.clone(),
                         at_revision: self.revision + 1,
+                        instruction: *instruction,
                     });
                 }
                 p.revision = self.revision + 1;
-                self.notify(&task, Some(presentation_id.clone()), body, effects)?;
+                self.notify(&task, Some(presentation_id.clone()), &instruction.message(body), effects)?;
             }
             Command::AcceptDelivery {
                 presentation_id,
