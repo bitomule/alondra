@@ -101,6 +101,9 @@ fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
         .filter_map(|node| node.project.as_deref()).find(|project| *project != "others") {
         row.badges.push(super::Label { text: project.into(), tone: Tone::Neutral });
     }
+    row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View {
+        key: format!("task:{}", task.id),
+    });
     row.children = task_tree(&tasks, context);
     row
 }
@@ -342,7 +345,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             .filter(|title: &String| !title.is_empty())
             .unwrap_or_else(|| t!(context.lang, "Request details unavailable", "Detalles de la solicitud no disponibles").into()),
         tone: None,
-        link: Some(super::Link::View {
+        link: (context.client != super::Client::Ios).then(|| super::Link::View {
             key: format!("request:{}", task.request_id),
         }),
     });

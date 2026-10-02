@@ -70,7 +70,7 @@ public extension TaskDetail {
                 if case .row(let row) = item { row.trailing?.instant } else { nil }
             }.first,
             node: reference(linked(to: "node:")),
-            request: reference(linked(to: "request:")),
+            request: reference(facts.dropFirst().first { $0.link == nil }),
             now: now,
             waiting: Section(title: section("waiting")?.title, elements: items("waiting").compactMap {
                 if case .card(let card) = $0 { card } else { nil }

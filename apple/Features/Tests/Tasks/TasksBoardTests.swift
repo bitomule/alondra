@@ -26,9 +26,16 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertEqual(request.project, "Alondra")
         XCTAssertEqual(request.state, "Active")
         XCTAssertEqual(request.touchedAt, Date(timeIntervalSince1970: 1_767_216_600))
-        XCTAssertEqual(request.link, .view(key: "request:r-1"))
+        XCTAssertEqual(request.link, .view(key: "task:t-2"), "a request opens its most recently changed task")
         XCTAssertEqual(request.tasks.first?.tone, .warning)
         XCTAssertEqual(request.tasks.first?.icon, .action)
+    }
+
+    func testAFinishedRequestOpensItsLastTaskAndOneWithoutTasksOpensNothing() throws {
+        let board = TasksBoard(document: try Samples.document("tasks-populated"))
+
+        XCTAssertEqual(board.finished.requests.map(\.link), [.view(key: "task:t-5"), nil])
+        XCTAssertEqual(board.finished.requests.map(\.tasks.isEmpty), [false, true])
     }
 
     func testFinishedAndArchivedWorkIsFoldedUnderItsCountWithTheNextPageKey() throws {

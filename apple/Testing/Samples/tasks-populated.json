@@ -52,7 +52,7 @@
           "subtitle": "Active",
           "link": {
             "kind": "view",
-            "key": "request:r-1"
+            "key": "task:t-2"
           },
           "badges": [
             {
@@ -146,7 +146,7 @@
           "subtitle": "Active",
           "link": {
             "kind": "view",
-            "key": "request:r-2"
+            "key": "task:t-4"
           },
           "trailing": {
             "kind": "time",
@@ -196,7 +196,7 @@
           "subtitle": "Finished",
           "link": {
             "kind": "view",
-            "key": "request:r-3"
+            "key": "task:t-5"
           },
           "trailing": {
             "kind": "time",
@@ -236,10 +236,6 @@
           "depth": 0,
           "struck": false,
           "subtitle": "Withdrawn",
-          "link": {
-            "kind": "view",
-            "key": "request:r-4"
-          },
           "trailing": {
             "kind": "time",
             "at": "2025-12-29T10:00:00.000Z",

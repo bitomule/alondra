@@ -38,15 +38,6 @@ final class TasksSnapshotTests: XCTestCase {
         }
     }
 
-    private func request(_ document: ViewDocument) -> StoreOf<RequestDetailFeature> {
-        let key = ViewKey(rawValue: document.key)
-        var state = RequestDetailFeature.State(key: key)
-        state.screen = .showing(document, key: key)
-        return Store(initialState: state) { RequestDetailFeature() } withDependencies: {
-            $0.viewsClient.observe = ViewsClient.serving(document)
-        }
-    }
-
     func test_tasks_populated() throws {
         let document = try SampleViews.document("tasks-populated")
         assertScreen { ScreenFrame(height: 720) { TasksView(store: tasks(document)) } }
@@ -112,15 +103,5 @@ final class TasksSnapshotTests: XCTestCase {
             $0.viewsClient.observe = { _ in AsyncThrowingStream { $0.finish(throwing: ViewsClientError.missingView) } }
         }
         assertScreen(lightAndDark) { ScreenFrame(height: 320) { TaskDetailView(store: store) } }
-    }
-
-    func test_requestDetail() throws {
-        let document = try SampleViews.document("request-detail")
-        assertScreen { ScreenFrame(height: 700) { RequestDetailView(store: request(document)) } }
-    }
-
-    func test_requestDetail_spanish() throws {
-        let document = try SampleViews.document("request-detail-es")
-        assertScreen(language: .spanish) { ScreenFrame(height: 700) { RequestDetailView(store: request(document)) } }
     }
 }

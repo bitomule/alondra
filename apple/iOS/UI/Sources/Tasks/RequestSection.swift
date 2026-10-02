@@ -41,36 +41,29 @@ struct RequestSection: View {
 
     private var header: some View {
         HStack(alignment: .bottom, spacing: 10) {
-            Button {
-                if let link = request.link { open(link) }
-            } label: {
-                VStack(alignment: .leading, spacing: 5) {
-                    HStack(spacing: 8) {
-                        if let project = request.project {
-                            Text(verbatim: project)
-                                .font(.caption.weight(.medium))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 3)
-                                .background(Palette.hairline, in: .capsule)
-                        }
-                        meta
-                            .font(.caption)
-                            .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 5) {
+                HStack(spacing: 8) {
+                    if let project = request.project {
+                        Text(verbatim: project)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Palette.hairline, in: .capsule)
                     }
-                    .lineLimit(1)
-                    if !request.isSingleTask {
-                        Text(verbatim: request.title)
-                            .font(.display(.title3, weight: .bold))
-                            .foregroundStyle(Palette.ink)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
+                    meta
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
-                .contentShape(.rect)
+                .lineLimit(1)
+                if !request.isSingleTask {
+                    Text(verbatim: request.title)
+                        .font(.display(.title3, weight: .bold))
+                        .foregroundStyle(Palette.ink)
+                        .multilineTextAlignment(.leading)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
-            .buttonStyle(.plain)
-            .accessibilityHint("Opens the request")
             Spacer(minLength: 8)
             if !request.isSingleTask, let state = request.state {
                 StateChip(label: state, tint: request.tasks.isEmpty ? Palette.slate : Palette.sky)

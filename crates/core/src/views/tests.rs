@@ -983,6 +983,43 @@ fn tasks_hide_zero_scheduled_count_and_archive_action_until_completed_tasks_exis
 }
 
 #[test]
+fn a_request_row_links_to_its_most_recently_changed_task() {
+    let mut state = fixture();
+    let mut later = state.tasks[&"t-1".into()].clone();
+    later.id = "t-2".into();
+    later.revision = 7;
+    state.tasks.insert("t-2".into(), later);
+    let mut earlier = state.tasks[&"t-1".into()].clone();
+    earlier.id = "t-0".into();
+    earlier.revision = 3;
+    state.tasks.insert("t-0".into(), earlier);
+    state.requests.insert("r-2".into(), Request::new("r-2".into(), "Still splitting".into()));
+
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "tasks", "");
+    let link = |id: &str| view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) if row.id == id => Some(row.link.clone()),
+        _ => None,
+    }).unwrap();
+    assert_eq!(link("r-1"), Some(Link::View { key: "task:t-2".into() }));
+    assert_eq!(link("r-2"), None);
+}
+
+#[test]
+fn only_the_iphone_gets_no_link_to_the_request_view() {
+    let state = fixture();
+    let request_fact_link = |client| {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "task:t-1", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Facts(facts) => facts.items.iter().find(|fact| fact.label == "Request").map(|fact| fact.link.clone()),
+            _ => None,
+        }).unwrap()
+    };
+    assert_eq!(request_fact_link(Client::Ios), None);
+    assert_eq!(request_fact_link(Client::Tui), Some(Link::View { key: "request:r-1".into() }));
+    assert_eq!(request_fact_link(Client::Mac), Some(Link::View { key: "request:r-1".into() }));
+}
+
+#[test]
 fn schedule_editor_resets_old_options_when_project_changes() {
     let mut state = fixture();
     let schedule: crate::domain_v2::Schedule = serde_json::from_value(serde_json::json!({

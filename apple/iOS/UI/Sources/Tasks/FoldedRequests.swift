@@ -58,48 +58,54 @@ private struct FinishedRequestRow: View {
     private var cancelled: Bool { request.tasks.allSatisfy(\.struck) }
 
     var body: some View {
-        Button {
-            if let link = request.link { open(link) }
-        } label: {
-            HStack(spacing: 8) {
-                HStack(alignment: .top, spacing: 12) {
-                    Glyph(symbol: cancelled ? "xmark" : "checkmark", tint: cancelled ? Palette.slate : Palette.sage)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(verbatim: request.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(Palette.ink)
-                            .multilineTextAlignment(.leading)
-                        if let state = request.state {
-                            StateLine(label: state, tint: cancelled ? Palette.slate : Palette.sage, since: request.touchedAt)
-                        }
-                        if request.tasks.count != 1 {
-                            Group {
-                                if request.tasks.isEmpty {
-                                    Text("Finished without tasks")
-                                } else {
-                                    Text("\(request.tasks.count) tasks")
-                                }
+        if let link = request.link {
+            Button { open(link) } label: { content(opensTask: true) }
+                .buttonStyle(PressStyle())
+        } else {
+            content(opensTask: false)
+        }
+    }
+
+    private func content(opensTask: Bool) -> some View {
+        HStack(spacing: 8) {
+            HStack(alignment: .top, spacing: 12) {
+                Glyph(symbol: cancelled ? "xmark" : "checkmark", tint: cancelled ? Palette.slate : Palette.sage)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(verbatim: request.title)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(Palette.ink)
+                        .multilineTextAlignment(.leading)
+                    if let state = request.state {
+                        StateLine(label: state, tint: cancelled ? Palette.slate : Palette.sage, since: request.touchedAt)
+                    }
+                    if request.tasks.count != 1 {
+                        Group {
+                            if request.tasks.isEmpty {
+                                Text("Finished without tasks")
+                            } else {
+                                Text("\(request.tasks.count) tasks")
                             }
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                            .padding(.top, 1)
                         }
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 1)
                     }
                 }
-                Spacer(minLength: 0)
+            }
+            Spacer(minLength: 0)
+            if opensTask {
                 Image(systemName: "chevron.right")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
             }
-            .padding(.leading, 16)
-            .padding(.trailing, 14)
-            .padding(.vertical, 12)
-            .overlay(alignment: .top) {
-                if !first { Hairline(leading: 62) }
-            }
-            .contentShape(.rect)
         }
-        .buttonStyle(PressStyle())
+        .padding(.leading, 16)
+        .padding(.trailing, 14)
+        .padding(.vertical, 12)
+        .overlay(alignment: .top) {
+            if !first { Hairline(leading: 62) }
+        }
+        .contentShape(.rect)
     }
 }

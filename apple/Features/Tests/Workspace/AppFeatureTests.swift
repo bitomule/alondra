@@ -99,11 +99,11 @@ final class AppFeatureTests: XCTestCase {
         let store = makeStore()
         await store.send(.open(.tasks, key("task:t-1")))
         await store.send(.open(.fleet, key("node:a-1")))
-        await store.send(.open(.newRequest, key("request:r-1")))
+        await store.send(.open(.newRequest, key("node:a-2")))
 
         XCTAssertEqual(store.state.tasksPath.map(\.key), [key("task:t-1")])
         XCTAssertEqual(store.state.fleetPath.map(\.key), [key("node:a-1")])
-        XCTAssertEqual(store.state.newRequestPath.map(\.key), [key("request:r-1")])
+        XCTAssertEqual(store.state.newRequestPath.map(\.key), [key("node:a-2")])
         XCTAssertTrue(store.state.inboxPath.isEmpty)
     }
 
@@ -177,7 +177,6 @@ final class AppFeatureTests: XCTestCase {
     func testToastsComeFromTheRebuiltScreensOnAnyTab() async throws {
         let routes: [(String, DetailRoute.Action)] = [
             ("task:t-1", .taskDetail(.delegate(.failed("No")))),
-            ("request:r-1", .requestDetail(.delegate(.failed("No")))),
             ("schedules", .schedules(.delegate(.failed("No")))),
             ("schedule:new", .scheduleEditor(.delegate(.failed("No")))),
             ("pull_request:github.com/o/r#1", .prReview(.delegate(.failed("No")))),
@@ -210,8 +209,8 @@ final class AppFeatureTests: XCTestCase {
 
         await store.send(.open(.fleet, key("task:t-1")))
         let task = try XCTUnwrap(store.state.fleetPath.ids.first)
-        await store.send(.fleetPath(.element(id: task, action: .taskDetail(.delegate(.open(key("request:r-1")))))))
-        XCTAssertEqual(store.state.fleetPath.map(\.key), [key("task:t-1"), key("request:r-1")])
+        await store.send(.fleetPath(.element(id: task, action: .taskDetail(.delegate(.open(key("node:a-1")))))))
+        XCTAssertEqual(store.state.fleetPath.map(\.key), [key("task:t-1"), key("node:a-1")])
         XCTAssertEqual(store.state.tasksPath.count, 2, "the other tabs are not touched")
     }
 
@@ -285,7 +284,7 @@ final class AppFeatureTests: XCTestCase {
     @MainActor
     func testARebuiltScreenObservesItselfSoTheRootSendsItNothing() async {
         let store = makeStore()
-        for screen in ["task:t-1", "request:r-1", "schedules", "schedule:new"] {
+        for screen in ["task:t-1", "schedules", "schedule:new"] {
             await store.send(.open(.tasks, key(screen)))
         }
 

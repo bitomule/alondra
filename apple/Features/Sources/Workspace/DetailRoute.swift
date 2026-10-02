@@ -9,7 +9,6 @@ import Foundation
 public enum DetailRoute {
     case legacy(ViewsScreenFeature)
     case taskDetail(TaskDetailFeature)
-    case requestDetail(RequestDetailFeature)
     case schedules(SchedulesFeature)
     case scheduleEditor(ScheduleEditorFeature)
     case review(ReviewFeature)
@@ -21,7 +20,7 @@ public extension DetailRoute {
     /// The screen a server link opens. A key outside this table opens nothing, so a view the app
     /// does not know shows up as a failing test instead of an unexplained generic screen.
     enum Kind: Equatable, Sendable, CaseIterable {
-        case card, document, pullRequest, task, request, node, schedules, schedule, tasksPage
+        case card, document, pullRequest, task, node, schedules, schedule, tasksPage
 
         public init?(key: ViewKey) {
             let raw = key.rawValue
@@ -31,7 +30,6 @@ public extension DetailRoute {
             case _ where raw.hasPrefix("document:"): self = .document
             case _ where raw.hasPrefix("pull_request:"): self = .pullRequest
             case _ where raw.hasPrefix("task:"): self = .task
-            case _ where raw.hasPrefix("request:"): self = .request
             case _ where raw.hasPrefix("node:"): self = .node
             case _ where raw.hasPrefix("schedule:"): self = .schedule
             case _ where raw.hasPrefix("tasks?"): self = .tasksPage
@@ -53,7 +51,6 @@ public extension DetailRoute.State {
             self = .prReview(PRReviewFeature.State(key: .pullRequest(key.pullRequestID ?? "")))
         case .card, .document: self = .review(ReviewFeature.State(key: key))
         case .task: self = .taskDetail(TaskDetailFeature.State(key: key))
-        case .request: self = .requestDetail(RequestDetailFeature.State(key: key))
         case .schedules: self = .schedules(SchedulesFeature.State())
         case .schedule: self = .scheduleEditor(ScheduleEditorFeature.State(key: key))
         case .pullRequest: self = .prReview(PRReviewFeature.State(key: key))
@@ -68,7 +65,6 @@ public extension DetailRoute.State {
         case .legacy(let state): state.key
         case .review(let state): state.screen.key
         case .taskDetail(let state): state.screen.key
-        case .requestDetail(let state): state.screen.key
         case .schedules(let state): state.screen.key
         case .scheduleEditor(let state): state.screen.key
         case .prReview(let state): state.screen.key
@@ -85,7 +81,6 @@ public extension DetailRoute.Action {
         case .review(.delegate(.open(let key))): .open(key)
         case .review(.actions(.delegate(let outcome))): ScreenDelegate(outcome)
         case .taskDetail(.delegate(let delegate)),
-             .requestDetail(.delegate(let delegate)),
              .schedules(.delegate(let delegate)),
              .scheduleEditor(.delegate(let delegate)),
              .prReview(.delegate(let delegate)),

@@ -73,8 +73,7 @@ import Testing
         }
         let nodeID = try contextID(.node)
         let taskID = try contextID(.task)
-        let requestID = try contextID(.mission)
-        for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID), .request(requestID),
+        for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID),
                     .newRequest(), .machine, .schedules, .schedule("new")] {
             guard case let .document(screen) = try await client.load(key, nil) else {
                 Issue.record("Missing demo destination \(key.rawValue)")

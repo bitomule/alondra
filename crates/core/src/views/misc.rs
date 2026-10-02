@@ -157,6 +157,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
                     }),
                     None,
                 );
+                row.link = None;
                 row.badges.push(super::Label {
                     text: if request.closed {
                         t!(context.lang, "Delivered", "Entregada")
