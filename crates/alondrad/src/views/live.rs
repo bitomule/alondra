@@ -388,6 +388,7 @@ pub(crate) async fn gather(
         }
     }
     LiveSnapshot {
+        closed_nodes: client.domain.live.closed_sessions(),
         nodes,
         pull_requests,
         orchestrator,

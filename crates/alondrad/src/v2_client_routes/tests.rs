@@ -413,6 +413,27 @@ async fn closing_a_background_session_runs_claude_rm_and_takes_it_out_of_the_fle
 }
 
 #[tokio::test]
+async fn a_node_the_user_closed_leaves_fleet_stays_gone_after_a_restart_and_is_not_revived() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    fixture.domain.live.observe(&hook("agent-a", "Stop", json!({})));
+    fixture.command(Actor::System, "connect-a", Command::ObserveAgent { agent_id: "agent-a".into(), connected: true });
+    let short = fixture.domain.live.node("agent-a").unwrap().short_id;
+    fixture.client.use_sessions(FakeSessions::listing(&[&short]));
+    assert!(fleet_lists(&view_json(&fixture, "fleet", "en").await, "agent-a"), "it is a row before it is closed");
+
+    let (status, answer) = fixture.local_send("/agents/agent-a/close", &json!({"force": false})).await;
+    assert_eq!(status, StatusCode::OK, "{answer}");
+
+    assert!(!fleet_lists(&view_json(&fixture, "fleet", "en").await, "agent-a"), "closing takes the node out of Fleet at once");
+    let restarted = Live::persisted_in(&fixture.home);
+    assert!(restarted.is_closed("agent-a"), "the daemon remembers the close after a restart");
+    assert_eq!(restarted.closed_sessions(), ["agent-a"]);
+    assert!(!Live::persisted_in(&std::env::temp_dir().join("alondra-no-such-home")).is_closed("agent-a"));
+}
+
+#[tokio::test]
 async fn closing_an_interactive_session_only_leaves_the_fleet() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
@@ -887,6 +908,11 @@ async fn view_json(fixture: &Fixture, key: &str, lang: &str) -> Value {
     let response = crate::views::routes::relay(&fixture.client, "device:test", &path).await;
     assert_eq!(response.status(), StatusCode::OK, "{path}");
     serde_json::from_slice(&axum::body::to_bytes(response.into_body(), 4 * 1024 * 1024).await.unwrap()).unwrap()
+}
+
+fn fleet_lists(view: &Value, agent: &str) -> bool {
+    view["sections"].as_array().unwrap().iter()
+        .flat_map(|section| section["items"].as_array().unwrap()).any(|item| item["id"] == agent)
 }
 
 fn node_row<'a>(view: &'a Value, agent: &str) -> &'a Value {
