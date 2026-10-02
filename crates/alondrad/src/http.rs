@@ -77,34 +77,6 @@ fn document_refusal(user: &str) -> String {
     )
 }
 
-pub const USER_KEY_FILE: &str = "tui-key.pem";
-const USER_ONLY_COMMANDS: &[&str] = &["answer", "send", "pair", "devices", "orchestrator-retry", "orchestrator-cancel", "orchestrator-acknowledge"];
-
-/// Nodes share the user's account, so they could run the CLI that signs as the user. The
-/// plugin's hook refuses it; a determined node could still hide the command, which is why
-/// the phone and the Mac app keep their keys in the Secure Enclave.
-fn forbidden_for_nodes(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
-    let field = |k: &str| input.and_then(|i| i.get(k)).and_then(Value::as_str).unwrap_or("");
-    let touches_key = |s: &str| s.contains(USER_KEY_FILE) || (s.contains("Application Support") && s.to_lowercase().contains("alondra"));
-    match tool? {
-        "Bash" => {
-            let command = field("command");
-            let words: Vec<&str> = command.split(|c: char| c.is_whitespace() || matches!(c, ';' | '&' | '|' | '(' | ')' | '`')).filter(|w| !w.is_empty()).collect();
-            let runs_user_command = words
-                .windows(2)
-                .any(|w| (w[0] == "alondra" || w[0].ends_with("/alondra")) && USER_ONLY_COMMANDS.contains(&w[1]));
-            if runs_user_command {
-                return Some("Nodes cannot run `alondra answer`, `send`, `pair` or `devices`: they act as the user. Use your Alondra MCP tools (ask, report) instead.".into());
-            }
-            touches_key(command).then(|| "Nodes cannot touch the user's signing key.".into())
-        }
-        _ => ["file_path", "path", "pattern", "notebook_path"]
-            .iter()
-            .any(|k| touches_key(field(k)))
-            .then(|| "Nodes cannot touch the user's signing key.".into()),
-    }
-}
-
 pub(crate) fn tool_summary(tool: Option<&str>, input: Option<&Value>) -> Option<String> {
     let input = input?;
     let pick = |k: &str| input.get(k).and_then(Value::as_str).map(str::to_string);
@@ -191,7 +163,7 @@ fn launched_mark(headers: &axum::http::HeaderMap) -> bool {
 /// Reasons to deny a tool before it can be confused with another task's work.
 fn hook_denial(v: &View, h: &HookEvent, input: &Value) -> Option<String> {
     if h.event == "PreToolUse"
-        && let Some(reason) = forbidden_for_nodes(h.tool_name.as_deref(), input.get("tool_input"))
+        && let Some(reason) = crate::domain_transport::forbidden_for_nodes(h.tool_name.as_deref(), input.get("tool_input"))
     {
         return Some(reason);
     }
@@ -6037,32 +6009,6 @@ mod tests {
     fn worktree_leftovers_are_carried_as_the_reasons_detail() {
         let reasons = close_reasons(false, false, Some("2 commit(s) not pushed in /tmp/x".into()));
         assert_eq!(reasons, vec![CloseReason { kind: "worktree", detail: Some("2 commit(s) not pushed in /tmp/x".into()) }]);
-    }
-}
-
-#[cfg(test)]
-mod node_guard_tests {
-    use super::*;
-
-    fn bash(c: &str) -> Option<String> {
-        forbidden_for_nodes(Some("Bash"), Some(&json!({"command": c})))
-    }
-
-    #[test]
-    fn nodes_cannot_answer_as_the_user() {
-        assert!(bash("alondra answer 55 Mergea").is_some());
-        assert!(bash("cd /tmp && ~/.local/bin/alondra send orquestador hola").is_some());
-        assert!(bash("cat ~/.alondra/tui-key.pem").is_some());
-        assert!(bash("ls ~/Library/'Application Support'/com.bitomule.alondra.mac").is_some());
-        assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/Users/x/.alondra/tui-key.pem"}))).is_some());
-    }
-
-    #[test]
-    fn ordinary_commands_pass() {
-        assert!(bash("alondra status").is_none());
-        assert!(bash("alondra doctor --json").is_none());
-        assert!(bash("git commit -m 'answer the question'").is_none());
-        assert!(forbidden_for_nodes(Some("Read"), Some(&json!({"file_path": "/tmp/x.md"}))).is_none());
     }
 }
 
