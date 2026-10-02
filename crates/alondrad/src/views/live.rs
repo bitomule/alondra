@@ -587,19 +587,30 @@ mod cache_tests {
     }
 }
 
-/// CPU moves every sample, so it only counts as changed past `CPU_STEP` or on a new level;
-/// otherwise every minute would wake every client.
-const CPU_STEP: f64 = 0.10;
+/// RAM and CPU move a point or two every sample. Ten points is about two of the pill's 22 pt bar,
+/// the smallest move a glance notices; below it, or without a new level, the published set stays.
+const LOAD_STEP: f64 = 0.10;
+/// Free disk drifts slowly with builds and caches; two points is tens of GB on any Mac disk.
+const DISK_STEP: f64 = 0.02;
 
+fn machine_step(id: &str) -> Option<f64> {
+    match id {
+        "memory" | "cpu" => Some(LOAD_STEP),
+        "disk" => Some(DISK_STEP),
+        _ => None,
+    }
+}
+
+/// Whether publishing `right` over `left` would show nothing meaningful: a Claude reading counts
+/// whenever its text, detail or level moves; a machine gauge only past its step or on a new level.
 fn same_visible_gauges(left: &[Gauge], right: &[Gauge]) -> bool {
     left.len() == right.len()
         && left.iter().zip(right).all(|(a, b)| {
-            let same_text = if a.id == "cpu" {
-                (a.value - b.value).abs() < CPU_STEP
-            } else {
-                a.text == b.text
+            let same_reading = match machine_step(&a.id) {
+                Some(step) => (a.value - b.value).abs() < step,
+                None => a.text == b.text && a.detail == b.detail,
             };
-            a.id == b.id && same_text && a.level == b.level && a.detail == b.detail
+            a.id == b.id && same_reading && a.level == b.level
         })
 }
 
@@ -815,17 +826,54 @@ mod tests {
     }
 
     #[test]
-    fn gauges_change_only_when_displayed_text_or_level_changes() {
-        let first = Gauge { id: "memory".into(), label: "RAM".into(), value: 0.501,
-            text: "50%".into(), detail: None, level: Level::Calm };
-        let mut sampled = first.clone();
-        sampled.value = 0.504;
-        assert!(same_visible_gauges(&[first.clone()], &[sampled.clone()]));
-        sampled.text = "51%".into();
-        assert!(!same_visible_gauges(&[first.clone()], &[sampled.clone()]));
-        sampled.text = first.text.clone();
-        sampled.level = Level::Warm;
-        assert!(!same_visible_gauges(&[first], &[sampled]));
+    fn ram_wakes_clients_only_past_its_step_or_on_a_new_level() {
+        let memory = |value: f64, level: Level| Gauge { id: "memory".into(), label: "RAM".into(), value,
+            text: format!("{}%", (value * 100.0).round()), detail: None, level };
+        assert!(same_visible_gauges(&[memory(0.50, Level::Calm)], &[memory(0.51, Level::Calm)]));
+        assert!(same_visible_gauges(&[memory(0.50, Level::Calm)], &[memory(0.59, Level::Calm)]));
+        assert!(!same_visible_gauges(&[memory(0.50, Level::Calm)], &[memory(0.61, Level::Calm)]));
+        assert!(!same_visible_gauges(&[memory(0.69, Level::Calm)], &[memory(0.71, Level::Warm)]));
+    }
+
+    #[test]
+    fn disk_wakes_clients_only_past_its_step_or_on_a_new_level() {
+        let disk = |value: f64, text: &str, level: Level| Gauge { id: "disk".into(), label: "Disk".into(), value,
+            text: text.into(), detail: None, level };
+        assert!(same_visible_gauges(&[disk(0.880, "58 GB free", Level::Warm)], &[disk(0.881, "57 GB free", Level::Warm)]));
+        assert!(!same_visible_gauges(&[disk(0.880, "58 GB free", Level::Warm)], &[disk(0.901, "48 GB free", Level::Warm)]));
+        assert!(!same_visible_gauges(&[disk(0.849, "70 GB free", Level::Calm)], &[disk(0.851, "69 GB free", Level::Warm)]));
+    }
+
+    #[test]
+    fn every_claude_reading_change_wakes_clients() {
+        let week = |text: &str, detail: &str| Gauge { id: "claude_week".into(), label: "Claude week".into(),
+            value: 0.83, text: text.into(), detail: Some(detail.into()), level: Level::Calm };
+        assert!(same_visible_gauges(&[week("83%", "resets Monday")], &[week("83%", "resets Monday")]));
+        assert!(!same_visible_gauges(&[week("83%", "resets Monday")], &[week("84%", "resets Monday")]));
+        assert!(!same_visible_gauges(&[week("83%", "resets Monday")], &[week("83%", "resets Monday · measured 2 h ago")]));
+    }
+
+    #[test]
+    fn a_minute_of_ram_and_cpu_wiggle_keeps_the_published_set() {
+        let machine = |memory_free: u32, cpu: f32| alondra_core::Machine { at: 0, memory_total: 100,
+            memory_available: 50, memory_free_percent: Some(memory_free), load: [0.0; 3], cpus: 8,
+            cpu_usage: cpu, disk_total: 1_000, disk_available: 120, unreliable: false };
+        let usage = |week: f64| alondra_core::usage::Usage { week_percent: week, week_resets_at: 0,
+            today_spent: None, today_share: None, per_day_left: 0.0, over_pace: false, five_hour_percent: Some(10.0),
+            five_hour_resets_at: Some(0), measured_at: 0 };
+        let sample = |m: &alondra_core::Machine, u: &alondra_core::usage::Usage| {
+            (gauges(m, Some(u), Lang::En, 0), gauges(m, Some(u), Lang::Es, 0))
+        };
+        let start = std::time::Instant::now();
+        let minute = |n: u64| start + std::time::Duration::from_secs(60 * n);
+        let mut published = None;
+        let first = published_gauges(&mut published, start, Lang::En, || sample(&machine(61, 21.0), &usage(83.0)));
+        let wiggled = published_gauges(&mut published, minute(1), Lang::En, || sample(&machine(58, 26.0), &usage(83.0)));
+        assert_eq!(wiggled, first, "RAM 39→42 % and CPU 21→26 % are not worth waking every phone");
+        let reading = published_gauges(&mut published, minute(2), Lang::En, || sample(&machine(58, 26.0), &usage(84.0)));
+        assert_eq!(reading.iter().find(|gauge| gauge.id == "claude_week").unwrap().text, "84%");
+        assert_eq!(reading.iter().find(|gauge| gauge.id == "memory").unwrap().text, "42%",
+            "a published set carries the current machine readings along with the new Claude one");
     }
 
     #[test]
