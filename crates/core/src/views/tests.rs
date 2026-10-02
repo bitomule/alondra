@@ -742,6 +742,65 @@ fn document_review_card_exposes_revision_content_and_review_actions() {
     assert!(card.actions.iter().any(|action| action.label == "Request changes"));
 }
 
+fn plan_question_fixture() -> DomainState {
+    let mut state = fixture();
+    state.documents.insert("plan".into(), Document {
+        id: "plan".into(), title: "Plan: one task per node".into(), current_revision: "plan-r1".into(),
+    });
+    state.document_revisions.insert("plan-r1".into(), DocumentRevision {
+        id: "plan-r1".into(), document_id: "plan".into(), number: 1,
+        content_digest: "c".repeat(64), content_reference: "stored/plan".into(),
+    });
+    state.tasks.get_mut(&"t-1".into()).unwrap().documents.insert("plan".into(), "plan".into());
+    let question = state.interactions.get_mut(&"i-1".into()).unwrap();
+    question.payload = InteractionPayload::Question {
+        options: vec![QuestionOption { id: "separate".into(), label: "Approve; node messaging in its own PR".into(),
+            description: None, inputs: vec![] }],
+        answer: None,
+    };
+    question.subject = Some(InteractionSubject::DocumentReview { document_id: "plan".into(), revision_id: "plan-r1".into() });
+    state
+}
+
+fn document_content(view: &View) -> Option<&ContentRef> {
+    view.sections.iter().flat_map(|section| &section.items).find_map(|item|
+        if let Item::ContentRef(content) = item { Some(content) } else { None })
+}
+
+#[test]
+fn a_question_about_a_plan_opens_the_plan_for_review_with_its_options_and_request_changes() {
+    let state = plan_question_fixture();
+    for key in ["card:plan-r1", "card:i-1"] {
+        let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, key, "");
+        let content = document_content(&view).unwrap_or_else(|| panic!("{key} shows the plan"));
+        assert_eq!((content.kind, content.fetch.as_str(), content.commentable),
+            (ContentKind::Document, "/document-revisions/plan-r1/content", true), "{key}");
+        let card = card_of(&view);
+        let answer = card.actions.iter().find(|action| action.id.starts_with("ans:i-1@")).expect("the node's options");
+        assert_eq!(answer.options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["separate"]);
+        let changes = card.actions.iter().find(|action| action.id.starts_with("changes:i-1@")).expect("request changes");
+        assert_eq!((changes.label.as_str(), changes.stamp.as_deref(), changes.enabled), ("Pedir cambios", Some("Cambios solicitados"), true));
+        assert_eq!(changes.comments, Some(CommentSpec { kind: CommentKind::Blocks }));
+        assert!(changes.key.is_none());
+    }
+    let root = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:plan-r1", "");
+    let card = card_of(&root);
+    assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str(), card.title.as_str()),
+        (Icon::Document, "Document", "Plan: one task per node"));
+    assert!(card.children.iter().all(|child| child.actions.is_empty()), "the review card carries the answer");
+}
+
+#[test]
+fn a_question_linked_to_no_document_keeps_its_plain_answer() {
+    let mut state = plan_question_fixture();
+    state.interactions.get_mut(&"i-1".into()).unwrap().subject = None;
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(document_content(&view).is_none());
+    let card = card_of(&view);
+    assert_eq!(card.icon, Icon::Question);
+    assert!(card.actions.iter().all(|action| !action.id.starts_with("changes:")), "{:?}", card.actions);
+}
+
 fn delivery_card_actions(state: &DomainState, lang: Lang, key: &str) -> Vec<Action> {
     let view = render(state, &LiveSnapshot::default(), Client::Ios, lang, key, "");
     let Item::Card(card) = &view.sections[0].items[0] else { panic!("delivery card") };
@@ -2053,6 +2112,27 @@ fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes_and_a_review
     assert_eq!(pushed[1].id, "open:i-1");
     let ios = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     assert!(answer_action(card_of(&ios)).options.iter().all(|option| option.key.is_none()));
+}
+
+#[test]
+fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve_as_8ccd131() {
+    use crate::domain_v2::Hold;
+    let state = held_fixture(Hold::Plan, "# Ship the parser\n\n1. Split the lexer");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    let review: Vec<_> = card.actions.iter()
+        .filter(|action| action.id.starts_with("changes:i-1@") || action.id.starts_with("accept:i-1@"))
+        .map(|action| (action.label.as_str(), action.style, action.comments.is_some(), action.stamp.as_deref()))
+        .collect();
+    assert_eq!(review, [("Pedir cambios", Style::Secondary, true, Some("Cambios solicitados")),
+        ("Aprobar", Style::Primary, false, Some("Aprobado"))]);
+    let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
+    assert_eq!(pushed.iter().map(|a| a.label.as_str()).collect::<Vec<_>>(), ["Approve", "Review"],
+        "the lock screen keeps Approve and Review");
+    let permission = held_fixture(Hold::Permission, "Bash: clean the build");
+    let permission_view = render(&permission, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    let card = card_of(&permission_view);
+    assert!(card.actions.iter().all(|action| !action.id.starts_with("changes:") && !action.id.starts_with("accept:")));
 }
 
 #[test]

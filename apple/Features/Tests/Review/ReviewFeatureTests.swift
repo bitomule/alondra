@@ -287,6 +287,54 @@ final class ReviewFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testAHeldPlanIsReadInFullCommentedAndApprovedOrSentBackFromTheBar() async throws {
+        let feed = FeedStub()
+        let store = store(try Fixtures.heldPlanCard(), feed: feed)
+        XCTAssertEqual(store.state.markdown, "# Ship the parser\n\n1. Split the lexer\n2. Add tests")
+        XCTAssertEqual(labels(store), ["Request changes", "Approve"])
+        XCTAssertNil(store.state.subject?.options, "Approve and Request changes are not repeated in the page")
+        XCTAssertTrue(store.state.acceptsFeedback)
+
+        let block = try XCTUnwrap(store.state.blocks.last { $0.isCommentable })
+        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.composingChanged("Keep the old tests"))
+        await store.send(.commentSaved)
+        let changes = try XCTUnwrap(store.state.subject?.barActions.first)
+        await store.send(.actionTapped(changes))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.first?.actionId, "changes:hold-1@1")
+        XCTAssertEqual(feed.requests.first?.input.comments?.map(\.text), ["Keep the old tests"])
+
+        let approving = self.store(try Fixtures.heldPlanCard(), feed: feed)
+        let approve = try XCTUnwrap(approving.state.subject?.barActions.last)
+        await approving.send(.actionTapped(approve))
+        await approving.skipReceivedActions()
+        XCTAssertEqual(feed.requests.last?.actionId, "accept:hold-1@1")
+    }
+
+    @MainActor
+    func testAPlanTheNodeAskedAboutOffersItsOptionsAndRequestChangesWithComments() async throws {
+        let feed = FeedStub()
+        let store = store(try Fixtures.planQuestionCard(), feed: feed, content: { _ in "# Plan\n\nOne task per node." })
+        await store.send(.screen(.loaded(try Fixtures.planQuestionCard())))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.subject?.icon, .document)
+        XCTAssertEqual(store.state.subject?.options?.options.map(\.label), ["Approve; messaging in its own PR"])
+        XCTAssertEqual(labels(store), ["Request changes"])
+        XCTAssertTrue(store.state.canComment)
+
+        let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
+        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.composingChanged("Split it"))
+        await store.send(.commentSaved)
+        let changes = try XCTUnwrap(store.state.subject?.barActions.first)
+        await store.send(.actionTapped(changes))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.first?.actionId, "changes:q-1@1")
+        XCTAssertEqual(feed.requests.first?.input.comments?.map(\.text), ["Split it"])
+    }
+
+    @MainActor
     func testTheScreenObservesItsOwnKeyAndStopsWhenAsked() async throws {
         let feed = FeedStub([try Fixtures.liveDelivery()])
         var state = ReviewFeature.State(key: deliveryKey)

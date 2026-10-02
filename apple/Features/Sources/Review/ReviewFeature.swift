@@ -101,8 +101,10 @@ public struct ReviewFeature: Sendable {
                 .sorted { Self.rank($0) < Self.rank($1) }
         }
 
+        /// A question's options in the page; a plan approved from the bar does not repeat them.
         public var options: WireAction? {
-            guard icon == .question || icon == .action else { return nil }
+            guard [Icon.question, .action, .document].contains(icon),
+                  !actions.contains(where: { Self.verb($0) == "accept" }) else { return nil }
             return actions.first { $0.presentation == .options && $0.enabled }
         }
 

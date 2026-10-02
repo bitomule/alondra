@@ -7,7 +7,8 @@ use super::{
     text::{t, tf},
 };
 use crate::domain_v2::{
-    AvailableAction, DomainState, Hold, InboxItem, InboxSubject, InteractionPayload, Recipient,
+    AvailableAction, DomainState, Hold, InboxItem, InboxSubject, InteractionPayload, InteractionSubject,
+    Recipient,
 };
 
 pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
@@ -46,7 +47,7 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         card_ids: vec![],
         more: None,
     }];
-    if let InboxSubject::DocumentReview { revision_id, .. } = &item.subject
+    if let Some(revision_id) = reviewed_revision(item, context.domain)
         && let Some(revision) = context.domain.document_revisions.get(revision_id)
         && let Some(document) = context.domain.documents.get(&revision.document_id)
     {
@@ -103,6 +104,17 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         empty: None,
         notices: vec![],
     })
+}
+/// The document revision a card is about: a document review, or a question its node linked to one.
+fn reviewed_revision<'a>(item: &'a InboxItem, domain: &'a DomainState) -> Option<&'a crate::domain_v2::DocumentRevisionId> {
+    match &item.subject {
+        InboxSubject::DocumentReview { revision_id, .. } => Some(revision_id),
+        InboxSubject::Interaction { interaction_id } => match &domain.interactions.get(interaction_id)?.subject {
+            Some(InteractionSubject::DocumentReview { revision_id, .. }) => Some(revision_id),
+            _ => None,
+        },
+        InboxSubject::PullRequest { .. } => None,
+    }
 }
 pub(super) fn plain_id(id: &str) -> bool {
     super::id::valid(id)
@@ -674,6 +686,7 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
             out.push(action);
         }
     }
+    out.extend(review_actions(item, context));
     if let InboxSubject::Interaction { interaction_id } = &item.subject {
         if let Some(interaction) = context.domain.interactions.get(interaction_id) {
             let (verb, label, placeholder, key) = match &interaction.payload {
@@ -914,6 +927,59 @@ fn merge_confirm(pr: &crate::domain_v2::PullRequest, context: &RenderContext<'_>
         message: summary,
         button: t!(context.lang, "Merge", "Fusionar").into(),
     }
+}
+
+/// 8ccd131's review of a held plan or of a question about a document: Request changes sends the
+/// comments on the text's blocks as the answer, and a plan is approved from the same bar.
+fn review_actions(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Action> {
+    let InboxSubject::Interaction { interaction_id } = &item.subject else { return vec![] };
+    let Some(interaction) = context.domain.interactions.get(interaction_id) else { return vec![] };
+    let plan = hold_of(item, context.domain) == Some(Hold::Plan);
+    if !plan && !matches!(interaction.subject, Some(InteractionSubject::DocumentReview { .. })) {
+        return vec![];
+    }
+    let Some(answer) = item.available_actions.iter().find(|action| action.kind == "answer_question") else {
+        return vec![];
+    };
+    let lang = context.lang;
+    let action = |verb: Verb, label: &str, style: Style, input: Input, stamp: &str, key: Option<&str>| {
+        let comments = verb == Verb::Changes;
+        action_id(verb, &interaction_id.0, interaction.revision, None).map(|id| Action {
+            id: id.to_string(),
+            label: label.into(),
+            style,
+            presentation: Presentation::Button,
+            options: vec![],
+            input,
+            attachments: comments,
+            comments: comments.then_some(CommentSpec { kind: super::CommentKind::Blocks }),
+            confirm: None,
+            enabled: answer.enabled,
+            disabled_reason: answer.disabled_reason.as_deref().map(|code| disabled_reason(code, lang).to_owned()),
+            stamp: Some(stamp.into()),
+            key: key.filter(|_| context.client != Client::Ios).map(str::to_owned),
+            link: None,
+        })
+    };
+    let changes = action(
+        Verb::Changes,
+        t!(lang, "Request changes", "Pedir cambios"),
+        Style::Secondary,
+        Input::Text {
+            placeholder: t!(lang, "Describe the changes", "Describe los cambios").into(),
+            required: true,
+            multiline: true,
+        },
+        t!(lang, "Changes requested", "Cambios solicitados"),
+        Some("r"),
+    );
+    let approve = if plan {
+        action(Verb::Accept, t!(lang, "Approve", "Aprobar"), Style::Primary, Input::None,
+            t!(lang, "Approved", "Aprobado"), None)
+    } else {
+        None
+    };
+    changes.into_iter().chain(approve).collect()
 }
 
 fn carries_artifact(item: &InboxItem) -> bool {

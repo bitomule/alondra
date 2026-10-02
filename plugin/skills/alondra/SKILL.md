@@ -42,7 +42,19 @@ why; retry an uncertain call with exactly the same arguments.
   presentation's id.
 - `create_document` / `revise_document`: a file the user reviews. Copy it into Alondra's files
   folder (`$ALONDRA_HOME/files/`) and pass that path with its
-  SHA256; each revision is reviewed as it is.
+  SHA256; each revision is reviewed as it is. Creating it shows the user nothing by itself.
+- A plan (the user asks you to plan, or the work needs a plan approved first): enter plan mode
+  with `EnterPlanMode`, plan, and present it with `ExitPlanMode`. Alondra holds it as a plan card:
+  the user reads the whole plan, comments on any block, and approves or requests changes; the
+  requested changes reach you as a message right after. Never write a plan as a document or ask
+  about it with `ask`.
+- Another document the user approves before you go on (a design, a report, a spec): create (or
+  revise) it, `ask` with the decision in `body` and the approval options, then at once
+  `link_interaction_subject` with that question and
+  `{kind: "document_review", document_id, revision_id}`. The user gets the review card: the whole
+  document, a comment on any block, your options and Request changes, whose comments come back as
+  the answer. Never ask a separate plain question about a document, and do not paste the document
+  into `body`.
 - `withdraw_question`: a question of yours that no longer needs an answer.
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
 
