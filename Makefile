@@ -4,7 +4,7 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: snapshots-record snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
+.PHONY: snapshots-record snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -13,6 +13,12 @@ build:
 # Override with make device DEVICE="device name or UDID".
 device:
 	python3 tools/device.py
+
+# The iPhone's unified log does not reach this Mac; only `--console` brings the
+# app's stdout back, so traces print to stdout and this target reads them. Device
+# builds are `-c opt`: a trace behind `#if DEBUG` never reaches this console.
+device-console: device
+	xcrun devicectl device process launch --console --terminate-existing --device "$(DEVICE)" com.bitomule.alondra
 
 test:
 	bazelisk test //crates/...

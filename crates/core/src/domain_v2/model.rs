@@ -437,4 +437,8 @@ impl DomainState {
             holds: BTreeMap::new(),
         }
     }
+    /// The orchestrator has neither defined it into Tasks nor closed it.
+    pub fn is_defining(&self, request: &Request) -> bool {
+        !request.closed && !self.tasks.values().any(|task| task.request_id == request.id)
+    }
 }

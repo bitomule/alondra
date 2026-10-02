@@ -158,7 +158,7 @@ public struct NewRequestView: View {
     }
 
     @ViewBuilder private var recentHeading: some View {
-        if let title = store.recentTitle { Text(verbatim: title) } else { Text("Recent Requests") }
+        if let title = store.recentTitle { Text(verbatim: title) } else { Text("Pending Requests") }
     }
 
     private var sendBar: some View {

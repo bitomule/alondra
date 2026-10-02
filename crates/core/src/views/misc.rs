@@ -131,14 +131,13 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
         })],
     ));
     if context.client == Client::Ios {
-        let mut requests: Vec<_> = context.domain.requests.values().collect();
+        let mut requests: Vec<_> = context.domain.requests.values().filter(|request| context.domain.is_defining(request)).collect();
         requests.sort_by(|left, right| {
             context.live.request_times.get(&right.id.0).cmp(&context.live.request_times.get(&left.id.0))
                 .then_with(|| right.id.cmp(&left.id))
         });
         let sent = requests
             .into_iter()
-            .take(8)
             .map(|request| {
                 let mut row = common::row(
                     &request.id.0,
@@ -159,12 +158,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
                 );
                 row.link = None;
                 row.badges.push(super::Label {
-                    text: if request.closed {
-                        t!(context.lang, "Delivered", "Entregada")
-                    } else {
-                        t!(context.lang, "Queued", "En cola")
-                    }
-                    .into(),
+                    text: t!(context.lang, "Queued", "En cola").into(),
                     tone: Tone::Neutral,
                 });
                 row.trailing =
@@ -181,7 +175,7 @@ pub(super) fn new_request(key: &str, context: &RenderContext<'_>) -> Result<View
             .collect();
         view.sections.push(common::section(
             "sent",
-            Some(t!(context.lang, "Recent Requests", "Solicitudes recientes").into()),
+            Some(t!(context.lang, "Pending Requests", "Solicitudes pendientes").into()),
             sent,
         ));
     }

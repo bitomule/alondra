@@ -120,9 +120,13 @@ public struct ActionFeature: Sendable {
                 return .none
             case let .chooseOption(id):
                 guard state.action?.options.contains(where: { $0.id == id }) == true else { return .none }
+                if state.selectedOptionID != id, !state.inFlight { state.pending = nil }
                 state.selectedOptionID = id; state.error = nil
                 return .none
-            case let .textChanged(text): state.text = text; state.error = nil; return .none
+            case let .textChanged(text):
+                if state.text != text, !state.inFlight { state.pending = nil }
+                state.text = text; state.error = nil
+                return .none
             case let .attachmentsChanged(ids):
                 state.attachments = ids
                 guard state.pendingAttachmentSubmit, state.attachmentPicker.allReady else { return .none }

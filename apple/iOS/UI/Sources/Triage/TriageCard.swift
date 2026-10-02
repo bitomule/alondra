@@ -313,6 +313,7 @@ struct TriageCard: View {
                 ForEach(action.options, id: \.id) { option in
                     Button {
                         store.send(.optionPicked(action, optionID: option.id))
+                        if case .text = option.input { replyFocused = true }
                     } label: {
                         VStack(alignment: compact ? .center : .leading, spacing: 4) {
                             Text(option.label).font(.headline)

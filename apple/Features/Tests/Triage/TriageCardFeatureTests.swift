@@ -45,25 +45,107 @@ final class TriageCardFeatureTests: XCTestCase {
     // MARK: Options and the reply field
 
     @MainActor
-    func testPickingAnOptionHighlightsItWithoutSendingAndSendingAnswersWithIt() async throws {
+    func testTappingAnOptionThatNeedsNoTextAnswersWithItAtOnce() async throws {
         let feed = FeedStub()
-        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+        let store = try await store("plan-r1", feed: feed, loaded: try Fixtures.planQuestionCard())
         let answer = try XCTUnwrap(store.state.replyAction)
         XCTAssertEqual(answer.presentation, .options)
         let option = try XCTUnwrap(answer.options.first)
 
         await store.send(.optionPicked(answer, optionID: option.id))
         await store.skipReceivedActions()
-        XCTAssertEqual(store.state.actions.selectedOptionID, option.id)
-        XCTAssertEqual(feed.requests, [])
+        let request = try XCTUnwrap(feed.requests.first, "tapping the option is the answer")
+        XCTAssertEqual(feed.requests.count, 1)
+        XCTAssertEqual(request.actionId, answer.id)
+        XCTAssertEqual(request.optionId, option.id)
+        XCTAssertNil(request.input.text)
+        XCTAssertEqual(request.dataEpoch, "test-epoch")
+        XCTAssertEqual(store.state.stamp, "Answered", "the stamp shows once the server applied it")
+    }
 
+    @MainActor
+    func testAnOptionThatNeedsTextIsPickedAndTheReplyFieldSendsItWithTheText() async throws {
+        let feed = FeedStub()
+        let store = try await store("hold-1", feed: feed, loaded: try Fixtures.heldPlanCard())
+        let answer = try XCTUnwrap(store.state.replyAction)
+
+        await store.send(.optionPicked(answer, optionID: "request_changes"))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.actions.selectedOptionID, "request_changes")
+        XCTAssertEqual(feed.requests, [], "an option that asks for text waits for the reply field")
+
+        await store.send(.replyChanged("Split the lexer first"))
         await store.send(.replySent(answer))
         await store.skipReceivedActions()
         let request = try XCTUnwrap(feed.requests.first)
-        XCTAssertEqual(request.actionId, answer.id)
-        XCTAssertEqual(request.optionId, option.id)
-        XCTAssertEqual(request.dataEpoch, "test-epoch")
-        XCTAssertEqual(store.state.stamp, "Answered", "the stamp shows once the server applied it")
+        XCTAssertEqual(request.optionId, "request_changes")
+        XCTAssertEqual(request.input.text, "Split the lexer first")
+    }
+
+    @MainActor
+    private func flakyStore(
+        _ id: String, loaded document: ViewDocument
+    ) -> (TestStoreOf<TriageCardFeature>, LockIsolated<[ActionRequest]>, LockIsolated<Bool>) {
+        let attempts = LockIsolated<[ActionRequest]>([])
+        let failing = LockIsolated(true)
+        var state = TriageCardFeature.State(id: id)
+        state.screen.document = document
+        state.screen.phase = .loaded
+        state.actions.dataEpoch = document.dataEpoch
+        let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
+            $0.viewsClient.perform = { request in
+                attempts.withValue { $0.append(request) }
+                if failing.value { throw URLError(.timedOut) }
+                return try ContractCodec.decode(ActionResponse.self, from: Data(
+                    #"{"protocol":1,"outcome":"applied","message":"Done","stamp":"Answered"}"#.utf8))
+            }
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
+        return (store, attempts, failing)
+    }
+
+    @MainActor
+    func testRetryingTheSameOptionAfterAFailureKeepsItsCommandAndAnotherOptionIsANewCommand() async throws {
+        let (store, attempts, failing) = flakyStore("perm-1", loaded: try Fixtures.permissionCard())
+        let answer = try XCTUnwrap(store.state.replyAction)
+
+        await store.send(.optionPicked(answer, optionID: "allow"))
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.actions.inFlight)
+        XCTAssertEqual(store.state.actions.error, "Couldn’t send. Try again.")
+
+        await store.send(.optionPicked(answer, optionID: "allow"))
+        await store.skipReceivedActions()
+        failing.setValue(false)
+        await store.send(.optionPicked(answer, optionID: "deny"))
+        await store.skipReceivedActions()
+
+        let sent = attempts.value
+        XCTAssertEqual(sent.map(\.optionId), ["allow", "allow", "deny"])
+        guard sent.count == 3 else { return }
+        XCTAssertEqual(sent[0].commandId, sent[1].commandId, "a retry is the same command, which the daemon deduplicates")
+        XCTAssertNotEqual(sent[1].commandId, sent[2].commandId, "a different answer is a different command")
+        XCTAssertEqual(store.state.stamp, "Answered")
+    }
+
+    @MainActor
+    func testEditingTheReplyAfterAFailureSendsTheNewTextAsANewCommand() async throws {
+        let (store, attempts, failing) = flakyStore(Fixtures.questionID, loaded: try Fixtures.card(Fixtures.questionID))
+        let answer = try XCTUnwrap(store.state.replyAction)
+
+        await store.send(.replyChanged("Ship the warm one"))
+        await store.send(.replySent(answer))
+        await store.skipReceivedActions()
+        failing.setValue(false)
+        await store.send(.replyChanged("Ship the clear one"))
+        await store.send(.replySent(answer))
+        await store.skipReceivedActions()
+
+        let sent = attempts.value
+        XCTAssertEqual(sent.map(\.input.text), ["Ship the warm one", "Ship the clear one"])
+        guard sent.count == 2 else { return }
+        XCTAssertNotEqual(sent[0].commandId, sent[1].commandId)
     }
 
     @MainActor
@@ -81,10 +163,9 @@ final class TriageCardFeatureTests: XCTestCase {
         }
         store.exhaustivity = .off
         let answer = try XCTUnwrap(store.state.replyAction)
-        let option = try XCTUnwrap(answer.options.first)
+        let option = try XCTUnwrap(answer.options.first { if case .none = $0.input { true } else { false } })
 
         await store.send(.optionPicked(answer, optionID: option.id))
-        await store.send(.replySent(answer))
         await store.receive(\.actions.submit)
         XCTAssertTrue(store.state.actions.inFlight)
         XCTAssertNil(store.state.stamp, "sent is not applied")
@@ -94,9 +175,14 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testTypingAfterPickingAnOptionThatNeedsNoTextDropsThePick() async throws {
+    func testTypingAfterAFailedOptionThatNeedsNoTextDropsThePick() async throws {
         let card = try Fixtures.card(Fixtures.questionID)
-        let store = try await store(Fixtures.questionID, loaded: card)
+        var state = TriageCardFeature.State(id: Fixtures.questionID)
+        state.screen.document = card
+        let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
+            $0.viewsClient.perform = { _ in throw URLError(.notConnectedToInternet) }
+        }
+        store.exhaustivity = .off
         let answer = try XCTUnwrap(store.state.replyAction)
         let plain = try XCTUnwrap(answer.options.first { if case .none = $0.input { true } else { false } })
 
@@ -271,7 +357,6 @@ final class TriageCardFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.card?.body?.text.hasPrefix("```") == true, "the prompt arrives as a code block")
 
         await store.send(.optionPicked(answer, optionID: "deny"))
-        await store.send(.replySent(answer))
         await store.skipReceivedActions()
         let request = try XCTUnwrap(feed.requests.first)
         XCTAssertEqual(request.optionId, "deny")

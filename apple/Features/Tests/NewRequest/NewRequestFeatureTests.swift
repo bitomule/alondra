@@ -47,7 +47,7 @@ final class NewRequestFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.values["effort"], .string("auto"))
         XCTAssertNil(store.state.project, "no project means the orchestrator picks")
         XCTAssertEqual(store.state.optionsSummary, ["Review each one", "Auto"])
-        XCTAssertEqual(store.state.recent.map(\.title), ["Polish the Alondra beta"])
+        XCTAssertEqual(store.state.recent.map(\.title), ["Import lists from Notes"])
         XCTAssertFalse(store.state.canSend)
     }
 

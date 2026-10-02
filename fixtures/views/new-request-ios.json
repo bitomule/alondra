@@ -4,7 +4,7 @@
   "view": "new_request",
   "key": "new_request",
   "client": "ios",
-  "version": "vb73f21912752aa10",
+  "version": "v23a3ea6dc8417d02",
   "cursor": "cursor-1",
   "title": "Ask for Something New",
   "status": {
@@ -192,14 +192,14 @@
     },
     {
       "id": "sent",
-      "title": "Recent Requests",
+      "title": "Pending Requests",
       "collapsed": false,
       "items": [
         {
           "type": "row",
-          "id": "r-9f2156b5a8894e53901f0af576dff6a2",
+          "id": "r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d",
           "icon": "request",
-          "title": "Polish the Alondra beta",
+          "title": "Import lists from Notes",
           "badges": [
             {
               "text": "Queued",
