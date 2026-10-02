@@ -18,6 +18,7 @@ public struct FleetOverview: Equatable, Sendable {
         public var isOrchestrator: Bool
         public var activity: String?
         public var activityAt: String?
+        public var interrupt: WireAction?
         public var close: WireAction?
 
         init(row: Row) {
@@ -32,6 +33,7 @@ public struct FleetOverview: Equatable, Sendable {
             let activity = row.children.first { $0.id == "activity" }
             self.activity = activity?.title
             if case .time(let at, _)? = activity?.trailing { activityAt = at }
+            interrupt = row.actions.first { $0.id?.hasPrefix("interrupt:") == true }
             close = row.actions.first { $0.id?.hasPrefix("close:") == true }
         }
     }

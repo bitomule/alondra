@@ -19,6 +19,7 @@ pub enum Verb {
     Conflicts,
     Msg,
     Close,
+    Interrupt,
     OrchRetry,
     OrchAck,
     OrchStop,
@@ -29,7 +30,7 @@ pub enum Verb {
     NewRequest,
 }
 impl Verb {
-    pub const ALL: [Self; 25] = [
+    pub const ALL: [Self; 26] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -47,6 +48,7 @@ impl Verb {
         Self::Conflicts,
         Self::Msg,
         Self::Close,
+        Self::Interrupt,
         Self::OrchRetry,
         Self::OrchAck,
         Self::OrchStop,
@@ -75,6 +77,7 @@ impl Verb {
             Self::Conflicts => "conflicts",
             Self::Msg => "msg",
             Self::Close => "close",
+            Self::Interrupt => "interrupt",
             Self::OrchRetry => "orch_retry",
             Self::OrchAck => "orch_ack",
             Self::OrchStop => "orch_stop",

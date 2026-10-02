@@ -154,7 +154,7 @@ fn action_receipts() -> &'static tokio::sync::Mutex<std::collections::HashMap<(S
 }
 
 fn is_external(verb: Verb) -> bool {
-    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Close |
+    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Close | Verb::Interrupt |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest)
 }
@@ -236,6 +236,7 @@ async fn execute_external(
         Verb::Conflicts => "Conflicts requested",
         Verb::Msg => "Message sent",
         Verb::Close => "Closed",
+        Verb::Interrupt => "Interrupted",
         Verb::OrchRetry => "Retried",
         Verb::OrchAck => "Acknowledged",
         Verb::OrchStop => "Stopped",
@@ -249,7 +250,7 @@ async fn execute_external(
     let stamp = if lang == Lang::Es { match action.verb {
         Verb::Reply => "Respuesta enviada",
         Verb::AskPr => "Pregunta enviada", Verb::Conflicts => "Conflictos comunicados",
-        Verb::Msg => "Mensaje enviado", Verb::Close => "Cerrado",
+        Verb::Msg => "Mensaje enviado", Verb::Close => "Cerrado", Verb::Interrupt => "Interrumpido",
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
         Verb::SchedRun => "Ejecución iniciada", Verb::SchedToggle => "Tarea actualizada",
         Verb::SchedDelete => "Tarea eliminada", Verb::SchedSave => "Tarea guardada",
@@ -336,6 +337,15 @@ async fn execute_external(
             let force = request.input.fields.get("force").and_then(Value::as_bool).unwrap_or(false);
             let reply = client.write(&user_id, Write::Close(agent.0), &json!({"force":force}), transport, &authorize).await?;
             Ok(to_applied(reply.status.as_u16(), reply.body))
+        }
+        Verb::Interrupt => {
+            let agent = AgentId(action.subject.clone());
+            if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
+            match domain.live.pushes.interrupt(&agent.0) {
+                Ok(()) => Ok(to_applied(200, json!({"interrupted": agent.0}))),
+                Err(_) => Ok(to_applied(409, json!({"code": "session_unreachable",
+                    "message": "The node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"}))),
+            }
         }
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop => {
             let runtime = crate::domain_orchestrator::load(home)?;
@@ -1618,6 +1628,26 @@ mod tests {
 
     fn waits_for_the_user(domain: &crate::domain_runtime::DomainRuntime) -> bool {
         domain.state().unwrap().projection().inbox.iter().any(|item| item.pending)
+    }
+
+    #[tokio::test]
+    async fn interrupting_a_node_writes_one_interrupt_down_its_connection_and_is_refused_when_it_is_gone() {
+        let (home, domain, client) = action_home();
+        apply_seed_command(&domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        let interrupt = |command_id: &str| {
+            let action = ActionId::new(Verb::Interrupt, "agent-a", domain.state().unwrap().revision, None).unwrap().to_string();
+            action_request(&domain, command_id, "es", action, None, json!({}))
+        };
+        let refused = execute_action(&domain, &client, &home.0, "test-device", interrupt("0b6f9a52-3c1e-4d7a-9f20-6a1b2c3d4e5f"), None, || Ok(())).await.unwrap();
+        assert_eq!((refused["outcome"].as_str(), refused["code"].as_str()), (Some("rejected"), Some("session_unreachable")), "{refused}");
+
+        let node = crate::node_push::testing::Node::connect(&domain, "agent-a");
+        let applied = execute_action(&domain, &client, &home.0, "test-device", interrupt("1c7f0b63-4d2f-4e8b-8a31-7b2c3d4e5f60"), None, || Ok(())).await.unwrap();
+        assert_eq!((applied["outcome"].as_str(), applied["stamp"].as_str()), (Some("applied"), Some("Interrumpido")), "{applied}");
+        tokio::task::yield_now().await;
+        assert_eq!(node.interrupts(), 1);
     }
 
     #[tokio::test]

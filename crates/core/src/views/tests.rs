@@ -1707,12 +1707,21 @@ fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     assert_eq!(working.children.len(), 1, "the task is the item, not a row under it");
     assert_eq!(working.children[0].title, "cargo test");
     assert!(matches!(&working.children[0].trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:55:00Z"));
+    let verbs = |row: &Row| row.actions.iter().map(|action| action.id.split(':').next().unwrap().to_owned()).collect::<Vec<_>>();
+    assert_eq!(verbs(&working), ["interrupt", "close"], "a working node can be interrupted or closed from its card");
+    let interrupt = &working.actions[0];
+    assert_eq!((interrupt.label.as_str(), interrupt.style), ("Interrumpir", Style::Secondary));
+    assert!(interrupt.confirm.is_some());
 
     live.nodes[0].working = false;
     state.agents.get_mut(&"a-1".into()).unwrap().name = "alondra-ios".into();
     let resting = item(&state, &live);
     assert_eq!(resting.subtitle.as_deref(), Some("alondra-ios"), "a node name that adds something stays");
     assert_eq!(resting.children[0].title, "Earlier note");
+    assert_eq!(verbs(&resting), ["close"], "nothing to interrupt once its turn ended");
+    let detail = render(&state, &live, Client::Ios, Lang::En, "node:a-1", "");
+    let Item::Actions(bar) = &detail.sections.iter().find(|section| section.id == "actions").unwrap().items[0] else { panic!("actions") };
+    assert!(bar.actions.iter().all(|action| !action.id.starts_with("interrupt:")));
     assert!(matches!(&resting.children[0].trailing, Some(Trailing::Time { at, .. }) if at == "2026-09-30T09:50:00Z"));
 
     let tui = render(&state, &live, Client::Tui, Lang::En, "fleet", "");

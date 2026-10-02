@@ -21,6 +21,32 @@ fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> 
     Some(action)
 }
 
+fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
+    let mut action = common::action(Verb::Msg, id, context.domain.revision,
+        t!(context.lang, "Message", "Mensaje"), Style::Primary)?;
+    action.input = super::Input::Text {
+        placeholder: format!("{} {}…", t!(context.lang, "Write to", "Escribe a"), common::agent_label(&AgentId(id.into()), context)),
+        required: true,
+        multiline: true,
+    };
+    action.attachments = true;
+    Some(action)
+}
+
+/// Stopping a node's current turn, offered only while it works.
+fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
+    context.live.nodes.iter().find(|node| node.agent_id == id).filter(|node| node.working)?;
+    let mut action = common::action(Verb::Interrupt, id, context.domain.revision,
+        t!(context.lang, "Interrupt", "Interrumpir"), Style::Secondary)?;
+    action.confirm = Some(Confirm {
+        title: action.label.clone(),
+        message: t!(context.lang, "Stop what this node is doing now? It keeps its task and waits for you.",
+            "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.").into(),
+        button: action.label.clone(),
+    });
+    Some(action)
+}
+
 /// A node's one state, in 8ccd131's words: a question it blocks on, then what the session does,
 /// then what waits for the user on it, then where its tasks stand.
 /// A node is in Fleet while it is connected, has a task, or is live; one that finished and left
@@ -125,6 +151,7 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
             row.subtitle = (task.title != name).then_some(name);
         }
         row.children.extend(live.and_then(activity));
+        row.actions.extend(interrupt_action(&agent.id.0, context));
     } else {
         row.subtitle = live.and_then(|node| node.tool.clone());
         row.children.extend(task.map(|task| super::tasks::task_row(task, context)));
@@ -406,26 +433,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             rows,
         ));
     }
-    let mut actions = vec![];
-    if let Some(mut action) = common::action(
-        Verb::Msg,
-        id,
-        context.domain.revision,
-        t!(context.lang, "Message", "Mensaje"),
-        Style::Primary,
-    ) {
-        action.input = super::Input::Text {
-            placeholder: format!(
-                "{} {}…",
-                t!(context.lang, "Write to", "Escribe a"),
-                common::agent_label(&agent.id, context)
-            ),
-            required: true,
-            multiline: true,
-        };
-        action.attachments = true;
-        actions.push(action);
-    }
+    let mut actions: Vec<_> = message_action(id, context).into_iter().collect();
+    actions.extend(interrupt_action(id, context));
     actions.extend(close_action(id, context));
     if !actions.is_empty() {
         view.sections.push(common::section(
