@@ -495,6 +495,24 @@ impl Auth {
         Ok(())
     }
 
+    /// APNs said this token will never be delivered to again; keep the slot empty until the
+    /// phone registers a token. A registration that replaced it meanwhile stays.
+    pub fn forget_dead_push(&self, device_id: &str, token: &str) -> Result<()> {
+        self.ensure_registry_ready()?;
+        let mut registry = self.devices.lock().unwrap();
+        if registry.push.get(device_id).is_none_or(|current| current.token != token) {
+            return Ok(());
+        }
+        let dead = registry.push.remove(device_id);
+        if let Err(e) = self.persist_registry(&registry) {
+            if let Some(dead) = dead {
+                registry.push.insert(device_id.to_owned(), dead);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
     pub fn push_registration(&self, device_id: &str) -> Option<PushRegistration> {
         if self.ensure_registry_ready().is_err() {
             return None;

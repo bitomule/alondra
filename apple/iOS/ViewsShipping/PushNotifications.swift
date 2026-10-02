@@ -123,6 +123,14 @@ final class PushCenter {
 
     func registerWithAPNs() { UIApplication.shared.registerForRemoteNotifications() }
 
+    /// Apple asks apps to fetch the token again rather than trust an earlier one, and the
+    /// relay forgets a token APNs rejected; coming back to the app re-sends it either way.
+    func reregisterOnReturn() {
+        guard authorization == .authorized, !clients.isEmpty else { return }
+        registrations.expireRegistrations()
+        registerWithAPNs()
+    }
+
     func didRegister(deviceToken: Data) {
         token = deviceToken.map { String(format: "%02x", $0) }.joined()
         scheduleSync()
