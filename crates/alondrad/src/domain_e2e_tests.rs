@@ -328,6 +328,13 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     daemon.domain.live.pushes.interrupt(SESSION).unwrap();
     assert_eq!(next_line(&mut reader, patience), Some(json!({"interrupt": true})));
 
+    let interrupt = format!("http://127.0.0.1:{}/sandbox/interrupt/{SESSION}", daemon.port);
+    let client = reqwest::Client::new();
+    assert_eq!(client.post(&interrupt).send().await.unwrap().status(), 404, "only a sandbox daemon offers it");
+    daemon.domain.live.sandbox.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(client.post(&interrupt).send().await.unwrap().status(), 200);
+    assert_eq!(next_line(&mut reader, patience), Some(json!({"interrupt": true})));
+
     for report in [
         json!({"event": "turn.start", "turn_id": "t1"}),
         json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "cargo test"}}),

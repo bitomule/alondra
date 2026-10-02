@@ -397,6 +397,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         state.attach_service(service.clone());
     }
     let domain = state.domain();
+    domain.live.sandbox.store(config.sandbox, std::sync::atomic::Ordering::Relaxed);
     let state_domain = domain.clone();
     let gauges = state.gauges();
     let client = state.client();

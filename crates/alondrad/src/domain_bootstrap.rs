@@ -123,6 +123,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/orchestrator/launch", post(orchestrator_launch))
         .route("/orchestrator/send", post(orchestrator_send))
         .route("/orchestrator/interrupt", post(orchestrator_interrupt))
+        .route("/sandbox/interrupt/{session}", post(sandbox_interrupt))
         .route("/orchestrator/machine", get(orchestrator_machine))
         .route("/orchestrator/schedules", post(orchestrator_schedule))
         .route("/orchestrator/fleet", get(orchestrator_fleet))
@@ -514,6 +515,25 @@ async fn orchestrator_send(
         )
         .await,
     )
+}
+
+/// Lets a sandbox's operator interrupt a probe node, which has no orchestrator to ask.
+async fn sandbox_interrupt(
+    State(state): State<Arc<V2Only>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    axum::extract::Path(session): axum::extract::Path<String>,
+) -> Response {
+    if !state.domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
+        return StatusCode::NOT_FOUND.into_response();
+    }
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    match state.domain.live.pushes.interrupt(&session) {
+        Ok(()) => Json(json!({"interrupted": session})).into_response(),
+        Err(_) => crate::domain_api::domain_error(DomainError::new("session_unreachable", "no connection from that session")),
+    }
 }
 
 async fn orchestrator_interrupt(

@@ -13,6 +13,9 @@ pub(crate) struct Live {
     presence: Mutex<HashMap<String, i64>>,
     pub(crate) mods: crate::node_reports::Reports,
     pub(crate) pushes: crate::node_push::Pushes,
+    /// A sandbox daemon registers the Agent of any session whose mod connects, so a hand-launched
+    /// probe node can be sent to.
+    pub(crate) sandbox: std::sync::atomic::AtomicBool,
 }
 
 impl Live {

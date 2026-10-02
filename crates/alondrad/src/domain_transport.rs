@@ -117,6 +117,9 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
         Err(error) => return refuse(stream, format!("invalid node connection: {error}")).await,
     };
     let session = hello.session_id.clone();
+    if domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
+        register_probe(domain, &session)?;
+    }
     let number = domain.live.mods.connect(hello, alondra_core::now_millis());
     let mut lines = domain.live.pushes.attach(&session, number);
     let mut changed = domain.subscribe();
@@ -149,6 +152,20 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
         Some(std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => Ok(()),
         _ => Err(error),
     })
+}
+
+fn register_probe(domain: &DomainRuntime, session: &str) -> Result<()> {
+    let state = domain.state()?;
+    if state.agents.contains_key(&AgentId(session.to_owned())) {
+        return Ok(());
+    }
+    let envelope = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
+        command_id: format!("sandbox-probe-{session}").into(), expected_revision: state.revision,
+        command: Command::RegisterAgent { agent_id: session.into(), name: format!("test/{}", &session[..session.len().min(8)]) },
+    };
+    domain.execute(&Actor::System, &envelope, None, || Ok(())).map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    Ok(())
 }
 
 /// The lines for this session's pending outbox messages that this connection has not carried yet.
@@ -1045,6 +1062,20 @@ mod tests {
         let mut third = connect(&domain, "session-a").await;
         assert!(third.nothing_arrives().await, "acked, so never again");
         third.close().await;
+    }
+
+    #[tokio::test]
+    async fn only_a_sandbox_daemon_registers_the_agent_of_a_connecting_probe() {
+        let fixture = Fixture::new();
+        let domain = Arc::new(fixture.open());
+        connect(&domain, "8a73d968-0000").await.close().await;
+        assert!(domain.state().unwrap().agents.is_empty(), "a real daemon never invents an Agent");
+        domain.live.sandbox.store(true, std::sync::atomic::Ordering::Relaxed);
+        connect(&domain, "8a73d968-0000").await.close().await;
+        connect(&domain, "8a73d968-0000").await.close().await;
+        let state = domain.state().unwrap();
+        assert_eq!(state.agents[&"8a73d968-0000".into()].name, "test/8a73d968");
+        assert_eq!(state.agents.len(), 1);
     }
 
     #[tokio::test]
