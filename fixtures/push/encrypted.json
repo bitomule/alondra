@@ -1,0 +1,68 @@
+{
+  "apns": {
+    "alondra": {
+      "envelope": {
+        "ciphertext": "UnDgEv5gelVE69JxI37h6HHe1nIsQ-NrueELJKo6zlS_bUibXa0eVQO4i9DV6L2g_iSd2vBYeWTW-xKEs9Osrzs5nuCRGyvnn-DiRe9rV8DGp3XRZMFMsSxZjPM7HxvZwGNaksk4JD-UgBvrGH75FrEVQG1Wi8YPx4Ki8CCZBUDaRi4KJmL_TQubzSzRHjQ72pwEejotoamWUCMTgWBkLiQXiHSMIycfwCrm015uZ8rp0Ypw__mp8KOCDnNIZSpCi9ml3hQD3n4frGSBogRRKwUItRKsTnurerISJh9vXrjj85-i4eu5Z8y99pR_ViQL1In71n3moxOhgFnoH9Sz36-dw32gJ54axunpqv271vYYnVpkeY961qkANg2wtWCGZDzsMrFLbkuV35eqVbUKbCVZv3AdcIHvH6QxEHbe9Ks__fdM_UCongTeZaW7G3ZsY9AX31ihdNblpKy3ezX9hLEBXA9L0O00cXs8Bv25oralMwywUXftKpko8-Q2Nx9re5RRF5JFntIXi30BPaF4xiZd9Tu8UP2c9eFhVExq9hyid4Rs9GapPFvs_ON6eqw29UeKCA7A5n-faKmaOv1GVrUfy8DY2it6RW3dHZW_qr7JyKU8gFO5nF1IIziyh-ZpPGox6X3HWSbCNP_-WG9C4nGRxxT6Ia_zYp7gmq7KE3eRJP-rZGSWICrN6zEd4Tp3nuaELSm3CORi1k2brTG0okzH80Y3WUKRpF2HrYED3x6OiGjdbQTyl7RWRo4DXsjPYs6sXjyrSFw_cFQZ7Gyo5qKtQpcagD57cfrWTkKgDzJhdQCbXbrKXFrdjNmwoAD2OiUVz1txs2WfB2a1lSkyaTxXEDhA9TgDloyyEG-_NfAHsiWvLHXAGhsZ35BGtbSqZwyKCynQi34tjn5YEdO04K03EF5YL7xdbtn_r7mM9FBorCLuKkGGIOMUCcgIMsHMgg",
+        "ephemeral_key": "BLS5GOghYbqNu5IKAD7fgcnnO32sTo87bZhjkjgLFqxvz6LhnokQZLkzi7JhtMD8n64oylYi3QdGOU3cnLi9ojQ",
+        "expires_at_ms": 1790925106370,
+        "kind": "push",
+        "nonce": "sWVf3nb5wLBazivs",
+        "recipient": "phone-fixture",
+        "request_id": "Qf2A62RapPk8STaZeneAlA",
+        "route": "mac-fixture",
+        "sender": "mac-fixture",
+        "signature": "72nTQnKfmP0n3ddmXJBh7VoAh5UzsqC0bzwTN8VRF0pCcLFWc46RBkjYwONr4YCOpAAvUaxnjMKWFuvzwYri1w",
+        "v": 1
+      },
+      "push_binding": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "aps": {
+      "alert": {
+        "body": "Nueva actividad",
+        "title": "Alondra"
+      },
+      "mutable-content": 1
+    }
+  },
+  "device_agreement_private_key": "UlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlI",
+  "device_id": "phone-fixture",
+  "mac_id": "mac-fixture",
+  "mac_signing_public_key": "mmUXPUigoMcG7uwqda4fVnk76Yiy1Afpp9Orp1dKnqUQHazqrfQrZhVDo1Pk9QXsQSgd-FNf7MWRLqOe1rUFaA",
+  "payload": {
+    "alondra": {
+      "actions": [
+        {
+          "id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
+          "label": "Yes",
+          "option": "yes"
+        },
+        {
+          "id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
+          "label": "Request changes",
+          "option": "changes",
+          "placeholder": "Añade una nota",
+          "text": true
+        },
+        {
+          "id": "ctx:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
+          "label": "Necesito más contexto",
+          "placeholder": "¿Qué falta?",
+          "text": true
+        }
+      ],
+      "card": "c92d0a11-7c47-4c47-b42b-36b8f22f5120",
+      "data_epoch": "fixture-epoch",
+      "kind": "question",
+      "protocol": 1
+    },
+    "aps": {
+      "alert": {
+        "body": "New activity in Alondra",
+        "title": "Alondra"
+      },
+      "category": "ALONDRA_PUSH",
+      "mutable-content": 1,
+      "sound": "default"
+    }
+  }
+}

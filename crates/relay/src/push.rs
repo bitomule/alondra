@@ -253,6 +253,20 @@ impl std::error::Error for ApnsRejection {}
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn apns_payload_matches_the_cross_language_fixture() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/push/encrypted.json")).unwrap();
+        let alondra = &fixture["apns"]["alondra"];
+        let envelope: EnvelopeV1 = serde_json::from_value(alondra["envelope"].clone()).unwrap();
+        assert_eq!(
+            payload(&envelope, alondra["push_binding"].as_str().unwrap()),
+            fixture["apns"],
+            "the notification service extension decrypts exactly this shape"
+        );
+    }
+
     #[test]
     fn binding_and_token_are_canonical() {
         let valid = PushRegistration {

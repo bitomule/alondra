@@ -62,6 +62,19 @@ public enum NotificationDecoder {
         payload["aps"] = aps
         return try JSONSerialization.data(withJSONObject: payload)
     }
+    /// The notification service extension's whole path from APNs `userInfo` to the
+    /// authenticated payload; nil means it shows the generic "open Alondra" alert.
+    public static func open(userInfo: [AnyHashable: Any], store: NotificationDecryptionStore) -> [String: Any]? {
+        guard let raw = try? JSONSerialization.data(withJSONObject: userInfo),
+              let hint = try? bindingHint(raw),
+              let context = try? store.load(binding: hint),
+              let decrypted = try? decrypt(raw, context: context),
+              let payload = (try? JSONSerialization.jsonObject(with: decrypted)) as? [String: Any],
+              NotificationPayload.Binding(userInfo: payload) != nil,
+              payload["aps"] is [String: Any] else { return nil }
+        return payload
+    }
+
     private struct Outer: Decodable {
         let alondra: Encrypted
         struct Encrypted: Decodable {

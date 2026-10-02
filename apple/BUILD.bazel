@@ -17,6 +17,22 @@ sh_test(
     data = [":localization_catalogs"],
 )
 
+PUSH_KEYCHAIN_FILES = [
+    "iOS/Info.plist",
+    "iOSNotificationService/Info.plist",
+    "iOS/Alondra.entitlements",
+    "iOS/AppStore.entitlements",
+    "iOSNotificationService/AlondraNotificationService.entitlements",
+    "iOSNotificationService/AppStore.entitlements",
+]
+
+sh_test(
+    name = "push_keychain_group_test",
+    srcs = ["push_keychain_group_test.py"],
+    args = ["$(rootpath %s)" % path for path in PUSH_KEYCHAIN_FILES],
+    data = PUSH_KEYCHAIN_FILES,
+)
+
 sh_test(
     name = "spanish_catalog_test",
     srcs = ["spanish_catalog_test.py"],

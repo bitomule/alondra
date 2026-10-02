@@ -1,0 +1,5 @@
+filegroup(
+    name = "push",
+    srcs = glob(["*.json"]),
+    visibility = ["//visibility:public"],
+)

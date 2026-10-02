@@ -1616,6 +1616,62 @@ mod http_tests {
     }
 
     #[tokio::test]
+    async fn re_pairing_with_the_same_mac_supersedes_the_older_push_registration() {
+        let mac_sign = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let (_url, server, task) = test_server_with_apns(&mac_sign, None).await;
+        let identity = |mac: &str| auth::Identity {
+            device_id: mac.into(),
+            owner_sub: "owner".into(),
+        };
+        for (index, (phone, mac)) in [
+            ("phone-old", "mac-1"),
+            ("phone-new", "mac-1"),
+            ("phone-other-mac", "mac-2"),
+            ("phone-other-install", "mac-1"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let key = SigningKey::from_slice(&[40 + index as u8; 32]).unwrap();
+            server
+                .auth
+                .enroll(
+                    &identity(mac),
+                    PhoneDevice {
+                        device_id: phone.into(),
+                        owner_sub: "owner".into(),
+                        signing_key: key_bytes(&key),
+                    },
+                )
+                .unwrap();
+        }
+        let registration = |token: &str, binding: u8| PushRegistration {
+            token: token.repeat(32),
+            environment: "production".into(),
+            push_binding: URL_SAFE_NO_PAD.encode([binding; 32]),
+        };
+        let auth = &server.auth;
+        auth.register_push("phone-old", registration("ab", 1)).unwrap();
+        auth.register_push("phone-other-mac", registration("ab", 2)).unwrap();
+        auth.register_push("phone-other-install", registration("cd", 3)).unwrap();
+        auth.register_push("phone-new", registration("ab", 4)).unwrap();
+
+        assert!(
+            auth.push_registration("phone-old").is_none(),
+            "the phone cannot decrypt pushes for a pairing it replaced"
+        );
+        assert_eq!(auth.push_registration("phone-new"), Some(registration("ab", 4)));
+        assert_eq!(auth.push_registration("phone-other-mac"), Some(registration("ab", 2)));
+        assert_eq!(auth.push_registration("phone-other-install"), Some(registration("cd", 3)));
+        let stored: Value = serde_json::from_slice(
+            &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
+        )
+        .unwrap();
+        assert!(stored["push"].get("phone-old").is_none());
+        task.abort();
+    }
+
+    #[tokio::test]
     async fn encrypted_push_requires_both_identities_and_purges_registration_on_revoke() {
         use std::sync::Mutex;
         let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));

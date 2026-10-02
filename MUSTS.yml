@@ -35,17 +35,22 @@ checks:
       - "Makefile"
       - "apple/**/*.xcstrings"
       - "apple/no_sleep_wording_test.sh"
+      - "apple/push_keychain_group_test.py"
+      - "apple/**/*.entitlements"
+      - "apple/**/Info.plist"
     with:
       targets:
         - //crates/...
         - //apple:no_sleep_wording_test
         - //apple:spanish_catalog_test
+        - //apple:push_keychain_group_test
 
   apple-tests:
     uses: bazel/test
     paths:
       - "apple/**"
       - "fixtures/views/**"
+      - "fixtures/push/**"
       - "**/*.bazel"
       - "MODULE.bazel"
       - ".bazelrc"
