@@ -223,6 +223,9 @@ pub enum Command {
         presentation_id: InteractionId,
         targets: Vec<DeliveryTarget>,
         body: String,
+        /// Alondra on its own sends only `conflicts`.
+        #[serde(default)]
+        instruction: Instruction,
     },
     AcceptDelivery {
         presentation_id: InteractionId,

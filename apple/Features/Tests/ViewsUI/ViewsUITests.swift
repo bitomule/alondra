@@ -204,6 +204,20 @@ final class CardActionPresentationTests: XCTestCase {
         XCTAssertFalse(pullRequest.actions.contains { CardActionPresentation.isRescueComments(card: pullRequest, action: $0) })
     }
 
+    func testAPullRequestRequestsChangesFromItsReplyFieldAlone() throws {
+        let pullRequest = try card(named: "card-pr")
+        let changes = try XCTUnwrap(pullRequest.actions.first { $0.id?.hasPrefix("changes:") == true })
+        let ask = try XCTUnwrap(pullRequest.actions.first { $0.id?.hasPrefix("ask_pr:") == true })
+        XCTAssertFalse(CardActionPresentation.showsAsControl(changes, in: pullRequest, reply: changes))
+        XCTAssertTrue(CardActionPresentation.showsAsControl(ask, in: pullRequest, reply: changes))
+    }
+
+    func testADocumentKeepsItsReplyActionAsAButtonToItsComments() throws {
+        let document = try addingRequestChanges(card(named: "card-delivery", replacingIcon: "document", linkingArtifact: true))
+        let changes = try XCTUnwrap(document.actions.first { $0.id?.hasPrefix("changes:") == true })
+        XCTAssertTrue(CardActionPresentation.showsAsControl(changes, in: document, reply: changes))
+    }
+
     func testOpenOnGitHubIsTheIdlessURLAction() throws {
         let github = try ContractCodec.decode(AlondraContract.Action.self, from: Data(#"{"id":"","label":"Open on GitHub","style":"plain","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"link":{"kind":"url","url":"https://github.com/o/r/pull/1"}}"#.utf8))
         XCTAssertTrue(CardActionPresentation.isOpenOnGitHub(github))

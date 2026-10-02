@@ -441,6 +441,7 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
             presentation_id: "delivery".into(),
             targets: text(),
             body: "One correction".into(),
+            instruction: Instruction::Changes,
         },
     )
     .unwrap();
@@ -2158,6 +2159,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
             presentation_id: "d".into(),
             targets: targets.clone(),
             body: "Tighten the summary".into(),
+            instruction: Instruction::Changes,
         },
     )
     .unwrap();
@@ -2645,7 +2647,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
             is_final: true }, false),
         (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
-            targets: text(), body: "Change".into() }, false),
+            targets: text(), body: "Change".into(), instruction: Instruction::Changes }, false),
         (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
         (Command::AuthorizeMerge { authorization_id: "fresh-auth".into(),
             presentation_id: ids.interaction.into(), pr_id: ids.pr.into(),
@@ -2896,4 +2898,61 @@ fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox(
     let ordinary = exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(),
         option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();
     assert!(matches!(ordinary.effects[..], [DomainEffect::NotifyAgent { .. }]));
+}
+
+fn hand_back(s: &mut DomainState, actor: Actor, instruction: Instruction) -> Result<CommandOutcome, DomainError> {
+    exec(s, actor, Command::SubmitFeedback { attachments: vec![], presentation_id: "d".into(), targets: pr_targets(),
+        body: "Back to you".into(), instruction })
+}
+
+fn waiting(s: &DomainState, id: &str) -> bool {
+    s.item(&s.interactions[&id.into()]).pending
+}
+
+#[test]
+fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents_again() {
+    for instruction in [Instruction::Changes, Instruction::Question, Instruction::Reply, Instruction::Conflicts] {
+        let mut s = fixture();
+        register(&mut s);
+        present(&mut s, "d", pr_targets());
+        assert!(waiting(&s, "d"));
+        let actor = if instruction == Instruction::Conflicts { Actor::System } else { user() };
+        let outcome = hand_back(&mut s, actor, instruction).unwrap();
+        assert!(matches!(&outcome.effects[..], [DomainEffect::NotifyAgent { message, .. }]
+            if message == &instruction.message("Back to you")));
+        assert!(!waiting(&s, "d"), "{instruction:?}");
+        assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(instruction)));
+        exec(&mut s, agent(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
+            scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into() }).unwrap();
+        assert!(!waiting(&s, "d"), "{instruction:?}: another word from the Agent never brings the delivery back");
+        assert_eq!(s.task_handed_back(&"t".into()), Some(instruction));
+        present(&mut s, "d2", pr_targets());
+        assert!(waiting(&s, "d2"));
+        assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::InReview, None));
+    }
+}
+
+#[test]
+fn every_instruction_but_conflicts_ends_by_asking_the_agent_to_present_again() {
+    for instruction in [Instruction::Changes, Instruction::Question, Instruction::Reply] {
+        let message = instruction.message("Use the new API");
+        assert!(message.contains("Use the new API") && message.contains("present the result again with present_result"), "{message}");
+    }
+    assert_eq!(Instruction::Conflicts.message("Alondra's own words"), "Alondra's own words");
+}
+
+#[test]
+fn alondra_alone_sends_only_conflicts_and_an_agent_never_sends_back() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    for (actor, instruction) in [(Actor::System, Instruction::Changes), (Actor::System, Instruction::Question),
+        (agent(), Instruction::Conflicts)] {
+        let before = s.clone();
+        assert_eq!(hand_back(&mut s, actor, instruction).unwrap_err().code, "forbidden");
+        assert_eq!(s, before);
+    }
+    hand_back(&mut s, Actor::System, Instruction::Conflicts).unwrap();
+    let InteractionPayload::Delivery { feedback, .. } = &s.interactions[&"d".into()].payload else { unreachable!() };
+    assert_eq!((feedback[0].user_id.as_str(), feedback[0].instruction), (Feedback::ALONDRA, Instruction::Conflicts));
 }

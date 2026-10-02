@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 fn task_subtitle(task: &Task, context: &RenderContext<'_>) -> String {
     let project = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter()
         .find(|node| node.agent_id == id.0).and_then(|node| node.project.as_deref()));
-    let state = task_state_label(task.state, context.lang);
+    let state = common::instruction_label(task, context.domain, context.lang)
+        .unwrap_or_else(|| task_state_label(task.state, context.lang));
     match project {
         Some(project) if !project.is_empty() && project != "others" => format!("{project} · {state}"),
         _ => state.into(),
@@ -138,7 +139,8 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
                 let mut child = common::row(&task.id.0, &format!("task:{}", task.id), icon,
                     task.title.clone(), Some(task_subtitle(task, context)));
                 child.depth = 1;
-                child.badges.push(Label { text: task_state_label(task.state, context.lang).into(), tone });
+                child.badges.push(Label { text: common::instruction_label(task, context.domain, context.lang)
+                    .unwrap_or_else(|| task_state_label(task.state, context.lang)).into(), tone });
                 child
             }).collect();
         projects.entry(project.into()).or_default().push(row);

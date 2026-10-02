@@ -5,7 +5,7 @@
 //! the same command path as the resource API.
 
 use alondra_core::domain_v2::{
-    Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold,
+    Actor, AuthorizationId, Command, CommandEnvelope, CommandId, DataEpoch, DomainError, Hold, Instruction,
     InteractionId, InteractionPayload, MergeMethod, Revision, TaskId,
 };
 use alondra_core::views::{action_id::{ActionId, Verb}, Lang, VIEWS_PROTOCOL};
@@ -154,7 +154,7 @@ fn action_receipts() -> &'static tokio::sync::Mutex<std::collections::HashMap<(S
 }
 
 fn is_external(verb: Verb) -> bool {
-    matches!(verb, Verb::Ctx | Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Close |
+    matches!(verb, Verb::Reply | Verb::AskPr | Verb::Conflicts | Verb::Msg | Verb::Close |
         Verb::OrchRetry | Verb::OrchAck | Verb::OrchStop | Verb::SchedRun | Verb::SchedToggle |
         Verb::SchedDelete | Verb::SchedSave | Verb::NewRequest)
 }
@@ -193,7 +193,8 @@ async fn execute_action(
     if let Some(response) = changed_pr_head(&state, &action, lang) {
         return Ok(response);
     }
-    if action.verb == Verb::Changes && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty())
+    if matches!(action.verb, Verb::Changes | Verb::AskPr | Verb::Reply)
+        && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty())
         && request.input.comments.is_empty() {
         return Ok(rejected_field(lang, "text", "This option needs text"));
     }
@@ -201,7 +202,7 @@ async fn execute_action(
         && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
         return Ok(rejected_field(lang, "option_id", "Choose an option"));
     }
-    if is_external(action.verb) {
+    if is_external(action.verb) && !handed_back_in_domain(&state, &action) {
         execute_external(domain, client, home, device, &request, &attachments, &action, identity, authorize, lang).await
     } else {
         execute_value(domain, device, request, &attachments, identity, authorize)
@@ -230,7 +231,6 @@ async fn execute_external(
     let user_id = format!("device:{device}");
     let transport = identity.map(|(sender, request_id, digest)| (sender, request_id, digest));
     let stamp = match action.verb {
-        Verb::Ctx => "Context requested",
         Verb::Reply => "Reply sent",
         Verb::AskPr => "Question sent",
         Verb::Conflicts => "Conflicts requested",
@@ -247,7 +247,7 @@ async fn execute_external(
         _ => return Ok(no_longer_available(lang, "This action is no longer available")),
     };
     let stamp = if lang == Lang::Es { match action.verb {
-        Verb::Ctx => "Contexto solicitado", Verb::Reply => "Respuesta enviada",
+        Verb::Reply => "Respuesta enviada",
         Verb::AskPr => "Pregunta enviada", Verb::Conflicts => "Conflictos comunicados",
         Verb::Msg => "Mensaje enviado", Verb::Close => "Cerrado",
         Verb::OrchRetry => "Reintentado", Verb::OrchAck => "Confirmado", Verb::OrchStop => "Detenido",
@@ -267,7 +267,7 @@ async fn execute_external(
         }
     };
     match action.verb {
-        Verb::Ctx | Verb::Reply => {
+        Verb::Reply => {
             let interaction_id = InteractionId(action.subject.clone());
             let Some(interaction) = state.interactions.get(&interaction_id)
                 .filter(|interaction| !interaction.withdrawn && interaction.revision == action.revision)
@@ -285,17 +285,10 @@ async fn execute_external(
             };
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
             let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
-            let note = if action.verb == Verb::Reply {
-                alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default())
-            } else {
-                request.input.text.as_deref().unwrap_or_default().trim().to_owned()
-            };
-            let note = note.as_str();
-            if action.verb == Verb::Reply && note.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
-            let (kind, text, mark_read) = if action.verb == Verb::Ctx {
-                ("more_context", context_request(note), false)
-            } else { ("reply", note.to_owned(), matches!(interaction.payload, InteractionPayload::Information { .. })) };
-            let body = json!({"text":text,"attachments":attachments,"kind":kind,
+            let text = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
+            if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
+            let mark_read = matches!(interaction.payload, InteractionPayload::Information { .. });
+            let body = json!({"text":text,"attachments":attachments,"kind":"reply",
                 "mark_read":mark_read,"interaction_id":interaction_id,"task_id":task_id});
             let reply = crate::domain_bootstrap::send_agent_message(domain, home, device, &agent, body).await;
             let status = reply["status"].as_u64().unwrap_or(500) as u16;
@@ -650,6 +643,13 @@ fn execute_value(
     let Some((command, stamp)) = map_domain_action(&state, &action, &request, attachments, lang) else {
         return Ok(no_longer_available(lang, "This action is no longer available"));
     };
+    let conflicts = (action.verb == Verb::Conflicts)
+        .then(|| state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone())))
+        .flatten();
+    let (actor, command_id) = match conflicts {
+        Some(pr) => (Actor::System, conflicts_command_id(pr)),
+        None => (Actor::User { user_id: format!("device:{device}") }, command_id),
+    };
     let envelope = CommandEnvelope {
         protocol_version: 2,
         data_epoch: DataEpoch(request.data_epoch),
@@ -657,7 +657,6 @@ fn execute_value(
         expected_revision: action.revision as Revision,
         command,
     };
-    let actor = Actor::User { user_id: format!("device:{device}") };
     let transport = identity.map(|(sender, request_id, digest)| (sender, request_id, digest));
     let outcome = match domain.execute(&actor, &envelope, transport,
         || authorize().map_err(|_| DomainError::new("forbidden", "device approval was revoked").into())) {
@@ -777,6 +776,40 @@ fn map_domain_action(
                 None => stamp("Answered", "Respondida"),
             }))
         }
+        Verb::Ctx => {
+            let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
+            let (InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. }) = &interaction.payload else { return None; };
+            if state.holds.contains_key(&interaction.id) { return None; }
+            let note = request.input.text.as_deref().unwrap_or_default().trim();
+            let inputs = std::collections::BTreeMap::from([("text".to_owned(), alondra_core::domain_v2::InputValue::Text(context_request(note)))]);
+            Some((Command::AnswerQuestion { interaction_id: interaction.id.clone(), option_id: String::new(),
+                inputs, attachments: vec![] }, stamp("Context requested", "Contexto solicitado")))
+        }
+        Verb::Reply => {
+            let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
+            let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
+            let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
+            let text = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
+            if text.trim().is_empty() { return None; }
+            Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(),
+                body: text, attachments: attachments.to_vec(), instruction: Instruction::Reply },
+                stamp("Reply sent", "Respuesta enviada")))
+        }
+        Verb::AskPr | Verb::Conflicts => {
+            let pr = state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))?;
+            let presentation = pr_presentation(state, pr)?;
+            let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
+            let (body, attachments, instruction, stamp) = if action.verb == Verb::AskPr {
+                let text = request.input.text.as_deref().unwrap_or_default().trim();
+                if text.is_empty() { return None; }
+                (text.to_owned(), attachments.to_vec(), Instruction::Question, stamp("Question sent", "Pregunta enviada"))
+            } else {
+                (crate::domain_messages::conflicts_text(&crate::domain_messages::user_name(), pr), vec![],
+                    Instruction::Conflicts, stamp("Conflicts requested", "Conflictos comunicados"))
+            };
+            Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: targets.clone(),
+                body, attachments, instruction }, stamp))
+        }
         Verb::Read => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             Some((Command::MarkRead { interaction_id: interaction.id.clone() }, stamp("Marked as read", "Marcada como leída")))
@@ -829,7 +862,7 @@ fn map_domain_action(
                 }
             }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(), body,
-                attachments: attachments.to_vec() }, stamp("Changes requested", "Cambios solicitados")))
+                attachments: attachments.to_vec(), instruction: Instruction::Changes }, stamp("Changes requested", "Cambios solicitados")))
         }
         Verb::Merge => {
             let (interaction, target_pr) = if state.pull_requests.contains_key(&alondra_core::domain_v2::PrId(action.subject.clone())) {
@@ -887,6 +920,38 @@ fn map_domain_action(
         }
         _ => None,
     }
+}
+
+/// A reply to a delivery, a question about a presented PR or a request to resolve its conflicts
+/// is feedback on that delivery, so its card leaves the queue; with no delivery to hold it is
+/// only typed to the node.
+fn handed_back_in_domain(state: &alondra_core::domain_v2::DomainState, action: &ActionId) -> bool {
+    match action.verb {
+        Verb::Reply => state.interactions.get(&InteractionId(action.subject.clone()))
+            .is_some_and(|interaction| matches!(interaction.payload, InteractionPayload::Delivery { .. })),
+        Verb::AskPr | Verb::Conflicts => state.pull_requests.get(&alondra_core::domain_v2::PrId(action.subject.clone()))
+            .is_some_and(|pr| pr_presentation(state, pr).is_some()),
+        _ => false,
+    }
+}
+
+/// Resolve conflicts is Alondra's own request, whether the user tapped it or Alondra noticed:
+/// one per PR head, so a second one for the same head changes nothing.
+pub(crate) fn conflicts_command_id(pr: &alondra_core::domain_v2::PullRequest) -> CommandId {
+    CommandId(format!("conflicts-{}-{}", pr.id, pr.head))
+}
+
+/// The open PR's current final delivery, presented at the PR's head.
+pub(crate) fn pr_presentation<'a>(
+    state: &'a alondra_core::domain_v2::DomainState,
+    pr: &alondra_core::domain_v2::PullRequest,
+) -> Option<&'a alondra_core::domain_v2::Interaction> {
+    if pr.state != alondra_core::domain_v2::PrState::Open { return None; }
+    let task = state.tasks.get(&pr.task_id).filter(|task| !task.state.terminal())?;
+    let presentation = state.interactions.get(task.final_presentation.as_ref()?)?;
+    let InteractionPayload::Delivery { targets, .. } = &presentation.payload else { return None; };
+    targets.iter().any(|target| matches!(target, alondra_core::domain_v2::DeliveryTarget::PullRequest { pr_id, head }
+        if pr_id == &pr.id && head == &pr.head)).then_some(presentation)
 }
 
 fn held_plan(state: &alondra_core::domain_v2::DomainState, interaction: &alondra_core::domain_v2::Interaction) -> bool {
@@ -1493,6 +1558,78 @@ mod tests {
         let stale = execute_action(&domain, &client, &home.0, "test-device", second, None, || Ok(())).await.unwrap();
         assert_eq!(stale["outcome"], "no_longer_available", "{stale}");
         assert_eq!(domain.state().unwrap().revision, revision_after_answer, "the second answer changes nothing");
+    }
+
+    fn presented_pr(domain: &crate::domain_runtime::DomainRuntime) {
+        use alondra_core::domain_v2::DeliveryTarget;
+        let user = Actor::User { user_id: "user".into() };
+        let agent = Actor::Agent { agent_id: "agent-a".into() };
+        apply_seed_command(domain, Actor::System, "register-agent", Command::RegisterAgent {
+            agent_id: "agent-a".into(), name: "Agent A".into(),
+        });
+        apply_seed_command(domain, user.clone(), "create-request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false,
+        });
+        apply_seed_command(domain, user, "create-task", Command::CreateTask {
+            task_id: "task".into(), request_id: "request".into(), title: "Task".into(),
+            agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+        });
+        apply_seed_command(domain, agent.clone(), "register-pr", Command::RegisterPr {
+            task_id: "task".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(),
+            number: 7, head: "0123456789abcdef".into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+        });
+        apply_seed_command(domain, agent, "present", Command::PresentResult {
+            attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
+            is_final: true,
+        });
+    }
+
+    fn waits_for_the_user(domain: &crate::domain_runtime::DomainRuntime) -> bool {
+        domain.state().unwrap().projection().inbox.iter().any(|item| item.pending)
+    }
+
+    #[tokio::test]
+    async fn resolving_conflicts_or_asking_about_a_presented_pr_hands_it_back_to_its_node() {
+        use alondra_core::domain_v2::{Feedback, Instruction};
+        for (verb, text, author, instruction) in [(Verb::Conflicts, None, Feedback::ALONDRA, Instruction::Conflicts),
+            (Verb::AskPr, Some("Why a new table?"), "device:test-device", Instruction::Question)] {
+            let (home, domain, client) = action_home();
+            presented_pr(&domain);
+            assert!(waits_for_the_user(&domain));
+            let action = ActionId::new(verb, "pr", domain.state().unwrap().revision, None).unwrap().to_string();
+            let mut request = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "es", action, None, json!({}));
+            request.input.text = text.map(str::to_owned);
+            let applied = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+            assert_eq!(applied["outcome"], "applied", "{applied}");
+            let state = domain.state().unwrap();
+            let InteractionPayload::Delivery { feedback, .. } = &state.interactions[&"result".into()].payload else { unreachable!() };
+            assert_eq!(feedback.iter().map(|f| (f.user_id.as_str(), f.instruction)).collect::<Vec<_>>(), [(author, instruction)]);
+            assert_eq!(state.task_handed_back(&"task".into()), Some(instruction));
+            assert!(!waits_for_the_user(&domain), "{verb:?} takes the card out of Waiting for You");
+        }
+    }
+
+    #[tokio::test]
+    async fn asking_for_more_context_answers_the_question_so_its_card_leaves() {
+        use alondra_core::domain_v2::{Recipient, Scope, QuestionOption};
+        let (home, domain, client) = action_home();
+        presented_pr(&domain);
+        apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
+            recipient: Recipient::User, body: "Which API?".into(), blocking: true,
+            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }],
+        });
+        let revision = domain.state().unwrap().interactions[&"question".into()].revision;
+        let action = ActionId::new(Verb::Ctx, "question", revision, None).unwrap().to_string();
+        let mut request = action_request(&domain, "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10", "en", action, None, json!({}));
+        request.input.text = Some("the cost".into());
+        let applied = execute_action(&domain, &client, &home.0, "test-device", request, None, || Ok(())).await.unwrap();
+        assert_eq!((applied["outcome"].as_str(), applied["stamp"].as_str()), (Some("applied"), Some("Context requested")), "{applied}");
+        let state = domain.state().unwrap();
+        let InteractionPayload::Question { answer: Some(answer), .. } = &state.interactions[&"question".into()].payload else { unreachable!() };
+        assert_eq!(answer.inputs["text"], alondra_core::domain_v2::InputValue::Text(context_request("the cost")));
+        assert!(!state.projection().inbox.iter().any(|item| item.id == "interaction:question" && item.pending));
     }
 
     #[test]

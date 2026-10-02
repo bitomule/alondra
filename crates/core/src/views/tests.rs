@@ -2298,3 +2298,59 @@ fn status_names_the_node_count_fleet() {
         assert!(view.status.counts.iter().all(|count| !count.label.to_lowercase().contains("agent")));
     }
 }
+
+fn presented_pr() -> DomainState {
+    use crate::domain_v2::{Actor, Command, DeliveryTarget, MergeMethod};
+    let mut state = DomainState::new("test-epoch");
+    let agent = Actor::Agent { agent_id: "a".into() };
+    let user = Actor::User { user_id: "u".into() };
+    for (actor, command) in [
+        (Actor::System, Command::RegisterAgent { agent_id: "a".into(), name: "Node A".into() }),
+        (user.clone(), Command::CreateRequest { request_id: "r".into(), body: "Fix it".into(), auto_merge: false }),
+        (user.clone(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Fix it".into(),
+            agent_id: Some("a".into()), review_prs: false, dependencies: BTreeSet::new(), stack: None }),
+        (agent.clone(), Command::RegisterPr { task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(),
+            repository: "owner/repo".into(), number: 1, head: "head1".into(), base: "main".into(),
+            allowed_methods: vec![MergeMethod::Squash] }),
+        (agent, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
+            body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+            is_final: true }),
+    ] {
+        execute(&mut state, actor, command);
+    }
+    state
+}
+
+fn execute(state: &mut DomainState, actor: crate::domain_v2::Actor, command: crate::domain_v2::Command) {
+    let envelope = crate::domain_v2::CommandEnvelope {
+        protocol_version: 2, data_epoch: state.data_epoch.clone(),
+        command_id: format!("c-{}", state.revision).into(), expected_revision: state.revision, command,
+    };
+    state.execute(&actor, &envelope).unwrap();
+}
+
+#[test]
+fn a_pr_sent_back_leaves_waiting_for_you_and_its_task_says_what_alondra_asked() {
+    use crate::domain_v2::{Actor, Command, DeliveryTarget, Instruction};
+    let live = LiveSnapshot::default();
+    let home = |state: &DomainState| render(state, &live, Client::Ios, Lang::En, "home", "").sections[0].card_ids.clone();
+    let task = |state: &DomainState, lang| serde_json::to_string(&render(state, &live, Client::Tui, lang, "task:t", "")).unwrap();
+    let presented = presented_pr();
+    assert_eq!(home(&presented), ["pr"]);
+    let user = Actor::User { user_id: "u".into() };
+    for (actor, instruction, english, spanish) in [
+        (Actor::System, Instruction::Conflicts, "Resolving conflicts", "Resolviendo conflictos"),
+        (user.clone(), Instruction::Changes, "Changes requested", "Cambios solicitados"),
+        (user.clone(), Instruction::Question, "Answering your question", "Respondiendo a tu pregunta"),
+        (user.clone(), Instruction::Reply, "Acting on your reply", "Atendiendo tu respuesta"),
+    ] {
+        let mut state = presented.clone();
+        execute(&mut state, actor, Command::SubmitFeedback {
+            attachments: vec![], presentation_id: "d".into(), body: "Back to you".into(), instruction,
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
+        });
+        assert!(home(&state).is_empty(), "{instruction:?} takes the card out of Waiting for You");
+        assert!(task(&state, Lang::En).contains(english), "{instruction:?}");
+        assert!(task(&state, Lang::Es).contains(spanish), "{instruction:?}");
+    }
+}

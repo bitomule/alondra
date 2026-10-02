@@ -95,6 +95,18 @@ pub(super) fn effort_label(effort: &str, lang: super::Lang) -> Option<&'static s
     })
 }
 
+/// A working Task whose delivery Alondra sent back says what it told the node to do.
+pub(super) fn instruction_label(task: &crate::domain_v2::Task, domain: &crate::domain_v2::DomainState, lang: super::Lang) -> Option<&'static str> {
+    use crate::domain_v2::{Instruction, TaskState};
+    if task.state != TaskState::Running { return None; }
+    Some(match domain.task_handed_back(&task.id)? {
+        Instruction::Changes => super::text::t!(lang, "Changes requested", "Cambios solicitados"),
+        Instruction::Conflicts => super::text::t!(lang, "Resolving conflicts", "Resolviendo conflictos"),
+        Instruction::Question => super::text::t!(lang, "Answering your question", "Respondiendo a tu pregunta"),
+        Instruction::Reply => super::text::t!(lang, "Acting on your reply", "Atendiendo tu respuesta"),
+    })
+}
+
 pub(super) fn task_presentation(state: crate::domain_v2::TaskState) -> (super::Icon, super::Tone) {
     use crate::domain_v2::TaskState as S;
     use super::{Icon, Tone};

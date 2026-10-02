@@ -5,7 +5,10 @@ use super::{
 use crate::domain_v2::{DomainState, Request, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
-fn state(task: &Task, lang: super::Lang) -> &'static str {
+fn state(task: &Task, domain: &DomainState, lang: super::Lang) -> &'static str {
+    if let Some(label) = common::instruction_label(task, domain, lang) {
+        return label;
+    }
     match task.state {
         TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
         TaskState::Running => t!(lang, "Working", "Trabajando"),
@@ -29,10 +32,10 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
         &format!("task:{}", task.id),
         icon,
         task.title.clone(),
-        Some(state(task, context.lang).into()),
+        Some(state(task, context.domain, context.lang).into()),
     );
     row.struck = task.state == TaskState::Cancelled;
-    row.badges.push(super::Label { text: state(task, context.lang).into(), tone });
+    row.badges.push(super::Label { text: state(task, context.domain, context.lang).into(), tone });
     row.trailing = Some(Trailing::Count {
         value: context
             .domain
@@ -323,7 +326,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let request = context.domain.requests.get(&task.request_id);
     let mut facts = vec![Fact {
         label: t!(context.lang, "State", "Estado").into(),
-        value: state(task, context.lang).into(),
+        value: state(task, context.domain, context.lang).into(),
         tone: Some(common::task_presentation(task.state).1),
         link: None,
     }];

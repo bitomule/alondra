@@ -41,16 +41,13 @@ struct TriageCard: View {
         case (.document, "changes"), (.delivery, "changes"): return 1
         case (.document, "accept"), (.delivery, "accept"): return 2
         case (.pullRequest, "ask_pr"): return 1
-        case (.pullRequest, "changes"): return 2
-        case (.pullRequest, "merge"): return 3
+        case (.pullRequest, "merge"), (.pullRequest, "conflicts"): return 2
         default: return CardActionPresentation.isOpenOnGitHub(action) ? 5 : 4
         }
     }
     private var controlActions: [AlondraContract.Action] {
-        card.actions.filter { action in
-            action.presentation != .options &&
-                (action.id != replyAction?.id || (action.comments != nil && verb(action) != "reply"))
-        }.sorted { controlRank($0) < controlRank($1) }
+        card.actions.filter { CardActionPresentation.showsAsControl($0, in: card, reply: replyAction) }
+            .sorted { controlRank($0) < controlRank($1) }
     }
 
     var body: some View {
@@ -369,9 +366,6 @@ struct TriageCard: View {
                 } else if CardActionPresentation.isOpenOnGitHub(action) {
                     Label(action.label, systemImage: "arrow.up.right.square")
                         .font(.subheadline.weight(.medium)).frame(maxWidth: .infinity, alignment: .leading)
-                } else if card.icon == .pullRequest, verb(action) == "changes" {
-                    Label(action.label, systemImage: "arrow.uturn.backward")
-                        .font(.subheadline.weight(.medium)).frame(minHeight: 30)
                 } else if verb(action) == "read" {
                     Label(action.label, systemImage: "checkmark")
                         .font(prominent ? .headline : .subheadline.weight(.medium))

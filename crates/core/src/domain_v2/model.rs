@@ -287,6 +287,33 @@ pub struct Feedback {
     pub user_id: String,
     pub body: String,
     pub at_revision: Revision,
+    #[serde(default)]
+    pub instruction: Instruction,
+}
+impl Feedback {
+    pub const ALONDRA: &'static str = "alondra";
+}
+/// What Alondra told the Agent to do with its delivery. The Task shows it until the Agent
+/// presents again, which every instruction ends by asking for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Instruction {
+    #[default]
+    Changes,
+    Question,
+    Reply,
+    Conflicts,
+}
+impl Instruction {
+    /// The words the Agent receives: the user's text, then what to do once it is done.
+    pub fn message(self, body: &str) -> String {
+        match self {
+            Self::Changes => format!("The user requested changes on your result: {body}\n\nWhen they are done, present the result again with present_result, for a PR with its new head."),
+            Self::Question => format!("The user asks about your result: {body}\n\nAnswer with publish_information, then present the result again with present_result, for a PR with its new head."),
+            Self::Reply => format!("The user replied to your result: {body}\n\nWhen you have acted on it, present the result again with present_result, for a PR with its new head."),
+            Self::Conflicts => body.to_owned(),
+        }
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
