@@ -2,9 +2,7 @@
 //! Agent for a Task, type a message into an Agent's session, press Esc in it and read the
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
-use crate::domain_messages::{Session, Sessions};
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_transport::Terminal;
 use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, RequestId, TaskId, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -188,11 +186,10 @@ pub(crate) struct SendBody {
     task: Option<TaskId>,
 }
 
-/// Types the orchestrator's text into an Agent's session. With a Task, the Agent is told which
+/// Sends the orchestrator's text to an Agent's session. With a Task, the Agent is told which
 /// one; a Task nobody works on becomes this Agent's, and a closed one is reopened. An Agent works
 /// on one Task at a time, so a Task for an Agent busy with another is refused.
-pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody,
-    sessions: &impl Sessions, terminal: &Arc<impl Terminal>) -> Result<Value, DomainError> {
+pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
     if let Some(task_id) = &body.task {
@@ -211,7 +208,7 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
     }
     let message = serde_json::from_value(json!({"text": body.text, "task_id": body.task}))
         .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
-    crate::domain_messages::deliver(domain, home, actor, "The orchestrator", &agent_id, message, sessions, terminal).await
+    crate::domain_messages::deliver(domain, home, actor, "The orchestrator", &agent_id, message, false).await
 }
 
 #[derive(Deserialize)]
@@ -220,25 +217,13 @@ pub(crate) struct NodeBody {
     node: String,
 }
 
-/// Presses Esc in an Agent's background session, to stop a call it is stuck in.
-pub(crate) async fn interrupt(domain: &DomainRuntime, body: NodeBody, sessions: &impl Sessions,
-    escape: impl FnOnce(&str) -> Result<(), String> + Send + 'static) -> Result<Value, DomainError> {
+/// Aborts the turn an Agent's session is running, to stop a call it is stuck in; its mod does it.
+pub(crate) fn interrupt(domain: &DomainRuntime, body: NodeBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
-    let short = match sessions.find(&agent_id.0).await {
-        Some(Session { interactive: true, .. }) => {
-            return Err(DomainError::new("interactive_session", "this agent runs in the user's terminal; Alondra cannot press keys there"));
-        }
-        Some(session) => session.short,
-        None => crate::domain_transport::terminals(&current).remove(&agent_id)
-            .ok_or_else(|| DomainError::new("session_unreachable", "no background session is known for this agent"))?,
-    };
-    let target = short.clone();
-    match tokio::task::spawn_blocking(move || escape(&target)).await {
-        Ok(Ok(())) => Ok(json!({"interrupted": short})),
-        Ok(Err(reason)) => Err(DomainError::new("session_unreachable", reason)),
-        Err(_) => Err(DomainError::new("session_unreachable", "the interrupt did not finish")),
-    }
+    domain.live.pushes.interrupt(&agent_id.0)
+        .map_err(|_| DomainError::new("session_unreachable", "the agent's session is not connected to Alondra: its Claude Code mod is not running"))?;
+    Ok(json!({"interrupted": agent_id.0}))
 }
 
 #[cfg(test)]

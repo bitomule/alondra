@@ -243,7 +243,8 @@ fn sent_notice(answer: &Value, name: &str) -> String {
     }
     match answer.get("delivery_state").and_then(Value::as_str) {
         Some("uncertain") => trf!("It may not have reached {name}'s session; check it before sending again", "Puede que no haya llegado a la sesión de {name}; revísala antes de reenviar"),
-        Some("handed") => trf!("Typed into {name}'s session", "Escrito en la sesión de {name}"),
+        Some("handed") => trf!("Delivered to {name}'s session", "Entregado a la sesión de {name}"),
+        Some("dispatching") => trf!("{name} is busy: the message reaches its session as soon as the current turn ends", "{name} está ocupado: el mensaje llega a su sesión en cuanto termine el turno actual"),
         _ => crate::delivery::response_notice(answer, None).unwrap_or_else(|| trf!("Sent to {name}", "Enviado a {name}")),
     }
 }

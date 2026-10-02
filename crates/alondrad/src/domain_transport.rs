@@ -1,17 +1,13 @@
-//! V2-only producer transport. Outbox messages for an Agent reach its Claude
-//! session the two ways legacy used: injected into the turn that just ended
-//! (Stop hook `additionalContext`) or typed into its background terminal. A
-//! handoff is technical evidence only; every attempt is claimed before any
-//! external write and finished as handed, retryable or uncertain afterwards.
+//! V2-only producer transport. Outbox messages for an Agent reach its Claude session through
+//! the connection its node mod holds open (`node_connection`): written down it the moment they
+//! exist, handed once the mod acknowledges them. A handoff is technical evidence only.
 //!
 //! Hooks observe sessions the domain already knows. They never create an
 //! Agent, a Task or a decision. The one transition they make is the one a
 //! session's own activity proves: its assigned Task has started.
 use crate::domain_agent_lifecycle as lifecycle;
-use crate::domain_messages::{ClaudeAgents, Session, Sessions};
 use crate::domain_runtime::DomainRuntime;
-use crate::domain_store::{DeliveryClaim, OutboxMessage};
-use crate::wake::WriteFailure;
+use crate::domain_store::OutboxMessage;
 use alondra_core::delivery::State;
 use alondra_core::domain_v2::{
     Actor, AgentId, Author, Command, CommandEnvelope, DomainState, InputValue, InteractionId, InteractionPayload,
@@ -20,7 +16,7 @@ use alondra_core::domain_v2::{
 use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -28,8 +24,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 
 const MAX_HOOK_BYTES: u64 = 25 * 1024 * 1024;
-const MAX_BATCH: usize = 32;
-const TERMINAL_RETRY: Duration = Duration::from_secs(120);
 
 #[derive(Deserialize)]
 struct Envelope {
@@ -68,11 +62,13 @@ async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background:
     if let Some(hello) = frame.get_mut("node_connect").map(Value::take) {
         return node_connection(stream, domain, hello).await;
     }
+    if let Some(ack) = frame.get_mut("node_ack").map(Value::take) {
+        return node_ack(stream, domain, ack).await;
+    }
     let envelope: Envelope = serde_json::from_value(frame).context("invalid local hook envelope")?;
     let reply = respond(domain, &envelope.payload, background)?;
-    let (body, claims) = match reply {
-        Reply::Plain(body) => (body, vec![]),
-        Reply::Delivery { body, claims } => (body, claims),
+    let body = match reply {
+        Reply::Plain(body) => body,
         Reply::Held(held) => {
             let answer = tokio::select! {
                 answer = crate::domain_holds::wait(domain, &held.id) => answer,
@@ -81,32 +77,14 @@ async fn handle_with(mut stream: UnixStream, domain: &DomainRuntime, background:
                     return crate::domain_holds::withdraw(domain, &held.id);
                 }
             };
-            (answered(domain, &envelope.payload, &held, answer?), vec![])
+            answered(domain, &envelope.payload, &held, answer?)
         }
     };
     let bytes = serde_json::to_vec(&body)?;
-    let sent = async {
-        stream.write_all(&200u16.to_be_bytes()).await?;
-        stream.write_all(&bytes).await?;
-        stream.shutdown().await?;
-        if claims.is_empty() {
-            return Ok(());
-        }
-        anyhow::ensure!(
-            tokio::time::timeout(Duration::from_secs(5), stream.read_u8()).await?? == 6,
-            "hook reply was not acknowledged"
-        );
-        Ok::<(), anyhow::Error>(())
-    }
-    .await;
-    // A reply already written may have reached Claude even without the
-    // acknowledgement, so a missing ack is uncertain, never retryable.
-    let (state, reason) = match &sent {
-        Ok(()) => (State::Handed, None),
-        Err(_) => (State::Uncertain, Some("hook_ack_missing")),
-    };
-    finish_all(domain, &claims, state, reason)?;
-    sent
+    stream.write_all(&200u16.to_be_bytes()).await?;
+    stream.write_all(&bytes).await?;
+    stream.shutdown().await?;
+    Ok(())
 }
 
 async fn refuse(mut stream: UnixStream, reason: String) -> Result<()> {
@@ -129,8 +107,10 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
     Ok(())
 }
 
-/// The connection a node mod holds open for its session's life. Nothing travels down it yet:
-/// while it is open the node is reachable, and the moment it closes, from either side, it is not.
+/// The connection a node mod holds open for its session's life. While it is open the node is
+/// reachable and the moment it closes, from either side, it is not. Down it go the session's
+/// pending outbox messages, each once per connection and again on the next until acknowledged,
+/// the direct messages and the interrupts addressed to it.
 async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: Value) -> Result<()> {
     let hello: crate::node_reports::Hello = match serde_json::from_value(hello) {
         Ok(hello) => hello,
@@ -138,23 +118,95 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
     };
     let session = hello.session_id.clone();
     let number = domain.live.mods.connect(hello, alondra_core::now_millis());
+    let mut lines = domain.live.pushes.attach(&session, number);
+    let mut changed = domain.subscribe();
     let held = async {
         stream.write_all(&200u16.to_be_bytes()).await?;
+        let mut sent = BTreeSet::new();
         let mut buffer = [0u8; 256];
-        while stream.read(&mut buffer).await? > 0 {}
-        Ok::<(), std::io::Error>(())
+        loop {
+            for line in pending_lines(domain, &session, &mut sent)? {
+                stream.write_all(format!("{line}\n").as_bytes()).await?;
+            }
+            tokio::select! {
+                read = stream.read(&mut buffer) => {
+                    if read? == 0 {
+                        return Ok(());
+                    }
+                }
+                line = lines.recv() => match line {
+                    Some(line) => stream.write_all(format!("{line}\n").as_bytes()).await?,
+                    None => return Ok(()),
+                },
+                _ = changed.changed() => {}
+            }
+        }
     }
     .await;
+    domain.live.pushes.detach(&session, number);
     domain.live.mods.disconnect(&session, number);
-    held.or_else(|error| match error.kind() {
-        std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe => Ok(()),
-        _ => Err(error.into()),
+    held.or_else(|error: anyhow::Error| match error.downcast_ref::<std::io::Error>().map(std::io::Error::kind) {
+        Some(std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe) => Ok(()),
+        _ => Err(error),
     })
+}
+
+/// The lines for this session's pending outbox messages that this connection has not carried yet.
+fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>) -> Result<Vec<String>> {
+    let pending: Vec<OutboxMessage> = domain.store.lock().expect("domain store poisoned").pending_messages()?.into_iter()
+        .filter(|message| message.recipient_kind == "agent" && message.agent_id.as_deref() == Some(session)
+            && !sent.contains(&message.id))
+        .collect();
+    if pending.is_empty() {
+        return Ok(vec![]);
+    }
+    let state = domain.state()?;
+    Ok(pending.into_iter().map(|message| {
+        sent.insert(message.id);
+        crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &render(&state, &message), false)
+    }).collect())
+}
+
+/// The mod took these messages: the outbox ones become handed, the direct ones stop being resent.
+async fn node_ack(mut stream: UnixStream, domain: &DomainRuntime, ack: Value) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Ack {
+        session_id: String,
+        ids: Vec<String>,
+    }
+    let ack: Ack = match serde_json::from_value(ack) {
+        Ok(ack) => ack,
+        Err(error) => return refuse(stream, format!("invalid node acknowledgement: {error}")).await,
+    };
+    hand_over(domain, &ack.session_id, &ack.ids)?;
+    domain.live.pushes.acknowledged(&ack.session_id, &ack.ids);
+    stream.write_all(&200u16.to_be_bytes()).await?;
+    stream.write_all(b"{}").await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+fn hand_over(domain: &DomainRuntime, session: &str, ids: &[String]) -> Result<()> {
+    let mut store = domain.store.lock().expect("domain store poisoned");
+    let pending = store.pending_messages()?;
+    for id in ids.iter().filter_map(|id| id.strip_prefix(crate::node_push::OUTBOX_PREFIX)?.parse::<i64>().ok()) {
+        if !pending.iter().any(|message| message.id == id && message.agent_id.as_deref() == Some(session)) {
+            continue;
+        }
+        if let Some(claim) = store.claim_message(id)? {
+            anyhow::ensure!(store.finish_message(claim.attempt_id, claim.version, State::Handed, None)?, "domain delivery claim changed while finishing");
+        }
+    }
+    Ok(())
+}
+
+pub(crate) async fn run(listener: UnixListener, domain: Arc<DomainRuntime>) -> Result<()> {
+    crate::domain_holds::release_orphans(&domain)?;
+    serve(listener, domain).await
 }
 
 enum Reply {
     Plain(Value),
-    Delivery { body: Value, claims: Vec<DeliveryClaim> },
     Held(crate::domain_holds::Held),
 }
 
@@ -220,17 +272,15 @@ fn respond(domain: &DomainRuntime, payload: &Value, background: impl Fn(&str) ->
         "SessionStart" | "SessionEnd" => Ok(Reply::Plain(json!({}))),
         "Stop" => {
             let held = crate::domain_messages::take_held(domain, &agent_id);
-            let batch = claim_batch(domain, &agent_id)?;
-            let (text, claims) = match batch {
-                Some(batch) => (held.into_iter().chain([batch.text]).collect::<Vec<_>>().join("\n\n"), batch.claims),
-                None if held.is_empty() => match unreported(domain, &agent_id, payload)? {
-                    Some(text) => (text, vec![]),
+            let text = if held.is_empty() {
+                match unreported(domain, &agent_id, payload)? {
+                    Some(text) => text,
                     None => return Ok(Reply::Plain(json!({}))),
-                },
-                None => (held.join("\n\n"), vec![]),
+                }
+            } else {
+                held.join("\n\n")
             };
-            let body = json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}});
-            Ok(Reply::Delivery { body, claims })
+            Ok(Reply::Plain(json!({"hookSpecificOutput": {"hookEventName": "Stop", "additionalContext": text}})))
         }
         _ => Ok(Reply::Plain(json!({}))),
     }
@@ -315,36 +365,6 @@ pub(crate) fn nudge_text(user: &str, task: &TaskId) -> String {
     )
 }
 
-struct Batch {
-    text: String,
-    claims: Vec<DeliveryClaim>,
-}
-
-/// Claim every pending message of one Agent under the store lock, so the
-/// terminal worker and a Stop hook can never hand the same message twice.
-fn claim_batch(domain: &DomainRuntime, agent_id: &AgentId) -> Result<Option<Batch>> {
-    let mut store = domain.store.lock().expect("domain store poisoned");
-    let pending: Vec<OutboxMessage> = store.pending_messages()?.into_iter()
-        .filter(|message| message.recipient_kind == "agent"
-            && message.agent_id.as_deref() == Some(agent_id.0.as_str()))
-        .take(MAX_BATCH)
-        .collect();
-    if pending.is_empty() {
-        return Ok(None);
-    }
-    let mut claims = vec![];
-    for message in pending {
-        if let Some(claim) = store.claim_message(message.id)? {
-            claims.push(claim);
-        }
-    }
-    if claims.is_empty() {
-        return Ok(None);
-    }
-    let state = store.load()?;
-    Ok(Some(Batch { text: batch_text(&state, &claims), claims }))
-}
-
 /// Producer-facing delivery contains only the message written for the Agent.
 /// Delivery identity, interaction data and authorization remain in Alondra.
 pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
@@ -421,148 +441,11 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     text
 }
 
-fn batch_text(state: &DomainState, claims: &[DeliveryClaim]) -> String {
-    claims.iter().map(|claim| render(state, &claim.message)).collect::<Vec<_>>().join("\n\n")
-}
-
-fn finish_all(domain: &DomainRuntime, claims: &[DeliveryClaim], state: State,
-    reason: Option<&str>) -> Result<()> {
-    let mut store = domain.store.lock().expect("domain store poisoned");
-    for claim in claims {
-        let finished = store.finish_message(claim.attempt_id, claim.version, state, reason)?;
-        anyhow::ensure!(finished, "domain delivery claim changed while finishing");
-    }
-    Ok(())
-}
-
-/// Background sessions the daemon launched: the terminal `claude attach`
-/// opens is known from the Schedule launch that handed the session over.
-pub(crate) fn terminals(state: &DomainState) -> BTreeMap<AgentId, String> {
-    state.schedule.runs.values().filter_map(|run| {
-        let launch = run.launch.as_ref()?;
-        if launch.state != ScheduleLaunchState::Handed {
-            return None;
-        }
-        let short = launch.session_id.clone()?;
-        let agent = state.tasks.get(run.task_id.as_ref()?)?.agent_id.clone()?;
-        Some((agent, short))
-    }).collect()
-}
-
-#[derive(Default)]
-pub(crate) struct Backoff {
-    failed: HashMap<AgentId, Instant>,
-}
-
-impl Backoff {
-    fn ready(&mut self, agent: &AgentId) -> bool {
-        self.failed.retain(|_, at| at.elapsed() < TERMINAL_RETRY);
-        !self.failed.contains_key(agent)
-    }
-    fn outcome(&mut self, agent: &AgentId, handed: bool) {
-        if handed {
-            self.failed.remove(agent);
-        } else {
-            self.failed.insert(agent.clone(), Instant::now());
-        }
-    }
-}
-
-pub(crate) trait Terminal: Sync + Send + 'static {
-    fn write(&self, short: &str, text: &str) -> std::result::Result<(), WriteFailure>;
-}
-
-pub(crate) struct Tmux;
-impl Terminal for Tmux {
-    fn write(&self, short: &str, text: &str) -> std::result::Result<(), WriteFailure> {
-        crate::wake::type_into(short, text)
-    }
-}
-
-/// Agents with messages waiting, however their session was launched.
-fn waiting_agents(domain: &DomainRuntime) -> Result<BTreeSet<AgentId>> {
-    Ok(domain.store.lock().expect("domain store poisoned").pending_messages()?.into_iter()
-        .filter(|message| message.recipient_kind == "agent")
-        .filter_map(|message| message.agent_id.map(AgentId))
-        .collect())
-}
-
-/// One pass over every background session with pending messages: a Schedule
-/// launch knows its terminal, any other session is found in `claude agents`.
-/// An interactive session gets its messages from its next Stop hook. A session
-/// whose last write failed, that could not be found or that is interactive is
-/// left alone for a while; a terminal that was not ready stays retryable, and
-/// a write that may have landed is uncertain.
-pub(crate) async fn deliver_terminals(domain: &DomainRuntime, home: &Path, sessions: &impl Sessions,
-    terminal: &Arc<impl Terminal>, backoff: &mut Backoff) -> Result<()> {
-    let state = domain.state()?;
-    let mut known = terminals(&state);
-    for agent in waiting_agents(domain)? {
-        if !backoff.ready(&agent) {
-            continue;
-        }
-        let short = match known.remove(&agent) {
-            Some(short) => short,
-            None => match sessions.find(&agent.0).await {
-                Some(Session { interactive: false, short }) => short,
-                _ => {
-                    backoff.outcome(&agent, false);
-                    continue;
-                }
-            },
-        };
-        let Some(batch) = claim_batch(domain, &agent)? else { continue };
-        let typed: Vec<(u64, String, Option<u64>)> = batch.claims.iter()
-            .map(|claim| (claim.message.id as u64, render(&state, &claim.message), None))
-            .collect();
-        let outcome = match crate::wake::turn_for(home, &typed) {
-            Err(error) => {
-                log!("could not prepare v2 message: {error}");
-                (State::Retryable, Some("prepare_failed"))
-            }
-            Ok(text) => {
-                let terminal = terminal.clone();
-                let target = short.clone();
-                match tokio::task::spawn_blocking(move || terminal.write(&target, &text)).await {
-                    Ok(Ok(())) => (State::Handed, None),
-                    Ok(Err(WriteFailure::NotStarted)) => (State::Retryable, Some("terminal_not_ready")),
-                    Ok(Err(WriteFailure::Uncertain)) => (State::Uncertain, Some("terminal_write_uncertain")),
-                    Err(_) => (State::Uncertain, Some("delivery_worker_failed")),
-                }
-            }
-        };
-        backoff.outcome(&agent, outcome.0 == State::Handed);
-        finish_all(domain, &batch.claims, outcome.0, outcome.1)?;
-    }
-    Ok(())
-}
-
-pub(crate) async fn run(listener: UnixListener, domain: Arc<DomainRuntime>, home: PathBuf) -> Result<()> {
-    crate::domain_holds::release_orphans(&domain)?;
-    tokio::select! {
-        result = serve(listener, domain.clone()) => result,
-        result = run_terminals(domain, home) => result,
-    }
-}
-
-pub(crate) async fn run_terminals(domain: Arc<DomainRuntime>, home: PathBuf) -> Result<()> {
-    let terminal = Arc::new(Tmux);
-    let mut backoff = Backoff::default();
-    let mut changed = domain.subscribe();
-    loop {
-        deliver_terminals(&domain, &home, &ClaudeAgents, &terminal, &mut backoff).await?;
-        tokio::select! {
-            _ = changed.changed() => {},
-            _ = tokio::time::sleep(Duration::from_secs(10)) => {},
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use alondra_core::domain_v2::*;
-    use std::sync::Mutex;
+    use std::collections::BTreeMap;
 
     struct Fixture(PathBuf);
     impl Fixture {
@@ -853,13 +736,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stop_hook_hands_only_the_message_once_and_no_ack_is_uncertain() {
+    async fn the_stop_hook_no_longer_delivers_the_outbox() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         answered_question(&domain, "session-a");
-        let pending = agent_outbox(&domain, "session-a");
-        assert_eq!(pending.len(), 1);
-
         let (reply, result) = hook(&domain, json!({"session_id": "stranger", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
         assert_eq!(reply, json!({}), "an unknown session gets nothing and creates nothing");
@@ -867,35 +747,13 @@ mod tests {
 
         let (reply, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
         result.unwrap();
-        let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert_eq!(reply["hookSpecificOutput"]["hookEventName"], "Stop");
-        assert_eq!(context, "Yes.");
-        assert!(!context.contains("data_epoch") && !context.contains("revision=")
-            && !context.contains("task_id=") && !context.contains("interaction_id=")
-            && !context.contains("option_id"), "{context}");
-        assert!(agent_outbox(&domain, "session-a").is_empty());
-        assert_eq!(attempts(&domain), vec![(pending[0].0, "handed".into(), None)]);
-
-        let (reply, _) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
-        assert!(reminder_only(&reply), "a handed message is never delivered twice: {reply}");
-
-        answered_question(&domain, "session-b");
-        let id = agent_outbox(&domain, "session-b")[0].0;
-        let (reply, result) = hook(&domain, json!({"session_id": "session-b", "hook_event_name": "Stop"}), None).await;
-        assert!(result.is_err());
-        let uncertain_context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert_eq!(uncertain_context, "Yes.");
-        assert!(!uncertain_context.contains("question-session-b"));
-        assert!(attempts(&domain).contains(&(id, "uncertain".into(), Some("hook_ack_missing".into()))));
-        assert!(agent_outbox(&domain, "session-b").is_empty(), "an uncertain handoff is not retried blindly");
-        drop(domain);
-        let reopened = fixture.open();
-        assert!(agent_outbox(&reopened, "session-b").is_empty());
-        assert!(agent_outbox(&reopened, "session-a").is_empty());
+        assert!(reminder_only(&reply), "only the nudge, never the answer: {reply}");
+        assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "the message waits for the node's connection");
+        assert!(attempts(&domain).is_empty());
     }
 
     #[tokio::test]
-    async fn a_held_user_message_reaches_the_next_stop_hook_once_with_any_batch() {
+    async fn a_held_user_message_reaches_the_next_stop_hook_once() {
         let fixture = Fixture::new();
         let domain = fixture.open();
         answered_question(&domain, "session-a");
@@ -903,9 +761,8 @@ mod tests {
         let stop = json!({"session_id": "session-a", "hook_event_name": "Stop"});
         let (body, result) = hook(&domain, stop.clone(), Some(6)).await;
         result.unwrap();
-        let context = body["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-        assert_eq!(context, "Use the new API\n\nYes.");
-        assert!(agent_outbox(&domain, "session-a").is_empty());
+        assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Use the new API");
+        assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "the outbox is not the Stop hook's");
         domain.held.lock().unwrap().entry("session-a".into()).or_default().push("Only this".into());
         let (body, _) = hook(&domain, stop.clone(), Some(6)).await;
         assert_eq!(body["hookSpecificOutput"]["additionalContext"], "Only this");
@@ -938,9 +795,12 @@ mod tests {
             authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
             expected_head: head.into(), method: MergeMethod::Squash,
         });
-        let (reply, result) = hook(&domain, json!({"session_id": "session-a", "hook_event_name": "Stop"}), Some(6)).await;
-        result.unwrap();
-        let context = reply["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
+        let domain = Arc::new(domain);
+        let mut node = connect(&domain, "session-a").await;
+        let answer = node.line().await.unwrap();
+        let notice = node.line().await.unwrap();
+        assert_eq!(answer["text"], "Yes.");
+        let context = format!("{}\n\n{}", answer["text"].as_str().unwrap(), notice["text"].as_str().unwrap().trim());
         assert_eq!(context, "Yes.\n\nThe user authorized merging the presented pull request.");
         assert!(!context.contains("authorization_id") && !context.contains("pr_id")
             && !context.contains("head") && !context.contains("auth-"), "{context}");
@@ -1095,131 +955,111 @@ mod tests {
         assert_eq!(reply, json!({}), "a presented result already tells the user");
     }
 
-    struct FakeTerminal {
-        writes: Mutex<Vec<(String, String)>>,
-        outcome: Mutex<std::result::Result<(), WriteFailure>>,
+    /// The connection a node mod holds open, served by the daemon over a socket pair.
+    struct Connection {
+        reader: tokio::io::BufReader<UnixStream>,
+        served: tokio::task::JoinHandle<Result<()>>,
     }
-    impl Terminal for FakeTerminal {
-        fn write(&self, short: &str, text: &str) -> std::result::Result<(), WriteFailure> {
-            self.writes.lock().unwrap().push((short.into(), text.into()));
-            match &*self.outcome.lock().unwrap() {
-                Ok(()) => Ok(()),
-                Err(WriteFailure::NotStarted) => Err(WriteFailure::NotStarted),
-                Err(WriteFailure::Uncertain) => Err(WriteFailure::Uncertain),
-            }
+
+    async fn connect(domain: &Arc<DomainRuntime>, session: &str) -> Connection {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let body = serde_json::to_vec(&json!({"node_connect": {"session_id": session, "version": "2.1.287"}})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        let domain = domain.clone();
+        let served = tokio::spawn(async move { handle(server, &domain).await });
+        assert_eq!(client.read_u16().await.unwrap(), 200);
+        Connection { reader: tokio::io::BufReader::new(client), served }
+    }
+
+    impl Connection {
+        async fn line(&mut self) -> Option<Value> {
+            use tokio::io::AsyncBufReadExt;
+            let mut line = String::new();
+            let read = tokio::time::timeout(Duration::from_secs(5), self.reader.read_line(&mut line)).await.expect("no line arrived");
+            (read.unwrap() > 0).then(|| serde_json::from_str(&line).unwrap())
+        }
+
+        async fn nothing_arrives(&mut self) -> bool {
+            use tokio::io::AsyncBufReadExt;
+            let mut line = String::new();
+            tokio::time::timeout(Duration::from_millis(150), self.reader.read_line(&mut line)).await.is_err()
+        }
+
+        async fn close(self) {
+            drop(self.reader);
+            self.served.await.unwrap().unwrap();
         }
     }
 
-    #[derive(Default)]
-    struct Listed(BTreeMap<String, Session>);
-    impl Sessions for Listed {
-        async fn find(&self, session_id: &str) -> Option<Session> {
-            self.0.get(session_id).cloned()
-        }
-    }
-
-    fn launched_by_schedule(domain: &DomainRuntime, agent: &str, short: &str) {
-        let now = alondra_core::now_millis();
-        command(domain, Actor::System, "schedule", Command::CreateSchedule { schedule: Schedule {
-            id: "schedule-1".into(), title: "Review".into(), text: "Review".into(), project: None,
-            options: BTreeMap::new(), disallowed_tools: vec![], frequency: ScheduleFrequency::Daily,
-            hour: 9, minute: 0, weekday: None, interval: None, start_at: None,
-            enabled: false, next_run: None, revision: 1, deleted_at: None,
-        }});
-        command(domain, Actor::System, "claim-run", Command::ClaimScheduleRun {
-            schedule_id: "schedule-1".into(), run_id: "run-1".into(),
-            origin: ScheduleRunOrigin::Manual, now, next_after_now: None,
-            expected_schedule_revision: None,
-        });
-        let snapshot = domain.state().unwrap().schedule.runs[&"run-1".into()].definition_snapshot.clone().unwrap();
-        let request = Request::new("scheduled-request".into(), snapshot.text.clone());
-        let task = Task {
-            id: "scheduled-task".into(), request_id: request.id.clone(), agent_id: None,
-            title: snapshot.title.clone(), state: TaskState::NotStarted, revision: 0, started: false,
-            review_prs: false, final_presentation: None, pr_id: None, dependencies: BTreeSet::new(),
-            stack: None, documents: BTreeMap::new(), archived: false,
-        };
-        let options = alondra_core::options::OptionsFile::default().resolve(None, &BTreeMap::new()).unwrap();
-        let launch = ScheduleLaunchIntent { name: "scheduled/run".into(), cwd: "/tmp".into(),
-            prompt: snapshot.text.clone(), options_json: serde_json::to_string(&options).unwrap() };
-        command(domain, Actor::System, "sent", Command::RecordScheduleRunSent {
-            run_id: "run-1".into(), request, task, launch, finished_at: now,
-        });
-        command(domain, Actor::System, "claim-launch", Command::ClaimScheduleLaunch { run_id: "run-1".into(), now });
-        command(domain, Actor::System, "handed", Command::RecordScheduleLaunchHanded {
-            run_id: "run-1".into(), session_id: Some(short.into()), agent_id: Some(agent.into()), finished_at: now,
-        });
+    async fn acknowledge(domain: &DomainRuntime, session: &str, ids: Value) -> Result<()> {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        let body = serde_json::to_vec(&json!({"node_ack": {"session_id": session, "ids": ids}})).unwrap();
+        client.write_u32(body.len() as u32).await.unwrap();
+        client.write_all(&body).await.unwrap();
+        let (result, status) = tokio::join!(handle(server, domain), client.read_u16());
+        assert_eq!(status.unwrap(), 200);
+        result
     }
 
     #[tokio::test]
-    async fn terminal_worker_types_into_launched_sessions_and_classifies_failures() {
+    async fn a_connected_node_is_written_its_message_the_moment_it_exists_and_the_ack_hands_it() {
         let fixture = Fixture::new();
-        let domain = fixture.open();
+        let domain = Arc::new(fixture.open());
+        let mut node = connect(&domain, "session-a").await;
+        assert!(node.nothing_arrives().await, "nothing is written while nothing is pending, and nothing polls");
+
         answered_question(&domain, "session-a");
-        let terminal = Arc::new(FakeTerminal { writes: Mutex::new(vec![]), outcome: Mutex::new(Ok(())) });
-        let mut backoff = Backoff::default();
-        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut Backoff::default()).await.unwrap();
-        assert!(terminal.writes.lock().unwrap().is_empty(), "a session without a known terminal is not typed into");
-        assert_eq!(agent_outbox(&domain, "session-a").len(), 1);
-
-        launched_by_schedule(&domain, "session-a", "ab1234");
+        let line = node.line().await.unwrap();
         let id = agent_outbox(&domain, "session-a")[0].0;
-        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
-        let writes = terminal.writes.lock().unwrap().clone();
-        assert_eq!(writes.len(), 1);
-        assert_eq!(writes[0].0, "ab1234");
-        assert_eq!(writes[0].1, "Yes.");
-        assert!(!writes[0].1.contains("data_epoch") && !writes[0].1.contains("revision=")
-            && !writes[0].1.contains("interaction_id="), "{}", writes[0].1);
-        assert!(agent_outbox(&domain, "session-a").is_empty());
-        assert!(attempts(&domain).contains(&(id, "handed".into(), None)));
-        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
-        assert_eq!(terminal.writes.lock().unwrap().len(), 1, "nothing pending, nothing typed");
+        assert_eq!(line, json!({"id": format!("o-{id}"), "text": "Yes.", "as_user": false}));
+        assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "written is not handed");
 
-        command(&domain, Actor::Agent { agent_id: "session-a".into() }, "question-2", Command::AskQuestion {
-            attachments: vec![], interaction_id: "question-2".into(),
-            scope: Scope::Task { task_id: "task-session-a".into() }, recipient: Recipient::User,
-            body: "Again".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
-        });
-        command(&domain, Actor::User { user_id: "u".into() }, "answer-2", Command::AnswerQuestion {
-            attachments: vec![], interaction_id: "question-2".into(), option_id: "yes".into(), inputs: Default::default(),
-        });
-        let second = agent_outbox(&domain, "session-a")[0].0;
-        *terminal.outcome.lock().unwrap() = Err(WriteFailure::NotStarted);
-        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
-        assert_eq!(agent_outbox(&domain, "session-a"), vec![(second, "retryable".into())]);
-        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut backoff).await.unwrap();
-        assert_eq!(terminal.writes.lock().unwrap().len(), 2, "a failed session backs off");
-        let mut fresh = Backoff::default();
-        *terminal.outcome.lock().unwrap() = Err(WriteFailure::Uncertain);
-        deliver_terminals(&domain, &fixture.0, &Listed::default(), &terminal, &mut fresh).await.unwrap();
+        acknowledge(&domain, "other-session", json!([format!("o-{id}")])).await.unwrap();
+        assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "another session cannot hand it over");
+        acknowledge(&domain, "session-a", json!([format!("o-{id}"), "o-9999", "d-1"])).await.unwrap();
         assert!(agent_outbox(&domain, "session-a").is_empty());
-        assert!(attempts(&domain).contains(&(second, "uncertain".into(), Some("terminal_write_uncertain".into()))));
-        drop(domain);
-        let reopened = fixture.open();
-        assert!(agent_outbox(&reopened, "session-a").is_empty(), "an uncertain write is not retyped after restart");
+        assert_eq!(attempts(&domain), vec![(id, "handed".into(), None)]);
+        acknowledge(&domain, "session-a", json!([format!("o-{id}")])).await.unwrap();
+        assert_eq!(attempts(&domain).len(), 1, "a second ack changes nothing");
+        node.close().await;
     }
 
     #[tokio::test]
-    async fn a_node_launched_for_a_request_gets_its_pending_messages_typed_into_its_background_session() {
+    async fn an_unacknowledged_message_is_written_again_on_every_new_connection_until_it_is_acked() {
         let fixture = Fixture::new();
-        let domain = fixture.open();
-        answered_question(&domain, "launched");
-        answered_question(&domain, "interactive");
-        answered_question(&domain, "gone");
-        let sessions = Listed(BTreeMap::from([
-            ("launched".to_string(), Session { short: "fe12d68c".into(), interactive: false }),
-            ("interactive".to_string(), Session { short: "ab12cd34".into(), interactive: true }),
-        ]));
-        let terminal = Arc::new(FakeTerminal { writes: Mutex::new(vec![]), outcome: Mutex::new(Ok(())) });
-        let id = agent_outbox(&domain, "launched")[0].0;
-        deliver_terminals(&domain, &fixture.0, &sessions, &terminal, &mut Backoff::default()).await.unwrap();
-        assert_eq!(*terminal.writes.lock().unwrap(), [("fe12d68c".to_string(), "Yes.".to_string())]);
-        assert!(agent_outbox(&domain, "launched").is_empty());
-        assert!(attempts(&domain).contains(&(id, "handed".into(), None)));
-        assert_eq!(agent_outbox(&domain, "interactive").len(), 1, "an interactive session takes its messages at its next Stop hook");
-        assert_eq!(agent_outbox(&domain, "gone").len(), 1, "a session Claude no longer lists keeps its messages");
+        let domain = Arc::new(fixture.open());
+        answered_question(&domain, "session-a");
+        let id = agent_outbox(&domain, "session-a")[0].0;
+
+        let mut first = connect(&domain, "session-a").await;
+        assert_eq!(first.line().await.unwrap()["id"], format!("o-{id}"), "a message that waited is written on connect");
+        assert!(first.nothing_arrives().await, "once per connection");
+        first.close().await;
+
+        let mut second = connect(&domain, "session-a").await;
+        assert_eq!(second.line().await.unwrap()["id"], format!("o-{id}"), "no ack, so it comes again");
+        acknowledge(&domain, "session-a", json!([format!("o-{id}")])).await.unwrap();
+        second.close().await;
+
+        let mut third = connect(&domain, "session-a").await;
+        assert!(third.nothing_arrives().await, "acked, so never again");
+        third.close().await;
+    }
+
+    #[tokio::test]
+    async fn a_message_for_another_agent_is_not_written_and_a_newer_connection_replaces_the_older() {
+        let fixture = Fixture::new();
+        let domain = Arc::new(fixture.open());
+        answered_question(&domain, "session-b");
+        let mut older = connect(&domain, "session-a").await;
+        assert!(older.nothing_arrives().await);
+        let mut newer = connect(&domain, "session-a").await;
+        assert!(older.line().await.is_none(), "the older connection is closed by the daemon");
+        domain.live.pushes.interrupt("session-a").unwrap();
+        assert_eq!(newer.line().await.unwrap(), json!({"interrupt": true}));
+        newer.close().await;
+        assert!(domain.live.mods.session("session-a").unwrap().unreachable());
     }
 
     fn working_agent(domain: &DomainRuntime, agent: &str) {

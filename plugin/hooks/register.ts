@@ -13,6 +13,11 @@ let session: Session | undefined
 let stopping = false
 let retryMs = FIRST_RETRY_MS
 let reports: Promise<void> = Promise.resolve()
+let turnId: string | undefined
+const submitting = new Set<string>()
+const submitted = new Set<string>()
+
+type Push = { id?: string; text?: string; as_user?: boolean; interrupt?: boolean }
 
 async function send($: EngineInterface, report: Record<string, unknown>): Promise<void> {
   if (!session) return
@@ -44,9 +49,54 @@ function summaryInput(call: Record<string, unknown>): Record<string, unknown> {
   return input
 }
 
+async function acknowledge($: EngineInterface, id: string): Promise<void> {
+  if (!session) return
+  try {
+    const sent = await $.process.run([session.alondra, 'node', 'ack', id], {
+      stdin: JSON.stringify({ session_id: session.id }),
+      timeoutMs: REPORT_TIMEOUT_MS,
+    })
+    if (sent.exitCode !== 0) $.ui.log(`Alondra did not take the ack of ${id}: ${sent.stderr.trim()}`, { to: 'debug' })
+  } catch (error) {
+    $.ui.log(`Alondra did not take the ack of ${id}: ${error}`, { to: 'debug' })
+  }
+}
+
+async function submit($: EngineInterface, id: string, text: string, asUser: boolean): Promise<void> {
+  if (submitted.has(id)) return acknowledge($, id)
+  if (submitting.has(id)) return
+  submitting.add(id)
+  try {
+    await $.prompt.submit({ text, asUser })
+    submitted.add(id)
+  } catch (error) {
+    $.ui.log(`Alondra message ${id} was not submitted: ${error}`, { to: 'debug' })
+    return
+  } finally {
+    submitting.delete(id)
+  }
+  await acknowledge($, id)
+}
+
+async function receive($: EngineInterface, line: string): Promise<void> {
+  let push: Push
+  try {
+    push = JSON.parse(line)
+  } catch {
+    $.ui.log(`Alondra sent a line that is not JSON: ${line.slice(0, 200)}`, { to: 'debug' })
+    return
+  }
+  if (push.interrupt) {
+    if (turnId !== undefined) await $.turn.abort({ turnId })
+  } else if (typeof push.id === 'string' && typeof push.text === 'string') {
+    void submit($, push.id, push.text, push.as_user === true)
+  }
+}
+
 async function connect($: EngineInterface): Promise<void> {
   if (!session || stopping) return
   let ended: ProcessSpawnResult = { code: null, signal: null }
+  let pending = ''
   try {
     const helper = $.process.spawn({ argv: [session.alondra, 'node', 'connect'], input: session.hello })
     for (;;) {
@@ -55,7 +105,14 @@ async function connect($: EngineInterface): Promise<void> {
         ended = step.value ?? ended
         break
       }
-      if (step.value.stream === 'stdout' && step.value.text.includes('connected')) retryMs = FIRST_RETRY_MS
+      if (step.value.stream !== 'stdout') continue
+      pending += step.value.text
+      const lines = pending.split('\n')
+      pending = lines.pop() ?? ''
+      for (const line of lines) {
+        if (line === 'connected') retryMs = FIRST_RETRY_MS
+        else if (line.trim() !== '') await receive($, line)
+      }
     }
   } catch (error) {
     $.ui.log(`Alondra connection failed: ${error}`, { to: 'debug' })
@@ -106,11 +163,13 @@ export const register: Register = (on) => {
   })
 
   on('turn.start', async ($, e, next) => {
+    if (!('agentId' in e && e.agentId !== undefined)) turnId = e.turnId
     queue($, { event: 'turn.start', turn_id: e.turnId })
     return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
+    if (e.turnId === turnId) turnId = undefined
     if (e.agentId === undefined) {
       queue($, {
         event: 'turn.complete',

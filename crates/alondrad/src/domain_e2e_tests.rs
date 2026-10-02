@@ -120,6 +120,34 @@ fn node_event(home: &Path, report: Value) {
     assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
 }
 
+/// What the node mod runs once its session takes a message: `alondra node ack <id>`.
+fn node_ack(home: &Path, ids: &[&str]) {
+    let mut child = Process::new(alondra_binary())
+        .args(["node", "ack"]).args(ids)
+        .env("ALONDRA_HOME", home)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+        .spawn().unwrap();
+    child.stdin.as_mut().unwrap().write_all(json!({"session_id": SESSION}).to_string().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+}
+
+type Pushed = std::io::BufReader<std::process::ChildStdout>;
+
+/// The next JSON line the helper copied from the daemon, or none within `wait`.
+fn next_line(reader: &mut Option<Pushed>, wait: std::time::Duration) -> Option<Value> {
+    let mut taken = reader.take().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut taken, &mut line).unwrap();
+        let _ = sender.send((taken, line));
+    });
+    let (back, line) = receiver.recv_timeout(wait).ok()?;
+    *reader = Some(back);
+    (!line.is_empty()).then(|| serde_json::from_str(&line).unwrap())
+}
+
 const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
 
 struct CapturingLauncher(Mutex<Vec<Vec<String>>>);
@@ -195,33 +223,46 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     assert!(matches!(state.interactions[&"question-1".into()].payload, InteractionPayload::Question { .. }));
     assert_ne!(state.tasks[&task.id].state, TaskState::Done);
 
-    // The user answers; the session ends its turn and receives the answer.
+    // The user answers; the answer is written down the session's open connection at once.
+    let (mut helper, pushed) = connect(&home);
+    let mut pushed = Some(pushed);
+    let patience = std::time::Duration::from_secs(10);
     daemon.execute(Actor::User { user_id: "device:phone".into() }, "answer", Command::AnswerQuestion {
         attachments: vec![], interaction_id: "question-1".into(), option_id: "yes".into(), inputs: BTreeMap::new(),
     });
+    let line = next_line(&mut pushed, patience).expect("the answer was written down the connection");
+    let id = line["id"].as_str().unwrap().to_owned();
+    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Yes."), Some(false)), "{line}");
+    assert!(daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().is_empty(), "written is not handed");
+
+    // The Stop hook keeps its nudge but no longer carries the outbox.
     assert_eq!(hook(&home, json!({"session_id": "stranger", "hook_event_name": "Stop"})), json!({}));
     let stop = hook(&home, json!({"session_id": session, "hook_event_name": "Stop"}));
-    let context = stop["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_default().to_owned();
-    assert_eq!(context, "Yes.");
-    assert!(!context.contains("data_epoch") && !context.contains("revision=")
-        && !context.contains("interaction_id=") && !context.contains("option_id"), "{stop}");
+    assert!(stop["hookSpecificOutput"]["additionalContext"].as_str().unwrap().starts_with("[Alondra] Your turn ended"), "{stop}");
+
+    node_ack(&home, &[&id]);
     let evidence = daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
     assert_eq!(evidence.iter().filter(|item| item.recipient_kind == "agent").count(), 1);
     assert!(evidence.iter().all(|item| item.recipient_kind != "agent" || item.state == "handed"));
 
-    // The daemon restarts: the session keeps acting with its bearer and is not handed the answer again.
+    // The daemon restarts: the session keeps acting with its bearer and is not written the answer again.
+    helper.kill().unwrap();
+    helper.wait().unwrap();
     daemon.stop().await;
     let daemon = Daemon::start(&home).await;
+    let (mut helper, pushed) = connect(&home);
+    let mut pushed = Some(pushed);
+    assert!(next_line(&mut pushed, std::time::Duration::from_millis(500)).is_none(), "an acknowledged message is not written again");
     let replies = mcp(&home, daemon.port, from_settings, vec![
         ("publish_information", tool_args(&epoch, "info-2", 0, json!({"kind": "publish_information",
             "interaction_id": "info-2", "scope": scope, "recipient": {"kind": "user"}, "body": "Acting on the answer"}))),
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
     assert!(daemon.domain.state().unwrap().interactions.contains_key(&"info-2".into()));
-    let reminder = hook(&home, json!({"session_id": session, "hook_event_name": "Stop"}));
-    assert!(reminder["hookSpecificOutput"]["additionalContext"].as_str().unwrap().starts_with("[Alondra] Your turn ended"), "{reminder}");
     let evidence = daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
     assert_eq!(evidence.iter().filter(|item| item.recipient_kind == "agent").count(), 1, "no second delivery");
+    helper.kill().unwrap();
+    helper.wait().unwrap();
 
     // The session ends: its bearer stops working.
     assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "SessionEnd"})), json!({}));
@@ -271,11 +312,21 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     let daemon = Daemon::start(&home).await;
     let mods = &daemon.domain.live.mods;
 
-    let (mut held, _) = connect(&home);
+    let (mut held, reader) = connect(&home);
+    let mut reader = Some(reader);
     eventually("the connection is registered", || mods.session(SESSION).is_some_and(|s| s.connection.is_some())).await;
     let session = mods.session(SESSION).unwrap();
     assert_eq!(session.version.as_deref(), Some("2.1.287"), "a connection says the mod loaded");
     assert!(!session.unreachable());
+
+    let patience = std::time::Duration::from_secs(10);
+    let acked = daemon.domain.live.pushes.message(SESSION, "Use the new API", true).unwrap();
+    let line = next_line(&mut reader, patience).expect("a direct message is written down the connection");
+    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Use the new API"), Some(true)));
+    node_ack(&home, &[line["id"].as_str().unwrap()]);
+    tokio::time::timeout(patience, acked).await.expect("the ack reached the sender").unwrap();
+    daemon.domain.live.pushes.interrupt(SESSION).unwrap();
+    assert_eq!(next_line(&mut reader, patience), Some(json!({"interrupt": true})));
 
     for report in [
         json!({"event": "turn.start", "turn_id": "t1"}),

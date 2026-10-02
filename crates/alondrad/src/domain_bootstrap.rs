@@ -368,8 +368,7 @@ async fn agent_message(
         &crate::domain_messages::user_name(),
         &id.into(),
         body,
-        &crate::domain_messages::ClaudeAgents,
-        &Arc::new(crate::domain_transport::Tmux),
+        true,
     )
     .await
     {
@@ -512,8 +511,6 @@ async fn orchestrator_send(
             &state.home,
             &actor,
             body,
-            &crate::domain_messages::ClaudeAgents,
-            &Arc::new(crate::domain_transport::Tmux),
         )
         .await,
     )
@@ -534,15 +531,7 @@ async fn orchestrator_interrupt(
             "invalid interrupt",
         ));
     };
-    tool_answer(
-        crate::domain_orchestrator_tools::interrupt(
-            &state.domain,
-            body,
-            &crate::domain_messages::ClaudeAgents,
-            crate::wake::interrupt,
-        )
-        .await,
-    )
+    tool_answer(crate::domain_orchestrator_tools::interrupt(&state.domain, body))
 }
 
 /// A Schedule the orchestrator creates for the user, materialized as the user's own drafts are.

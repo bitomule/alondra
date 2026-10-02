@@ -12,6 +12,7 @@ pub(crate) struct Live {
     sequence: AtomicU64,
     presence: Mutex<HashMap<String, i64>>,
     pub(crate) mods: crate::node_reports::Reports,
+    pub(crate) pushes: crate::node_push::Pushes,
 }
 
 impl Live {

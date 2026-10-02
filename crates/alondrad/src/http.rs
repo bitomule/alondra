@@ -2046,26 +2046,6 @@ pub(crate) struct MessageBody {
     task: Option<String>,
 }
 
-async fn interrupt(State(hub): State<AppState>, Path(key): Path<String>) -> Response {
-    if hub.read(|v| v.resolve_node(&key).is_some_and(|n| n.is_orchestrator)) {
-        return err(StatusCode::CONFLICT, "the orchestrator is managed by Alondra and has no attached terminal");
-    }
-    let Some(short) = hub.read(|v| v.resolve_node(&key).map(|n| n.short_id.clone())) else {
-        return err(StatusCode::NOT_FOUND, format!("unknown node {key}"));
-    };
-    if !hub.config.wake {
-        return err(StatusCode::CONFLICT, "this alondrad does not attach to node sessions");
-    }
-    let own = hub.own_attach(&short);
-    let outcome = tokio::task::spawn_blocking(move || crate::wake::interrupt(&short)).await;
-    drop(own);
-    match outcome {
-        Ok(Ok(())) => Json(json!({"interrupted": key})).into_response(),
-        Ok(Err(e)) => err(StatusCode::BAD_GATEWAY, e),
-        Err(e) => internal(e.into()),
-    }
-}
-
 fn held_for_turn_end_note(name: &str) -> String {
     format!(
         "{name} is an interactive terminal session, not a background job: Alondra cannot type into it, so the message \
