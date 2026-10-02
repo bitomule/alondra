@@ -1,5 +1,5 @@
 {
-  "description": "Alondra's node mod reports the session to alondrad; the settings hooks guard the node and hold its questions",
+  "description": "Alondra's node mod reports the session to alondrad; the settings hooks guard the node and hold its MCP elicitations",
   "modules": ["./register.ts"],
   "hooks": {
     "SessionStart": [
@@ -31,19 +31,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/alondra\" hook",
-            "timeout": 2592000
-          }
-        ]
-      }
-    ],
-    "PermissionRequest": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}/bin/alondra\" hook",
-            "timeout": 2592000
+            "timeout": 5
           }
         ]
       }

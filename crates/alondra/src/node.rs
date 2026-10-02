@@ -1,13 +1,15 @@
-//! The three commands the node mod runs: `event` hands alondrad one report of its session,
-//! `connect` holds the session's connection to alondrad open for as long as both live, and `ack`
-//! tells alondrad which of the messages it wrote down that connection the session has taken. The
-//! open connection is what tells alondrad the node is reachable; `connect` sleeps in `read` and
-//! copies whatever alondrad writes down it, one JSON line per message or interrupt, to its
+//! The commands the node mod runs: `event` hands alondrad one report of its session, `connect`
+//! holds the session's connection to alondrad open for as long as both live, `ack` tells alondrad
+//! which of the messages it wrote down that connection the session has taken, and `hold` puts one
+//! card to the user and prints the answer. The open connection is what tells alondrad the node is
+//! reachable; `connect` sleeps in `read` and copies whatever alondrad writes down it, one JSON line
+//! per message or interrupt, to its
 //! standard output.
 
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::path::Path;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use clap::Subcommand;
@@ -15,6 +17,18 @@ use serde_json::{Value, json};
 
 const MAX_REPORT_BYTES: u64 = 1024 * 1024;
 const CLOSED_BY_DAEMON: i32 = 3;
+const REDIAL: Duration = Duration::from_secs(1);
+
+#[derive(Debug)]
+struct Refused(String);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
+impl std::error::Error for Refused {}
 
 #[derive(Subcommand)]
 pub enum Cmd {
@@ -24,6 +38,8 @@ pub enum Cmd {
     Connect,
     /// Tells alondrad the session took these message ids; the session id is on standard input
     Ack { ids: Vec<String> },
+    /// Puts the card on standard input to the user and prints the answer, waiting across daemon restarts
+    Hold,
 }
 
 pub fn run(command: Cmd) -> Result<()> {
@@ -36,6 +52,7 @@ pub fn run(command: Cmd) -> Result<()> {
             frame["ids"] = json!(ids);
             event_frame(&socket, json!({"node_ack": frame}))
         }
+        Cmd::Hold => hold(&socket, input),
         Cmd::Connect => {
             let mut stream = open(&socket, json!({"node_connect": input}))?;
             println!("connected");
@@ -67,6 +84,25 @@ fn event_frame(socket: &Path, frame: Value) -> Result<()> {
     Ok(())
 }
 
+/// A daemon that is down or restarting is dialled again every second and sent the same card,
+/// which it recognises by its id: a card posted before the restart is still waiting when it is back.
+fn hold(socket: &Path, card: Value) -> Result<()> {
+    loop {
+        match open(socket, json!({"node_hold": card})) {
+            Ok(mut stream) => {
+                let mut answer = String::new();
+                if stream.read_to_string(&mut answer).is_ok() && !answer.is_empty() {
+                    println!("{answer}");
+                    return Ok(());
+                }
+            }
+            Err(error) if error.is::<Refused>() => return Err(error),
+            Err(_) => {}
+        }
+        std::thread::sleep(REDIAL);
+    }
+}
+
 /// Sends one frame and reads the daemon's status; what follows the status is left on the stream.
 fn open(socket: &Path, frame: Value) -> Result<UnixStream> {
     let mut stream = UnixStream::connect(socket).with_context(|| format!("cannot reach alondrad at {}", socket.display()))?;
@@ -79,7 +115,7 @@ fn open(socket: &Path, frame: Value) -> Result<UnixStream> {
     if status >= 400 {
         let mut reason = String::new();
         let _ = stream.read_to_string(&mut reason);
-        bail!("alondrad refused the report ({status}): {reason}");
+        return Err(Refused(format!("alondrad refused the report ({status}): {reason}")).into());
     }
     Ok(stream)
 }

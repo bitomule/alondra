@@ -7,7 +7,21 @@ const ANSWER_LIMIT = 8_000
 const SUMMARY_FIELDS = ['command', 'file_path', 'description', 'pattern', 'url'] as const
 const SUMMARY_LIMIT = 300
 
+const HOLD_RUN_MS = 600_000
+
 type Session = { id: string; alondra: string; hello: string }
+
+type Card = { id: string; kind: 'question' | 'plan' | 'permission'; tool?: string; input: Record<string, unknown> }
+type Answer = {
+  held: boolean
+  answers?: Record<string, string>
+  approved?: boolean
+  feedback?: string
+  allowed?: boolean
+  reason?: string
+}
+
+const approvedPlans = new Set<string>()
 
 let session: Session | undefined
 let stopping = false
@@ -90,6 +104,27 @@ async function receive($: EngineInterface, line: string): Promise<void> {
     if (turnId !== undefined) await $.turn.abort({ turnId })
   } else if (typeof push.id === 'string' && typeof push.text === 'string') {
     void submit($, push.id, push.text, push.as_user === true)
+  }
+}
+
+// The wait lives inside `$.process.run`, which the hook's 10 s budget does not count. Claude Code
+// ends a run at its timeout, so the helper is run again and posts the same card id: alondrad finds
+// the card already open, which is also how a card outlives a daemon restart.
+async function hold($: EngineInterface, next: { signal: AbortSignal }, card: Card): Promise<Answer> {
+  if (!session) return { held: false }
+  for (;;) {
+    const startedAt = await $.clock.now()
+    try {
+      const run = await $.process.run([session.alondra, 'node', 'hold'], {
+        stdin: JSON.stringify({ session_id: session.id, ...card }),
+        timeoutMs: HOLD_RUN_MS,
+      })
+      if (run.exitCode !== 0) throw new Error(`alondra node hold exited ${run.exitCode}: ${run.stderr.trim()}`)
+      return JSON.parse(run.stdout) as Answer
+    } catch (error) {
+      const ranOut = (await $.clock.now()) - startedAt >= HOLD_RUN_MS - 2_000
+      if (!ranOut || next.signal.aborted) throw error
+    }
   }
 }
 
@@ -190,4 +225,36 @@ export const register: Register = (on) => {
       queue($, { event: 'tool.end', tool_use_id: e.tool_use_id })
     }
   })
+
+  on('tool.call', { tool: 'AskUserQuestion' }, async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    const reply = await hold($, next, { id: e.tool_use_id, kind: 'question', input: { questions: e.questions } })
+    if (!reply.held) return next(e)
+    return { result: { questions: e.questions, answers: reply.answers } }
+  }).catch(async (_$, _e, next) => ({ deny: `The question could not be put to the user: ${next.error.kind}` }))
+
+  on('tool.call', { tool: 'ExitPlanMode' }, async ($, e, next) => {
+    if (e.agentId !== undefined) return next(e)
+    const reply = await hold($, next, { id: e.tool_use_id, kind: 'plan', input: { plan: e.plan } })
+    if (!reply.held) return next(e)
+    if (!reply.approved) return { deny: reply.feedback ?? 'The user requests changes to the plan' }
+    approvedPlans.add(e.tool_use_id)
+    return next(e)
+  }).catch(async (_$, _e, next) => ({ deny: `The plan could not be put to the user: ${next.error.kind}` }))
+
+  on('tool.check', async ($, e, next) => {
+    const decided = await next(e)
+    if (e.tool === 'ExitPlanMode' && approvedPlans.delete(e.tool_use_id)) {
+      return { decision: 'allow', reason: 'The user approved this plan' }
+    }
+    if (decided.decision !== 'ask' || e.tool === 'AskUserQuestion') return decided
+    const reply = await hold($, next, { id: e.tool_use_id, kind: 'permission', tool: e.tool, input: e.input })
+    if (!reply.held) return decided
+    return reply.allowed
+      ? { decision: 'allow', reason: reply.reason ?? 'The user allowed this call' }
+      : { decision: 'deny', reason: reply.reason ?? 'The user denies it' }
+  }).catch(async (_$, _e, next) => ({
+    decision: 'deny',
+    reason: `The permission question could not be put to the user: ${next.error.kind}`,
+  }))
 }
