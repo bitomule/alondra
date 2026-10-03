@@ -27,8 +27,11 @@ final class MachineBadgeSnapshotTests: XCTestCase {
 
     private static let status = #"{"version":"v1","summary":"0 nodos trabajando","badge":0,"counts":[],"gauges":[{"id":"claude_week","label":"Claude semana","value":0.83,"text":"83%","detail":"El límite semanal se reinicia","level":"calm"},{"id":"claude_today","label":"Claude hoy","value":0.0,"text":"0/6%","detail":"Gastado 0% de la cuota diaria del 6%","level":"calm"},{"id":"claude_five_hours","label":"Claude 5 h","value":0.0,"text":"0%","detail":"El límite de 5 horas se reinicia","level":"calm"},{"id":"memory","label":"RAM","value":0.39,"text":"39%","level":"calm"},{"id":"cpu","label":"CPU","value":0.24,"text":"24%","level":"calm"},{"id":"disk","label":"Disco","value":0.88,"text":"58 GB libres","level":"warm"}],"orchestrator":{"text":"inactivo","tone":"neutral"}}"#
 
-    private func navigationBar(width: CGFloat) throws -> UIImage {
-        let status = try ContractCodec.decode(ViewStatus.self, from: Data(Self.status.utf8))
+    private static let fullDiskStatus = status
+        .replacingOccurrences(of: #""value":0.88,"text":"58 GB libres","level":"warm""#, with: #""value":0.96,"text":"16 GB libres","level":"hot""#)
+
+    private func navigationBar(width: CGFloat, status raw: String = status) throws -> UIImage {
+        let status = try ContractCodec.decode(ViewStatus.self, from: Data(raw.utf8))
         let store = try ScreenStores.triage(queue: []) { $0.status = status }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
@@ -54,6 +57,10 @@ final class MachineBadgeSnapshotTests: XCTestCase {
 
     func test_narrow_keepsEveryBarAndSettings() throws {
         assertAppSnapshot(of: try navigationBar(width: 375), as: .image(precision: 0.99, perceptualPrecision: 0.97))
+    }
+
+    func test_fullDisk_takesOverTheMachineReading() throws {
+        assertAppSnapshot(of: try navigationBar(width: 440, status: Self.fullDiskStatus), as: .image(precision: 0.99, perceptualPrecision: 0.97))
     }
 
     func test_popover_breaksTheMachineDownIntoRamAndCpu() throws {

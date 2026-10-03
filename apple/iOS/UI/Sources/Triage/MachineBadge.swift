@@ -20,7 +20,7 @@ struct MachineBadge: View {
         .modifier(ProposedWidth(width: max(width - Self.reservedBarWidth, 0)))
     }
 
-    private static let machineLoad: Set<String> = ["memory", "cpu"]
+    private static let machineLoad = MachineCapacity.sources.union([MachineCapacity.id])
 
     private func pill(showsText: @escaping (String) -> Bool) -> some View {
         HStack(spacing: 6) {
@@ -40,7 +40,7 @@ struct MachineBadge: View {
             } else {
                 Image(systemName: "desktopcomputer").font(.footnote)
             }
-            ForEach(gauges.filter { !Self.machineLoad.contains($0.id) && $0.id != "disk" }, id: \.id) { gauge in
+            ForEach(gauges.filter { !MachineCapacity.sources.contains($0.id) }, id: \.id) { gauge in
                 HStack(spacing: 3) {
                     ReadingIcon(gauge: gauge)
                     if showsText(gauge.id) {
@@ -99,6 +99,7 @@ private struct WidthLayout: Layout {
 
 private struct MachineCapacity {
     static let id = "machine"
+    static let sources: Set<String> = ["memory", "cpu", "disk"]
 
     let value: Double
     let level: Level
@@ -106,11 +107,11 @@ private struct MachineCapacity {
     let accessibilityLabel: String
 
     init?(gauges: [AlondraContract.Gauge]) {
-        let load = gauges.filter { ["memory", "cpu"].contains($0.id) }
-        guard let busiest = load.max(by: { $0.value < $1.value }) else { return nil }
-        value = busiest.value
-        level = load.map(\.level).max { $0.severity < $1.severity } ?? busiest.level
-        text = busiest.text
+        let load = gauges.filter { Self.sources.contains($0.id) }
+        guard let critical = load.max(by: { ($0.level.severity, $0.value) < ($1.level.severity, $1.value) }) else { return nil }
+        value = critical.value
+        level = critical.level
+        text = "\(Int((critical.value * 100).rounded()))%"
         accessibilityLabel = load.map { "\($0.label) \($0.text)" }.joined(separator: ", ")
     }
 }
