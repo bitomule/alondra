@@ -8,7 +8,7 @@ use super::{
 };
 use crate::domain_v2::{
     AvailableAction, DomainState, Hold, InboxItem, InboxSubject, InteractionPayload, InteractionSubject,
-    Recipient,
+    Recipient, Scope,
 };
 
 pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
@@ -406,7 +406,10 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         title: held
             .map(|held| held.title)
             .or_else(|| live_pr.and_then(|detail| detail.title.clone()))
-            .unwrap_or_else(|| item.title.clone()),
+            .unwrap_or_else(|| match item.task_id {
+                Some(_) => item.title.clone(),
+                None => t!(context.lang, "Orchestrator", "Orquestador").into(),
+            }),
         badges,
         context: context_lines,
         timestamps,
@@ -771,7 +774,7 @@ fn actions(item: &InboxItem, context: &RenderContext<'_>) -> Result<Vec<Action>,
                         "c",
                     )
                 }
-                InteractionPayload::Information { .. } => (
+                InteractionPayload::Information { .. } if matches!(interaction.scope, Scope::Task { .. }) => (
                     Verb::Reply,
                     t!(context.lang, "Reply", "Responder"),
                     t!(context.lang, "Write a reply", "Escribe una respuesta").to_owned(),

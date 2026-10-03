@@ -154,7 +154,7 @@ fn home_ios_sends_only_ordered_ids() {
         "2026-09-30T10:00:00Z",
     );
     assert!(view.sections[0].items.is_empty());
-    assert_eq!(view.sections[0].card_ids, ["i-1", "i-2", "i-3"]);
+    assert_eq!(view.sections[0].card_ids, ["i-1", "i-2", "i-3", "i-4"]);
 }
 
 #[test]
@@ -199,7 +199,7 @@ fn a_huge_inbox_stays_under_the_budget_and_reports_more() {
     assert_eq!(queue.card_ids.last().unwrap(), "q-1999");
     let bytes = serde_json::to_vec(&view).unwrap();
     assert!(bytes.len() < 744 * 1024, "home used {} bytes", bytes.len());
-    assert_eq!(queue.card_ids.len(), 2_003, "every remaining card is reported by id");
+    assert_eq!(queue.card_ids.len(), 2_004, "every remaining card is reported by id");
 }
 #[test]
 fn focus_puts_the_id_first() {
@@ -239,7 +239,7 @@ fn version_ignores_time() {
     assert_eq!(a.version, b.version);
 }
 #[test]
-fn orchestrator_items_are_not_in_home() {
+fn orchestrator_questions_to_the_user_wait_in_home() {
     let state = fixture();
     let live = LiveSnapshot::default();
     let view = render(
@@ -250,18 +250,18 @@ fn orchestrator_items_are_not_in_home() {
         "home",
         "2026-09-30T10:00:00Z",
     );
-    assert!(!view.sections[0].card_ids.contains(&"i-4".to_owned()));
+    assert!(view.sections[0].card_ids.contains(&"i-4".to_owned()));
     assert_eq!(view.status.badge, view.sections[0].card_ids.len() as u32);
     assert_eq!(
         view.status.summary,
-        "1 question · 2 to read · 0 nodes working"
+        "2 questions · 2 to read · 0 nodes working"
     );
 }
 #[test]
 fn icon_badge_counts_what_waits_in_home() {
     let state = fixture();
     let home = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "home", "2026-09-30T10:00:00Z");
-    assert_eq!(super::inbox_badge(&state), 3, "the orchestrator's question is not the user's");
+    assert_eq!(super::inbox_badge(&state), 4, "the orchestrator's question to the user is the user's");
     assert_eq!(super::inbox_badge(&state), home.status.badge);
     assert_eq!(super::inbox_badge(&state), home.sections[0].card_ids.len() as u32);
     assert_eq!(super::inbox_badge(&DomainState::new("empty")), 0);
@@ -407,6 +407,7 @@ fn pr_fixture() -> DomainState {
 
 fn golden_fixture() -> DomainState {
     let mut state = pr_fixture();
+    state.interactions.remove(&"i-4".into());
     let request_id = "r-9f2156b5a8894e53901f0af576dff6a2";
     let task_id = "t-651c38484cd2f34e74d5107ba05f7f15";
     let interaction_ids = [
@@ -1615,8 +1616,8 @@ fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
 fn a_failed_orchestrator_run_waits_for_the_user_in_home_with_both_choices() {
     let state = fixture();
     let home = render(&state, &orchestrator_waiting(true), Client::Ios, Lang::Es, "home", "");
-    assert_eq!(home.sections[0].card_ids, ["orchestrator-decision", "i-1", "i-2", "i-3"]);
-    assert_eq!(home.sections[0].count, Some(4));
+    assert_eq!(home.sections[0].card_ids, ["orchestrator-decision", "i-1", "i-2", "i-3", "i-4"]);
+    assert_eq!(home.sections[0].count, Some(5));
 
     let card = render(&state, &orchestrator_waiting(true), Client::Ios, Lang::Es, "card:orchestrator-decision", "");
     let Item::Card(card) = &card.sections[0].items[0] else { panic!("decision card") };
@@ -1679,7 +1680,7 @@ fn the_orchestrator_screen_says_it_failed_and_why_in_the_users_language() {
 fn a_running_orchestrator_shows_no_decision_card() {
     let state = fixture();
     let home = render(&state, &orchestrator_waiting(false), Client::Ios, Lang::En, "home", "");
-    assert_eq!(home.sections[0].card_ids, ["i-1", "i-2", "i-3"]);
+    assert_eq!(home.sections[0].card_ids, ["i-1", "i-2", "i-3", "i-4"]);
     let live = orchestrator_waiting(false);
     let card = build("card:orchestrator-decision", RenderContext {
         domain: &state, live: &live, client: Client::Ios, lang: Lang::En,
@@ -2470,7 +2471,7 @@ fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
     assert_eq!(options[1].style, Style::Destructive);
     assert!(matches!(&options[1].input, Input::Text { placeholder, required: false, .. } if placeholder == "Escribe el motivo"));
     assert!(card.actions.iter().all(|action| !action.id.starts_with("ctx:")), "a held card is answered, not discussed");
-    assert_eq!(view.status.summary.split(" · ").next(), Some("1 pregunta"));
+    assert_eq!(view.status.summary.split(" · ").next(), Some("2 preguntas"));
     let pushed = push_actions(&state, "i-1", Lang::En).unwrap();
     assert_eq!(pushed.iter().map(|a| (a.option.as_deref(), a.label.as_str(), a.text, a.open)).collect::<Vec<_>>(),
         [(Some("allow"), "Allow", false, false), (Some("deny"), "Deny", false, false)]);
@@ -2774,4 +2775,63 @@ fn the_tui_cancels_a_task_with_x() {
         _ => None,
     }).unwrap_or_else(|| panic!("cancel action: {:?}", state.task_actions(&"t-1".into())));
     assert_eq!(cancel.key.as_deref(), Some("x"));
+}
+fn answered_and_closed_request() -> DomainState {
+    use crate::domain_v2::{Actor, Command, CommandEnvelope, DomainEffect, PROTOCOL_VERSION};
+    let run = |state: &mut DomainState, actor: Actor, command: Command| {
+        state.execute(&actor, &CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("c-{}", state.revision).into(),
+            expected_revision: state.revision,
+            command,
+        }).unwrap()
+    };
+    let mut state = DomainState::new("epoch-1");
+    let orchestrator = Actor::Orchestrator { generation: 0 };
+    run(&mut state, Actor::User { user_id: "u".into() }, Command::CreateRequest {
+        request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false,
+    });
+    let published = run(&mut state, orchestrator.clone(), Command::PublishInformation {
+        attachments: vec![],
+        interaction_id: "a7efd99d-answer-1".into(),
+        scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
+        recipient: Recipient::User,
+        body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(),
+    });
+    assert_eq!(published.effects, vec![DomainEffect::NotifyUser {
+        task_id: None, interaction_id: "a7efd99d-answer-1".into(),
+    }]);
+    run(&mut state, orchestrator, Command::CloseRequest {
+        request_id: "a7efd99d".into(),
+        answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
+        withdrawn: false,
+        title: Some("Cifrar imágenes vía R2".into()),
+    });
+    state
+}
+#[test]
+fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
+    let state = answered_and_closed_request();
+    let live = LiveSnapshot::default();
+    let ios = render(&state, &live, Client::Ios, Lang::Es, "home", "");
+    assert_eq!(ios.sections[0].card_ids, vec!["a7efd99d-answer-1".to_owned()]);
+    assert_eq!(ios.status.badge, 1);
+    assert_eq!(inbox_badge(&state), 1);
+    let tui = render(&state, &live, Client::Tui, Lang::En, "home", "");
+    let to_read = tui.sections.iter().find(|section| section.id == "to_read").unwrap();
+    assert!(matches!(to_read.items.as_slice(), [Item::Row(row)] if row.id == "a7efd99d-answer-1"));
+    let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
+    assert!(serde_json::to_string(&sidebar).unwrap().contains("a7efd99d-answer-1"));
+    let card = render(&state, &live, Client::Ios, Lang::Es, "card:a7efd99d-answer-1", "");
+    let Some(Item::Card(card)) = card.sections.iter().flat_map(|section| &section.items).next() else {
+        panic!("the answer renders as a card");
+    };
+    assert_eq!(card.title, "Orquestador");
+    assert!(card.actions.iter().any(|action| action.id.starts_with("read:")));
+    assert!(!card.actions.iter().any(|action| action.id.starts_with("reply:")),
+        "a reply needs a node, and the orchestrator's answer has none");
+    let alert = push_content(&state, "a7efd99d-answer-1", Lang::Es).unwrap().alert.unwrap();
+    assert_eq!(alert.title, "Orquestador");
+    assert_eq!(alert.body.as_deref(), Some("Sí. Para el cifrado una imagen son bytes como cualquier otro."));
 }

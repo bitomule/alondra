@@ -4,7 +4,7 @@ use super::{
     card::{card_key, from_item, orchestrator_decision, plain_id, public_id},
     text::t,
 };
-use crate::domain_v2::{DomainProjection, DomainState, InboxItem, InboxSubject, Scope};
+use crate::domain_v2::{DomainProjection, InboxItem};
 
 pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     if !matches!(context.client, Client::Ios | Client::Tui) {
@@ -15,7 +15,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         return Err(BuildError::InvalidKey);
     }
     let projection = context.domain.projection();
-    let mut roots = waiting(&projection, context.domain);
+    let mut roots = waiting(&projection);
     if let Some(focus) = focus {
         if let Some(index) = roots.iter().position(|item| {
             public_id(item) == focus || item.children.iter().any(|child| public_id(child) == focus)
@@ -149,22 +149,10 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         notices: vec![],
     })
 }
-/// What waits for the user: the home queue, its count and the app icon badge.
-pub(super) fn waiting<'a>(projection: &'a DomainProjection, domain: &DomainState) -> Vec<&'a InboxItem> {
-    projection
-        .inbox
-        .iter()
-        .filter(|item| item.pending && !orchestrator_only(item, domain))
-        .collect()
-}
-fn orchestrator_only(item: &InboxItem, domain: &DomainState) -> bool {
-    match &item.subject {
-        InboxSubject::Interaction { interaction_id } => domain
-            .interactions
-            .get(interaction_id)
-            .is_some_and(|interaction| matches!(&interaction.scope, Scope::Orchestrator { .. })),
-        _ => false,
-    }
+/// What waits for the user: the home queue, its count and the app icon badge. The inbox only
+/// holds what is addressed to the user, the orchestrator's answers and questions included.
+pub(super) fn waiting(projection: &DomainProjection) -> Vec<&InboxItem> {
+    projection.inbox.iter().filter(|item| item.pending).collect()
 }
 fn row(item: &InboxItem, context: &RenderContext<'_>, depth: u8) -> Result<Row, BuildError> {
     let card = from_item(item, context, false)?;

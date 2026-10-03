@@ -1038,13 +1038,53 @@ mod tests {
                 revision: 1, order: 1, withdrawn: false,
             });
         }
-        assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 2);
+        assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 3);
         let InteractionPayload::Information { read_by } =
             &mut state.interactions.get_mut(&InteractionId::from("info-1")).unwrap().payload else { unreachable!() };
         read_by.insert("mac".into());
-        assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 1,
+        assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 2,
             "an item resolved elsewhere leaves the badge");
         assert_eq!(user_push_payload(&state, None, Lang::En)["aps"]["badge"], views::inbox_badge(&state));
+    }
+
+    #[tokio::test]
+    async fn an_orchestrator_answer_is_pushed_and_badged_even_when_its_request_closes_with_it() {
+        let home = std::env::temp_dir().join(format!("alondra-orchestrator-answer-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        let orchestrator = Actor::Orchestrator { generation: 0 };
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "a7efd99d".into(), body: "can we encrypt images via R2".into(), auto_merge: false,
+        });
+        v2_command(&domain, orchestrator.clone(), "answer", Command::PublishInformation {
+            attachments: vec![],
+            interaction_id: "a7efd99d-answer-1".into(),
+            scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
+            recipient: Recipient::User,
+            body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(),
+        });
+        v2_command(&domain, orchestrator, "close", Command::CloseRequest {
+            request_id: "a7efd99d".into(),
+            answer: Some("Sí: se cifran en el cliente antes de subirlas a R2".into()),
+            withdrawn: false,
+            title: Some("Cifrar imágenes vía R2".into()),
+        });
+        let user: Vec<_> = domain.store.lock().unwrap().pending_messages().unwrap()
+            .into_iter().filter(|message| message.recipient_kind == "user").collect();
+        assert_eq!(user.len(), 1, "one push for the answer, none for the close");
+        assert_eq!(user[0].interaction_id.as_deref(), Some("a7efd99d-answer-1"));
+        let state = domain.state().unwrap();
+        let payload = user_push_payload(&state, user[0].interaction_id.as_deref(), Lang::Es);
+        assert_eq!(payload["alondra"]["card"], "a7efd99d-answer-1");
+        assert_eq!(payload["alondra"]["kind"], "information");
+        assert_eq!(payload["aps"]["alert"]["title"], "Orquestador");
+        assert_eq!(payload["aps"]["alert"]["body"], "Sí. Para el cifrado una imagen son bytes como cualquier otro.");
+        assert_eq!(payload["aps"]["badge"], 1, "the answer waits in the inbox the badge counts");
+        let push = Push::open(&home).unwrap();
+        deliver_one_v2(&domain, &home, &push, None, &client, user[0].clone()).await.unwrap();
+        assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
+            .iter().any(|item| item.message_id == user[0].id && item.state == "handed"));
     }
 
     #[test]
