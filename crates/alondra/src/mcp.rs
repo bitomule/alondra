@@ -298,7 +298,7 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
         ),
         (
             "close_request",
-            "Close a Request that needs no Task. State the answer or mark it withdrawn.",
+            "Close a Request that needs no Task. State the answer or mark it withdrawn. The answer is the Request's record: the user only sees what you sent with publish_information or ask.",
             json!({"request_id":{"type":"string"},"answer":{"type":"string"},"withdrawn":{"type":"boolean"},"title":{"type":"string"}}),
             vec!["request_id"],
         ),

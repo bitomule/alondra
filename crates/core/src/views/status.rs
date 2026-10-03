@@ -6,7 +6,7 @@ use super::{
 use crate::domain_v2::DomainProjection;
 
 pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) -> Status {
-    let roots = super::home::waiting(projection, context.domain);
+    let roots = super::home::waiting(projection);
     let pending = roots.len() as u32;
     let questions = roots
         .iter()

@@ -44,7 +44,7 @@ pub enum BuildError {
 }
 /// The app icon badge: the same count as the Waiting for You queue and `Status::badge`.
 pub fn inbox_badge(domain: &crate::domain_v2::DomainState) -> u32 {
-    home::waiting(&domain.projection(), domain).len() as u32
+    home::waiting(&domain.projection()).len() as u32
 }
 pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> {
     let mut view = if key == "home" || key.starts_with("home?focus=") {

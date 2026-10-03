@@ -159,7 +159,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
     }
     let projection = context.domain.projection();
     let mut view = common::view("sidebar", "sidebar", None, context, vec![]);
-    let pending = super::home::waiting(&projection, context.domain);
+    let pending = super::home::waiting(&projection);
     for (id, title, pr) in [
         (
             "waiting",
