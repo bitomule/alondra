@@ -289,7 +289,8 @@ final class NotificationResponder: NSObject, UNUserNotificationCenterDelegate {
     }
 
     func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification, withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
-        completionHandler([.banner, .list, .badge])
+        let isRemotePush = notification.request.trigger is UNPushNotificationTrigger
+        completionHandler(ForegroundPresentation.options(isRemotePush: isRemotePush))
     }
 }
 
