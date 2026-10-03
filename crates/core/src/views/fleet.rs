@@ -500,6 +500,16 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
         message.key = (context.client == super::Client::Tui).then(|| "M".into());
         actions.push(message);
     }
+    actions.extend(orchestrator_decisions(context));
+    view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })]));
+    Ok(view)
+}
+
+/// What the user can do with the orchestrator's current run: retry or continue past a failed
+/// one, or stop one in progress.
+pub(super) fn orchestrator_decisions(context: &RenderContext<'_>) -> Vec<super::Action> {
+    let live = context.live.orchestrator.as_ref();
+    let mut actions = Vec::new();
     if let Some(run) = live.and_then(|o| o.active_run_id.as_deref()) {
         for (enabled, verb, label) in [
             (live.is_some_and(|o| o.can_retry), Verb::OrchRetry, t!(context.lang, "Retry", "Reintentar")),
@@ -532,6 +542,5 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
             }
         }
     }
-    view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })]));
-    Ok(view)
+    actions
 }

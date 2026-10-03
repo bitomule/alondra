@@ -16,6 +16,12 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         return Err(BuildError::InvalidKey);
     }
     let projection = context.domain.projection();
+    if id == ORCHESTRATOR_DECISION {
+        let card = orchestrator_decision(context, true).ok_or(BuildError::NotFound)?;
+        let mut view = super::common::view("card", &format!("card:{id}"), Some(card.title.clone()), context, vec![]);
+        view.sections.push(super::common::section("card", None, vec![Item::Card(card)]));
+        return Ok(view);
+    }
     let fallback = context
         .domain
         .interactions
@@ -105,6 +111,52 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         notices: vec![],
     })
 }
+pub(super) const ORCHESTRATOR_DECISION: &str = "orchestrator-decision";
+
+/// A failed orchestrator run stays claimed until the user retries it or continues without it;
+/// until then no new request is split.
+pub(super) fn orchestrator_decision(context: &RenderContext<'_>, included: bool) -> Option<Card> {
+    let live = context.live.orchestrator.as_ref().filter(|o| o.can_retry && o.active_run_id.is_some())?;
+    let explanation = t!(context.lang,
+        "Its last run failed partway, so some of its actions may already have happened. New requests wait until you choose: retry the run, or continue without repeating it.",
+        "Su última ejecución falló a medias, así que puede que algunas acciones ya se hayan hecho. Las solicitudes nuevas esperan hasta que elijas: reintentarla o continuar sin repetirla.");
+    let error = live.summary.as_deref().map(str::trim).filter(|error| !error.is_empty());
+    Some(Card {
+        id: ORCHESTRATOR_DECISION.into(),
+        link: Some(Link::View { key: format!("card:{ORCHESTRATOR_DECISION}") }),
+        icon: Icon::Warning,
+        eyebrow: Some(Label { text: t!(context.lang, "Orchestrator", "Orquestador").into(), tone: Tone::Accent }),
+        title: t!(context.lang, "The orchestrator needs your decision", "El orquestador necesita que decidas").into(),
+        subtitle: error.and_then(|error| error.lines().next()).map(|line| line.chars().take(140).collect()),
+        badges: vec![],
+        context: vec![ContextLine {
+            icon: Icon::Node,
+            text: t!(context.lang, "Orchestrator", "Orquestador").into(),
+            link: Some(Link::View { key: "node:orchestrator".into() }),
+            chip: None,
+            state: None,
+        }],
+        timestamps: vec![],
+        state: None,
+        detail: if included { Detail::Included } else { Detail::Reference },
+        body: included.then(|| Markdown {
+            text: match error {
+                Some(error) => format!("{explanation}\n\n{}: {error}", t!(context.lang, "What failed", "Qué falló")),
+                None => explanation.into(),
+            },
+            truncated: false,
+            more: None,
+            commentable: false,
+        }),
+        attachments: vec![],
+        quotes: vec![],
+        children: vec![],
+        facts: None,
+        checks: None,
+        actions: if included { super::fleet::orchestrator_decisions(context) } else { vec![] },
+    })
+}
+
 /// The document revision a card is about: a document review, or a question its node linked to one.
 fn reviewed_revision<'a>(item: &'a InboxItem, domain: &'a DomainState) -> Option<&'a crate::domain_v2::DocumentRevisionId> {
     match &item.subject {

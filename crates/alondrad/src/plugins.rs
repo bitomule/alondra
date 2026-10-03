@@ -128,11 +128,20 @@ fn sync(source: &Path, target: &Path, wrapper: &str) -> anyhow::Result<()> {
 
 /// The flags that load Alondra's plugins into a session and mark it as Alondra's.
 pub fn launch_flags(plugins: &[&Path]) -> Vec<String> {
+    launch_flags_with(plugins, None)
+}
+
+/// Extra permissions join Alondra's launch settings in its single `--settings`.
+pub fn launch_flags_with(plugins: &[&Path], permissions: Option<serde_json::Value>) -> Vec<String> {
     let mut out = vec![];
     for p in plugins {
         out.extend(["--plugin-dir".to_string(), p.display().to_string()]);
     }
-    out.extend(["--settings".to_string(), alondra_core::launch_settings()]);
+    let mut settings: serde_json::Value = serde_json::from_str(&alondra_core::launch_settings()).expect("launch settings are JSON");
+    if let Some(permissions) = permissions {
+        settings["permissions"] = permissions;
+    }
+    out.extend(["--settings".to_string(), settings.to_string()]);
     out
 }
 

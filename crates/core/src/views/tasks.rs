@@ -79,6 +79,8 @@ fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
                 t!(context.lang, "Withdrawn", "Retirada")
             } else if request.closed {
                 t!(context.lang, "Finished", "Terminada")
+            } else if tasks.is_empty() && context.live.orchestrator.as_ref().is_some_and(|o| o.can_retry) {
+                t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
             } else if tasks.is_empty() {
                 t!(
                     context.lang,
