@@ -2728,18 +2728,51 @@ fn every_tui_action_a_screen_offers_has_its_own_key() {
     assert!(problems.is_empty(), "{problems:#?}");
 }
 
+/// Task t-1 of a scheduled run whose launch failed, reached through the domain's own commands so
+/// the state is one the daemon could hold.
 fn failed_launch_fixture(error: &str) -> DomainState {
+    use crate::domain_v2::{
+        Actor, Command, CommandEnvelope, Schedule, ScheduleFrequency, ScheduleLaunchIntent, ScheduleRunOrigin,
+    };
     let mut state = fixture();
     state.interactions.clear();
-    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    state.tasks.clear();
+    state.requests.clear();
+    let run = |state: &mut DomainState, command| {
+        state.execute(&Actor::System, &CommandEnvelope {
+            protocol_version: 2,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("c-{}", state.revision).into(),
+            expected_revision: state.revision,
+            command,
+        }).unwrap();
+    };
+    run(&mut state, Command::CreateSchedule { schedule: Schedule {
+        id: "0789f185-0000".into(), title: "Build a feature".into(), text: "Build a feature".into(),
+        project: Some("alondra".into()), options: BTreeMap::new(), disallowed_tools: vec![],
+        frequency: ScheduleFrequency::Daily, hour: 9, minute: 0, weekday: None, interval: None,
+        start_at: None, enabled: true, next_run: Some(100), revision: 1, deleted_at: None,
+    }});
+    run(&mut state, Command::ClaimScheduleRun {
+        schedule_id: "0789f185-0000".into(), run_id: "run-7e2035e8e1d7c5e3f9431b9087d457e3".into(),
+        origin: ScheduleRunOrigin::Due, now: 100, next_after_now: Some(200), expected_schedule_revision: None,
+    });
+    let mut task = fixture().tasks[&"t-1".into()].clone();
     (task.state, task.started, task.final_presentation) = (TaskState::NotStarted, false, None);
-    let run: crate::domain_v2::ScheduleRun = serde_json::from_value(serde_json::json!({
-        "id":"run-7e2035e8e1d7c5e3f9431b9087d457e3", "schedule_id":"0789f185-0000",
-        "origin":"due", "due_at":100, "claimed_at":105, "claim_revision":2,
-        "finished_at":110, "state":"failed", "request_id":"r-1", "task_id":"t-1",
-        "error":error, "definition_snapshot":null, "launch":null
-    })).unwrap();
-    state.schedule.runs.insert(run.id.clone(), run);
+    let options = crate::options::OptionsFile::default().resolve(Some("alondra"), &BTreeMap::new()).unwrap();
+    run(&mut state, Command::RecordScheduleRunSent {
+        run_id: "run-7e2035e8e1d7c5e3f9431b9087d457e3".into(),
+        request: Request::new("r-1".into(), "Build a feature".into()),
+        task,
+        launch: ScheduleLaunchIntent {
+            name: "scheduled/run-1".into(), cwd: "/synthetic/Projects/alondra".into(),
+            prompt: "Build a feature".into(), options_json: serde_json::to_string(&options).unwrap(),
+        },
+        finished_at: 101,
+    });
+    run(&mut state, Command::RecordScheduleRunFailed {
+        run_id: "run-7e2035e8e1d7c5e3f9431b9087d457e3".into(), reason: error.into(), finished_at: 102,
+    });
     state
 }
 
@@ -2765,9 +2798,7 @@ fn a_task_without_a_failed_launch_is_still_not_started() {
 
 #[test]
 fn the_tui_cancels_a_task_with_x() {
-    let mut state = failed_launch_fixture("boom");
-    state.revision = 5;
-    state.schedule.runs.clear();
+    let state = failed_launch_fixture("boom");
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1", "");
     let cancel = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
         Item::Actions(bar) => bar.actions.iter().find(|action| action.id.starts_with("cancel:")),

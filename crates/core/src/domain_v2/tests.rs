@@ -258,6 +258,32 @@ fn schedule_commands_preserve_claim_and_result_history() {
 }
 
 #[test]
+fn the_user_cancels_a_task_whose_scheduled_launch_failed() {
+    let mut state = fixture();
+    let mut definition = schedule();
+    definition.title = "Updated review".into();
+    exec(&mut state, Actor::System, Command::CreateSchedule { schedule: definition }).unwrap();
+    exec(&mut state, Actor::System, Command::ClaimScheduleRun {
+        schedule_id: "schedule-1".into(), run_id: "run-1".into(), origin: ScheduleRunOrigin::Due,
+        now: 100, next_after_now: Some(200), expected_schedule_revision: None,
+    }).unwrap();
+    let (request, task) = scheduled_request_task("scheduled-request", "scheduled-task");
+    exec(&mut state, Actor::System, Command::RecordScheduleRunSent {
+        run_id: "run-1".into(), request, task, launch: scheduled_launch(), finished_at: 101,
+    }).unwrap();
+    exec(&mut state, Actor::System, Command::RecordScheduleRunFailed {
+        run_id: "run-1".into(), reason: "Workspace not trusted.\n".into(), finished_at: 102,
+    }).unwrap();
+    let cancel = state.task_actions(&"scheduled-task".into()).unwrap()
+        .into_iter().find(|action| action.kind == "cancel_task").unwrap();
+    assert!(cancel.enabled, "{cancel:?}");
+    exec(&mut state, user(), Command::CancelTask { task_id: "scheduled-task".into() }).unwrap();
+    assert_eq!(state.tasks[&TaskId::from("scheduled-task")].state, TaskState::Cancelled);
+    assert_eq!(state.schedule.runs[&ScheduleRunId::from("run-1")].state, ScheduleRunState::Failed);
+    state.validate().unwrap();
+}
+
+#[test]
 fn schedule_delete_and_restart_keep_history_without_replaying_due_slots() {
     let mut state = DomainState::new("epoch");
     exec(
