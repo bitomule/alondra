@@ -162,6 +162,10 @@ final class PRReviewSnapshotTests: XCTestCase {
         sheet.actions.comments = [comment]
         assertAppSnapshot(of: AnyView(composer(sheet).environment(\.locale, Locale(identifier: "es_ES"))),
                           as: spanishImage(.light), named: "sheet_light_es")
+        var ask = try state(adding: Self.merge, spanish: true)
+        ask.actions.action = try XCTUnwrap(ask.review?.ask)
+        assertAppSnapshot(of: AnyView(composer(ask).environment(\.locale, Locale(identifier: "es_ES"))),
+                          as: spanishImage(.dark), named: "askSheet_dark_es")
     }
 
     private func spanishScreen(_ view: some View) -> AnyView {

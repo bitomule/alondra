@@ -67,7 +67,7 @@ struct ViewsScreenView: View {
         attachmentContent
         .sheet(isPresented: Binding(get: { store.action.action != nil && !isInlineNodeMessage && !isInlineForm }, set: { if !$0 && !isInlineNodeMessage && !isInlineForm { store.send(.action(.dismiss)) } })) {
             let action = store.scope(state: \.action, action: \.action)
-            ActionComposerSheet(store: action, title: action.action?.label ?? "", submitTitle: composerSubmitTitle,
+            ActionComposerSheet(store: action, title: action.action?.label ?? "", submit: composerSubmit,
                                 tint: screenGlow) {
                 ActionInputView(store: action, form: store.form,
                                 showCommentEditor: !store.key.rawValue.hasPrefix("pull_request:"),
@@ -77,10 +77,10 @@ struct ViewsScreenView: View {
         }
     }
 
-    private var composerSubmitTitle: String {
-        if store.form?.id == "schedule" { return store.form?.submit.label ?? String(localized: "Save Schedule") }
-        if case .text = store.action.action?.input { return String(localized: "Send") }
-        return String(localized: "Continue")
+    private var composerSubmit: ActionComposerSheet<ActionInputView>.Submit {
+        if store.form?.id == "schedule" { return .confirm(store.form?.submit.label ?? String(localized: "Save Schedule")) }
+        if case .text = store.action.action?.input { return .send }
+        return .confirm(String(localized: "Continue"))
     }
 
     private var pickerContent: some View {
