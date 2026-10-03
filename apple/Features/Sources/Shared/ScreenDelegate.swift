@@ -3,13 +3,15 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// What a rebuilt screen asks of the app around it. The app opens the screen a link points to and
-/// turns the outcome of an action into a toast; the screen never reaches for either itself.
+/// What a rebuilt screen asks of the app around it. The app opens the screen a link points to,
+/// turns the outcome of an action into a toast, and delivers the action of a screen that left as
+/// it was sent; the screen never reaches for any of them itself.
 @CasePathable
 public enum ScreenDelegate: Equatable, Sendable {
     case open(ViewKey)
     case completed(String)
     case failed(String)
+    case handOff(ActionRequest)
 }
 
 public extension ScreenDelegate {

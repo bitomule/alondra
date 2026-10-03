@@ -141,10 +141,11 @@ pub fn push_content(
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
     }) else { return Ok(PushContent { alert: None, actions: vec![] }) };
-    let alert = push_alert(card);
     if let Some(hold) = domain.holds.get(&crate::domain_v2::InteractionId(card_id.into())) {
+        let alert = held_push_alert(*hold, card, lang).or_else(|| push_alert(card));
         return Ok(PushContent { alert, actions: held_push_actions(*hold, card, lang) });
     }
+    let alert = push_alert(card);
     let mut pushed = Vec::new();
     for action in &card.actions {
         if action.id.is_empty() || action.link.is_some() || !action.enabled ||
@@ -180,6 +181,26 @@ fn push_alert(card: &Card) -> Option<PushAlert> {
     });
     let body = excerpt.or_else(|| card.eyebrow.as_ref().and_then(|label| one_line(&label.text, PUSH_BODY_CHARS)));
     Some(PushAlert { title, body })
+}
+
+/// What a node waiting on Claude Code's prompt says on the lock screen: who asks and for what
+/// (the permission card already reads "<node> needs permission"), with what to decide below.
+fn held_push_alert(hold: crate::domain_v2::Hold, card: &Card, lang: Lang) -> Option<PushAlert> {
+    use crate::domain_v2::Hold;
+    let node = card.context.iter().find(|line| line.icon == Icon::Node).map(|line| line.text.as_str());
+    let (title, body) = match hold {
+        Hold::Permission => (card.title.clone(), card.subtitle.as_deref()?.to_owned()),
+        Hold::Plan => (match node {
+            Some(node) => text::tf!(lang, "{node} has a plan for you", "{node} tiene un plan para ti", node = node),
+            None => text::t!(lang, "A node has a plan for you", "Un nodo tiene un plan para ti").into(),
+        }, card.title.clone()),
+        Hold::Question => (match node {
+            Some(node) => text::tf!(lang, "{node} asks", "{node} pregunta", node = node),
+            None => text::t!(lang, "A node asks", "Un nodo pregunta").into(),
+        }, card.title.clone()),
+        Hold::Elicitation => return None,
+    };
+    Some(PushAlert { title: one_line(&title, PUSH_TITLE_CHARS)?, body: one_line(&body, PUSH_BODY_CHARS) })
 }
 
 fn one_line(text: &str, limit: usize) -> Option<String> {

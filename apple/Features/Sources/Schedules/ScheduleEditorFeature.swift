@@ -44,6 +44,9 @@ public struct ScheduleEditorFeature: Sendable {
             form.map { ScheduleEditorRules.isVisible(field, values: values, in: $0) } ?? false
         }
 
+        /// Saving waits for the daemon, which may refuse a field; the form shows it is saving meanwhile.
+        public var isSaving: Bool { actions.inFlight }
+
         public var canSave: Bool {
             form != nil && !actions.inFlight
                 && !text("name").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty

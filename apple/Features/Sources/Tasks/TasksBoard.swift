@@ -18,8 +18,8 @@ public struct TasksBoard: Equatable, Sendable {
         public var isSingleTask: Bool { tasks.count == 1 }
     }
 
-    /// One task in its request's tree. `rails` says, for each ancestor level, whether that
-    /// ancestor has more tasks below this one, so the screen can draw the connecting lines.
+    /// One task in its request's tree, with what its node does now or said last. `rails` says, for
+    /// each ancestor level, whether that ancestor has more tasks below this one.
     public struct Line: Equatable, Sendable, Identifiable {
         public let id: String
         public let title: String
@@ -28,6 +28,8 @@ public struct TasksBoard: Equatable, Sendable {
         public let icon: Icon
         public let struck: Bool
         public let waiting: Int
+        public let activity: String?
+        public let activityAt: String?
         public let depth: Int
         public let rails: [Bool]
         public let isLastSibling: Bool
@@ -94,6 +96,29 @@ public extension TasksBoard {
     }
 }
 
+public extension TasksBoard {
+    /// The board as it is after what was just sent: a withdrawn request is gone, archived work has
+    /// moved to the archive.
+    func hiding(_ optimistic: Optimistic) -> TasksBoard {
+        guard !optimistic.isEmpty else { return self }
+        func shown(_ fold: Fold, adding moved: Fold? = nil) -> Fold {
+            let kept = fold.requests.filter { !optimistic.hides($0.withdraw?.id) }
+            let movedRequests = moved?.requests ?? []
+            return Fold(id: fold.id, title: fold.title,
+                        count: max(0, fold.count - (fold.requests.count - kept.count)) + (moved?.count ?? 0),
+                        requests: movedRequests + kept, more: fold.more)
+        }
+        let archiving = optimistic.hides(archiveCompleted?.id)
+        let emptied = Fold(id: finished.id, title: finished.title, count: 0, requests: [], more: nil)
+        return TasksBoard(
+            summary: summary, schedules: schedules, active: shown(active),
+            finished: archiving ? emptied : shown(finished),
+            archived: archiving ? shown(archived, adding: finished) : shown(archived),
+            archiveCompleted: archiving ? nil : archiveCompleted, empty: empty
+        )
+    }
+}
+
 /// Rows loaded by "show more" for one section, and the page after them if there is one.
 public struct TasksPage: Equatable, Sendable {
     public var rows: [Row]
@@ -120,13 +145,18 @@ extension TasksBoard.Line {
     static func tree(_ rows: [Row], rails: [Bool]) -> [Self] {
         rows.enumerated().flatMap { index, row -> [Self] in
             let last = index == rows.count - 1
+            let activity = row.children.first { $0.id == "activity" }
+            let children = row.children.filter { $0.id != "activity" }
+            var activityAt: String?
+            if case .time(let at, _)? = activity?.trailing { activityAt = at }
             let line = Self(
                 id: row.id, title: row.title, state: row.subtitle, tone: row.badges.first?.tone,
                 icon: row.icon, struck: row.struck, waiting: row.trailing?.count ?? 0,
-                depth: rails.count, rails: rails, isLastSibling: last, hasChildren: !row.children.isEmpty,
+                activity: activity?.title, activityAt: activityAt,
+                depth: rails.count, rails: rails, isLastSibling: last, hasChildren: !children.isEmpty,
                 link: row.link
             )
-            return [line] + tree(row.children, rails: rails + [!last])
+            return [line] + tree(children, rails: rails + [!last])
         }
     }
 }

@@ -115,6 +115,15 @@ final class TriageSnapshotTests: XCTestCase {
         assertVariants { Harness(store: store) }
     }
 
+    func test_permissionPromptDenying() throws {
+        let store = try single(try Fixtures.permissionCard()) { state in
+            let answer = state.cards[0].replyAction
+            state.cards[0].actions.action = answer
+            state.cards[0].actions.selectedOptionID = "deny"
+        }
+        assertVariants { Harness(store: store) }
+    }
+
     func test_plan() throws {
         let store = try single(try Fixtures.planCard())
         assertVariants { Harness(store: store) }
@@ -124,9 +133,14 @@ final class TriageSnapshotTests: XCTestCase {
 
     func test_stackOfFourWithThePageDots() throws {
         let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID, Fixtures.pullRequestID]
-        let store = try ScreenStores.triage(
-            queue: queue, cards: [try Fixtures.card(Fixtures.questionID), try Fixtures.card(Fixtures.informationID)]
-        )
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.prefix(3).map(Fixtures.card))
+        assertVariants { Harness(store: store) }
+    }
+
+    func test_stackAfterTheLastCardWrapsToTheFirst() throws {
+        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID, Fixtures.pullRequestID]
+        let shown = [Fixtures.pullRequestID, Fixtures.questionID, Fixtures.informationID]
+        let store = try ScreenStores.triage(queue: queue, cards: try shown.map(Fixtures.card)) { $0.index = 3 }
         assertVariants { Harness(store: store) }
     }
 }

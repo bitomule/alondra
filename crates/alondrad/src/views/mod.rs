@@ -2,6 +2,7 @@ pub(crate) mod cache;
 pub(crate) mod actions;
 pub(crate) mod feed;
 pub(crate) mod live;
+pub(crate) mod reset_time;
 pub(crate) mod routes;
 
 pub(crate) const VIEW_BUDGET_BYTES: usize = {

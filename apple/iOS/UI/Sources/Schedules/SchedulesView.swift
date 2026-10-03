@@ -53,12 +53,13 @@ public struct SchedulesView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(list.entries.enumerated()), id: \.element.id) { index, entry in
                         ScheduleRow(
-                            entry: entry, first: index == 0, busy: store.actions.inFlight,
+                            entry: entry, first: index == 0,
                             open: { store.send(.open($0)) }, perform: { store.send(.perform($0)) }
                         )
                     }
                 }
                 .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 24, style: .continuous))
+                .animation(.smooth, value: list.entries.map(\.id))
                 .padding(.horizontal, 16)
                 .padding(.top, 20)
             }
@@ -71,7 +72,6 @@ public struct SchedulesView: View {
 private struct ScheduleRow: View {
     let entry: ScheduleList.Entry
     let first: Bool
-    let busy: Bool
     let open: (AlondraContract.Link) -> Void
     let perform: (WireAction) -> Void
 
@@ -91,6 +91,12 @@ private struct ScheduleRow: View {
                             if let frequency = entry.frequency {
                                 Text(verbatim: frequency)
                                     .foregroundStyle(.secondary)
+                            }
+                            if entry.pausedHere == true {
+                                StateChip(label: String(localized: "Paused"), tint: TaskStyle.tint(tone: .warning))
+                            }
+                            if entry.startedHere {
+                                StateChip(label: String(localized: "Running"), tint: TaskStyle.tint(tone: .success))
                             }
                             ForEach(entry.badges, id: \.text) { badge in
                                 StateChip(label: badge.text, tint: TaskStyle.tint(tone: badge.tone))
@@ -113,8 +119,8 @@ private struct ScheduleRow: View {
             .buttonStyle(PressStyle())
             Menu {
                 if let run = entry.run { Button(run.label, systemImage: "play.fill") { perform(run) } }
-                if let toggle = entry.toggle {
-                    Button(toggle.label, systemImage: entry.isPaused ? "play.circle" : "pause.circle") { perform(toggle) }
+                if let toggle = entry.toggle, let label = entry.toggleLabel {
+                    Button(label, systemImage: entry.isPaused ? "play.circle" : "pause.circle") { perform(toggle) }
                 }
                 if let delete = entry.delete {
                     Button(delete.label, systemImage: "trash", role: .destructive) { perform(delete) }
@@ -127,7 +133,6 @@ private struct ScheduleRow: View {
                     .frame(minWidth: 36, minHeight: 36)
                     .contentShape(.rect)
             }
-            .disabled(busy)
         }
         .padding(.leading, 16)
         .padding(.trailing, 8)

@@ -15,6 +15,7 @@ public struct NodeDetailFeature: Sendable {
         public var composer: ActionFeature.State
         public var actions: ActionFeature.State
         public var draft = ""
+        public var optimistic = Optimistic()
 
         public init(key: ViewKey) {
             screen = ScreenFeature.State(key: key)
@@ -22,11 +23,11 @@ public struct NodeDetailFeature: Sendable {
             actions = .ios()
         }
 
-        public var detail: NodeDetail? { screen.document.map(NodeDetail.init(document:)) }
+        public var detail: NodeDetail? { screen.document.map { NodeDetail(document: $0).hiding(optimistic) } }
         public var isOrchestrator: Bool { screen.key.rawValue == "node:orchestrator" }
 
         public var canSend: Bool {
-            composer.action != nil && !composer.inFlight
+            composer.action != nil
                 && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachmentPicker.entries.isEmpty)
         }
     }
@@ -59,6 +60,7 @@ public struct NodeDetailFeature: Sendable {
             case .task:
                 return .send(.screen(.task))
             case .screen(.loaded(let document)):
+                state.optimistic.reconcile(document.version)
                 state.composer.dataEpoch = document.dataEpoch
                 state.actions.dataEpoch = document.dataEpoch
                 guard let message = NodeDetail(document: document).message else { return .none }
@@ -77,18 +79,28 @@ public struct NodeDetailFeature: Sendable {
             case .send:
                 guard state.canSend else { return .none }
                 return .concatenate(.send(.composer(.textChanged(state.draft))), .send(.composer(.submit)))
-            case .composer(.response(let response)) where response.outcome == .applied:
+            case .composer(.sent):
                 state.draft = ""
                 guard let message = state.composer.action else { return .none }
                 return .send(.composer(.present(message)))
+            case .composer(.settled(let request, applied: false)):
+                if state.draft.isEmpty { state.draft = request.input.text ?? "" }
+                return .none
             case .composer(.delegate(let delegate)), .actions(.delegate(let delegate)):
                 return .send(.delegate(ScreenDelegate(delegate)))
             case .composer:
                 return .none
             case .perform(let wire):
+                state.actions.handsOff = wire.command == "close"
                 return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
-            case .actions(.response(let response)) where response.outcome == .applied && state.actions.action?.id?.hasPrefix("close:") == true:
-                return .run { _ in await dismiss() }
+            case .actions(.sent(let request)) where state.actions.handsOff:
+                return .merge(.send(.delegate(.handOff(request))), .run { _ in await dismiss() })
+            case .actions(.sent(let request)):
+                state.optimistic.begin(request.actionId, request)
+                return .none
+            case .actions(.settled(let request, let applied)):
+                state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
+                return .none
             case .actions:
                 return .none
             case .follow(let link):

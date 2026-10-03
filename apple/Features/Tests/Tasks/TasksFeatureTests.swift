@@ -49,7 +49,7 @@ final class TasksFeatureTests: XCTestCase {
         }
         await store.finish()
 
-        XCTAssertEqual(store.state.board?.active.requests.map(\.id), ["r-1", "r-2"])
+        XCTAssertEqual(store.state.board?.active.requests.map(\.id), ["r-5", "r-1", "r-2"])
     }
 
     @MainActor
@@ -87,7 +87,7 @@ final class TasksFeatureTests: XCTestCase {
         XCTAssertEqual(asked.value, [ViewKey(rawValue: "tasks?section=finished&after=20")])
         XCTAssertEqual(store.state.board?.finished.requests.map(\.id), ["r-3", "r-4", "r-9"])
         XCTAssertEqual(store.state.board?.finished.more?.remaining, 2)
-        XCTAssertEqual(store.state.board?.active.requests.count, 2)
+        XCTAssertEqual(store.state.board?.active.requests.count, 3)
         XCTAssertTrue(store.state.loadingMore.isEmpty)
     }
 
@@ -172,6 +172,33 @@ final class TasksFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testArchivingMovesTheFinishedWorkAtOnceAndBackIfTheDaemonRefuses() async throws {
+        let gate = Gate()
+        let document = try Samples.document("tasks-populated")
+        let store = await loaded(document, respond: { _ in try Responses.rejected("Nothing to archive") })
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Responses.rejected("Nothing to archive")
+        }
+        let before = try XCTUnwrap(store.state.board)
+        XCTAssertGreaterThan(before.finished.count, 0)
+
+        await store.send(.archiveCompleted)
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.board?.finished.count, 0, "the finished work moves before the daemon answers")
+        XCTAssertEqual(store.state.board?.archived.count, before.archived.count + before.finished.count)
+        XCTAssertNil(store.state.board?.archiveCompleted)
+
+        await store.send(.screen(.loaded(document)))
+        XCTAssertEqual(store.state.board?.finished.count, 0, "a stale board cannot bring it back")
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.board, before)
+        await store.receive(\.delegate.failed, "Nothing to archive")
+    }
+
+    @MainActor
     func testWithNothingToArchiveTheButtonDoesNothing() async throws {
         let sent = SentActions()
         let store = await loaded(try Fixtures.document("tasks-ios"), sent: sent)
@@ -187,7 +214,7 @@ final class TasksFeatureTests: XCTestCase {
         let document = try Samples.document("tasks-populated") { object in
             var sections = object["sections"] as? [[String: Any]] ?? []
             var items = sections[1]["items"] as? [[String: Any]] ?? []
-            items[1]["actions"] = [[
+            items[2]["actions"] = [[
                 "id": "withdraw:r-2@4", "label": "Withdraw Request", "style": "destructive", "presentation": "button",
                 "input": ["kind": "none"], "attachments": false, "enabled": true,
                 "confirm": ["title": "Withdraw Request", "message": "Withdraw this request?", "button": "Withdraw Request"],

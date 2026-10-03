@@ -31,9 +31,18 @@ final class NodeDetailFeatureTests: XCTestCase {
         reply: String = #"{"protocol":1,"outcome":"applied","message":"Sent"}"#,
         fail: Bool = false,
         dismissed: LockIsolated<Bool> = LockIsolated(false),
+        handedOff: LockIsolated<[ActionRequest]> = LockIsolated([]),
         key: ViewKey? = nil
     ) -> TestStoreOf<NodeDetailFeature> {
-        let store = TestStore(initialState: NodeDetailFeature.State(key: key ?? self.key)) { NodeDetailFeature() } withDependencies: {
+        let store = TestStore(initialState: NodeDetailFeature.State(key: key ?? self.key)) {
+            CombineReducers {
+                NodeDetailFeature()
+                Reduce { _, action in
+                    if case .delegate(.handOff(let request)) = action { handedOff.withValue { $0.append(request) } }
+                    return .none
+                }
+            }
+        } withDependencies: {
             $0.uuid = .incrementing
             $0.dismiss = DismissEffect { dismissed.setValue(true) }
             $0.viewsClient.perform = { request in
@@ -158,6 +167,30 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertTrue(store.state.canSend)
     }
 
+    func testAMessageLeavesTheComposerAtOnceAndComesBackIfItCannotBeSent() async throws {
+        let gate = Gate()
+        let store = store()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            throw ViewsClientError.missingView
+        }
+        await store.send(.screen(.loaded(try document())))
+        await store.receive(\.composer.present)
+
+        await store.send(.draftChanged("Ship it"))
+        await store.send(.send)
+        await store.receive(\.composer.sent)
+        XCTAssertEqual(store.state.draft, "", "the composer clears before the daemon answers")
+        await store.receive(\.composer.present)
+        await store.send(.draftChanged("And then"))
+        XCTAssertTrue(store.state.canSend, "the next message does not wait for the first")
+        await store.send(.draftChanged(""))
+
+        await gate.open()
+        await store.receive(\.composer.settled)
+        XCTAssertEqual(store.state.draft, "Ship it")
+    }
+
     func testABlankMessageCannotBeSent() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)
@@ -170,10 +203,11 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertTrue(requests.value.isEmpty)
     }
 
-    func testClosingTheNodeAsksFirstAndThenLeavesTheScreen() async throws {
+    func testClosingTheNodeAsksFirstAndThenLeavesAtOnceHandingTheCloseToTheApp() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
+        let handedOff = LockIsolated<[ActionRequest]>([])
         let dismissed = LockIsolated(false)
-        let store = store(requests: requests, reply: #"{"protocol":1,"outcome":"applied","message":"Closed"}"#, dismissed: dismissed)
+        let store = store(requests: requests, dismissed: dismissed, handedOff: handedOff)
         await store.send(.screen(.loaded(try document())))
         await store.receive(\.composer.present)
         let close = try XCTUnwrap(store.state.detail?.close)
@@ -181,27 +215,15 @@ final class NodeDetailFeatureTests: XCTestCase {
         await store.send(.perform(close))
         await store.skipReceivedActions()
         XCTAssertEqual(store.state.actions.confirmation?.title, "Close Node")
-        XCTAssertTrue(requests.value.isEmpty)
+        XCTAssertTrue(handedOff.value.isEmpty)
         XCTAssertFalse(dismissed.value)
 
         await store.send(.actions(.confirm))
-        await store.receive(\.delegate.completed, "Closed")
+        await store.skipReceivedActions()
 
-        XCTAssertEqual(requests.value.map(\.actionId), [close.id])
+        XCTAssertEqual(handedOff.value.map(\.actionId), [close.id])
+        XCTAssertTrue(requests.value.isEmpty, "the app delivers the close; the screen never waits for it")
         XCTAssertTrue(dismissed.value)
-    }
-
-    func testARefusedCloseKeepsTheScreen() async throws {
-        let dismissed = LockIsolated(false)
-        let store = store(reply: #"{"protocol":1,"outcome":"rejected","message":"It has unpushed work"}"#, dismissed: dismissed)
-        await store.send(.screen(.loaded(try document())))
-        await store.receive(\.composer.present)
-
-        await store.send(.perform(try XCTUnwrap(store.state.detail?.close)))
-        await store.send(.actions(.confirm))
-        await store.receive(\.delegate.failed, "It has unpushed work")
-
-        XCTAssertFalse(dismissed.value)
     }
 
     func testTheOrchestratorOffersRetryContinueAndStopEachWithAConfirmation() async throws {
@@ -230,6 +252,61 @@ final class NodeDetailFeatureTests: XCTestCase {
         await store.send(.actions(.confirm))
         await store.skipReceivedActions()
         XCTAssertEqual(requests.value.map(\.actionId), ["orch_stop:orchestrator@2~run1"])
+    }
+
+    private func orchestratorDocument(version: String = "v1") throws -> ViewDocument {
+        try Fixtures.document("node-ios", edit: { object in
+            object["key"] = "node:orchestrator"
+            object["version"] = version
+            var bar = items(of: "actions", in: object)
+            bar[0]["actions"] = ["orch_retry:orchestrator@2~run1", "orch_ack:orchestrator@2~run1", "orch_stop:orchestrator@2~run1"].map {
+                ["id": $0, "label": String($0.prefix(while: { $0 != ":" })), "style": "secondary", "presentation": "button",
+                 "input": ["kind": "none"], "attachments": false, "enabled": true] as [String: Any]
+            }
+            replaceItems(of: "actions", in: &object, with: bar)
+        })
+    }
+
+    func testAnOrchestratorDecisionLeavesAtOnceShowsWhatHappensNextAndComesBackIfItFails() async throws {
+        let gate = Gate()
+        let store = store(key: .node("orchestrator"))
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Fixtures.response(#"{"protocol":1,"outcome":"rejected","message":"The run already moved on"}"#)
+        }
+        let document = try orchestratorDocument()
+        await store.send(.screen(.loaded(document)))
+        let before = try XCTUnwrap(store.state.detail)
+        let retry = try XCTUnwrap(before.orchestratorActions.first)
+
+        await store.send(.perform(retry))
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.detail?.orchestratorActions, [], "the decision leaves before the daemon answers")
+        XCTAssertEqual(store.state.detail?.state, "Retrying")
+
+        await store.send(.screen(.loaded(document)))
+        XCTAssertEqual(store.state.detail?.orchestratorActions, [], "a stale view cannot offer it again")
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.detail, before)
+        await store.receive(\.delegate.failed, "The run already moved on")
+    }
+
+    func testStoppingTheOrchestratorSaysItIsStoppingUntilANewerViewArrives() async throws {
+        let store = store(key: .node("orchestrator"))
+        await store.send(.screen(.loaded(try orchestratorDocument())))
+        let stop = try XCTUnwrap(store.state.detail?.orchestratorActions.last)
+
+        await store.send(.perform(stop))
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.detail?.state, "Stopping")
+        await store.receive(\.actions.settled)
+        await store.send(.screen(.loaded(try orchestratorDocument())))
+        XCTAssertEqual(store.state.detail?.state, "Stopping", "the view it was applied over is stale")
+
+        await store.send(.screen(.loaded(try orchestratorDocument(version: "v2"))))
+        XCTAssertEqual(store.state.detail?.orchestratorActions.count, 3, "a newer view rules")
     }
 
     func testTheTaskAndTheWaitingCardOpenTheirScreens() async {

@@ -121,7 +121,7 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
 }
 
 /// What the node runs now while it works, otherwise what it said last, with when.
-fn activity(node: &super::LiveNode) -> Option<super::Row> {
+pub(super) fn activity(node: &super::LiveNode) -> Option<super::Row> {
     let message = || node.last_message.as_deref().map(str::trim)
         .filter(|text| !text.is_empty() && !text.starts_with("mcp__"))
         .map(|text| (text.lines().next().unwrap_or_default().to_owned(), node.last_message_at.clone()));
@@ -500,6 +500,16 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
         message.key = (context.client == super::Client::Tui).then(|| "M".into());
         actions.push(message);
     }
+    actions.extend(orchestrator_decisions(context));
+    view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })]));
+    Ok(view)
+}
+
+/// What the user can do with the orchestrator's current run: retry or continue past a failed
+/// one, or stop one in progress.
+pub(super) fn orchestrator_decisions(context: &RenderContext<'_>) -> Vec<super::Action> {
+    let live = context.live.orchestrator.as_ref();
+    let mut actions = Vec::new();
     if let Some(run) = live.and_then(|o| o.active_run_id.as_deref()) {
         for (enabled, verb, label) in [
             (live.is_some_and(|o| o.can_retry), Verb::OrchRetry, t!(context.lang, "Retry", "Reintentar")),
@@ -532,6 +542,5 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
             }
         }
     }
-    view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })]));
-    Ok(view)
+    actions
 }

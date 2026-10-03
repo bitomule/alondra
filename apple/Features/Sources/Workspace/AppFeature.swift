@@ -4,7 +4,7 @@ import ComposableArchitecture
 import Foundation
 
 /// The iPhone's root: four tabs, each with its own stack of pushed screens, the settings sheet, the
-/// toast, and where a tapped notification lands. It subscribes to the feed for the app-level status
+/// toast, where a tapped notification lands, and the delivery of what a screen sent as it left. It subscribes to the feed for the app-level status
 /// and for the screens that still refresh through the root (`legacy`); the rebuilt screens observe
 /// their own key.
 @Reducer
@@ -49,6 +49,8 @@ public struct AppFeature: Sendable {
         case fleetPath(StackActionOf<DetailRoute>)
         case newRequestPath(StackActionOf<DetailRoute>)
         case viewsFeed(FeedEvent)
+        case handOffAnswered(ActionRequest, ActionResponse)
+        case handOffFailed(ActionRequest, String)
     }
 
     @Dependency(\.viewsClient) var viewsClient
@@ -61,94 +63,123 @@ public struct AppFeature: Sendable {
         Scope(state: \.fleet, action: \.fleet) { FleetFeature() }
         Scope(state: \.newRequest, action: \.newRequest) { NewRequestFeature() }
         Reduce { state, action in
-            if let toast = Self.toast(for: action) {
-                let notice = WorkspaceNotice(event: toast)
-                state.notice = notice
-                return .run { send in
-                    try await clock.sleep(for: .seconds(notice.failure ? 4 : 2.2))
-                    await send(.dismissNotice(notice.id))
-                }.cancellable(id: CancelID.notice, cancelInFlight: true)
-            }
-            switch action {
-            case .appeared:
-                return .run { [viewsClient] send in
-                    for await event in await viewsClient.feed() { await send(.viewsFeed(event)) }
-                }.cancellable(id: CancelID.feed, cancelInFlight: true)
-            case .disappeared:
-                return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed))
-            case .tabSelected(let tab):
-                state.tab = tab
-                return .none
-            case .settingsPresented(let value):
-                state.settingsPresented = value
-                return .none
-            case .dismissNotice(let id):
-                guard state.notice?.id == id else { return .none }
-                state.notice = nil
-                return .cancel(id: CancelID.notice)
-            case .dismissCloseRefusal:
-                state.closeRefusal = nil
-                return .none
-            case .notificationOpened(let cardID):
-                state.tab = .inbox
-                state.settingsPresented = false
-                state.inboxPath.removeAll()
-                let publicID = String(cardID.split(separator: ":").last ?? Substring(cardID))
-                return .send(.triage(.focus(publicID)))
-            case .triage(.delegate(.open(let key))):
-                return .send(.openFromTriage(key))
-            case .openFromTriage(let key):
-                state.inboxPath.removeAll()
-                Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
-                return .none
-            case .open(let tab, let key):
-                switch tab {
-                case .inbox: Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
-                case .tasks: Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
-                case .fleet: Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
-                case .newRequest: Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
-                }
-                return .none
-            case .fleet(.delegate(.closeRefused(let message))):
-                state.closeRefusal = message
-                return .none
-            case .fleet(.delegate(.screen(.open(let key)))):
-                Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
-                return .none
-            case .viewsFeed(.stale(let keys)):
-                return Self.refreshPaths(state, .stale(keys))
-            case .viewsFeed(.reset):
-                return Self.refreshPaths(state, .reset)
-            case .viewsFeed(.snapshot(let snapshot)):
-                if snapshot.reset { return .send(.viewsFeed(.reset)) }
-                if let status = snapshot.status { return .send(.triage(.feedStatus(status))) }
-                return .none
-            case .newRequest(.delegate(.open(let key))):
-                Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
-                return .none
-            case .tasks(.delegate(.open(let key))):
-                Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
-                return .none
-            case .inboxPath(.element(id: _, action: let route)):
-                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.inboxPath, owner: "ios.detail") }
-                return .none
-            case .tasksPath(.element(id: _, action: let route)):
-                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.tasksPath, owner: "ios.tasks") }
-                return .none
-            case .fleetPath(.element(id: _, action: let route)):
-                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.fleetPath, owner: "ios.fleet") }
-                return .none
-            case .newRequestPath(.element(id: _, action: let route)):
-                if case .open(let key)? = route.delegate { Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request") }
-                return .none
-            case .triage, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
-                return .none
-            }
+            guard let toast = Self.toast(for: action) else { return reduce(&state, action) }
+            let notice = WorkspaceNotice(event: toast)
+            state.notice = notice
+            return .merge(reduce(&state, action), .run { send in
+                try await clock.sleep(for: .seconds(notice.failure ? 4 : 2.2))
+                await send(.dismissNotice(notice.id))
+            }.cancellable(id: CancelID.notice, cancelInFlight: true))
         }
         .forEach(\.inboxPath, action: \.inboxPath)
         .forEach(\.tasksPath, action: \.tasksPath)
         .forEach(\.fleetPath, action: \.fleetPath)
         .forEach(\.newRequestPath, action: \.newRequestPath)
+    }
+
+    private func reduce(_ state: inout State, _ action: Action) -> Effect<Action> {
+        switch action {
+        case .appeared:
+            return .run { [viewsClient] send in
+                for await event in await viewsClient.feed() { await send(.viewsFeed(event)) }
+            }.cancellable(id: CancelID.feed, cancelInFlight: true)
+        case .disappeared:
+            return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed))
+        case .tabSelected(let tab):
+            state.tab = tab
+            return .none
+        case .settingsPresented(let value):
+            state.settingsPresented = value
+            return .none
+        case .dismissNotice(let id):
+            guard state.notice?.id == id else { return .none }
+            state.notice = nil
+            return .cancel(id: CancelID.notice)
+        case .dismissCloseRefusal:
+            state.closeRefusal = nil
+            return .none
+        case .notificationOpened(let cardID):
+            state.tab = .inbox
+            state.settingsPresented = false
+            state.inboxPath.removeAll()
+            let publicID = String(cardID.split(separator: ":").last ?? Substring(cardID))
+            return .send(.triage(.focus(publicID)))
+        case .triage(.delegate(.open(let key))):
+            return .send(.openFromTriage(key))
+        case .openFromTriage(let key):
+            state.inboxPath.removeAll()
+            Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
+            return .none
+        case .open(let tab, let key):
+            switch tab {
+            case .inbox: Self.push(key, onto: &state.inboxPath, owner: "ios.detail")
+            case .tasks: Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
+            case .fleet: Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
+            case .newRequest: Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
+            }
+            return .none
+        case .fleet(.delegate(.closeRefused(let message))):
+            state.closeRefusal = message
+            return .none
+        case .fleet(.delegate(.screen(.open(let key)))):
+            Self.push(key, onto: &state.fleetPath, owner: "ios.fleet")
+            return .none
+        case .viewsFeed(.stale(let keys)):
+            return Self.refreshPaths(state, .stale(keys))
+        case .viewsFeed(.reset):
+            return Self.refreshPaths(state, .reset)
+        case .viewsFeed(.snapshot(let snapshot)):
+            if snapshot.reset { return .send(.viewsFeed(.reset)) }
+            if let status = snapshot.status { return .send(.triage(.feedStatus(status))) }
+            return .none
+        case .newRequest(.delegate(.open(let key))):
+            Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
+            return .none
+        case .tasks(.delegate(.open(let key))):
+            Self.push(key, onto: &state.tasksPath, owner: "ios.tasks")
+            return .none
+        case .inboxPath(.element(id: let id, action: let route)):
+            if case .handOff(let request)? = route.delegate { return deliver(request, from: state.inboxPath[id: id]?.key) }
+            if case .open(let key)? = route.delegate { Self.push(key, onto: &state.inboxPath, owner: "ios.detail") }
+            return .none
+        case .tasksPath(.element(id: let id, action: let route)):
+            if case .handOff(let request)? = route.delegate { return deliver(request, from: state.tasksPath[id: id]?.key) }
+            if case .open(let key)? = route.delegate { Self.push(key, onto: &state.tasksPath, owner: "ios.tasks") }
+            return .none
+        case .fleetPath(.element(id: let id, action: let route)):
+            if case .handOff(let request)? = route.delegate { return deliver(request, from: state.fleetPath[id: id]?.key) }
+            if case .open(let key)? = route.delegate { Self.push(key, onto: &state.fleetPath, owner: "ios.fleet") }
+            return .none
+        case .newRequestPath(.element(id: let id, action: let route)):
+            if case .handOff(let request)? = route.delegate { return deliver(request, from: state.newRequestPath[id: id]?.key) }
+            if case .open(let key)? = route.delegate { Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request") }
+            return .none
+        case .handOffAnswered(let request, let reply):
+            let applied = reply.outcome == .applied
+            return .merge(.send(.triage(.handOffSettled(request, applied: applied))),
+                          .send(.fleet(.handOffSettled(request, applied: applied))))
+        case .handOffFailed(let request, _):
+            return .merge(.send(.triage(.handOffSettled(request, applied: false))),
+                          .send(.fleet(.handOffSettled(request, applied: false))))
+        case .triage, .tasks, .fleet, .newRequest, .inboxPath, .tasksPath, .fleetPath, .newRequestPath:
+            return .none
+        }
+    }
+
+    /// A screen that left as it sent its action: the queue and the fleet show the result at once,
+    /// and the daemon's answer settles it here, where it outlives the screen.
+    private func deliver(_ request: ActionRequest, from key: ViewKey?) -> Effect<Action> {
+        let cardID = key.flatMap { key in
+            ["card:", "pull_request:"].first { key.rawValue.hasPrefix($0) }.map { String(key.rawValue.dropFirst($0.count)) }
+        }
+        return .merge(
+            cardID.map { .send(.triage(.handedOff(request, cardID: $0))) } ?? .none,
+            .send(.fleet(.handedOff(request))),
+            .run { [viewsClient] send in
+                do { await send(.handOffAnswered(request, try await viewsClient.perform(request))) }
+                catch { await send(.handOffFailed(request, String(localized: "Couldn’t send. Try again."))) }
+            }
+        )
     }
 
     /// A key outside the route table opens nothing, and a screen already on top is not pushed twice.
@@ -181,6 +212,12 @@ public struct AppFeature: Sendable {
             return value.event
         case .triage(.delegate(.noLongerPending)):
             return .actionCompleted(String(localized: "That’s no longer pending"))
+        case .handOffAnswered(_, let reply):
+            return reply.outcome == .applied
+                ? .actionCompleted(reply.message ?? String(localized: "Action completed"))
+                : .failure(reply.message ?? String(localized: "Action failed"))
+        case .handOffFailed(_, let message):
+            return .failure(message)
         case .inboxPath(.element(id: _, action: let route)),
              .tasksPath(.element(id: _, action: let route)),
              .fleetPath(.element(id: _, action: let route)),
@@ -199,6 +236,7 @@ public extension ScreenDelegate {
         case .open: nil
         case .completed(let message): .actionCompleted(message)
         case .failed(let message): .failure(message)
+        case .handOff: nil
         }
     }
 }

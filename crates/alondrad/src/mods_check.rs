@@ -1,7 +1,8 @@
 //! At start, alondrad checks that the Claude Code it launches nodes with can run their node mod:
 //! version 2.1.287 or later, the node plugin passes `claude plugin validate --strict`, and its
 //! tests pass under `claude plugin test`, which also fails when hooks modules are turned off.
-//! A failure is logged and reported by `/daemon`; each launch still waits for its own mod.
+//! A failure is logged and reported by `/daemon`, and re-checked every ten minutes until it passes;
+//! each launch still waits for its own mod.
 use alondra_core::mods;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -57,8 +58,36 @@ async fn claude(args: &[&str], timeout: Duration) -> Option<(bool, String)> {
     Some((out.status.success(), format!("{}{}", String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr))))
 }
 
+const RECHECK_EVERY: Duration = Duration::from_secs(600);
+
+/// A failing check is retried because Claude Code's rollout switches can flip on after start.
+pub(crate) fn next_check(status: &Status) -> Option<Duration> {
+    (!status.ok).then_some(RECHECK_EVERY)
+}
+
+fn changed(previous: Option<&Status>, status: &Status) -> bool {
+    previous != Some(status)
+}
+
 pub(crate) async fn run(plugin: Option<PathBuf>) {
-    let outcomes = match &plugin {
+    loop {
+        let status = check(plugin.as_deref()).await;
+        if changed(self::status().as_ref(), &status) {
+            if status.ok {
+                log!("{}", status.detail);
+            } else {
+                log!("nodes cannot run their mod: {}", status.detail);
+            }
+        }
+        let wait = next_check(&status);
+        *STATUS.lock().expect("mods check lock poisoned") = Some(status);
+        let Some(wait) = wait else { return };
+        tokio::time::sleep(wait).await;
+    }
+}
+
+async fn check(plugin: Option<&Path>) -> Status {
+    let outcomes = match plugin {
         Some(dir) => {
             let dir = dir.display().to_string();
             Outcomes {
@@ -69,18 +98,29 @@ pub(crate) async fn run(plugin: Option<PathBuf>) {
         }
         None => Outcomes { version: None, validate: None, test: None },
     };
-    let status = judge(plugin.as_deref(), &outcomes);
-    if status.ok {
-        log!("{}", status.detail);
-    } else {
-        log!("nodes cannot run their mod: {}", status.detail);
-    }
-    *STATUS.lock().expect("mods check lock poisoned") = Some(status);
+    judge(plugin, &outcomes)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failing_check_is_retried_every_ten_minutes_until_it_passes() {
+        let failing = Status { ok: false, detail: "hooks modules are turned off".into() };
+        let passing = Status { ok: true, detail: "runs".into() };
+        assert_eq!(next_check(&failing), Some(Duration::from_secs(600)));
+        assert_eq!(next_check(&passing), None);
+    }
+
+    #[test]
+    fn only_a_different_status_is_logged() {
+        let failing = Status { ok: false, detail: "off".into() };
+        let passing = Status { ok: true, detail: "runs".into() };
+        assert!(changed(None, &failing), "the first reading is always logged");
+        assert!(!changed(Some(&failing), &failing.clone()));
+        assert!(changed(Some(&failing), &passing));
+    }
 
     fn ran(text: &str) -> Option<(bool, String)> {
         Some((true, text.into()))

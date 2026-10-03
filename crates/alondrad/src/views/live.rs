@@ -1,3 +1,4 @@
+use super::reset_time;
 use alondra_core::Millis;
 use alondra_core::domain_v2::{DomainState, PrState, PullRequest, TaskId, TaskState};
 use alondra_core::views::{
@@ -641,6 +642,7 @@ fn gauges(
 ) -> Vec<Gauge> {
     let mut out = Vec::new();
     if let Some(usage) = usage {
+        let week_reset = reset_time::reset_day_and_time(usage.week_resets_at, now, reset_time::local_offset_secs, lang);
         let aged = |detail: String| Some(match reading_age(usage.measured_at, now, lang) {
             Some(age) => format!("{detail} · {age}"),
             None => detail,
@@ -655,8 +657,8 @@ fn gauges(
             value: usage.week_percent / 100.0,
             text: format!("{}%", usage.week_percent.round()),
             detail: aged(match lang {
-                Lang::En => format!("Weekly limit resets {}", timestamp(usage.week_resets_at)),
-                Lang::Es => format!("El límite semanal se reinicia {}", timestamp(usage.week_resets_at)),
+                Lang::En => format!("Weekly limit resets {week_reset}"),
+                Lang::Es => format!("El límite semanal se reinicia {week_reset}"),
             }),
             level: if usage.week_percent >= 85.0 {
                 Level::Hot
@@ -698,6 +700,7 @@ fn gauges(
             });
         }
         if let Some(percent) = usage.five_hour_percent {
+            let five_hour_reset = |at| reset_time::five_hour_reset(at, now, reset_time::local_offset_secs, lang);
             out.push(Gauge {
                 id: "claude_five_hours".into(),
                 label: match lang {
@@ -708,8 +711,8 @@ fn gauges(
                 value: percent / 100.0,
                 text: format!("{}%", percent.round()),
                 detail: usage.five_hour_resets_at.and_then(|at| aged(match lang {
-                    Lang::En => format!("5-hour limit resets {}", timestamp(at)),
-                    Lang::Es => format!("El límite de 5 horas se reinicia {}", timestamp(at)),
+                    Lang::En => format!("5-hour limit resets {}", five_hour_reset(at)),
+                    Lang::Es => format!("El límite de 5 horas se reinicia {}", five_hour_reset(at)),
                 })),
                 level: if percent >= 85.0 { Level::Hot } else { Level::Calm },
             });
@@ -741,7 +744,9 @@ fn gauges(
         detail: None,
         level: if machine.unreliable {
             Level::Hot
-        } else if cpu >= 85.0 {
+        } else if cpu >= 90.0 {
+            Level::Hot
+        } else if cpu >= 75.0 {
             Level::Warm
         } else {
             Level::Calm
@@ -886,8 +891,15 @@ mod tests {
         assert_eq!(english.iter().map(|gauge| gauge.id.as_str()).collect::<Vec<_>>(), ["memory", "cpu", "disk"]);
         let cpu = &english[1];
         assert_eq!((cpu.label.as_str(), cpu.text.as_str(), cpu.level), ("CPU", "34%", Level::Calm));
+        let cpu_level = |machine: &alondra_core::Machine| gauges(machine, None, Lang::En, 0)[1].level;
+        machine.cpu_usage = 74.0;
+        assert_eq!(cpu_level(&machine), Level::Calm);
+        machine.cpu_usage = 75.0;
+        assert_eq!(cpu_level(&machine), Level::Warm);
+        machine.cpu_usage = 89.0;
+        assert_eq!(cpu_level(&machine), Level::Warm);
         machine.cpu_usage = 90.0;
-        assert_eq!(gauges(&machine, None, Lang::En, 0)[1].level, Level::Warm);
+        assert_eq!(cpu_level(&machine), Level::Hot);
         machine.cpu_usage = 10.0;
         machine.unreliable = true;
         assert_eq!(gauges(&machine, None, Lang::En, 0)[1].level, Level::Hot);
@@ -916,7 +928,8 @@ mod tests {
         assert!(result[1].label.contains('!'));
         assert!(result[1].detail.as_deref().unwrap().contains("faster"));
         assert_eq!((result[2].id.as_str(), result[2].text.as_str()), ("claude_five_hours", "10%"));
-        assert!(result[2].detail.as_deref().unwrap().starts_with("5-hour limit resets 2026-10-02"));
+        assert!(result[2].detail.as_deref().unwrap().starts_with("5-hour limit resets "));
+        assert!(!result[0].detail.as_deref().unwrap().contains("2026-"), "reset dates are human, not ISO");
     }
 
     #[test]

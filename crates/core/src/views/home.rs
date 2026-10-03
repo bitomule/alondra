@@ -1,7 +1,7 @@
 use super::{
     BuildError, Client, Item, Link, Notice, RenderContext, Row, Section, TimeFormat, Tone,
     Trailing, VIEWS_PROTOCOL, View,
-    card::{card_key, from_item, plain_id, public_id},
+    card::{card_key, from_item, orchestrator_decision, plain_id, public_id},
     text::t,
 };
 use crate::domain_v2::{DomainProjection, DomainState, InboxItem, InboxSubject, Scope};
@@ -26,13 +26,13 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
     }
     let status = super::status::build(&projection, context);
+    let decision = orchestrator_decision(context, false);
     let (sections, empty) = match context.client {
         Client::Ios => {
-            let count = roots.len() as u32;
-            let card_ids = roots
-                .iter()
-                .map(|item| public_id(item).to_owned())
+            let card_ids: Vec<String> = decision.iter().map(|card| card.id.clone())
+                .chain(roots.iter().map(|item| public_id(item).to_owned()))
                 .collect();
+            let count = card_ids.len() as u32;
             (
                 vec![Section {
                     id: "queue".into(),
@@ -95,21 +95,32 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                 };
                 sections[index].items.push(Item::Row(row(item, context, 0)?));
             }
+            if let Some(card) = &decision {
+                sections[0].items.insert(0, Item::Row(Row {
+                    id: card.id.clone(), link: card.link.clone(), icon: card.icon, title: card.title.clone(),
+                    subtitle: card.subtitle.clone(), badges: vec![], trailing: None, depth: 0, struck: false,
+                    children: vec![], actions: vec![],
+                }));
+            }
             let mut sections = sections.to_vec();
-            if let Some(first) = roots.first() {
+            let detail = match roots.first() {
+                Some(first) if focus.is_some() || decision.is_none() => Some(from_item(first, context, true)?),
+                _ => orchestrator_decision(context, true),
+            };
+            if let Some(detail) = detail {
                 sections.push(Section {
                     id: "detail".into(),
                     title: None,
                     count: None,
                     collapsed: false,
-                    items: vec![Item::Card(from_item(first, context, true)?)],
+                    items: vec![Item::Card(detail)],
                     card_ids: vec![],
                     more: None,
                 });
             }
             (
                 sections,
-                roots.is_empty().then(|| Notice {
+                (roots.is_empty() && decision.is_none()).then(|| Notice {
                     text: t!(
                         context.lang,
                         "Nothing is waiting for you",

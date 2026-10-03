@@ -79,6 +79,7 @@ public extension DetailRoute.Action {
         switch self {
         case .legacy(.action(.delegate(let outcome))): ScreenDelegate(outcome)
         case .review(.delegate(.open(let key))): .open(key)
+        case .review(.delegate(.handOff(let request))): .handOff(request)
         case .review(.actions(.delegate(let outcome))): ScreenDelegate(outcome)
         case .taskDetail(.delegate(let delegate)),
              .schedules(.delegate(let delegate)),

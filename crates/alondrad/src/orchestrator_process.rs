@@ -171,9 +171,7 @@ impl Stream {
                 }
                 if self.restricted && tools.expect("checked above").iter().any(|tool| {
                     let name = tool.as_str().unwrap_or_default();
-                    name != "Skill" && name != "Read"
-                        && !name.starts_with("mcp__alondra-orchestrator__")
-                        && !name.starts_with("mcp__plugin_alondra-orchestrator_alondra-orchestrator__")
+                    !RESTRICTED_TOOLS.split(',').any(|allowed| allowed == name) && !alondra_tool(name)
                 }) {
                     bail!("orchestrator has an unexpected built-in or MCP tool");
                 }
@@ -203,7 +201,10 @@ impl Stream {
                     && v["num_turns"] == 0 && v["duration_api_ms"] == 0
                     && v["errors"].as_array().is_some_and(|errors| errors.iter().any(|error| error.as_str() == Some(format!("No conversation found with session ID: {session}").as_str())));
                 self.success = v["subtype"] == "success" && v["is_error"] == false;
-                if v["permission_denials"].as_array().is_some_and(|d| !d.is_empty()) {
+                // A refused optional tool is one Claude worked around; only Alondra's own
+                // tools are required for a batch to be handled.
+                if v["permission_denials"].as_array().is_some_and(|denials| denials.iter()
+                    .any(|denial| denial["tool_name"].as_str().is_some_and(alondra_tool))) {
                     self.success = false;
                     self.error = Some("Claude denied a required tool permission in auto mode".into());
                 }
@@ -216,6 +217,22 @@ impl Stream {
         }
         Ok(false)
     }
+}
+
+const RESTRICTED_TOOLS: &str = "Skill,Read,Glob,Grep";
+
+fn alondra_tool(name: &str) -> bool {
+    name.starts_with("mcp__alondra-orchestrator__") || name.starts_with("mcp__plugin_alondra-orchestrator_alondra-orchestrator__")
+}
+
+/// The projects root is readable and never writable: nodes do the work in it.
+fn read_only(root: &Path) -> Value {
+    let pattern = format!("/{}/**", root.display());
+    serde_json::json!({
+        "additionalDirectories": [root],
+        "allow": [format!("Read({pattern})")],
+        "deny": [format!("Edit({pattern})")],
+    })
 }
 
 fn bounded(mut text: String) -> String {
@@ -243,6 +260,7 @@ pub struct Invocation<'a> {
     pub home: &'a Path,
     pub plugins: Vec<&'a Path>,
     pub domain_v2: bool,
+    pub projects_root: Option<&'a Path>,
     /// The bearer bound to this execution; only a v2 invocation carries one.
     pub capability: Option<&'a str>,
     pub session: &'a str,
@@ -261,13 +279,13 @@ impl Invocation<'_> {
             let mcp_config = serde_json::json!({"mcpServers":{"alondra-orchestrator":{
                 "command":self.plugins[0].join("bin/alondra"), "args":["mcp-orchestrator"]
             }}}).to_string();
-            cmd.args(["--restricted", "--tools", "Skill,Read", "--strict-mcp-config"])
+            cmd.args(["--restricted", "--tools", RESTRICTED_TOOLS, "--strict-mcp-config"])
                 .args(["--mcp-config", &mcp_config]);
         } else {
             cmd.args(["--setting-sources", "user"]);
         }
         cmd.args(["--disallowedTools", "AskUserQuestion", "ExitPlanMode"])
-            .args(crate::plugins::launch_flags(&self.plugins))
+            .args(crate::plugins::launch_flags_with(&self.plugins, self.projects_root.filter(|_| self.domain_v2).map(read_only)))
             .args([if self.resume { "--resume" } else { "--session-id" }, self.session])
             .env("ALONDRA_HOME", self.home)
             .env("ALONDRA_ORCHESTRATOR", "1")
@@ -409,6 +427,68 @@ mod tests {
         assert_eq!(s.window, Some(1000000));
         assert!(s.success);
     }
+    /// The result Claude 2.1.287 emits after `--restricted` refuses a Read outside the working directories.
+    const REFUSED_READ_RESULT: &[u8] = br#"{"type":"result","session_id":"a","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":4,"result":"Done.","permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01Hi3ayKKFGKNW3JAR2tb9Z2","tool_input":{"file_path":"/Users/example/.zshrc","limit":1}}]}"#;
+
+    #[test]
+    fn a_refused_optional_tool_in_a_successful_run_is_success() {
+        let mut s = Stream::default();
+        s.accept(REFUSED_READ_RESULT, "a").unwrap();
+        assert!(s.success, "{s:?}");
+        assert_eq!(s.error, None);
+    }
+
+    #[test]
+    fn a_refused_alondra_tool_fails_the_run() {
+        for tool in ["mcp__alondra-orchestrator__create_task", "mcp__plugin_alondra-orchestrator_alondra-orchestrator__launch"] {
+            let mut s = Stream::default();
+            let line = std::str::from_utf8(REFUSED_READ_RESULT).unwrap().replace(r#""tool_name":"Read""#, &format!(r#""tool_name":"{tool}""#));
+            s.accept(line.as_bytes(), "a").unwrap();
+            assert!(!s.success);
+            assert_eq!(s.error.as_deref(), Some("Claude denied a required tool permission in auto mode"));
+        }
+    }
+
+    #[test]
+    fn the_projects_root_is_readable_and_never_writable() {
+        let dir = std::env::temp_dir().join(uuid().unwrap());
+        let lock = Ownership::acquire(&dir).unwrap().unwrap();
+        let root = Path::new("/Users/someone/Projects");
+        let mut i = invocation(&dir, Path::new("claude"), &lock);
+        i.projects_root = Some(root);
+        let args: Vec<_> = i.command().as_std().get_args().map(|s| s.to_string_lossy().into_owned()).collect();
+        assert!(args.windows(2).any(|a| a == ["--tools", "Skill,Read,Glob,Grep"]), "{args:?}");
+        assert!(args.iter().any(|a| a == "--restricted"));
+        let parsed = |args: &[String]| -> Vec<Value> {
+            args.windows(2).filter(|a| a[0] == "--settings").map(|a| serde_json::from_str(&a[1]).unwrap()).collect()
+        };
+        let [settings] = parsed(&args).try_into().expect("one --settings");
+        assert_eq!(settings["permissions"], serde_json::json!({
+            "additionalDirectories": ["/Users/someone/Projects"],
+            "allow": ["Read(//Users/someone/Projects/**)"],
+            "deny": ["Edit(//Users/someone/Projects/**)"],
+        }));
+        assert_eq!(settings["env"], serde_json::from_str::<Value>(&alondra_core::launch_settings()).unwrap()["env"]);
+        i.projects_root = None;
+        let args: Vec<_> = i.command().as_std().get_args().map(|s| s.to_string_lossy().into_owned()).collect();
+        let [settings] = parsed(&args).try_into().expect("one --settings");
+        assert!(settings.get("permissions").is_none());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn init_accepts_the_read_only_search_tools_and_nothing_that_writes() {
+        let init = |tool: &str| format!(r#"{{"type":"system","subtype":"init","session_id":"a","permissionMode":"auto","mcp_servers":[{{"name":"alondra-orchestrator","status":"connected"}}],"tools":["Skill","Read","{tool}","mcp__alondra-orchestrator__create_task","mcp__alondra-orchestrator__ask"]}}"#);
+        for tool in ["Glob", "Grep"] {
+            let mut s = Stream { restricted: true, ..Stream::default() };
+            assert!(s.accept(init(tool).as_bytes(), "a").unwrap());
+        }
+        for tool in ["Edit", "Write", "Bash", "NotebookEdit"] {
+            let mut s = Stream { restricted: true, ..Stream::default() };
+            assert!(s.accept(init(tool).as_bytes(), "a").is_err(), "{tool}");
+        }
+    }
+
     #[test]
     fn invalid_and_foreign_results_are_not_success() {
         let mut s = Stream::default();
@@ -527,7 +607,7 @@ mod tests {
         path
     }
     fn invocation<'a>(dir: &'a Path, exe: &'a Path, lock: &'a Ownership) -> Invocation<'a> {
-        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain_v2: true, capability: None, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
+        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain_v2: true, projects_root: None, capability: None, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
     }
     #[tokio::test]
     async fn real_process_drains_stderr_and_checks_terminal_result() {

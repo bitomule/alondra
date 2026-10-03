@@ -12,9 +12,10 @@ public struct SchedulesFeature: Sendable {
     public struct State: Equatable {
         public var screen = ScreenFeature.State(key: .schedules)
         public var actions = ActionFeature.State.ios()
+        public var optimistic = Optimistic()
         public init() {}
 
-        public var list: ScheduleList? { screen.document.map(ScheduleList.init) }
+        public var list: ScheduleList? { screen.document.map { ScheduleList(document: $0).hiding(optimistic) } }
     }
 
     public enum Action {
@@ -50,6 +51,13 @@ public struct SchedulesFeature: Sendable {
                 }
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
+                state.optimistic.reconcile(document.version)
+                return .none
+            case .actions(.sent(let request)):
+                state.optimistic.begin(request.actionId, request)
+                return .none
+            case .actions(.settled(let request, let applied)):
+                state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
                 return .none
             case .open(let link):
                 return ScreenDelegate.opening(link).map { .send(.delegate($0)) } ?? .none

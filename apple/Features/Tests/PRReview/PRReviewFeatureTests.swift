@@ -63,7 +63,15 @@ final class PRReviewFeatureTests: XCTestCase {
         diffs: LockIsolated<[String?]> = LockIsolated([]),
         dismissed: LockIsolated<Bool> = LockIsolated(false)
     ) -> TestStoreOf<PRReviewFeature> {
-        let store = TestStore(initialState: PRReviewFeature.State(key: key)) { PRReviewFeature() } withDependencies: {
+        let store = TestStore(initialState: PRReviewFeature.State(key: key)) {
+            CombineReducers {
+                PRReviewFeature()
+                Reduce { _, action in
+                    if case .delegate(.handOff(let request)) = action { requests.withValue { $0.append(request) } }
+                    return .none
+                }
+            }
+        } withDependencies: {
             $0.uuid = .incrementing
             $0.dismiss = DismissEffect { dismissed.setValue(true) }
             $0.viewsClient.fetchContent = { ref in
@@ -263,28 +271,24 @@ final class PRReviewFeatureTests: XCTestCase {
         XCTAssertNil(store.state.actions.confirmation)
     }
 
-    func testAnAppliedActionClosesTheScreenAndReportsItsOutcome() async throws {
+    func testAnActionClosesTheScreenAtOnceAndHandsItsRequestToTheApp() async throws {
         let dismissed = LockIsolated(false)
-        let store = store(reply: #"{"protocol":1,"outcome":"applied","message":"Merged"}"#, dismissed: dismissed)
+        let performed = LockIsolated(false)
+        let store = store(dismissed: dismissed)
+        store.dependencies.viewsClient.perform = { _ in
+            performed.setValue(true)
+            return try Fixtures.response(#"{"protocol":1,"outcome":"rejected","message":"Checks are failing"}"#)
+        }
         await store.send(.screen(.loaded(try document(adding: [Self.conflictsAction]))))
         await store.receive(\.diffLoaded)
 
         await store.send(.perform(try XCTUnwrap(store.state.review?.resolveConflicts)))
-        await store.receive(\.delegate.completed, "Merged")
+        await store.receive(\.actions.sent)
+        await store.receive(\.delegate.handOff)
+        await store.finish()
 
         XCTAssertTrue(dismissed.value)
-    }
-
-    func testARejectedActionKeepsTheScreenOpenAndSaysWhy() async throws {
-        let dismissed = LockIsolated(false)
-        let store = store(reply: #"{"protocol":1,"outcome":"rejected","message":"Checks are failing"}"#, dismissed: dismissed)
-        await store.send(.screen(.loaded(try document(adding: [Self.conflictsAction]))))
-        await store.receive(\.diffLoaded)
-
-        await store.send(.perform(try XCTUnwrap(store.state.review?.resolveConflicts)))
-        await store.receive(\.delegate.failed, "Checks are failing")
-
-        XCTAssertFalse(dismissed.value)
+        XCTAssertFalse(performed.value, "the app delivers it and reports the outcome; the screen never waits")
     }
 
     func testFoldingOneFileOrAllOfThem() async throws {

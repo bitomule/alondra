@@ -4,7 +4,7 @@ import SwiftUI
 
 /// The pill shares the navigation bar with Settings. A toolbar item wider than its slot is folded,
 /// with Settings, into a "…" menu, so the pill gives up numbers before it outgrows the slot: first
-/// the RAM and CPU figures, then every figure, keeping each reading's bar.
+/// the machine figure, then every figure, keeping each reading's icon.
 struct MachineBadge: View {
     let gauges: [AlondraContract.Gauge]
     let width: CGFloat
@@ -14,28 +14,43 @@ struct MachineBadge: View {
     var body: some View {
         ViewThatFits(in: .horizontal) {
             pill { _ in true }
-            pill { !Self.machineLoad.contains($0.id) }
+            pill { !Self.machineLoad.contains($0) }
             pill { _ in false }
         }
         .modifier(ProposedWidth(width: max(width - Self.reservedBarWidth, 0)))
     }
 
-    private static let machineLoad: Set<String> = ["memory", "cpu"]
+    private static let machineLoad = MachineCapacity.sources.union([MachineCapacity.id])
 
-    private func pill(showsText: @escaping (AlondraContract.Gauge) -> Bool) -> some View {
+    private func pill(showsText: @escaping (String) -> Bool) -> some View {
         HStack(spacing: 6) {
             Circle().fill(Palette.sage).frame(width: 8, height: 8)
                 .shadow(color: Palette.sage.opacity(0.8), radius: 4)
-            Image(systemName: "desktopcomputer").font(.footnote)
-            ForEach(gauges.filter { $0.id != "disk" }, id: \.id) { gauge in
+            if let capacity = MachineCapacity(gauges: gauges) {
                 HStack(spacing: 3) {
-                    ReadingBar(value: gauge.value, tint: gauge.level.tint)
-                    if showsText(gauge) {
+                    ReadingIcon(symbols: ("desktopcomputer", "desktopcomputer"), value: capacity.value, tint: capacity.level.tint)
+                    if showsText(MachineCapacity.id) {
+                        Text(capacity.text).font(.caption2.monospacedDigit().weight(.medium))
+                            .foregroundStyle(capacity.level == .hot ? Palette.rose : Palette.ink.opacity(0.65))
+                            .contentTransition(.numericText())
+                    }
+                }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(capacity.accessibilityLabel)
+            } else {
+                Image(systemName: "desktopcomputer").font(.footnote)
+            }
+            ForEach(gauges.filter { !MachineCapacity.sources.contains($0.id) }, id: \.id) { gauge in
+                HStack(spacing: 3) {
+                    ReadingIcon(gauge: gauge)
+                    if showsText(gauge.id) {
                         Text(gauge.text).font(.caption2.monospacedDigit().weight(.medium))
                             .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink.opacity(0.65))
                             .contentTransition(.numericText())
                     }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(gauge.label) \(gauge.text)")
             }
         }
         .fixedSize()
@@ -43,14 +58,17 @@ struct MachineBadge: View {
     }
 }
 
-struct MachineDetail: View {
+public struct MachineDetail: View {
     let gauges: [AlondraContract.Gauge]
-    var body: some View {
+
+    public init(gauges: [AlondraContract.Gauge]) { self.gauges = gauges }
+
+    public var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Mac").font(.display(.title3, weight: .bold))
             ForEach(gauges, id: \.id) { gauge in
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    ReadingBar(value: gauge.value, tint: gauge.level.tint)
+                    ReadingIcon(gauge: gauge).frame(width: 22)
                     Text(gauge.detail ?? "\(gauge.label): \(gauge.text)")
                         .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
@@ -79,18 +97,82 @@ private struct WidthLayout: Layout {
     }
 }
 
-private struct ReadingBar: View {
+private struct MachineCapacity {
+    static let id = "machine"
+    static let sources: Set<String> = ["memory", "cpu", "disk"]
+
+    let value: Double
+    let level: Level
+    let text: String
+    let accessibilityLabel: String
+
+    init?(gauges: [AlondraContract.Gauge]) {
+        let load = gauges.filter { Self.sources.contains($0.id) }
+        guard let critical = load.max(by: { ($0.level.severity, $0.value) < ($1.level.severity, $1.value) }) else { return nil }
+        value = critical.value
+        level = critical.level
+        text = "\(Int((critical.value * 100).rounded()))%"
+        accessibilityLabel = load.map { "\($0.label) \($0.text)" }.joined(separator: ", ")
+    }
+}
+
+private struct ReadingIcon: View {
+    let symbols: (outline: String, filled: String)
     let value: Double
     let tint: Color
+
+    private static let minimumFill = 0.06
+
+    init(gauge: AlondraContract.Gauge) {
+        self.init(symbols: Self.symbols(for: gauge.id), value: gauge.value, tint: gauge.level.tint)
+    }
+
+    init(symbols: (outline: String, filled: String), value: Double, tint: Color) {
+        self.symbols = symbols
+        self.value = value
+        self.tint = tint
+    }
+
     var body: some View {
-        Capsule().fill(Palette.ink.opacity(0.15)).frame(width: 22, height: 4)
-            .overlay(alignment: .leading) {
-                Capsule().fill(tint).frame(width: 22 * max(0.06, min(value, 1)))
+        Image(systemName: symbols.outline)
+            .font(.footnote)
+            .foregroundStyle(Palette.ink.opacity(0.2))
+            .overlay {
+                Image(systemName: symbols.filled)
+                    .font(.footnote)
+                    .foregroundStyle(tint)
+                    .mask(alignment: .bottom) {
+                        GeometryReader { proxy in
+                            Rectangle()
+                                .frame(height: proxy.size.height * max(Self.minimumFill, min(value, 1)))
+                                .frame(maxHeight: .infinity, alignment: .bottom)
+                        }
+                    }
             }
+            .accessibilityHidden(true)
+    }
+
+    static func symbols(for id: String) -> (outline: String, filled: String) {
+        switch id {
+        case "memory": ("memorychip", "memorychip.fill")
+        case "cpu": ("cpu", "cpu.fill")
+        case "claude_five_hours": ("hourglass", "hourglass")
+        case "claude_today": ("sun.max", "sun.max.fill")
+        case "claude_week": ("calendar", "calendar")
+        default: ("gauge.with.dots.needle.67percent", "gauge.with.dots.needle.67percent")
+        }
     }
 }
 
 private extension Level {
+    var severity: Int {
+        switch self {
+        case .calm: 0
+        case .warm: 1
+        case .hot: 2
+        }
+    }
+
     var tint: Color {
         switch self {
         case .calm: Palette.sky

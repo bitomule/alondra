@@ -17,6 +17,11 @@ final class FeedStub: @unchecked Sendable {
 
     var requests: [ActionRequest] { lock.withLock { sent } }
 
+    /// What a screen handed to the app as it left, which the app sends on its behalf.
+    func deliver(_ request: ActionRequest) {
+        lock.withLock { sent.append(request) }
+    }
+
     func serve(_ document: ViewDocument) {
         lock.withLock { documents[document.key] = document }
     }
@@ -147,7 +152,9 @@ extension Fixtures {
         ])
     }
 
-    /// A tool-permission prompt: the command in a code block, Allow and Deny to pick from.
+    /// A tool-permission prompt Claude Code held, shaped as the daemon renders it: the warning
+    /// icon and Permission eyebrow, the node asking, the tool and what it is for, the command in
+    /// a code block, and Allow or Deny (with an optional reason).
     static func permissionCard() throws -> ViewDocument {
         try document("card-question") { object in
             object["key"] = "card:perm-1"
@@ -155,15 +162,33 @@ extension Fixtures {
             var items = try XCTUnwrap(sections[0]["items"] as? [[String: Any]])
             items[0]["id"] = "perm-1"
             items[0]["link"] = ["kind": "view", "key": "card:perm-1"]
-            items[0]["title"] = "Run a command?"
-            items[0]["body"] = ["text": "```\nnpm test -- --watch=false\n```", "truncated": false, "commentable": false]
-            func option(_ id: String, _ label: String, _ style: String) -> [String: Any] {
-                ["id": id, "label": label, "style": style, "input": ["kind": "none"]]
-            }
+            items[0]["icon"] = "warning"
+            items[0]["eyebrow"] = ["text": "Permission", "tone": "accent"]
+            items[0]["title"] = "Alondra · iOS needs permission"
+            items[0]["subtitle"] = "Bash: Extract shared waiting-items helper in core views"
+            items[0]["quotes"] = nil
+            let command = """
+            python3 - <<'EOF'
+            import re
+            p='crates/core/src/views/home.rs'; s=open(p).read()
+            s=s.replace("let mut roots", "let roots")
+            open(p,'w').write(s)
+            p='crates/core/src/views/sidebar.rs'; s=open(p).read()
+            s=s.replace("orchestrator_only", "waiting")
+            open(p,'w').write(s)
+            EOF
+            grep -n 'waiting(' crates/core/src/views/*.rs
+            """
+            items[0]["body"] = ["text": "```\n\(command)\n```", "truncated": false, "commentable": false]
             items[0]["actions"] = [[
                 "id": "ans:perm-1@1", "label": "Answer", "style": "primary", "presentation": "options",
-                "options": [option("allow", "Allow", "primary"), option("deny", "Deny", "secondary")],
-                "input": ["kind": "none"], "attachments": false, "enabled": true, "stamp": "Answered",
+                "options": [
+                    ["id": "allow", "label": "Allow", "style": "primary", "input": ["kind": "none"]],
+                    ["id": "deny", "label": "Deny", "style": "destructive",
+                     "input": ["kind": "text", "placeholder": "Write the reason", "required": false, "multiline": true]],
+                ],
+                "input": ["kind": "text", "placeholder": "Write your answer", "required": false, "multiline": true],
+                "attachments": true, "enabled": true, "stamp": "Answered",
             ]]
             sections[0]["items"] = items
             object["sections"] = sections

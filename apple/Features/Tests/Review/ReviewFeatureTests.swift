@@ -20,7 +20,15 @@ final class ReviewFeatureTests: XCTestCase {
         state.screen.document = document
         state.screen.phase = .loaded
         state.actions.dataEpoch = document.dataEpoch
-        let store = TestStore(initialState: state) { ReviewFeature() } withDependencies: {
+        let store = TestStore(initialState: state) {
+            CombineReducers {
+                ReviewFeature()
+                Reduce { _, action in
+                    if case .delegate(.handOff(let request)) = action { feed.deliver(request) }
+                    return .none
+                }
+            }
+        } withDependencies: {
             $0.viewsClient.observe = feed.observe
             $0.viewsClient.perform = feed.perform()
             if let content { $0.viewsClient.fetchContent = content }
@@ -148,7 +156,7 @@ final class ReviewFeatureTests: XCTestCase {
         XCTAssertEqual(request.actionId, changes.id)
         XCTAssertEqual(request.input.comments?.map(\.anchor), [first.draftKey, last.draftKey])
         XCTAssertEqual(request.input.text, "Overall: good")
-        XCTAssertEqual(dismissed.value, 1, "the review closes once the server applied it")
+        XCTAssertEqual(dismissed.value, 1, "the review closes as it sends")
         XCTAssertTrue(store.state.comments.isEmpty)
         XCTAssertEqual(store.state.general, "")
     }
@@ -185,13 +193,16 @@ final class ReviewFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAFailedSendKeepsTheCommentsAndTheReviewOpen() async throws {
+    func testSendingLeavesAtOnceAndHandsTheRequestToTheAppWithoutWaitingForTheDaemon() async throws {
         let dismissed = LockIsolated(0)
-        let feed = FeedStub()
+        let performed = LockIsolated(0)
         var state = ReviewFeature.State(key: deliveryKey)
         state.screen.document = try Fixtures.liveDelivery()
         let store = TestStore(initialState: state) { ReviewFeature() } withDependencies: {
-            $0.viewsClient.perform = feed.perform(#"{"protocol":1,"outcome":"rejected","message":"This card has changed"}"#)
+            $0.viewsClient.perform = { _ in
+                performed.withValue { $0 += 1 }
+                throw CancellationError()
+            }
             $0.dismiss = DismissEffect { dismissed.withValue { $0 += 1 } }
         }
         store.exhaustivity = .off
@@ -202,10 +213,12 @@ final class ReviewFeatureTests: XCTestCase {
         let changes = try XCTUnwrap(store.state.subject?.actions.first { $0.id?.hasPrefix("changes:") == true })
 
         await store.send(.actionTapped(changes))
-        await store.skipReceivedActions()
-        XCTAssertEqual(store.state.comments[block.draftKey]?.text, "keep me")
-        XCTAssertEqual(dismissed.value, 0)
-        XCTAssertEqual(store.state.actions.error, "This card has changed")
+        await store.receive(\.actions.sent)
+        await store.receive(\.delegate.handOff)
+        await store.finish()
+        XCTAssertEqual(dismissed.value, 1)
+        XCTAssertEqual(performed.value, 0, "the app delivers it; the review never waits for the daemon")
+        XCTAssertTrue(store.state.comments.isEmpty)
     }
 
     @MainActor

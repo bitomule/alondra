@@ -16,6 +16,12 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         return Err(BuildError::InvalidKey);
     }
     let projection = context.domain.projection();
+    if id == ORCHESTRATOR_DECISION {
+        let card = orchestrator_decision(context, true).ok_or(BuildError::NotFound)?;
+        let mut view = super::common::view("card", &format!("card:{id}"), Some(card.title.clone()), context, vec![]);
+        view.sections.push(super::common::section("card", None, vec![Item::Card(card)]));
+        return Ok(view);
+    }
     let fallback = context
         .domain
         .interactions
@@ -105,6 +111,52 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
         notices: vec![],
     })
 }
+pub(super) const ORCHESTRATOR_DECISION: &str = "orchestrator-decision";
+
+/// A failed orchestrator run stays claimed until the user retries it or continues without it;
+/// until then no new request is split.
+pub(super) fn orchestrator_decision(context: &RenderContext<'_>, included: bool) -> Option<Card> {
+    let live = context.live.orchestrator.as_ref().filter(|o| o.can_retry && o.active_run_id.is_some())?;
+    let explanation = t!(context.lang,
+        "Its last run failed partway, so some of its actions may already have happened. New requests wait until you choose: retry the run, or continue without repeating it.",
+        "Su última ejecución falló a medias, así que puede que algunas acciones ya se hayan hecho. Las solicitudes nuevas esperan hasta que elijas: reintentarla o continuar sin repetirla.");
+    let error = live.summary.as_deref().map(str::trim).filter(|error| !error.is_empty());
+    Some(Card {
+        id: ORCHESTRATOR_DECISION.into(),
+        link: Some(Link::View { key: format!("card:{ORCHESTRATOR_DECISION}") }),
+        icon: Icon::Warning,
+        eyebrow: Some(Label { text: t!(context.lang, "Orchestrator", "Orquestador").into(), tone: Tone::Accent }),
+        title: t!(context.lang, "The orchestrator needs your decision", "El orquestador necesita que decidas").into(),
+        subtitle: error.and_then(|error| error.lines().next()).map(|line| line.chars().take(140).collect()),
+        badges: vec![],
+        context: vec![ContextLine {
+            icon: Icon::Node,
+            text: t!(context.lang, "Orchestrator", "Orquestador").into(),
+            link: Some(Link::View { key: "node:orchestrator".into() }),
+            chip: None,
+            state: None,
+        }],
+        timestamps: vec![],
+        state: None,
+        detail: if included { Detail::Included } else { Detail::Reference },
+        body: included.then(|| Markdown {
+            text: match error {
+                Some(error) => format!("{explanation}\n\n{}: {error}", t!(context.lang, "What failed", "Qué falló")),
+                None => explanation.into(),
+            },
+            truncated: false,
+            more: None,
+            commentable: false,
+        }),
+        attachments: vec![],
+        quotes: vec![],
+        children: vec![],
+        facts: None,
+        checks: None,
+        actions: if included { super::fleet::orchestrator_decisions(context) } else { vec![] },
+    })
+}
+
 /// The document revision a card is about: a document review, or a question its node linked to one.
 fn reviewed_revision<'a>(item: &'a InboxItem, domain: &'a DomainState) -> Option<&'a crate::domain_v2::DocumentRevisionId> {
     match &item.subject {
@@ -148,23 +200,38 @@ fn hold_of(item: &InboxItem, domain: &DomainState) -> Option<Hold> {
     let InboxSubject::Interaction { interaction_id } = &item.subject else { return None };
     domain.holds.get(interaction_id).copied()
 }
+struct HeldText {
+    title: String,
+    subtitle: Option<String>,
+    body: Option<String>,
+}
 /// A held card's own title and text, as 8ccd131 showed them: the plan's first heading over the
-/// whole plan; otherwise the first line (the permission's summary, the question, the request)
-/// over the rest.
-fn held_text(item: &InboxItem, hold: Option<Hold>) -> Option<(String, Option<String>)> {
+/// whole plan; a permission names the node asking, with the tool and what it is for under the
+/// title and the command below; otherwise the first line (the question, the request) over the rest.
+fn held_text(item: &InboxItem, hold: Option<Hold>, context: &RenderContext<'_>) -> Option<HeldText> {
     let hold = hold?;
     let body = item.body.as_deref()?;
     let first = body.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty())?;
     let title: String = first.chars().take(120).collect();
     if hold == Hold::Plan {
-        return Some((title, Some(body.to_owned())));
+        return Some(HeldText { title, subtitle: None, body: Some(body.to_owned()) });
     }
-    let rest = body.trim_start().split_once('\n').map(|(_, rest)| rest.trim()).filter(|rest| !rest.is_empty());
-    Some((title, rest.map(str::to_owned)))
+    let rest = body.trim_start().split_once('\n').map(|(_, rest)| rest.trim().to_owned()).filter(|rest| !rest.is_empty());
+    if hold == Hold::Permission {
+        return Some(HeldText { title: permission_title(item, context), subtitle: Some(title), body: rest });
+    }
+    Some(HeldText { title, subtitle: None, body: rest })
+}
+fn permission_title(item: &InboxItem, context: &RenderContext<'_>) -> String {
+    match &item.agent_id {
+        Some(agent_id) => tf!(context.lang, "{node} needs permission", "{node} necesita permiso",
+            node = super::common::agent_label(agent_id, context)),
+        None => t!(context.lang, "A node needs permission", "Un nodo necesita permiso").into(),
+    }
 }
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let (label, icon) = eyebrow(item, context.lang);
-    let held = held_text(item, hold_of(item, context.domain));
+    let held = held_text(item, hold_of(item, context.domain), context);
     let mut context_lines = vec![];
     if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
@@ -227,7 +294,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         InboxSubject::PullRequest { pr_id } => context.live.pull_requests.iter().find(|detail| detail.id == pr_id.0),
         _ => None,
     };
-    let held_body = held.as_ref().map(|(_, body)| body.as_ref());
+    let held_body = held.as_ref().map(|held| held.body.as_ref());
     let body = included
         .then(|| {
             live_pr
@@ -326,11 +393,11 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                 Tone::Neutral
             },
         }),
+        subtitle: held.as_ref().and_then(|held| held.subtitle.clone()),
         title: held
-            .map(|(title, _)| title)
+            .map(|held| held.title)
             .or_else(|| live_pr.and_then(|detail| detail.title.clone()))
             .unwrap_or_else(|| item.title.clone()),
-        subtitle: None,
         badges,
         context: context_lines,
         timestamps,

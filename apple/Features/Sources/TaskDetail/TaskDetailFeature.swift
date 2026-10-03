@@ -3,7 +3,8 @@ import ComposableArchitecture
 import Foundation
 
 /// One task: its state, what it waits for from you, its request, pull requests, dependencies,
-/// documents, options and history, with cancel, reopen and archive.
+/// documents, options and history, with cancel, reopen and archive. A tapped action leaves the bar
+/// at once and returns if the daemon does not apply it.
 @Reducer
 public struct TaskDetailFeature: Sendable {
     public init() {}
@@ -12,6 +13,7 @@ public struct TaskDetailFeature: Sendable {
     public struct State: Equatable {
         public var screen: ScreenFeature.State
         public var actions = ActionFeature.State.ios()
+        public var optimistic = Optimistic()
         public init(key: ViewKey) { screen = ScreenFeature.State(key: key) }
 
         public var detail: TaskDetail? { screen.document.map(TaskDetail.init) }
@@ -35,6 +37,13 @@ public struct TaskDetailFeature: Sendable {
                 return .send(.screen(.task))
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
+                state.optimistic.reconcile(document.version)
+                return .none
+            case .actions(.sent(let request)):
+                state.optimistic.begin(request.actionId, request)
+                return .none
+            case .actions(.settled(let request, let applied)):
+                state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
                 return .none
             case .open(let link):
                 return ScreenDelegate.opening(link).map { .send(.delegate($0)) } ?? .none
