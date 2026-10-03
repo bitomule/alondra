@@ -140,7 +140,12 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
             view.sections.push(common::section(
                 "children",
                 None,
-                card.children.into_iter().map(Item::Card).collect(),
+                card.children.into_iter().map(|mut child| {
+                    if context.client == super::Client::Tui {
+                        child.actions.clear();
+                    }
+                    Item::Card(child)
+                }).collect(),
             ));
         }
         if let Some(body) = live

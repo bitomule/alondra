@@ -73,16 +73,6 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     }
 }
 
-pub fn ago(ms: i64) -> String {
-    let s = ((now_millis() - ms) / 1000).max(0);
-    match s {
-        0..=59 => tr!("now", "ahora").into(),
-        60..=3599 => format!("{}m", s / 60),
-        3600..=86399 => format!("{}h", s / 3600),
-        _ => format!("{}d", s / 86400),
-    }
-}
-
 fn panel(title: Line<'static>, focused: bool) -> Panel<'static> {
     Panel::bordered()
         .border_type(BorderType::Rounded)
@@ -204,22 +194,6 @@ fn centered_lines(f: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
     );
 }
 
-pub(super) fn since_phrase(ms: i64) -> String {
-    let t = ago(ms);
-    if now_millis() - ms < 60_000 {
-        tr!("since just now", "desde ahora mismo").into()
-    } else {
-        trf!("for {t}", "desde hace {t}")
-    }
-}
-
-pub(super) fn ago_phrase(ms: i64) -> String {
-    if now_millis() - ms < 60_000 {
-        return tr!("just now", "ahora mismo").into();
-    }
-    let t = ago(ms);
-    trf!("{t} ago", "hace {t}")
-}
 
 pub(super) fn state_color(s: NodeState) -> Color {
     match s {
@@ -443,12 +417,14 @@ const BAR_CELLS: usize = 4;
 
 fn draw_views_inbox(f: &mut Frame, app: &mut App, home: &alondra_core::views::View, area: Rect) {
     let w = area.width;
-    app.detail_view.shown = w >= 84;
-    if w >= 84 {
-        let lw = if w >= 170 {
-            50
-        } else {
-            (w * 2 / 5).clamp(36, 56)
+    let lists = app.screen != Screen::Inbox && !app.schedules_open;
+    app.detail_view.shown = w >= if lists { 100 } else { 84 };
+    if app.detail_view.shown {
+        let lw = match app.screen {
+            _ if !lists && w >= 170 => 50,
+            _ if !lists => (w * 2 / 5).clamp(36, 56),
+            Screen::Fleet => (w * 11 / 20).clamp(56, 90),
+            _ => (w * 3 / 5).clamp(56, 96),
         };
         let [list, detail] =
             Layout::horizontal([Constraint::Length(lw), Constraint::Min(30)]).areas(area);
@@ -552,10 +528,16 @@ fn draw_views_inbox_list(
         }
         if let Some(title) = &section.title {
             let count = section.count.unwrap_or_else(|| section.items.len() as u32);
+            let (text, color) = match section.id.as_str() {
+                "pull_requests" => (title.to_uppercase(), Color::Magenta),
+                "to_read" => (title.to_uppercase(), Color::Cyan),
+                id if id.starts_with("project:") => (title.clone(), Color::Reset),
+                _ => (title.to_uppercase(), ACCENT),
+            };
             lines.push(Line::from(vec![
                 Span::styled(
-                    format!(" {} ", title.to_uppercase()),
-                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+                    format!(" {text} "),
+                    Style::new().fg(color).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(count.to_string(), Style::new().fg(DIM)),
             ]));
@@ -665,63 +647,7 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
     let actions = visible_detail_actions(document);
     if !actions.is_empty() {
         lines.push(Line::default());
-        for action in &actions {
-            let hint = super::view_render::action_hint(action);
-            let label = if action.enabled {
-                action.label.clone()
-            } else {
-                format!(
-                    "{} · {}",
-                    action.label,
-                    action.disabled_reason.as_deref().unwrap_or("unavailable")
-                )
-            };
-            let mut title = Vec::new();
-            if action.enabled {
-                let rendered = super::view_render::action_line(action);
-                if let Some((hint, label)) = rendered
-                    .strip_prefix('[')
-                    .and_then(|rendered| rendered.split_once("] "))
-                {
-                    title.push(Span::styled(
-                        format!(" {hint} "),
-                        Style::new()
-                            .fg(Color::Black)
-                            .bg(ACCENT)
-                            .add_modifier(Modifier::BOLD),
-                    ));
-                    title.push(Span::raw(format!(" {label}")));
-                } else {
-                    title.push(Span::raw(format!(" {rendered}")));
-                }
-            } else if hint.is_empty() {
-                title.push(Span::raw(format!(" {label}")));
-            } else {
-                title.push(Span::styled(
-                    format!(" {hint} "),
-                    Style::new()
-                        .fg(Color::Black)
-                        .bg(ACCENT)
-                        .add_modifier(Modifier::BOLD),
-                ));
-                title.push(Span::raw(format!(" {label}")));
-            }
-            lines.push(Line::from(title));
-            for (index, option) in action.options.iter().enumerate() {
-                let hint = option
-                    .key
-                    .clone()
-                    .unwrap_or_else(|| (index + 1).to_string());
-                let label = merge_option_label(option);
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        format!("  {hint} "),
-                        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(label),
-                ]));
-            }
-        }
+        lines.extend(action_menu(&actions));
     }
     app.detail_view.total = lines.len();
     app.detail_view.h = inner.height as usize;
@@ -1374,6 +1300,63 @@ fn fleet_summary(app: &App) -> Vec<Line<'static>> {
     lines
 }
 
+/// What a document lets you do, one line each and all alike, as 8ccd131 drew a card's keys: the
+/// choices first, numbered, then every action with its key. Only what can be done is listed.
+pub(super) fn action_menu(actions: &[alondra_core::views::Action]) -> Vec<Line<'static>> {
+    let entry = |key: &str, label: String| {
+        Line::from(vec![
+            keycap(if key == "enter" { "⏎" } else { key }),
+            Span::raw(format!(" {label}")),
+        ])
+    };
+    let mut lines = Vec::new();
+    for action in actions {
+        for (index, option) in action.options.iter().enumerate() {
+            let key = option.key.clone().unwrap_or_else(|| (index + 1).to_string());
+            lines.push(entry(&key, merge_option_label(option)));
+        }
+    }
+    for action in actions {
+        let key = super::view_render::action_hint(action);
+        if key.is_empty() {
+            lines.push(Line::from(Span::styled(
+                format!("    {}", action.label),
+                Style::new().fg(DIM),
+            )));
+        } else {
+            lines.push(entry(key, action.label.clone()));
+        }
+    }
+    lines
+}
+
+/// How the key bar names an action's key: `⏎` for enter and `Shift+R` for a capital, as 8ccd131
+/// did, since a capital needs Shift.
+pub(super) fn footer_key(hint: &str) -> String {
+    match hint {
+        "enter" => "⏎".into(),
+        _ if hint.chars().count() == 1 && hint.chars().all(|c| c.is_ascii_uppercase()) => {
+            format!("Shift+{hint}")
+        }
+        _ => hint.into(),
+    }
+}
+
+/// The actions a list screen offers whatever is selected, such as archiving every finished task.
+pub(super) fn screen_actions(view: &alondra_core::views::View) -> Vec<alondra_core::views::Action> {
+    view.sections
+        .iter()
+        .flat_map(|section| &section.items)
+        .filter_map(|item| match item {
+            alondra_core::views::Item::Actions(bar) => Some(bar.actions.iter()),
+            _ => None,
+        })
+        .flatten()
+        .filter(|action| action.enabled && !super::view_render::action_hint(action).is_empty())
+        .cloned()
+        .collect()
+}
+
 pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(String, String)> {
     let mut keys = Vec::new();
     let has_diff = view.sections.iter().flat_map(|section| &section.items).any(|item|
@@ -1386,7 +1369,7 @@ pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(Stri
         let hint = super::view_render::action_hint(&action);
         if !hint.is_empty() && !(has_diff && hint.eq_ignore_ascii_case("d")) {
             let entry = (
-                if hint == "enter" { "⏎" } else { hint }.to_owned(),
+                footer_key(hint),
                 action.label.clone(),
             );
             if !keys.contains(&entry) {
@@ -1425,7 +1408,7 @@ fn merge_option_label(option: &alondra_core::views::ActionOption) -> String {
 pub(super) fn visible_detail_actions(document: &alondra_core::views::View) -> Vec<alondra_core::views::Action> {
     super::view_render::actions(document)
         .into_iter()
-        .filter(|action| action.enabled || !action.id.starts_with("accept:"))
+        .filter(|action| action.enabled)
         .collect()
 }
 
@@ -1486,14 +1469,20 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
                     let hint = super::view_render::action_hint(action);
                     if !hint.is_empty() {
                         from_server.push((
-                            if hint == "enter" { "⏎" } else { hint }.into(),
+                            footer_key(hint),
                             action.label.clone(),
                         ));
                     }
                 }
             }
+            for action in screen_actions(home) {
+                from_server.push((
+                    footer_key(super::view_render::action_hint(&action)),
+                    action.label.clone(),
+                ));
+            }
             for entry in from_server {
-                if !keys.contains(&entry) {
+                if !keys.iter().any(|(key, _)| key == &entry.0) {
                     keys.push(entry);
                 }
             }
@@ -1506,19 +1495,14 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
             }
             let mut shortcuts = Vec::new();
             match app.screen {
-                Screen::Inbox => {}
+                Screen::Inbox => shortcuts.push(k("Shift+M", tr!("orchestrator", "orquestador"))),
                 Screen::Tasks => shortcuts.extend([
-                    k("r", tr!("message", "mensaje")),
                     k("⏎", tr!("its terminal", "su terminal")),
-                    k("x", tr!("cancel / withdraw", "descartar / retirar")),
-                    k("Shift+A", tr!("archive finished", "archivar terminadas")),
                     k("s", tr!("scheduled", "programadas")),
                 ]),
                 Screen::Fleet => shortcuts.extend([
                     k("/", tr!("search", "buscar")),
-                    k("r", tr!("message", "mensaje")),
                     k("⏎", tr!("its terminal (← returns)", "su terminal (← vuelve)")),
-                    k("x", tr!("close node", "cerrar nodo")),
                 ]),
             }
             for shortcut in shortcuts {
@@ -2013,6 +1997,13 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
             ),
         ),
         row(
+            "a",
+            tr!(
+                "archive this finished task, or bring an archived one back",
+                "archivar esta tarea terminada, o sacar del archivo una archivada"
+            ),
+        ),
+        row(
             "Shift+A",
             tr!(
                 "archive every finished or cancelled task",
@@ -2043,10 +2034,17 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
             ),
         ),
         row(
-            "r · ⏎ · a",
+            "r · ⏎",
             tr!(
                 "message the node · its terminal",
                 "mensaje al nodo · su terminal"
+            ),
+        ),
+        row(
+            "i",
+            tr!(
+                "interrupt what the node is doing now; it keeps its task",
+                "interrumpir lo que hace ahora el nodo; conserva su tarea"
             ),
         ),
         row(

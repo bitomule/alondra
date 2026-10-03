@@ -542,26 +542,6 @@ fn view_footer_deduplicates_actions_and_names_merge_methods_for_people() {
 }
 
 #[test]
-fn views_task_and_agent_footers_restore_reviewed_shortcuts() {
-    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
-    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
-    let mut app = App::new(tx);
-    app.screen = Screen::Tasks;
-    app.home_view = Some(serde_json::from_value(view_fixture("tasks-ios.json")).unwrap());
-    let keys = crate::tui::draw::footer_keys(&app);
-    assert!(keys.iter().any(|(key, _)| key == "r"));
-    assert!(keys.iter().any(|(key, _)| key == "x"));
-    assert!(keys.iter().any(|(key, _)| key == "Shift+A"));
-
-    app.screen = Screen::Fleet;
-    app.home_view = Some(serde_json::from_value(view_fixture("fleet-ios.json")).unwrap());
-    let keys = crate::tui::draw::footer_keys(&app);
-    assert!(keys.iter().any(|(key, label)| key == "/" && label == "search"));
-    assert!(keys.iter().any(|(key, label)| key == "r" && label == "message"));
-    assert!(keys.iter().any(|(key, label)| key == "x" && label == "close node"));
-}
-
-#[test]
 fn d_on_a_selected_delivery_opens_the_views_diff_without_a_clone() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);

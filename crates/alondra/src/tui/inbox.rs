@@ -155,6 +155,21 @@ impl App {
     }
 
     pub(super) fn view_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
+        self.document_action_key(key)
+            .or_else(|| self.screen_action_key(key))
+    }
+
+    fn screen_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
+        let home = self.home_view.as_ref()?;
+        let action = super::draw::screen_actions(home)
+            .into_iter()
+            .find(|action| hint_matches(super::view_render::action_hint(action), key))?;
+        let epoch = home.data_epoch.clone();
+        let selected = Key(home.key.clone());
+        Some(self.run_view_action(&action, None, &selected, epoch))
+    }
+
+    fn document_action_key(&mut self, key: KeyEvent) -> Option<Flow> {
         let selected = self.selected_view_key()?;
         let document = self
             .card_view
@@ -367,7 +382,7 @@ pub(super) fn safe_github_url(value: &str) -> bool {
 fn hint_matches(hint: &str, key: KeyEvent) -> bool {
     if hint.chars().count() == 1 {
         return key.code == KeyCode::Char(hint.chars().next().unwrap_or('\0'))
-            && key.modifiers.is_empty();
+            && (key.modifiers - crossterm::event::KeyModifiers::SHIFT).is_empty();
     }
     match hint.to_ascii_lowercase().as_str() {
         "enter" | "return" => key.code == KeyCode::Enter,

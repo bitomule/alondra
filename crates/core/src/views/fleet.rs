@@ -13,6 +13,7 @@ fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> 
         t!(context.lang, "Close Node", "Cerrar nodo"),
         Style::Destructive,
     )?;
+    action.key = (context.client == super::Client::Tui).then(|| "x".into());
     action.confirm = Some(Confirm {
         title: action.label.clone(),
         message: t!(context.lang, "Close this node?", "¿Cerrar este nodo?").into(),
@@ -24,6 +25,7 @@ fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> 
 fn message_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
     let mut action = common::action(Verb::Msg, id, context.domain.revision,
         t!(context.lang, "Message", "Mensaje"), Style::Primary)?;
+    action.key = (context.client == super::Client::Tui).then(|| "r".into());
     action.input = super::Input::Text {
         placeholder: format!("{} {}…", t!(context.lang, "Write to", "Escribe a"), common::agent_label(&AgentId(id.into()), context)),
         required: true,
@@ -38,6 +40,7 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
     context.live.nodes.iter().find(|node| node.agent_id == id).filter(|node| node.working)?;
     let mut action = common::action(Verb::Interrupt, id, context.domain.revision,
         t!(context.lang, "Interrupt", "Interrumpir"), Style::Secondary)?;
+    action.key = (context.client == super::Client::Tui).then(|| "i".into());
     action.confirm = Some(Confirm {
         title: action.label.clone(),
         message: t!(context.lang, "Stop what this node is doing now? It keeps its task and waits for you.",
@@ -154,19 +157,27 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
         row.children.extend(live.and_then(activity));
         row.actions.extend(interrupt_action(&agent.id.0, context));
     } else {
-        row.subtitle = live.and_then(|node| node.tool.clone());
-        row.children.extend(task.map(|task| super::tasks::task_row(task, context)));
+        if let Some(task) = task {
+            row.title = task.title.clone();
+        }
+        row.subtitle = live.filter(|node| node.working).and_then(|node| node.tool.clone())
+            .or_else(|| (row.title != name).then_some(name));
     }
     row.actions.extend(close_action(&agent.id.0, context));
-    row.trailing = Some(Trailing::Count {
-        value: context
-            .domain
-            .projection()
-            .inbox
-            .iter()
-            .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
-            .count() as u32,
-    });
+    if context.client == super::Client::Tui {
+        row.trailing = live.and_then(|node| node.state_since.clone())
+            .map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
+    } else {
+        row.trailing = Some(Trailing::Count {
+            value: context
+                .domain
+                .projection()
+                .inbox
+                .iter()
+                .filter(|item| item.pending && item.agent_id.as_ref() == Some(&agent.id))
+                .count() as u32,
+        });
+    }
     if let Some(live) = live
         && let Some(text) = &live.background_badge
     {
@@ -278,7 +289,8 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .values()
         .filter(|task| task.agent_id.as_ref() == Some(&agent.id))
         .collect();
-    if let Some(task) = common::current_task(context.domain, &agent.id).filter(|task| !task.state.terminal()) {
+    if let Some(task) = common::current_task(context.domain, &agent.id)
+        .filter(|task| !task.state.terminal() && context.client != super::Client::Tui) {
         facts.push(Fact {
             label: t!(context.lang, "Task", "Tarea").into(),
             value: task.title.clone(),
@@ -323,13 +335,17 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         .into_iter()
         .filter(|task| task.state != TaskState::Cancelled)
         .map(|task| {
-            Item::Row(common::row(
-                &task.id.0,
-                &format!("task:{}", task.id),
-                Icon::Task,
-                task.title.clone(),
-                None,
-            ))
+            Item::Row(if context.client == super::Client::Tui {
+                super::tasks::task_row(task, context)
+            } else {
+                common::row(
+                    &task.id.0,
+                    &format!("task:{}", task.id),
+                    Icon::Task,
+                    task.title.clone(),
+                    None,
+                )
+            })
         })
         .collect();
     view.sections.push(common::section(
@@ -468,11 +484,10 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
     let mut actions = Vec::new();
     if let Some(mut message) = common::action(Verb::Msg, "view", context.domain.revision,
         t!(context.lang, "Message", "Mensaje"), Style::Primary) {
-        message.key = (context.client == super::Client::Tui).then(|| "M".into());
+        message.key = (context.client == super::Client::Tui).then(|| "r".into());
         message.input = super::Input::Text { placeholder: t!(context.lang, "Write to the orchestrator…", "Escribe al orquestador…").into(),
             required: true, multiline: true };
         message.attachments = true;
-        message.key = (context.client == super::Client::Tui).then(|| "M".into());
         actions.push(message);
     }
     actions.extend(orchestrator_decisions(context));
@@ -494,6 +509,11 @@ pub(super) fn orchestrator_decisions(context: &RenderContext<'_>) -> Vec<super::
             if !enabled { continue; }
             let style = if verb == Verb::OrchStop { Style::Destructive } else { Style::Secondary };
             if let Some(mut action) = common::action(verb, "orchestrator", context.domain.revision, label, style) {
+                action.key = (context.client == super::Client::Tui).then(|| match verb {
+                    Verb::OrchRetry => "R",
+                    Verb::OrchAck => "C",
+                    _ => "S",
+                }.into());
                 match super::action_id::ActionId::new(verb, "orchestrator", context.domain.revision, Some(run.into())) {
                     Ok(id) => {
                     action.id = id.to_string();

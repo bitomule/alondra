@@ -4,7 +4,7 @@
   "view": "home",
   "key": "home",
   "client": "tui",
-  "version": "v2c82ff9b2cf9a1ba",
+  "version": "vcd312d7ac674fa7e",
   "cursor": "cursor-1",
   "status": {
     "version": "v47edd097e99cb5fc",
@@ -252,7 +252,8 @@
               },
               "attachments": true,
               "enabled": true,
-              "stamp": "Answered"
+              "stamp": "Answered",
+              "key": "r"
             },
             {
               "id": "ctx:a98d034b-249e-4487-a89b-57de38c26372@1",

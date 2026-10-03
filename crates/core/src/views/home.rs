@@ -102,7 +102,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
                     children: vec![], actions: vec![],
                 }));
             }
-            let mut sections = sections.to_vec();
+            let mut sections: Vec<Section> = sections.into_iter().filter(|section| !section.items.is_empty()).collect();
             let detail = match roots.first() {
                 Some(first) if focus.is_some() || decision.is_none() => Some(from_item(first, context, true)?),
                 _ => orchestrator_decision(context, true),

@@ -15,6 +15,9 @@ mod work;
 #[path = "tui/tests/parity.rs"]
 mod parity;
 #[cfg(test)]
+#[path = "tui/tests/screens.rs"]
+mod screens;
+#[cfg(test)]
 mod views_tests;
 
 #[derive(Debug)]
@@ -1424,8 +1427,18 @@ impl App {
                     }
                     if key == "node:orchestrator" && self.compose_orchestrator_on_load {
                         self.compose_orchestrator_on_load = false;
-                        let _ = self
-                            .view_action_key(KeyEvent::new(KeyCode::Char('M'), KeyModifiers::NONE));
+                        let message = self.card_view.as_ref().and_then(|view| {
+                            view_render::actions(view).into_iter().find(|action| {
+                                action.id.starts_with("msg:")
+                            })
+                        });
+                        if let Some(key) = message
+                            .as_ref()
+                            .and_then(|action| view_render::action_hint(action).chars().next())
+                        {
+                            let _ = self
+                                .view_action_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+                        }
                     }
                 }
             }

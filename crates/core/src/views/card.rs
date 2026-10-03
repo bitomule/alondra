@@ -380,6 +380,14 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
             actions.append(&mut child.actions);
         }
     }
+    if context.client != Client::Ios {
+        let free = ["r", "s"].into_iter()
+            .find(|key| !actions.iter().any(|action| action.key.as_deref() == Some(*key)));
+        if let (Some(key), Some(answer)) = (free, actions.iter_mut()
+            .find(|action| action.id.starts_with("ans:") && action.key.is_none())) {
+            answer.key = Some(key.into());
+        }
+    }
     Ok(Card {
         id: public_id(item).into(),
         link: Some(Link::View {
