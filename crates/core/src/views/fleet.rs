@@ -121,7 +121,7 @@ fn context_label(percent: u32, lang: super::Lang) -> super::Label {
 }
 
 /// What the node runs now while it works, otherwise what it said last, with when.
-fn activity(node: &super::LiveNode) -> Option<super::Row> {
+pub(super) fn activity(node: &super::LiveNode) -> Option<super::Row> {
     let message = || node.last_message.as_deref().map(str::trim)
         .filter(|text| !text.is_empty() && !text.starts_with("mcp__"))
         .map(|text| (text.lines().next().unwrap_or_default().to_owned(), node.last_message_at.clone()));

@@ -3,29 +3,24 @@ import AlondraDesign
 import AlondraFeatures
 import SwiftUI
 
-/// One request: who and when, its title and state, and its tasks as a tree.
+/// One request: who and when, what was asked, and its tasks as Fleet-style cards. A request the
+/// orchestrator is still splitting says so once, under what was asked.
 struct RequestSection: View {
     let request: TasksBoard.Request
     let open: (AlondraContract.Link) -> Void
     let perform: (WireAction) -> Void
     @State private var confirmingWithdraw = false
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 10) {
             header
-            VStack(spacing: 0) {
-                if request.tasks.isEmpty {
-                    DefiningRow(request: request)
-                } else {
-                    ForEach(Array(request.tasks.enumerated()), id: \.element.id) { index, line in
-                        TaskTreeRow(line: line, first: index == 0, open: open)
-                    }
-                }
+            ForEach(request.tasks) { line in
+                TaskCard(line: line, open: open)
             }
-            .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 24, style: .continuous))
         }
         .padding(.horizontal, 16)
-        .padding(.top, 24)
+        .padding(.top, 28)
         .confirmationDialog(
             request.withdraw?.confirm?.title ?? "",
             isPresented: $confirmingWithdraw,
@@ -40,34 +35,28 @@ struct RequestSection: View {
     }
 
     private var header: some View {
-        HStack(alignment: .bottom, spacing: 10) {
-            VStack(alignment: .leading, spacing: 5) {
-                HStack(spacing: 8) {
-                    if let project = request.project {
-                        Text(verbatim: project)
-                            .font(.caption.weight(.medium))
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 8)
-                            .padding(.vertical, 3)
-                            .background(Palette.hairline, in: .capsule)
-                    }
-                    meta
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-                .lineLimit(1)
+        HStack(alignment: .top, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
+                meta
                 if !request.isSingleTask {
                     Text(verbatim: request.title)
-                        .font(.display(.title3, weight: .bold))
+                        .font(.headline)
                         .foregroundStyle(Palette.ink)
+                        .lineLimit(3)
                         .multilineTextAlignment(.leading)
-                        .fixedSize(horizontal: false, vertical: true)
+                        .accessibilityAddTraits(.isHeader)
+                }
+                if request.tasks.isEmpty, let state = request.state {
+                    HStack(spacing: 6) {
+                        Glyph(symbol: "diamond", tint: Palette.slate, size: .tiny, pulse: true)
+                        Text(verbatim: state)
+                            .font(.caption.weight(.semibold))
+                            .foregroundStyle(Palette.slate)
+                    }
+                    .accessibilityElement(children: .combine)
                 }
             }
-            Spacer(minLength: 8)
-            if !request.isSingleTask, let state = request.state {
-                StateChip(label: state, tint: request.tasks.isEmpty ? Palette.slate : Palette.sky)
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
             if request.withdraw != nil {
                 Menu {
                     Button("Withdraw Request", systemImage: "xmark.circle", role: .destructive) {
@@ -84,131 +73,101 @@ struct RequestSection: View {
             }
         }
         .padding(.horizontal, 4)
-        .padding(.bottom, 9)
     }
 
-    @ViewBuilder private var meta: some View {
-        HStack(spacing: 4) {
-            if let touchedAt = request.touchedAt { RelativeTime(date: touchedAt) }
-            if request.tasks.count > 1 {
-                if request.touchedAt != nil { Text(verbatim: "·") }
-                Text("\(request.tasks.count) tasks")
-            }
-        }
-    }
-}
-
-/// A request the orchestrator has not split into tasks yet.
-private struct DefiningRow: View {
-    let request: TasksBoard.Request
-
-    var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Glyph(symbol: "diamond", tint: Palette.slate, pulse: true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text("The orchestrator is splitting it into tasks")
-                    .font(.subheadline.weight(.medium))
+    private var meta: some View {
+        let layout = typeSize.isAccessibilitySize
+            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 6))
+        return layout {
+            if let project = request.project {
+                Text(verbatim: project)
+                    .font(.caption.weight(.medium))
                     .foregroundStyle(.secondary)
-                if let state = request.state {
-                    StateLine(label: state, tint: Palette.slate, since: request.touchedAt)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Palette.hairline, in: .capsule)
+            }
+            HStack(spacing: 4) {
+                if let touchedAt = request.touchedAt { RelativeTime(date: touchedAt) }
+                if request.tasks.count > 1 {
+                    if request.touchedAt != nil { Text(verbatim: "·") }
+                    Text("\(request.tasks.count) tasks")
                 }
             }
-            Spacer(minLength: 0)
+            .font(.caption)
+            .foregroundStyle(.tertiary)
         }
-        .padding(.leading, 16)
-        .padding(.trailing, 14)
-        .padding(.vertical, 12)
-        .accessibilityElement(children: .combine)
+        .lineLimit(1)
     }
 }
 
-/// One task in its request's tree: an elbow ties it to the task it goes after; tasks on the same
-/// level run in parallel.
-struct TaskTreeRow: View {
+/// One task as Fleet draws a node: its state, its title, and what its node does now or said last.
+/// A task that goes after another sits indented under it.
+struct TaskCard: View {
     let line: TasksBoard.Line
-    let first: Bool
     let open: (AlondraContract.Link) -> Void
 
-    static let indent: CGFloat = 38
+    @Environment(\.dynamicTypeSize) private var typeSize
+
+    private var tint: Color { TaskStyle.tint(icon: line.icon, tone: line.tone) }
 
     var body: some View {
-        Button {
-            if let link = line.link { open(link) }
-        } label: {
-            HStack(spacing: 8) {
-                HStack(alignment: .top, spacing: 12) {
-                    Glyph(symbol: TaskStyle.symbol(icon: line.icon, struck: line.struck),
-                          tint: TaskStyle.tint(icon: line.icon, tone: line.tone),
-                          pulse: line.icon == .mission)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(verbatim: line.title)
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(line.struck ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.ink))
-                            .strikethrough(line.struck)
-                            .multilineTextAlignment(.leading)
-                        if let state = line.state {
-                            Text(verbatim: state)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(TaskStyle.tint(icon: line.icon, tone: line.tone))
-                        }
-                    }
-                }
-                Spacer(minLength: 0)
-                HStack(spacing: 8) {
-                    if line.waiting > 0 { WaitingBadge(count: line.waiting) }
-                    Image(systemName: "chevron.right")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(.tertiary)
-                        .accessibilityHidden(true)
-                }
+        HStack(alignment: .top, spacing: 6) {
+            if line.depth > 0 {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, CGFloat(line.depth - 1) * 20 + 6)
+                    .padding(.top, 18)
+                    .accessibilityHidden(true)
             }
-            .padding(.leading, 16 + CGFloat(line.depth) * Self.indent)
-            .padding(.trailing, 14)
-            .padding(.vertical, 12)
-            .background(alignment: .topLeading) { TreeLines(line: line) }
-            .overlay(alignment: .top) {
-                if !first { Hairline(leading: 62 + CGFloat(line.depth) * Self.indent) }
-            }
-            .contentShape(.rect)
+            Button { if let link = line.link { open(link) } } label: { card }
+                .buttonStyle(PressStyle())
+                .accessibilityElement(children: .combine)
         }
-        .buttonStyle(PressStyle())
     }
-}
 
-/// The rails of the tree: the elbow into this row, the lines of ancestors that go on below it,
-/// and the rail down to its own children.
-private struct TreeLines: View {
-    let line: TasksBoard.Line
-
-    var body: some View {
-        GeometryReader { proxy in
-            let height = proxy.size.height
-            let x = { (level: Int) in 16 + CGFloat(level) * TaskTreeRow.indent + 17 }
-            let glyphMid: CGFloat = 12 + 17
-            Path { path in
-                for level in 0..<max(0, line.depth - 1) where line.rails[level + 1] {
-                    path.move(to: CGPoint(x: x(level), y: 0))
-                    path.addLine(to: CGPoint(x: x(level), y: height))
+    private var card: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Glyph(symbol: TaskStyle.symbol(icon: line.icon, struck: line.struck), tint: tint,
+                      size: .small, pulse: line.icon == .mission)
+                if let state = line.state {
+                    Text(verbatim: state).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
                 }
-                if line.depth > 0 {
-                    let rail = x(line.depth - 1)
-                    let radius: CGFloat = 11
-                    path.move(to: CGPoint(x: rail, y: 0))
-                    path.addLine(to: CGPoint(x: rail, y: glyphMid - radius))
-                    path.addQuadCurve(to: CGPoint(x: rail + radius, y: glyphMid), control: CGPoint(x: rail, y: glyphMid))
-                    path.addLine(to: CGPoint(x: x(line.depth) - 17, y: glyphMid))
-                    if !line.isLastSibling {
-                        path.move(to: CGPoint(x: rail, y: glyphMid - radius))
-                        path.addLine(to: CGPoint(x: rail, y: height))
+                Spacer(minLength: 8)
+                if line.waiting > 0 { WaitingBadge(count: line.waiting) }
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            Text(verbatim: line.title)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(line.struck ? AnyShapeStyle(.secondary) : AnyShapeStyle(Palette.ink))
+                .strikethrough(line.struck)
+                .lineLimit(3)
+                .multilineTextAlignment(.leading)
+            if line.activity != nil || line.activityAt != nil {
+                let layout = typeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
+                    : AnyLayout(HStackLayout(alignment: .firstTextBaseline, spacing: 6))
+                layout {
+                    if let activity = line.activity {
+                        Text(verbatim: activity).font(.footnote).foregroundStyle(.secondary)
+                            .lineLimit(typeSize.isAccessibilitySize ? 2 : 1)
+                    }
+                    if !typeSize.isAccessibilitySize { Spacer(minLength: 4) }
+                    if let at = line.activityAt {
+                        TimeText(raw: at).font(.caption).foregroundStyle(.tertiary).fixedSize()
                     }
                 }
-                if line.hasChildren {
-                    path.move(to: CGPoint(x: x(line.depth), y: 12 + 34))
-                    path.addLine(to: CGPoint(x: x(line.depth), y: height))
-                }
             }
-            .stroke(Palette.slate.opacity(0.38), style: StrokeStyle(lineWidth: 2, lineCap: .round))
         }
-        .accessibilityHidden(true)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 22, style: .continuous))
+        .contentShape(.rect)
     }
 }

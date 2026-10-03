@@ -42,7 +42,6 @@ public struct TasksView: View {
                 TasksSummary(board: board)
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
         }
         .padding(.horizontal, 20)
@@ -104,13 +103,26 @@ private struct TasksSummary: View {
     }
 
     var body: some View {
-        HStack(spacing: 5) {
-            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
-                if index > 0 { Text(verbatim: "·") }
-                Text(part)
+        ViewThatFits(in: .horizontal) {
+            joined(parts).fixedSize()
+            VStack(alignment: .leading, spacing: 2) {
+                joined(Array(parts.prefix(1))).fixedSize()
+                joined(Array(parts.dropFirst())).fixedSize()
+            }
+            VStack(alignment: .leading, spacing: 2) {
+                ForEach(Array(parts.enumerated()), id: \.offset) { _, part in Text(part) }
             }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    private func joined(_ parts: [LocalizedStringKey]) -> some View {
+        HStack(spacing: 5) {
+            ForEach(Array(parts.enumerated()), id: \.offset) { index, part in
+                if index > 0 { Text(verbatim: "·") }
+                Text(part).lineLimit(1)
+            }
+        }
     }
 }
 

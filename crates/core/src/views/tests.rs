@@ -1149,6 +1149,33 @@ fn a_request_row_links_to_its_most_recently_changed_task() {
 }
 
 #[test]
+fn on_the_iphone_a_task_row_says_what_its_node_does_now_like_fleet() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode {
+        agent_id: "a-1".into(), name: "Node One".into(), working: true,
+        tool: Some("cargo test".into()), state_since: Some("2026-09-30T09:58:00Z".into()),
+        ..LiveNode::default()
+    });
+    let task_children = |client| {
+        let view = render(&state, &live, client, Lang::En, "tasks", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Row(row) if row.id == "r-1" => row.children.iter().find(|child| child.id == "t-1").map(|task| task.children.clone()),
+            _ => None,
+        }).unwrap()
+    };
+    let ios = task_children(Client::Ios);
+    assert_eq!(ios.len(), 1);
+    assert_eq!(ios[0].id, "activity");
+    assert_eq!(ios[0].title, "cargo test");
+    assert_eq!(ios[0].trailing, Some(Trailing::Time {
+        at: "2026-09-30T09:58:00Z".into(), format: TimeFormat::Relative,
+    }));
+    assert!(task_children(Client::Tui).is_empty(), "the TUI tree keeps only tasks under a task");
+}
+
+#[test]
 fn only_the_iphone_gets_no_link_to_the_request_view() {
     let state = fixture();
     let request_fact_link = |client| {

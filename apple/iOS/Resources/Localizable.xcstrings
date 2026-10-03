@@ -2730,16 +2730,6 @@
         }
       }
     },
-    "The orchestrator is splitting it into tasks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El orquestador la reparte en tareas"
-          }
-        }
-      }
-    },
     "%lld waiting for you": {
       "localizations": {
         "es": {

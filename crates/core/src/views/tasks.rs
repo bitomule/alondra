@@ -125,9 +125,13 @@ fn task_tree(tasks: &[&Task], context: &RenderContext<'_>) -> Vec<super::Row> {
         if !placed.insert(task.id.0.clone()) { return None; }
         let mut row = task_row(task, context);
         row.depth = depth;
-        row.children = tasks.iter().filter(|child| parents.get(&child.id.0) == Some(&task.id.0))
-            .filter_map(|child| branch(child, tasks, parents, placed, depth.saturating_add(1), context))
-            .collect();
+        if context.client == super::Client::Ios {
+            row.children.extend(task.agent_id.as_ref()
+                .and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
+                .and_then(super::fleet::activity));
+        }
+        row.children.extend(tasks.iter().filter(|child| parents.get(&child.id.0) == Some(&task.id.0))
+            .filter_map(|child| branch(child, tasks, parents, placed, depth.saturating_add(1), context)));
         Some(row)
     }
     let mut placed = BTreeSet::new();

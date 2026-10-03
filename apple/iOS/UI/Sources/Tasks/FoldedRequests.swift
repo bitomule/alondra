@@ -74,6 +74,7 @@ private struct FinishedRequestRow: View {
                     Text(verbatim: request.title)
                         .font(.subheadline.weight(.semibold))
                         .foregroundStyle(Palette.ink)
+                        .lineLimit(3)
                         .multilineTextAlignment(.leading)
                     if let state = request.state {
                         StateLine(label: state, tint: cancelled ? Palette.slate : Palette.sage, since: request.touchedAt)

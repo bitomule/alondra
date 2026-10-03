@@ -49,7 +49,7 @@ final class TasksFeatureTests: XCTestCase {
         }
         await store.finish()
 
-        XCTAssertEqual(store.state.board?.active.requests.map(\.id), ["r-1", "r-2"])
+        XCTAssertEqual(store.state.board?.active.requests.map(\.id), ["r-5", "r-1", "r-2"])
     }
 
     @MainActor
@@ -87,7 +87,7 @@ final class TasksFeatureTests: XCTestCase {
         XCTAssertEqual(asked.value, [ViewKey(rawValue: "tasks?section=finished&after=20")])
         XCTAssertEqual(store.state.board?.finished.requests.map(\.id), ["r-3", "r-4", "r-9"])
         XCTAssertEqual(store.state.board?.finished.more?.remaining, 2)
-        XCTAssertEqual(store.state.board?.active.requests.count, 2)
+        XCTAssertEqual(store.state.board?.active.requests.count, 3)
         XCTAssertTrue(store.state.loadingMore.isEmpty)
     }
 
@@ -187,7 +187,7 @@ final class TasksFeatureTests: XCTestCase {
         let document = try Samples.document("tasks-populated") { object in
             var sections = object["sections"] as? [[String: Any]] ?? []
             var items = sections[1]["items"] as? [[String: Any]] ?? []
-            items[1]["actions"] = [[
+            items[2]["actions"] = [[
                 "id": "withdraw:r-2@4", "label": "Withdraw Request", "style": "destructive", "presentation": "button",
                 "input": ["kind": "none"], "attachments": false, "enabled": true,
                 "confirm": ["title": "Withdraw Request", "message": "Withdraw this request?", "button": "Withdraw Request"],
