@@ -51,6 +51,23 @@ struct Signer {
     key: p256::ecdsa::SigningKey,
 }
 
+static LAST_TIMESTAMP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Signatures are deterministic, so two identical requests signed in the same millisecond
+/// would be byte-identical and alondrad would refuse the second as a replay.
+fn unique_timestamp() -> u64 {
+    use std::sync::atomic::Ordering::SeqCst;
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let mut last = LAST_TIMESTAMP.load(SeqCst);
+    loop {
+        let next = now.max(last + 1);
+        match LAST_TIMESTAMP.compare_exchange(last, next, SeqCst, SeqCst) {
+            Ok(_) => return next,
+            Err(seen) => last = seen,
+        }
+    }
+}
+
 const KEY_FILE: &str = "tui-key.pem";
 const DEVICE_FILE: &str = "tui-device";
 
@@ -59,7 +76,7 @@ impl Signer {
         use base64::Engine as _;
         use p256::ecdsa::signature::Signer as _;
         use sha2::Digest as _;
-        let timestamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis()).to_string();
+        let timestamp = unique_timestamp().to_string();
         let digest: String = sha2::Sha256::digest(body).iter().map(|b| format!("{b:02x}")).collect();
         let message = format!("{method}\n{path}\n{timestamp}\n{digest}");
         let signature: p256::ecdsa::Signature = self.key.sign(message.as_bytes());
@@ -597,6 +614,46 @@ mod tests {
         assert_eq!(&id[14..15], "4");
         assert!(matches!(&id[19..20], "8" | "9" | "a" | "b"));
         assert_ne!(a["command_id"], b["command_id"]);
+    }
+}
+
+#[cfg(test)]
+mod signing_tests {
+    use super::*;
+    use p256::ecdsa::signature::Verifier as _;
+    use sha2::Digest as _;
+
+    fn signer() -> Signer {
+        Signer { device: "dev".into(), key: p256::ecdsa::SigningKey::from_slice(&[7u8; 32]).unwrap() }
+    }
+
+    #[test]
+    fn identical_requests_signed_back_to_back_never_repeat() {
+        use base64::Engine as _;
+        let signer = signer();
+        let verifying = *signer.key.verifying_key();
+        let mut timestamps = std::collections::HashSet::new();
+        let mut signatures = std::collections::HashSet::new();
+        for _ in 0..200 {
+            let headers = signer.sign("GET", "/views/home", b"");
+            let timestamp = headers[1].1.clone();
+            let signature = headers[2].1.clone();
+            let der = base64::engine::general_purpose::STANDARD.decode(&signature).unwrap();
+            let message = format!("GET\n/views/home\n{timestamp}\n{}", sha2::Sha256::digest(b"").iter().map(|b| format!("{b:02x}")).collect::<String>());
+            verifying.verify(message.as_bytes(), &p256::ecdsa::Signature::from_der(&der).unwrap()).unwrap();
+            assert!(timestamps.insert(timestamp));
+            assert!(signatures.insert(signature));
+        }
+    }
+
+    #[test]
+    fn timestamps_increase_across_threads() {
+        let handles: Vec<_> = (0..4).map(|_| std::thread::spawn(|| (0..500).map(|_| unique_timestamp()).collect::<Vec<_>>())).collect();
+        let mut all: Vec<u64> = handles.into_iter().flat_map(|h| h.join().unwrap()).collect();
+        let total = all.len();
+        all.sort_unstable();
+        all.dedup();
+        assert_eq!(all.len(), total);
     }
 }
 
