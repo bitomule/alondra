@@ -2598,3 +2598,49 @@ fn a_push_shows_what_the_card_asks_not_a_generic_line() {
     assert_eq!(long.body.as_ref().unwrap().chars().count(), PUSH_BODY_CHARS);
     assert!(long.body.unwrap().ends_with('…'));
 }
+
+fn failed_launch_fixture(error: &str) -> DomainState {
+    let mut state = fixture();
+    state.interactions.clear();
+    let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+    (task.state, task.started, task.final_presentation) = (TaskState::NotStarted, false, None);
+    let run: crate::domain_v2::ScheduleRun = serde_json::from_value(serde_json::json!({
+        "id":"run-7e2035e8e1d7c5e3f9431b9087d457e3", "schedule_id":"0789f185-0000",
+        "origin":"due", "due_at":100, "claimed_at":105, "claim_revision":2,
+        "finished_at":110, "state":"failed", "request_id":"r-1", "task_id":"t-1",
+        "error":error, "definition_snapshot":null, "launch":null
+    })).unwrap();
+    state.schedule.runs.insert(run.id.clone(), run);
+    state
+}
+
+#[test]
+fn a_task_whose_scheduled_launch_failed_says_so_and_why() {
+    let state = failed_launch_fixture("Workspace not trusted.\n");
+    let live = LiveSnapshot::default();
+    let detail = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::En, "task:t-1", "")).unwrap();
+    assert!(detail.contains("Did not start"), "{detail}");
+    assert!(detail.contains("the scheduled run could not launch its node: Workspace not trusted."), "{detail}");
+    assert!(!detail.contains("Not started"), "{detail}");
+    let list = serde_json::to_string(&render(&state, &live, Client::Tui, Lang::Es, "tasks", "")).unwrap();
+    assert!(list.contains("No arrancó"), "{list}");
+}
+
+#[test]
+fn a_task_without_a_failed_launch_is_still_not_started() {
+    let mut state = failed_launch_fixture("boom");
+    state.schedule.runs.clear();
+    let detail = serde_json::to_string(&render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1", "")).unwrap();
+    assert!(detail.contains("Not started") && !detail.contains("Did not start"), "{detail}");
+}
+
+#[test]
+fn the_tui_cancels_a_task_with_x() {
+    let state = failed_launch_fixture("boom");
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1", "");
+    let cancel = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Actions(bar) => bar.actions.iter().find(|action| action.id.starts_with("cancel:")),
+        _ => None,
+    }).expect("cancel action");
+    assert_eq!(cancel.key.as_deref(), Some("x"));
+}
