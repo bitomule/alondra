@@ -4,7 +4,7 @@ import SwiftUI
 
 /// The pill shares the navigation bar with Settings. A toolbar item wider than its slot is folded,
 /// with Settings, into a "…" menu, so the pill gives up numbers before it outgrows the slot: first
-/// the RAM and CPU figures, then every figure, keeping each reading's bar.
+/// the RAM and CPU figures, then every figure, keeping each reading's icon.
 struct MachineBadge: View {
     let gauges: [AlondraContract.Gauge]
     let width: CGFloat
@@ -29,13 +29,15 @@ struct MachineBadge: View {
             Image(systemName: "desktopcomputer").font(.footnote)
             ForEach(gauges.filter { $0.id != "disk" }, id: \.id) { gauge in
                 HStack(spacing: 3) {
-                    ReadingBar(value: gauge.value, tint: gauge.level.tint)
+                    ReadingIcon(gauge: gauge)
                     if showsText(gauge) {
                         Text(gauge.text).font(.caption2.monospacedDigit().weight(.medium))
                             .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink.opacity(0.65))
                             .contentTransition(.numericText())
                     }
                 }
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(gauge.label) \(gauge.text)")
             }
         }
         .fixedSize()
@@ -50,7 +52,7 @@ struct MachineDetail: View {
             Text("Mac").font(.display(.title3, weight: .bold))
             ForEach(gauges, id: \.id) { gauge in
                 HStack(alignment: .firstTextBaseline, spacing: 10) {
-                    ReadingBar(value: gauge.value, tint: gauge.level.tint)
+                    ReadingIcon(gauge: gauge)
                     Text(gauge.detail ?? "\(gauge.label): \(gauge.text)")
                         .foregroundStyle(gauge.level == .hot ? Palette.rose : Palette.ink)
                         .fixedSize(horizontal: false, vertical: true)
@@ -79,14 +81,40 @@ private struct WidthLayout: Layout {
     }
 }
 
-private struct ReadingBar: View {
-    let value: Double
-    let tint: Color
+private struct ReadingIcon: View {
+    let gauge: AlondraContract.Gauge
+
+    private static let minimumFill = 0.06
+
     var body: some View {
-        Capsule().fill(Palette.ink.opacity(0.15)).frame(width: 22, height: 4)
-            .overlay(alignment: .leading) {
-                Capsule().fill(tint).frame(width: 22 * max(0.06, min(value, 1)))
+        let symbols = Self.symbols(for: gauge.id)
+        Image(systemName: symbols.outline)
+            .font(.footnote)
+            .foregroundStyle(Palette.ink.opacity(0.2))
+            .overlay {
+                Image(systemName: symbols.filled)
+                    .font(.footnote)
+                    .foregroundStyle(gauge.level.tint)
+                    .mask(alignment: .bottom) {
+                        GeometryReader { proxy in
+                            Rectangle()
+                                .frame(height: proxy.size.height * max(Self.minimumFill, min(gauge.value, 1)))
+                                .frame(maxHeight: .infinity, alignment: .bottom)
+                        }
+                    }
             }
+            .accessibilityHidden(true)
+    }
+
+    static func symbols(for id: String) -> (outline: String, filled: String) {
+        switch id {
+        case "memory": ("memorychip", "memorychip.fill")
+        case "cpu": ("cpu", "cpu.fill")
+        case "claude_five_hours": ("hourglass", "hourglass")
+        case "claude_today": ("sun.max", "sun.max.fill")
+        case "claude_week": ("calendar", "calendar")
+        default: ("gauge.with.dots.needle.67percent", "gauge.with.dots.needle.67percent")
+        }
     }
 }
 
