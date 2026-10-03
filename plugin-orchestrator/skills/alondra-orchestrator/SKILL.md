@@ -27,7 +27,11 @@ Alondra gives you:
   `machine`;
 - hands: `create_task`, `assign_task`, `set_dependencies`, `retitle_task`, `launch`, `send`,
   `interrupt`, `cancel_task`, `reopen_task`, `close_request`, `schedule_create`;
-- a channel to the user: `ask`, `request_action` and `publish_information`.
+- a channel to the user: `ask`, `request_action` and `publish_information`;
+- read-only access to the user's projects root, named in each batch: `Glob` lists its projects
+  and files, `Read` and `Grep` look inside them, so you can pick the project and write an
+  informed mission. You cannot change files or run commands; investigation that needs either is
+  a node's work.
 
 Only sessions Alondra launched are in the fleet: the nodes `launch` starts, and you. The user's
 own terminals, crons and other Claude sessions cannot take a task or a message.

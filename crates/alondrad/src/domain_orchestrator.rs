@@ -157,7 +157,7 @@ impl Executor {
         save(&self.home, &runtime)
     }
 
-    fn prompt(&self, runtime: &Runtime, resume: bool, messages: &[OutboxMessage]) -> Result<String> {
+    fn prompt(&self, runtime: &Runtime, resume: bool, projects_root: Option<&Path>, messages: &[OutboxMessage]) -> Result<String> {
         let state = self.domain.state()?;
         let mut text = String::from("You are Alondra's orchestrator. Load the alondra-orchestrator skill. Process this inbox batch with the Alondra tools; use Alondra ask for user questions. After processing the batch, finish this invocation. Do not wait or poll for future work. The daemon will resume this conversation when there is more work.\n");
         if !runtime.pending_resolutions.is_empty() {
@@ -165,6 +165,9 @@ impl Executor {
         }
         if !resume {
             text.push_str("This is a new conversation. Call fleet before acting; do not infer that existing tasks need to be started again.\n");
+        }
+        if let Some(root) = projects_root {
+            text.push_str(&format!("Projects root, readable with Read, Glob and Grep: {}\n", root.display()));
         }
         let user = crate::domain_messages::user_name();
         text.push_str(&summary(&state, |request| crate::domain_orchestrator_tools::request_choices(&self.domain, request).ok().flatten()
@@ -233,15 +236,23 @@ impl Executor {
         runtime.session_id = Some(session.clone());
         runtime.cancel_requested = false;
         save(&self.home, &runtime)?;
-        let capability = self.domain.bind_orchestrator(&run_id)
-            .map_err(|error| anyhow::anyhow!("cannot bind the execution's capability: {error}"))?;
-        let prompt = self.prompt(&runtime, resume, &claimed)?;
+        let projects_root = crate::domain_schedule_runner::options_at(&self.home).ok()
+            .map(|file| file.projects_root(&crate::options::user_home()))
+            .filter(|root| root.is_dir());
+        let prepared = self.domain.bind_orchestrator(&run_id)
+            .map_err(|error| anyhow::anyhow!("cannot bind the execution's capability: {error}"))
+            .and_then(|capability| Ok((capability, self.prompt(&runtime, resume, projects_root.as_deref(), &claimed)?)));
+        let (capability, prompt) = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => return self.failed(runtime, &run, format!("{error:#}")),
+        };
         let directory = self.home.join("runtime/orchestrator");
         let home = self.home.clone();
         let output = process::execute(Invocation {
             executable: &self.executable, cwd: &directory, home: &self.home,
             plugins: vec![node_plugin.as_path(), orchestrator_plugin.as_path()],
-            domain_v2: true, capability: Some(capability.expose_for_child_environment()),
+            domain_v2: true, projects_root: projects_root.as_deref(),
+            capability: Some(capability.expose_for_child_environment()),
             session: &session, resume, execution: &run_id, prompt: &prompt, ownership,
         }, |_| {
             let mut runtime = load(&home)?;
@@ -253,7 +264,9 @@ impl Executor {
                 tokio::time::sleep(Duration::from_secs(1)).await;
             }
         }).await;
-        self.domain.revoke_execution(&run_id)?;
+        if let Err(error) = self.domain.revoke_execution(&run_id) {
+            log!("v2 orchestrator: cannot persist the revoked capability of {run_id}: {error:#}");
+        }
         let mut runtime = load(&self.home)?;
         let Some(run) = runtime.active_run.clone() else { return Ok(()) };
         let succeeded = output.exit_ok && output.stream.success && output.stream.result
@@ -285,17 +298,21 @@ impl Executor {
         } else {
             "Claude exited without a successful terminal result".into()
         });
+        self.failed(runtime, &run, error)
+    }
+
+    fn failed(&self, mut runtime: Runtime, run: &Run, error: String) -> Result<()> {
         runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
         runtime.last_error = Some(error);
         // Before Claude ran, nothing happened and the batch may be offered
         // again; once spawned, its effects are unknown and the user decides.
         if !run.spawned && runtime.consecutive_failures < 3 {
-            self.finish(&run, State::Retryable, Some("orchestrator_launch_failed"))?;
+            self.finish(run, State::Retryable, Some("orchestrator_launch_failed"))?;
             runtime.active_run = None;
             let delay = 30_000_i64.saturating_mul(1_i64 << runtime.consecutive_failures.min(5));
             runtime.retry_at = Some(now_millis().saturating_add(delay));
         } else {
-            self.finish(&run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
+            self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
         }
         save(&self.home, &runtime)
     }
@@ -535,6 +552,62 @@ mod tests {
         assert!(!prompt.contains("new conversation") && prompt.contains("Where do I put change 3?")
             && !prompt.contains("Where do I put change 1?") && !prompt.contains("inbox message"), "{prompt}");
         assert_eq!(load(&f.executor.home).unwrap().session_id, runtime.session_id, "the conversation is resumed");
+    }
+
+    /// Recorded from the 2026-10-03 run e8ab8f90: Read on the projects root was refused, the
+    /// orchestrator went on to create and launch its task, and Claude reported success.
+    const REFUSED_READ_THEN_SUCCESS: &str = r#"printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"tool_use","id":"toolu_01RqEHPzQNkeM7Upm8Mc7Yqu","name":"Read","input":{"file_path":"/Users/example/Projects"}}],"usage":{"input_tokens":2}}}'
+printf '%s\n' '{"type":"user","session_id":"'"$session"'","message":{"role":"user","content":[{"type":"tool_result","content":"/Users/example/Projects is outside /Users/example/.alondra/runtime/orchestrator; --restricted confines the file tools to the working directory.","is_error":true,"tool_use_id":"toolu_01RqEHPzQNkeM7Upm8Mc7Yqu"}]}}'
+printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"tool_use","id":"toolu_create","name":"mcp__plugin_alondra-orchestrator_alondra-orchestrator__create_task","input":{"request_id":"r","title":"Push badge"}}],"usage":{"input_tokens":3}}}'
+printf '%s\n' '{"type":"assistant","session_id":"'"$session"'","message":{"model":"opus","content":[{"type":"text","text":"Task created and launched."}],"usage":{"input_tokens":4}}}'
+printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":4,"result":"Task created and launched.","permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01RqEHPzQNkeM7Upm8Mc7Yqu","tool_input":{"file_path":"/Users/example/Projects"}}],"modelUsage":{"opus":{"contextWindow":1000000}}}'"#;
+
+    #[tokio::test]
+    async fn a_run_that_worked_around_a_refused_read_is_handed_and_frees_the_orchestrator() {
+        let f = fixture(REFUSED_READ_THEN_SUCCESS);
+        let domain = &f.executor.domain;
+        let projects = f.root.join("projects");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(alondra_core::options::path_in(&f.executor.home), format!("projects_root = {:?}\n", projects.to_str().unwrap())).unwrap();
+        ask_orchestrator(domain, 1);
+        f.executor.tick(&f.ownership).await.unwrap();
+        let prompt = std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/received-prompt")).unwrap();
+        assert!(prompt.contains(&format!("Projects root, readable with Read, Glob and Grep: {}\n", projects.display())), "{prompt}");
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none(), "{runtime:?}");
+        assert_eq!(runtime.last_error, None);
+        assert_eq!(runtime.consecutive_failures, 0);
+        assert!(attempts(domain).iter().all(|(_, state, _)| state == "handed"));
+        ask_orchestrator(domain, 2);
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/starts")).unwrap().lines().count(), 2,
+            "the next batch runs at once");
+    }
+
+    #[tokio::test]
+    async fn a_run_that_cannot_be_prepared_is_released_for_retry_instead_of_left_running() {
+        let f = fixture(SUCCESS);
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        let blocked = f.executor.home.join("domain-capabilities.json.next");
+        std::fs::create_dir_all(blocked.join("occupied")).unwrap();
+        f.executor.tick(&f.ownership).await.unwrap();
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none(), "{runtime:?}");
+        assert!(runtime.last_error.as_deref().is_some_and(|error| error.contains("capability")), "{runtime:?}");
+        assert!(runtime.retry_at.is_some());
+        assert!(!f.executor.home.join("runtime/orchestrator/starts").exists());
+        assert!(attempts(domain).iter().all(|(_, state, reason)| state == "retryable" && reason.as_deref() == Some("orchestrator_launch_failed")));
+        assert_eq!(status(&f.executor).unwrap()["phase"], "failed");
+
+        std::fs::remove_dir_all(&blocked).unwrap();
+        let mut runtime = load(&f.executor.home).unwrap();
+        runtime.retry_at = None;
+        save(&f.executor.home, &runtime).unwrap();
+        f.executor.tick(&f.ownership).await.unwrap();
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.last_error.is_none(), "{runtime:?}");
+        assert!(outbox(domain).is_empty());
     }
 
     #[tokio::test]
