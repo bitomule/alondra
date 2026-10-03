@@ -12,6 +12,7 @@ struct TriageCard: View {
     let card: Card
     let isFront: Bool
     let zoom: Namespace.ID
+    let onSkip: (() -> Void)?
     @Environment(\.openURL) private var openURL
     @State private var contentHeight: CGFloat?
     @FocusState private var replyFocused: Bool
@@ -69,6 +70,7 @@ struct TriageCard: View {
             .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
             .scaleEffect(stamp == nil ? 1 : 1.02)
             .animation(.spring(duration: 0.35, bounce: 0.4), value: stamp)
+            .sensoryFeedback(.success, trigger: stamp) { _, new in new != nil }
             .alert(store.actions.confirmation?.title ?? "", isPresented: Binding(
                 get: { store.actions.confirmation != nil }, set: { if !$0 { store.send(.actions(.cancelConfirmation)) } }
             )) {
@@ -123,7 +125,18 @@ struct TriageCard: View {
                 KindBadge(kind: kind)
                 Spacer()
                 if let at = card.timestamps.first?.at {
-                    Text(relativeStamp(at)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    Text(relativeStamp(at)).font(.footnote).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                }
+                if let onSkip {
+                    Button(action: onSkip) {
+                        Image(systemName: "arrow.uturn.forward")
+                            .font(.footnote.weight(.semibold))
+                            .frame(width: 30, height: 30)
+                            .background(Palette.hairline, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Leave for Later")
                 }
             }
             Text(card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
@@ -223,6 +236,9 @@ struct TriageCard: View {
                 .onTapGesture { openCardDetail() }
         }
         .accessibilityAction(named: "Open") { openCardDetail() }
+        .accessibilityActions {
+            if let onSkip { Button("Leave for Later", action: onSkip) }
+        }
     }
 
     /// What a permission would run, as 8ccd131 showed it: the command itself, a few lines tall;
