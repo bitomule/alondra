@@ -44,6 +44,20 @@
       "items": [
         {
           "type": "row",
+          "id": "r-5",
+          "icon": "mission",
+          "title": "In Alondra the task that was running tonight got stuck, what failed? Look at the orchestrator log and the node that ran it",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "The orchestrator is splitting it",
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T23:58:00.000Z",
+            "format": "relative"
+          }
+        },
+        {
+          "type": "row",
           "id": "r-1",
           "icon": "mission",
           "title": "Polish the Alondra beta",
@@ -86,7 +100,21 @@
               "trailing": {
                 "kind": "count",
                 "value": 4
-              }
+              },
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Asked whether to keep the old review sheet",
+                  "depth": 0,
+                  "struck": false,
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2025-12-31T22:05:00.000Z",
+                    "format": "relative"
+                  }
+                }
+              ]
             },
             {
               "id": "t-2",
@@ -110,6 +138,18 @@
                 "value": 1
               },
               "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "xcodebuild test -scheme Alondra",
+                  "depth": 0,
+                  "struck": false,
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2025-12-31T23:52:00.000Z",
+                    "format": "relative"
+                  }
+                },
                 {
                   "id": "t-3",
                   "icon": "task",
@@ -174,13 +214,27 @@
               "trailing": {
                 "kind": "count",
                 "value": 0
-              }
+              },
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Reading last week's token usage",
+                  "depth": 0,
+                  "struck": false,
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2025-12-31T23:55:00.000Z",
+                    "format": "relative"
+                  }
+                }
+              ]
             }
           ]
         }
       ],
       "title": "Active",
-      "count": 2
+      "count": 3
     },
     {
       "id": "finished",
