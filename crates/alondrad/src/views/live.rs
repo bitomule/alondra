@@ -201,6 +201,7 @@ pub(crate) async fn gather(
     .map(|value| LiveOrchestrator {
         working: value["phase"] == "running",
         summary: value["last_error"].as_str().map(str::to_owned),
+        failure: value["failure"].as_str().map(str::to_owned),
         queue_depth: value["queue_depth"].as_u64().unwrap_or(0).min(u32::MAX as u64) as u32,
         active_run_id: value["active_run_id"].as_str().map(str::to_owned),
         can_retry: value["can_retry"].as_bool().unwrap_or(false),

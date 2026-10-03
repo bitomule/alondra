@@ -21,6 +21,8 @@ public struct NodeDetail: Equatable, Sendable {
     public var tasks: [Row] = []
     public var needs: Markdown?
     public var summary: Markdown?
+    /// Why the orchestrator's last run failed, in the user's words.
+    public var failure: Markdown?
     public var lastMessage: Markdown?
     public var lastMessageAt: String?
     public var lastMessageFormat = TimeFormat.relative
@@ -51,6 +53,7 @@ public struct NodeDetail: Equatable, Sendable {
             case "tasks": tasks = Self.rows(items)
             case "needs": needs = Self.markdown(items)
             case "summary": summary = Self.markdown(items)
+            case "failure": failure = Self.markdown(items)
             case "last_message":
                 lastMessage = Self.markdown(items)
                 if let time = Self.rows(items).compactMap(\.time).first {

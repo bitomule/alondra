@@ -188,32 +188,11 @@ pub(super) fn list(context: &RenderContext<'_>) -> View {
         "node:orchestrator",
         Icon::Orchestrator,
         t!(context.lang, "Orchestrator", "Orquestador").into(),
-        context
-            .live
-            .orchestrator
-            .as_ref()
-            .and_then(|o| o.summary.clone()),
+        common::orchestrator_failure(context).and_then(|text| text.lines().next().map(str::to_owned)),
     );
-    orchestrator.trailing = Some(Trailing::Text {
-        text: if context
-            .live
-            .orchestrator
-            .as_ref()
-            .is_some_and(|o| o.working)
-        {
-            t!(context.lang, "Working", "Trabajando")
-        } else {
-            t!(context.lang, "Idle", "Inactivo")
-        }
-        .into(),
-    });
-    let orchestrator_state = if context.live.orchestrator.as_ref().is_some_and(|o| o.working) {
-        t!(context.lang, "Working", "Trabajando")
-    } else { t!(context.lang, "Idle", "Inactivo") };
-    orchestrator.badges.push(super::Label {
-        text: orchestrator_state.into(),
-        tone: common::state_tone(if context.live.orchestrator.as_ref().is_some_and(|o| o.working) { "working" } else { "idle" }),
-    });
+    let state = common::orchestrator_label(context);
+    orchestrator.trailing = Some(Trailing::Text { text: state.text.clone() });
+    orchestrator.badges.push(state);
     view.sections.push(common::section(
         "orchestrator",
         None,
@@ -456,19 +435,15 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
         vec![],
     );
     let live = context.live.orchestrator.as_ref();
+    let state = common::orchestrator_label(context);
     view.sections.push(common::section(
         "header",
         None,
         vec![Item::Facts(Facts {
             items: vec![Fact {
                 label: t!(context.lang, "State", "Estado").into(),
-                value: if live.is_some_and(|o| o.working) {
-                    t!(context.lang, "Working", "Trabajando")
-                } else {
-                    t!(context.lang, "Idle", "Inactivo")
-                }
-                .into(),
-                tone: None,
+                value: state.text,
+                tone: Some(state.tone),
                 link: None,
             }, Fact {
                 label: t!(context.lang, "Queued messages", "Mensajes en cola").into(),
@@ -478,12 +453,12 @@ fn orchestrator(context: &RenderContext<'_>) -> Result<View, BuildError> {
             }],
         })],
     ));
-    if let Some(summary) = live.and_then(|o| o.summary.as_ref()) {
+    if let Some(failure) = common::orchestrator_failure(context) {
         view.sections.push(common::section(
-            "summary",
+            "failure",
             None,
             vec![Item::Markdown(Markdown {
-                text: summary.clone(),
+                text: failure,
                 truncated: false,
                 more: None,
                 commentable: false,

@@ -27,12 +27,30 @@ pub(crate) struct Runtime {
     pub active_run: Option<Run>,
     pub last_run_id: Option<String>,
     pub last_error: Option<String>,
+    /// What kind of failure `last_error` describes, so the user reads it in their language.
+    #[serde(default)]
+    pub failure: Option<Failure>,
     pub retry_at: Option<i64>,
     pub consecutive_failures: u32,
     pub cancel_requested: bool,
     /// Batches whose execution was interrupted or given up: the next run is
     /// told never to replay them.
     pub pending_resolutions: Vec<Resolution>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Failure {
+    /// Claude did not start; the batch is offered again on its own.
+    Launch,
+    /// Claude ran but did not finish; some of its actions may have happened.
+    Interrupted,
+    /// One of Alondra's own tools was refused to it.
+    Denied,
+    /// The user stopped the run.
+    Cancelled,
+    /// Its saved conversation was gone; the next run starts a new one.
+    SessionMissing,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -88,6 +106,7 @@ impl Executor {
             self.give_up(&run, "daemon_restarted_during_execution")?;
             runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
             runtime.last_error = None;
+            runtime.failure = None;
             runtime.retry_at = None;
             runtime.consecutive_failures = 0;
             runtime.cancel_requested = false;
@@ -126,6 +145,7 @@ impl Executor {
         drop(store);
         runtime.pending_resolutions.push(Resolution { run_id: run.id, message_ids: run.message_ids });
         runtime.last_error = None;
+        runtime.failure = None;
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         save(&self.home, &runtime)
@@ -143,6 +163,7 @@ impl Executor {
         }
         drop(store);
         runtime.last_error = None;
+        runtime.failure = None;
         runtime.retry_at = None;
         runtime.consecutive_failures = 0;
         save(&self.home, &runtime)
@@ -244,7 +265,7 @@ impl Executor {
             .and_then(|capability| Ok((capability, self.prompt(&runtime, resume, projects_root.as_deref(), &claimed)?)));
         let (capability, prompt) = match prepared {
             Ok(prepared) => prepared,
-            Err(error) => return self.failed(runtime, &run, format!("{error:#}")),
+            Err(error) => return self.failed(runtime, &run, format!("{error:#}"), false),
         };
         let directory = self.home.join("runtime/orchestrator");
         let home = self.home.clone();
@@ -274,6 +295,7 @@ impl Executor {
         if runtime.cancel_requested {
             self.finish(&run, State::Uncertain, Some("orchestrator_cancelled"))?;
             runtime.last_error = Some("Orchestrator execution was cancelled; check its effects before retrying".into());
+            runtime.failure = Some(Failure::Cancelled);
             runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
             return save(&self.home, &runtime);
         }
@@ -282,26 +304,29 @@ impl Executor {
             runtime.session_id = None;
             runtime.active_run = None;
             runtime.last_error = Some("The saved Claude conversation is missing; a new conversation will be created".into());
+            runtime.failure = Some(Failure::SessionMissing);
             return save(&self.home, &runtime);
         }
         if succeeded {
             self.finish(&run, State::Handed, None)?;
             runtime.active_run = None;
             runtime.last_error = None;
+            runtime.failure = None;
             runtime.retry_at = None;
             runtime.consecutive_failures = 0;
             runtime.pending_resolutions.clear();
             return save(&self.home, &runtime);
         }
+        let denied = output.stream.denied;
         let error = output.stream.error.unwrap_or_else(|| if !output.diagnostic.trim().is_empty() {
             output.diagnostic
         } else {
             "Claude exited without a successful terminal result".into()
         });
-        self.failed(runtime, &run, error)
+        self.failed(runtime, &run, error, denied)
     }
 
-    fn failed(&self, mut runtime: Runtime, run: &Run, error: String) -> Result<()> {
+    fn failed(&self, mut runtime: Runtime, run: &Run, error: String, denied: bool) -> Result<()> {
         runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
         runtime.last_error = Some(error);
         // Before Claude ran, nothing happened and the batch may be offered
@@ -311,8 +336,10 @@ impl Executor {
             runtime.active_run = None;
             let delay = 30_000_i64.saturating_mul(1_i64 << runtime.consecutive_failures.min(5));
             runtime.retry_at = Some(now_millis().saturating_add(delay));
+            runtime.failure = Some(Failure::Launch);
         } else {
             self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
+            runtime.failure = Some(if denied { Failure::Denied } else { Failure::Interrupted });
         }
         save(&self.home, &runtime)
     }
@@ -358,7 +385,7 @@ pub(crate) fn status(executor: &Executor) -> Result<serde_json::Value> {
         "phase": phase, "can_retry": ambiguous, "can_cancel": runtime.active_run.is_some() && !ambiguous,
         "cancel_requested": runtime.cancel_requested,
         "active_run_id": runtime.active_run.as_ref().map(|run| run.id.clone()),
-        "queue_depth": queue_depth, "last_error": runtime.last_error, "retry_at": runtime.retry_at,
+        "queue_depth": queue_depth, "last_error": runtime.last_error, "failure": runtime.failure, "retry_at": runtime.retry_at,
     }))
 }
 
@@ -599,6 +626,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert!(!f.executor.home.join("runtime/orchestrator/starts").exists());
         assert!(attempts(domain).iter().all(|(_, state, reason)| state == "retryable" && reason.as_deref() == Some("orchestrator_launch_failed")));
         assert_eq!(status(&f.executor).unwrap()["phase"], "failed");
+        assert_eq!(status(&f.executor).unwrap()["failure"], "launch");
 
         std::fs::remove_dir_all(&blocked).unwrap();
         let mut runtime = load(&f.executor.home).unwrap();
@@ -687,6 +715,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let runtime = load(&f.executor.home).unwrap();
         let run = runtime.active_run.clone().expect("an ambiguous execution stays claimed");
         assert!(runtime.last_error.is_some());
+        assert_eq!(runtime.failure, Some(Failure::Interrupted));
         assert!(attempts(domain).iter().all(|(_, state, reason)| state == "uncertain" && reason.as_deref() == Some("orchestrator_execution_ambiguous")));
         assert!(outbox(domain).is_empty(), "an ambiguous batch is not offered again");
         f.executor.tick(&f.ownership).await.unwrap();
@@ -694,7 +723,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert!(f.executor.acknowledge("other-run").is_err());
         f.executor.acknowledge(&run.id).unwrap();
         let runtime = load(&f.executor.home).unwrap();
-        assert!(runtime.active_run.is_none() && runtime.last_error.is_none());
+        assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.failure.is_none());
         assert_eq!(runtime.pending_resolutions, vec![Resolution { run_id: run.id.clone(), message_ids: run.message_ids.clone() }]);
         assert!(attempts(domain).iter().all(|(_, state, _)| state == "discarded"));
 

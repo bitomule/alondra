@@ -120,7 +120,11 @@ pub struct LiveCheck {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveOrchestrator {
     pub working: bool,
+    /// The last run's error as Alondra recorded it; present while that failure stands.
     pub summary: Option<String>,
+    /// Its kind: launch, interrupted, denied, cancelled or session_missing.
+    #[serde(default)]
+    pub failure: Option<String>,
     #[serde(default)]
     pub queue_depth: u32,
     #[serde(default)]
