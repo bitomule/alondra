@@ -1,8 +1,11 @@
 //! A permission prompt, plan waiting for approval, AskUserQuestion or MCP elicitation of a
-//! background Agent becomes a held card the user answers from any device. The first three are
-//! held by the node's mod (`plugin/hooks/register.ts`), which posts a card under an id derived from
-//! the tool call and posts it again whenever its wait is cut, so a card survives a daemon restart
-//! and a repeated post finds the card already there. An MCP elicitation has no mod answer, so its
+//! background Agent becomes a held card the user answers from any device. Plans and questions are
+//! held by the node's mod (`plugin/hooks/register.ts`), which posts a card under the tool call's id
+//! and posts it again whenever its wait is cut, so a card survives a daemon restart and a repeated
+//! post finds the card already there. A permission prompt is held by the plugin's PermissionRequest
+//! hook (`alondra hook`), which only runs once Claude Code would show its own dialog, after auto
+//! mode's classifier: it posts the same kind of card, dials again across a daemon restart, and its
+//! card is withdrawn when the hook goes away. An MCP elicitation has no mod answer, so its
 //! settings hook keeps waiting and a hook that goes away withdraws its card.
 use crate::domain_runtime::DomainRuntime;
 use crate::http::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
@@ -28,8 +31,10 @@ pub(crate) enum Kind {
     Permission,
 }
 
-/// One card a node mod puts to the user. `id` is the tool call's id, so the same call posts the
-/// same card however many times the mod asks.
+/// One card a node puts to the user. `id` is the tool call's id, or the hook run's own id for a
+/// permission prompt, so the same call posts the same card however many times it asks.
+/// `withdraw_when_gone` marks a poster whose wait is the question itself: when it goes away the
+/// question was answered elsewhere or abandoned, so the card stops waiting.
 #[derive(Deserialize)]
 pub(crate) struct Card {
     pub session_id: String,
@@ -39,6 +44,8 @@ pub(crate) struct Card {
     pub tool: Option<String>,
     #[serde(default)]
     pub input: Value,
+    #[serde(default)]
+    pub withdraw_when_gone: bool,
 }
 
 const KINDS: [&str; 3] = ["question", "plan", "permission"];

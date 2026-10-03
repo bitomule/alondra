@@ -76,34 +76,15 @@ test('a plan the user sends back is denied with their words, an approved one is 
   expect(held.runs()).toBe(2)
 })
 
-test('an ask is put to the user and a deny rule is never upgraded', async ($, on) => {
-  const held = await startWithHolds($, on, () => ({ held: true, allowed: true, reason: 'David allowed this call' }), (e) =>
+test('an ask from the rules is left for Claude Code, so auto mode can still approve it and nothing is held', async ($, on) => {
+  const held = await startWithHolds($, on, () => ({ held: true, allowed: true }), (e) =>
     e.input.command?.includes('rm') ? { decision: 'deny', rule: 'Bash(rm *)' } : { decision: 'ask' })
 
-  const allowed = await $.tool.check({ tool: 'Bash', tool_use_id: 'toolu-1', input: { command: 'make' } } as never)
-  expect(allowed.decision).toBe('allow')
+  const asked = await $.tool.check({ tool: 'Bash', tool_use_id: 'toolu-1', input: { command: 'grep x log | tail -20; grep -c "" log' } } as never)
+  expect(asked.decision).toBe('ask')
   const denied = await $.tool.check({ tool: 'Bash', tool_use_id: 'toolu-2', input: { command: 'rm -rf /' } } as never)
   expect(denied.decision).toBe('deny')
-  expect(held.cards).toEqual([
-    { session_id: 'session-1', id: 'toolu-1', kind: 'permission', tool: 'Bash', input: { command: 'make' } },
-  ])
-})
-
-test('a refused permission becomes a deny with the reason, and an allow rule is not asked about', async ($, on) => {
-  const held = await startWithHolds($, on, () => ({ held: true, allowed: false, reason: 'David denied it: not now' }), (e) => ({
-    decision: e.tool === 'Read' ? 'allow' : 'ask',
-  }))
-  const refused = await $.tool.check({ tool: 'Bash', tool_use_id: 'toolu-1', input: { command: 'make' } } as never)
-  expect(refused).toEqual({ decision: 'deny', reason: 'David denied it: not now' })
-  const read = await $.tool.check({ tool: 'Read', tool_use_id: 'toolu-2', input: {} } as never)
-  expect(read.decision).toBe('allow')
-  expect(held.runs()).toBe(1)
-})
-
-test('a permission the daemon does not hold stays an ask for Claude Code to put in the terminal', async ($, on) => {
-  await startWithHolds($, on, () => ({ held: false }))
-  const out = await $.tool.check({ tool: 'Bash', tool_use_id: 'toolu-1', input: { command: 'make' } } as never)
-  expect(out.decision).toBe('ask')
+  expect(held.runs()).toBe(0)
 })
 
 test('a cut wait is run again with the same card until the user answers', async ($, on) => {
@@ -118,7 +99,5 @@ test('a helper that fails at once denies the call instead of letting it through'
   const held = await startWithHolds($, on, () => 'failure')
   const question = await $.tool.call({ tool: 'AskUserQuestion', tool_use_id: 'toolu-1', questions } as never)
   expect(question).toHaveProperty('deny')
-  const permission = await $.tool.check({ tool: 'Bash', tool_use_id: 'toolu-2', input: { command: 'make' } } as never)
-  expect(permission.decision).toBe('deny')
-  expect(held.runs()).toBe(2)
+  expect(held.runs()).toBe(1)
 })
