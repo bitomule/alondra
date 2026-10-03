@@ -24,7 +24,7 @@ public struct PRReviewView: View {
         .navigationTitle(store.review.map { Text(verbatim: $0.title) } ?? Text("Pull Request"))
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
-        .toolbar { foldToolbar }
+        .toolbar { hostToolbar }
         .task { await store.send(.task).finish() }
         .sheet(isPresented: Binding(get: { store.isComposing }, set: { if !$0 { store.send(.dismissSheet) } })) { sheet }
         .sheet(item: Binding(get: { store.attachment }, set: { if $0 == nil { store.send(.closeAttachment) } })) { preview in
@@ -79,7 +79,7 @@ public struct PRReviewView: View {
             .padding(16)
         }
         .scrollDismissesKeyboard(.interactively)
-        .safeAreaInset(edge: .bottom, spacing: 0) { PRActionBar(store: store, review: review, openURL: openURL) }
+        .safeAreaBar(edge: .bottom) { PRActionBar(store: store, review: review) }
     }
 
     @ViewBuilder private var diff: some View {
@@ -96,7 +96,11 @@ public struct PRReviewView: View {
             .frame(maxWidth: .infinity)
         case .loaded(let files):
             VStack(alignment: .leading, spacing: 12) {
-                Text("Diff").font(.title3.weight(.bold)).foregroundStyle(Palette.ink)
+                HStack(alignment: .firstTextBaseline) {
+                    Text("Diff").font(.title3.weight(.bold)).foregroundStyle(Palette.ink)
+                    Spacer()
+                    if !files.isEmpty { foldAllButton(files) }
+                }
                 Text("Tap a line to comment on it").font(.caption).foregroundStyle(.secondary)
                 PRDiffView(files: files, collapsed: store.collapsed, comments: store.comments,
                            toggle: { store.send(.toggleFile($0)) },
@@ -106,27 +110,34 @@ public struct PRReviewView: View {
         }
     }
 
-    @ToolbarContentBuilder private var foldToolbar: some ToolbarContent {
-        if case .loaded(let files) = store.diff, !files.isEmpty {
+    @ToolbarContentBuilder private var hostToolbar: some ToolbarContent {
+        if let url = store.review?.pageURL {
             ToolbarItem(placement: .topBarTrailing) {
-                let allCollapsed = store.collapsed.count == files.count
-                Button(allCollapsed ? "Expand All Files" : "Collapse All Files",
-                       systemImage: allCollapsed ? "rectangle.expand.vertical" : "rectangle.compress.vertical") {
-                    withAnimation(.snappy) { _ = store.send(.toggleAllFiles) }
-                }
+                Button("Open on GitHub", systemImage: "arrow.up.right.square") { openURL(url) }
             }
         }
     }
 
+    private func foldAllButton(_ files: [DiffFile]) -> some View {
+        let allCollapsed = store.collapsed.count == files.count
+        return Button {
+            withAnimation(.snappy) { _ = store.send(.toggleAllFiles) }
+        } label: {
+            Label(allCollapsed ? "Expand All" : "Collapse All",
+                  systemImage: allCollapsed ? "chevron.down" : "chevron.up")
+                .font(.subheadline.weight(.medium))
+        }
+        .buttonStyle(.glass)
+        .controlSize(.small)
+        .buttonBorderShape(.capsule)
+        .accessibilityLabel(allCollapsed ? "Expand All Files" : "Collapse All Files")
+    }
+
     private var sheet: some View {
-        ActionInputView(store: store.scope(state: \.actions, action: \.actions), showCommentEditor: false)
-            .padding()
-            .presentationDetents([.medium, .large])
-            .safeAreaInset(edge: .bottom) {
-                Button("Send") { store.send(.actions(.submit)) }
-                    .buttonStyle(.borderedProminent).tint(Palette.dawn)
-                    .padding()
-            }
+        let actions = store.scope(state: \.actions, action: \.actions)
+        return ActionComposerSheet(store: actions, title: actions.action?.label ?? "") {
+            ActionInputView(store: actions, showCommentEditor: false)
+        }
     }
 }
 

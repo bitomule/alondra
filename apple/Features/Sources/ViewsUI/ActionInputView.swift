@@ -1,5 +1,6 @@
 import AlondraAttachments
 import AlondraContract
+import AlondraDesign
 import ComposableArchitecture
 import SwiftUI
 
@@ -7,6 +8,7 @@ import SwiftUI
 public struct ActionInputView: View {
     @Bindable public var store: StoreOf<ActionFeature>
     @State private var optionsPresented = false
+    @FocusState private var textFocused: Bool
     public let form: WireForm?
     public let showCommentEditor: Bool
     public var onReload: ((Field, JSONValue) -> Void)?
@@ -36,22 +38,16 @@ public struct ActionInputView: View {
                         store.send(.chooseOption($0.id))
                     }
                 }
-                input(action.options.first(where: { $0.id == store.selectedOptionID })?.input ?? action.input)
-                if form?.id != "new_request", action.attachments || (form?.fields.contains(where: { if case .attachments = $0.kind { true } else { false } }) == true) {
-                    AttachmentPicker(store: attachmentStore)
+                let input = action.options.first(where: { $0.id == store.selectedOptionID })?.input ?? action.input
+                self.input(input, attaches: takesAttachments(action))
+                if takesAttachments(action), !embedsAttachments(input) {
+                    attachments
                 }
                 if let commentSpec = action.comments {
                     if showCommentEditor {
                         ActionCommentsEditor(comments: store.comments, kind: commentSpec.kind) { store.send(.commentsChanged($0)) }
                     } else if !store.comments.isEmpty {
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Your comments").font(.subheadline.weight(.semibold))
-                            ForEach(store.comments, id: \.anchor) { comment in
-                                Text(comment.text).font(.callout)
-                                    .frame(maxWidth: .infinity, alignment: .leading)
-                                    .padding(8).background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 8))
-                            }
-                        }
+                        commentList
                     }
                 }
                 if let form, form.id == "schedule" {
@@ -67,17 +63,76 @@ public struct ActionInputView: View {
         }
     }
 
+    private func takesAttachments(_ action: WireAction) -> Bool {
+        guard form?.id != "new_request" else { return false }
+        return action.attachments
+            || form?.fields.contains(where: { if case .attachments = $0.kind { true } else { false } }) == true
+    }
+
+    /// On the phone a written answer carries its paperclip inside the writing card, as the New
+    /// tab and the node composer do.
+    private func embedsAttachments(_ input: AlondraContract.Input) -> Bool {
+        #if os(iOS)
+        if case .text(_, _, true) = input { return true }
+        #endif
+        return false
+    }
+
+    @ViewBuilder private var attachments: some View {
+        #if os(iOS)
+        HStack(alignment: .center, spacing: 8) {
+            AttachButton(store: attachmentStore)
+            AttachmentStrip(store: attachmentStore)
+        }
+        #else
+        AttachmentPicker(store: attachmentStore)
+        #endif
+    }
+
+    private var commentList: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Label("Your comments", systemImage: "text.bubble")
+                .font(.footnote.weight(.bold))
+                .textCase(.uppercase)
+                .kerning(0.6)
+                .foregroundStyle(.secondary)
+            ForEach(store.comments, id: \.anchor) { comment in
+                Text(comment.text)
+                    .font(.callout)
+                    .foregroundStyle(ViewPalette.ink)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(14)
+                    .background(ViewPalette.card.opacity(0.9), in: .rect(cornerRadius: 20, style: .continuous))
+            }
+        }
+        .padding(.top, 6)
+    }
+
     private var attachmentStore: StoreOf<AttachmentFeature> {
         store.scope(state: \.attachmentPicker, action: \.attachmentPicker)
     }
 
-    @ViewBuilder private func input(_ input: AlondraContract.Input) -> some View {
+    @ViewBuilder private func input(_ input: AlondraContract.Input, attaches: Bool) -> some View {
         switch input {
         case .none: EmptyView()
         case let .text(placeholder, _, multiline):
             if multiline {
-                TextEditor(text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }))
-                    .frame(minHeight: 110).overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                VStack(alignment: .leading, spacing: 12) {
+                    TextField(placeholder ?? store.action?.label ?? "",
+                              text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
+                        .font(.display(.title3, weight: .regular))
+                        .lineLimit(4...12)
+                        .focused($textFocused)
+                    if attaches, embedsAttachments(input) { attachments }
+                }
+                .padding(16)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(ViewPalette.card, in: .rect(cornerRadius: 28, style: .continuous))
+                .overlay(RoundedRectangle(cornerRadius: 28, style: .continuous)
+                    .strokeBorder(textFocused ? ViewPalette.dawn.opacity(0.5) : ViewPalette.hairline))
+                .shadow(color: .black.opacity(0.12), radius: 18, y: 10)
+                .animation(.smooth(duration: 0.25), value: textFocused)
+                .onAppear { textFocused = true }
             } else {
                 TextField(placeholder ?? "", text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }))
                     .textFieldStyle(.roundedBorder)

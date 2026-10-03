@@ -118,8 +118,9 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
     Ok(())
 }
 
-/// A card the node mod puts to the user, answered on the same connection. A helper that goes away
+/// A card a node puts to the user, answered on the same connection. A mod helper that goes away
 /// leaves the card open: the mod's wait was cut, not the question, and its next post finds the card.
+/// A permission hook that goes away takes its card with it.
 async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) -> Result<()> {
     let card: crate::domain_holds::Card = match serde_json::from_value(card) {
         Ok(card) => card,
@@ -130,7 +131,9 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
         Some(id) => {
             let answer = tokio::select! {
                 answer = crate::domain_holds::wait(domain, &id) => answer?,
-                _ = stream.read_u8() => return Ok(()),
+                _ = stream.read_u8() => {
+                    return if card.withdraw_when_gone { crate::domain_holds::withdraw(domain, &id) } else { Ok(()) };
+                }
             };
             let state = domain.state()?;
             match (answer, state.holds.get(&id)) {
@@ -1403,6 +1406,26 @@ mod tests {
         let (result, body) = tokio::join!(handler, reply(&mut again));
         result.unwrap();
         assert_eq!(body, json!({"held": true, "approved": true}));
+    }
+
+    #[tokio::test]
+    async fn a_permission_hook_that_goes_away_withdraws_its_card() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let mut card = permission("agent-a");
+        card["withdraw_when_gone"] = json!(true);
+        let (mut hook, server) = UnixStream::pair().unwrap();
+        send(&mut hook, &json!({"node_hold": card})).await;
+        let handler = handle(server, &domain);
+        tokio::pin!(handler);
+        let id = tokio::select! {
+            id = open_hold(&domain) => id,
+            result = &mut handler => panic!("answered without waiting: {result:?}"),
+        };
+        drop(hook);
+        handler.await.unwrap();
+        assert!(domain.state().unwrap().interactions[&id].withdrawn, "the prompt was answered in the terminal or abandoned");
     }
 
     #[tokio::test]

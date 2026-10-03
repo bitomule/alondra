@@ -270,3 +270,48 @@ fn node_connect_ends_with_an_exit_code_when_the_daemon_goes_away_or_is_not_there
     assert_eq!((held.status.code(), held.status.signal()), (Some(3), None), "the daemon went away");
     std::fs::remove_dir_all(home).unwrap();
 }
+
+#[test]
+fn a_permission_prompt_is_held_as_a_card_and_answered_with_claude_codes_decision_or_left_to_claude_code() {
+    let home = std::env::temp_dir().join(format!("alondra-cli-permission-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&home);
+    std::fs::create_dir_all(&home).unwrap();
+    let prompt = br#"{"session_id":"s","hook_event_name":"PermissionRequest","permission_mode":"auto","tool_name":"Bash","tool_input":{"command":"git push"}}"#;
+    let hook = || {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+            .arg("hook")
+            .env("ALONDRA_HOME", &home)
+            .env("ALONDRA_LAUNCHED", "1")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().unwrap();
+        child.stdin.take().unwrap().write_all(prompt).unwrap();
+        child.wait_with_output().unwrap()
+    };
+
+    let absent = hook();
+    assert!(absent.status.success());
+    assert!(absent.stdout.is_empty(), "no daemon decides nothing: {}", String::from_utf8_lossy(&absent.stdout));
+
+    let listener = UnixListener::bind(home.join("hooks.sock")).unwrap();
+    let daemon = std::thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut size = [0; 4];
+        stream.read_exact(&mut size).unwrap();
+        let mut bytes = vec![0; u32::from_be_bytes(size) as usize];
+        stream.read_exact(&mut bytes).unwrap();
+        let sent: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        stream.write_all(&200u16.to_be_bytes()).unwrap();
+        stream.write_all(br#"{"held":true,"allowed":false,"reason":"David denies it"}"#).unwrap();
+        sent
+    });
+    let answered = hook();
+    let card = daemon.join().unwrap()["node_hold"].take();
+    assert!(answered.status.success());
+    assert_eq!((card["session_id"].as_str(), card["kind"].as_str(), card["tool"].as_str()), (Some("s"), Some("permission"), Some("Bash")));
+    assert_eq!(card["input"], serde_json::json!({"command": "git push"}));
+    assert_eq!(card["withdraw_when_gone"], true);
+    let decision: serde_json::Value = serde_json::from_slice(&answered.stdout).unwrap();
+    assert_eq!(decision, serde_json::json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+        "decision": {"behavior": "deny", "message": "David denies it"}}}));
+    std::fs::remove_dir_all(home).unwrap();
+}

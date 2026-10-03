@@ -11,14 +11,12 @@ const HOLD_RUN_MS = 600_000
 
 type Session = { id: string; alondra: string; version: string; cwd: string; launchKey?: string }
 
-type Card = { id: string; kind: 'question' | 'plan' | 'permission'; tool?: string; input: Record<string, unknown> }
+type Card = { id: string; kind: 'question' | 'plan'; input: Record<string, unknown> }
 type Answer = {
   held: boolean
   answers?: Record<string, string>
   approved?: boolean
   feedback?: string
-  allowed?: boolean
-  reason?: string
 }
 
 const approvedPlans = new Set<string>()
@@ -283,18 +281,9 @@ export const register: Register = (on) => {
   }).catch(async (_$, _e, next) => ({ deny: `The plan could not be put to the user: ${next.error.kind}` }))
 
   on('tool.check', async ($, e, next) => {
-    const decided = await next(e)
     if (e.tool === 'ExitPlanMode' && approvedPlans.delete(e.tool_use_id)) {
       return { decision: 'allow', reason: 'The user approved this plan' }
     }
-    if (decided.decision !== 'ask' || e.tool === 'AskUserQuestion') return decided
-    const reply = await hold($, next, { id: e.tool_use_id, kind: 'permission', tool: e.tool, input: e.input })
-    if (!reply.held) return decided
-    return reply.allowed
-      ? { decision: 'allow', reason: reply.reason ?? 'The user allowed this call' }
-      : { decision: 'deny', reason: reply.reason ?? 'The user denies it' }
-  }).catch(async (_$, _e, next) => ({
-    decision: 'deny',
-    reason: `The permission question could not be put to the user: ${next.error.kind}`,
-  }))
+    return next(e)
+  })
 }
