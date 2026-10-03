@@ -124,7 +124,18 @@ struct TriageCard: View {
                 KindBadge(kind: kind)
                 Spacer()
                 if let at = card.timestamps.first?.at {
-                    Text(relativeStamp(at)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    Text(relativeStamp(at)).font(.footnote).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                }
+                if let onSkip {
+                    Button(action: onSkip) {
+                        Image(systemName: "arrow.uturn.forward")
+                            .font(.footnote.weight(.semibold))
+                            .frame(width: 30, height: 30)
+                            .background(Palette.hairline, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Leave for Later")
                 }
             }
             Text(card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)

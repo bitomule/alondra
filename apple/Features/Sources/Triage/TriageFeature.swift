@@ -68,6 +68,7 @@ public struct TriageFeature: Sendable {
         case screen(ScreenFeature.Action)
         case cards(IdentifiedActionOf<TriageCardFeature>)
         case next
+        case leaveForLater
         case dragChanged
         case dragEnded(translation: Double, predicted: Double)
         case swipeSettled
@@ -130,6 +131,10 @@ public struct TriageFeature: Sendable {
                 return .none
             case .next:
                 return advance(&state)
+            case .leaveForLater:
+                guard state.swipe == nil, state.orderedIDs.count > 1, let id = state.currentID else { return .none }
+                state.swipe = Swipe(cardID: id, released: true, leaving: .left)
+                return settle()
             case .dragChanged:
                 guard state.swipe == nil, let id = state.currentID else { return .none }
                 state.swipe = Swipe(cardID: id)
@@ -140,11 +145,7 @@ public struct TriageFeature: Sendable {
                 if state.orderedIDs.count > 1, Self.commits(translation: translation, predicted: predicted) {
                     state.swipe?.leaving = translation > 0 ? .right : .left
                 }
-                return .run { [clock] send in
-                    try await clock.sleep(for: Self.leaveDuration)
-                    await send(.swipeSettled, animation: .spring(duration: 0.5, bounce: 0.2))
-                }
-                .cancellable(id: CancelID.swipe, cancelInFlight: true)
+                return settle()
             case .swipeSettled:
                 guard let swipe = state.swipe else { return .none }
                 state.swipe = nil
@@ -192,6 +193,14 @@ public struct TriageFeature: Sendable {
             }
         }
         return .merge(effects)
+    }
+
+    private func settle() -> Effect<Action> {
+        .run { [clock] send in
+            try await clock.sleep(for: Self.leaveDuration)
+            await send(.swipeSettled, animation: .spring(duration: 0.5, bounce: 0.2))
+        }
+        .cancellable(id: CancelID.swipe, cancelInFlight: true)
     }
 
     private func advance(_ state: inout State) -> Effect<Action> {

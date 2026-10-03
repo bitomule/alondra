@@ -130,7 +130,7 @@ public struct TriageView: View {
                         if let card = cardStore.card {
                             TriageCard(
                                 store: cardStore, card: card, isFront: depth == 0, zoom: zoom,
-                                onSkip: browsable ? { store.send(.next, animation: .spring(duration: 0.5, bounce: 0.2)) } : nil
+                                onSkip: browsable ? { store.send(.leaveForLater) } : nil
                             )
                         } else {
                             CardPlaceholder(store: cardStore)
@@ -169,6 +169,10 @@ public struct TriageView: View {
                 withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
             }
         }
+        .onChange(of: store.swipe?.leaving) { _, leaving in
+            guard let leaving else { return }
+            withAnimation(.easeIn(duration: 0.16)) { drag = leaving == .right ? 420 : -420 }
+        }
         .onChange(of: store.swipe == nil) { _, settled in
             guard settled else { return }
             var instant = Transaction()
@@ -191,10 +195,8 @@ public struct TriageView: View {
             .onEnded { value in
                 guard store.swipe?.released == false else { return }
                 store.send(.dragEnded(translation: drag, predicted: value.predictedEndTranslation.width))
-                switch store.swipe?.leaving {
-                case .left?: withAnimation(.easeIn(duration: 0.16)) { drag = -420 }
-                case .right?: withAnimation(.easeIn(duration: 0.16)) { drag = 420 }
-                case nil: withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
+                if store.swipe?.leaving == nil {
+                    withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
                 }
             }
     }

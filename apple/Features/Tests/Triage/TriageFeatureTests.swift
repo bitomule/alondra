@@ -141,6 +141,39 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testLeaveForLaterSendsTheCardOffLikeASwipe() async throws {
+        let clock = TestClock()
+        let feed = try fullFeed()
+        let store = store(feed, clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.leaveForLater) {
+            $0.swipe = .init(cardID: self.ids.question, released: true, leaving: .left)
+        }
+        await store.send(.leaveForLater)
+        await store.send(.dragChanged)
+        XCTAssertEqual(store.state.swipe?.leaving, .left, "a drag while the card leaves changes nothing")
+        await clock.advance(by: TriageFeature.leaveDuration)
+        await store.receive(\.swipeSettled)
+        XCTAssertNil(store.state.swipe)
+        XCTAssertEqual(store.state.currentID, ids.information)
+        XCTAssertEqual(store.state.skips, 1)
+        XCTAssertEqual(feed.requests, [], "leaving for later marks nothing")
+    }
+
+    @MainActor
+    func testTheOnlyCardCannotBeLeftForLater() async throws {
+        let store = store(FeedStub([try Fixtures.home(queue: [ids.question]), try Fixtures.card(ids.question)]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await store.send(.leaveForLater)
+        XCTAssertNil(store.state.swipe)
+        XCTAssertEqual(store.state.currentID, ids.question)
+    }
+
+    @MainActor
     func testADragNeverOpensTheCard() async throws {
         let clock = TestClock()
         var state = TriageFeature.State()
