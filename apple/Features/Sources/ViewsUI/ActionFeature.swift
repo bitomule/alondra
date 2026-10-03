@@ -27,18 +27,13 @@ public struct ActionFeature: Sendable {
         public var attachmentPicker = AttachmentFeature.State()
         public var pendingAttachmentSubmit = false
         public var requiresAttachments = false
+        public var handsOff = false
         public var dataEpoch: String
         public var client: ViewClient
         public var lang: String
 
         public init(dataEpoch: String, client: ViewClient, lang: String) {
             self.dataEpoch = dataEpoch; self.client = client; self.lang = lang
-        }
-
-        public var hiddenCardID: String? {
-            guard inFlight, let id = action?.id else { return nil }
-            let subject = id.split(separator: "@").first?.split(separator: ":").last
-            return subject.map(String.init)
         }
 
         /// The confirm button, naming the option the action runs with: "Merge (squash)".
@@ -69,6 +64,10 @@ public struct ActionFeature: Sendable {
         case confirm
         case cancelConfirmation
         case sendChangedAction
+        /// The request left: the screen shows its result now, without waiting for the daemon.
+        case sent(ActionRequest)
+        /// The daemon answered `sent`, or could not be reached; a screen undoes what it showed when not applied.
+        case settled(ActionRequest, applied: Bool)
         case response(ActionResponse)
         case failed(String)
         case dismiss
@@ -179,24 +178,29 @@ public struct ActionFeature: Sendable {
                 state.changed = nil
                 state.pending = makeRequest(state, actionID: changed.actionId)
                 return send(&state)
+            case .sent, .settled:
+                return .none
             case let .response(reply):
                 state.inFlight = false
                 state.pending = nil
                 switch reply.outcome {
                 case .applied:
-                    state.stamp = reply.stamp ?? state.action?.stamp
+                    state.stamp = reply.stamp ?? state.stamp ?? state.action?.stamp
                     state.error = nil
                     return .send(.delegate(.completed(reply.message ?? String(localized: "Action completed"))))
                 case .changed:
+                    state.stamp = nil
                     state.changed = reply.confirm
                     state.error = reply.message
                     return .none
                 case .noLongerAvailable, .rejected:
+                    state.stamp = nil
                     state.error = reply.message
                     return .send(.delegate(.failed(reply.message ?? String(localized: "Action failed"))))
                 }
             case let .failed(message):
                 state.inFlight = false
+                state.stamp = nil
                 state.error = message
                 // Keep the exact request and command ID for an explicit retry.
                 return .send(.delegate(.failed(message)))
@@ -220,16 +224,31 @@ public struct ActionFeature: Sendable {
         }
     }
 
+    /// The result shows at once: the stamp is up before the daemon answers, and the delivery runs on
+    /// even if the screen goes away. A screen that leaves on sending hands the request off instead,
+    /// to whoever outlives it.
     private func send(_ state: inout State) -> Effect<Action> {
-        guard let id = state.action?.id else { return .none }
+        guard let action = state.action, let id = action.id else { return .none }
         let request = state.pending ?? makeRequest(state, actionID: id)
+        state.stamp = action.stamp ?? String(localized: "Sent")
+        state.error = nil
+        guard !state.handsOff else {
+            state.pending = nil
+            return .send(.sent(request))
+        }
         state.pending = request
         state.inFlight = true
-        state.error = nil
-        return .run { send in
-            do { await send(.response(try await viewsClient.perform(request))) }
-            catch { await send(.failed(String(localized: "Couldn’t send. Try again."))) }
-        }
+        return .merge(.send(.sent(request)), .run { [viewsClient] send in
+            let delivery = Task { try await viewsClient.perform(request) }
+            do {
+                let reply = try await delivery.value
+                await send(.settled(request, applied: reply.outcome == .applied))
+                await send(.response(reply))
+            } catch {
+                await send(.settled(request, applied: false))
+                await send(.failed(String(localized: "Couldn’t send. Try again.")))
+            }
+        })
     }
 
     private func makeRequest(_ state: State, actionID: String) -> ActionRequest {

@@ -6,7 +6,7 @@ import ComposableArchitecture
 import SwiftUI
 
 /// One card of Waiting for You: the 34 pt shell, the scrolling body, the pinned controls and the
-/// stamp that covers it once the server has applied what was sent.
+/// stamp that covers it the moment an answer is sent.
 struct TriageCard: View {
     @Bindable var store: StoreOf<TriageCardFeature>
     let card: Card
@@ -360,7 +360,7 @@ struct TriageCard: View {
                             .padding(.horizontal, compact ? 0 : 6)
                     }
                     .buttonStyle(OptionPillStyle(tint: tint, picked: store.actions.selectedOptionID == option.id))
-                    .disabled(!action.enabled || store.actions.inFlight)
+                    .disabled(!action.enabled)
                 }
             }
         } else { actionButton(action) }
@@ -379,7 +379,7 @@ struct TriageCard: View {
                     .font(.headline).frame(maxWidth: .infinity, minHeight: 50)
             }
             .buttonStyle(FilledStyle(tint: actionTint))
-            .disabled(!action.enabled || store.actions.inFlight)
+            .disabled(!action.enabled)
         } else {
             Button {
             if case .url(let url) = action.link {
@@ -414,7 +414,7 @@ struct TriageCard: View {
                 }
             }
             .buttonStyle(AnyButtonStyle(tint: filledTint(for: action)))
-            .disabled(!action.enabled || store.actions.inFlight ||
+            .disabled(!action.enabled ||
                 (verb(action) == "ask_pr" && store.replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
         }
     }
@@ -443,7 +443,7 @@ struct TriageCard: View {
             }
             .buttonStyle(PressStyle())
             .disabled((store.replyDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                && !(selected?.id == action.id && store.actions.selectedOptionID != nil)) || store.actions.inFlight)
+                && !(selected?.id == action.id && store.actions.selectedOptionID != nil)))
             .padding(4)
             .accessibilityLabel("Send")
         }

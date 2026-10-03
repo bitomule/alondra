@@ -17,6 +17,11 @@ final class FeedStub: @unchecked Sendable {
 
     var requests: [ActionRequest] { lock.withLock { sent } }
 
+    /// What a screen handed to the app as it left, which the app sends on its behalf.
+    func deliver(_ request: ActionRequest) {
+        lock.withLock { sent.append(request) }
+    }
+
     func serve(_ document: ViewDocument) {
         lock.withLock { documents[document.key] = document }
     }

@@ -151,7 +151,7 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testTheStampOnlyShowsAfterTheServerAnswers() async throws {
+    func testTheStampShowsTheMomentTheAnswerIsSentWithoutWaitingForTheServer() async throws {
         let feed = FeedStub()
         let (gate, release) = AsyncStream<Void>.makeStream()
         let card = try Fixtures.card(Fixtures.questionID)
@@ -169,9 +169,11 @@ final class TriageCardFeatureTests: XCTestCase {
 
         await store.send(.optionPicked(answer, optionID: option.id))
         await store.receive(\.actions.submit)
+        await store.receive(\.actions.sent)
         XCTAssertTrue(store.state.actions.inFlight)
-        XCTAssertNil(store.state.stamp, "sent is not applied")
+        XCTAssertEqual(store.state.stamp, "Answered", "the stamp does not wait for the daemon")
         release.yield()
+        await store.receive(\.actions.settled)
         await store.receive(\.actions.response)
         XCTAssertEqual(store.state.stamp, "Answered")
     }

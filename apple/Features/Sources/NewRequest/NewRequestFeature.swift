@@ -3,7 +3,8 @@ import ComposableArchitecture
 import Foundation
 
 /// The composer on the New tab: what you want done, what to attach, how to launch it, and the
-/// requests already sent. The text and the options stay in the draft until the daemon accepts them.
+/// requests already sent. Sending clears the composer at once; a request the daemon does not take
+/// puts its text back.
 @Reducer
 public struct NewRequestFeature: Sendable {
     public init() {}
@@ -32,7 +33,7 @@ public struct NewRequestFeature: Sendable {
         }
 
         public var canSend: Bool {
-            form?.submit.enabled == true && !actions.inFlight
+            form?.submit.enabled == true
                 && !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
         }
 
@@ -109,13 +110,15 @@ public struct NewRequestFeature: Sendable {
             case .send:
                 guard state.canSend else { return .none }
                 return .send(.actions(.submit))
-            case .actions(.delegate(.completed(let message))):
+            case .actions(.sent):
                 state.values["text"] = .string("")
-                guard let form = state.form else { return .send(.delegate(.completed(message))) }
-                return .concatenate(
-                    .send(.actions(.presentForm(form.submit, state.values, requiresAttachments: true))),
-                    .send(.delegate(.completed(message)))
-                )
+                guard let form = state.form else { return .none }
+                return .send(.actions(.presentForm(form.submit, state.values, requiresAttachments: true)))
+            case .actions(.settled(let request, applied: false)):
+                guard state.text.isEmpty, let text = request.input.fields?["text"] else { return .none }
+                return Self.set("text", text, in: &state)
+            case .actions(.delegate(.completed(let message))):
+                return .send(.delegate(.completed(message)))
             case .actions(.delegate(.failed(let message))):
                 return .send(.delegate(.failed(message)))
             case .screen, .options, .actions, .delegate:

@@ -186,7 +186,7 @@ public struct NodeDetailView: View {
                     Text(action.label).frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glass)
-                .disabled(!action.enabled || store.actions.inFlight)
+                .disabled(!action.enabled)
             }
         }
         .controlSize(.large).buttonBorderShape(.capsule)
@@ -206,9 +206,8 @@ public struct NodeDetailView: View {
                 }
                 .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 22))
                 Button { store.send(.send) } label: {
-                    Image(systemName: store.composer.inFlight ? "ellipsis" : "arrow.up")
+                    Image(systemName: "arrow.up")
                         .font(.body.weight(.bold)).frame(width: 26, height: 26)
-                        .symbolEffect(.variableColor.iterative, isActive: store.composer.inFlight)
                 }
                 .buttonStyle(.glassProminent).buttonBorderShape(.circle).tint(Palette.dawn)
                 .disabled(!store.canSend)

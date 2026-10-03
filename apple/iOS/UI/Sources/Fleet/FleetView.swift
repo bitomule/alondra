@@ -57,6 +57,7 @@ public struct FleetView: View {
             }
         }
         .listRowSpacing(10)
+        .animation(.smooth, value: overview)
         .overlay {
             if overview.isEmpty, let empty = overview.empty {
                 ContentUnavailableView(empty.text, systemImage: "circle.hexagongrid")
@@ -101,6 +102,7 @@ public struct FleetView: View {
                 }
             }
             .listRowSpacing(10)
+            .animation(.smooth, value: results)
             .overlay {
                 if results.groups.isEmpty { ContentUnavailableView.search(text: store.query) }
             }

@@ -96,6 +96,29 @@ public extension TasksBoard {
     }
 }
 
+public extension TasksBoard {
+    /// The board as it is after what was just sent: a withdrawn request is gone, archived work has
+    /// moved to the archive.
+    func hiding(_ optimistic: Optimistic) -> TasksBoard {
+        guard !optimistic.isEmpty else { return self }
+        func shown(_ fold: Fold, adding moved: Fold? = nil) -> Fold {
+            let kept = fold.requests.filter { !optimistic.hides($0.withdraw?.id) }
+            let movedRequests = moved?.requests ?? []
+            return Fold(id: fold.id, title: fold.title,
+                        count: max(0, fold.count - (fold.requests.count - kept.count)) + (moved?.count ?? 0),
+                        requests: movedRequests + kept, more: fold.more)
+        }
+        let archiving = optimistic.hides(archiveCompleted?.id)
+        let emptied = Fold(id: finished.id, title: finished.title, count: 0, requests: [], more: nil)
+        return TasksBoard(
+            summary: summary, schedules: schedules, active: shown(active),
+            finished: archiving ? emptied : shown(finished),
+            archived: archiving ? shown(archived, adding: finished) : shown(archived),
+            archiveCompleted: archiving ? nil : archiveCompleted, empty: empty
+        )
+    }
+}
+
 /// Rows loaded by "show more" for one section, and the page after them if there is one.
 public struct TasksPage: Equatable, Sendable {
     public var rows: [Row]

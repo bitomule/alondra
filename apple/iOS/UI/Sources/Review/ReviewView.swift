@@ -176,7 +176,6 @@ public struct ReviewView: View {
                     .padding(.horizontal, 6)
                 }
                 .buttonStyle(OptionPillStyle(tint: kind.tint, picked: false))
-                .disabled(store.actions.inFlight)
             }
             if let error = store.actions.error {
                 Text(error).font(.caption).foregroundStyle(Palette.rose)
@@ -245,7 +244,7 @@ public struct ReviewView: View {
             if case .url(let url) = action.link, let destination = URL(string: url) { openURL(destination) }
             else { store.send(.actionTapped(action)) }
         }
-        let disabled = !store.state.isSendable(action) || store.actions.inFlight
+        let disabled = !store.state.isSendable(action)
         if action.style == .primary {
             Button(action: tap) {
                 if ReviewFeature.Subject.verb(action) == "accept" { Label(action.label, systemImage: "checkmark") }

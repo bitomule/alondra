@@ -71,12 +71,16 @@ final class ViewsUITests: XCTestCase {
             $0.text = "My answer"
             $0.error = nil
         }
+        let request = ActionRequest(commandId: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10",
+                                    dataEpoch: "epoch", client: .ios, lang: "en", actionId: "ans:q-1@1",
+                                    optionId: "", input: ActionInput(text: "My answer"))
         await store.send(.submit) {
             $0.inFlight = true
-            $0.pending = ActionRequest(commandId: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10",
-                                           dataEpoch: "epoch", client: .ios, lang: "en", actionId: "ans:q-1@1",
-                                           optionId: "", input: ActionInput(text: "My answer"))
+            $0.pending = request
+            $0.stamp = "Sent"
         }
+        await store.receive(\.sent, request)
+        await store.receive(\.settled)
         await store.receive(\.response) {
             $0.inFlight = false
             $0.pending = nil

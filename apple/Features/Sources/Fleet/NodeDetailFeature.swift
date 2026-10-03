@@ -26,7 +26,7 @@ public struct NodeDetailFeature: Sendable {
         public var isOrchestrator: Bool { screen.key.rawValue == "node:orchestrator" }
 
         public var canSend: Bool {
-            composer.action != nil && !composer.inFlight
+            composer.action != nil
                 && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !composer.attachmentPicker.entries.isEmpty)
         }
     }
@@ -77,18 +77,22 @@ public struct NodeDetailFeature: Sendable {
             case .send:
                 guard state.canSend else { return .none }
                 return .concatenate(.send(.composer(.textChanged(state.draft))), .send(.composer(.submit)))
-            case .composer(.response(let response)) where response.outcome == .applied:
+            case .composer(.sent):
                 state.draft = ""
                 guard let message = state.composer.action else { return .none }
                 return .send(.composer(.present(message)))
+            case .composer(.settled(let request, applied: false)):
+                if state.draft.isEmpty { state.draft = request.input.text ?? "" }
+                return .none
             case .composer(.delegate(let delegate)), .actions(.delegate(let delegate)):
                 return .send(.delegate(ScreenDelegate(delegate)))
             case .composer:
                 return .none
             case .perform(let wire):
+                state.actions.handsOff = wire.command == "close"
                 return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
-            case .actions(.response(let response)) where response.outcome == .applied && state.actions.action?.id?.hasPrefix("close:") == true:
-                return .run { _ in await dismiss() }
+            case .actions(.sent(let request)) where state.actions.handsOff:
+                return .merge(.send(.delegate(.handOff(request))), .run { _ in await dismiss() })
             case .actions:
                 return .none
             case .follow(let link):

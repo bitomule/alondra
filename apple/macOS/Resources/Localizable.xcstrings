@@ -30,6 +30,7 @@
     "Issues": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Incidencias"}}}},
     "Action completed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acción completada"}}}},
     "Action failed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo completar la acción"}}}},
+    "Sent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviado"}}}},
     "Choose an option": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige una opción"}}}},
     "Enter a response": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Escribe una respuesta"}}}},
     "Couldn’t send. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo enviar. Vuelve a intentarlo."}}}},

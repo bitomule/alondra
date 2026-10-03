@@ -91,6 +91,30 @@ final class SchedulesTests: XCTestCase {
     }
 
     @MainActor
+    func testADeletedScheduleLeavesTheListAtOnceAndReturnsIfTheDeleteFails() async throws {
+        let gate = Gate()
+        let store = try await loaded()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            throw URLError(.notConnectedToInternet)
+        }
+        let entry = try XCTUnwrap(store.state.list?.entries.first)
+
+        await store.send(.perform(try XCTUnwrap(entry.delete)))
+        await store.send(.actions(.confirm))
+        await store.receive(\.actions.sent)
+        XCTAssertFalse(store.state.list?.entries.contains { $0.id == entry.id } ?? true)
+
+        await store.send(.screen(.loaded(try XCTUnwrap(store.state.screen.document))))
+        XCTAssertFalse(store.state.list?.entries.contains { $0.id == entry.id } ?? true)
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.list?.entries.first?.id, entry.id)
+        await store.receive(\.delegate.failed)
+    }
+
+    @MainActor
     func testAFailedActionIsReportedAndLeavesTheListAlone() async throws {
         let store = try await loaded(respond: { _ in throw URLError(.notConnectedToInternet) })
 

@@ -230,6 +230,40 @@ final class AppFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.notice?.event, .actionCompleted("Accepted"))
     }
 
+    // MARK: Hand-off
+
+    @MainActor
+    func testAnActionSentFromAReviewThatLeftIsDeliveredByTheAppAndAFailureBringsTheCardBack() async throws {
+        let gate = Gate()
+        let cards = ["c-1", "c-2"]
+        var state = AppFeature.State()
+        state.triage.screen.document = try Fixtures.home(queue: cards)
+        state.triage.orderedIDs = cards
+        let store = makeStore(state)
+        store.dependencies.viewsClient.observe = { _ in AsyncThrowingStream { $0.finish() } }
+        let performed = LockIsolated<[ActionRequest]>([])
+        store.dependencies.viewsClient.perform = { request in
+            performed.withValue { $0.append(request) }
+            await gate.wait()
+            return try Responses.rejected("This card has changed")
+        }
+        await store.send(.open(.inbox, key("card:c-1")))
+        let id = try XCTUnwrap(store.state.inboxPath.ids.first)
+        let request = ActionRequest(commandId: "c", dataEpoch: "", client: .ios, lang: "en", actionId: "accept:c-1@1")
+
+        await store.send(.inboxPath(.element(id: id, action: .review(.delegate(.handOff(request))))))
+        await store.receive(\.triage.handedOff)
+        XCTAssertEqual(store.state.triage.orderedIDs, ["c-2"], "the card leaves Waiting for You at once")
+
+        await gate.open()
+        await store.receive(\.handOffAnswered)
+        XCTAssertEqual(performed.value, [request])
+        await store.receive(\.triage.handOffSettled)
+        XCTAssertEqual(store.state.triage.orderedIDs, cards)
+        XCTAssertEqual(store.state.triage.currentID, "c-1")
+        XCTAssertEqual(store.state.notice?.event, .failure("This card has changed"))
+    }
+
     // MARK: Close refusal
 
     @MainActor

@@ -26,7 +26,10 @@ public struct ReviewFeature: Sendable {
         public var preview: AttachmentPreview?
         public var awaitingAttachments = false
 
-        public init(key: ViewKey) { screen = ScreenFeature.State(key: key) }
+        public init(key: ViewKey) {
+            screen = ScreenFeature.State(key: key)
+            actions.handsOff = true
+        }
 
         public var subject: Subject? { Subject(document: screen.document, key: screen.key) }
         public var contentPending: Bool { contentDigest != nil && content == nil && !contentFailed }
@@ -163,6 +166,7 @@ public struct ReviewFeature: Sendable {
         @CasePathable
         public enum Delegate: Equatable, Sendable {
             case open(ViewKey)
+            case handOff(ActionRequest)
         }
     }
 
@@ -267,11 +271,10 @@ public struct ReviewFeature: Sendable {
                     return .none
                 }
                 return state.attachments.allReady ? .send(.submit) : .none
-            case .actions(.response(let response)):
-                guard response.outcome == .applied else { return .none }
+            case .actions(.sent(let request)):
                 state.comments = [:]
                 state.general = ""
-                return .run { [dismiss] _ in await dismiss() }
+                return .merge(.send(.delegate(.handOff(request))), .run { [dismiss] _ in await dismiss() })
             case .actions:
                 return .none
             }
