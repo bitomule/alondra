@@ -16,7 +16,7 @@ struct PRActionBar: View {
                 GlassBarRow {
                     if let ask = review.ask {
                         Button { store.send(.perform(ask)) } label: {
-                            GlassBarLabel(String(localized: "Ask"), fills: review.requestChanges == nil)
+                            GlassBarLabel(String(localized: "Ask"))
                         }
                         .buttonStyle(.glass)
                         .disabled(!ask.enabled)

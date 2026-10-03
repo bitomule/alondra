@@ -3,7 +3,9 @@ import AlondraDesign
 import AlondraFeatures
 import AlondraiOSUI
 import ComposableArchitecture
+import SnapshotTesting
 import SwiftUI
+import UIKit
 import XCTest
 
 /// The PR screen as the daemon's `pull_request:` view fills it.
@@ -41,19 +43,32 @@ final class PRReviewSnapshotTests: XCTestCase {
      "input":{"kind":"none"},"attachments":false,"enabled":true}
     """
 
+    /// The labels the daemon sends a Spanish phone (`crates/core/src/views/card.rs`); the fixture
+    /// is the English document, so the Spanish variants swap them in to show what ships.
+    private static let spanishLabels = [
+        "Ask about the PR": "Preguntar por la PR",
+        "Request changes": "Pedir cambios",
+        "Merge": "Fusionar",
+        "Resolve conflicts": "Resolver conflictos",
+        "Your question": "Tu pregunta",
+        "Describe the changes": "Describe los cambios",
+    ]
+
     private func screen(
         adding action: String,
         comments: [String: ActionComment] = [:],
-        collapsed: Set<String> = []
+        collapsed: Set<String> = [],
+        spanish: Bool = false
     ) throws -> some View {
-        PRReviewView(store: store(try state(adding: action, comments: comments, collapsed: collapsed)))
+        PRReviewView(store: store(try state(adding: action, comments: comments, collapsed: collapsed, spanish: spanish)))
             .environment(\.highlightsDiffs, false)
     }
 
     private func state(
         adding action: String,
         comments: [String: ActionComment] = [:],
-        collapsed: Set<String> = []
+        collapsed: Set<String> = [],
+        spanish: Bool = false
     ) throws -> PRReviewFeature.State {
         let document = try ScreenFixtures.document("pull-request-ios") { object in
             var sections = object["sections"] as? [[String: Any]] ?? []
@@ -61,6 +76,18 @@ final class PRReviewSnapshotTests: XCTestCase {
                 var bar = sections[index]["items"] as? [[String: Any]] ?? []
                 var actions = bar[0]["actions"] as? [[String: Any]] ?? []
                 actions.append((try? JSONSerialization.jsonObject(with: Data(action.utf8)) as? [String: Any]) ?? [:])
+                if spanish {
+                    for slot in actions.indices {
+                        if let label = actions[slot]["label"] as? String, let es = Self.spanishLabels[label] {
+                            actions[slot]["label"] = es
+                        }
+                        if var input = actions[slot]["input"] as? [String: Any],
+                           let placeholder = input["placeholder"] as? String, let es = Self.spanishLabels[placeholder] {
+                            input["placeholder"] = es
+                            actions[slot]["input"] = input
+                        }
+                    }
+                }
                 bar[0]["actions"] = actions
                 sections[index]["items"] = bar
             }
@@ -121,6 +148,29 @@ final class PRReviewSnapshotTests: XCTestCase {
         state.actions.text = "Keep the weekday picker and add a test for it."
         let view = composer(state)
         assertScreenVariants(inNavigationStack: false) { view }
+    }
+
+    func test_prReview_spanishDaemonLabels() throws {
+        let anchor = UnifiedDiff.parse(Self.diff).first?.lines.compactMap(\.anchor).first ?? ""
+        let comment = ActionComment(anchor: anchor, text: "¿Mantiene el selector de días?")
+        let ready = try screen(adding: Self.merge, comments: [anchor: comment], spanish: true)
+        assertAppSnapshot(of: spanishScreen(ready), as: spanishImage(.dark), named: "merge_dark_es")
+        let conflicts = try screen(adding: Self.conflicts, spanish: true)
+        assertAppSnapshot(of: spanishScreen(conflicts), as: spanishImage(.light), named: "conflicts_light_es")
+        var sheet = try state(adding: Self.merge, comments: [anchor: comment], spanish: true)
+        sheet.actions.action = try XCTUnwrap(sheet.review?.requestChanges)
+        sheet.actions.comments = [comment]
+        assertAppSnapshot(of: AnyView(composer(sheet).environment(\.locale, Locale(identifier: "es_ES"))),
+                          as: spanishImage(.light), named: "sheet_light_es")
+    }
+
+    private func spanishScreen(_ view: some View) -> AnyView {
+        AnyView(NavigationStack { view }.environment(\.locale, Locale(identifier: "es_ES")))
+    }
+
+    private func spanishImage(_ style: UIUserInterfaceStyle) -> Snapshotting<AnyView, UIImage> {
+        .image(drawHierarchyInKeyWindow: true, perceptualPrecision: 0.98,
+               layout: .fixed(width: 393, height: 852), traits: .init(userInterfaceStyle: style))
     }
 
     func test_prReview_noLongerAvailable() {

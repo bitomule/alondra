@@ -33,17 +33,14 @@ struct GlassBarRow<Content: View>: View {
 }
 
 /// A bar button's label: it drops its symbol before its words when the row runs short, and
-/// stretches so the buttons sharing a row split what the hugging ones leave.
+/// stretches so the buttons sharing a row split it evenly.
 struct GlassBarLabel: View {
     let title: String
     let systemImage: String?
-    let fills: Bool
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
-    init(_ title: String, systemImage: String? = nil, fills: Bool = true) {
+    init(_ title: String, systemImage: String? = nil) {
         self.title = title
         self.systemImage = systemImage
-        self.fills = fills
     }
 
     var body: some View {
@@ -51,6 +48,6 @@ struct GlassBarLabel: View {
             if let systemImage { Label(title, systemImage: systemImage) }
             Text(title)
         }
-        .frame(maxWidth: fills || dynamicTypeSize.isAccessibilitySize ? .infinity : nil)
+        .frame(maxWidth: .infinity)
     }
 }
