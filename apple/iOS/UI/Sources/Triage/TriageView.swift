@@ -251,9 +251,9 @@ private struct CardPlaceholder: View {
                 } actions: {
                     Button("Try Again") { store.send(.screen(.retry)) }.buttonStyle(.glass)
                 }
-            case .missing:
+            case .missing, .loaded:
                 ContentUnavailableView("This screen is no longer available", systemImage: "tray")
-            case .loading, .loaded:
+            case .loading:
                 ProgressView()
             }
         }

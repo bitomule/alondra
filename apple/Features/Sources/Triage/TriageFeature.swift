@@ -40,8 +40,12 @@ public struct TriageFeature: Sendable {
             return false
         }
         public var loadError: String? {
-            if case .failed(let message) = screen.phase, screen.document == nil { return message }
-            return nil
+            guard screen.document == nil else { return nil }
+            switch screen.phase {
+            case .failed(let message): return message
+            case .missing: return TriageFeature.loadFailure
+            case .loading, .loaded: return nil
+            }
         }
 
         fileprivate var stampShowing: Bool { visibleIDs.contains { cards[id: $0]?.actions.stamp != nil } }
@@ -78,6 +82,7 @@ public struct TriageFeature: Sendable {
         case swipeSettled
         case machinePresented(Bool)
         case stampElapsed
+        case loadTimedOut
         /// A screen opened from a card sent its answer and left; the app delivers it.
         case handedOff(ActionRequest, cardID: String)
         case handOffSettled(ActionRequest, applied: Bool)
@@ -94,9 +99,12 @@ public struct TriageFeature: Sendable {
     public static let depth = 3
     public static let leaveDuration = Duration.milliseconds(160)
     public static let stampDuration = Duration.milliseconds(650)
+    /// Past the transport's own request timeouts: a queue still not here by then shows an error with retry.
+    public static let loadDeadline = Duration.seconds(20)
 
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case stamp, swipe }
+    private enum CancelID { case stamp, swipe, loadDeadline }
+    static var loadFailure: String { String(localized: "Couldn’t load this from your Mac. Try again.") }
 
     public static func commits(translation: Double, predicted: Double) -> Bool {
         abs(translation) > 90 || (abs(predicted) > 240 && abs(translation) > 30)
@@ -112,7 +120,9 @@ public struct TriageFeature: Sendable {
                 })
             case .disappeared:
                 state.swipe = nil
-                return .merge([.send(.screen(.stop)), .cancel(id: CancelID.stamp), .cancel(id: CancelID.swipe)] + state.cards.ids.map {
+                return .merge([
+                    .send(.screen(.stop)), .cancel(id: CancelID.stamp), .cancel(id: CancelID.swipe), .cancel(id: CancelID.loadDeadline),
+                ] + state.cards.ids.map {
                     .send(.cards(.element(id: $0, action: .screen(.stop))))
                 })
             case .focus(let id):
@@ -127,15 +137,29 @@ public struct TriageFeature: Sendable {
             case .feedStatus(let status):
                 state.status = status
                 return .none
+            case .screen(.task), .screen(.retry):
+                guard state.screen.document == nil else { return .none }
+                return .run { [clock] send in
+                    try await clock.sleep(for: Self.loadDeadline)
+                    await send(.loadTimedOut)
+                }
+                .cancellable(id: CancelID.loadDeadline, cancelInFlight: true)
+            case .loadTimedOut:
+                guard state.screen.document == nil, state.screen.phase == .loading else { return .none }
+                state.screen.phase = .failed(Self.loadFailure)
+                return .none
+            case .screen(.missing) where state.screen.key != .home:
+                state.screen = ScreenFeature.State(key: .home)
+                return .send(.screen(.task))
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
                 state.status = document.status
                 state.optimistic.reconcile(document.version)
                 if state.stampShowing {
                     state.newerQueueWaiting = true
-                    return .none
+                    return .cancel(id: CancelID.loadDeadline)
                 }
-                return showQueue(&state)
+                return .merge(.cancel(id: CancelID.loadDeadline), showQueue(&state))
             case .screen:
                 return .none
             case .next:
