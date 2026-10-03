@@ -66,17 +66,21 @@ struct ViewsScreenView: View {
     private var actionSheetContent: some View {
         attachmentContent
         .sheet(isPresented: Binding(get: { store.action.action != nil && !isInlineNodeMessage && !isInlineForm }, set: { if !$0 && !isInlineNodeMessage && !isInlineForm { store.send(.action(.dismiss)) } })) {
-            ActionInputView(store: store.scope(state: \.action, action: \.action), form: store.form,
-                            showCommentEditor: !store.key.rawValue.hasPrefix("pull_request:"),
-                            onReload: { field, value in store.send(.reloadForm(field.id, value)) },
-                            onPicker: { field, source in store.send(.pickerOpened(field.id, source)) })
-                .padding()
-                .presentationDetents([.medium, .large])
-                .safeAreaInset(edge: .bottom) {
-                    Button(store.form?.id == "schedule" ? (store.form?.submit.label ?? String(localized: "Save Schedule")) : String(localized: "Continue")) { store.send(.action(.submit)) }
-                        .buttonStyle(.borderedProminent).tint(Palette.dawn).padding()
-                }
+            let action = store.scope(state: \.action, action: \.action)
+            ActionComposerSheet(store: action, title: action.action?.label ?? "", submitTitle: composerSubmitTitle,
+                                tint: screenGlow) {
+                ActionInputView(store: action, form: store.form,
+                                showCommentEditor: !store.key.rawValue.hasPrefix("pull_request:"),
+                                onReload: { field, value in store.send(.reloadForm(field.id, value)) },
+                                onPicker: { field, source in store.send(.pickerOpened(field.id, source)) })
+            }
         }
+    }
+
+    private var composerSubmitTitle: String {
+        if store.form?.id == "schedule" { return store.form?.submit.label ?? String(localized: "Save Schedule") }
+        if case .text = store.action.action?.input { return String(localized: "Send") }
+        return String(localized: "Continue")
     }
 
     private var pickerContent: some View {

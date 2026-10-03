@@ -50,6 +50,29 @@ final class ViewsUITests: XCTestCase {
         await store.send(.cancelConfirmation) { $0.confirmation = nil }
     }
 
+    func testSendStaysOffUntilTheActionHasWhatItAsksFor() throws {
+        let required = try ContractCodec.decode(AlondraContract.Action.self, from: Data(#"{"id":"ask_pr:pr-1@1","label":"Ask about the PR","style":"secondary","presentation":"button","input":{"kind":"text","placeholder":"Your question","required":true,"multiline":true},"attachments":true,"enabled":true}"#.utf8))
+        var state = ActionFeature.State(dataEpoch: "epoch", client: .ios, lang: "en")
+        state.action = required
+        XCTAssertFalse(state.canSubmit)
+        state.text = "   \n"
+        XCTAssertFalse(state.canSubmit, "whitespace is not a question")
+        state.comments = [ActionComment(anchor: "a.swift:3", text: "Why?")]
+        XCTAssertTrue(state.canSubmit, "line comments stand in for the text")
+        state.comments = []
+        state.text = "Why the new picker?"
+        XCTAssertTrue(state.canSubmit)
+        state.inFlight = true
+        XCTAssertFalse(state.canSubmit, "one send at a time")
+
+        let options = try ContractCodec.decode(AlondraContract.Action.self, from: Data(#"{"id":"ans:q-1@1","label":"Answer","style":"primary","presentation":"options","options":[{"id":"yes","label":"Yes","style":"primary","input":{"kind":"none"}}],"input":{"kind":"none"},"attachments":false,"enabled":true}"#.utf8))
+        var choice = ActionFeature.State(dataEpoch: "epoch", client: .ios, lang: "en")
+        choice.action = options
+        XCTAssertFalse(choice.canSubmit)
+        choice.selectedOptionID = "yes"
+        XCTAssertTrue(choice.canSubmit)
+    }
+
     @MainActor
     func testQuestionAcceptsFreeTextWithoutChoosingAnOption() async throws {
         let bytes = #"{"id":"ans:q-1@1","label":"Answer","style":"primary","presentation":"options","options":[{"id":"yes","label":"Yes","style":"primary","input":{"kind":"none"}}],"input":{"kind":"text","placeholder":"Answer in your own words…","required":false,"multiline":true},"attachments":false,"enabled":true}"#.data(using: .utf8)!

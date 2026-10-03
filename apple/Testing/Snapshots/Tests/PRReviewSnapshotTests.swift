@@ -46,6 +46,15 @@ final class PRReviewSnapshotTests: XCTestCase {
         comments: [String: ActionComment] = [:],
         collapsed: Set<String> = []
     ) throws -> some View {
+        PRReviewView(store: store(try state(adding: action, comments: comments, collapsed: collapsed)))
+            .environment(\.highlightsDiffs, false)
+    }
+
+    private func state(
+        adding action: String,
+        comments: [String: ActionComment] = [:],
+        collapsed: Set<String> = []
+    ) throws -> PRReviewFeature.State {
         let document = try ScreenFixtures.document("pull-request-ios") { object in
             var sections = object["sections"] as? [[String: Any]] ?? []
             for index in sections.indices where sections[index]["id"] as? String == "actions" {
@@ -64,8 +73,15 @@ final class PRReviewSnapshotTests: XCTestCase {
         state.diff = .loaded(UnifiedDiff.parse(Self.diff))
         state.comments = comments
         state.collapsed = collapsed
-        return PRReviewView(store: store(state))
-            .environment(\.highlightsDiffs, false)
+        return state
+    }
+
+    private func composer(_ state: PRReviewFeature.State) -> some View {
+        let actions = store(state).scope(state: \.actions, action: \.actions)
+        return ActionComposerSheet(store: actions, title: actions.action?.label ?? "") {
+            ActionInputView(store: actions, showCommentEditor: false)
+        }
+        .background(Palette.night)
     }
 
     private func store(_ state: PRReviewFeature.State) -> StoreOf<PRReviewFeature> {
@@ -87,6 +103,24 @@ final class PRReviewSnapshotTests: XCTestCase {
             collapsed: ["Cargo.lock"]
         )
         assertScreenVariants { view }
+    }
+
+    func test_prReview_askSheet() throws {
+        var state = try state(adding: Self.merge)
+        state.actions.action = try XCTUnwrap(state.review?.ask)
+        let view = composer(state)
+        assertScreenVariants(inNavigationStack: false) { view }
+    }
+
+    func test_prReview_requestChangesSheetWithAComment() throws {
+        let anchor = UnifiedDiff.parse(Self.diff).first?.lines.compactMap(\.anchor).first ?? ""
+        let comment = ActionComment(anchor: anchor, text: "Does this keep the weekday picker?")
+        var state = try state(adding: Self.merge, comments: [anchor: comment])
+        state.actions.action = try XCTUnwrap(state.review?.requestChanges)
+        state.actions.comments = [comment]
+        state.actions.text = "Keep the weekday picker and add a test for it."
+        let view = composer(state)
+        assertScreenVariants(inNavigationStack: false) { view }
     }
 
     func test_prReview_noLongerAvailable() {

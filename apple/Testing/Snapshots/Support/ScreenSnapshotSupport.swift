@@ -35,6 +35,7 @@ func idleViewsClient(_ client: inout ViewsClient) {
 /// and accessibility size 3, English and Spanish.
 @MainActor
 func assertScreenVariants<Content: View>(
+    inNavigationStack: Bool = true,
     file: StaticString = #filePath,
     testName: String = #function,
     line: UInt = #line,
@@ -45,7 +46,7 @@ func assertScreenVariants<Content: View>(
         for variant in SnapshotVariant.allCases {
             let suffix = language == .english ? variant.suffix : "\(variant.suffix)_\(language.rawValue.prefix(2))"
             let screen = AnyView(
-                NavigationStack { view }
+                Group { if inNavigationStack { NavigationStack { view } } else { view } }
                     .environment(\.locale, language.locale)
                     .environment(\.calendar, language.calendar)
                     .environment(\.referenceDate, screenReferenceDate)
