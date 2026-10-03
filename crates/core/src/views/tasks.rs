@@ -24,6 +24,22 @@ fn state(task: &Task, domain: &DomainState, lang: super::Lang) -> &'static str {
     }
 }
 
+/// The domain answers "task_not_active" for opposite reasons: a task that already ended cannot be
+/// cancelled, and one that is still open cannot be reopened or archived.
+fn task_action_reason(verb: Verb, code: &str, task: &Task, lang: super::Lang) -> &'static str {
+    match (verb, code) {
+        (Verb::Cancel, "task_not_active") => t!(lang, "The task already ended", "La tarea ya terminó"),
+        (Verb::Reopen, "task_not_active") if !task.state.terminal() => {
+            t!(lang, "The task is still open", "La tarea sigue abierta")
+        }
+        (Verb::Reopen, "not_found") => t!(lang, "Its request is closed", "Su solicitud está cerrada"),
+        (Verb::Archive, "task_not_active") if !task.state.terminal() => {
+            t!(lang, "Only finished tasks can be archived", "Solo se archivan tareas terminadas")
+        }
+        _ => super::card::disabled_reason(code, lang),
+    }
+}
+
 fn effort_label(effort: &str, lang: super::Lang) -> String {
     common::effort_label(effort, lang).unwrap_or(effort).into()
 }
@@ -39,6 +55,13 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     );
     row.struck = task.state == TaskState::Cancelled;
     row.badges.push(super::Label { text: state(task, context.domain, context.lang).into(), tone });
+    if context.client == super::Client::Tui {
+        row.subtitle = None;
+        row.trailing = context.live.task_history.get(&task.id.0)
+            .and_then(|history| history.last())
+            .map(|step| Trailing::Time { at: step.at.clone(), format: super::TimeFormat::Relative });
+        return row;
+    }
     row.trailing = Some(Trailing::Count {
         value: context
             .domain
@@ -112,6 +135,27 @@ fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
     row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View {
         key: format!("task:{}", task.id),
     });
+    if context.client == super::Client::Tui {
+        match tasks.as_slice() {
+            [task] => {
+                let (icon, tone) = common::task_presentation(task.state);
+                row.icon = icon;
+                row.struck = task.state == TaskState::Cancelled;
+                row.subtitle = None;
+                row.badges.insert(0, super::Label { text: state(task, context.domain, context.lang).into(), tone });
+                return row;
+            }
+            [] => {}
+            many => {
+                let done = many.iter().filter(|task| task.state.terminal()).count();
+                row.subtitle = None;
+                row.badges.insert(0, super::Label {
+                    text: tf!(context.lang, "{done} of {total}", "{done} de {total}", done = done, total = many.len()),
+                    tone: Tone::Neutral,
+                });
+            }
+        }
+    }
     row.children = task_tree(&tasks, context);
     row
 }
@@ -267,13 +311,14 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
         });
     }
     if context.domain.tasks.values().any(|task| task.state.terminal() && !task.archived)
-        && let Some(action) = common::action(
+        && let Some(mut action) = common::action(
         Verb::ArchiveDone,
         "view",
         context.domain.revision,
         t!(context.lang, "Archive Completed", "Archivar terminadas"),
         Style::Secondary,
     ) {
+        action.key = (context.client == super::Client::Tui).then(|| "A".into());
         view.sections.push(common::section(
             "actions",
             None,
@@ -369,6 +414,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             key: format!("request:{}", task.request_id),
         }),
     });
+    if context.client == super::Client::Tui {
+        facts.retain(|fact| fact.value != task.title);
+    }
     view.sections.push(common::section(
         "header",
         None,
@@ -578,7 +626,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             ) {
                 Ok(id) => {
                 message.id = id.to_string();
-                message.key = (context.client == super::Client::Tui).then(|| "M".into());
+                message.key = (context.client == super::Client::Tui).then(|| "r".into());
                 message.input = super::Input::Text {
                     placeholder: t!(context.lang, "Write to this task's node…", "Escribe al nodo de esta tarea…").into(),
                     required: true,
@@ -592,26 +640,33 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
     }
     for available in context.domain.task_actions(&task.id).unwrap_or_default() {
-        let (verb, label, style) = match available.kind.as_str() {
+        if context.client == super::Client::Tui && !available.enabled {
+            continue;
+        }
+        let (verb, label, style, key) = match available.kind.as_str() {
             "cancel_task" => (
                 Verb::Cancel,
                 t!(context.lang, "Cancel Task", "Cancelar tarea"),
                 Style::Destructive,
+                "x",
             ),
             "reopen_task" => (
                 Verb::Reopen,
                 t!(context.lang, "Reopen", "Reabrir"),
                 Style::Secondary,
+                "R",
             ),
             "archive_task" => (
                 Verb::Archive,
                 t!(context.lang, "Archive", "Archivar"),
                 Style::Secondary,
+                "a",
             ),
             "unarchive_task" => (
                 Verb::Unarchive,
                 t!(context.lang, "Unarchive", "Desarchivar"),
                 Style::Secondary,
+                "a",
             ),
             _ => continue,
         };
@@ -619,11 +674,11 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
             common::action(verb, id, available.expected_revision, label, style)
         {
             action.enabled = available.enabled;
+            action.key = (context.client == super::Client::Tui).then(|| key.into());
             action.disabled_reason = available.disabled_reason
                 .as_deref()
-                .map(|code| super::card::disabled_reason(code, context.lang).to_owned());
+                .map(|code| task_action_reason(verb, code, task, context.lang).to_owned());
             if verb == Verb::Cancel {
-                action.key = (context.client == super::Client::Tui).then(|| "x".into());
                 action.confirm = Some(Confirm {
                     title: label.into(),
                     message: t!(context.lang, "Cancel this task?", "¿Cancelar esta tarea?").into(),
@@ -704,6 +759,7 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
             t!(context.lang, "Withdraw Request", "Retirar solicitud"),
             Style::Destructive,
         ) {
+            action.key = (context.client == super::Client::Tui).then(|| "x".into());
             action.confirm = Some(Confirm {
                 title: action.label.clone(),
                 message: t!(

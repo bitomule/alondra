@@ -979,6 +979,7 @@ fn pull_request_detail_uses_live_title_body_and_branch_names() {
 fn task_detail_keeps_dependencies_options_and_human_request_text() {
     let mut state = fixture();
     state.requests.get_mut(&"r-1".into()).unwrap().title = None;
+    state.tasks.get_mut(&"t-1".into()).unwrap().title = "Wire the parser".into();
     let mut dependency = state.tasks[&"t-1".into()].clone();
     dependency.id = "t-2".into();
     dependency.title = "Prepare API".into();
@@ -1002,15 +1003,87 @@ fn task_detail_keeps_dependencies_options_and_human_request_text() {
 }
 
 #[test]
-fn fleet_node_rows_keep_their_assigned_task_rows() {
+fn a_tui_fleet_node_is_one_row_named_by_its_task_with_its_state_and_since_when() {
     let mut state = fixture();
+    state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
-    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "fleet", "");
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode {
+        agent_id: "a-1".into(), name: "Node One".into(), working: true, project: Some("App".into()),
+        tool: Some("cargo test".into()), state_since: Some("2026-09-30T09:58:00Z".into()),
+        ..LiveNode::default()
+    });
+    let view = render(&state, &live, Client::Tui, Lang::En, "fleet", "");
     let node = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Row(row) = item && row.id == "a-1" { Some(row) } else { None }
     }).unwrap();
-    assert_eq!(node.id, "a-1");
-    assert!(node.children.iter().any(|task| task.id == "t-1" && task.title == "Build a feature"));
+    assert_eq!(node.title, "Build a feature");
+    assert!(node.children.is_empty(), "one task per node: no task row repeats the node");
+    assert_eq!(node.badges.first().map(|badge| badge.text.as_str()), Some("Working"));
+    assert_eq!(node.subtitle.as_deref(), Some("cargo test"));
+    assert_eq!(node.trailing, Some(Trailing::Time { at: "2026-09-30T09:58:00Z".into(), format: TimeFormat::Relative }));
+    assert!(view.sections.iter().any(|section| section.title.as_deref() == Some("App")));
+}
+
+#[test]
+fn a_tui_task_list_shows_a_request_with_one_task_as_that_task_and_nests_only_several() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let mut live = LiveSnapshot::default();
+    live.request_times.insert("r-1".into(), "2026-10-03T19:49:18.945+02:00".into());
+    let row = |state: &DomainState| {
+        let view = render(state, &live, Client::Tui, Lang::Es, "tasks", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Row(row) if row.id == "r-1" => Some(row.clone()),
+            _ => None,
+        }).unwrap()
+    };
+    let single = row(&state);
+    assert!(single.children.is_empty());
+    assert_eq!(single.title, "Build a feature");
+    assert_eq!(single.badges.first().map(|badge| badge.text.as_str()), Some("Trabajando"));
+    assert!(single.subtitle.is_none(), "the request's own state would contradict the task's");
+    assert!(!matches!(single.trailing, Some(Trailing::Count { .. })));
+    let mut second = state.tasks[&"t-1".into()].clone();
+    second.id = "t-2".into();
+    second.title = "Write the docs".into();
+    second.state = TaskState::Done;
+    state.tasks.insert(second.id.clone(), second);
+    let several = row(&state);
+    assert_eq!(several.children.iter().map(|task| task.id.as_str()).collect::<Vec<_>>(), ["t-1", "t-2"]);
+    assert_eq!(several.badges.first().map(|badge| badge.text.as_str()), Some("1 de 2"));
+    assert!(several.children.iter().all(|task| !matches!(task.trailing, Some(Trailing::Count { .. }))));
+}
+
+#[test]
+fn an_empty_tui_inbox_has_no_section_titles_only_its_empty_state() {
+    let mut state = fixture();
+    state.interactions.clear();
+    let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "home", "");
+    assert!(view.sections.iter().all(|section| section.title.is_none()), "{:?}", view.sections);
+    assert!(view.empty.is_some());
+}
+
+#[test]
+fn tui_task_actions_hide_what_does_not_apply_and_ios_reasons_say_why() {
+    let mut state = fixture();
+    state.revision = 5;
+    state.interactions.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = None;
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let actions = |client| {
+        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "task:t-1", "");
+        tui_document_actions(&view)
+    };
+    let tui = actions(Client::Tui);
+    assert!(tui.iter().all(|action| action.enabled), "{tui:?}");
+    assert_eq!(tui.iter().map(|action| action.label.as_str()).collect::<Vec<_>>(), ["Cancelar tarea"], "{:?}", actions(Client::Ios));
+    assert_eq!(tui[0].key.as_deref(), Some("x"));
+    let ios = actions(Client::Ios);
+    let reason = |label: &str| ios.iter().find(|action| action.label == label).and_then(|action| action.disabled_reason.clone());
+    assert_eq!(reason("Reabrir").as_deref(), Some("La tarea sigue abierta"));
+    assert_eq!(reason("Archivar").as_deref(), Some("Solo se archivan tareas terminadas"));
+    assert!(ios.iter().all(|action| action.key.is_none()), "keys are a terminal thing");
 }
 
 #[test]
@@ -1027,17 +1100,17 @@ fn a_fleet_node_shows_the_one_task_it_is_on_not_the_ones_it_finished() {
     let node_row = |state: &DomainState| {
         let view = render(state, &LiveSnapshot::default(), Client::Tui, Lang::En, "fleet", "");
         view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
-            if let Item::Row(row) = item && row.id == "a-1" { Some(row.children.iter().map(|task| task.id.clone()).collect::<Vec<_>>()) } else { None }
+            if let Item::Row(row) = item && row.id == "a-1" { Some(row.title.clone()) } else { None }
         }).unwrap()
     };
-    assert_eq!(node_row(&state), ["t-1"]);
+    assert_eq!(node_row(&state), "Build a feature");
     let detail = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "");
     assert!(header_facts(&detail).iter().any(|fact| fact.label == "Task" && fact.value == "Build a feature"));
     state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
     let idle = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "node:a-1", "");
     assert!(header_facts(&idle).iter().all(|fact| fact.label != "Task"), "a node between tasks is on none");
     state.tasks.get_mut(&"t-1".into()).unwrap().revision = 2;
-    assert_eq!(node_row(&state), ["t-1"], "between tasks a node shows the last one it had");
+    assert_eq!(node_row(&state), "Build a feature", "between tasks a node shows the last one it had");
 }
 
 #[test]
@@ -1181,12 +1254,17 @@ fn on_the_iphone_a_task_row_says_what_its_node_does_now_like_fleet() {
     assert_eq!(ios[0].trailing, Some(Trailing::Time {
         at: "2026-09-30T09:58:00Z".into(), format: TimeFormat::Relative,
     }));
-    assert!(task_children(Client::Tui).is_empty(), "the TUI tree keeps only tasks under a task");
+    let tui = render(&state, &live, Client::Tui, Lang::En, "tasks", "");
+    assert!(tui.sections.iter().flat_map(|section| &section.items).all(|item| match item {
+        Item::Row(row) => row.children.is_empty(),
+        _ => true,
+    }), "the TUI shows a one-task request as that one task row");
 }
 
 #[test]
 fn only_the_iphone_gets_no_link_to_the_request_view() {
-    let state = fixture();
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().title = "Wire the parser".into();
     let request_fact_link = |client| {
         let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "task:t-1", "");
         view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
@@ -2599,6 +2677,57 @@ fn a_push_shows_what_the_card_asks_not_a_generic_line() {
     assert!(long.body.unwrap().ends_with('…'));
 }
 
+/// The actions the terminal offers for a document: its cards' own (each child card is a row of
+/// its own), its action bars and its notices'.
+fn tui_document_actions(view: &View) -> Vec<Action> {
+    let mut out = Vec::new();
+    for item in view.sections.iter().flat_map(|section| &section.items) {
+        match item {
+            Item::Card(card) => out.extend(card.actions.iter().cloned()),
+            Item::Actions(bar) => out.extend(bar.actions.iter().cloned()),
+            Item::Notice(notice) => out.extend(notice.action.iter().cloned()),
+            _ => {}
+        }
+    }
+    let mut seen = BTreeSet::new();
+    out.retain(|action| seen.insert(action.id.clone()));
+    out
+}
+
+#[test]
+fn every_tui_action_a_screen_offers_has_its_own_key() {
+    let (golden, golden_live) = (golden_fixture(), golden_live());
+    let (plan, no_live) = (plan_question_fixture(), LiveSnapshot::default());
+    let mut problems = Vec::new();
+    let screens = [
+        "card:a98d034b-249e-4487-a89b-57de38c26372",
+        "card:f12d034b-249e-4487-a89b-57de38c26372",
+        "card:github.com/example/repo#12",
+        "card:hf-weekly-2026-09-30",
+        "tasks",
+        "node:d887a34b-249e-4487-a89b-57de38c26372",
+        "node:orchestrator",
+        "task:t-651c38484cd2f34e74d5107ba05f7f15",
+        "request:r-9f2156b5a8894e53901f0af576dff6a2",
+        "pull_request:github.com/example/repo#12",
+    ]
+    .map(|key| (&golden, &golden_live, key));
+    for (state, live, key) in screens.into_iter().chain([(&plan, &no_live, "card:i-1"), (&plan, &no_live, "card:plan-r1")]) {
+        let view = render(state, live, Client::Tui, Lang::En, key, "2026-09-30T10:00:00Z");
+        let mut seen = BTreeSet::new();
+        for action in tui_document_actions(&view).into_iter().filter(|action| action.enabled) {
+            match &action.key {
+                None => problems.push(format!("{key}: {} ({}) has no key", action.label, action.id)),
+                Some(hint) if !seen.insert(hint.clone()) => {
+                    problems.push(format!("{key}: {} ({}) reuses {hint}", action.label, action.id))
+                }
+                Some(_) => {}
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{problems:#?}");
+}
+
 fn failed_launch_fixture(error: &str) -> DomainState {
     let mut state = fixture();
     state.interactions.clear();
@@ -2636,11 +2765,13 @@ fn a_task_without_a_failed_launch_is_still_not_started() {
 
 #[test]
 fn the_tui_cancels_a_task_with_x() {
-    let state = failed_launch_fixture("boom");
+    let mut state = failed_launch_fixture("boom");
+    state.revision = 5;
+    state.schedule.runs.clear();
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En, "task:t-1", "");
     let cancel = view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
         Item::Actions(bar) => bar.actions.iter().find(|action| action.id.starts_with("cancel:")),
         _ => None,
-    }).expect("cancel action");
+    }).unwrap_or_else(|| panic!("cancel action: {:?}", state.task_actions(&"t-1".into())));
     assert_eq!(cancel.key.as_deref(), Some("x"));
 }

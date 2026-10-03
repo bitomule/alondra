@@ -19,6 +19,7 @@ fn opens_schedules(view: &View, id: &str) -> bool {
 pub fn sections(view: &View) -> impl Iterator<Item = &Section> {
     view.sections.iter().filter(|section| {
         !section.id.eq("detail")
+            && !section.items.is_empty()
             && !(view.key == "tasks"
                 && section.items.iter().all(
                     |item| matches!(item, Item::Row(row) if opens_schedules(view, &row.id)),
@@ -51,50 +52,89 @@ pub fn rows(view: &View) -> Vec<(&Row, bool)> {
     result
 }
 
+/// One list item: glyph and title, and on the right its state and since when, the way 8ccd131
+/// laid rows out. What does not fit beside the title goes on the line below; a subtitle (what a
+/// node runs now) goes under it.
 pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<Line<'static>> {
-    let glyph = icon(row.icon);
-    let prefix = if selected { "▌" } else { " " };
-    let indent = if nested { "  ↳ " } else { "" };
-    let mut first = vec![Span::styled(prefix, Style::new().fg(ACCENT))];
-    first.push(Span::styled(
-        indent.to_owned(),
-        Style::new().fg(Color::Magenta),
-    ));
-    first.push(Span::styled(
-        format!("{glyph} "),
-        Style::new()
-            .fg(icon_color(row.icon))
-            .add_modifier(Modifier::BOLD),
-    ));
-    first.push(Span::styled(
-        row.title.clone(),
-        if selected {
-            Style::new().add_modifier(Modifier::BOLD)
-        } else {
-            Style::default()
-        },
-    ));
-    let first = fit(first, width);
-    let mut lines = vec![first];
-    let mut meta = Vec::new();
-    if let Some(subtitle) = &row.subtitle {
-        meta.push(subtitle.clone());
+    let bar = Span::styled(if selected { "▌" } else { " " }, Style::new().fg(ACCENT));
+    let mut title_style = Style::default();
+    if selected {
+        title_style = title_style.add_modifier(Modifier::BOLD);
     }
-    meta.extend(row.badges.iter().map(|badge| badge.text.clone()));
-    if let Some(trailing) = &row.trailing {
-        match trailing {
-            alondra_core::views::Trailing::Count { value } => meta.push(value.to_string()),
-            alondra_core::views::Trailing::Time { at, format } => meta.push(format_time(at, *format)),
-            alondra_core::views::Trailing::Text { text } => meta.push(text.clone()),
+    if row.struck {
+        title_style = title_style.add_modifier(Modifier::CROSSED_OUT);
+    }
+    let mut first = vec![
+        bar.clone(),
+        Span::styled(
+            if nested { "  ↳ " } else { "" },
+            Style::new().fg(Color::Magenta),
+        ),
+        Span::styled(
+            format!("{} ", icon(row.icon)),
+            Style::new()
+                .fg(icon_color(row.icon))
+                .add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let mut seen = std::collections::HashSet::new();
+    let mut meta: Vec<Span<'static>> = Vec::new();
+    let mut parts: Vec<(String, Style)> = row
+        .badges
+        .iter()
+        .map(|badge| (badge.text.clone(), label_style(badge)))
+        .collect();
+    match &row.trailing {
+        Some(alondra_core::views::Trailing::Count { value }) if *value > 0 => {
+            parts.push((value.to_string(), Style::new().fg(DIM)))
+        }
+        Some(alondra_core::views::Trailing::Count { .. }) | None => {}
+        Some(alondra_core::views::Trailing::Time { at, format }) => {
+            parts.push((format_time(at, *format), Style::new().fg(DIM)))
+        }
+        Some(alondra_core::views::Trailing::Text { text }) => {
+            parts.push((text.clone(), Style::new().fg(DIM)))
         }
     }
-    if !meta.is_empty() {
-        let mut seen = std::collections::HashSet::new();
-        meta.retain(|value| seen.insert(value.clone()));
+    for (text, style) in parts {
+        if text.is_empty() || !seen.insert(text.clone()) {
+            continue;
+        }
+        if !meta.is_empty() {
+            meta.push(Span::styled(" · ", Style::new().fg(DIM)));
+        }
+        meta.push(Span::styled(text, style));
+    }
+    let subtitle = row
+        .subtitle
+        .as_ref()
+        .filter(|subtitle| !subtitle.is_empty() && !seen.contains(*subtitle));
+    let lead_width: usize = first.iter().map(Span::width).sum();
+    let meta_width: usize = meta.iter().map(Span::width).sum();
+    let title_width = super::md::str_width(&row.title);
+    let under = if nested { "      " } else { "  " };
+    first.push(Span::styled(row.title.clone(), title_style));
+    let mut lines = Vec::new();
+    if meta.is_empty() || lead_width + title_width + 2 + meta_width <= width {
+        if !meta.is_empty() {
+            first.push(Span::raw(
+                " ".repeat(width - lead_width - title_width - meta_width),
+            ));
+            first.extend(meta);
+        }
+        lines.push(fit(first, width));
+    } else {
+        lines.push(fit(first, width));
+        let mut second = vec![bar.clone(), Span::raw(under)];
+        second.extend(meta);
+        lines.push(fit(second, width));
+    }
+    if let Some(subtitle) = subtitle {
         lines.push(fit(
             vec![
-                Span::raw(if nested { "      " } else { "  " }),
-                Span::styled(meta.join(" · "), Style::new().fg(DIM)),
+                bar,
+                Span::raw(under),
+                Span::styled(subtitle.clone(), Style::new().fg(Color::Gray)),
             ],
             width,
         ));
@@ -105,15 +145,6 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
 /// The agent a card came from, the way its header names it.
 pub fn card_agent(card: &Card) -> Option<&alondra_core::views::ContextLine> {
     card.context.iter().find(|line| line.icon == Icon::Node)
-}
-
-fn age(at: &str) -> String {
-    let age = format_time(at, alondra_core::views::TimeFormat::Relative);
-    if age == tr!("now", "ahora") {
-        age
-    } else {
-        trf!("{age} ago", "hace {age}")
-    }
 }
 
 /// `? Question · Alondra · iOS · Demo Garden · 3d ago`: what it is, who it came from, how old.
@@ -132,7 +163,7 @@ fn card_header(card: &Card) -> Line<'static> {
         rest.extend(agent.chip.as_ref().map(|chip| chip.text.clone()));
     }
     if let Some(stamp) = card.timestamps.first() {
-        rest.push(age(&stamp.at));
+        rest.push(format_time(&stamp.at, alondra_core::views::TimeFormat::Relative));
     }
     for part in rest {
         spans.push(Span::styled(format!(" · {part}"), Style::new().fg(DIM)));
@@ -230,7 +261,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
             }),
         )));
     }
-    for section in &view.sections {
+    for section in view.sections.iter().filter(|section| !section.items.is_empty()) {
         if let Some(title) = &section.title {
             if !lines.is_empty() {
                 lines.push(Line::default());
@@ -340,7 +371,8 @@ pub fn format_time(at: &str, format: alondra_core::views::TimeFormat) -> String 
     let Some(offset) = local_utc_offset(millis) else {
         return at.to_owned();
     };
-    format_time_at(at, millis, offset, format)
+    let now = alondra_core::now_millis();
+    format_time_at(at, millis, offset, format, now, local_utc_offset(now).unwrap_or(offset))
 }
 
 fn format_time_at(
@@ -348,19 +380,81 @@ fn format_time_at(
     millis: i64,
     utc_offset_seconds: i64,
     format: alondra_core::views::TimeFormat,
+    now: i64,
+    now_offset_seconds: i64,
 ) -> String {
     let Some((date, time)) = date_time_at_offset(millis, utc_offset_seconds) else {
         return at.to_owned();
     };
     match format {
-        alondra_core::views::TimeFormat::Relative => super::draw::ago(millis),
+        alondra_core::views::TimeFormat::Relative => {
+            relative(millis, utc_offset_seconds, now, now_offset_seconds, &time)
+        }
         alondra_core::views::TimeFormat::Absolute => format!("{date} {time}"),
         alondra_core::views::TimeFormat::Time => time,
     }
 }
 
+/// "ahora", "hace 5 min", "hoy 05:00", "ayer 22:10", "hace 3 días", "28 sep": how long ago in the
+/// words a person uses, by the local calendar day.
+fn relative(millis: i64, offset: i64, now: i64, now_offset: i64, time: &str) -> String {
+    let local_day = |at: i64, offset: i64| (at.div_euclid(1_000) + offset).div_euclid(86_400);
+    let days = local_day(now, now_offset) - local_day(millis, offset);
+    let seconds = (now - millis) / 1_000;
+    if seconds.abs() < 60 {
+        return tr!("now", "ahora").into();
+    }
+    if (60..3_600).contains(&seconds) {
+        let minutes = seconds / 60;
+        return trf!("{minutes} min ago", "hace {minutes} min");
+    }
+    match days {
+        0 => trf!("today {time}", "hoy {time}"),
+        1 => trf!("yesterday {time}", "ayer {time}"),
+        -1 => trf!("tomorrow {time}", "mañana {time}"),
+        2..=6 => trf!("{days} days ago", "hace {days} días"),
+        _ => {
+            let Some((date, _)) = date_time_at_offset(millis, offset) else {
+                return time.to_owned();
+            };
+            let mut parts = date.split('-');
+            let (year, month, day) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+            let month = month.parse::<usize>().unwrap_or(1).clamp(1, 12) - 1;
+            let day = day.trim_start_matches('0');
+            let spanish = crate::i18n::lang() == crate::i18n::Lang::Es;
+            let name = if spanish {
+                ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"][month]
+            } else {
+                ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"][month]
+            };
+            let same_year = date_time_at_offset(now, now_offset)
+                .is_some_and(|(today, _)| today.starts_with(year));
+            match (spanish, same_year) {
+                (true, true) => format!("{day} {name}"),
+                (true, false) => format!("{day} {name} {year}"),
+                (false, true) => format!("{name} {day}"),
+                (false, false) => format!("{name} {day}, {year}"),
+            }
+        }
+    }
+}
+
+/// An RFC 3339 instant, `Z` or with its UTC offset, in milliseconds since the epoch.
 fn parse_utc(value: &str) -> Option<i64> {
-    let value = value.strip_suffix('Z')?;
+    let (value, offset_seconds) = match value.strip_suffix('Z') {
+        Some(value) => (value, 0),
+        None => {
+            let split = value.len().checked_sub(6)?;
+            let (value, offset) = (value.get(..split)?, value.get(split..)?);
+            let sign = match offset.as_bytes().first()? {
+                b'+' => 1,
+                b'-' => -1,
+                _ => return None,
+            };
+            let (hours, minutes) = offset.get(1..)?.split_once(':')?;
+            (value, sign * (hours.parse::<i64>().ok()? * 3_600 + minutes.parse::<i64>().ok()? * 60))
+        }
+    };
     let (date, clock) = value.split_once('T')?;
     let mut date_parts = date.split('-');
     let (year, month, day) = (
@@ -390,10 +484,12 @@ fn parse_utc(value: &str) -> Option<i64> {
     let days = era * 146_097 + day_of_era - 719_468;
     let fraction = value
         .split_once('.')
-        .and_then(|(_, fraction)| fraction.parse::<u16>().ok())
+        .map(|(_, fraction)| fraction)
+        .filter(|fraction| !fraction.is_empty() && fraction.bytes().all(|b| b.is_ascii_digit()))
+        .map(|fraction| format!("{fraction:0<3}")[..3].parse::<i64>().unwrap_or(0))
         .unwrap_or(0);
-    let millis = ((days * 86_400 + hour * 3_600 + minute * 60 + second) * 1_000)
-        + i64::from(fraction);
+    let millis = ((days * 86_400 + hour * 3_600 + minute * 60 + second - offset_seconds) * 1_000)
+        + fraction;
     Some(millis)
 }
 
@@ -556,11 +652,48 @@ mod tests {
         use alondra_core::views::TimeFormat;
         let at = "2026-10-01T23:55:00.000Z";
         let instant = parse_utc(at).unwrap();
-        assert_eq!(format_time_at(at, instant, 2 * 3_600, TimeFormat::Absolute), "2026-10-02 01:55");
-        assert_eq!(format_time_at(at, instant, 2 * 3_600, TimeFormat::Time), "01:55");
-        assert_eq!(format_time_at(at, instant, -(5 * 3_600 + 30 * 60), TimeFormat::Absolute), "2026-10-01 18:25");
-        assert_eq!(format_time_at(at, instant, 0, TimeFormat::Time), "23:55");
+        let format = |offset, format| format_time_at(at, instant, offset, format, instant, offset);
+        assert_eq!(format(2 * 3_600, TimeFormat::Absolute), "2026-10-02 01:55");
+        assert_eq!(format(2 * 3_600, TimeFormat::Time), "01:55");
+        assert_eq!(format(-(5 * 3_600 + 30 * 60), TimeFormat::Absolute), "2026-10-01 18:25");
+        assert_eq!(format(0, TimeFormat::Time), "23:55");
         assert_eq!(format_time("not-a-date", TimeFormat::Absolute), "not-a-date");
+    }
+
+    #[test]
+    fn offset_timestamps_from_the_daemon_are_read_as_the_same_instant() {
+        assert_eq!(
+            parse_utc("2026-10-03T19:49:18.945+02:00"),
+            parse_utc("2026-10-03T17:49:18.945Z")
+        );
+        assert_eq!(
+            parse_utc("2026-10-03T05:00:00.861-03:30"),
+            parse_utc("2026-10-03T08:30:00.861Z")
+        );
+        assert_eq!(parse_utc("2026-10-03T17:49:18.9Z").map(|ms| ms % 1_000), Some(900));
+    }
+
+    #[test]
+    fn relative_times_read_like_people_say_them_by_local_day() {
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
+        let madrid = 2 * 3_600;
+        let now = parse_utc("2026-10-03T19:54:18.945+02:00").unwrap();
+        let ago = |at: &str| {
+            let instant = parse_utc(at).unwrap();
+            format_time_at(at, instant, madrid, alondra_core::views::TimeFormat::Relative, now, madrid)
+        };
+        assert_eq!(ago("2026-10-03T19:54:00.000+02:00"), "ahora");
+        assert_eq!(ago("2026-10-03T19:49:18.945+02:00"), "hace 5 min");
+        assert_eq!(ago("2026-10-03T05:00:00.861+02:00"), "hoy 05:00");
+        assert_eq!(ago("2026-10-02T22:10:00.000+02:00"), "ayer 22:10");
+        assert_eq!(ago("2026-09-30T10:00:00.000+02:00"), "hace 3 días");
+        assert_eq!(ago("2026-09-12T10:00:00.000+02:00"), "12 sep");
+        assert_eq!(ago("2025-12-24T10:00:00.000+02:00"), "24 dic 2025");
+        assert_eq!(ago("2026-10-04T09:00:00.000+02:00"), "mañana 09:00");
+        crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+        assert_eq!(ago("2026-10-03T19:49:18.945+02:00"), "5 min ago");
+        assert_eq!(ago("2026-10-03T05:00:00.861+02:00"), "today 05:00");
+        assert_eq!(ago("2026-09-12T10:00:00.000+02:00"), "Sep 12");
     }
 
     #[test]
@@ -570,9 +703,28 @@ mod tests {
             "subtitle": "working", "badges": [{"text": "working", "tone": "info"}],
             "struck": false
         })).unwrap();
-        let rendered = row_lines(&row, 80, false, false);
-        assert_eq!(rendered.len(), 2);
-        assert_eq!(rendered[1].to_string().matches("working").count(), 1);
+        let rendered: String = row_lines(&row, 80, false, false)
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        assert_eq!(rendered.matches("working").count(), 1, "{rendered}");
+    }
+
+    #[test]
+    fn a_row_keeps_its_state_beside_the_title_and_drops_empty_counters() {
+        let row: Row = serde_json::from_value(serde_json::json!({
+            "id": "node", "icon": "node", "title": "Ship", "depth": 0, "struck": false,
+            "badges": [{"text": "Working", "tone": "info"}],
+            "trailing": {"kind": "count", "value": 0}
+        })).unwrap();
+        let rendered = row_lines(&row, 30, false, false);
+        assert_eq!(rendered.len(), 1);
+        assert_eq!(rendered[0].to_string(), " ● Ship                Working");
+        let narrow = row_lines(&row, 12, false, false);
+        assert_eq!(
+            narrow.iter().map(ToString::to_string).collect::<Vec<_>>(),
+            [" ● Ship", "   Working"]
+        );
     }
 
     #[test]
