@@ -105,6 +105,9 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
     if !Path::new(&body.cwd).is_dir() {
         return Err(DomainError::new("invalid_input", format!("directory {} does not exist", body.cwd)));
     }
+    if let Some(repository) = crate::claude_trust::check(Path::new(&body.cwd)) {
+        return Err(DomainError::new("workspace_untrusted", crate::claude_trust::instructions(&repository)));
+    }
     let Some(plugin) = launcher.plugin() else {
         return Err(DomainError::new("unavailable", "Alondra's plugin was not found: run `alondra setup` in the Alondra repo"));
     };

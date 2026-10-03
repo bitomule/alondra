@@ -3,6 +3,7 @@ mod log;
 mod approval_lease;
 mod auth;
 mod classify;
+mod claude_trust;
 mod delivery;
 mod domain_agent_lifecycle;
 mod domain_api;

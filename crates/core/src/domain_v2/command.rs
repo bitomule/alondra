@@ -298,6 +298,13 @@ pub enum DomainEffect {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         request_id: Option<RequestId>,
     },
+    /// A scheduled Task whose launch failed: it stays not started with no node and nothing
+    /// retries it.
+    ScheduleLaunchFailed {
+        task_id: TaskId,
+        title: String,
+        reason: String,
+    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CommandOutcome {

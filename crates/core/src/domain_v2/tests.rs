@@ -233,16 +233,21 @@ fn schedule_commands_preserve_claim_and_result_history() {
         run_id: "run-1".into(), now: 102,
     }, "conflict");
     state.tasks.get_mut(&TaskId::from("scheduled-task")).unwrap().dependencies.clear();
-    exec(
+    let failed = exec(
         &mut state,
         Actor::System,
         Command::RecordScheduleRunFailed {
             run_id: "run-1".into(),
-            reason: "Launch failed".into(),
+            reason: "Workspace not trusted.\n".into(),
             finished_at: 102,
         },
     )
     .unwrap();
+    assert_eq!(failed.effects, [DomainEffect::ScheduleLaunchFailed {
+        task_id: "scheduled-task".into(),
+        title: "Updated review".into(),
+        reason: "Workspace not trusted.".into(),
+    }]);
     let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
     assert_eq!(run.state, ScheduleRunState::Failed);
     assert_eq!(run.finished_at, Some(101));

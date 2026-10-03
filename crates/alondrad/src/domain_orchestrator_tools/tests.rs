@@ -146,6 +146,28 @@ async fn a_launch_carries_the_requests_choices_a_bound_capability_and_takes_the_
 }
 
 #[tokio::test]
+async fn a_launch_in_a_repository_claude_does_not_trust_is_refused_before_claude_runs() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let project = f.project.canonicalize().unwrap();
+    let config = f.root.join(".claude.json");
+    crate::claude_trust::use_config_for_test(&config);
+    let trust = |accepted: bool| std::fs::write(&config, json!({"projects": {project.to_str().unwrap(): {"hasTrustDialogAccepted": accepted}}}).to_string()).unwrap();
+
+    trust(false);
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "workspace_untrusted");
+    assert!(refused.message.contains(project.to_str().unwrap()), "{}", refused.message);
+    assert!(claude.calls.lock().unwrap().is_empty());
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none());
+
+    trust(true);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap();
+    assert_eq!(claude.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn without_choices_the_orchestrators_effort_applies_and_the_prompt_can_be_given() {
     let f = world();
     let actor = the_orchestrator(&f.domain);
