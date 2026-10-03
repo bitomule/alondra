@@ -1261,3 +1261,46 @@ fn a_held_plan_is_approved_with_a_and_sent_back_with_p_like_8ccd131() {
     assert_eq!(posted(&app)[0].1["option_id"], "request_changes");
     assert_eq!(posted(&app)[0].1["input"]["text"], "Split it in two PRs");
 }
+
+fn task_view(id: &str, with_node: bool) -> alondra_core::views::View {
+    let action = |action_id: &str, label: &str, key: &str| serde_json::json!({
+        "id": action_id, "label": label, "style": "secondary", "presentation": "button",
+        "input": {"kind": "none"}, "attachments": false, "enabled": true, "key": key
+    });
+    let mut actions = vec![action(&format!("cancel:{id}@1"), "Cancel Task", "x")];
+    let mut sections = vec![];
+    if with_node {
+        actions.insert(0, action("msg:a-1@1", "Message", "M"));
+        sections.push(serde_json::json!({"id": "attach", "collapsed": false, "items": [{
+            "type": "row", "id": "attach", "icon": "node", "title": "Attach", "depth": 0, "struck": false,
+            "link": {"kind": "local", "local": {"kind": "attach", "session": "abc123"}}, "actions": []
+        }]}));
+    }
+    sections.push(serde_json::json!({"id": "actions", "collapsed": false,
+        "items": [{"type": "actions", "actions": actions}]}));
+    let mut view = view_fixture("card-question.json");
+    view["key"] = serde_json::json!(format!("task:{id}"));
+    view["sections"] = serde_json::json!(sections);
+    serde_json::from_value(view).unwrap()
+}
+
+#[test]
+fn task_footer_offers_only_the_keys_the_selected_task_answers() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.screen = Screen::Tasks;
+    app.task_sel = Some(crate::tui::tasks::TaskKey::Task("t-1".into()));
+
+    app.card_view = Some(task_view("t-1", true));
+    let keys = crate::tui::draw::footer_keys(&app);
+    assert!(keys.iter().any(|(key, label)| key == "M" && label == "message"), "{keys:?}");
+    assert!(keys.iter().any(|(key, label)| key == "⏎" && label == "its terminal"), "{keys:?}");
+    assert!(keys.iter().any(|(key, label)| key == "x" && label == "cancel task"), "{keys:?}");
+    assert!(!keys.iter().any(|(key, _)| key == "r"), "{keys:?}");
+
+    app.card_view = Some(task_view("t-1", false));
+    let keys = crate::tui::draw::footer_keys(&app);
+    assert!(!keys.iter().any(|(key, _)| key == "M" || key == "⏎" || key == "r"), "{keys:?}");
+    assert!(keys.iter().any(|(key, _)| key == "x"), "{keys:?}");
+}

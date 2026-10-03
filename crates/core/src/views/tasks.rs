@@ -9,6 +9,9 @@ fn state(task: &Task, domain: &DomainState, lang: super::Lang) -> &'static str {
     if let Some(label) = common::instruction_label(task, domain, lang) {
         return label;
     }
+    if common::failed_launch(task, domain).is_some() {
+        return common::launch_failed_label(lang);
+    }
     match task.state {
         TaskState::NotStarted => t!(lang, "Not started", "Sin empezar"),
         TaskState::Running => t!(lang, "Working", "Trabajando"),
@@ -356,7 +359,15 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
         TaskState::Closing => Some(line(t!(context.lang,
             "merged; the node does what the merge unblocks",
             "fusionada; el nodo hace lo que desbloquea la fusión").into(), None)),
-        TaskState::NotStarted | TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
+        TaskState::NotStarted => common::failed_launch(task, context.domain).map(|error| line(
+            if error.is_empty() {
+                t!(context.lang, "the scheduled run could not launch its node",
+                    "la ejecución programada no pudo lanzar su nodo").into()
+            } else {
+                tf!(context.lang, "the scheduled run could not launch its node: {error}",
+                    "la ejecución programada no pudo lanzar su nodo: {error}", error = error)
+            }, None)),
+        TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
     }
 }
 

@@ -9,6 +9,7 @@ fn task_subtitle(task: &Task, context: &RenderContext<'_>) -> String {
     let project = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter()
         .find(|node| node.agent_id == id.0).and_then(|node| node.project.as_deref()));
     let state = common::instruction_label(task, context.domain, context.lang)
+        .or_else(|| common::failed_launch(task, context.domain).map(|_| common::launch_failed_label(context.lang)))
         .unwrap_or_else(|| task_state_label(task.state, context.lang));
     match project {
         Some(project) if !project.is_empty() && project != "others" => format!("{project} · {state}"),

@@ -1596,13 +1596,19 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
                 Some(super::tasks::TaskKey::Finished | super::tasks::TaskKey::Archived) => {
                     keys.push(k("⏎", tr!("show / hide", "mostrar / ocultar")));
                 }
-                Some(super::tasks::TaskKey::Task(_)) => {
-                    keys.extend([
-                        k("o", tr!("detail", "detalle")),
-                        k("⏎", tr!("its terminal", "su terminal")),
-                        k("r", tr!("message", "mensaje")),
-                        k("x", tr!("cancel", "descartar")),
-                    ]);
+                Some(super::tasks::TaskKey::Task(id)) => {
+                    let key = format!("task:{}", id.0);
+                    let view = app.card_view.as_ref().filter(|view| view.key == key);
+                    keys.push(k("o", tr!("detail", "detalle")));
+                    if view.and_then(super::view_render::attach_session).is_some() {
+                        keys.push(k("⏎", tr!("its terminal", "su terminal")));
+                    }
+                    for action in view.map(super::view_render::actions).unwrap_or_default() {
+                        let hint = super::view_render::action_hint(&action);
+                        if !hint.is_empty() && action.enabled {
+                            keys.push(k(hint, &action.label.to_lowercase()));
+                        }
+                    }
                 }
                 Some(super::tasks::TaskKey::Request(_)) => {
                     keys.extend([
