@@ -237,6 +237,7 @@ final class TriageFeatureTests: XCTestCase {
         let stopped = expectation(description: "the home feed is released")
         input.onTermination = { _ in stopped.fulfill() }
         let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = { _ in stream }
         }
         store.exhaustivity = .off
@@ -271,6 +272,100 @@ final class TriageFeatureTests: XCTestCase {
         await store.receive(\.delegate.noLongerPending)
         XCTAssertNil(store.state.focusedID)
         XCTAssertEqual(store.state.screen.key, .focusedHome("gone"))
+    }
+
+    // MARK: Live queue (0.2.33): the daemon answers 404 for `home?focus=` of a card no longer waiting
+
+    private func liveFeed() throws -> FeedStub {
+        FeedStub([
+            try Samples.document("live-home-es"),
+            try Samples.document("live-card-permission-es"),
+            try Samples.document("live-card-ask-es"),
+        ])
+    }
+
+    private let liveQueue = ["hold-permission-toolu_01R1rRYBcDDQMBfXcpzvDgMn", "ask-parcel-trust-prompt-1"]
+
+    @MainActor
+    func testOpeningANotificationForACardAlreadyGoneShowsTheLiveQueue() async throws {
+        let store = store(try liveFeed())
+        await store.send(.feedStatus(try Samples.document("live-home-es").status))
+
+        await store.send(.focus("hold-permission-toolu_01AlreadyAnswered"))
+        await store.receive(\.delegate.noLongerPending)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.screen.key, .home)
+        XCTAssertNotNil(store.state.screen.document, "the queue is shown, not 'Connecting to the fleet…'")
+        XCTAssertEqual(store.state.orderedIDs, liveQueue)
+        XCTAssertEqual(store.state.currentCard?.id, liveQueue[0])
+        XCTAssertEqual(store.state.cards[id: liveQueue[1]]?.card?.id, liveQueue[1])
+        XCTAssertNil(store.state.loadError)
+    }
+
+    @MainActor
+    func testAFocusedCardLeavingTheQueueFallsBackToTheWholeQueue() async throws {
+        let feed = try liveFeed()
+        let focused = liveQueue[0]
+        feed.serve(try Fixtures.document("home-ios-es", edit: { object in
+            object["key"] = "home?focus=\(focused)"
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            sections[0]["card_ids"] = [focused]
+            object["sections"] = sections
+        }))
+        let store = store(feed)
+        await store.send(.focus(focused))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.currentID, focused)
+
+        await store.send(.screen(.missing))
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.screen.key, .home)
+        XCTAssertNotNil(store.state.screen.document)
+        XCTAssertEqual(store.state.orderedIDs, liveQueue)
+    }
+
+    @MainActor
+    func testACardThatCannotLoadStaysInPlaceWithoutHoldingUpTheOthers() async throws {
+        let clock = TestClock()
+        let store = store(FeedStub([try Samples.document("live-home-es"), try Samples.document("live-card-ask-es")]), clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.orderedIDs, liveQueue)
+        XCTAssertEqual(store.state.cards[id: liveQueue[0]]?.screen.phase, .missing)
+        XCTAssertEqual(store.state.cards[id: liveQueue[1]]?.card?.id, liveQueue[1])
+
+        await store.send(.leaveForLater)
+        await clock.advance(by: TriageFeature.leaveDuration)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.currentID, liveQueue[1])
+    }
+
+    @MainActor
+    func testAQueueTheDaemonDoesNotServeIsAnErrorWithRetryNotAnEndlessSpinner() async throws {
+        let store = store(FeedStub())
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        XCTAssertNil(store.state.screen.document)
+        XCTAssertNotNil(store.state.loadError)
+    }
+
+    @MainActor
+    func testAQueueThatNeverArrivesBecomesAnErrorWithRetry() async throws {
+        let clock = TestClock()
+        let store = store(FeedStub(), clock: clock)
+        store.dependencies.viewsClient.observe = { _ in AsyncThrowingStream { _ in } }
+
+        await store.send(.task)
+        XCTAssertNil(store.state.loadError)
+        await clock.advance(by: TriageFeature.loadDeadline)
+        await store.skipReceivedActions()
+
+        XCTAssertNotNil(store.state.loadError)
+        await store.send(.disappeared)
     }
 
     // MARK: Offline
