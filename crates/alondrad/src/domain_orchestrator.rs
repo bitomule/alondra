@@ -351,7 +351,9 @@ fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain_v2::Reque
     let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
     let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
     for request in state.requests.values().filter(|request| !request.closed) {
-        text.push_str(&format!("request {}: {}\n", request.id, one_line(&request.body)));
+        let unsplit = !state.tasks.values().any(|task| task.request_id == request.id);
+        let body = if unsplit { request.body.trim().to_owned() } else { one_line(&request.body) };
+        text.push_str(&format!("request {}: {body}\n", request.id));
         if let Some(chosen) = choices(&request.id) {
             text.push_str(&chosen);
             text.push('\n');
@@ -793,6 +795,17 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let state = f.executor.domain.state().unwrap();
         let text = summary(&state, |request| (request.0 == "r").then(|| "  options: project App · Effort: hard".to_owned()));
         assert!(text.contains("request r: Work\n  options: project App · Effort: hard\ntask t"), "{text}");
+    }
+
+    #[test]
+    fn a_request_not_split_yet_reaches_the_orchestrator_whole() {
+        let f = fixture(SUCCESS);
+        let long = format!("{} end of the message", "word ".repeat(80));
+        command(&f.executor.domain, Actor::User { user_id: "u".into() }, "long", Command::CreateRequest {
+            request_id: "long".into(), body: long.clone(), auto_merge: false,
+        });
+        let text = summary(&f.executor.domain.state().unwrap(), |_| None);
+        assert!(text.contains("end of the message"), "{text}");
     }
 
     #[tokio::test]
