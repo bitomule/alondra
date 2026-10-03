@@ -5,34 +5,26 @@ import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// The attachment menu, with presentation and import owned by TCA: a bare paperclip inside a
-/// composer's glass, or a titled glass capsule where it stands on its own.
+/// The original attachment menu, with presentation and import owned by TCA.
 public struct AttachButton: View {
     public let store: StoreOf<AttachmentFeature>
-    public let title: Text?
 
-    public init(store: StoreOf<AttachmentFeature>, title: Text? = nil) {
-        self.store = store
-        self.title = title
-    }
+    public init(store: StoreOf<AttachmentFeature>) { self.store = store }
 
     public var body: some View {
-        Group {
-            if let title {
-                menu { Label { title } icon: { Image(systemName: "paperclip") } }
-                    .menuStyle(.button)
-                    .buttonStyle(.glass)
-                    .buttonBorderShape(.capsule)
-            } else {
-                menu {
-                    Image(systemName: "paperclip")
-                        .font(.body.weight(.semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 36, height: 36)
-                }
-                .accessibilityLabel("Attach")
+        Menu {
+            Button("Photos", systemImage: "photo.on.rectangle") { store.send(.showPhotos(true)) }
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Camera", systemImage: "camera") { store.send(.showCamera(true)) }
             }
+            Button("Files", systemImage: "folder") { store.send(.showFiles(true)) }
+        } label: {
+            Image(systemName: "paperclip")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 36, height: 36)
         }
+        .accessibilityLabel("Attach")
         .photosPicker(
             isPresented: Binding(get: { store.photosPresented }, set: { store.send(.showPhotos($0)) }),
             selection: Binding(get: { store.photos }, set: { store.send(.photosSelected($0)) }),
@@ -51,18 +43,6 @@ public struct AttachButton: View {
             Button("OK", role: .cancel) { store.send(.dismissError) }
         } message: {
             Text(store.importError ?? "")
-        }
-    }
-
-    private func menu<MenuLabel: View>(@ViewBuilder label: () -> MenuLabel) -> some View {
-        Menu {
-            Button("Photos", systemImage: "photo.on.rectangle") { store.send(.showPhotos(true)) }
-            if UIImagePickerController.isSourceTypeAvailable(.camera) {
-                Button("Camera", systemImage: "camera") { store.send(.showCamera(true)) }
-            }
-            Button("Files", systemImage: "folder") { store.send(.showFiles(true)) }
-        } label: {
-            label()
         }
     }
 }

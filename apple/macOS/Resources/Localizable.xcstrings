@@ -443,7 +443,6 @@
         }
       }
     },
-    "Attach": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Adjuntar"}}}},
     "Ask": {
       "localizations": {
         "es": {
