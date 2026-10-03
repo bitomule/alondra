@@ -4,12 +4,13 @@ import AlondraContract
 import ComposableArchitecture
 import SwiftUI
 
-/// Waiting for You: a stack of cards in the order the server sends them. Swiping browses; nothing
-/// is marked until a card's own controls are used.
+/// Waiting for You: a stack of cards in the order the server sends them. Swiping either way sends
+/// the front card to the back; tapping opens it; nothing is marked until a card's own controls are used.
 public struct TriageView: View {
     @Bindable var store: StoreOf<TriageFeature>
     let zoom: Namespace.ID
     @State private var drag: CGFloat = 0
+    @GestureState private var dragging = false
     @State private var frontHeight: CGFloat?
     @State private var keyboardVisible = false
     @State private var screenWidth: CGFloat = 0
@@ -118,14 +119,19 @@ public struct TriageView: View {
     }
 
     private var stack: some View {
-        let ids = Array(store.orderedIDs.dropFirst(store.index).prefix(3))
+        let ids = store.visibleIDs
+        let browsable = store.orderedIDs.count > 1
         return ZStack(alignment: .top) {
             ForEach(ids.reversed(), id: \.self) { id in
                 let depth = ids.firstIndex(of: id) ?? 0
+                let dragged = browsable && id == store.swipe?.cardID
                 Group {
                     if let cardStore = store.scope(state: \.cards[id: id], action: \.cards[id: id]) {
                         if let card = cardStore.card {
-                            TriageCard(store: cardStore, card: card, isFront: depth == 0, zoom: zoom)
+                            TriageCard(
+                                store: cardStore, card: card, isFront: depth == 0, zoom: zoom,
+                                onSkip: browsable ? { store.send(.next, animation: .spring(duration: 0.5, bounce: 0.2)) } : nil
+                            )
                         } else {
                             CardPlaceholder(store: cardStore)
                         }
@@ -142,31 +148,55 @@ public struct TriageView: View {
                 .scaleEffect(1 - CGFloat(depth) * 0.05, anchor: .top)
                 .offset(y: CGFloat(depth) * -11)
                 .brightness(depth == 0 ? 0 : -0.04 * Double(depth))
-                .offset(x: depth == 0 ? drag : 0)
-                .opacity(depth == 0 ? 1 - Double(min(abs(drag) / 900, 0.35)) : 1)
-                .zIndex(Double(3 - depth))
+                .offset(x: dragged ? drag : 0)
+                .opacity(dragged ? 1 - Double(min(abs(drag) / 900, 0.35)) : 1)
+                .zIndex(dragged ? 10 : Double(TriageFeature.depth - depth))
                 .allowsHitTesting(depth == 0)
                 .accessibilityHidden(depth != 0)
-                .transition(reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: 0.96, anchor: .top)))
+                .transition(reduceMotion ? .opacity : .asymmetric(
+                    insertion: .opacity.combined(with: .scale(scale: 0.96, anchor: .top)), removal: .opacity
+                ))
             }
         }
         .padding(.top, CGFloat(max(0, ids.count - 1)) * 11)
-        .simultaneousGesture(
-            DragGesture(minimumDistance: 24)
-                .onChanged { value in
-                    guard abs(value.translation.width) > abs(value.translation.height) else { return }
-                    drag = value.translation.width
+        .simultaneousGesture(swipe(browsable: browsable))
+        .onChange(of: dragging) { _, now in
+            guard !now else { return }
+            Task { @MainActor in
+                await Task.yield()
+                guard store.swipe?.released == false else { return }
+                store.send(.dragEnded(translation: 0, predicted: 0))
+                withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
+            }
+        }
+        .onChange(of: store.swipe == nil) { _, settled in
+            guard settled else { return }
+            var instant = Transaction()
+            instant.disablesAnimations = true
+            withTransaction(instant) { drag = 0 }
+        }
+        .sensoryFeedback(.impact(weight: .light), trigger: store.skips)
+        .animation(.spring(duration: 0.5, bounce: 0.22), value: ids)
+    }
+
+    private func swipe(browsable: Bool) -> some Gesture {
+        DragGesture(minimumDistance: 24)
+            .updating($dragging) { _, dragging, _ in dragging = true }
+            .onChanged { value in
+                if store.swipe == nil { store.send(.dragChanged) }
+                guard browsable, store.swipe?.released == false,
+                      abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
+                drag = value.translation.width
+            }
+            .onEnded { value in
+                guard store.swipe?.released == false else { return }
+                store.send(.dragEnded(translation: drag, predicted: value.predictedEndTranslation.width))
+                switch store.swipe?.leaving {
+                case .left?: withAnimation(.easeIn(duration: 0.16)) { drag = -420 }
+                case .right?: withAnimation(.easeIn(duration: 0.16)) { drag = 420 }
+                case nil: withAnimation(.spring(duration: 0.4, bounce: 0.35)) { drag = 0 }
                 }
-                .onEnded { value in
-                    let projected = value.predictedEndTranslation.width
-                    withAnimation(.spring(duration: 0.4, bounce: 0.35)) {
-                        if projected < -90 { store.send(.move(1)) }
-                        else if projected > 90 { store.send(.move(-1)) }
-                        drag = 0
-                    }
-                }
-        )
-        .animation(.spring(duration: 0.5, bounce: 0.22), value: store.currentID)
+            }
     }
 
     private var empty: some View {

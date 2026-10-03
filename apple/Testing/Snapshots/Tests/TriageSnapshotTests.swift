@@ -124,9 +124,14 @@ final class TriageSnapshotTests: XCTestCase {
 
     func test_stackOfFourWithThePageDots() throws {
         let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID, Fixtures.pullRequestID]
-        let store = try ScreenStores.triage(
-            queue: queue, cards: [try Fixtures.card(Fixtures.questionID), try Fixtures.card(Fixtures.informationID)]
-        )
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.prefix(3).map(Fixtures.card))
+        assertVariants { Harness(store: store) }
+    }
+
+    func test_stackAfterTheLastCardWrapsToTheFirst() throws {
+        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID, Fixtures.pullRequestID]
+        let shown = [Fixtures.pullRequestID, Fixtures.questionID, Fixtures.informationID]
+        let store = try ScreenStores.triage(queue: queue, cards: try shown.map(Fixtures.card)) { $0.index = 3 }
         assertVariants { Harness(store: store) }
     }
 }
