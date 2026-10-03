@@ -65,6 +65,20 @@ public struct NodeDetail: Equatable, Sendable {
         }
     }
 
+    /// The node as it is after what was just sent: an orchestrator decision taken here leaves the
+    /// screen and the state says what happens next.
+    public func hiding(_ optimistic: Optimistic) -> NodeDetail {
+        guard let taken = orchestratorActions.first(where: { optimistic.hides($0.id) }) else { return self }
+        var detail = self
+        detail.orchestratorActions = []
+        detail.state = switch taken.command {
+        case "orch_retry": String(localized: "Retrying")
+        case "orch_stop": String(localized: "Stopping")
+        default: String(localized: "Continuing")
+        }
+        return detail
+    }
+
     private mutating func sortActions(_ actions: [WireAction]) {
         for action in actions {
             switch action.id?.prefix(while: { $0 != ":" }) {

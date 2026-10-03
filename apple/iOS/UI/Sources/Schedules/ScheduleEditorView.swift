@@ -29,13 +29,27 @@ public struct ScheduleEditorView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .confirmationAction) {
-                Button("Save", systemImage: "checkmark") { store.send(.save) }
-                    .disabled(!store.canSave)
+                if store.isSaving {
+                    HStack(spacing: 6) {
+                        ProgressView().controlSize(.small)
+                        Text("Saving…").font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
+                    }
+                    .transition(.blurReplace)
+                    .accessibilityElement(children: .combine)
+                } else {
+                    Button("Save", systemImage: "checkmark") { store.send(.save) }
+                        .disabled(!store.canSave)
+                        .transition(.blurReplace)
+                }
             }
         }
+        .animation(.smooth(duration: 0.25), value: store.isSaving)
         .task { await store.send(.task).finish() }
         .actionDialogs(store.scope(state: \.actions, action: \.actions))
-        .sensoryFeedback(.success, trigger: store.actions.stamp)
+        .sensoryFeedback(trigger: store.isSaving) { wasSaving, saving in
+            guard wasSaving, !saving else { return nil }
+            return store.actions.error == nil && store.errors.isEmpty && store.formError == nil ? .success : .error
+        }
     }
 
     private var form: some View {
@@ -50,6 +64,8 @@ public struct ScheduleEditorView: View {
             }
         }
         .scrollContentBackground(.hidden)
+        .disabled(store.isSaving)
+        .opacity(store.isSaving ? 0.6 : 1)
     }
 
     @ViewBuilder private var notices: some View {

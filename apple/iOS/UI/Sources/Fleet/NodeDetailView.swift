@@ -91,6 +91,7 @@ public struct NodeDetailView: View {
                 if !detail.orchestratorActions.isEmpty { orchestratorActions(detail.orchestratorActions) }
             }
             .padding(20)
+            .animation(.smooth, value: detail.orchestratorActions.isEmpty)
         }
         .scrollDismissesKeyboard(.interactively)
         .safeAreaBar(edge: .bottom) { if detail.message != nil { composer(detail) } }

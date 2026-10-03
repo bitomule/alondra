@@ -202,6 +202,46 @@ final class ScheduleEditorTests: XCTestCase {
     }
 
     @MainActor
+    func testSavingShowsItIsSavingUntilTheDaemonAnswersEitherWay() async throws {
+        for reply in [try Responses.applied("Saved"), try Responses.rejected("Choose a valid time.", field: "time")] {
+            let gate = Gate()
+            let store = try await loaded()
+            store.dependencies.viewsClient.perform = { _ in
+                await gate.wait()
+                return reply
+            }
+            await store.send(.set("name", .string("Evening digest")))
+            XCTAssertFalse(store.state.isSaving)
+
+            await store.send(.save)
+            await store.receive(\.actions.sent)
+            XCTAssertTrue(store.state.isSaving, "the save waits for the daemon and says so")
+            XCTAssertFalse(store.state.canSave, "a second tap cannot send it twice")
+
+            await gate.open()
+            await store.receive(\.actions.response)
+            XCTAssertFalse(store.state.isSaving, "\(reply.outcome)")
+            await store.finish()
+        }
+    }
+
+    @MainActor
+    func testASaveThatCannotReachTheDaemonStopsSaving() async throws {
+        let gate = Gate()
+        let store = try await loaded()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            throw URLError(.notConnectedToInternet)
+        }
+        await store.send(.save)
+        await store.receive(\.actions.sent)
+        XCTAssertTrue(store.state.isSaving)
+        await gate.open()
+        await store.receive(\.actions.failed)
+        XCTAssertFalse(store.state.isSaving)
+    }
+
+    @MainActor
     func testASaveThatCouldNotBeSentIsAToastAndKeepsWhatWasTyped() async throws {
         let store = try await loaded(respond: { _ in throw URLError(.notConnectedToInternet) })
 

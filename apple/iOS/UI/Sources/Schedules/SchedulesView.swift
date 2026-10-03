@@ -92,6 +92,12 @@ private struct ScheduleRow: View {
                                 Text(verbatim: frequency)
                                     .foregroundStyle(.secondary)
                             }
+                            if entry.pausedHere == true {
+                                StateChip(label: String(localized: "Paused"), tint: TaskStyle.tint(tone: .warning))
+                            }
+                            if entry.startedHere {
+                                StateChip(label: String(localized: "Running"), tint: TaskStyle.tint(tone: .success))
+                            }
                             ForEach(entry.badges, id: \.text) { badge in
                                 StateChip(label: badge.text, tint: TaskStyle.tint(tone: badge.tone))
                             }
@@ -113,8 +119,8 @@ private struct ScheduleRow: View {
             .buttonStyle(PressStyle())
             Menu {
                 if let run = entry.run { Button(run.label, systemImage: "play.fill") { perform(run) } }
-                if let toggle = entry.toggle {
-                    Button(toggle.label, systemImage: entry.isPaused ? "play.circle" : "pause.circle") { perform(toggle) }
+                if let toggle = entry.toggle, let label = entry.toggleLabel {
+                    Button(label, systemImage: entry.isPaused ? "play.circle" : "pause.circle") { perform(toggle) }
                 }
                 if let delete = entry.delete {
                     Button(delete.label, systemImage: "trash", role: .destructive) { perform(delete) }
