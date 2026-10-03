@@ -258,6 +258,15 @@ fn orchestrator_items_are_not_in_home() {
     );
 }
 #[test]
+fn icon_badge_counts_what_waits_in_home() {
+    let state = fixture();
+    let home = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "home", "2026-09-30T10:00:00Z");
+    assert_eq!(super::inbox_badge(&state), 3, "the orchestrator's question is not the user's");
+    assert_eq!(super::inbox_badge(&state), home.status.badge);
+    assert_eq!(super::inbox_badge(&state), home.sections[0].card_ids.len() as u32);
+    assert_eq!(super::inbox_badge(&DomainState::new("empty")), 0);
+}
+#[test]
 fn pull_request_contains_its_question() {
     let mut state = fixture();
     state.pull_requests.insert(

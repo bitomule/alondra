@@ -31,7 +31,9 @@ public struct TriageFeature: Sendable {
             guard !orderedIDs.isEmpty else { return [] }
             return (0 ..< min(TriageFeature.depth, orderedIDs.count)).map { orderedIDs[(index + $0) % orderedIDs.count] }
         }
-        public var badge: Int { Int(status?.badge ?? screen.document?.status.badge ?? 0) }
+        public var badge: Int { iconBadge ?? 0 }
+        /// What waits for the user, as the server counts it; nil until the first status arrives.
+        public var iconBadge: Int? { (status?.badge ?? screen.document?.status.badge).map(Int.init) }
         public var queueTitle: String? { screen.document?.sections.first { $0.id == "queue" }?.title }
         public var isOffline: Bool {
             if case .failed = screen.phase { return screen.document != nil }

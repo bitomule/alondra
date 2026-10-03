@@ -44,6 +44,17 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testTheIconBadgeIsUnknownUntilTheServerCountsTheQueue() async throws {
+        let store = store(try fullFeed())
+        XCTAssertNil(store.state.iconBadge, "a fresh launch must not clear the badge a push set")
+
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.iconBadge, 4)
+    }
+
+    @MainActor
     func testLeavingForLaterSendsTheFrontCardToTheBackOfTheQueueWithoutSendingAnything() async throws {
         let feed = try fullFeed()
         let store = store(feed)

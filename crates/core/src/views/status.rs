@@ -6,11 +6,7 @@ use super::{
 use crate::domain_v2::DomainProjection;
 
 pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) -> Status {
-    let roots: Vec<_> = projection
-        .inbox
-        .iter()
-        .filter(|item| item.pending && !super::home::orchestrator_only(item, context))
-        .collect();
+    let roots = super::home::waiting(projection, context.domain);
     let pending = roots.len() as u32;
     let questions = roots
         .iter()

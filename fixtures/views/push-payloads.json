@@ -5,7 +5,7 @@
       "interaction": "question",
       "id": "c92d0a11-7c47-4c47-b42b-36b8f22f5120",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the question parser?"}, "sound": "default", "category": "ALONDRA_PUSH", "mutable-content": 1},
+        "aps": {"alert": {"title": "Split the parser", "body": "Merge the question parser?"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
         "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "c92d0a11-7c47-4c47-b42b-36b8f22f5120", "kind": "question", "actions": [{"id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1", "option": "yes", "label": "Yes"}, {"id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1", "option": "changes", "label": "Request changes", "text": true, "placeholder": "Add a note"}, {"id": "ctx:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1", "label": "Need more context", "text": true, "placeholder": "What is missing?"}]}
       }
     },
@@ -13,7 +13,7 @@
       "interaction": "action_request",
       "id": "a019b231-43d1-4aa9-a0c3-5713a8ac2150",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the action_request parser?"}, "sound": "default", "category": "ALONDRA_PUSH", "mutable-content": 1},
+        "aps": {"alert": {"title": "Split the parser", "body": "Merge the action_request parser?"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
         "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "a019b231-43d1-4aa9-a0c3-5713a8ac2150", "kind": "action_request", "actions": [{"id": "ans:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1", "option": "yes", "label": "Yes"}, {"id": "ans:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1", "option": "changes", "label": "Request changes", "text": true, "placeholder": "Add a note"}, {"id": "ctx:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1", "label": "Need more context", "text": true, "placeholder": "What is missing?"}]}
       }
     },
@@ -21,7 +21,7 @@
       "interaction": "information",
       "id": "f0ab22dc-2a7a-4c90-b178-d5a91a6338d8",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the information parser?"}, "sound": "default", "category": "ALONDRA_PUSH", "mutable-content": 1},
+        "aps": {"alert": {"title": "Split the parser", "body": "Merge the information parser?"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
         "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "f0ab22dc-2a7a-4c90-b178-d5a91a6338d8", "kind": "information", "actions": [{"id": "read:f0ab22dc-2a7a-4c90-b178-d5a91a6338d8@1", "label": "Mark as read"}, {"id": "reply:f0ab22dc-2a7a-4c90-b178-d5a91a6338d8@1", "label": "Reply", "text": true, "placeholder": "Write a reply"}]}
       }
     },
@@ -29,7 +29,7 @@
       "interaction": "delivery_text",
       "id": "hf-weekly-2026-10-01",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the delivery_text parser?"}, "sound": "default", "mutable-content": 1},
+        "aps": {"alert": {"title": "Split the parser", "body": "Merge the delivery_text parser?"}, "sound": "default", "badge": 4, "mutable-content": 1},
         "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hf-weekly-2026-10-01", "kind": "delivery", "actions": []}
       }
     },
@@ -37,7 +37,7 @@
       "interaction": "delivery_pull_request",
       "id": "hf-weekly-2026-10-02",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the delivery_pull_request parser?"}, "sound": "default", "mutable-content": 1},
+        "aps": {"alert": {"title": "Split the parser", "body": "Merge the delivery_pull_request parser?"}, "sound": "default", "badge": 4, "mutable-content": 1},
         "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hf-weekly-2026-10-02", "kind": "delivery", "actions": []}
       }
     },
@@ -45,7 +45,7 @@
       "interaction": "permission",
       "id": "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS",
       "payload": {
-        "aps": {"alert": {"title": "A node needs permission", "body": "Bash: Extract shared waiting-items helper in core views"}, "sound": "default", "category": "ALONDRA_PUSH", "mutable-content": 1},
+        "aps": {"alert": {"title": "A node needs permission", "body": "Bash: Extract shared waiting-items helper in core views"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
         "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS", "kind": "question", "actions": [{"id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1", "option": "allow", "label": "Allow"}, {"id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1", "option": "deny", "label": "Deny"}]}
       }
     }
