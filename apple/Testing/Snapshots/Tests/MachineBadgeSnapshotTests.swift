@@ -55,4 +55,9 @@ final class MachineBadgeSnapshotTests: XCTestCase {
     func test_narrow_keepsEveryBarAndSettings() throws {
         assertAppSnapshot(of: try navigationBar(width: 375), as: .image(precision: 0.99, perceptualPrecision: 0.97))
     }
+
+    func test_popover_breaksTheMachineDownIntoRamAndCpu() throws {
+        let status = try ContractCodec.decode(ViewStatus.self, from: Data(Self.status.utf8))
+        assertScreen([.light]) { ScreenFrame(height: 260) { MachineDetail(gauges: status.gauges) } }
+    }
 }
