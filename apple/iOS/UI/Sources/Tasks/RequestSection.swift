@@ -98,7 +98,8 @@ struct RequestSection: View {
     }
 }
 
-/// A request the orchestrator has not split into tasks yet.
+/// A request the orchestrator has not split into tasks yet, with why: splitting, or waiting for
+/// the user's decision on a failed run.
 private struct DefiningRow: View {
     let request: TasksBoard.Request
 
@@ -106,11 +107,19 @@ private struct DefiningRow: View {
         HStack(alignment: .top, spacing: 12) {
             Glyph(symbol: "diamond", tint: Palette.slate, pulse: true)
             VStack(alignment: .leading, spacing: 3) {
-                Text("The orchestrator is splitting it into tasks")
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(.secondary)
-                if let state = request.state {
-                    StateLine(label: state, tint: Palette.slate, since: request.touchedAt)
+                Group {
+                    if let state = request.state {
+                        Text(verbatim: state)
+                    } else {
+                        Text("The orchestrator is splitting it into tasks")
+                    }
+                }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(.secondary)
+                if let touchedAt = request.touchedAt {
+                    RelativeTime(date: touchedAt)
+                        .font(.caption)
+                        .foregroundStyle(.tertiary)
                 }
             }
             Spacer(minLength: 0)

@@ -1490,6 +1490,65 @@ fn ambiguous_orchestrator_run_exposes_both_choices_with_confirmation() {
     assert!(actions.iter().any(|action| action.id.starts_with("orch_ack:") && action.confirm.is_some()));
     assert!(!actions.iter().any(|action| action.id.starts_with("orch_stop:")));
 }
+fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
+    LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
+        working: false, summary: Some("Claude exited without a successful terminal result".into()),
+        queue_depth: 1, active_run_id: Some("run-1".into()), can_retry, can_cancel: !can_retry,
+    }), ..Default::default() }
+}
+
+#[test]
+fn a_failed_orchestrator_run_waits_for_the_user_in_home_with_both_choices() {
+    let state = fixture();
+    let home = render(&state, &orchestrator_waiting(true), Client::Ios, Lang::Es, "home", "");
+    assert_eq!(home.sections[0].card_ids, ["orchestrator-decision", "i-1", "i-2", "i-3"]);
+    assert_eq!(home.sections[0].count, Some(4));
+
+    let card = render(&state, &orchestrator_waiting(true), Client::Ios, Lang::Es, "card:orchestrator-decision", "");
+    let Item::Card(card) = &card.sections[0].items[0] else { panic!("decision card") };
+    assert_eq!(card.title, "El orquestador necesita que decidas");
+    assert!(card.body.as_ref().unwrap().text.contains("Claude exited without a successful terminal result"));
+    let verbs: Vec<_> = card.actions.iter().map(|action| action.id.split(':').next().unwrap()).collect();
+    assert_eq!(verbs, ["orch_retry", "orch_ack"]);
+    assert!(card.actions.iter().all(|action| action.id.ends_with("~run-1") && action.confirm.is_some()));
+
+    let tui = render(&state, &orchestrator_waiting(true), Client::Tui, Lang::En, "home", "");
+    let Item::Row(first) = &tui.sections[0].items[0] else { panic!("decision row") };
+    assert_eq!(first.id, "orchestrator-decision");
+    let sidebar = render(&state, &orchestrator_waiting(true), Client::Mac, Lang::En, "sidebar", "");
+    let waiting = sidebar.sections.iter().find(|section| section.id == "waiting").unwrap();
+    assert!(matches!(&waiting.items[0], Item::Row(row) if row.id == "orchestrator-decision"));
+    assert_eq!(waiting.count, Some(waiting.items.len() as u32));
+}
+
+#[test]
+fn a_running_orchestrator_shows_no_decision_card() {
+    let state = fixture();
+    let home = render(&state, &orchestrator_waiting(false), Client::Ios, Lang::En, "home", "");
+    assert_eq!(home.sections[0].card_ids, ["i-1", "i-2", "i-3"]);
+    let live = orchestrator_waiting(false);
+    let card = build("card:orchestrator-decision", RenderContext {
+        domain: &state, live: &live, client: Client::Ios, lang: Lang::En,
+        transport: Transport::Loopback, cursor: "cursor-1", rendered_at: "",
+    });
+    assert!(matches!(card, Err(BuildError::NotFound)), "{card:?}");
+}
+
+#[test]
+fn a_request_not_split_yet_says_it_waits_for_the_users_decision() {
+    let mut state = fixture();
+    state.requests.insert("r-2".into(), Request::new("r-2".into(), "Still splitting".into()));
+    let subtitle = |live: &LiveSnapshot| {
+        let view = render(&state, live, Client::Ios, Lang::Es, "tasks", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Row(row) if row.id == "r-2" => row.subtitle.clone(),
+            _ => None,
+        }).unwrap()
+    };
+    assert_eq!(subtitle(&orchestrator_waiting(true)), "Esperando tu decisión");
+    assert_eq!(subtitle(&orchestrator_waiting(false)), "El orquestador la está dividiendo");
+}
+
 #[test]
 fn spanish_builder_text_differs() {
     let state = fixture();

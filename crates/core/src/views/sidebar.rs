@@ -179,10 +179,13 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
             .iter()
             .filter(|item| (item.kind == "pull_request") == pr)
             .collect();
+        let decision = super::card::orchestrator_decision(context, false).filter(|_| !pr).map(|card| {
+            Item::Row(common::row(&card.id, &format!("card:{}", card.id), card.icon, card.title, card.subtitle))
+        });
         let mut section = common::section(
             id,
             Some(title.into()),
-            cards
+            decision.into_iter().map(Ok).chain(cards
                 .iter()
                 .map(|item| {
                     let card = super::card::from_item(item, context, false)?;
@@ -193,10 +196,10 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
                         card.title,
                         card.subtitle,
                     )))
-                })
+                }))
                 .collect::<Result<Vec<_>, BuildError>>()?,
         );
-        section.count = Some(cards.len() as u32);
+        section.count = Some(section.items.len() as u32);
         view.sections.push(section);
     }
     view.sections.push(task_groups(context));
