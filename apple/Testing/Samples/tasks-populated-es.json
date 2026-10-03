@@ -44,6 +44,20 @@
       "items": [
         {
           "type": "row",
+          "id": "r-5",
+          "icon": "mission",
+          "title": "En Alondra la tarea que se ejecutaba esta noche se ha quedado atascada, ¿qué ha fallado? Mira el log del orquestador y el nodo",
+          "depth": 0,
+          "struck": false,
+          "subtitle": "El orquestador la está dividiendo",
+          "trailing": {
+            "kind": "time",
+            "at": "2025-12-31T23:58:00.000Z",
+            "format": "relative"
+          }
+        },
+        {
+          "type": "row",
           "id": "r-1",
           "icon": "mission",
           "title": "Pulir la beta de Alondra",
@@ -86,7 +100,21 @@
               "trailing": {
                 "kind": "count",
                 "value": 4
-              }
+              },
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Preguntó si mantener la hoja de revisión antigua",
+                  "depth": 0,
+                  "struck": false,
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2025-12-31T22:05:00.000Z",
+                    "format": "relative"
+                  }
+                }
+              ]
             },
             {
               "id": "t-2",
@@ -110,6 +138,18 @@
                 "value": 1
               },
               "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "xcodebuild test -scheme Alondra",
+                  "depth": 0,
+                  "struck": false,
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2025-12-31T23:52:00.000Z",
+                    "format": "relative"
+                  }
+                },
                 {
                   "id": "t-3",
                   "icon": "task",
@@ -174,13 +214,27 @@
               "trailing": {
                 "kind": "count",
                 "value": 0
-              }
+              },
+              "children": [
+                {
+                  "id": "activity",
+                  "icon": "notice",
+                  "title": "Leyendo el consumo de tokens de la semana pasada",
+                  "depth": 0,
+                  "struck": false,
+                  "trailing": {
+                    "kind": "time",
+                    "at": "2025-12-31T23:55:00.000Z",
+                    "format": "relative"
+                  }
+                }
+              ]
             }
           ]
         }
       ],
       "title": "Activas",
-      "count": 2
+      "count": 3
     },
     {
       "id": "finished",

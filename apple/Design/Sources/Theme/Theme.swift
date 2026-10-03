@@ -101,6 +101,7 @@ public struct Kind {
         case .pullRequest: self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
         case .document: self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
         case .delivery: self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
+        case .warning: self.init(String(localized: "Permission"), "lock.shield", Palette.rose)
         default: self.init(String(localized: "Notice"), "bell", Palette.slate)
         }
     }

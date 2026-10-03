@@ -1149,6 +1149,33 @@ fn a_request_row_links_to_its_most_recently_changed_task() {
 }
 
 #[test]
+fn on_the_iphone_a_task_row_says_what_its_node_does_now_like_fleet() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode {
+        agent_id: "a-1".into(), name: "Node One".into(), working: true,
+        tool: Some("cargo test".into()), state_since: Some("2026-09-30T09:58:00Z".into()),
+        ..LiveNode::default()
+    });
+    let task_children = |client| {
+        let view = render(&state, &live, client, Lang::En, "tasks", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+            Item::Row(row) if row.id == "r-1" => row.children.iter().find(|child| child.id == "t-1").map(|task| task.children.clone()),
+            _ => None,
+        }).unwrap()
+    };
+    let ios = task_children(Client::Ios);
+    assert_eq!(ios.len(), 1);
+    assert_eq!(ios[0].id, "activity");
+    assert_eq!(ios[0].title, "cargo test");
+    assert_eq!(ios[0].trailing, Some(Trailing::Time {
+        at: "2026-09-30T09:58:00Z".into(), format: TimeFormat::Relative,
+    }));
+    assert!(task_children(Client::Tui).is_empty(), "the TUI tree keeps only tasks under a task");
+}
+
+#[test]
 fn only_the_iphone_gets_no_link_to_the_request_view() {
     let state = fixture();
     let request_fact_link = |client| {
@@ -2307,7 +2334,8 @@ fn a_held_permission_card_shows_what_it_would_run_with_allow_and_deny() {
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::Es, "card:i-1", "");
     let card = card_of(&view);
     assert_eq!((card.icon, card.eyebrow.as_ref().unwrap().text.as_str()), (Icon::Warning, "Permiso"));
-    assert_eq!(card.title, "Bash: clean the build");
+    assert_eq!(card.title, "Node One necesita permiso");
+    assert_eq!(card.subtitle.as_deref(), Some("Bash: clean the build"));
     assert_eq!(card.body.as_ref().unwrap().text, "```\nrm -rf build\n```");
     let options = &answer_action(card).options;
     assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str(), o.key.as_deref())).collect::<Vec<_>>(),
@@ -2502,10 +2530,18 @@ fn a_node_reads_merging_from_the_claim_of_its_merge_authorization_until_the_merg
 fn a_push_shows_what_the_card_asks_not_a_generic_line() {
     use crate::domain_v2::Hold;
     let alert = |state: &DomainState| push_content(state, "i-1", Lang::En).unwrap().alert.unwrap();
-    let permission = alert(&held_fixture(Hold::Permission, "Bash: clean the build\n\n```\nrm -rf build\n```"));
-    assert_eq!(permission, PushAlert { title: "Bash: clean the build".into(), body: Some("rm -rf build".into()) });
+    let held = "Bash: Extract shared waiting-items helper in core views\n\n```\npython3 - <<'EOF'\nimport re\nEOF\n```";
+    assert_eq!(alert(&held_fixture(Hold::Permission, held)), PushAlert {
+        title: "Node One needs permission".into(),
+        body: Some("Bash: Extract shared waiting-items helper in core views".into()),
+    }, "the lock screen says who asks and for what, never the raw command");
+    assert_eq!(push_content(&held_fixture(Hold::Permission, held), "i-1", Lang::Es).unwrap().alert.unwrap().title,
+        "Node One necesita permiso");
     let plan = alert(&held_fixture(Hold::Plan, "# Ship the parser\n\n1. Split the lexer\n2. Add tests"));
-    assert_eq!(plan, PushAlert { title: "Ship the parser".into(), body: Some("1. Split the lexer".into()) });
+    assert_eq!(plan, PushAlert { title: "Node One has a plan for you".into(), body: Some("Ship the parser".into()) });
+    let question = push_content(&held_fixture(Hold::Question, "Which database?\n\n- Postgres"), "i-1", Lang::Es)
+        .unwrap().alert.unwrap();
+    assert_eq!(question, PushAlert { title: "Node One pregunta".into(), body: Some("Which database?".into()) });
 
     let mut state = fixture();
     state.interactions.get_mut(&"i-1".into()).unwrap().body = format!("Should I {}?", "really ".repeat(60));

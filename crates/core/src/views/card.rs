@@ -200,23 +200,38 @@ fn hold_of(item: &InboxItem, domain: &DomainState) -> Option<Hold> {
     let InboxSubject::Interaction { interaction_id } = &item.subject else { return None };
     domain.holds.get(interaction_id).copied()
 }
+struct HeldText {
+    title: String,
+    subtitle: Option<String>,
+    body: Option<String>,
+}
 /// A held card's own title and text, as 8ccd131 showed them: the plan's first heading over the
-/// whole plan; otherwise the first line (the permission's summary, the question, the request)
-/// over the rest.
-fn held_text(item: &InboxItem, hold: Option<Hold>) -> Option<(String, Option<String>)> {
+/// whole plan; a permission names the node asking, with the tool and what it is for under the
+/// title and the command below; otherwise the first line (the question, the request) over the rest.
+fn held_text(item: &InboxItem, hold: Option<Hold>, context: &RenderContext<'_>) -> Option<HeldText> {
     let hold = hold?;
     let body = item.body.as_deref()?;
     let first = body.lines().map(|line| line.trim_start_matches('#').trim()).find(|line| !line.is_empty())?;
     let title: String = first.chars().take(120).collect();
     if hold == Hold::Plan {
-        return Some((title, Some(body.to_owned())));
+        return Some(HeldText { title, subtitle: None, body: Some(body.to_owned()) });
     }
-    let rest = body.trim_start().split_once('\n').map(|(_, rest)| rest.trim()).filter(|rest| !rest.is_empty());
-    Some((title, rest.map(str::to_owned)))
+    let rest = body.trim_start().split_once('\n').map(|(_, rest)| rest.trim().to_owned()).filter(|rest| !rest.is_empty());
+    if hold == Hold::Permission {
+        return Some(HeldText { title: permission_title(item, context), subtitle: Some(title), body: rest });
+    }
+    Some(HeldText { title, subtitle: None, body: rest })
+}
+fn permission_title(item: &InboxItem, context: &RenderContext<'_>) -> String {
+    match &item.agent_id {
+        Some(agent_id) => tf!(context.lang, "{node} needs permission", "{node} necesita permiso",
+            node = super::common::agent_label(agent_id, context)),
+        None => t!(context.lang, "A node needs permission", "Un nodo necesita permiso").into(),
+    }
 }
 pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included: bool) -> Result<Card, BuildError> {
     let (label, icon) = eyebrow(item, context.lang);
-    let held = held_text(item, hold_of(item, context.domain));
+    let held = held_text(item, hold_of(item, context.domain), context);
     let mut context_lines = vec![];
     if let Some(agent_id) = &item.agent_id {
         let node = context.live.nodes.iter().find(|node| node.agent_id == agent_id.0);
@@ -279,7 +294,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         InboxSubject::PullRequest { pr_id } => context.live.pull_requests.iter().find(|detail| detail.id == pr_id.0),
         _ => None,
     };
-    let held_body = held.as_ref().map(|(_, body)| body.as_ref());
+    let held_body = held.as_ref().map(|held| held.body.as_ref());
     let body = included
         .then(|| {
             live_pr
@@ -378,11 +393,11 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
                 Tone::Neutral
             },
         }),
+        subtitle: held.as_ref().and_then(|held| held.subtitle.clone()),
         title: held
-            .map(|(title, _)| title)
+            .map(|held| held.title)
             .or_else(|| live_pr.and_then(|detail| detail.title.clone()))
             .unwrap_or_else(|| item.title.clone()),
-        subtitle: None,
         badges,
         context: context_lines,
         timestamps,

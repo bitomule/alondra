@@ -93,7 +93,7 @@ final class NotificationPayloadTests: XCTestCase {
     func testEveryDaemonPushMatchesTheViewsFixture() throws {
         let fixture = try fixture()
         let cases = try XCTUnwrap(fixture["cases"] as? [[String: Any]])
-        XCTAssertEqual(cases.count, 5)
+        XCTAssertEqual(cases.count, 6)
         let binding = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         for entry in cases {
             var push = try XCTUnwrap(entry["payload"] as? [String: Any])
@@ -105,6 +105,19 @@ final class NotificationPayloadTests: XCTestCase {
             XCTAssertEqual(bound.item.kind.rawValue, alondra["kind"] as? String)
             XCTAssertEqual(bound.item.epoch, fixture["data_epoch"] as? String)
         }
+    }
+
+    func testAPermissionPushSaysWhoAsksForWhatAndOffersAllowAndDeny() throws {
+        let cases = try XCTUnwrap(try fixture()["cases"] as? [[String: Any]])
+        let push = try XCTUnwrap(cases.first { $0["interaction"] as? String == "permission" }?["payload"] as? [String: Any])
+        let alert = NotificationAlert(aps: try XCTUnwrap(push["aps"] as? [String: Any]))
+        XCTAssertEqual(alert.title, "A node needs permission")
+        XCTAssertEqual(alert.body, "Bash: Extract shared waiting-items helper in core views")
+        let item = try XCTUnwrap(NotificationPayload.Item(userInfo: push))
+        XCTAssertEqual(item.actions.map(\.label), ["Allow", "Deny"])
+        XCTAssertEqual(item.actions.map(\.option), ["allow", "deny"])
+        XCTAssertEqual(Set(item.actions.map(\.id)), ["ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1"])
+        XCTAssertFalse(item.actions.contains { $0.text || $0.opens }, "both answer from the lock screen")
     }
 
     func testFourButtonTextActionCategoryIsBuiltFromPayload() throws {

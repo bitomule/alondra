@@ -1770,6 +1770,7 @@
         }
       }
     },
+    "Shows the whole command": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Muestra el comando entero"}}}},
     "Shows them": {
       "localizations": {
         "es": {
@@ -2726,16 +2727,6 @@
                 }
               }
             }
-          }
-        }
-      }
-    },
-    "The orchestrator is splitting it into tasks": {
-      "localizations": {
-        "es": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "El orquestador la reparte en tareas"
           }
         }
       }

@@ -12,6 +12,7 @@ struct TriageCard: View {
     let card: Card
     let isFront: Bool
     let zoom: Namespace.ID
+    let onSkip: (() -> Void)?
     @Environment(\.openURL) private var openURL
     @State private var contentHeight: CGFloat?
     @FocusState private var replyFocused: Bool
@@ -24,13 +25,14 @@ struct TriageCard: View {
     private var selected: AlondraContract.Action? { store.selected }
     private func inputPlaceholder(_ action: AlondraContract.Action) -> String {
         if card.icon == .pullRequest { return String(localized: "What should change?") }
-        if case let .text(value, _, _) = action.input {
+        let picked = selected?.id == action.id ? action.options.first { $0.id == store.actions.selectedOptionID } : nil
+        if case let .text(value, _, _) = picked?.input ?? action.input {
             return value ?? String(localized: "Write your answer")
         }
         return String(localized: "Write your answer")
     }
     private var stamp: String? { store.stamp }
-    private var isQuestion: Bool { card.icon == .question || card.icon == .action }
+    private var isQuestion: Bool { card.icon == .question || card.icon == .action || card.icon == .warning }
     private var isDocumentReview: Bool { CardActionPresentation.isDocumentReview(card) }
     private func verb(_ action: AlondraContract.Action) -> String {
         action.id?.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
@@ -68,6 +70,7 @@ struct TriageCard: View {
             .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
             .scaleEffect(stamp == nil ? 1 : 1.02)
             .animation(.spring(duration: 0.35, bounce: 0.4), value: stamp)
+            .sensoryFeedback(.success, trigger: stamp) { _, new in new != nil }
             .alert(store.actions.confirmation?.title ?? "", isPresented: Binding(
                 get: { store.actions.confirmation != nil }, set: { if !$0 { store.send(.actions(.cancelConfirmation)) } }
             )) {
@@ -122,7 +125,18 @@ struct TriageCard: View {
                 KindBadge(kind: kind)
                 Spacer()
                 if let at = card.timestamps.first?.at {
-                    Text(relativeStamp(at)).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    Text(relativeStamp(at)).font(.footnote).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                }
+                if let onSkip {
+                    Button(action: onSkip) {
+                        Image(systemName: "arrow.uturn.forward")
+                            .font(.footnote.weight(.semibold))
+                            .frame(width: 30, height: 30)
+                            .background(Palette.hairline, in: .circle)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Leave for Later")
                 }
             }
             Text(card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
@@ -168,7 +182,9 @@ struct TriageCard: View {
                 if card.icon == .delivery || card.icon == .document {
                     ArtifactLinks(text: body.text, tint: tint)
                 }
-                if body.truncated || body.more != nil || body.text.count > 600 {
+                if card.icon == .warning {
+                    command(body)
+                } else if body.truncated || body.more != nil || body.text.count > 600 {
                     excerpt(body)
                 } else {
                     MarkdownView(markdown: body).foregroundStyle(Palette.ink.opacity(0.9))
@@ -220,7 +236,29 @@ struct TriageCard: View {
                 .onTapGesture { openCardDetail() }
         }
         .accessibilityAction(named: "Open") { openCardDetail() }
+        .accessibilityActions {
+            if let onSkip { Button("Leave for Later", action: onSkip) }
+        }
     }
+
+    /// What a permission would run, as 8ccd131 showed it: the command itself, a few lines tall;
+    /// a longer one fades out and opens whole in the card.
+    private func command(_ markdown: Markdown) -> some View {
+        let long = markdown.text.split(separator: "\n", omittingEmptySubsequences: false).count > Self.commandLines + 2
+        return Button { openCardDetail() } label: {
+            MarkdownView(markdown: markdown).foregroundStyle(Palette.ink.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, maxHeight: long ? 150 : nil, alignment: .topLeading)
+                .clipped()
+                .mask(LinearGradient(stops: [.init(color: .black, location: long ? 0.6 : 1), .init(color: long ? .clear : .black, location: 1)],
+                                     startPoint: .top, endPoint: .bottom))
+                .contentShape(.rect)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityHint(Text("Shows the whole command"))
+    }
+
+    private static let commandLines = 6
 
     private func excerpt(_ markdown: Markdown) -> some View {
         let blocks = MarkdownParser.blocks(from: markdown.text)

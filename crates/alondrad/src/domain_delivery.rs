@@ -787,7 +787,7 @@ mod tests {
                 .unwrap();
         let state = push_fixture_state(fixture["data_epoch"].as_str().unwrap());
         let cases = fixture["cases"].as_array().unwrap();
-        assert_eq!(cases.len(), 5);
+        assert_eq!(cases.len(), 6);
         for case in cases {
             let id = case["id"].as_str().unwrap();
             let name = case["interaction"].as_str().unwrap();
@@ -968,6 +968,16 @@ mod tests {
                 },
             );
         }
+        let held = InteractionId::from(push_fixture_id("permission"));
+        state.interactions.insert(held.clone(), Interaction {
+            attachments: vec![], id: held.clone(), scope: Scope::Task { task_id: "task-a".into() },
+            author: Author::System, recipient: Recipient::User,
+            body: "Bash: Extract shared waiting-items helper in core views\n\n```\npython3 - <<'EOF'\nimport re\nEOF\n```".into(),
+            blocking: true, subject: None,
+            payload: InteractionPayload::Question { options: Hold::Permission.options(), answer: None },
+            revision: 1, order: 1, withdrawn: false,
+        });
+        state.holds.insert(held, Hold::Permission);
         state
     }
 
@@ -978,6 +988,7 @@ mod tests {
             "information" => "f0ab22dc-2a7a-4c90-b178-d5a91a6338d8",
             "delivery_text" => "hf-weekly-2026-10-01",
             "delivery_pull_request" => "hf-weekly-2026-10-02",
+            "permission" => "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS",
             _ => panic!("unknown fixture interaction {name}"),
         }
     }
@@ -1038,6 +1049,9 @@ mod tests {
                 action
             }).collect();
             assert_eq!(Value::from(shown), expected, "{hold:?}");
+            if hold == Hold::Permission {
+                assert_eq!(payload["aps"]["alert"], json!({"title": "A node needs permission", "body": "Bash: ls"}));
+            }
         }
     }
 }

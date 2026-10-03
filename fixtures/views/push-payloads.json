@@ -40,6 +40,14 @@
         "aps": {"alert": {"title": "Split the parser", "body": "Merge the delivery_pull_request parser?"}, "sound": "default", "mutable-content": 1},
         "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hf-weekly-2026-10-02", "kind": "delivery", "actions": []}
       }
+    },
+    {
+      "interaction": "permission",
+      "id": "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS",
+      "payload": {
+        "aps": {"alert": {"title": "A node needs permission", "body": "Bash: Extract shared waiting-items helper in core views"}, "sound": "default", "category": "ALONDRA_PUSH", "mutable-content": 1},
+        "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS", "kind": "question", "actions": [{"id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1", "option": "allow", "label": "Allow"}, {"id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1", "option": "deny", "label": "Deny"}]}
+      }
     }
   ]
 }

@@ -7,9 +7,9 @@ final class TasksBoardTests: XCTestCase {
     func testRequestsKeepTheirTaskTreeInOrderWithTheRailsEachRowNeeds() throws {
         let board = TasksBoard(document: try Samples.document("tasks-populated"))
 
-        XCTAssertEqual(board.active.requests.map(\.id), ["r-1", "r-2"])
-        let first = try XCTUnwrap(board.active.requests.first)
-        XCTAssertEqual(first.tasks.map(\.id), ["t-1", "t-2", "t-3"])
+        XCTAssertEqual(board.active.requests.map(\.id), ["r-5", "r-1", "r-2"])
+        let first = try XCTUnwrap(board.active.requests.first { $0.id == "r-1" })
+        XCTAssertEqual(first.tasks.map(\.id), ["t-1", "t-2", "t-3"], "what a node does now is not a task")
         XCTAssertEqual(first.tasks.map(\.depth), [0, 0, 1])
         XCTAssertEqual(first.tasks.map(\.hasChildren), [false, true, false])
         XCTAssertEqual(first.tasks.map(\.isLastSibling), [false, true, true])
@@ -19,9 +19,26 @@ final class TasksBoardTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(board.active.requests.last).isSingleTask)
     }
 
-    func testARequestCarriesItsProjectStateAndWhenItWasLastTouched() throws {
+    func testATaskSaysWhatItsNodeDoesNowAndWhen() throws {
+        let board = TasksBoard(document: try Samples.document("tasks-populated"))
+        let tasks = try XCTUnwrap(board.active.requests.first { $0.id == "r-1" }).tasks
+
+        XCTAssertEqual(tasks.map(\.activity), ["Asked whether to keep the old review sheet", "xcodebuild test -scheme Alondra", nil])
+        XCTAssertEqual(tasks.map(\.activityAt), ["2025-12-31T22:05:00.000Z", "2025-12-31T23:52:00.000Z", nil])
+    }
+
+    func testARequestTheOrchestratorIsStillSplittingHasNoTasksYet() throws {
         let board = TasksBoard(document: try Samples.document("tasks-populated"))
         let request = try XCTUnwrap(board.active.requests.first)
+
+        XCTAssertEqual(request.id, "r-5")
+        XCTAssertEqual(request.state, "The orchestrator is splitting it")
+        XCTAssertTrue(request.tasks.isEmpty)
+    }
+
+    func testARequestCarriesItsProjectStateAndWhenItWasLastTouched() throws {
+        let board = TasksBoard(document: try Samples.document("tasks-populated"))
+        let request = try XCTUnwrap(board.active.requests.first { $0.id == "r-1" })
 
         XCTAssertEqual(request.project, "Alondra")
         XCTAssertEqual(request.state, "Active")
@@ -87,6 +104,6 @@ final class TasksBoardTests: XCTestCase {
 
         XCTAssertEqual(board.finished.requests.map(\.id), ["r-3", "r-4", "r-2"])
         XCTAssertEqual(board.finished.more?.remaining, 2)
-        XCTAssertEqual(board.active.requests.count, 2, "another section's rows are not touched")
+        XCTAssertEqual(board.active.requests.count, 3, "another section's rows are not touched")
     }
 }
