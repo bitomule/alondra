@@ -10,6 +10,7 @@ import AlondraiOSUI
 import ComposableArchitecture
 import Observation
 import SwiftUI
+import UserNotifications
 
 struct AppScene: View {
     let owner: AccountSession
@@ -138,11 +139,18 @@ private struct ApprovedServiceScene: View {
                 returningFromBackground = false
                 notifications.push.reregisterOnReturn()
             }
+            if phase == .active { showIconBadge(context.store?.triage.iconBadge) }
             context.consumeNotification(notifications, services: services, active: phase == .active)
         }
+        .onChange(of: context.store?.triage.iconBadge, initial: true) { _, badge in showIconBadge(badge) }
     }
 
     private func retry() { Task { await services.retryViewsConnection() } }
+
+    private func showIconBadge(_ badge: Int?) {
+        guard let badge else { return }
+        Task { try? await UNUserNotificationCenter.current().setBadgeCount(badge) }
+    }
 }
 
 struct RootView<AccountContent: View>: View {

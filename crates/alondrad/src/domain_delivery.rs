@@ -222,7 +222,8 @@ async fn deliver_user_runtime(
 fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: Lang) -> Value {
     let mut alondra = json!({"protocol": views::VIEWS_PROTOCOL, "data_epoch": state.data_epoch,
         "actions": []});
-    let mut aps = json!({"alert": {"title": "Alondra"}, "sound": "default", "mutable-content": 1});
+    let mut aps = json!({"alert": {"title": "Alondra"}, "sound": "default",
+        "badge": views::inbox_badge(state), "mutable-content": 1});
     if let Some(id) = interaction_id {
         alondra["card"] = json!(id);
         if let Some(interaction) = state.interactions.get(&InteractionId::from(id)) {
@@ -1009,6 +1010,30 @@ mod tests {
             "push_binding": "A".repeat(43), "payload": payload, "with_sound": true,
         })).unwrap();
         assert!(plaintext.len() <= 1_500, "encrypted push plaintext is {} bytes", plaintext.len());
+    }
+
+    #[test]
+    fn every_push_carries_what_waits_for_the_user_as_the_icon_badge() {
+        let mut state = DomainState::new("epoch-1");
+        for (id, scope) in [
+            ("info-1", Scope::Task { task_id: "task-a".into() }),
+            ("info-2", Scope::Task { task_id: "task-a".into() }),
+            ("orchestrator-1", Scope::Orchestrator { request_id: None }),
+        ] {
+            state.interactions.insert(id.into(), Interaction {
+                attachments: vec![], id: id.into(), scope, author: Author::System,
+                recipient: Recipient::User, body: "Hecho".into(), blocking: false, subject: None,
+                payload: InteractionPayload::Information { read_by: Default::default() },
+                revision: 1, order: 1, withdrawn: false,
+            });
+        }
+        assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 2);
+        let InteractionPayload::Information { read_by } =
+            &mut state.interactions.get_mut(&InteractionId::from("info-1")).unwrap().payload else { unreachable!() };
+        read_by.insert("mac".into());
+        assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 1,
+            "an item resolved elsewhere leaves the badge");
+        assert_eq!(user_push_payload(&state, None, Lang::En)["aps"]["badge"], views::inbox_badge(&state));
     }
 
     #[test]

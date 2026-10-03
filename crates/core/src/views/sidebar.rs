@@ -158,11 +158,7 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
     }
     let projection = context.domain.projection();
     let mut view = common::view("sidebar", "sidebar", None, context, vec![]);
-    let pending: Vec<_> = projection
-        .inbox
-        .iter()
-        .filter(|item| item.pending && !super::home::orchestrator_only(item, context))
-        .collect();
+    let pending = super::home::waiting(&projection, context.domain);
     for (id, title, pr) in [
         (
             "waiting",
