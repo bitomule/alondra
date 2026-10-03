@@ -142,6 +142,12 @@ async fn invoke_claimed(
             "schedule project directory does not exist".into(),
         ));
     }
+    if let Some(repository) = crate::claude_trust::check(Path::new(&launch.cwd)) {
+        return Err((
+            StatusCode::CONFLICT,
+            crate::claude_trust::instructions(&repository),
+        ));
+    }
     let Some(plugin) = launcher.plugin() else {
         return Err((
             StatusCode::SERVICE_UNAVAILABLE,
@@ -1139,6 +1145,33 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*launcher.calls.lock().unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_repository_claude_does_not_trust_is_never_launched_and_the_orchestrator_hears_why() {
+        let fixture = Fixture::new();
+        let config = fixture.root.join(".claude.json");
+        std::fs::write(&config, r#"{"projects":{}}"#).unwrap();
+        crate::claude_trust::use_config_for_test(&config);
+        fixture.claim("untrusted");
+        let launcher = CountingLauncher {
+            calls: Mutex::new(0),
+            fail: false,
+        };
+        run_cycle(&fixture.domain, &fixture.home, false, &launcher)
+            .await
+            .unwrap();
+        assert_eq!(*launcher.calls.lock().unwrap(), 0, "Claude is never asked to start there");
+        let state = fixture.domain.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("untrusted")];
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        assert!(run.error.as_deref().unwrap().starts_with("Claude Code does not trust"));
+        let told = fixture.domain.store.lock().unwrap().pending_messages().unwrap();
+        assert!(
+            told.iter().any(|message| message.recipient_kind == "orchestrator"
+                && message.message.contains("Claude Code does not trust")),
+            "the orchestrator hears the scheduled Task needs the user's trust: {told:?}"
+        );
     }
 
     #[tokio::test]

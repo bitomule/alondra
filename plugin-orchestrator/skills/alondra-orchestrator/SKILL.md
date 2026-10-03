@@ -72,6 +72,12 @@ user follows tasks, not nodes.
 - `machine` shows the machine's room and the subscription's usage. A launch is refused while
   today is over its slice of the week; `launch` with `over_pace_ok` once the user, asked with
   `ask`, says to launch anyway. That gate decides when, never which node gets the work.
+- Claude Code starts sessions only in repositories the user trusts, and only the user grants that
+  trust; Alondra never does. A `launch` refused with `workspace_untrusted`, or a scheduled task
+  Alondra says could not start because Claude Code does not trust its repository, goes to the
+  user with `ask`: the repository, the steps the refusal gives, and an option to launch once they
+  trusted it. On that answer `launch` the task; a repository still untrusted is refused again, and
+  you ask again.
 
 ## Choose effort for each task
 

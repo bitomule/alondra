@@ -299,6 +299,11 @@ pub(crate) fn mutation(
             d::Command::UpdateSchedule { schedule }
         }
     };
+    if let d::Command::CreateSchedule { schedule } | d::Command::UpdateSchedule { schedule } = &command
+        && let Some(refusal) = untrusted_project(home, schedule)
+    {
+        return refusal;
+    }
     let envelope = d::CommandEnvelope {
         protocol_version: d::PROTOCOL_VERSION,
         data_epoch: state.data_epoch,
@@ -313,6 +318,17 @@ pub(crate) fn mutation(
         Err(error_value) => return store_error(error_value),
     };
     mutation_response(method, path, body, &outcome)
+}
+
+/// An enabled Schedule would launch where Claude Code refuses to start, so it is not saved.
+fn untrusted_project(home: &Path, schedule: &d::Schedule) -> Option<Value> {
+    if !schedule.enabled {
+        return None;
+    }
+    let root = crate::domain_schedule_runner::options_at(home).ok()?.projects_root(&crate::options::user_home());
+    let folder = schedule.project.as_deref().map_or(root.clone(), |project| root.join(project));
+    let repository = crate::claude_trust::check(&folder)?;
+    Some(error("untrusted_project", &crate::claude_trust::instructions(&repository)))
 }
 
 fn run_response(outcome: &d::CommandOutcome) -> Value {
@@ -368,6 +384,28 @@ mod tests {
         }
         async fn stop(&self, _: &str) {}
         fn plugin(&self) -> Option<std::path::PathBuf> { Some("/synthetic/plugin".into()) }
+    }
+
+    #[test]
+    fn a_schedule_in_a_repository_claude_does_not_trust_is_not_saved() {
+        let fixture = Fixture::new();
+        fs::create_dir_all(fixture.root.join("projects/Parcel/.git")).unwrap();
+        let parcel = fixture.root.join("projects/Parcel").canonicalize().unwrap();
+        let config = fixture.root.join(".claude.json");
+        crate::claude_trust::use_config_for_test(&config);
+        let trust = |accepted: bool| fs::write(&config, json!({"projects": {parcel.to_str().unwrap(): {"hasTrustDialogAccepted": accepted}}}).to_string()).unwrap();
+        let mut draft = Fixture::draft();
+        draft["project"] = json!("Parcel");
+        let create = || mutation(&fixture.domain, &fixture.home, "POST", "/schedules", Some(&draft), None, || Ok(()));
+
+        trust(false);
+        let refused = create();
+        assert_eq!(refused["body"]["code"], "untrusted_project");
+        assert!(refused["body"]["message"].as_str().unwrap().contains(parcel.to_str().unwrap()));
+        assert!(fixture.domain.state().unwrap().schedule.schedules.is_empty());
+
+        trust(true);
+        assert_eq!(create()["status"], 201);
     }
 
     #[tokio::test]
