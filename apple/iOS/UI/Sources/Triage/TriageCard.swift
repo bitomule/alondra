@@ -24,13 +24,14 @@ struct TriageCard: View {
     private var selected: AlondraContract.Action? { store.selected }
     private func inputPlaceholder(_ action: AlondraContract.Action) -> String {
         if card.icon == .pullRequest { return String(localized: "What should change?") }
-        if case let .text(value, _, _) = action.input {
+        let picked = selected?.id == action.id ? action.options.first { $0.id == store.actions.selectedOptionID } : nil
+        if case let .text(value, _, _) = picked?.input ?? action.input {
             return value ?? String(localized: "Write your answer")
         }
         return String(localized: "Write your answer")
     }
     private var stamp: String? { store.stamp }
-    private var isQuestion: Bool { card.icon == .question || card.icon == .action }
+    private var isQuestion: Bool { card.icon == .question || card.icon == .action || card.icon == .warning }
     private var isDocumentReview: Bool { CardActionPresentation.isDocumentReview(card) }
     private func verb(_ action: AlondraContract.Action) -> String {
         action.id?.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
@@ -168,7 +169,9 @@ struct TriageCard: View {
                 if card.icon == .delivery || card.icon == .document {
                     ArtifactLinks(text: body.text, tint: tint)
                 }
-                if body.truncated || body.more != nil || body.text.count > 600 {
+                if card.icon == .warning {
+                    command(body)
+                } else if body.truncated || body.more != nil || body.text.count > 600 {
                     excerpt(body)
                 } else {
                     MarkdownView(markdown: body).foregroundStyle(Palette.ink.opacity(0.9))
@@ -221,6 +224,25 @@ struct TriageCard: View {
         }
         .accessibilityAction(named: "Open") { openCardDetail() }
     }
+
+    /// What a permission would run, as 8ccd131 showed it: the command itself, a few lines tall;
+    /// a longer one fades out and opens whole in the card.
+    private func command(_ markdown: Markdown) -> some View {
+        let long = markdown.text.split(separator: "\n", omittingEmptySubsequences: false).count > Self.commandLines + 2
+        return Button { openCardDetail() } label: {
+            MarkdownView(markdown: markdown).foregroundStyle(Palette.ink.opacity(0.9))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, maxHeight: long ? 150 : nil, alignment: .topLeading)
+                .clipped()
+                .mask(LinearGradient(stops: [.init(color: .black, location: long ? 0.6 : 1), .init(color: long ? .clear : .black, location: 1)],
+                                     startPoint: .top, endPoint: .bottom))
+                .contentShape(.rect)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityHint(Text("Shows the whole command"))
+    }
+
+    private static let commandLines = 6
 
     private func excerpt(_ markdown: Markdown) -> some View {
         let blocks = MarkdownParser.blocks(from: markdown.text)

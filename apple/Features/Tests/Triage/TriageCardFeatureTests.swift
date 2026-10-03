@@ -1,4 +1,5 @@
 import AlondraContract
+import AlondraDesign
 import AlondraFeatures
 import AlondraFeed
 import ComposableArchitecture
@@ -119,6 +120,7 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.skipReceivedActions()
         failing.setValue(false)
         await store.send(.optionPicked(answer, optionID: "deny"))
+        await store.send(.replySent(answer))
         await store.skipReceivedActions()
 
         let sent = attempts.value
@@ -353,13 +355,19 @@ final class TriageCardFeatureTests: XCTestCase {
         let store = try await store("perm-1", feed: feed, loaded: permission)
         let answer = try XCTUnwrap(store.state.replyAction)
         XCTAssertEqual(answer.options.map(\.label), ["Allow", "Deny"])
-        XCTAssertEqual(store.state.card?.icon, .question)
+        XCTAssertEqual(store.state.card?.icon, .warning)
+        XCTAssertEqual(store.state.card.map { Kind($0).label }, "Permission")
         XCTAssertTrue(store.state.card?.body?.text.hasPrefix("```") == true, "the prompt arrives as a code block")
 
         await store.send(.optionPicked(answer, optionID: "deny"))
         await store.skipReceivedActions()
+        XCTAssertTrue(feed.requests.isEmpty, "Deny waits for an optional reason")
+        await store.send(.replyChanged("Use the existing helper"))
+        await store.send(.replySent(answer))
+        await store.skipReceivedActions()
         let request = try XCTUnwrap(feed.requests.first)
         XCTAssertEqual(request.optionId, "deny")
+        XCTAssertEqual(request.input.text, "Use the existing helper")
     }
 
     @MainActor
