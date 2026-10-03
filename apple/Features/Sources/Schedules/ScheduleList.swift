@@ -7,14 +7,22 @@ public struct ScheduleList: Equatable, Sendable {
         public let id: String
         public let title: String
         public let frequency: String?
-        public let badges: [AlondraContract.Label]
+        public var badges: [AlondraContract.Label]
         public let nextRun: Date?
         public let link: AlondraContract.Link?
         public let run: WireAction?
         public let toggle: WireAction?
         public let delete: WireAction?
+        /// Paused or resumed here and not yet shown by a newer view; `nil` leaves it to the daemon.
+        public var pausedHere: Bool?
+        public var startedHere = false
 
-        public var isPaused: Bool { badges.contains { $0.tone == .warning } }
+        public var isPaused: Bool { pausedHere ?? badges.contains { $0.tone == .warning } }
+
+        public var toggleLabel: String? {
+            guard let toggle else { return nil }
+            return pausedHere.map { $0 ? String(localized: "Resume") : String(localized: "Pause") } ?? toggle.label
+        }
     }
 
     public let title: String
@@ -48,9 +56,19 @@ public extension ScheduleList {
 }
 
 public extension ScheduleList {
-    /// The list without the schedules just deleted.
+    /// The list as it is after what was just sent: a deleted schedule is gone, a paused one is
+    /// paused, a resumed one runs again, and one started now says so.
     func hiding(_ optimistic: Optimistic) -> ScheduleList {
         guard !optimistic.isEmpty else { return self }
-        return ScheduleList(title: title, entries: entries.filter { !optimistic.hides($0.delete?.id) }, empty: empty, add: add)
+        let shown = entries.filter { !optimistic.hides($0.delete?.id) }.map { entry in
+            var entry = entry
+            if optimistic.hides(entry.toggle?.id) {
+                entry.pausedHere = !entry.isPaused
+                entry.badges.removeAll { $0.tone == .warning }
+            }
+            entry.startedHere = optimistic.hides(entry.run?.id)
+            return entry
+        }
+        return ScheduleList(title: title, entries: shown, empty: empty, add: add)
     }
 }

@@ -115,6 +115,76 @@ final class SchedulesTests: XCTestCase {
     }
 
     @MainActor
+    func testResumingFlipsTheScheduleAtOnceAndBackIfTheDaemonRefuses() async throws {
+        let gate = Gate()
+        let store = try await loaded()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Responses.rejected("The schedule changed")
+        }
+        let paused = try XCTUnwrap(store.state.list?.entries[1])
+        XCTAssertTrue(paused.isPaused)
+
+        await store.send(.perform(try XCTUnwrap(paused.toggle)))
+        await store.receive(\.actions.sent)
+        let resumed = try XCTUnwrap(store.state.list?.entries[1])
+        XCTAssertFalse(resumed.isPaused, "the schedule runs again before the daemon answers")
+        XCTAssertEqual(resumed.toggleLabel, "Pause")
+        XCTAssertFalse(resumed.badges.contains { $0.tone == .warning })
+
+        await store.send(.screen(.loaded(try XCTUnwrap(store.state.screen.document))))
+        XCTAssertEqual(store.state.list?.entries[1].isPaused, false, "a stale list cannot pause it again")
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.list?.entries[1], paused)
+        await store.receive(\.delegate.failed, "The schedule changed")
+    }
+
+    @MainActor
+    func testPausingShowsThePausedScheduleAtOnce() async throws {
+        let gate = Gate()
+        let store = try await loaded()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Responses.applied("Paused")
+        }
+        let running = try XCTUnwrap(store.state.list?.entries.first)
+        XCTAssertFalse(running.isPaused)
+
+        await store.send(.perform(try XCTUnwrap(running.toggle)))
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.list?.entries.first?.isPaused, true)
+        XCTAssertEqual(store.state.list?.entries.first?.toggleLabel, "Resume")
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.list?.entries.first?.isPaused, true, "the view it was applied over cannot undo it")
+    }
+
+    @MainActor
+    func testRunNowShowsTheScheduleRunningAtOnceAndStopsSayingSoIfItFails() async throws {
+        let gate = Gate()
+        let store = try await loaded()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            throw URLError(.notConnectedToInternet)
+        }
+        let entry = try XCTUnwrap(store.state.list?.entries.first)
+
+        await store.send(.perform(try XCTUnwrap(entry.run)))
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.list?.entries.first?.startedHere, true)
+
+        await store.send(.screen(.loaded(try XCTUnwrap(store.state.screen.document))))
+        XCTAssertEqual(store.state.list?.entries.first?.startedHere, true)
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.list?.entries.first?.startedHere, false)
+        await store.receive(\.delegate.failed)
+    }
+
+    @MainActor
     func testAFailedActionIsReportedAndLeavesTheListAlone() async throws {
         let store = try await loaded(respond: { _ in throw URLError(.notConnectedToInternet) })
 

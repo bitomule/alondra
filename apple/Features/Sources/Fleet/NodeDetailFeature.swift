@@ -15,6 +15,7 @@ public struct NodeDetailFeature: Sendable {
         public var composer: ActionFeature.State
         public var actions: ActionFeature.State
         public var draft = ""
+        public var optimistic = Optimistic()
 
         public init(key: ViewKey) {
             screen = ScreenFeature.State(key: key)
@@ -22,7 +23,7 @@ public struct NodeDetailFeature: Sendable {
             actions = .ios()
         }
 
-        public var detail: NodeDetail? { screen.document.map(NodeDetail.init(document:)) }
+        public var detail: NodeDetail? { screen.document.map { NodeDetail(document: $0).hiding(optimistic) } }
         public var isOrchestrator: Bool { screen.key.rawValue == "node:orchestrator" }
 
         public var canSend: Bool {
@@ -59,6 +60,7 @@ public struct NodeDetailFeature: Sendable {
             case .task:
                 return .send(.screen(.task))
             case .screen(.loaded(let document)):
+                state.optimistic.reconcile(document.version)
                 state.composer.dataEpoch = document.dataEpoch
                 state.actions.dataEpoch = document.dataEpoch
                 guard let message = NodeDetail(document: document).message else { return .none }
@@ -93,6 +95,12 @@ public struct NodeDetailFeature: Sendable {
                 return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
             case .actions(.sent(let request)) where state.actions.handsOff:
                 return .merge(.send(.delegate(.handOff(request))), .run { _ in await dismiss() })
+            case .actions(.sent(let request)):
+                state.optimistic.begin(request.actionId, request)
+                return .none
+            case .actions(.settled(let request, let applied)):
+                state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
+                return .none
             case .actions:
                 return .none
             case .follow(let link):

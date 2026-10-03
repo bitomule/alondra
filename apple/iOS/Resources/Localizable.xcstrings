@@ -2,6 +2,13 @@
   "sourceLanguage": "en",
   "strings": {
     "since": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "desde"}}}},
+    "Pause": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pausar"}}}},
+    "Resume": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reanudar"}}}},
+    "Running": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "En marcha"}}}},
+    "Retrying": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Reintentando"}}}},
+    "Stopping": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Deteniendo"}}}},
+    "Continuing": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Continuando"}}}},
+    "Saving…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Guardando…"}}}},
     "This pull request is no longer available": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esta solicitud de cambios ya no está disponible"}}}},
     "Running in the background": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "En segundo plano"}}}},
     "Summary": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Resumen"}}}},
