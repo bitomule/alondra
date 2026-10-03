@@ -265,6 +265,12 @@ fn hook() -> Result<()> {
         println!("{output}");
         return Ok(());
     }
+    if payload.get("hook_event_name").and_then(serde_json::Value::as_str) == Some("PermissionRequest") {
+        if let Some(decision) = node::permission_request(&payload) {
+            println!("{decision}");
+        }
+        return Ok(());
+    }
     if payload.get("hook_event_name").and_then(serde_json::Value::as_str) == Some("MessageDisplay")
         && payload.get("final") != Some(&serde_json::Value::Bool(true))
     {
