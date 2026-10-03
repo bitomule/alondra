@@ -4,7 +4,8 @@ import Foundation
 
 /// Waiting for You: the ordered queue from the `home` view, and the cards around the one in front.
 /// The server decides what is waiting and in which order. Swiping either way sends the front card to
-/// the back of the queue and marks nothing.
+/// the back of the queue and marks nothing. A card answered here or from its own screen leaves at
+/// once and comes back to the front if the daemon does not apply the answer.
 @Reducer
 public struct TriageFeature: Sendable {
     public init() {}
@@ -22,6 +23,7 @@ public struct TriageFeature: Sendable {
         public var newerQueueWaiting = false
         public var swipe: Swipe?
         public var skips = 0
+        public var optimistic = Optimistic()
 
         public var currentID: String? { orderedIDs.indices.contains(index) ? orderedIDs[index] : nil }
         public var currentCard: Card? { currentID.flatMap { cards[id: $0]?.card } }
@@ -40,7 +42,7 @@ public struct TriageFeature: Sendable {
             return nil
         }
 
-        fileprivate var stampShowing: Bool { cards.contains { $0.actions.stamp != nil } }
+        fileprivate var stampShowing: Bool { visibleIDs.contains { cards[id: $0]?.actions.stamp != nil } }
     }
 
     /// A drag on the front card, from its first movement until the card has left or sprung back.
@@ -74,6 +76,9 @@ public struct TriageFeature: Sendable {
         case swipeSettled
         case machinePresented(Bool)
         case stampElapsed
+        /// A screen opened from a card sent its answer and left; the app delivers it.
+        case handedOff(ActionRequest, cardID: String)
+        case handOffSettled(ActionRequest, applied: Bool)
         case delegate(Delegate)
 
         @CasePathable
@@ -86,7 +91,7 @@ public struct TriageFeature: Sendable {
     /// The front card and the two drawn behind it, so the next card already has its content.
     public static let depth = 3
     public static let leaveDuration = Duration.milliseconds(160)
-    static let stampDuration = Duration.milliseconds(650)
+    public static let stampDuration = Duration.milliseconds(650)
 
     @Dependency(\.continuousClock) var clock
     private enum CancelID { case stamp, swipe }
@@ -100,7 +105,7 @@ public struct TriageFeature: Sendable {
         Reduce { state, action in
             switch action {
             case .task:
-                return .merge([.send(.screen(.task))] + state.cards.ids.map {
+                return .merge([.send(.screen(.task)), state.stampShowing ? stampTimer() : .none] + state.cards.ids.map {
                     .send(.cards(.element(id: $0, action: .screen(.task))))
                 })
             case .disappeared:
@@ -113,7 +118,8 @@ public struct TriageFeature: Sendable {
                 state.screen = ScreenFeature.State(key: .focusedHome(id))
                 state.orderedIDs = []
                 state.index = 0
-                state.cards = []
+                let optimistic = state.optimistic
+                state.cards.removeAll { !optimistic.isSending($0.id) }
                 state.newerQueueWaiting = false
                 return .send(.screen(.task))
             case .feedStatus(let status):
@@ -122,6 +128,7 @@ public struct TriageFeature: Sendable {
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
                 state.status = document.status
+                state.optimistic.reconcile(document.version)
                 if state.stampShowing {
                     state.newerQueueWaiting = true
                     return .none
@@ -157,17 +164,25 @@ public struct TriageFeature: Sendable {
             case .cards(.element(id: _, action: .delegate(.open(let key)))):
                 guard state.swipe == nil else { return .none }
                 return .send(.delegate(.open(key)))
-            case .cards(.element(id: _, action: .actions(.response(let response)))):
-                guard response.outcome == .applied else { return .none }
-                return .run { [clock] send in
-                    try await clock.sleep(for: Self.stampDuration)
-                    await send(.stampElapsed)
+            case .cards(.element(id: let id, action: .actions(.sent(let request)))):
+                state.optimistic.begin(id, request)
+                return stampTimer()
+            case .cards(.element(id: _, action: .actions(.settled(let request, let applied)))),
+                 .handOffSettled(let request, let applied):
+                guard let id = state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
+                else { return .none }
+                return bringBack(id, &state)
+            case .handedOff(let request, let cardID):
+                state.optimistic.begin(cardID, request)
+                guard !state.stampShowing else {
+                    state.newerQueueWaiting = true
+                    return .none
                 }
-                .cancellable(id: CancelID.stamp, cancelInFlight: true)
+                return showQueue(&state)
             case .stampElapsed:
                 state.newerQueueWaiting = false
                 let queue = showQueue(&state)
-                let stamped = state.cards.filter { $0.actions.stamp != nil }.map(\.id)
+                let stamped = state.cards.filter { $0.actions.stamp != nil && !state.optimistic.isSending($0.id) }.map(\.id)
                 return .merge([queue, .send(.screen(.retry))] + stamped.map {
                     .send(.cards(.element(id: $0, action: .actions(.dismiss))))
                 })
@@ -181,7 +196,7 @@ public struct TriageFeature: Sendable {
     private func showQueue(_ state: inout State) -> Effect<Action> {
         guard let document = state.screen.document else { return .none }
         let previousID = state.currentID
-        let ids = document.sections.first { $0.id == "queue" }?.cardIds ?? []
+        let ids = (document.sections.first { $0.id == "queue" }?.cardIds ?? []).filter { !state.optimistic.hides($0) }
         state.orderedIDs = ids
         state.index = previousID.flatMap(ids.firstIndex(of:)) ?? min(state.index, max(ids.count - 1, 0))
         var effects = [keepWindowObserved(&state)]
@@ -193,6 +208,21 @@ public struct TriageFeature: Sendable {
             }
         }
         return .merge(effects)
+    }
+
+    /// An answer the daemon did not apply: its card returns to the front, where it was answered.
+    private func bringBack(_ id: String, _ state: inout State) -> Effect<Action> {
+        let queue = showQueue(&state)
+        if let index = state.orderedIDs.firstIndex(of: id) { state.index = index }
+        return .merge(queue, keepWindowObserved(&state))
+    }
+
+    private func stampTimer() -> Effect<Action> {
+        .run { [clock] send in
+            try await clock.sleep(for: Self.stampDuration)
+            await send(.stampElapsed)
+        }
+        .cancellable(id: CancelID.stamp, cancelInFlight: true)
     }
 
     private func settle() -> Effect<Action> {
@@ -212,7 +242,8 @@ public struct TriageFeature: Sendable {
 
     private func keepWindowObserved(_ state: inout State) -> Effect<Action> {
         let wanted = state.visibleIDs
-        state.cards.removeAll { !wanted.contains($0.id) }
+        let optimistic = state.optimistic
+        state.cards.removeAll { !wanted.contains($0.id) && !optimistic.isSending($0.id) }
         let epoch = state.screen.document?.dataEpoch ?? ""
         var started: [Effect<Action>] = []
         for id in wanted where state.cards[id: id] == nil {

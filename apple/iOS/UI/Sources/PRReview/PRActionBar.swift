@@ -12,7 +12,6 @@ struct PRActionBar: View {
     let openURL: OpenURLAction
 
     var body: some View {
-        let busy = store.actions.inFlight
         VStack(spacing: 8) {
             if review.ask != nil || review.requestChanges != nil {
                 HStack(spacing: 8) {
@@ -21,14 +20,14 @@ struct PRActionBar: View {
                             Label(ask.label, systemImage: "questionmark.bubble").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.glass)
-                        .disabled(!ask.enabled || busy)
+                        .disabled(!ask.enabled)
                     }
                     if let changes = review.requestChanges {
                         Button { store.send(.perform(changes)) } label: {
                             Label(changesTitle(changes), systemImage: "arrow.uturn.backward").frame(maxWidth: .infinity)
                         }
                         .buttonStyle(.glassProminent)
-                        .disabled(!changes.enabled || busy)
+                        .disabled(!changes.enabled)
                     }
                 }
             }
@@ -37,9 +36,9 @@ struct PRActionBar: View {
                     Label(conflicts.label, systemImage: "arrow.triangle.branch").frame(maxWidth: .infinity)
                 }
                 .buttonStyle(.glassProminent).tint(Palette.dawn)
-                .disabled(!conflicts.enabled || busy)
+                .disabled(!conflicts.enabled)
             } else if let merge = review.merge {
-                mergeMenu(merge, busy: busy)
+                mergeMenu(merge)
             }
             if let url = review.pageURL {
                 HStack {
@@ -63,7 +62,7 @@ struct PRActionBar: View {
         store.comments.isEmpty ? action.label : "\(action.label) (\(store.comments.count))"
     }
 
-    private func mergeMenu(_ merge: WireAction, busy: Bool) -> some View {
+    private func mergeMenu(_ merge: WireAction) -> some View {
         Menu {
             ForEach(merge.options, id: \.id) { option in
                 Button(option.label) { store.send(.perform(merge, optionID: option.id)) }
@@ -75,6 +74,6 @@ struct PRActionBar: View {
         }
         .menuStyle(.button).buttonStyle(.glassProminent)
         .tint(merge.enabled ? Palette.sageDeep : Palette.slate)
-        .disabled(!merge.enabled || busy)
+        .disabled(!merge.enabled)
     }
 }

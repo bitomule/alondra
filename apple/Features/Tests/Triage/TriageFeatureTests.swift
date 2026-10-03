@@ -326,7 +326,7 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testACardThatStaysInTheQueueLosesItsStampWhenItEnds() async throws {
+    func testACardANewerQueueStillListsComesBackWithoutItsStamp() async throws {
         let clock = TestClock<Duration>()
         let store = store(try fullFeed(), clock: clock)
         await store.send(.task)
@@ -338,8 +338,11 @@ final class TriageFeatureTests: XCTestCase {
         await clock.advance(by: .milliseconds(650))
         await store.receive(\.stampElapsed)
         await store.skipReceivedActions()
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question), "the same view cannot bring an applied answer back")
+
+        await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "vq2"))))
+        XCTAssertEqual(store.state.orderedIDs, queue, "a newer view rules")
         XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
-        XCTAssertEqual(store.state.currentID, ids.question)
     }
 
     @MainActor
@@ -360,6 +363,99 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "It already moved on")
         await clock.advance(by: .seconds(5))
         XCTAssertEqual(store.state.orderedIDs, queue)
+    }
+
+    // MARK: Optimistic answers
+
+    @MainActor
+    private func gated(
+        _ feed: FeedStub, clock: TestClock<Duration>, gate: Gate,
+        outcome: @escaping @Sendable () throws -> ActionResponse = { try Responses.applied() }
+    ) -> TestStoreOf<TriageFeature> {
+        let store = TestStore(initialState: TriageFeature.State()) { TriageFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = feed.observe
+            $0.viewsClient.perform = { request in
+                feed.deliver(request)
+                await gate.wait()
+                return try outcome()
+            }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    @MainActor
+    func testAnAnsweredCardLeavesWhileTheDaemonHasNotAnsweredAndAStaleQueueCannotBringItBack() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let feed = try fullFeed()
+        let store = gated(feed, clock: clock, gate: gate)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.stamp, "Answered", "the stamp is up before the daemon answers")
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.receive(\.stampElapsed)
+        XCTAssertEqual(store.state.orderedIDs, [ids.information, ids.delivery, ids.pullRequest])
+        XCTAssertEqual(store.state.currentID, ids.information, "the next card comes forward without waiting")
+
+        await store.send(.screen(.loaded(try Fixtures.home(queue: queue, version: "v-before"))))
+        XCTAssertEqual(store.state.orderedIDs, [ids.information, ids.delivery, ids.pullRequest],
+                       "a queue rendered before the daemon applied the answer cannot show the card again")
+
+        await gate.open()
+        await store.receive(\.cards[id: ids.question].actions.settled)
+        await store.skipReceivedActions()
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.question))
+        XCTAssertEqual(feed.requests.count, 1)
+    }
+
+    @MainActor
+    func testAnAnswerTheDaemonDidNotApplyBringsTheCardBackToTheFront() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let store = gated(try fullFeed(), clock: clock, gate: gate) {
+            try Responses.rejected("It already moved on")
+        }
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        _ = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.receive(\.stampElapsed)
+        XCTAssertEqual(store.state.currentID, ids.information)
+
+        await gate.open()
+        await store.receive(\.cards[id: ids.question].actions.settled)
+        XCTAssertEqual(store.state.orderedIDs, queue, "the card returns to its place")
+        XCTAssertEqual(store.state.currentID, ids.question, "and to the front, where it was answered")
+        await store.receive(\.cards[id: ids.question].actions.response)
+        XCTAssertNil(store.state.cards[id: ids.question]?.stamp)
+        XCTAssertEqual(store.state.cards[id: ids.question]?.actions.error, "It already moved on")
+        await store.receive(\.cards[id: ids.question].actions.delegate.failed)
+    }
+
+    @MainActor
+    func testAnAnswerFromItsOwnScreenTakesTheCardOutAtOnceAndBackIfItFails() async throws {
+        let store = store(try fullFeed())
+        await store.send(.task)
+        await store.skipReceivedActions()
+        let request = ActionRequest(commandId: "c-1", dataEpoch: "", client: .ios, lang: "en", actionId: "accept:x@1")
+
+        await store.send(.handedOff(request, cardID: ids.delivery))
+        XCTAssertEqual(store.state.orderedIDs, [ids.question, ids.information, ids.pullRequest])
+        XCTAssertEqual(store.state.currentID, ids.question)
+
+        await store.send(.screen(.loaded(try Fixtures.home(queue: queue))))
+        XCTAssertFalse(store.state.orderedIDs.contains(ids.delivery), "a stale queue keeps it out")
+
+        await store.send(.handOffSettled(request, applied: false))
+        XCTAssertEqual(store.state.orderedIDs, queue)
+        XCTAssertEqual(store.state.currentID, ids.delivery)
     }
 
     @MainActor

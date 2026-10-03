@@ -87,6 +87,29 @@ final class NewRequestFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testSendingClearsTheComposerBeforeTheDaemonAnswersAndAFailurePutsTheTextBack() async throws {
+        let gate = Gate()
+        let store = try await loaded()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            throw ViewsClientError.missingView
+        }
+
+        await store.send(.textChanged("Polish the beta"))
+        await store.send(.send)
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.text, "", "the composer is ready for the next request at once")
+        await store.send(.textChanged("Another one"))
+        XCTAssertTrue(store.state.canSend, "nothing waits for the daemon")
+        await store.send(.textChanged(""))
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.text, "Polish the beta")
+        await store.receive(\.delegate.failed)
+    }
+
+    @MainActor
     func testARefusedRequestKeepsTheDraftAndReportsIt() async throws {
         let delegates = LockIsolated<[ScreenDelegate]>([])
         let store = try await loaded(delegates: delegates) { _ in try Responses.rejected("Alondra can’t take requests right now") }

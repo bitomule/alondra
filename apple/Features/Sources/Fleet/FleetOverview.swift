@@ -65,4 +65,26 @@ public struct FleetOverview: Equatable, Sendable {
     }
 
     public var isEmpty: Bool { orchestrator == nil && groups.isEmpty }
+
+    /// The list as it is after what was just sent: a closing node is gone, an interrupted one no
+    /// longer offers Interrupt.
+    public func hiding(_ optimistic: Optimistic) -> FleetOverview {
+        guard !optimistic.isEmpty else { return self }
+        func shown(_ node: Node) -> Node {
+            var node = node
+            if optimistic.hides(node.interrupt?.id) { node.interrupt = nil }
+            return node
+        }
+        var overview = self
+        overview.orchestrator = orchestrator.map(shown)
+        overview.groups = groups.compactMap { group in
+            var group = group
+            let before = group.nodes.count
+            group.nodes = group.nodes.filter { !optimistic.hides($0.close?.id) }.map(shown)
+            let closing = UInt32(before - group.nodes.count)
+            group.count = group.count.map { $0 - min($0, closing) }
+            return group.nodes.isEmpty ? nil : group
+        }
+        return overview
+    }
 }

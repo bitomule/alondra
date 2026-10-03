@@ -150,6 +150,70 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertEqual(requests.value.map(\.actionId), [close.id])
     }
 
+    private func gated(_ gate: Gate, reply: String) -> TestStoreOf<FleetFeature> {
+        let store = TestStore(initialState: FleetFeature.State()) { FleetFeature() } withDependencies: {
+            $0.uuid = .incrementing
+            $0.viewsClient.perform = { _ in
+                await gate.wait()
+                return try Fixtures.response(reply)
+            }
+        }
+        store.exhaustivity = .off
+        return store
+    }
+
+    func testAClosedNodeLeavesTheListAtOnceAndAStaleListCannotBringItBack() async throws {
+        let gate = Gate()
+        let store = gated(gate, reply: #"{"protocol":1,"outcome":"applied","message":"Closed"}"#)
+        let fleet = try Fixtures.document("fleet-ios")
+        await store.send(.screen(.loaded(fleet)))
+        let node = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first)
+
+        await store.send(.perform(try XCTUnwrap(node.close)))
+        await store.send(.actions(.confirm))
+        await store.receive(\.actions.sent)
+        XCTAssertNil(store.state.overview?.groups.first { $0.nodes.contains { $0.id == node.id } },
+                     "the node is gone before the daemon answers")
+
+        await store.send(.screen(.loaded(fleet)))
+        XCTAssertNil(store.state.overview?.groups.first { $0.nodes.contains { $0.id == node.id } })
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        await store.send(.screen(.loaded(fleet)))
+        XCTAssertNil(store.state.overview?.groups.first { $0.nodes.contains { $0.id == node.id } },
+                     "the view the daemon applied it over still cannot")
+    }
+
+    func testAFailedCloseBringsTheNodeBack() async throws {
+        let gate = Gate()
+        let store = gated(gate, reply: #"{"protocol":1,"outcome":"rejected","message":"It is working"}"#)
+        await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
+        let node = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first)
+
+        await store.send(.perform(try XCTUnwrap(node.close)))
+        await store.send(.actions(.confirm))
+        await store.receive(\.actions.sent)
+        XCTAssertNil(store.state.overview?.groups.first?.nodes.first { $0.id == node.id })
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.overview?.groups.first?.nodes.first?.id, node.id)
+        await store.receive(\.delegate.closeRefused, "It is working")
+    }
+
+    func testANodeClosedFromItsScreenLeavesTheListUntilTheAppSettlesIt() async throws {
+        let store = store()
+        await store.send(.screen(.loaded(try Fixtures.document("fleet-ios"))))
+        let close = try XCTUnwrap(store.state.overview?.groups.first?.nodes.first?.close?.id)
+        let request = ActionRequest(commandId: "c-1", dataEpoch: "", client: .ios, lang: "en", actionId: close)
+
+        await store.send(.handedOff(request))
+        XCTAssertTrue(store.state.overview?.groups.isEmpty == true)
+        await store.send(.handOffSettled(request, applied: false))
+        XCTAssertEqual(store.state.overview?.groups.first?.nodes.first?.close?.id, close)
+    }
+
     func testInterruptingAWorkingNodeConfirmsThenSendsTheDaemonsAction() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests)

@@ -53,12 +53,13 @@ public struct SchedulesView: View {
                 VStack(spacing: 0) {
                     ForEach(Array(list.entries.enumerated()), id: \.element.id) { index, entry in
                         ScheduleRow(
-                            entry: entry, first: index == 0, busy: store.actions.inFlight,
+                            entry: entry, first: index == 0,
                             open: { store.send(.open($0)) }, perform: { store.send(.perform($0)) }
                         )
                     }
                 }
                 .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 24, style: .continuous))
+                .animation(.smooth, value: list.entries.map(\.id))
                 .padding(.horizontal, 16)
                 .padding(.top, 20)
             }
@@ -71,7 +72,6 @@ public struct SchedulesView: View {
 private struct ScheduleRow: View {
     let entry: ScheduleList.Entry
     let first: Bool
-    let busy: Bool
     let open: (AlondraContract.Link) -> Void
     let perform: (WireAction) -> Void
 
@@ -127,7 +127,6 @@ private struct ScheduleRow: View {
                     .frame(minWidth: 36, minHeight: 36)
                     .contentShape(.rect)
             }
-            .disabled(busy)
         }
         .padding(.leading, 16)
         .padding(.trailing, 8)

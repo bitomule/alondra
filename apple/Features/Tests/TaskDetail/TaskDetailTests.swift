@@ -107,6 +107,30 @@ final class TaskDetailTests: XCTestCase {
     }
 
     @MainActor
+    func testATappedActionLeavesTheBarAtOnceAndReturnsIfTheDaemonDoesNotApplyIt() async throws {
+        let gate = Gate()
+        let store = try await loaded()
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Responses.rejected("The task already finished")
+        }
+        let cancel = try XCTUnwrap(store.state.detail?.cancel)
+
+        await store.send(.perform(cancel))
+        await store.send(.actions(.confirm))
+        await store.receive(\.actions.sent)
+        XCTAssertTrue(store.state.optimistic.hides(cancel.id))
+
+        await store.send(.screen(.loaded(try XCTUnwrap(store.state.screen.document))))
+        XCTAssertTrue(store.state.optimistic.hides(cancel.id), "a stale view does not show it again")
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertFalse(store.state.optimistic.hides(cancel.id))
+        await store.receive(\.delegate.failed, "The task already finished")
+    }
+
+    @MainActor
     func testDecliningTheConfirmationSendsNothing() async throws {
         let sent = SentActions()
         let store = try await loaded(sent: sent)

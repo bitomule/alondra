@@ -172,6 +172,33 @@ final class TasksFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testArchivingMovesTheFinishedWorkAtOnceAndBackIfTheDaemonRefuses() async throws {
+        let gate = Gate()
+        let document = try Samples.document("tasks-populated")
+        let store = await loaded(document, respond: { _ in try Responses.rejected("Nothing to archive") })
+        store.dependencies.viewsClient.perform = { _ in
+            await gate.wait()
+            return try Responses.rejected("Nothing to archive")
+        }
+        let before = try XCTUnwrap(store.state.board)
+        XCTAssertGreaterThan(before.finished.count, 0)
+
+        await store.send(.archiveCompleted)
+        await store.receive(\.actions.sent)
+        XCTAssertEqual(store.state.board?.finished.count, 0, "the finished work moves before the daemon answers")
+        XCTAssertEqual(store.state.board?.archived.count, before.archived.count + before.finished.count)
+        XCTAssertNil(store.state.board?.archiveCompleted)
+
+        await store.send(.screen(.loaded(document)))
+        XCTAssertEqual(store.state.board?.finished.count, 0, "a stale board cannot bring it back")
+
+        await gate.open()
+        await store.receive(\.actions.settled)
+        XCTAssertEqual(store.state.board, before)
+        await store.receive(\.delegate.failed, "Nothing to archive")
+    }
+
+    @MainActor
     func testWithNothingToArchiveTheButtonDoesNothing() async throws {
         let sent = SentActions()
         let store = await loaded(try Fixtures.document("tasks-ios"), sent: sent)

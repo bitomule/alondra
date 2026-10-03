@@ -46,3 +46,11 @@ public extension ScheduleList {
         )
     }
 }
+
+public extension ScheduleList {
+    /// The list without the schedules just deleted.
+    func hiding(_ optimistic: Optimistic) -> ScheduleList {
+        guard !optimistic.isEmpty else { return self }
+        return ScheduleList(title: title, entries: entries.filter { !optimistic.hides($0.delete?.id) }, empty: empty, add: add)
+    }
+}

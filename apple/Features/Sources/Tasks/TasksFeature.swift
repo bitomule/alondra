@@ -4,7 +4,8 @@ import ComposableArchitecture
 import Foundation
 
 /// The Tasks tab: requests with their task trees, the finished and archived folds, archiving what
-/// is done, and the way into the scheduled tasks.
+/// is done, and the way into the scheduled tasks. Withdrawing and archiving show at once and undo
+/// themselves if the daemon does not apply them.
 @Reducer
 public struct TasksFeature: Sendable {
     public init() {}
@@ -17,10 +18,11 @@ public struct TasksFeature: Sendable {
         public var pages: [String: TasksPage] = [:]
         var pagesVersion: String?
         public var loadingMore: Set<String> = []
+        public var optimistic = Optimistic()
         public init() {}
 
         public var board: TasksBoard? {
-            screen.document.map { TasksBoard(document: $0, pages: pages) }
+            screen.document.map { TasksBoard(document: $0, pages: pages).hiding(optimistic) }
         }
     }
 
@@ -62,6 +64,7 @@ public struct TasksFeature: Sendable {
                 }
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
+                state.optimistic.reconcile(document.version)
                 if state.pagesVersion != document.version {
                     state.pages = [:]
                     state.pagesVersion = nil
@@ -105,6 +108,12 @@ public struct TasksFeature: Sendable {
                 return .send(.perform(archive))
             case .perform(let action):
                 return .concatenate(.send(.actions(.present(action))), .send(.actions(.submit)))
+            case .actions(.sent(let request)):
+                state.optimistic.begin(request.actionId, request)
+                return .none
+            case .actions(.settled(let request, let applied)):
+                state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
+                return .none
             case .actions(.delegate(let outcome)):
                 return .concatenate(.send(.actions(.dismiss)), .send(.delegate(ScreenDelegate(outcome))))
             case .screen, .actions, .delegate:

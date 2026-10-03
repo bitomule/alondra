@@ -4,7 +4,8 @@ import ComposableArchitecture
 import Foundation
 
 /// The Fleet tab: the orchestrator, every node grouped by project, a search the daemon answers,
-/// and the actions the daemon offers on each node: interrupting it while it works, closing it.
+/// and the actions the daemon offers on each node: interrupting it while it works, closing it. A
+/// closed node leaves the list at once and returns if the daemon does not close it.
 @Reducer
 public struct FleetFeature: Sendable {
     public init() {}
@@ -15,14 +16,15 @@ public struct FleetFeature: Sendable {
         public var search: ScreenFeature.State?
         public var query = ""
         public var actions: ActionFeature.State
+        public var optimistic = Optimistic()
 
         public init() {
             actions = .ios()
         }
 
         public var isSearching: Bool { !query.trimmingCharacters(in: .whitespaces).isEmpty }
-        public var overview: FleetOverview? { screen.document.map(FleetOverview.init(document:)) }
-        public var results: FleetOverview? { search?.document.map(FleetOverview.init(document:)) }
+        public var overview: FleetOverview? { screen.document.map { FleetOverview(document: $0).hiding(optimistic) } }
+        public var results: FleetOverview? { search?.document.map { FleetOverview(document: $0).hiding(optimistic) } }
     }
 
     public enum Action {
@@ -35,6 +37,9 @@ public struct FleetFeature: Sendable {
         case perform(WireAction)
         case actions(ActionFeature.Action)
         case follow(AlondraContract.Link)
+        /// A node's own screen closed it and left; the app delivers the close.
+        case handedOff(ActionRequest)
+        case handOffSettled(ActionRequest, applied: Bool)
         case delegate(Delegate)
 
         @CasePathable
@@ -74,6 +79,7 @@ public struct FleetFeature: Sendable {
                 }
             case .screen(.loaded(let document)):
                 state.actions.dataEpoch = document.dataEpoch
+                state.optimistic.reconcile(document.version)
                 return .none
             case .screen, .search:
                 return .none
@@ -96,6 +102,12 @@ public struct FleetFeature: Sendable {
                 return .concatenate(.send(.actions(.present(wire))), .send(.actions(.submit)))
             case .actions(.response(let response)) where response.outcome == .rejected && state.actions.action?.id?.hasPrefix("close:") == true:
                 return .send(.delegate(.closeRefused(response.message ?? String(localized: "Couldn’t close the node"))))
+            case .actions(.sent(let request)), .handedOff(let request):
+                state.optimistic.begin(request.actionId, request)
+                return .none
+            case .actions(.settled(let request, let applied)), .handOffSettled(let request, let applied):
+                state.optimistic.settle(request, applied: applied, shown: state.screen.document?.version)
+                return .none
             case .actions(.delegate(let delegate)):
                 return .send(.delegate(.screen(ScreenDelegate(delegate))))
             case .actions:

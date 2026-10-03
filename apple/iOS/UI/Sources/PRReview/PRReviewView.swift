@@ -125,7 +125,6 @@ public struct PRReviewView: View {
             .safeAreaInset(edge: .bottom) {
                 Button("Send") { store.send(.actions(.submit)) }
                     .buttonStyle(.borderedProminent).tint(Palette.dawn)
-                    .disabled(store.actions.inFlight)
                     .padding()
             }
     }

@@ -18,7 +18,7 @@ public struct TasksView: View {
                 content
             }
             .padding(.bottom, 24)
-            .animation(.smooth, value: store.board?.active.requests.map(\.id))
+            .animation(.smooth, value: store.board)
         }
         .background(DawnBackground())
         .navigationBarTitleDisplayMode(.inline)

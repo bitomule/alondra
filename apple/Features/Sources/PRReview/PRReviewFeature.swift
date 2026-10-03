@@ -32,6 +32,7 @@ public struct PRReviewFeature: Sendable {
         public init(key: ViewKey) {
             screen = ScreenFeature.State(key: key)
             actions = .ios()
+            actions.handsOff = true
         }
 
         public var review: PRReview? { screen.document.map(PRReview.init(document:)) }
@@ -122,8 +123,8 @@ public struct PRReviewFeature: Sendable {
                 return .concatenate(effects)
             case .dismissSheet:
                 return .send(.actions(.dismiss))
-            case .actions(.response(let response)) where response.outcome == .applied:
-                return .run { _ in await dismiss() }
+            case .actions(.sent(let request)):
+                return .merge(.send(.delegate(.handOff(request))), .run { _ in await dismiss() })
             case .actions(.delegate(let delegate)):
                 return .send(.delegate(ScreenDelegate(delegate)))
             case .actions:

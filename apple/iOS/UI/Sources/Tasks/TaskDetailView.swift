@@ -248,13 +248,13 @@ public struct TaskDetailView: View {
     }
 
     @ViewBuilder private func actions(_ detail: TaskDetail) -> some View {
-        let shown = [detail.cancel, detail.reopen, detail.archive].compactMap(\.self)
+        let shown = [detail.cancel, detail.reopen, detail.archive].compactMap(\.self).filter { !store.optimistic.hides($0.id) }
         if !shown.isEmpty {
             VStack(spacing: 10) {
                 ForEach(shown, id: \.id) { action in
                     ActionButton(
                         title: action.label, symbol: Self.symbol(for: action),
-                        tint: Self.tint(for: action), enabled: action.enabled && !store.actions.inFlight
+                        tint: Self.tint(for: action), enabled: action.enabled
                     ) { store.send(.perform(action)) }
                     if !action.enabled, let reason = action.disabledReason {
                         Text(verbatim: reason)

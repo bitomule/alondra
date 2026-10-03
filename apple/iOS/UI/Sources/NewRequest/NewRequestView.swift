@@ -164,7 +164,7 @@ public struct NewRequestView: View {
     private var sendBar: some View {
         Button { store.send(.send) } label: {
             Label {
-                if store.actions.inFlight { Text("Sending…") } else { Text("Ask the Orchestrator") }
+                Text("Ask the Orchestrator")
             } icon: {
                 Image(systemName: "paperplane.fill")
             }
