@@ -115,6 +115,15 @@ final class TriageSnapshotTests: XCTestCase {
         assertVariants { Harness(store: store) }
     }
 
+    func test_permissionPromptDenying() throws {
+        let store = try single(try Fixtures.permissionCard()) { state in
+            let answer = state.cards[0].replyAction
+            state.cards[0].actions.action = answer
+            state.cards[0].actions.selectedOptionID = "deny"
+        }
+        assertVariants { Harness(store: store) }
+    }
+
     func test_plan() throws {
         let store = try single(try Fixtures.planCard())
         assertVariants { Harness(store: store) }
