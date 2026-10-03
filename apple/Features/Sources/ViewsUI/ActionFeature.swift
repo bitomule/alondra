@@ -48,6 +48,31 @@ public struct ActionFeature: Sendable {
         public var confirmationIsDestructive: Bool {
             action?.id?.hasPrefix("merge:") != true
         }
+
+        /// Whether the send button can go now: the action is live and has what it asks for.
+        public var canSubmit: Bool {
+            guard let action, action.enabled, action.id != nil, !inFlight else { return false }
+            return missingInput == nil
+        }
+
+        /// What the person still has to give before the action can go, as submit words it.
+        var missingInput: String? {
+            guard let action else { return nil }
+            let typed = !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let freeText: Bool = {
+                guard selectedOptionID == nil, typed else { return false }
+                if case .text = action.input { return true }
+                return false
+            }()
+            if action.presentation == .options && !freeText && selectedOptionID == nil {
+                return String(localized: "Choose an option")
+            }
+            let input = selectedOptionID.flatMap { id in action.options.first { $0.id == id }?.input } ?? action.input
+            if case let .text(_, required, _) = input, required, comments.isEmpty, !typed {
+                return String(localized: "Enter a response")
+            }
+            return nil
+        }
     }
 
     public enum Action {
@@ -135,20 +160,8 @@ public struct ActionFeature: Sendable {
             case let .fieldsChanged(fields): state.fields = fields; return .none
             case .submit:
                 guard let selected = state.action, selected.enabled, selected.id != nil, !state.inFlight else { return .none }
-                let freeText: Bool = {
-                    guard state.selectedOptionID == nil,
-                          !state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
-                    if case .text = selected.input { return true }
-                    return false
-                }()
-                if selected.presentation == .options && !freeText && state.selectedOptionID == nil {
-                    state.error = String(localized: "Choose an option")
-                    return .none
-                }
-                let input = state.selectedOptionID.flatMap { id in selected.options.first { $0.id == id }?.input } ?? selected.input
-                if case let .text(_, required, _) = input, required, state.comments.isEmpty,
-                   state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    state.error = String(localized: "Enter a response")
+                if let missing = state.missingInput {
+                    state.error = missing
                     return .none
                 }
                 if let confirm = selected.confirm {

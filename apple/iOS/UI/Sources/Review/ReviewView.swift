@@ -225,16 +225,13 @@ public struct ReviewView: View {
     }
 
     private func actionBar(_ subject: ReviewFeature.Subject, kind: Kind) -> some View {
-        GlassEffectContainer(spacing: 12) {
-            HStack(spacing: 12) {
+        GlassActionBar {
+            GlassBarRow {
                 ForEach(subject.barActions, id: \.label) { action in
                     barButton(action, subject: subject, kind: kind)
                 }
             }
-            .controlSize(.large).buttonBorderShape(.capsule)
-            .font(.headline).lineLimit(1).minimumScaleFactor(0.75)
         }
-        .padding(.horizontal, 20).padding(.vertical, 8)
     }
 
     @ViewBuilder private func barButton(
@@ -247,21 +244,21 @@ public struct ReviewView: View {
         let disabled = !store.state.isSendable(action)
         if action.style == .primary {
             Button(action: tap) {
-                if ReviewFeature.Subject.verb(action) == "accept" { Label(action.label, systemImage: "checkmark") }
-                else { Text(action.label) }
+                GlassBarLabel(action.label,
+                              systemImage: ReviewFeature.Subject.verb(action) == "accept" ? "checkmark" : nil)
             }
-            .frame(maxWidth: .infinity)
             .buttonStyle(.glassProminent)
             .tint(Palette.sageDeep)
             .disabled(disabled)
         } else {
             Button(action: tap) {
-                if subject.isRescue(action) { Label("Rescue Comments", systemImage: "text.bubble") }
-                else if ReviewFeature.Subject.verb(action) == "changes" {
-                    Label(action.label, systemImage: "arrow.uturn.backward")
-                } else { Text(action.label) }
+                if subject.isRescue(action) {
+                    GlassBarLabel(String(localized: "Rescue Comments"), systemImage: "text.bubble")
+                } else {
+                    GlassBarLabel(action.label,
+                                  systemImage: ReviewFeature.Subject.verb(action) == "changes" ? "arrow.uturn.backward" : nil)
+                }
             }
-            .frame(maxWidth: .infinity)
             .buttonStyle(.glass)
             .tint(kind.tint)
             .disabled(disabled)

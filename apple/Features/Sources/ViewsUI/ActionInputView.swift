@@ -1,5 +1,6 @@
 import AlondraAttachments
 import AlondraContract
+import AlondraDesign
 import ComposableArchitecture
 import SwiftUI
 
@@ -7,6 +8,7 @@ import SwiftUI
 public struct ActionInputView: View {
     @Bindable public var store: StoreOf<ActionFeature>
     @State private var optionsPresented = false
+    @FocusState private var textFocused: Bool
     public let form: WireForm?
     public let showCommentEditor: Bool
     public var onReload: ((Field, JSONValue) -> Void)?
@@ -38,7 +40,7 @@ public struct ActionInputView: View {
                 }
                 input(action.options.first(where: { $0.id == store.selectedOptionID })?.input ?? action.input)
                 if form?.id != "new_request", action.attachments || (form?.fields.contains(where: { if case .attachments = $0.kind { true } else { false } }) == true) {
-                    AttachmentPicker(store: attachmentStore)
+                    attachments
                 }
                 if let commentSpec = action.comments {
                     if showCommentEditor {
@@ -67,6 +69,17 @@ public struct ActionInputView: View {
         }
     }
 
+    @ViewBuilder private var attachments: some View {
+        #if os(iOS)
+        HStack(alignment: .center, spacing: 8) {
+            AttachButton(store: attachmentStore, title: Text("Attach"))
+            AttachmentStrip(store: attachmentStore)
+        }
+        #else
+        AttachmentPicker(store: attachmentStore)
+        #endif
+    }
+
     private var attachmentStore: StoreOf<AttachmentFeature> {
         store.scope(state: \.attachmentPicker, action: \.attachmentPicker)
     }
@@ -76,8 +89,15 @@ public struct ActionInputView: View {
         case .none: EmptyView()
         case let .text(placeholder, _, multiline):
             if multiline {
-                TextEditor(text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }))
-                    .frame(minHeight: 110).overlay(RoundedRectangle(cornerRadius: 8).stroke(.quaternary))
+                TextField(placeholder ?? store.action?.label ?? "",
+                          text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
+                    .lineLimit(5...12)
+                    .focused($textFocused)
+                    .padding(14)
+                    .background(ViewPalette.card, in: .rect(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16)
+                        .strokeBorder(textFocused ? ViewPalette.dawn.opacity(0.6) : ViewPalette.hairline))
+                    .onAppear { textFocused = true }
             } else {
                 TextField(placeholder ?? "", text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }))
                     .textFieldStyle(.roundedBorder)
