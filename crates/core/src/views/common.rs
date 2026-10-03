@@ -106,6 +106,20 @@ pub(super) fn instruction_label(task: &crate::domain_v2::Task, domain: &crate::d
     })
 }
 
+/// The error of the scheduled launch that should have started this task and did not.
+pub(super) fn failed_launch<'a>(task: &crate::domain_v2::Task, domain: &'a crate::domain_v2::DomainState) -> Option<&'a str> {
+    use crate::domain_v2::{ScheduleRunState, TaskState};
+    if task.state != TaskState::NotStarted || task.agent_id.is_some() { return None; }
+    domain.schedule.runs.values()
+        .filter(|run| run.task_id.as_ref() == Some(&task.id) && run.state == ScheduleRunState::Failed)
+        .max_by_key(|run| run.finished_at)
+        .map(|run| run.error.as_deref().map(str::trim).filter(|error| !error.is_empty()).unwrap_or(""))
+}
+
+pub(super) fn launch_failed_label(lang: super::Lang) -> &'static str {
+    super::text::t!(lang, "Did not start", "No arrancó")
+}
+
 pub(super) fn task_presentation(state: crate::domain_v2::TaskState) -> (super::Icon, super::Tone) {
     use crate::domain_v2::TaskState as S;
     use super::{Icon, Tone};
