@@ -226,6 +226,19 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertTrue(dismissed.value)
     }
 
+    func testReadsWhyTheOrchestratorFailed() throws {
+        let document = try Fixtures.document("node-ios", edit: { object in
+            var sections = object["sections"] as? [[String: Any]] ?? []
+            sections.append(["id": "failure", "collapsed": false, "items": [[
+                "type": "markdown", "text": "Su última ejecución falló.", "truncated": false, "commentable": false,
+            ]]])
+            object["sections"] = sections
+        })
+
+        XCTAssertEqual(NodeDetail(document: document).failure?.text, "Su última ejecución falló.")
+        XCTAssertNil(NodeDetail(document: try self.document()).failure)
+    }
+
     func testTheOrchestratorOffersRetryContinueAndStopEachWithAConfirmation() async throws {
         let requests = LockIsolated<[ActionRequest]>([])
         let store = store(requests: requests, key: .node("orchestrator"))

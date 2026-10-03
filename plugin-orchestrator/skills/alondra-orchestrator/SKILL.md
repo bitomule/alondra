@@ -23,8 +23,8 @@ they can be read outside this conversation.
 
 Alondra gives you:
 - eyes: `fleet` (the nodes running, dormant or owing the user something, open questions and the
-  machine; `all: true` adds finished ones), `node` (one node in detail), `candidates` and
-  `machine`;
+  machine; `all: true` adds finished ones), `node` (one node in detail), `candidates`,
+  `machine`, and `daemon_log` (the end of Alondra's own log, when something in Alondra failed);
 - hands: `create_task`, `assign_task`, `set_dependencies`, `retitle_task`, `launch`, `send`,
   `interrupt`, `cancel_task`, `reopen_task`, `close_request`, `schedule_create`;
 - a channel to the user: `ask`, `request_action` and `publish_information`;

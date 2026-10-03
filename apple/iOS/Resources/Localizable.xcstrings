@@ -2058,6 +2058,16 @@
         }
       }
     },
+    "What went wrong": {
+      "localizations": {
+        "es": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Qué falló"
+          }
+        }
+      }
+    },
     "What it said last": {
       "localizations": {
         "es": {

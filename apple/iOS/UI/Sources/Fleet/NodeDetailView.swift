@@ -77,6 +77,9 @@ public struct NodeDetailView: View {
                         }
                     }
                 }
+                if let failure = detail.failure {
+                    NodeSection(title: "What went wrong", symbol: "exclamationmark.triangle") { MarkdownView(markdown: failure) }
+                }
                 if let needs = detail.needs {
                     NodeSection(title: "Needs", symbol: "hand.raised") { MarkdownView(markdown: needs) }
                 }

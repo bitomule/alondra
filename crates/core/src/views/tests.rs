@@ -1515,7 +1515,7 @@ fn task_board_nests_a_dependent_under_its_parent() {
 fn ambiguous_orchestrator_run_exposes_both_choices_with_confirmation() {
     let state = fixture();
     let live = LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
-        working: false, summary: Some("An execution needs a decision".into()),
+        working: false, summary: Some("An execution needs a decision".into()), failure: None,
         queue_depth: 2, active_run_id: Some("run-1".into()), can_retry: true, can_cancel: false,
     }), ..Default::default() };
     let view = render(&state, &live, Client::Ios, Lang::En, "node:orchestrator", "2026-09-30T10:00:00Z");
@@ -1528,7 +1528,7 @@ fn ambiguous_orchestrator_run_exposes_both_choices_with_confirmation() {
 }
 fn orchestrator_waiting(can_retry: bool) -> LiveSnapshot {
     LiveSnapshot { orchestrator: Some(live::LiveOrchestrator {
-        working: false, summary: Some("Claude exited without a successful terminal result".into()),
+        working: false, summary: Some("Claude exited without a successful terminal result".into()), failure: None,
         queue_depth: 1, active_run_id: Some("run-1".into()), can_retry, can_cancel: !can_retry,
     }), ..Default::default() }
 }
@@ -1555,6 +1555,46 @@ fn a_failed_orchestrator_run_waits_for_the_user_in_home_with_both_choices() {
     let waiting = sidebar.sections.iter().find(|section| section.id == "waiting").unwrap();
     assert!(matches!(&waiting.items[0], Item::Row(row) if row.id == "orchestrator-decision"));
     assert_eq!(waiting.count, Some(waiting.items.len() as u32));
+}
+
+fn orchestrator_screen(live: Option<live::LiveOrchestrator>, lang: Lang) -> (Vec<Fact>, Option<String>, Vec<String>) {
+    let live = LiveSnapshot { orchestrator: live, ..Default::default() };
+    let view = render(&fixture(), &live, Client::Ios, lang, "node:orchestrator", "");
+    let items = |id: &'static str| view.sections.iter().filter(move |section| section.id == id).flat_map(|section| &section.items);
+    let facts = items("header").flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
+    let failure = items("failure").find_map(|item| match item { Item::Markdown(text) => Some(text.text.clone()), _ => None });
+    let verbs = items("actions").flat_map(|item| match item { Item::Actions(bar) => bar.actions.clone(), _ => vec![] })
+        .map(|action| action.id.split(':').next().unwrap().to_owned()).collect();
+    (facts, failure, verbs)
+}
+
+#[test]
+fn the_orchestrator_screen_says_it_failed_and_why_in_the_users_language() {
+    let refused = live::LiveOrchestrator {
+        working: false, summary: Some("Claude denied a required tool permission in auto mode".into()),
+        failure: Some("denied".into()), queue_depth: 0, active_run_id: Some("run-1".into()), can_retry: true, can_cancel: false,
+    };
+    let (facts, failure, verbs) = orchestrator_screen(Some(refused), Lang::Es);
+    assert_eq!((facts[0].value.as_str(), facts[0].tone), ("Falló", Some(Tone::Warning)));
+    let failure = failure.expect("the failure is shown");
+    assert!(failure.contains("le negó una de las herramientas de Alondra"), "{failure}");
+    assert!(!failure.contains("Claude denied"), "Alondra's English diagnostic is not shown: {failure}");
+    assert_eq!(verbs, ["msg", "orch_retry", "orch_ack"]);
+
+    let crashed = live::LiveOrchestrator {
+        working: false, summary: Some("exit status: 1".into()), failure: Some("interrupted".into()),
+        queue_depth: 0, active_run_id: Some("run-1".into()), can_retry: true, can_cancel: false,
+    };
+    let failure = orchestrator_screen(Some(crashed), Lang::En).1.unwrap();
+    assert!(failure.starts_with("Its last run stopped partway") && failure.ends_with("Detail: `exit status: 1`"), "{failure}");
+
+    let fine = live::LiveOrchestrator {
+        working: false, summary: None, failure: None, queue_depth: 0, active_run_id: None, can_retry: false, can_cancel: false,
+    };
+    let (facts, failure, verbs) = orchestrator_screen(Some(fine), Lang::Es);
+    assert_eq!(facts[0].value, "Inactivo");
+    assert_eq!(failure, None);
+    assert_eq!(verbs, ["msg"], "a run that finished leaves nothing to decide");
 }
 
 #[test]

@@ -125,6 +125,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/orchestrator/interrupt", post(orchestrator_interrupt))
         .route("/sandbox/interrupt/{session}", post(sandbox_interrupt))
         .route("/orchestrator/machine", get(orchestrator_machine))
+        .route("/orchestrator/log", get(orchestrator_log))
         .route("/orchestrator/schedules", post(orchestrator_schedule))
         .route("/orchestrator/fleet", get(orchestrator_fleet))
         .route("/orchestrator/node", get(orchestrator_node))
@@ -711,6 +712,52 @@ async fn orchestrator_machine(
     Json(json!({"machine": machine, "usage": usage})).into_response()
 }
 
+const LOG_LINES: usize = 200;
+const MAX_LOG_LINES: usize = 1000;
+const MAX_LOG_BYTES: u64 = 512 * 1024;
+
+#[derive(Deserialize)]
+struct LogQuery {
+    lines: Option<usize>,
+}
+
+/// The end of the daemon's own log. The orchestrator reads it through this route because its
+/// file tools never reach Alondra's home, which holds keys and the nodes' capabilities.
+async fn orchestrator_log(
+    State(state): State<Arc<V2Only>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(query): Query<LogQuery>,
+) -> Response {
+    if let Err(refused) = tool_caller(&state, &peer, &headers) {
+        return refused;
+    }
+    let lines = query.lines.unwrap_or(LOG_LINES).clamp(1, MAX_LOG_LINES);
+    match log_tail(&state.home.join("alondrad.log"), lines) {
+        Ok(text) => Json(json!({"log": text})).into_response(),
+        Err(error) => crate::domain_api::domain_error(DomainError::new(
+            "storage_unavailable",
+            format!("cannot read alondrad.log: {error}"),
+        )),
+    }
+}
+
+fn log_tail(path: &Path, lines: usize) -> std::io::Result<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(String::new()),
+        Err(error) => return Err(error),
+    };
+    let start = file.metadata()?.len().saturating_sub(MAX_LOG_BYTES);
+    file.seek(SeekFrom::Start(start))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    let text = String::from_utf8_lossy(&bytes);
+    let whole: Vec<&str> = text.lines().skip(usize::from(start > 0)).collect();
+    Ok(whole[whole.len().saturating_sub(lines)..].join("\n"))
+}
+
 fn attachment_ref(home: &Path, name: &str, bytes: &[u8]) -> anyhow::Result<AttachmentRef> {
     let (id, attachment) = crate::uploads::store(home, name, bytes)?;
     let stored = attachment
@@ -1138,6 +1185,39 @@ mod tests {
                 .unwrap()
                 .contains_key("usage")
         );
+        assert_eq!(
+            client
+                .get(format!("{base}/orchestrator/log"))
+                .bearer_auth(&bearer)
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN,
+            "only the orchestrator reads the daemon log"
+        );
+        let lines: Vec<String> = (1..=300).map(|n| format!("line {n}")).collect();
+        std::fs::write(home.join("alondrad.log"), lines.join("\n")).unwrap();
+        let log = client
+            .get(format!("{base}/orchestrator/log?lines=2"))
+            .bearer_auth(orchestrator.expose_for_child_environment())
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        assert_eq!(log["log"], "line 299\nline 300");
+        let log = client
+            .get(format!("{base}/orchestrator/log"))
+            .bearer_auth(orchestrator.expose_for_child_environment())
+            .send()
+            .await
+            .unwrap()
+            .json::<serde_json::Value>()
+            .await
+            .unwrap();
+        assert_eq!(log["log"].as_str().unwrap().lines().count(), 200);
         let launch = client
             .post(format!("{base}/orchestrator/launch"))
             .bearer_auth(orchestrator.expose_for_child_environment())

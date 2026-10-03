@@ -58,6 +58,7 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "fleet", "description": format!("Fleet summary: unfinished nodes that are running, dormant or owe {user} something, with what they run in the background (subagents and shells; `suspect` when possibly hung); open questions, unread reports, undelivered messages for you, and the machine."), "inputSchema": {"type": "object", "properties": {"all": {"type": "boolean", "description": "Add finished and gone nodes"}}}}),
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
+            json!({"name": "daemon_log", "description": "The last lines of Alondra's daemon log (alondrad.log), to find out why something in Alondra failed.", "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer", "description": "How many lines from the end: 200 by default, at most 1000"}}}}),
             json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task: the node is told which one, a task no node works on yet becomes this node's, and a done task is reopened. A node works on one task at a time: a task for a node still on another is refused (agent_busy); launch a new node for it.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in, for when Alondra reports a node inside one call that looks hung; `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
             json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Refused while today is over its slice of the weekly subscription usage (see `machine`); over_pace_ok launches anyway once {user} has said so."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "model": {"type": "string", "description": "Only to override the model the request's effort sets"}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["light", "normal", "hard"], "description": format!("Choose independently for this task when the request's effort is auto or there is no request: light for bounded work with a known approach; normal for ordinary implementation and investigation (the starting point); hard only for a concrete unresolved difficulty named in the mission. Request size or importance does not justify hard. An effort {user} chose in the request is binding and ignores this")}, "over_pace_ok": {"type": "boolean", "description": format!("true only when {user} approved launching over today's usage slice")}}, "required": ["name", "cwd"]}}),
@@ -467,6 +468,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "send"
         | "interrupt"
         | "machine"
+        | "daemon_log"
         | "schedule_create"
         | "fleet"
         | "node"
@@ -611,6 +613,14 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         "machine" => {
             let bearer = domain_bearer()?;
             serde_json::to_string_pretty(&client.domain_get("/orchestrator/machine", &bearer)?)?
+        }
+        "daemon_log" => {
+            let bearer = domain_bearer()?;
+            let path = match args["lines"].as_u64() {
+                Some(lines) => format!("/orchestrator/log?lines={lines}"),
+                None => "/orchestrator/log".to_string(),
+            };
+            client.domain_get(&path, &bearer)?["log"].as_str().unwrap_or_default().to_string()
         }
         other => anyhow::bail!("unknown tool: {other}"),
     })
@@ -1124,7 +1134,7 @@ mod tests {
         for n in ["create_request","close_request","create_task","assign_task","set_dependencies","link_task_document"] { assert!(orchestrator.contains(n),"{n}"); }
         for n in ["create_task","close_request","link_task_document"] { assert!(!node.contains(n),"{n}"); }
         for n in ["present_result","complete_task","register_pr","claim_merge_authorization"] { assert!(!orchestrator.contains(n),"{n}"); }
-        for n in ["launch","send","interrupt","machine","schedule_create","fleet","node","candidates"] { assert!(orchestrator.contains(n)); assert!(!node.contains(n)); }
+        for n in ["launch","send","interrupt","machine","daemon_log","schedule_create","fleet","node","candidates"] { assert!(orchestrator.contains(n)); assert!(!node.contains(n)); }
         assert!(node.contains("wait_for_machine")); assert!(!orchestrator.contains("wait_for_machine"));
         let orchestrator_catalog=tools(Role::Orchestrator,"Ana");
         let launch=orchestrator_catalog.as_array().unwrap().iter().find(|t|t["name"]=="launch").unwrap();

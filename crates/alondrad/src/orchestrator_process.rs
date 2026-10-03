@@ -130,6 +130,7 @@ pub struct Stream {
     pub post_compact_tokens: Option<u64>,
     pub acted: bool,
     pub missing_session: bool,
+    pub denied: bool,
 }
 impl Stream {
     /// Session fencing applies to every session-bearing record, including terminal results.
@@ -206,6 +207,7 @@ impl Stream {
                 if v["permission_denials"].as_array().is_some_and(|denials| denials.iter()
                     .any(|denial| denial["tool_name"].as_str().is_some_and(alondra_tool))) {
                     self.success = false;
+                    self.denied = true;
                     self.error = Some("Claude denied a required tool permission in auto mode".into());
                 }
                 if !self.success && self.error.is_none() {
@@ -446,6 +448,7 @@ mod tests {
             s.accept(line.as_bytes(), "a").unwrap();
             assert!(!s.success);
             assert_eq!(s.error.as_deref(), Some("Claude denied a required tool permission in auto mode"));
+            assert!(s.denied);
         }
     }
 

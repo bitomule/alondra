@@ -120,14 +120,15 @@ pub(super) fn orchestrator_decision(context: &RenderContext<'_>, included: bool)
     let explanation = t!(context.lang,
         "Its last run failed partway, so some of its actions may already have happened. New requests wait until you choose: retry the run, or continue without repeating it.",
         "Su última ejecución falló a medias, así que puede que algunas acciones ya se hayan hecho. Las solicitudes nuevas esperan hasta que elijas: reintentarla o continuar sin repetirla.");
-    let error = live.summary.as_deref().map(str::trim).filter(|error| !error.is_empty());
+    let failure = super::common::orchestrator_failure(context)
+        .filter(|_| live.failure.as_deref() != Some("interrupted"));
     Some(Card {
         id: ORCHESTRATOR_DECISION.into(),
         link: Some(Link::View { key: format!("card:{ORCHESTRATOR_DECISION}") }),
         icon: Icon::Warning,
         eyebrow: Some(Label { text: t!(context.lang, "Orchestrator", "Orquestador").into(), tone: Tone::Accent }),
         title: t!(context.lang, "The orchestrator needs your decision", "El orquestador necesita que decidas").into(),
-        subtitle: error.and_then(|error| error.lines().next()).map(|line| line.chars().take(140).collect()),
+        subtitle: failure.as_deref().and_then(|failure| failure.lines().next()).map(|line| line.chars().take(140).collect()),
         badges: vec![],
         context: vec![ContextLine {
             icon: Icon::Node,
@@ -140,8 +141,8 @@ pub(super) fn orchestrator_decision(context: &RenderContext<'_>, included: bool)
         state: None,
         detail: if included { Detail::Included } else { Detail::Reference },
         body: included.then(|| Markdown {
-            text: match error {
-                Some(error) => format!("{explanation}\n\n{}: {error}", t!(context.lang, "What failed", "Qué falló")),
+            text: match &failure {
+                Some(failure) => format!("{explanation}\n\n{failure}"),
                 None => explanation.into(),
             },
             truncated: false,

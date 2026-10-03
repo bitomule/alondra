@@ -79,28 +79,13 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             },
         ],
         gauges: context.live.gauges.clone(),
-        orchestrator: Label {
-            text: if context
-                .live
-                .orchestrator
-                .as_ref()
-                .is_some_and(|o| o.working)
-            {
-                t!(context.lang, "working", "trabajando")
-            } else {
-                t!(context.lang, "idle", "inactivo")
-            }
-            .into(),
-            tone: if context
-                .live
-                .orchestrator
-                .as_ref()
-                .is_some_and(|o| o.working)
-            {
-                Tone::Info
-            } else {
-                Tone::Neutral
-            },
+        orchestrator: {
+            let (text, tone) = match super::common::orchestrator_state(context) {
+                super::common::OrchestratorState::Working => (t!(context.lang, "working", "trabajando"), Tone::Info),
+                super::common::OrchestratorState::Failed => (t!(context.lang, "failed", "falló"), Tone::Warning),
+                super::common::OrchestratorState::Idle => (t!(context.lang, "idle", "inactivo"), Tone::Neutral),
+            };
+            Label { text: text.into(), tone }
         },
         update: context.live.update.clone(),
     };

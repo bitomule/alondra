@@ -277,3 +277,58 @@ pub(super) fn agent_label(agent_id: &crate::domain_v2::AgentId, context: &Render
         .or_else(|| current_task(domain, agent_id).map(|task| task.title.clone()))
         .unwrap_or_else(|| t!(context.lang, "Node", "Nodo").into())
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum OrchestratorState { Working, Failed, Idle }
+
+pub(super) fn orchestrator_state(context: &RenderContext<'_>) -> OrchestratorState {
+    match context.live.orchestrator.as_ref() {
+        Some(live) if live.working => OrchestratorState::Working,
+        Some(live) if live.summary.is_some() => OrchestratorState::Failed,
+        _ => OrchestratorState::Idle,
+    }
+}
+
+pub(super) fn orchestrator_label(context: &RenderContext<'_>) -> super::Label {
+    let (text, tone) = match orchestrator_state(context) {
+        OrchestratorState::Working => (t!(context.lang, "Working", "Trabajando"), super::Tone::Accent),
+        OrchestratorState::Failed => (t!(context.lang, "Failed", "Falló"), super::Tone::Warning),
+        OrchestratorState::Idle => (t!(context.lang, "Idle", "Inactivo"), super::Tone::Neutral),
+    };
+    super::Label { text: text.into(), tone }
+}
+
+const FAILURE_DETAIL: usize = 300;
+
+/// The orchestrator's standing failure as the user reads it: what happened and what is already
+/// done, with Alondra's own text only where the sentence cannot say what went wrong.
+pub(super) fn orchestrator_failure(context: &RenderContext<'_>) -> Option<String> {
+    let live = context.live.orchestrator.as_ref()?;
+    let error = live.summary.as_deref()?;
+    let lang = context.lang;
+    let (sentence, with_detail) = match live.failure.as_deref() {
+        Some("launch") => (t!(lang,
+            "Claude could not start. Alondra will try again on its own.",
+            "Claude no pudo arrancar. Alondra lo volverá a intentar sola."), true),
+        Some("interrupted") => (t!(lang,
+            "Its last run stopped partway, so some of what it did may already be done. Check its tasks, then retry or continue without repeating it.",
+            "Su última ejecución se cortó a medias: puede que parte de lo que hizo ya esté hecho. Revisa sus tareas y elige reintentar o continuar sin repetir."), true),
+        Some("denied") => (t!(lang,
+            "Claude refused it one of Alondra's own tools, so its last run did not finish. Some of what it did may already be done.",
+            "Claude le negó una de las herramientas de Alondra y su última ejecución no terminó. Puede que parte de lo que hizo ya esté hecho."), false),
+        Some("cancelled") => (t!(lang,
+            "You stopped its last run. What it had already done stays done.",
+            "Detuviste su última ejecución. Lo que ya había hecho sigue hecho."), false),
+        Some("session_missing") => (t!(lang,
+            "Its saved conversation was gone. It will start a new one with the next message.",
+            "Su conversación guardada ya no existía. Empezará una nueva con el próximo mensaje."), false),
+        _ => (t!(lang, "Its last run failed.", "Su última ejecución falló."), true),
+    };
+    let detail: String = error.split_whitespace().collect::<Vec<_>>().join(" ").replace('`', "'")
+        .chars().take(FAILURE_DETAIL).collect();
+    Some(if with_detail && !detail.is_empty() {
+        format!("{sentence}\n\n{}: `{detail}`", t!(lang, "Detail", "Detalle"))
+    } else {
+        sentence.to_owned()
+    })
+}
