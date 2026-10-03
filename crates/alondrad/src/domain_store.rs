@@ -479,6 +479,13 @@ impl DomainStore {
                             None => "The domain has something for you.".to_owned(),
                         },
                     ),
+                    DomainEffect::ScheduleLaunchFailed { task_id, title, reason } => (
+                        "orchestrator",
+                        None,
+                        Some(task_id.0.as_str()),
+                        None,
+                        format!("The scheduled Task “{title}” ({task_id}) could not start: {reason} It stays not started with no node and nothing retries it: tell the user why and ask before starting it again."),
+                    ),
                 };
                 repository::exec(&tx, "INSERT INTO domain_messages(revision,ordinal,recipient_kind,agent_id,task_id,interaction_id,message) VALUES(?1,?2,?3,?4,?5,?6,?7)",params![outcome.revision as i64,index as i64,kind,agent,task,interaction,message])?;
                 if matches!(effect, DomainEffect::NotifyUser { .. }) {

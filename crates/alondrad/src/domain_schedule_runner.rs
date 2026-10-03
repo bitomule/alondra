@@ -238,6 +238,7 @@ fn request_task(snapshot: &ScheduleDefinitionSnapshot) -> (Request, Task) {
 }
 
 fn fail_run(domain: &DomainRuntime, run_id: &ScheduleRunId, reason: String) -> Result<()> {
+    log!("scheduled run {run_id} could not start: {}", reason.trim());
     match execute_system(
         domain,
         Command::RecordScheduleRunFailed {
@@ -1179,6 +1180,14 @@ mod tests {
         assert!(
             settings_files(&fixture.home).is_empty(),
             "a failed launch leaves no settings file"
+        );
+        let task_id = run.task_id.as_ref().unwrap();
+        let told = fixture.domain.store.lock().unwrap().pending_messages().unwrap();
+        assert!(
+            told.iter().any(|message| message.recipient_kind == "orchestrator"
+                && message.task_id.as_deref() == Some(task_id.0.as_str())
+                && message.message.contains("could not start: synthetic Claude failure")),
+            "the orchestrator hears why the scheduled Task did not start: {told:?}"
         );
     }
 
