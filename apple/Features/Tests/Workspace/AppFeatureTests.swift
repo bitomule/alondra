@@ -307,12 +307,22 @@ final class AppFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testWaitingForYouTakesItsStatusFromTheApp() async throws {
-        let store = makeStore()
-        let status = try Fixtures.document("home-ios").status
-        await store.send(.triage(.feedStatus(status)))
-        XCTAssertEqual(store.state.triage.status, status)
-        XCTAssertEqual(store.state.triage.badge, 5)
+    func testTheWaitingBadgeFollowsTheQueueFromAnyTab() async throws {
+        var state = AppFeature.State()
+        state.tab = .tasks
+        let queue = [Fixtures.questionID, Fixtures.informationID]
+        let feed = FeedStub([try Fixtures.home(queue: queue)])
+        let store = TestStore(initialState: state) { AppFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = feed.observe
+        }
+        store.exhaustivity = .off
+
+        let appeared = await store.send(.appeared)
+        await store.receive(\.triage.screen.loaded)
+        XCTAssertEqual(store.state.triage.orderedIDs, queue)
+        XCTAssertEqual(store.state.triage.badge, 2, "the badge counts the queue without Waiting for You on screen")
+        await appeared.cancel()
     }
 
     @MainActor

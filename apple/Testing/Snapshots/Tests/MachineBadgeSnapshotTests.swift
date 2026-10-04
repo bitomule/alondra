@@ -31,8 +31,13 @@ final class MachineBadgeSnapshotTests: XCTestCase {
         .replacingOccurrences(of: #""value":0.88,"text":"58 GB libres","level":"warm""#, with: #""value":0.96,"text":"16 GB libres","level":"hot""#)
 
     private func navigationBar(width: CGFloat, status raw: String = status) throws -> UIImage {
-        let status = try ContractCodec.decode(ViewStatus.self, from: Data(raw.utf8))
-        let store = try ScreenStores.triage(queue: []) { $0.status = status }
+        let home = try Fixtures.document("home-ios") { object in
+            object["status"] = try JSONSerialization.jsonObject(with: Data(raw.utf8))
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            sections[0]["card_ids"] = [String]()
+            object["sections"] = sections
+        }
+        let store = try ScreenStores.triage(queue: [], home: home)
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.first)
         let window = UIWindow(windowScene: scene)
         window.frame = CGRect(x: 0, y: 0, width: width, height: 874)
