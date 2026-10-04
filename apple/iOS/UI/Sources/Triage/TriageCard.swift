@@ -26,7 +26,7 @@ struct TriageCard: View {
     private var shell: some View {
         content
             .padding(.horizontal, 20).padding(.vertical, 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             .blur(radius: stamp == nil ? 0 : 10)
             .opacity(stamp == nil ? 1 : 0.4)
             .background { surface }
@@ -60,6 +60,7 @@ struct TriageCard: View {
                 CardContentRow(row: row, tint: tint) { openDetail() }
             }
             BlockChips(blocks: card.blocks, blockedBy: card.blockedBy, open: handleLink)
+            Spacer(minLength: 0)
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
             buttons
             if let reply = store.replyAction {

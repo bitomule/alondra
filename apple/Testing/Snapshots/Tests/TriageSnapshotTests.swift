@@ -159,6 +159,12 @@ final class TriageSnapshotTests: XCTestCase {
         assertVariants { Harness(store: store) }
     }
 
+    func test_stackOfAShortAndALongCardShareOneHeight() throws {
+        let queue = [Fixtures.informationID, Fixtures.questionID, Fixtures.deliveryID]
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
+        assertVariants { Harness(store: store) }
+    }
+
     func test_stackAfterTheLastCardWrapsToTheFirst() throws {
         let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID, Fixtures.pullRequestID]
         let shown = [Fixtures.pullRequestID, Fixtures.questionID, Fixtures.informationID]
