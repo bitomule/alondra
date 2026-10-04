@@ -133,6 +133,7 @@ fn row(item: &InboxItem, context: &RenderContext<'_>) -> Result<Row, BuildError>
         }),
         depth: 0,
         struck: false,
+        kind: None,
         children: vec![],
         actions: vec![],
     })

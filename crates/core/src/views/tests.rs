@@ -1562,6 +1562,7 @@ fn mac_views_match_goldens() {
         ("sidebar-mac.json", "sidebar", include_str!("../../../../fixtures/views/cards/sidebar-mac.json")),
         ("card-question-mac.json", "card:a98d034b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/card-question-mac.json")),
         ("card-pr-mac.json", "card:github.com/example/repo#12", include_str!("../../../../fixtures/views/cards/card-pr-mac.json")),
+        ("card-information-mac.json", "card:f12d034b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/card-information-mac.json")),
         ("pull-request-mac.json", "pull_request:github.com/example/repo#12", include_str!("../../../../fixtures/views/cards/pull-request-mac.json")),
         ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/cards/node-mac.json")),
         ("tasks-mac.json", "tasks", include_str!("../../../../fixtures/views/cards/tasks-mac.json")),
@@ -1569,6 +1570,46 @@ fn mac_views_match_goldens() {
     ] {
         let actual = render(&state, &live, Client::Mac, Lang::En, key, "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+fn the_mac_sidebar_lists_one_waiting_section_by_need() {
+    let state = golden_fixture();
+    let live = golden_live();
+    let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
+    let ids: Vec<_> = sidebar.sections.iter().map(|section| section.id.as_str()).collect();
+    assert!(!ids.contains(&"pull_requests"), "a pull request waits in the same list as everything else: {ids:?}");
+    let waiting = sidebar.sections.iter().find(|section| section.id == "waiting").unwrap();
+    let rows: Vec<_> = waiting.items.iter().filter_map(|item| match item { Item::Row(row) => Some(row), _ => None }).collect();
+    assert_eq!(rows.len() as u32, waiting.count.unwrap());
+    assert!(rows.iter().any(|row| row.kind == Some(CardKind::Review)), "the pull request review is listed with the rest");
+    for row in &rows {
+        let Some(Item::Card(card)) = render(&state, &live, Client::Mac, Lang::En, &format!("card:{}", row.id), "").sections.iter()
+            .flat_map(|section| section.items.clone()).next() else { panic!("{} renders as a card", row.id) };
+        assert_eq!(Some(&row.title), card.need.as_ref(), "a row is titled by what the card needs");
+        assert_eq!(row.kind, card.kind, "a row carries its card's kind");
+        assert_eq!(row.badges.first(), card.eyebrow.as_ref());
+    }
+}
+
+#[test]
+fn the_mac_sidebar_does_not_say_the_same_thing_twice() {
+    let state = golden_fixture();
+    let live = golden_live();
+    let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
+    let tasks = sidebar.sections.iter().find(|section| section.id == "tasks").unwrap();
+    for item in &tasks.items {
+        let Item::Row(group) = item else { continue };
+        for child in &group.children {
+            assert_ne!(child.subtitle.as_deref(), Some(group.title.as_str()), "a task under \"{}\" does not repeat it", group.title);
+        }
+    }
+    let orchestrator = sidebar.sections.iter().find(|section| section.id == "orchestrator").unwrap();
+    for item in &orchestrator.items {
+        let Item::Row(row) = item else { continue };
+        assert_eq!(row.trailing, None, "the orchestrator state is the badge, not a second label");
+        assert_eq!(row.badges.len(), 1);
     }
 }
 
@@ -1599,6 +1640,7 @@ fn generate_goldens() {
         ("sidebar-mac.json", "sidebar", Client::Mac, Lang::En),
         ("card-question-mac.json", "card:a98d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
         ("card-pr-mac.json", "card:github.com/example/repo#12", Client::Mac, Lang::En),
+        ("card-information-mac.json", "card:f12d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
         ("pull-request-mac.json", "pull_request:github.com/example/repo#12", Client::Mac, Lang::En),
         ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
         ("tasks-mac.json", "tasks", Client::Mac, Lang::En),
@@ -2295,7 +2337,7 @@ fn string_leaves(value: &serde_json::Value, path: &str, out: &mut Vec<(String, S
 #[test]
 fn every_builder_string_has_spanish() {
     const NAMES_AND_DATA: &[&str] = &[
-        "Alondra · iOS", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
+        "Alondra", "Alondra · iOS", "Alondra · iOS · Demo Garden", "Demo Garden", "PRs", "squash", "rebase", "Polish the Alondra beta", "Restore the native review experience", "PR #12", "1 · PR #12", "example/repo #12", "Base",
         "Memory", "Disk available", "6.1 GB of 16 GB", "120 GB", "Waiting for you",
         "Keep the warmer copy", "Ship the concise copy", "Normal",
         "A decision on the welcome copy", "Reviewing the native beta experience",

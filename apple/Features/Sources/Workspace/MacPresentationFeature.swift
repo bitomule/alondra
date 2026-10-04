@@ -72,6 +72,7 @@ public struct MacPresentationFeature: Sendable {
         case viewLoaded(String, ViewFetch)
         case viewFailed(String, String)
         case beginViewAction(AlondraContract.Action, target: String? = nil)
+        case sendReply(AlondraContract.Action, text: String)
         case beginViewForm(AlondraContract.Form)
         case reloadForm(String, JSONValue)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
@@ -98,12 +99,23 @@ public struct MacPresentationFeature: Sendable {
                 state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
                 state.activeForm = nil
                 state.actionTarget = target ?? state.selectedViewKey.flatMap(Self.cardID)
-                state.actionPresented = true
+                state.actionPresented = !action.sendsWithoutAsking
                 if action.comments?.kind == .diffLines {
                     let comments = state.diffComments.values.sorted { $0.anchor < $1.anchor }
                     return .concatenate(.send(.action(.present(action))), .send(.action(.commentsChanged(comments))))
                 }
+                if action.sendsWithoutAsking {
+                    return .concatenate(.send(.action(.present(action))), .send(.action(.submit)))
+                }
                 return .send(.action(.present(action)))
+            case let .sendReply(action, text):
+                guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
+                let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
+                state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
+                state.activeForm = nil
+                state.actionTarget = nil
+                state.actionPresented = false
+                return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.submit)))
             case .beginViewForm(let form):
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
@@ -374,11 +386,10 @@ public struct MacPresentationFeature: Sendable {
         return nil
     }
 
-    /// What waits for the person, in the order the sidebar lists it: questions and decisions first,
-    /// then pull requests.
+    /// What waits for the person, in the order the sidebar lists it.
     static func waitingEntries(in document: ViewDocument?) -> [(id: String, key: String)] {
         guard let document else { return [] }
-        return ["waiting", "pull_requests"].compactMap { id in document.sections.first { $0.id == id } }
+        return document.sections.filter { $0.id == "waiting" }
             .flatMap(\.items)
             .compactMap { item in
                 guard case let .row(row) = item, case let .view(key)? = row.link else { return nil }
@@ -456,5 +467,15 @@ private func viewRowIDs(_ items: [ViewItem]) -> [String] {
         case let .card(card): return [card.id] + card.children.flatMap { viewRowIDs([.card($0)]) }
         default: return []
         }
+    }
+}
+
+extension AlondraContract.Action {
+    /// A button that needs nothing more from the person: no text, no choice, no confirmation.
+    var sendsWithoutAsking: Bool {
+        guard enabled, id != nil, link == nil, confirm == nil, !attachments, comments == nil,
+              presentation == .button, options.isEmpty else { return false }
+        if case .none = input { return true }
+        return false
     }
 }

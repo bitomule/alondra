@@ -118,7 +118,7 @@ public struct ActionFeature: Sendable {
             case let .present(value):
                 state.action = value
                 state.requiresAttachments = value.attachments
-                state.selectedOptionID = nil; state.text = ""; state.attachments = []
+                state.selectedOptionID = value.optionId; state.text = ""; state.attachments = []
                 state.comments = []; state.fields = [:]; state.confirmation = nil
                 state.pending = nil; state.inFlight = false; state.stamp = nil
                 state.error = nil; state.changed = nil

@@ -314,6 +314,9 @@ pub struct Row {
     pub trailing: Option<Trailing>,
     pub depth: u8,
     pub struck: bool,
+    /// The kind of the card this row stands for, so a list can colour it like the card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<CardKind>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub children: Vec<Row>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
