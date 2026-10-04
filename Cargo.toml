@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/core", "crates/alondrad", "crates/alondra", "crates/e2e", "crates/relay"]
 
 [workspace.package]
-version = "0.2.38"
+version = "0.2.39"
 edition = "2024"
 license = "UNLICENSED"
 publish = false
