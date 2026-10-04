@@ -295,12 +295,14 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ArchiveTask { task_id, .. } => Some(task_id.clone()),
         Command::PublishInformation { scope, .. }
         | Command::AskQuestion { scope, .. }
-        | Command::RequestAction { scope, .. } => match scope {
+        | Command::RequestAction { scope, .. }
+        | Command::RaiseProblem { scope, .. } => match scope {
             Scope::Task { task_id } => Some(task_id.clone()),
             Scope::Orchestrator { .. } => None,
         },
         Command::MarkRead { interaction_id }
-        | Command::WithdrawQuestion { interaction_id }
+        | Command::Withdraw { interaction_id }
+        | Command::RequestClarification { interaction_id, .. }
         | Command::AnswerQuestion { interaction_id, .. }
         | Command::LinkInteractionSubject { interaction_id, .. } => {
             interaction_task(state, interaction_id)
@@ -553,7 +555,7 @@ mod producer_revision_tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::User,
-                body: "Progress".into(),
+                body: "Progress".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
             },
         );
         let revision = runtime.state().unwrap().revision;

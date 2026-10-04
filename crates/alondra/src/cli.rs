@@ -306,7 +306,7 @@ mod tests {
             QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] },
             QuestionOption { id: "other".into(), label: "Other".into(), description: None, inputs: vec![InputSpec { id: "why".into(), kind: InputKind::Text, required: true }] },
         ];
-        run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options });
+        run(Actor::Agent { agent_id: "agent-a".into() }, Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Name?".into(), blocking: true, options, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question") });
         s
     }
 

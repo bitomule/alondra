@@ -28,7 +28,7 @@ fn publish(runtime: &DomainRuntime, agent: &str, task: &str, id: &str, body: Str
                     interaction_id: id.into(),
                     scope: Scope::Task { task_id: task.into() },
                     recipient: Recipient::User,
-                    body,
+                    body, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
                 },
             },
             None,

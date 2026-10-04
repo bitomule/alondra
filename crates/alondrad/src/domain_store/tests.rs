@@ -107,7 +107,7 @@ fn present(store: &mut DomainStore) {
                 text: "The answer".into(),
             }],
             is_final: true,
-            attachments: vec![],
+            attachments: vec![], card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     );
 }
@@ -161,7 +161,7 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
             },
             recipient: Recipient::User,
             body: "Progress".into(),
-            attachments: vec![attachment("info-file")],
+            attachments: vec![attachment("info-file")], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         },
     );
     let task_before = store.load().unwrap().tasks[&TaskId::from("task-1")].clone();
@@ -283,7 +283,7 @@ fn replay_returns_the_first_outcome() {
             interaction_id: "info-1".into(),
             scope: Scope::Task { task_id: "task-1".into() },
             recipient: Recipient::User,
-            body: "Progress".into(),
+            body: "Progress".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         },
     );
     e.expected_revision = 0;
@@ -630,7 +630,7 @@ fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
             },
             recipient: Recipient::User,
             body: "Ready".into(),
-            attachments: vec![],
+            attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         },
     );
     let user_message = upgraded
@@ -663,9 +663,9 @@ fn a_withdrawn_question_a_retitled_task_and_a_closed_requests_answer_survive_res
     execute(&mut store, &agent(), "question", Command::AskQuestion {
         attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Ship?".into(), blocking: true,
-        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
     });
-    execute(&mut store, &agent(), "withdraw", Command::WithdrawQuestion { interaction_id: "question-1".into() });
+    execute(&mut store, &agent(), "withdraw", Command::Withdraw { interaction_id: "question-1".into() });
     let orchestrator = Actor::Orchestrator { generation: 0 };
     execute(&mut store, &orchestrator, "retitle", Command::RetitleTask { task_id: "task-1".into(), title: "Editor colours".into() });
     execute(&mut store, &user(), "request-2", Command::CreateRequest { request_id: "request-2".into(), body: "Is main green?".into(), auto_merge: false });
@@ -731,7 +731,7 @@ fn restart_preserves_decisions_documents_and_relations() {
                 label: "Continue".into(),
                 description: None,
                 inputs: vec![],
-            }],
+            }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         },
     );
     execute(
@@ -790,7 +790,7 @@ fn restart_preserves_decisions_documents_and_relations() {
                     revision_id: "revision-1".into(),
                 },
             ],
-            is_final: true,
+            is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     );
     execute(
@@ -878,7 +878,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
                 description: None,
                 inputs: vec![],
             }],
-            attachments: vec![attachment("question-file")],
+            attachments: vec![attachment("question-file")], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         },
     );
     execute(
@@ -904,7 +904,7 @@ fn attachments_of_interaction_answer_feedback_and_delivery_survive_restart() {
                 text: "Result".into(),
             }],
             is_final: true,
-            attachments: vec![attachment("delivery-file")],
+            attachments: vec![attachment("delivery-file")], card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     );
     execute(
@@ -959,7 +959,7 @@ fn second_user_read_is_noop_with_independent_receipt_and_zero_delivery() {
             },
             recipient: Recipient::User,
             body: "Info".into(),
-            attachments: vec![],
+            attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         },
     );
     execute(
@@ -1088,7 +1088,7 @@ fn document_package(store: &mut DomainStore, pr: bool) -> Vec<DeliveryTarget> {
             body: "Finished the design".into(),
             targets: targets.clone(),
             is_final: true,
-            attachments: vec![],
+            attachments: vec![], card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     );
     targets
@@ -1237,7 +1237,7 @@ fn a_new_final_reports_the_acceptance_it_superseded_and_feedback_does_not() {
                 text: "Another answer".into(),
             }],
             is_final: true,
-            attachments: vec![],
+            attachments: vec![], card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     );
     represent.expected_revision = 0;

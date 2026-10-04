@@ -434,7 +434,7 @@ mod tests {
                     label: "Yes".into(),
                     description: None,
                     inputs: vec![],
-                }],
+                }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
             },
         );
         let push = Push::open(&home).unwrap();
@@ -636,7 +636,7 @@ mod tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::User,
-                body: "Information".into(),
+                body: "Information".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
             },
         );
         let message = hub
@@ -688,7 +688,7 @@ mod tests {
                     label: "Yes".into(),
                     description: None,
                     inputs: vec![],
-                }],
+                }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
             },
         );
         command(
@@ -750,7 +750,7 @@ mod tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::User,
-                body: "Another update".into(),
+                body: "Another update".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
             },
         );
         std::fs::write(home.join("service.toml"), "service unavailable").unwrap();
@@ -965,7 +965,7 @@ mod tests {
                     payload,
                     revision: 1,
                     order: 1,
-                    withdrawn: false,
+                    withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
                 },
             );
         }
@@ -976,7 +976,7 @@ mod tests {
             body: "Bash: Extract shared waiting-items helper in core views\n\n```\npython3 - <<'EOF'\nimport re\nEOF\n```".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options: Hold::Permission.options(), answer: None },
-            revision: 1, order: 1, withdrawn: false,
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         });
         state.holds.insert(held, Hold::Permission);
         state
@@ -1010,7 +1010,7 @@ mod tests {
             author: Author::System, recipient: Recipient::User, body: "¿Qué debería hacer?".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options, answer: None },
-            revision: 117, order: 1, withdrawn: false,
+            revision: 117, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         });
 
         let payload = user_push_payload(&state, Some("i-spanish"), Lang::En);
@@ -1035,7 +1035,7 @@ mod tests {
                 attachments: vec![], id: id.into(), scope, author: Author::System,
                 recipient: Recipient::User, body: "Hecho".into(), blocking: false, subject: None,
                 payload: InteractionPayload::Information { read_by: Default::default() },
-                revision: 1, order: 1, withdrawn: false,
+                revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
             });
         }
         assert_eq!(user_push_payload(&state, Some("info-2"), Lang::En)["aps"]["badge"], 3);
@@ -1062,7 +1062,7 @@ mod tests {
             interaction_id: "a7efd99d-answer-1".into(),
             scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
             recipient: Recipient::User,
-            body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(),
+            body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         });
         v2_command(&domain, orchestrator, "close", Command::CloseRequest {
             request_id: "a7efd99d".into(),
@@ -1100,7 +1100,7 @@ mod tests {
                 author: Author::System, recipient: Recipient::User, body: "Bash: ls".into(),
                 blocking: true, subject: None,
                 payload: InteractionPayload::Question { options: hold.options(), answer: None },
-                revision: 3, order: 1, withdrawn: false,
+                revision: 3, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
             });
             state.holds.insert(id, hold);
             let payload = user_push_payload(&state, Some("hold-1"), Lang::En);

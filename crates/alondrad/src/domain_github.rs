@@ -302,7 +302,7 @@ mod tests {
         });
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true,
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         });
         command(domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "d".into(), pr_id: "pr".into(),
@@ -325,7 +325,7 @@ mod tests {
         assert_eq!(crate::domain_api::auto_merge_notice(domain, &register).is_some(), auto_merge);
         command(domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true,
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }], is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         });
     }
 

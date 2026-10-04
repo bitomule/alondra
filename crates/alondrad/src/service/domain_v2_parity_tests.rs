@@ -179,7 +179,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             },
             recipient: Recipient::User,
             body: "Synthetic information".into(),
-            attachments: vec![],
+            attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         },
     );
     execute(
@@ -205,7 +205,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
                     inputs: vec![],
                 })
                 .collect(),
-            attachments: vec![],
+            attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         },
     );
     let source = b"# Synthetic design\n";

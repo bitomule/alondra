@@ -301,7 +301,7 @@ mod tests {
         domain.execute(&Actor::Agent { agent_id: "agent-a".into() }, &CommandEnvelope {
             protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "i".into(),
             expected_revision: state.revision, command: Command::PublishInformation { attachments: vec![], interaction_id: "info-1".into(),
-                scope: alondra_core::domain_v2::Scope::Task { task_id: "t".into() }, recipient: alondra_core::domain_v2::Recipient::User, body: "Done".into() },
+                scope: alondra_core::domain_v2::Scope::Task { task_id: "t".into() }, recipient: alondra_core::domain_v2::Recipient::User, body: "Done".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update") },
         }, None, || Ok(())).unwrap();
         let _node = Node::connect(&domain, "agent-a");
         let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),

@@ -80,9 +80,16 @@ fn tools(role: Role, user: &str) -> Value {
     Value::Array(list)
 }
 
+/// The tools that put a card in front of someone: each may say what it needs and why.
+const CARD_TOOLS: [&str; 4] = ["ask", "request_action", "publish_information", "present_result"];
+
 fn domain_tool(name: &str, description: &str, fields: Value, required: &[&str]) -> Value {
     let mut properties = serde_json::Map::new();
     properties.extend(fields.as_object().expect("properties object").clone());
+    if CARD_TOOLS.contains(&name) {
+        properties.insert("need".into(), json!({"type":"string","maxLength":90,"description":"What you need from the reader, in the imperative and in one line. Without it, the first line of body is used"}));
+        properties.insert("why".into(), json!({"type":"string","maxLength":240,"description":"Why, and whom it holds back, in one or two sentences. Long text goes in body"}));
+    }
     let mut required_fields = Vec::new();
     required_fields.extend_from_slice(required);
     json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required_fields,"additionalProperties":false}})
@@ -671,7 +678,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "ask" => "ask_question",
         "request_action" => "request_action",
         "publish_information" => "publish_information",
-        "withdraw_question" => "withdraw_question",
+        "withdraw_question" => "withdraw",
         "answer_question" => "answer_question",
         "create_request" => "create_request",
         "close_request" => "close_request",
@@ -705,6 +712,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         command.remove(key);
     }
     command.insert("kind".into(), Value::String(kind.into()));
+    alondra_core::domain_v2::derive_wire_card(&mut command);
     let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
         "command_id":command_id,"expected_revision":0,"command":command});
     let _: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope.clone())?;

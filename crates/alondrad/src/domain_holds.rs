@@ -10,8 +10,8 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::http::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
 use alondra_core::domain_v2::{
-    Actor, AgentId, Answer, Author, Command, CommandEnvelope, DomainState, Hold, InputValue, InteractionId,
-    InteractionPayload, QuestionOption, PROTOCOL_VERSION,
+    clip, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope, ContentKind, DomainState, Hold,
+    InputValue, InteractionId, InteractionPayload, QuestionOption, TaskState, PROTOCOL_VERSION,
 };
 use anyhow::Result;
 use serde::Deserialize;
@@ -66,22 +66,77 @@ pub(crate) fn hold_elicitation(domain: &DomainRuntime, payload: &Value, backgrou
     open(domain, &session_id, id, Hold::Elicitation, None, input, Some(payload))
 }
 
-/// The card the mod posted, held for its session's active Task, or `None` when the session is
-/// not a background one working on a Task. A card posted again is the card already open.
-pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Result<Option<InteractionId>> {
+pub(crate) enum Posted {
+    Held(InteractionId),
+    /// R3: the node's Task was cancelled, so its permission is denied without asking.
+    Denied(String),
+    NotHeld,
+}
+
+/// The card the mod posted, held for its session's active Task; a permission of a node whose
+/// Task was cancelled is denied; anything else of a session that is not a background one working
+/// on a Task is not held. A card posted again is the card already open.
+pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Result<Posted> {
     let (hold, kind) = match card.kind {
         Kind::Question => (Hold::Question, KINDS[0]),
         Kind::Plan => (Hold::Plan, KINDS[1]),
         Kind::Permission => (Hold::Permission, KINDS[2]),
     };
     let id = interaction_id(kind, &card.id);
-    if domain.state()?.interactions.contains_key(&id) {
-        return Ok(Some(id));
+    let state = domain.state()?;
+    if state.interactions.contains_key(&id) {
+        return Ok(Posted::Held(id));
     }
     if !background {
-        return Ok(None);
+        return Ok(Posted::NotHeld);
     }
-    Ok(open(domain, &card.session_id, id, hold, card.tool.clone(), card.input.clone(), None)?.map(|held| held.id))
+    if hold == Hold::Permission
+        && let Some(reason) = cancelled_task(&state, &card.session_id)
+    {
+        return Ok(Posted::Denied(reason));
+    }
+    Ok(match open(domain, &card.session_id, id, hold, card.tool.clone(), card.input.clone(), None)? {
+        Some(held) => Posted::Held(held.id),
+        None => Posted::NotHeld,
+    })
+}
+
+/// Why a node with no active Task but a cancelled one must stop instead of asking.
+fn cancelled_task(state: &DomainState, session_id: &str) -> Option<String> {
+    let mine = || state.tasks.values().filter(|task| task.agent_id.as_ref().is_some_and(|a| a.0 == session_id));
+    if mine().any(|task| !task.state.terminal()) {
+        return None;
+    }
+    mine().find(|task| task.state == TaskState::Cancelled)
+        .map(|task| format!("Task {} was cancelled: Alondra denies this call without asking. Stop working on it.", task.id))
+}
+
+/// The card a held prompt stands for: a permission is authorized, a plan reviewed, Claude's
+/// question decided (a "(Recommended)" label is the recommendation, several questions a form).
+fn hold_card(hold: Hold, body: &str, input: &Value, options: &[QuestionOption], title: Option<&str>) -> CardSpec {
+    let first_line = |text: &str| text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned();
+    match hold {
+        Hold::Permission => CardSpec::new(CardKind::Authorize, clip(title.unwrap_or(body), CardSpec::NEED_MAX))
+            .content(ContentKind::Command, body),
+        Hold::Plan => {
+            let heading = body.lines().map(str::trim).find(|line| line.starts_with('#'))
+                .map(|line| line.trim_start_matches('#').trim().to_owned())
+                .filter(|line| !line.is_empty())
+                .unwrap_or_else(|| first_line(body));
+            CardSpec::new(CardKind::Review, clip(&heading, CardSpec::NEED_MAX)).content(ContentKind::Plan, body)
+        }
+        Hold::Question => {
+            let kind = if options.len() >= 2 { CardKind::Decide } else { CardKind::Provide };
+            let mut card = CardSpec::new(kind, clip(&first_line(body), CardSpec::NEED_MAX));
+            card.recommended = options.iter().find(|o| o.label.trim_end().ends_with("(Recommended)")).map(|o| o.id.clone());
+            let questions = input.get("questions").and_then(Value::as_array).map_or(0, Vec::len);
+            if questions > 1 {
+                card = card.content(ContentKind::Options, body);
+            }
+            card
+        }
+        Hold::Elicitation => CardSpec::new(CardKind::Provide, clip(&first_line(body), CardSpec::NEED_MAX)),
+    }
 }
 
 fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold, tool: Option<String>, input: Value,
@@ -98,10 +153,13 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
         None => title,
     };
     let mut options = hold.options();
+    let mut title = None;
     let body = match hold {
         Hold::Permission => {
             let summary = tool_summary(tool.as_deref(), Some(&input));
-            titled(permission_title(tool.as_deref(), &input, summary.as_deref()), permission_detail(&input, summary.as_deref()))
+            let need = permission_title(tool.as_deref(), &input, summary.as_deref());
+            title = Some(need.clone());
+            titled(need, permission_detail(&input, summary.as_deref()))
         }
         Hold::Plan => str_field(&input, "plan").filter(|plan| !plan.trim().is_empty()).unwrap_or_else(|| "Plan".into()),
         Hold::Question => {
@@ -125,8 +183,9 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
             titled(title, detail)
         }
     };
+    let card = hold_card(hold, &body, &input, &options, title.as_deref());
     execute(domain, &state, Command::HoldHook {
-        interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold, body, options,
+        interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold, body, options, card,
     })?;
     Ok(Some(Held { id, hold, input }))
 }
@@ -140,8 +199,9 @@ pub(crate) fn ask(domain: &DomainRuntime, session_id: &str, body: String, option
         return Ok(None);
     };
     let id = InteractionId(format!("hold-{}", crate::auth::random_hex(16)));
+    let card = hold_card(Hold::Question, &body, &Value::Null, &options, None);
     execute(domain, &state, Command::HoldHook {
-        interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold: Hold::Question, body, options,
+        interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold: Hold::Question, body, options, card,
     })?;
     Ok(Some(id))
 }
@@ -171,7 +231,7 @@ pub(crate) fn withdraw(domain: &DomainRuntime, id: &InteractionId) -> Result<()>
     let open = state.interactions.get(id).is_some_and(|interaction| !interaction.withdrawn
         && matches!(interaction.payload, InteractionPayload::Question { answer: None, .. }));
     if open {
-        execute(domain, &state, Command::WithdrawQuestion { interaction_id: id.clone() })?;
+        execute(domain, &state, Command::Withdraw { interaction_id: id.clone() })?;
     }
     Ok(())
 }

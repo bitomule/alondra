@@ -537,7 +537,7 @@ mod tests {
         command(domain, Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {
             attachments: vec![], interaction_id: format!("q{n}").into(), scope: Scope::Task { task_id: "t".into() },
             recipient: Recipient::Orchestrator, body: format!("Where do I put change {n}?"), blocking: false,
-            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
     }
 
@@ -648,7 +648,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         ask_orchestrator(domain, 2);
         command(domain, Actor::Agent { agent_id: "a".into() }, "user-info", Command::PublishInformation {
             interaction_id: "info-user".into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: Recipient::User, body: "User notification".into(), attachments: vec![],
+            recipient: Recipient::User, body: "User notification".into(), attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         });
         let cutoff = now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS);
         {

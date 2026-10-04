@@ -173,7 +173,7 @@ impl DomainState {
         let (kind, pending, actions) = match &i.payload {
             InteractionPayload::Information { read_by } => (
                 "information",
-                read_by.is_empty(),
+                read_by.is_empty() && !i.withdrawn,
                 vec![AvailableAction {
                     kind: "mark_read".into(),
                     enabled: read_by.is_empty(),

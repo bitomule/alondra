@@ -78,7 +78,7 @@ fn fixture() -> DomainState {
                 payload,
                 revision: 1,
                 order: index as u64 + 1,
-                withdrawn: false,
+                withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
             },
         );
     }
@@ -99,7 +99,7 @@ fn fixture() -> DomainState {
             },
             revision: 1,
             order: 4,
-            withdrawn: false,
+            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     state
@@ -181,7 +181,7 @@ fn a_huge_inbox_stays_under_the_budget_and_reports_more() {
                 },
                 revision: 1,
                 order: index + 10,
-                withdrawn: false,
+                withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
             },
         );
     }
@@ -306,7 +306,7 @@ fn pull_request_contains_its_question() {
             },
             revision: 1,
             order: 5,
-            withdrawn: false,
+            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     let live = LiveSnapshot::default();
@@ -374,7 +374,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 5,
-            withdrawn: false,
+            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     state.interactions.insert(
@@ -399,7 +399,7 @@ fn pr_fixture() -> DomainState {
             },
             revision: 1,
             order: 6,
-            withdrawn: false,
+            withdrawn: false, card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         },
     );
     state
@@ -2584,7 +2584,7 @@ fn presented_pr() -> DomainState {
             allowed_methods: vec![MergeMethod::Squash] }),
         (agent, Command::PresentResult { attachments: vec![], task_id: "t".into(), interaction_id: "d".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head1".into() }],
-            is_final: true }),
+            is_final: true, card: crate::domain_v2::CardSpec::delivery("Review the result", &[], true) }),
     ] {
         execute(&mut state, actor, command);
     }
@@ -2828,7 +2828,7 @@ fn answered_and_closed_request() -> DomainState {
         interaction_id: "a7efd99d-answer-1".into(),
         scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
         recipient: Recipient::User,
-        body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(),
+        body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
     });
     assert_eq!(published.effects, vec![DomainEffect::NotifyUser {
         task_id: None, interaction_id: "a7efd99d-answer-1".into(),

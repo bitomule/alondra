@@ -53,7 +53,8 @@ impl Fixture {
         Self { runtime, _cleanup: Cleanup(home.clone()), home, manager, agent, sequence: 0 }
     }
 
-    fn envelope(&mut self, command: Value) -> CommandEnvelope {
+    fn envelope(&mut self, mut command: Value) -> CommandEnvelope {
+        if let Some(command) = command.as_object_mut() { alondra_core::domain_v2::derive_wire_card(command); }
         self.sequence += 1;
         let state = self.runtime.state().unwrap();
         serde_json::from_value(json!({

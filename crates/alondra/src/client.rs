@@ -699,7 +699,8 @@ mod wire_tests {
     fn a_truncated_interaction_is_reassembled_from_its_chunks() {
         let interaction = serde_json::json!({"attachments": [], "id": "i-1", "scope": {"kind": "orchestrator", "request_id": null},
             "author": {"kind": "system"}, "recipient": {"kind": "user"}, "body": "cut", "blocking": false, "subject": null,
-            "payload": {"kind": "information", "read_by": []}, "revision": 3, "order": 3});
+            "payload": {"kind": "information", "read_by": []}, "revision": 3, "order": 3,
+            "card": {"kind": "know", "need": "Read the update"}});
         let chunk = |offset: usize, data: &str, more: bool| serde_json::json!({"protocol_version": 2, "data_epoch": "e", "revision": 3,
             "id": "i-1", "offset": offset, "total_bytes": 10, "data": data, "has_more": more});
         let (client, _, server) = peer(vec![

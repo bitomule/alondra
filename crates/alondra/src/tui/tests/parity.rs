@@ -1230,7 +1230,7 @@ fn held_plan_card() -> alondra_core::views::View {
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
     run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
         agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n1. Split the lexer".into(),
-        options: Hold::Plan.options() });
+        options: Hold::Plan.options(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Authorize, "Allow the call") });
     let live = alondra_core::views::LiveSnapshot::default();
     alondra_core::views::build("card:hold-1", alondra_core::views::RenderContext {
         domain: &state, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,
