@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "vceb84505c8906706",
+  "version": "v12ba9fbdbd19b7bd",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -131,7 +131,7 @@
           ],
           "actions": [
             {
-              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@0",
+              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Close Node",
               "style": "destructive",
               "presentation": "button",

@@ -24,22 +24,6 @@ fn state(task: &Task, domain: &DomainState, lang: super::Lang) -> &'static str {
     }
 }
 
-/// The domain answers "task_not_active" for opposite reasons: a task that already ended cannot be
-/// cancelled, and one that is still open cannot be reopened or archived.
-fn task_action_reason(verb: Verb, code: &str, task: &Task, lang: super::Lang) -> &'static str {
-    match (verb, code) {
-        (Verb::Cancel, "task_not_active") => t!(lang, "The task already ended", "La tarea ya terminó"),
-        (Verb::Reopen, "task_not_active") if !task.state.terminal() => {
-            t!(lang, "The task is still open", "La tarea sigue abierta")
-        }
-        (Verb::Reopen, "not_found") => t!(lang, "Its request is closed", "Su solicitud está cerrada"),
-        (Verb::Archive, "task_not_active") if !task.state.terminal() => {
-            t!(lang, "Only finished tasks can be archived", "Solo se archivan tareas terminadas")
-        }
-        _ => super::card::disabled_reason(code, lang),
-    }
-}
-
 fn effort_label(effort: &str, lang: super::Lang) -> String {
     common::effort_label(effort, lang).unwrap_or(effort).into()
 }
@@ -640,7 +624,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         }
     }
     for available in context.domain.task_actions(&task.id).unwrap_or_default() {
-        if context.client == super::Client::Tui && !available.enabled {
+        if !available.enabled {
             continue;
         }
         let (verb, label, style, key) = match available.kind.as_str() {
@@ -673,11 +657,7 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
         if let Some(mut action) =
             common::action(verb, id, available.expected_revision, label, style)
         {
-            action.enabled = available.enabled;
             action.key = (context.client == super::Client::Tui).then(|| key.into());
-            action.disabled_reason = available.disabled_reason
-                .as_deref()
-                .map(|code| task_action_reason(verb, code, task, context.lang).to_owned());
             if verb == Verb::Cancel {
                 action.confirm = Some(Confirm {
                     title: label.into(),

@@ -4,7 +4,7 @@
   "view": "new_request",
   "key": "new_request",
   "client": "ios",
-  "version": "v1d2595c9ea5bd1cb",
+  "version": "vdc8c18e9b95fc1cc",
   "cursor": "cursor-1",
   "title": "Ask for Something New",
   "status": {
@@ -177,7 +177,7 @@
             }
           ],
           "submit": {
-            "id": "new_request:view@0",
+            "id": "new_request:view@6",
             "label": "Send Request",
             "style": "primary",
             "presentation": "button",

@@ -756,7 +756,7 @@ fn new_work_sends_the_typed_text_and_the_chosen_rows_by_action_id() {
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "/actions");
-    assert_eq!(sent[0].1["action_id"], "new_request:view@0");
+    assert_eq!(sent[0].1["action_id"], "new_request:view@6");
     assert_eq!(sent[0].1["data_epoch"], "test-epoch");
     assert_eq!(
         sent[0].1["input"],

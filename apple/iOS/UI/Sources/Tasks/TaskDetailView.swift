@@ -253,16 +253,8 @@ public struct TaskDetailView: View {
             VStack(spacing: 10) {
                 ForEach(shown, id: \.id) { action in
                     ActionButton(
-                        title: action.label, symbol: Self.symbol(for: action),
-                        tint: Self.tint(for: action), enabled: action.enabled
+                        title: action.label, symbol: Self.symbol(for: action), tint: Self.tint(for: action)
                     ) { store.send(.perform(action)) }
-                    if !action.enabled, let reason = action.disabledReason {
-                        Text(verbatim: reason)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                            .frame(maxWidth: .infinity)
-                            .multilineTextAlignment(.center)
-                    }
                 }
             }
         }
