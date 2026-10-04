@@ -188,9 +188,39 @@ pub enum Item {
     Notice(Notice),
     Actions(ActionBar),
 }
+/// What a card asks of the user; the stable string clients draw the label, colour and icon from.
+pub use crate::domain_v2::CardKind;
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Card {
     pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kind: Option<CardKind>,
+    /// What the user must do, in the imperative; the same text as `title`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub need: Option<String>,
+    /// Why, and whom it holds back; the same text as `subtitle`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// One line: who sent it and where ("node · project"). The age is in `timestamps`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta: Option<String>,
+    /// The one line of content a card shows; the whole content is in the detail.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_row: Option<ContentRow>,
+    /// Cards this one holds back: "blocks PR #649".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<BlockChip>,
+    /// Cards that hold this one back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocked_by: Vec<BlockChip>,
+    /// Send text to the node (or the orchestrator) the card came from; on every card.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reply: Option<Action>,
+    /// What does not fit the three visible `actions`, with "Request clarification" and
+    /// "Open on GitHub".
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub more: Vec<Action>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
     pub icon: Icon,
@@ -222,6 +252,28 @@ pub struct Card {
     pub checks: Option<Checks>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ContentRow {
+    /// `plan`, `document`, `diff`, `command`, `report`, `steps`, `options`, `diagnosis` or `attachments`.
+    pub kind: String,
+    pub icon: Icon,
+    pub label: String,
+    pub summary: String,
+    /// Other contents behind the main one ("+2").
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub more_count: u32,
+}
+fn is_zero(value: &u32) -> bool {
+    *value == 0
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct BlockChip {
+    /// The id of the other card; open it with `link`.
+    pub id: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<Link>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContextLine {
@@ -355,6 +407,15 @@ pub struct Action {
     pub id: String,
     pub label: String,
     pub style: Style,
+    /// How the button reads: green to advance, red when advancing is risky, grey otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
+    /// A button that answers with this option of the action: send it as `option_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub option_id: Option<String>,
+    /// What choosing it means, when its author explained the option.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub presentation: Presentation,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub options: Vec<ActionOption>,
@@ -373,6 +434,13 @@ pub struct Action {
     pub key: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub link: Option<Link>,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    Advance,
+    Risk,
+    Neutral,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ActionOption {

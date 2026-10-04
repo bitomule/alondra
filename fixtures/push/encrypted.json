@@ -2,16 +2,16 @@
   "apns": {
     "alondra": {
       "envelope": {
-        "ciphertext": "_rIaJ1XHnqvgZVS4SYIRahhTldkLy_xiQi1wYEiw1k7KyJlH77qUiPB2i8NiekyZgn6ppksKImJBRbnnzzVQNzkwiqggpqqfaZbc8HkJko-_RTFq1Jz0lkSEi6n3VNqTv2bqRZgGAM9w3J9MePbAuWgF5e6-5C3igdZXTNEeBDKfPQYTLVxrWZFU9KMcq4lLOfuRCwV-Mk-BPacwDZ-t-Th03Et42_DIhqROzjqB8OVY1Yl8FuYkUC0qS4IOBuS_iqmGGiAbRoJxoinbzihlpM6BZyD2Kr4Z8_F5M_ad-dvP5tJr6X8aOqYY94gfDpTorNuwyftVcoXY6kYanJTN5Eg5fmR-tRy_rZGPOMCavIVN1qg1jQ-UcoabiRXFSKdE5feMqC4tZ6J2ayy24R0GFWyGX15VdvCyAP3J7s19LQDPRaAMI1BJJ_MqA8qPPAmuA9Pi6pt9c36k_F1e3yIADCDijvApmQfVXIdvSD8UDD7fOOFznrQzdfwI4m1yZ4XtsuyO5sPyddWoiPc2mYU4Z6d44wd-7ofTWz1Iyx-ff4bxBrCsBnogSvevCCCiX3hu-sRgaTt4s309h_HUR0r6AbPk5I_NJ2-MiRs1vzRNz68tBVnsKyPJ4gC302VT1c4gjnJPn0OfeGsppoEanG3CubumDl4LoZ8um7Ud2yIboxHYuG6NsgIhRtTSTA8GbwqYOZ8ewwizTo39UikQ97DAXfIvbdF0L8KtOEl1co_h7W9_5KmXvyNvF3z0fdeGkmwVhQF4UDDqvgu7fBc1kQS3IEcrmmjf7o6j6VYYXJ6zrpzeppIpOPuxaUTGQVen2WtLoaRmU68ugL2AvIs5ovdA7Z_7-sSlkahy1dp23E1y3H0b3Cu1EqvBNKulcEKPdeEMFcq0ipy1aHLQLfU1DwV-VCdqPnVJNb3vlBF0WUp01xE_BEKmvGH1tYiHYME9jBc7gvbxf0e8yThRmqnBJyH88FVKr3rFITM",
-        "ephemeral_key": "BH903Hhrpvmta1xmRXyBxhj5bSzg0XqWSddpCcUb1WwOTd3MDZ9h2XqmLlhlmGqr44cqBoiVgkeDUbqja_9dHiE",
-        "expires_at_ms": 1791020953421,
+        "ciphertext": "aA7D2kHI4scBVPof88vLY0y1Ga6jXowTW2C6jx9H_NmZ45sf7zLlbHvvTNRwz4YT8L2EJnLb-8JYW6PM6tK3iy7Tn41OfGaXTOOcNFhgR1I1khZf2-LtmkXZvHOkNmViS37SfIp3CkD9DoWLOlYdDSEoHDT4Hv2p03RaYnXFE1LWPpRQMmu0DSpqIXbiVhfrM8Z7aoVg8fHIfBLAtLaWrbaL2q_G0Qw04_mShTA3OdWKZinim-2QoyELpkgJNTgB8Rrc7w4RckH4EUUltlp88uTmG7XGPGxdHfr81VGCvBB1CSly4saeoT7Yn5jS_yFJi9ix8kpcnDxoW8XeyFwgp3aBE-SeIocr3Ubwf9TC-DIRf_lqNIVeLQujOzMp1VNVnRPOSZjeZboHTGTQ432DrNTyyRewa2nE3QH0OKrMqZXq0zdc3ARMl__Pop-aKHCCijOANFAE4EOO0hvI034aDChYb3aCqk_p1YecA_uHlsgrLkLOnpyShQh7cv3D3Tsh423Y_7qmKzNy_RKwh0GJqq_IMS4CR3Z8rZotAXOuWjPnrGW1OGKP0iX80ONRxdplm2J86gU6WkMc7ncL6ejgmkRzsWJ7bQwIuYU0ke-qT0pLG3V2PSt1eOUwuwStyr2g_LYJ_t7EOLc5AvKtXJZCjXQzZaINHhFxaQBTiuO_jF9b97bQWQxzAEeVx3d1PohOlsaklrjfD6BpSY3wayuwDumWe-ky0CWnlQPhnaIl9qQED-YBgxjYqqi0A6PfBPQsm9VVb3a-U8SO45YNiE8NATMcck_5MqWScnlQhyzgDY4jqpmcAxv31dgVPPWvFc8qfVLkl7Hrz_dCmIdL6qBsDhZI4e4bW8YobVy0qYMGHAXzYJfCplzaO_K5clH2aLOzY7fmgH_oBUQg3P7pDlw1wj4vZqPGO_Ms0kmqwPyz3wJ81XPnuWL-FhyC0mJp0-zRCjd8xi1xD_KD5UnO704qCdW8LvagRZvDUFYf9N7NtEB5zxfpv48WxJ1mFl6MGwfZb4pgQO13AlSOR3apUJ4G-20aZIB8ZwBHkdeazXCO_m_XdcFYZXlfSrmFd3alWtGaEXX0gp8X3-qWgT30PgiK2g",
+        "ephemeral_key": "BOr-AlUL_aHZ_yEk7YjdaYJEvp34vfgq_RgoYlNjd-Nh_HhaZQezmArgL7MUl-YuzUsj1Bjykhc28taSmJM3HAo",
+        "expires_at_ms": 1791078156486,
         "kind": "push",
-        "nonce": "oP6PzoGMFoVYwxff",
+        "nonce": "K0YqfPL_7j1v0QWs",
         "recipient": "phone-fixture",
-        "request_id": "1tJOquNo8yAYnaBvC7CbAA",
+        "request_id": "RejK-_Nse4H4Wft9BN0hjQ",
         "route": "mac-fixture",
         "sender": "mac-fixture",
-        "signature": "bFsjP5gwlMbumiHj3yp4zq5dPNbI6pkJnJNqtPSIqNIYM9ZmQUxRUVb0cK0sakBCUi2VkyoPEqgmMN-mO8Cg4A",
+        "signature": "XtlwyoS8QTMX1okCO8mbN3jWeg49TsJUjFRqKkvDhZkAgnqWuepAjC24aa0GTG2a9k3rMNGdif2zfv6ooQliVA",
         "v": 1
       },
       "push_binding": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
@@ -33,7 +33,7 @@
       "actions": [
         {
           "id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
-          "label": "Yes",
+          "label": "★ Yes",
           "option": "yes"
         },
         {
@@ -44,9 +44,9 @@
           "text": true
         },
         {
-          "id": "ctx:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
-          "label": "Necesito más contexto",
-          "placeholder": "¿Qué falta?",
+          "id": "reply:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
+          "label": "Responder",
+          "placeholder": "Responder a este nodo…",
           "text": true
         }
       ],
@@ -57,13 +57,15 @@
     },
     "aps": {
       "alert": {
-        "body": "Merge the question parser?",
-        "title": "Split the parser"
+        "body": "The lexer split is ready and its tests pass.",
+        "title": "Merge the question parser?"
       },
       "badge": 4,
       "category": "ALONDRA_PUSH",
+      "interruption-level": "active",
       "mutable-content": 1,
-      "sound": "default"
+      "sound": "default",
+      "thread-id": "orchestrator"
     }
   }
 }

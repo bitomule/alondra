@@ -13,6 +13,7 @@ pub enum Verb {
     Unarchive,
     ArchiveDone,
     Withdraw,
+    Clarify,
     Ctx,
     Reply,
     AskPr,
@@ -30,7 +31,7 @@ pub enum Verb {
     NewRequest,
 }
 impl Verb {
-    pub const ALL: [Self; 26] = [
+    pub const ALL: [Self; 27] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -42,6 +43,7 @@ impl Verb {
         Self::Unarchive,
         Self::ArchiveDone,
         Self::Withdraw,
+        Self::Clarify,
         Self::Ctx,
         Self::Reply,
         Self::AskPr,
@@ -71,6 +73,7 @@ impl Verb {
             Self::Unarchive => "unarchive",
             Self::ArchiveDone => "archive_done",
             Self::Withdraw => "withdraw",
+            Self::Clarify => "clarify",
             Self::Ctx => "ctx",
             Self::Reply => "reply",
             Self::AskPr => "ask_pr",
@@ -191,5 +194,24 @@ mod tests {
         for subject in ["../secret", "github.com/../repo#154", "a@12", "a~b", "a:b"] {
             assert!(ActionId::new(Verb::Msg, subject, 117, None).is_err());
         }
+    }
+}
+
+/// The option id that carries why the user asks a card's author to say it again.
+pub fn clarification_name(reason: crate::domain_v2::ClarificationReason) -> &'static str {
+    use crate::domain_v2::ClarificationReason::*;
+    match reason {
+        Unclear => "unclear",
+        Contradicts => "contradicts",
+        MissingContext => "missing_context",
+    }
+}
+pub fn clarification_reason(name: &str) -> Option<crate::domain_v2::ClarificationReason> {
+    use crate::domain_v2::ClarificationReason::*;
+    match name {
+        "unclear" => Some(Unclear),
+        "contradicts" => Some(Contradicts),
+        "missing_context" => Some(MissingContext),
+        _ => None,
     }
 }

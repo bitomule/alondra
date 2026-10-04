@@ -57,8 +57,16 @@ pub struct InboxItem {
     pub revision: Revision,
     pub order: Revision,
     pub pending: bool,
+    /// Always empty: every interaction is its own item. Removed with the old grouping in F6.
     pub children: Vec<InboxItem>,
     pub available_actions: Vec<AvailableAction>,
+    pub card: CardSpec,
+    /// The deliveries this card holds back until it is answered.
+    #[serde(default)]
+    pub blocks: Vec<InteractionId>,
+    /// The open cards, and for a stacked PR the upstream delivery, that hold this delivery back.
+    #[serde(default)]
+    pub blocked_by: Vec<InteractionId>,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AvailableAction {
@@ -170,7 +178,7 @@ impl DomainState {
             _ => None,
         };
         let active = task.is_none_or(|t| !t.state.terminal());
-        let (kind, pending, actions) = match &i.payload {
+        let (kind, pending, mut actions) = match &i.payload {
             InteractionPayload::Information { read_by } => (
                 "information",
                 read_by.is_empty() && !i.withdrawn,
@@ -283,6 +291,13 @@ impl DomainState {
                 )
             }
         };
+        if let Some(action) = self.clarification_action(i) {
+            actions.push(action);
+        }
+        let blocked_by = match &i.payload {
+            InteractionPayload::Delivery { .. } => self.delivery_blocked_by(i),
+            _ => vec![],
+        };
         InboxItem {
             id: format!("interaction:{}", i.id),
             kind: kind.into(),
@@ -301,13 +316,118 @@ impl DomainState {
             pending,
             children: vec![],
             available_actions: actions,
+            card: i.card.clone(),
+            blocks: self.blocked_deliveries(i),
+            blocked_by,
         }
     }
-    /// Complete coherent projection. IDs, grouping and action guards are server owned.
+    /// "Ask for clarification" is offered on an open card an agent or the orchestrator wrote,
+    /// unless Claude Code is waiting on it; the same guards as the command.
+    fn clarification_action(&self, i: &Interaction) -> Option<AvailableAction> {
+        if i.recipient != Recipient::User
+            || self.holds.contains_key(&i.id)
+            || matches!(i.author, Author::System)
+            || matches!(i.payload, InteractionPayload::Delivery { .. }) && !self.open(i)
+        {
+            return None;
+        }
+        let open = self.open(i);
+        Some(AvailableAction {
+            kind: "request_clarification".into(),
+            enabled: open,
+            disabled_reason: (!open).then(|| "invalid_action_for_kind".into()),
+            expected_revision: self.revision,
+            presentation_id: None,
+            expected_head: None,
+        })
+    }
+    /// What holds a delivery back: the open cards that block it, then the delivery of the PR
+    /// it is stacked on while that one still waits.
+    pub fn delivery_blocked_by(&self, delivery: &Interaction) -> Vec<InteractionId> {
+        let mut by = self.blocked_by(&delivery.id);
+        let upstream = match &delivery.scope {
+            Scope::Task { task_id } => self.tasks.get(task_id).and_then(|t| t.stack.as_ref()),
+            _ => None,
+        };
+        if let Some(stack) = upstream
+            && let Some(upstream_delivery) = self.interactions.get(&stack.presentation_id)
+            && self.open(upstream_delivery)
+            && upstream_delivery.id != delivery.id
+            && !by.contains(&upstream_delivery.id)
+        {
+            by.push(upstream_delivery.id.clone());
+        }
+        by
+    }
+    /// The "Waiting for You" order: a problem, then what holds a node up right now, then what
+    /// to review or test, what to provide, proposals and notices; the oldest first in each
+    /// group, and a card that holds another back sits right above it.
+    fn inbox_rank(item: &InboxItem, blocking: bool) -> u8 {
+        match item.card.kind {
+            CardKind::Problem => 0,
+            CardKind::Authorize | CardKind::Do | CardKind::Decide | CardKind::Provide if blocking => 1,
+            CardKind::Authorize | CardKind::Do | CardKind::Decide | CardKind::Review | CardKind::Test => 2,
+            CardKind::Provide => 3,
+            CardKind::Propose => 4,
+            CardKind::Know => 5,
+        }
+    }
+    fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
+        let blocking = |item: &InboxItem| match &item.subject {
+            InboxSubject::Interaction { interaction_id } => {
+                self.interactions.get(interaction_id).is_some_and(|i| i.blocking)
+            }
+            _ => false,
+        };
+        let mut sorted: Vec<(u8, InboxItem)> = items
+            .into_iter()
+            .map(|item| (Self::inbox_rank(&item, blocking(&item)), item))
+            .collect();
+        sorted.sort_by(|(ra, a), (rb, b)| (ra, a.order, &a.id).cmp(&(rb, b.order, &b.id)));
+        let interaction_of = |item: &InboxItem| match &item.subject {
+            InboxSubject::Interaction { interaction_id } => Some(interaction_id.clone()),
+            _ => None,
+        };
+        let position: BTreeMap<InteractionId, usize> = sorted
+            .iter()
+            .enumerate()
+            .filter_map(|(index, (_, item))| interaction_of(item).map(|id| (id, index)))
+            .collect();
+        let blockers: Vec<Vec<usize>> = sorted
+            .iter()
+            .map(|(_, item)| {
+                let mut at: Vec<usize> = item.blocked_by.iter().filter_map(|id| position.get(id).copied()).collect();
+                at.sort_unstable();
+                at
+            })
+            .collect();
+        let mut placed = vec![false; sorted.len()];
+        let mut sequence = Vec::with_capacity(sorted.len());
+        fn place(at: usize, blockers: &[Vec<usize>], placed: &mut [bool], sequence: &mut Vec<usize>) {
+            if placed[at] {
+                return;
+            }
+            placed[at] = true;
+            for &blocker in &blockers[at] {
+                place(blocker, blockers, placed, sequence);
+            }
+            sequence.push(at);
+            for (dependent, held_by) in blockers.iter().enumerate() {
+                if !placed[dependent] && held_by.contains(&at) && held_by.iter().all(|b| placed[*b]) {
+                    place(dependent, blockers, placed, sequence);
+                }
+            }
+        }
+        for at in 0..sorted.len() {
+            place(at, &blockers, &mut placed, &mut sequence);
+        }
+        let mut slots: Vec<Option<InboxItem>> = sorted.into_iter().map(|(_, item)| Some(item)).collect();
+        sequence.into_iter().filter_map(|at| slots[at].take()).collect()
+    }
+    /// Complete coherent projection. IDs, order and action guards are server owned.
     /// read_by is shared across the single owner domain, irrespective of device identity.
     pub fn projection(&self) -> DomainProjection {
-        let mut roots: BTreeMap<String, InboxItem> = BTreeMap::new();
-        let mut ungrouped = vec![];
+        let mut items = vec![];
         for i in self.interactions.values() {
             if i.recipient != Recipient::User {
                 continue;
@@ -324,100 +444,9 @@ impl DomainState {
             {
                 continue;
             }
-            let item = self.item(i);
-            let explicit = i.subject.clone().or_else(|| match &i.payload {
-                InteractionPayload::Delivery { targets, .. } => targets
-                    .iter()
-                    .find_map(|target| match target {
-                        DeliveryTarget::PullRequest { pr_id, .. } => {
-                            Some(InteractionSubject::PullRequest {
-                                pr_id: pr_id.clone(),
-                            })
-                        }
-                        _ => None,
-                    })
-                    .or_else(|| {
-                        targets.iter().find_map(|target| match target {
-                            DeliveryTarget::DocumentRevision {
-                                document_id,
-                                revision_id,
-                            } => Some(InteractionSubject::DocumentReview {
-                                document_id: document_id.clone(),
-                                revision_id: revision_id.clone(),
-                            }),
-                            _ => None,
-                        })
-                    }),
-                _ => None,
-            });
-            if let (Some(subject), Some(t)) = (explicit, task) {
-                let (key, kind, subject, title) = match subject {
-                    InteractionSubject::PullRequest { pr_id } => {
-                        let p = &self.pull_requests[&pr_id];
-                        (
-                            format!("pr:{pr_id}"),
-                            "pull_request",
-                            InboxSubject::PullRequest { pr_id },
-                            format!("{} #{}", p.repository, p.number),
-                        )
-                    }
-                    InteractionSubject::DocumentReview {
-                        document_id,
-                        revision_id,
-                    } => {
-                        let d = &self.documents[&document_id];
-                        (
-                            format!("document:{}:{}:{}", t.id, document_id, revision_id),
-                            "document_review",
-                            InboxSubject::DocumentReview {
-                                task_id: t.id.clone(),
-                                document_id,
-                                revision_id,
-                            },
-                            d.title.clone(),
-                        )
-                    }
-                };
-                let root = roots.entry(key.clone()).or_insert_with(|| InboxItem {
-                    id: key,
-                    kind: kind.into(),
-                    subject,
-                    title,
-                    body: None,
-                    task_id: Some(t.id.clone()),
-                    request_id: Some(t.request_id.clone()),
-                    agent_id: t.agent_id.clone(),
-                    revision: self.revision,
-                    order: i.order,
-                    pending: false,
-                    children: vec![],
-                    available_actions: vec![],
-                });
-                root.order = root.order.min(item.order);
-                root.pending |= item.pending;
-                root.children.push(item);
-            } else {
-                ungrouped.push(item)
-            }
+            items.push(self.item(i));
         }
-        for root in roots.values_mut() {
-            root.children
-                .sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
-        }
-        let mut inbox: Vec<_> = roots.into_values().chain(ungrouped).collect();
-        inbox.sort_by(|a, b| (a.order, &a.id).cmp(&(b.order, &b.id)));
-        fn pending(items: &[InboxItem]) -> u64 {
-            items
-                .iter()
-                .map(|i| {
-                    if i.children.is_empty() {
-                        u64::from(i.pending)
-                    } else {
-                        pending(&i.children)
-                    }
-                })
-                .sum()
-        }
+        let inbox = self.order_inbox(items);
         let unread_information = self
             .interactions
             .values()
@@ -429,7 +458,7 @@ impl DomainState {
             .count() as u64;
         let counts = InboxCounts {
             roots: inbox.len() as u64,
-            pending: pending(&inbox),
+            pending: inbox.iter().filter(|item| item.pending).count() as u64,
             unread_information,
         };
         DomainProjection {

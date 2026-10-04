@@ -54,14 +54,14 @@ struct EncryptedPushFixtureTests {
         let sent = try #require((fixture["payload"] as? [String: Any])?["alondra"] as? [String: Any])
         #expect(item.kind == .question)
         #expect(item.card == sent["card"] as? String)
-        #expect(item.actions.map(\.label) == ["Yes", "Request changes", "Necesito más contexto"])
+        #expect(item.actions.map(\.label) == ["★ Yes", "Request changes", "Responder"])
         #expect(item.actions.map(\.text) == [false, true, true])
         #expect(NotificationPayload.Binding(userInfo: payload)?.value == (try binding))
         #expect((payload["aps"] as? [String: Any])?["sound"] == nil, "with_sound false strips the sound")
         let alert = NotificationAlert(aps: try #require(payload["aps"] as? [String: Any]))
-        #expect(alert.title == "Split the parser")
-        #expect(alert.body == "Merge the question parser?",
-                "the lock screen shows the card's question, not a generic line")
+        #expect(alert.title == "Merge the question parser?")
+        #expect(alert.body == "The lexer split is ready and its tests pass.",
+                "the lock screen shows what the card needs, then why")
     }
 
     @Test func aPushWithoutTextFallsBackToTheExtensionsOwnLine() {

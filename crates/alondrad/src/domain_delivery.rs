@@ -236,8 +236,15 @@ fn user_push_payload(state: &DomainState, interaction_id: Option<&str>, lang: La
             alondra["kind"] = json!(kind);
             let content = views::push_content(state, id, lang).unwrap_or_else(|error| {
                 log!("could not render push content for card {id}: {error:?}");
-                views::PushContent { alert: None, actions: vec![] }
+                views::PushContent { alert: None, actions: vec![], interruption_level: "active", thread: None }
             });
+            aps["interruption-level"] = json!(content.interruption_level);
+            if content.interruption_level == "passive" {
+                aps.as_object_mut().map(|aps| aps.remove("sound"));
+            }
+            if let Some(thread) = &content.thread {
+                aps["thread-id"] = json!(thread);
+            }
             if let Some(alert) = content.alert {
                 aps["alert"]["title"] = json!(alert.title);
                 if let Some(body) = alert.body {
@@ -787,6 +794,20 @@ mod tests {
             serde_json::from_str(include_str!("../../../fixtures/views/push-payloads.json"))
                 .unwrap();
         let state = push_fixture_state(fixture["data_epoch"].as_str().unwrap());
+        if std::env::var_os("ALONDRA_WRITE_PUSH_PAYLOADS").is_some() {
+            let root = std::env::var("BUILD_WORKSPACE_DIRECTORY").expect("run through bazelisk run");
+            let cases: Vec<Value> = ["question", "action_request", "information", "delivery_text", "delivery_pull_request", "permission"]
+                .into_iter()
+                .map(|name| {
+                    let id = push_fixture_id(name);
+                    json!({"interaction": name, "id": id, "payload": user_push_payload(&state, Some(id), Lang::En)})
+                })
+                .collect();
+            let mut text = serde_json::to_string_pretty(&json!({"data_epoch": fixture["data_epoch"], "cases": cases})).unwrap();
+            text.push('\n');
+            std::fs::write(Path::new(&root).join("fixtures/views/push-payloads.json"), text).unwrap();
+            return;
+        }
         let cases = fixture["cases"].as_array().unwrap();
         assert_eq!(cases.len(), 6);
         for case in cases {
@@ -801,8 +822,16 @@ mod tests {
         let english = user_push_payload(&state, Some(push_fixture_id("question")), Lang::En);
         let spanish = user_push_payload(&state, Some(push_fixture_id("question")), Lang::Es);
         assert!(english["alondra"].get("actions_es").is_none());
-        assert_eq!(english["alondra"]["actions"][2]["label"], "Need more context");
-        assert_eq!(spanish["alondra"]["actions"][2]["label"], "Necesito más contexto");
+        assert_eq!(english["alondra"]["actions"][2]["label"], "Reply");
+        assert_eq!(spanish["alondra"]["actions"][2]["label"], "Responder");
+        assert_eq!(english["aps"]["interruption-level"], "active");
+        assert_eq!(english["aps"]["thread-id"], "orchestrator", "a card without a node groups under the orchestrator");
+        let permission = user_push_payload(&state, Some(push_fixture_id("permission")), Lang::En);
+        assert_eq!(permission["aps"]["interruption-level"], "time-sensitive");
+        let notice = user_push_payload(&state, Some(push_fixture_id("information")), Lang::En);
+        assert_eq!(notice["aps"]["interruption-level"], "passive");
+        assert!(notice["aps"].get("sound").is_none(), "a quiet notice makes no sound");
+        assert_eq!(english["aps"]["sound"], "default");
     }
 
     const ENCRYPTED_PUSH_FIXTURE: &str = "fixtures/push/encrypted.json";
@@ -949,6 +978,17 @@ mod tests {
         ];
         for (name, payload) in payloads {
             let id = InteractionId::from(push_fixture_id(name));
+            let body = format!("Merge the {name} parser?\n\nThe lexer split is ready and its tests pass.");
+            let kind = match name {
+                "question" => CardKind::Decide,
+                "action_request" => CardKind::Do,
+                "information" => CardKind::Know,
+                _ => CardKind::Review,
+            };
+            let mut card = CardSpec::derived(kind, &body);
+            if kind == CardKind::Decide {
+                card.recommended = Some("yes".into());
+            }
             state.interactions.insert(
                 id.clone(),
                 Interaction {
@@ -959,13 +999,13 @@ mod tests {
                     },
                     author: Author::System,
                     recipient: Recipient::User,
-                    body: format!("Merge the {name} parser?\n\nThe lexer split is ready and its tests pass."),
-                    blocking: false,
+                    body,
+                    blocking: matches!(name, "question" | "action_request"),
                     subject: None,
                     payload,
                     revision: 1,
                     order: 1,
-                    withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+                    withdrawn: false, card, clarification: None,
                 },
             );
         }
@@ -976,7 +1016,11 @@ mod tests {
             body: "Bash: Extract shared waiting-items helper in core views\n\n```\npython3 - <<'EOF'\nimport re\nEOF\n```".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options: Hold::Permission.options(), answer: None },
-            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            revision: 1, order: 1, withdrawn: false,
+            card: CardSpec::new(CardKind::Authorize, "Allow extracting the waiting-items helper")
+                .why("It rewrites a few files in core views.")
+                .content(ContentKind::Command, "python3 - <<'EOF'\nimport re\nEOF"),
+            clarification: None,
         });
         state.holds.insert(held, Hold::Permission);
         state
@@ -995,7 +1039,7 @@ mod tests {
     }
 
     #[test]
-    fn push_payload_fits_1500_bytes_with_four_spanish_options() {
+    fn push_payload_fits_1500_bytes_with_three_spanish_options_and_a_reply() {
         let mut state = DomainState::new("epoch-1");
         let id = InteractionId::from("i-spanish");
         let options = ["Mantener cookies", "Abrir en Safari", "Usar otra cuenta", "Cancelar"]
@@ -1010,13 +1054,16 @@ mod tests {
             author: Author::System, recipient: Recipient::User, body: "¿Qué debería hacer?".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options, answer: None },
-            revision: 117, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+            revision: 117, order: 1, withdrawn: false,
+            card: CardSpec::new(CardKind::Decide, "Elige qué hacer con las cookies").why("Sin tu elección la página no sigue."),
+            clarification: None,
         });
 
         let payload = user_push_payload(&state, Some("i-spanish"), Lang::En);
         let actions = payload["alondra"]["actions"].as_array().unwrap();
-        assert_eq!(actions.len(), 4);
+        assert_eq!(actions.len(), 4, "the three top answers and the text reply");
         assert_eq!(actions[0]["label"], "Mantener cookies");
+        assert_eq!(actions[3]["text"], true);
         let plaintext = serde_json::to_vec(&json!({
             "push_binding": "A".repeat(43), "payload": payload, "with_sound": true,
         })).unwrap();
@@ -1062,7 +1109,8 @@ mod tests {
             interaction_id: "a7efd99d-answer-1".into(),
             scope: Scope::Orchestrator { request_id: Some("a7efd99d".into()) },
             recipient: Recipient::User,
-            body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+            body: "Sí. Para el cifrado una imagen son bytes como cualquier otro.".into(),
+            card: CardSpec::new(CardKind::Know, "Cifrar imágenes con R2 es posible").why("Una imagen son bytes como cualquier otro."),
         });
         v2_command(&domain, orchestrator, "close", Command::CloseRequest {
             request_id: "a7efd99d".into(),
@@ -1078,8 +1126,10 @@ mod tests {
         let payload = user_push_payload(&state, user[0].interaction_id.as_deref(), Lang::Es);
         assert_eq!(payload["alondra"]["card"], "a7efd99d-answer-1");
         assert_eq!(payload["alondra"]["kind"], "information");
-        assert_eq!(payload["aps"]["alert"]["title"], "Orquestador");
-        assert_eq!(payload["aps"]["alert"]["body"], "Sí. Para el cifrado una imagen son bytes como cualquier otro.");
+        assert_eq!(payload["aps"]["alert"]["title"], "Cifrar imágenes con R2 es posible");
+        assert_eq!(payload["aps"]["alert"]["body"], "Una imagen son bytes como cualquier otro.");
+        assert_eq!(payload["aps"]["interruption-level"], "passive");
+        assert_eq!(payload["aps"]["thread-id"], "orchestrator");
         assert_eq!(payload["aps"]["badge"], 1, "the answer waits in the inbox the badge counts");
         let push = Push::open(&home).unwrap();
         deliver_one_v2(&domain, &home, &push, None, &client, user[0].clone()).await.unwrap();
@@ -1088,10 +1138,15 @@ mod tests {
     }
 
     #[test]
-    fn held_cards_push_allow_deny_or_approve_review_buttons() {
-        for (hold, expected) in [
-            (Hold::Permission, json!([{"option": "allow", "label": "Allow"}, {"option": "deny", "label": "Deny"}])),
-            (Hold::Plan, json!([{"option": "approve", "label": "Approve"}, {"label": "Review", "open": true}])),
+    fn held_cards_push_their_top_answers_and_a_text_reply() {
+        let permission = CardSpec::new(CardKind::Authorize, "Allow listing the folder").why("Read only.");
+        let plan = CardSpec::new(CardKind::Review, "Ship the parser").why("Two steps.");
+        for (hold, card, level, expected) in [
+            (Hold::Permission, permission, "time-sensitive",
+                json!([{"option": "allow", "label": "Allow"}, {"option": "deny", "label": "Deny", "text": true, "placeholder": "Write the reason"},
+                    {"label": "Reply", "text": true, "placeholder": "Reply to this node…"}])),
+            (Hold::Plan, plan, "active",
+                json!([{"label": "Approve"}, {"label": "Reply", "text": true, "placeholder": "Reply to this node…"}])),
         ] {
             let mut state = DomainState::new("epoch-1");
             let id = InteractionId::from("hold-1");
@@ -1100,23 +1155,20 @@ mod tests {
                 author: Author::System, recipient: Recipient::User, body: "Bash: ls".into(),
                 blocking: true, subject: None,
                 payload: InteractionPayload::Question { options: hold.options(), answer: None },
-                revision: 3, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
+                revision: 3, order: 1, withdrawn: false, card, clarification: None,
             });
             state.holds.insert(id, hold);
             let payload = user_push_payload(&state, Some("hold-1"), Lang::En);
             assert_eq!(payload["alondra"]["kind"], "question", "the app decodes held cards as questions");
             assert_eq!(payload["aps"]["category"], "ALONDRA_PUSH");
+            assert_eq!(payload["aps"]["interruption-level"], level, "{hold:?}");
             let shown: Vec<Value> = payload["alondra"]["actions"].as_array().unwrap().iter().map(|action| {
                 let mut action = action.clone();
-                let object = action.as_object_mut().unwrap();
-                assert!(object.remove("id").unwrap().as_str().unwrap().ends_with("hold-1@3")
-                    || object.get("open").is_some());
+                let id = action.as_object_mut().unwrap().remove("id").unwrap();
+                assert!(id.as_str().unwrap().ends_with("hold-1@3") || id.as_str().unwrap().contains("view@"), "{id}");
                 action
             }).collect();
             assert_eq!(Value::from(shown), expected, "{hold:?}");
-            if hold == Hold::Permission {
-                assert_eq!(payload["aps"]["alert"], json!({"title": "A node needs permission", "body": "Bash: ls"}));
-            }
         }
     }
 }

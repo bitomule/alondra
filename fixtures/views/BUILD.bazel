@@ -3,3 +3,11 @@ filegroup(
     srcs = glob(["*.json"], allow_empty = True),
     visibility = ["//visibility:public"],
 )
+
+# What the daemon renders since the card redesign. The files above are the shape the apps
+# still draw; the apps move to these with their own redesign and the old ones go then.
+filegroup(
+    name = "cards",
+    srcs = glob(["cards/*.json"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)

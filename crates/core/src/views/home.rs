@@ -1,7 +1,7 @@
 use super::{
     BuildError, Client, Item, Link, Notice, RenderContext, Row, Section, TimeFormat, Tone,
     Trailing, VIEWS_PROTOCOL, View,
-    card::{card_key, from_item, orchestrator_decision, plain_id, public_id},
+    card::{card_key, from_item, plain_id, public_id},
     text::t,
 };
 use crate::domain_v2::{DomainProjection, InboxItem};
@@ -17,21 +17,16 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
     let projection = context.domain.projection();
     let mut roots = waiting(&projection);
     if let Some(focus) = focus {
-        if let Some(index) = roots.iter().position(|item| {
-            public_id(item) == focus || item.children.iter().any(|child| public_id(child) == focus)
-        }) {
+        if let Some(index) = roots.iter().position(|item| public_id(item) == focus) {
             roots.rotate_left(index);
         } else {
             return Err(BuildError::NotFound);
         }
     }
     let status = super::status::build(&projection, context);
-    let decision = orchestrator_decision(context, false);
     let (sections, empty) = match context.client {
         Client::Ios => {
-            let card_ids: Vec<String> = decision.iter().map(|card| card.id.clone())
-                .chain(roots.iter().map(|item| public_id(item).to_owned()))
-                .collect();
+            let card_ids: Vec<String> = roots.iter().map(|item| public_id(item).to_owned()).collect();
             let count = card_ids.len() as u32;
             (
                 vec![Section {
@@ -56,56 +51,23 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
             )
         }
         Client::Tui => {
-            let mut sections = [
-                Section {
-                    id: "waiting".into(),
-                    title: Some(t!(context.lang, "Waiting for You", "Te espera").into()),
-                    count: None,
-                    collapsed: false,
-                    items: vec![],
-                    card_ids: vec![],
-                    more: None,
-                },
-                Section {
-                    id: "pull_requests".into(),
-                    title: Some(t!(context.lang, "Pull requests", "Solicitudes de cambios").into()),
-                    count: None,
-                    collapsed: false,
-                    items: vec![],
-                    card_ids: vec![],
-                    more: None,
-                },
-                Section {
-                    id: "to_read".into(),
-                    title: Some(t!(context.lang, "To Read", "Por leer").into()),
-                    count: None,
-                    collapsed: false,
-                    items: vec![],
-                    card_ids: vec![],
-                    more: None,
-                },
-            ];
+            let mut items = vec![];
             for item in &roots {
-                let index = if item.kind == "pull_request" {
-                    1
-                } else if item.kind == "information" {
-                    2
-                } else {
-                    0
-                };
-                sections[index].items.push(Item::Row(row(item, context, 0)?));
+                items.push(Item::Row(row(item, context)?));
             }
-            if let Some(card) = &decision {
-                sections[0].items.insert(0, Item::Row(Row {
-                    id: card.id.clone(), link: card.link.clone(), icon: card.icon, title: card.title.clone(),
-                    subtitle: card.subtitle.clone(), badges: vec![], trailing: None, depth: 0, struck: false,
-                    children: vec![], actions: vec![],
-                }));
-            }
-            let mut sections: Vec<Section> = sections.into_iter().filter(|section| !section.items.is_empty()).collect();
+            let mut sections = vec![Section {
+                id: "waiting".into(),
+                title: Some(t!(context.lang, "Waiting for You", "Te espera").into()),
+                count: Some(items.len() as u32),
+                collapsed: false,
+                items,
+                card_ids: vec![],
+                more: None,
+            }];
+            sections.retain(|section| !section.items.is_empty());
             let detail = match roots.first() {
-                Some(first) if focus.is_some() || decision.is_none() => Some(from_item(first, context, true)?),
-                _ => orchestrator_decision(context, true),
+                Some(first) => Some(from_item(first, context, true)?),
+                None => None,
             };
             if let Some(detail) = detail {
                 sections.push(Section {
@@ -120,7 +82,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
             }
             (
                 sections,
-                (roots.is_empty() && decision.is_none()).then(|| Notice {
+                roots.is_empty().then(|| Notice {
                     text: t!(
                         context.lang,
                         "Nothing is waiting for you",
@@ -154,7 +116,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
 pub(super) fn waiting(projection: &DomainProjection) -> Vec<&InboxItem> {
     projection.inbox.iter().filter(|item| item.pending).collect()
 }
-fn row(item: &InboxItem, context: &RenderContext<'_>, depth: u8) -> Result<Row, BuildError> {
+fn row(item: &InboxItem, context: &RenderContext<'_>) -> Result<Row, BuildError> {
     let card = from_item(item, context, false)?;
     Ok(Row {
         id: card.id,
@@ -164,18 +126,14 @@ fn row(item: &InboxItem, context: &RenderContext<'_>, depth: u8) -> Result<Row, 
         icon: card.icon,
         title: card.title,
         subtitle: card.subtitle,
-        badges: card.badges,
+        badges: card.eyebrow.into_iter().collect(),
         trailing: context.live.time(&item.id).map(|at| Trailing::Time {
             at: at.into(),
             format: TimeFormat::Relative,
         }),
-        depth,
+        depth: 0,
         struck: false,
-        children: item
-            .children
-            .iter()
-            .map(|child| row(child, context, depth + 1))
-            .collect::<Result<Vec<_>, _>>()?,
+        children: vec![],
         actions: vec![],
     })
 }

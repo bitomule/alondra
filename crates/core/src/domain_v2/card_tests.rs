@@ -474,3 +474,120 @@ fn a_proposal_can_be_answered_after_its_task_is_done() {
     ok(&mut s, user(), answer_with("do_it"));
     assert!(s.requests.contains_key(&"proposal-p".into()));
 }
+
+// F2: the inbox is one item per interaction, in the order the user should meet them.
+
+fn inbox_ids(s: &DomainState) -> Vec<String> {
+    s.projection().inbox.iter().map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
+}
+fn register_pr_of(s: &mut DomainState, actor: Actor, task: &str, pr: &str, number: u64) {
+    ok(s, actor, Command::RegisterPr {
+        task_id: task.into(), pr_id: pr.into(), host: "github.com".into(), repository: "owner/repo".into(),
+        number, head: format!("head-{pr}"), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
+    });
+}
+fn present_pr(s: &mut DomainState, actor: Actor, task: &str, id: &str, pr: &str) {
+    ok(s, actor, Command::PresentResult {
+        attachments: vec![], task_id: task.into(), interaction_id: id.into(), body: "Result ready".into(),
+        targets: vec![DeliveryTarget::PullRequest { pr_id: pr.into(), head: format!("head-{pr}") }],
+        is_final: true, card: review(),
+    });
+}
+
+#[test]
+fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
+    let mut s = fixture();
+    register_pr(&mut s);
+    ok(&mut s, agent(), present("d", pr_target(), true, review()));
+    let mut blocking = decide("Pick a name");
+    blocking.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
+    ok(&mut s, agent(), ask("q", "t", true, blocking));
+    ok(&mut s, agent(), inform("n", scope("t"), "Heads up"));
+    let projection = s.projection();
+    assert_eq!(inbox_ids(&s), ["q", "d", "n"], "a question, the delivery of the PR, a notice: three cards");
+    assert_eq!(projection.counts.roots, 3);
+    for item in &projection.inbox {
+        assert!(item.id.starts_with("interaction:"), "{}: no PR or document root", item.id);
+        assert!(matches!(item.subject, InboxSubject::Interaction { .. }));
+        assert!(item.children.is_empty(), "{}: no card holds another", item.id);
+        assert!(!matches!(item.kind.as_str(), "pull_request" | "document_review"));
+    }
+}
+
+#[test]
+fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_oldest_first() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "t2", "b");
+    ok(&mut s, agent(), inform("know-old", scope("t"), "The first notice"));
+    ok(&mut s, agent(), ask("propose", "t", false,
+        CardSpec::new(CardKind::Propose, "Let me also update the README").why("It names the old flag")));
+    ok(&mut s, agent(), ask("provide", "t", false,
+        CardSpec::new(CardKind::Provide, "Send a screenshot of the bug").why("I cannot reproduce it")));
+    ok(&mut s, agent(), inform("know-new", scope("t"), "The second notice"));
+    ok(&mut s, agent(), present("review", text(), true, review()));
+    ok(&mut s, Actor::System, Command::HoldHook {
+        interaction_id: "permission".into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Permission,
+        body: "Bash: rm -rf build".into(), options: Hold::Permission.options(),
+        card: CardSpec::new(CardKind::Authorize, "Allow cleaning the build").content(ContentKind::Command, "rm -rf build"),
+    });
+    ok(&mut s, agent(), ask("decide", "t", true, decide("Pick a name")));
+    let mut login = CardSpec::new(CardKind::Do, "Log in to App Store Connect").why("The upload needs a session");
+    login.verify = Some("I run asc whoami".into());
+    ok(&mut s, agent_b(), Command::RequestAction {
+        attachments: vec![], interaction_id: "do".into(), scope: scope("t2"), recipient: Recipient::User,
+        body: "Log in".into(), blocking: true, options: vec![], card: login,
+    });
+    ok(&mut s, Actor::System, Command::RaiseProblem {
+        attachments: vec![], interaction_id: "problem".into(), scope: scope("t"), body: "The launch failed".into(),
+        options: vec![option("retry", "Retry"), option("cancel", "Cancel the task")],
+        card: CardSpec::new(CardKind::Problem, "Decide what to do with the failed launch").why("The task has no node"),
+    });
+    assert_eq!(
+        inbox_ids(&s),
+        ["problem", "permission", "decide", "do", "review", "provide", "propose", "know-old", "know-new"],
+        "problem, what holds a node up (oldest first), review, provide, propose, notices (oldest first)"
+    );
+}
+
+#[test]
+fn a_card_that_blocks_sits_right_above_what_it_blocks() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "t2", "b");
+    ok(&mut s, agent_b(), Command::PresentResult {
+        attachments: vec![], task_id: "t2".into(), interaction_id: "elsewhere".into(), body: "Done".into(),
+        targets: text(), is_final: true, card: review(),
+    });
+    register_pr(&mut s);
+    ok(&mut s, agent(), present("d", pr_target(), true, review()));
+    let mut asks = decide("Keep the filter?");
+    asks.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
+    ok(&mut s, agent(), ask("q", "t", false, asks));
+    assert_eq!(inbox_ids(&s), ["elsewhere", "q", "d"], "the question comes out above the PR it holds back, not after it");
+    let projection = s.projection();
+    let item = |id: &str| projection.inbox.iter().find(|i| i.id == format!("interaction:{id}")).unwrap();
+    assert_eq!(item("d").blocked_by, vec![InteractionId::from("q")]);
+    assert_eq!(item("q").blocks, vec![InteractionId::from("d")]);
+    ok(&mut s, user(), answer("q"));
+    assert!(s.projection().inbox.iter().all(|i| i.blocked_by.is_empty()), "answered, it holds nothing back");
+}
+
+#[test]
+fn a_stacked_pr_is_blocked_by_the_delivery_it_sits_on() {
+    let mut s = fixture();
+    register_agent(&mut s, "b");
+    task(&mut s, "t2", "b");
+    register_pr_of(&mut s, agent_b(), "t2", "pr2", 8);
+    present_pr(&mut s, agent_b(), "t2", "above", "pr2");
+    register_pr_of(&mut s, agent(), "t", "pr", 7);
+    present_pr(&mut s, agent(), "t", "below", "pr");
+    s.tasks.get_mut(&TaskId::from("t2")).unwrap().stack = Some(StackDependency {
+        upstream_task: "t".into(), presentation_id: "below".into(), pr_id: "pr".into(), head: "head-pr".into(),
+    });
+    let projection = s.projection();
+    let item = |id: &str| projection.inbox.iter().find(|i| i.id == format!("interaction:{id}")).unwrap();
+    assert_eq!(item("above").blocked_by, vec![InteractionId::from("below")]);
+    assert!(item("below").blocked_by.is_empty());
+    assert_eq!(inbox_ids(&s), ["below", "above"], "the PR below comes first even though the one above is older");
+}

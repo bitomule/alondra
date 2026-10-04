@@ -458,12 +458,16 @@ fn interaction_rows<'a>(snapshot: &'a Snapshot, indices: &'a [usize], start: Opt
 }
 
 fn inbox_rows<'a>(snapshot: &'a Snapshot, pending_only: bool, start: Option<Key>) -> impl Iterator<Item = Row> + 'a {
-    snapshot
+    let mut chronological: Vec<_> = snapshot
         .projection
         .inbox
         .iter()
         .filter(move |root| !pending_only || root.pending)
         .map(|root| (Key::Ordered(root.order, root.id.clone()), root))
+        .collect();
+    chronological.sort_by(|(a, _), (b, _)| a.cmp(b));
+    chronological
+        .into_iter()
         .skip_while(move |(key, _)| start.as_ref().is_some_and(|s| key <= s))
         .map(|(key, root)| Row { key, id: root.id.clone(), value: to_value(root) })
 }

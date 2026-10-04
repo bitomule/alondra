@@ -8,14 +8,18 @@ import XCTest
 final class FixtureContractTests: XCTestCase {
     private static let notViews: Set<String> = ["push-payloads.json"]
 
+    /// The shape the apps still draw, and the one the daemon renders since the card redesign.
     private func fixtureURLs() throws -> [URL] {
         let environment = ProcessInfo.processInfo.environment
-        let directory = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
+        let root = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
             .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
             .appendingPathComponent("fixtures/views")
-        return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-            .filter { $0.pathExtension == "json" && !Self.notViews.contains($0.lastPathComponent) }
-            .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        return try ["", "cards"].flatMap { subdirectory -> [URL] in
+            let directory = subdirectory.isEmpty ? root : root.appendingPathComponent(subdirectory)
+            return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .filter { $0.pathExtension == "json" && !Self.notViews.contains($0.lastPathComponent) }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+        }
     }
 
     func testEveryViewFixtureDecodesIntoItsDocument() throws {

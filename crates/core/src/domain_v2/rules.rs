@@ -625,7 +625,7 @@ impl DomainState {
         Ok(())
     }
     /// What an open card holds back, as the deliveries it stands in front of.
-    fn blocked_deliveries(&self, i: &Interaction) -> Vec<InteractionId> {
+    pub(crate) fn blocked_deliveries(&self, i: &Interaction) -> Vec<InteractionId> {
         if !self.open(i) {
             return vec![];
         }

@@ -2,7 +2,7 @@ use super::{
     BuildError, ContentKind, ContentRef, Fact, Facts, Item, Notice, RenderContext, Tone, View,
     common, text::t,
 };
-use crate::domain_v2::{DocumentRevisionId, InboxSubject, PrId, PrState};
+use crate::domain_v2::{DocumentRevisionId, PrId, PrState};
 
 pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;
@@ -70,9 +70,10 @@ pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, Bu
         })],
     ));
     let projection = context.domain.projection();
-    if let Some(item) = projection.inbox.iter().chain(projection.inbox.iter().flat_map(|root| root.children.iter())).find(|item| matches!(&item.subject, InboxSubject::DocumentReview { revision_id, .. } if revision_id == &revision.id)) {
+    if let Some(item) = super::card::item_for_revision(&projection, &revision.id, context.domain) {
         let card = super::card::from_item(item, context, true)?;
-        if !card.actions.is_empty() { view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions: card.actions })])); }
+        let actions: Vec<_> = card.actions.into_iter().chain(card.more.into_iter().filter(|action| action.link.is_none())).collect();
+        if !actions.is_empty() { view.sections.push(common::section("actions", None, vec![Item::Actions(super::ActionBar { actions })])); }
     }
     Ok(view)
 }
@@ -128,25 +129,12 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
         vec![Item::Facts(Facts { items: facts })],
     ));
     let projection = context.domain.projection();
-    if let Some(item) = projection.inbox.iter().find(
-        |item| matches!(&item.subject, InboxSubject::PullRequest { pr_id } if pr_id == &pr.id),
-    ) {
+    if let Some(item) = super::card::item_for_pr(&projection, &pr.id, context.domain) {
         let card = super::card::from_item(item, context, true)?;
-        if let Some(checks) = card.checks {
+        let (_, checks, _) = super::card::pr_overview(pr, context);
+        if let Some(checks) = checks {
             view.sections
                 .push(common::section("checks", None, vec![Item::Checks(checks)]));
-        }
-        if !card.children.is_empty() {
-            view.sections.push(common::section(
-                "children",
-                None,
-                card.children.into_iter().map(|mut child| {
-                    if context.client == super::Client::Tui {
-                        child.actions.clear();
-                    }
-                    Item::Card(child)
-                }).collect(),
-            ));
         }
         if let Some(body) = live
             .and_then(|details| details.body.clone())
@@ -156,7 +144,6 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
                 more: None,
                 commentable: false,
             })
-            .or(card.body)
         {
             view.sections.push(common::section(
                 "description",
@@ -164,13 +151,12 @@ pub(super) fn pull_request(id: &str, context: &RenderContext<'_>) -> Result<View
                 vec![Item::Markdown(body)],
             ));
         }
-        if !card.actions.is_empty() {
+        let actions: Vec<_> = card.actions.into_iter().chain(card.reply).chain(card.more).collect();
+        if !actions.is_empty() {
             view.sections.push(common::section(
                 "actions",
                 None,
-                vec![Item::Actions(super::ActionBar {
-                    actions: card.actions,
-                })],
+                vec![Item::Actions(super::ActionBar { actions })],
             ));
         }
     }

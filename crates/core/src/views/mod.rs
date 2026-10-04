@@ -12,6 +12,7 @@ mod misc;
 mod schedules;
 mod sidebar;
 mod status;
+mod summary;
 mod tasks;
 #[cfg(test)]
 mod tests;
@@ -103,8 +104,7 @@ pub struct PushAction {
     pub open: bool,
 }
 
-/// What the lock screen shows for a card: its title, and the first line of its body or,
-/// without one, the kind of card it is.
+/// What the lock screen shows for a card: what the user must do over why.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PushAlert {
     pub title: String,
@@ -115,6 +115,10 @@ pub struct PushAlert {
 pub struct PushContent {
     pub alert: Option<PushAlert>,
     pub actions: Vec<PushAction>,
+    /// iOS `interruption-level`: `time-sensitive`, `active` or `passive`.
+    pub interruption_level: &'static str,
+    /// iOS `thread-id`: the notifications of one node group together.
+    pub thread: Option<String>,
 }
 
 pub const PUSH_TITLE_CHARS: usize = 80;
@@ -128,6 +132,18 @@ pub fn push_actions(
     Ok(push_content(domain, card_id, lang)?.actions)
 }
 
+/// How loudly a card interrupts: a problem, or a blocking permission or manual step, now; a
+/// decision, review, test or input when the user looks; a notice or a proposal quietly.
+fn push_level(kind: crate::domain_v2::CardKind, blocking: bool) -> &'static str {
+    use crate::domain_v2::CardKind::*;
+    match kind {
+        Problem => "time-sensitive",
+        Authorize | Do if blocking => "time-sensitive",
+        Authorize | Do | Decide | Review | Test | Provide => "active",
+        Know | Propose => "passive",
+    }
+}
+
 pub fn push_content(
     domain: &DomainState,
     card_id: &str,
@@ -138,69 +154,38 @@ pub fn push_content(
         domain, live: &live, client: Client::Ios, lang, transport: Transport::Relay,
         cursor: "push", rendered_at: "",
     })?;
+    let interaction = domain.interactions.get(&crate::domain_v2::InteractionId(card_id.into()));
+    let interruption_level = interaction.map_or("active", |i| push_level(i.card.kind, i.blocking));
+    let thread = interaction.map(|i| match &i.author {
+        crate::domain_v2::Author::Agent { agent_id } => agent_id.0.clone(),
+        _ => "orchestrator".to_owned(),
+    });
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
-    }) else { return Ok(PushContent { alert: None, actions: vec![] }) };
-    if let Some(hold) = domain.holds.get(&crate::domain_v2::InteractionId(card_id.into())) {
-        let alert = held_push_alert(*hold, card, lang).or_else(|| push_alert(card));
-        return Ok(PushContent { alert, actions: held_push_actions(*hold, card, lang) });
-    }
+    }) else { return Ok(PushContent { alert: None, actions: vec![], interruption_level, thread }) };
     let alert = push_alert(card);
     let mut pushed = Vec::new();
     for action in &card.actions {
-        if action.id.is_empty() || action.link.is_some() || !action.enabled ||
-            action.confirm.is_some() ||
-            (action.comments.is_some() && !action.id.starts_with("reply:")) { continue; }
-        if action.options.is_empty() {
-            let (text, placeholder) = push_text(&action.input);
-            pushed.push(PushAction { id: action.id.clone(), option: None,
-                label: action.label.clone(), text, placeholder, open: false });
-        } else {
-            for option in &action.options {
-                if !push_supported_option(domain, action, option) { continue; }
-                let (text, placeholder) = push_text(&option.input);
-                pushed.push(PushAction { id: action.id.clone(), option: Some(option.id.clone()),
-                    label: option.label.clone(), text, placeholder, open: false });
-                if pushed.len() == 4 { break; }
-            }
-        }
-        if pushed.len() == 4 { break; }
+        if action.id.is_empty() || action.link.is_some() || !action.enabled || action.confirm.is_some() ||
+            action.comments.is_some() { continue; }
+        if !push_supported_option(domain, action) { continue; }
+        let (text, placeholder) = push_text(&action.input);
+        pushed.push(PushAction { id: action.id.clone(), option: action.option_id.clone(),
+            label: action.label.clone(), text, placeholder, open: false });
     }
-    Ok(PushContent { alert, actions: pushed })
+    if let Some(reply) = card.reply.as_ref().filter(|reply| reply.enabled) {
+        let (_, placeholder) = push_text(&reply.input);
+        pushed.push(PushAction { id: reply.id.clone(), option: None, label: reply.label.clone(),
+            text: true, placeholder, open: false });
+    }
+    Ok(PushContent { alert, actions: pushed, interruption_level, thread })
 }
 
 fn push_alert(card: &Card) -> Option<PushAlert> {
-    let title = one_line(&card.title, PUSH_TITLE_CHARS)?;
-    let excerpt = card.body.as_ref().and_then(|body| {
-        body.text.lines()
-            .map(str::trim)
-            .filter(|line| !line.starts_with("```"))
-            .map(|line| line.trim_start_matches(['#', '>', '-', '*']).trim())
-            .find(|line| !line.is_empty() && *line != title)
-            .and_then(|line| one_line(line, PUSH_BODY_CHARS))
-    });
-    let body = excerpt.or_else(|| card.eyebrow.as_ref().and_then(|label| one_line(&label.text, PUSH_BODY_CHARS)));
+    let title = one_line(card.need.as_deref().unwrap_or(&card.title), PUSH_TITLE_CHARS)?;
+    let body = card.why.as_deref().and_then(|why| one_line(why, PUSH_BODY_CHARS))
+        .or_else(|| card.eyebrow.as_ref().and_then(|label| one_line(&label.text, PUSH_BODY_CHARS)));
     Some(PushAlert { title, body })
-}
-
-/// What a node waiting on Claude Code's prompt says on the lock screen: who asks and for what
-/// (the permission card already reads "<node> needs permission"), with what to decide below.
-fn held_push_alert(hold: crate::domain_v2::Hold, card: &Card, lang: Lang) -> Option<PushAlert> {
-    use crate::domain_v2::Hold;
-    let node = card.context.iter().find(|line| line.icon == Icon::Node).map(|line| line.text.as_str());
-    let (title, body) = match hold {
-        Hold::Permission => (card.title.clone(), card.subtitle.as_deref()?.to_owned()),
-        Hold::Plan => (match node {
-            Some(node) => text::tf!(lang, "{node} has a plan for you", "{node} tiene un plan para ti", node = node),
-            None => text::t!(lang, "A node has a plan for you", "Un nodo tiene un plan para ti").into(),
-        }, card.title.clone()),
-        Hold::Question => (match node {
-            Some(node) => text::tf!(lang, "{node} asks", "{node} pregunta", node = node),
-            None => text::t!(lang, "A node asks", "Un nodo pregunta").into(),
-        }, card.title.clone()),
-        Hold::Elicitation => return None,
-    };
-    Some(PushAlert { title: one_line(&title, PUSH_TITLE_CHARS)?, body: one_line(&body, PUSH_BODY_CHARS) })
 }
 
 fn one_line(text: &str, limit: usize) -> Option<String> {
@@ -211,39 +196,18 @@ fn one_line(text: &str, limit: usize) -> Option<String> {
     Some(format!("{}…", cut.trim_end()))
 }
 
-/// 8ccd131's notification buttons: Allow and Deny answer a permission from the lock screen;
-/// a plan offers Approve and Review, which opens the plan in the app.
-fn held_push_actions(hold: crate::domain_v2::Hold, card: &Card, lang: Lang) -> Vec<PushAction> {
-    let Some(answer) = card.actions.iter().find(|action| action.id.starts_with("ans:") && action.enabled) else {
-        return vec![];
-    };
-    let button = |option: &ActionOption| PushAction { id: answer.id.clone(), option: Some(option.id.clone()),
-        label: option.label.clone(), text: false, placeholder: None, open: false };
-    match hold {
-        crate::domain_v2::Hold::Permission => answer.options.iter().map(button).collect(),
-        crate::domain_v2::Hold::Plan => answer.options.iter().filter(|option| hold.approves(&option.id)).map(button)
-            .chain([PushAction { id: format!("open:{}", card.id), option: None,
-                label: text::t!(lang, "Review", "Revisar").into(), text: false, placeholder: None, open: true }])
-            .collect(),
-        crate::domain_v2::Hold::Question => answer.options.iter().take(4).map(button).collect(),
-        crate::domain_v2::Hold::Elicitation => answer.options.iter().map(|option| match &option.input {
-            Input::Text { placeholder, .. } if option.description.is_some() =>
-                PushAction { text: true, placeholder: Some(placeholder.clone()), ..button(option) },
-            _ => button(option),
-        }).collect(),
-    }
-}
-
-fn push_supported_option(domain: &DomainState, action: &Action, option: &ActionOption) -> bool {
+/// Only answers that need no more than one line of text can be given from a notification.
+fn push_supported_option(domain: &DomainState, action: &Action) -> bool {
     use crate::domain_v2::{InputKind, InteractionId, InteractionPayload};
     let Ok(id) = action_id::ActionId::parse(&action.id) else { return false };
     if id.verb != action_id::Verb::Ans { return true; }
+    let Some(option_id) = action.option_id.as_deref() else { return false };
     let Some(interaction) = domain.interactions.get(&InteractionId(id.subject)) else { return false };
     let options = match &interaction.payload {
         InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. } => options,
         _ => return false,
     };
-    let Some(source) = options.iter().find(|source| source.id == option.id) else { return false };
+    let Some(source) = options.iter().find(|source| source.id == option_id) else { return false };
     source.inputs.is_empty() || source.inputs.len() == 1 && source.inputs[0].kind == InputKind::Text
 }
 

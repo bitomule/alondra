@@ -326,7 +326,7 @@ impl App {
             }));
             return Flow::Go;
         }
-        let option_id = option.map(|option| option.id.clone());
+        let option_id = option.map(|option| option.id.clone()).or_else(|| action.option_id.clone());
         if let Some(confirm) = &action.confirm {
             let step = format!("{}:{}", action.id, option_id.as_deref().unwrap_or(""));
             if !self.confirmed(&step, confirm.message.clone()) {
