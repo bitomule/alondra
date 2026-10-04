@@ -24,6 +24,7 @@ swift_test(
     data = [
         "//apple/Testing/Samples:all",
         "//fixtures/views:all",
+        "//fixtures/views:cards",
     ],
     # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
     linkopts = ["-Wl,-export_dynamic"],

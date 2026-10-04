@@ -3,9 +3,10 @@ import ComposableArchitecture
 import Foundation
 
 /// Waiting for You: the ordered queue from the `home` view, and the cards around the one in front.
-/// The server decides what is waiting and in which order. Swiping either way sends the front card to
-/// the back of the queue and marks nothing. A card answered here or from its own screen leaves at
-/// once and comes back to the front if the daemon does not apply the answer.
+/// The server decides what is waiting and in which order. Swiping right answers with the card's
+/// first button and swiping left with its last, when one tap answers it; otherwise the swipe sends
+/// the front card to the back of the queue and marks nothing. A card answered here or from its own
+/// screen leaves at once and comes back to the front if the daemon does not apply the answer.
 @Reducer
 public struct TriageFeature: Sendable {
     public init() {}
@@ -56,11 +57,14 @@ public struct TriageFeature: Sendable {
         public let cardID: String
         public var released = false
         public var leaving: Direction?
+        /// The button the card leaves with, when the swipe answers instead of browsing.
+        public var answering: WireAction?
 
-        public init(cardID: String, released: Bool = false, leaving: Direction? = nil) {
+        public init(cardID: String, released: Bool = false, leaving: Direction? = nil, answering: WireAction? = nil) {
             self.cardID = cardID
             self.released = released
             self.leaving = leaving
+            self.answering = answering
         }
     }
 
@@ -175,15 +179,22 @@ public struct TriageFeature: Sendable {
             case .dragEnded(let translation, let predicted):
                 guard state.swipe?.released == false else { return .none }
                 state.swipe?.released = true
-                if state.orderedIDs.count > 1, Self.commits(translation: translation, predicted: predicted) {
-                    state.swipe?.leaving = translation > 0 ? .right : .left
+                guard Self.commits(translation: translation, predicted: predicted),
+                      let id = state.swipe?.cardID else { return settle() }
+                let direction: Direction = translation > 0 ? .right : .left
+                if let button = state.cards[id: id]?.swipeButton(direction), button.answersOnATap {
+                    state.swipe?.leaving = direction
+                    state.swipe?.answering = button
+                } else if state.orderedIDs.count > 1 {
+                    state.swipe?.leaving = direction
                 }
                 return settle()
             case .swipeSettled:
                 guard let swipe = state.swipe else { return .none }
                 state.swipe = nil
                 guard swipe.leaving != nil, swipe.cardID == state.currentID else { return .none }
-                return advance(&state)
+                guard let button = swipe.answering else { return advance(&state) }
+                return .send(.cards(.element(id: swipe.cardID, action: .actionTapped(button))))
             case .machinePresented(let presented):
                 state.machinePresented = presented
                 return .none

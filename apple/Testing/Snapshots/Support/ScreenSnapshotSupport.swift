@@ -17,7 +17,7 @@ enum ScreenFixtures {
     static func document(_ name: String, editing edit: (inout [String: Any]) -> Void = { _ in }) throws -> ViewDocument {
         let environment = ProcessInfo.processInfo.environment
         let root = try XCTUnwrap(environment["TEST_SRCDIR"])
-        let url = URL(fileURLWithPath: root).appendingPathComponent("_main/fixtures/views/\(name).json")
+        let url = URL(fileURLWithPath: root).appendingPathComponent("_main/fixtures/views/cards/\(name).json")
         var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         edit(&object)
         return try ContractCodec.decode(ViewDocument.self, from: JSONSerialization.data(withJSONObject: object))

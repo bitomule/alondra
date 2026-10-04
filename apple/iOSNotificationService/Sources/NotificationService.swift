@@ -44,6 +44,12 @@ final class NotificationService: UNNotificationServiceExtension {
             content.categoryIdentifier = aps["category"] as? String ?? ""
             content.badge = aps["badge"] as? NSNumber
             content.sound = aps["sound"] as? String == "default" ? .default : nil
+            content.threadIdentifier = alert.thread ?? ""
+            switch alert.level {
+            case .passive: content.interruptionLevel = .passive
+            case .timeSensitive: content.interruptionLevel = .timeSensitive
+            case .active, nil: content.interruptionLevel = .active
+            }
             content.userInfo = payload
         }
         let item = NotificationPayload.Item(userInfo: payload)

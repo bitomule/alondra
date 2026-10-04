@@ -74,9 +74,9 @@ final class AppFeatureTests: XCTestCase {
         let store = makeStore()
         await store.send(.open(.tasks, key("card:i-9")))
         let id = try XCTUnwrap(store.state.tasksPath.ids.first)
-        guard case .review = store.state.tasksPath[id: id] else { return XCTFail("a card opens the review") }
+        guard case .cardDetail = store.state.tasksPath[id: id] else { return XCTFail("a card opens the card detail") }
 
-        await store.send(.tasksPath(.element(id: id, action: .review(.delegate(.open(key("task:t-1")))))))
+        await store.send(.tasksPath(.element(id: id, action: .cardDetail(.delegate(.open(key("task:t-1")))))))
         XCTAssertEqual(store.state.tasksPath.map(\.key), [key("card:i-9"), key("task:t-1")])
         XCTAssertTrue(store.state.inboxPath.isEmpty)
     }
@@ -226,7 +226,7 @@ final class AppFeatureTests: XCTestCase {
         let store = makeStore()
         await store.send(.open(.inbox, key("card:i-9")))
         let id = try XCTUnwrap(store.state.inboxPath.ids.first)
-        await store.send(.inboxPath(.element(id: id, action: .review(.actions(.delegate(.completed("Accepted")))))))
+        await store.send(.inboxPath(.element(id: id, action: .cardDetail(.actions(.delegate(.completed("Accepted")))))))
         XCTAssertEqual(store.state.notice?.event, .actionCompleted("Accepted"))
     }
 
@@ -251,7 +251,7 @@ final class AppFeatureTests: XCTestCase {
         let id = try XCTUnwrap(store.state.inboxPath.ids.first)
         let request = ActionRequest(commandId: "c", dataEpoch: "", client: .ios, lang: "en", actionId: "accept:c-1@1")
 
-        await store.send(.inboxPath(.element(id: id, action: .review(.delegate(.handOff(request))))))
+        await store.send(.inboxPath(.element(id: id, action: .cardDetail(.delegate(.handOff(request))))))
         await store.receive(\.triage.handedOff)
         XCTAssertEqual(store.state.triage.orderedIDs, ["c-2"], "the card leaves Waiting for You at once")
 
@@ -312,7 +312,7 @@ final class AppFeatureTests: XCTestCase {
         let status = try Fixtures.document("home-ios").status
         await store.send(.triage(.feedStatus(status)))
         XCTAssertEqual(store.state.triage.status, status)
-        XCTAssertEqual(store.state.triage.badge, 4)
+        XCTAssertEqual(store.state.triage.badge, 5)
     }
 
     @MainActor

@@ -47,18 +47,18 @@ enum ScreenStores {
         Store(initialState: state) { TriageFeature() } withDependencies: { quiet(&$0) }
     }
 
-    static func review(
-        _ document: ViewDocument, edit: (inout ReviewFeature.State) -> Void = { _ in }
-    ) -> StoreOf<ReviewFeature> {
-        var state = ReviewFeature.State(key: ViewKey(rawValue: document.key))
+    static func cardDetail(
+        _ document: ViewDocument, edit: (inout CardDetailFeature.State) -> Void = { _ in }
+    ) -> StoreOf<CardDetailFeature> {
+        var state = CardDetailFeature.State(key: ViewKey(rawValue: document.key))
         state.screen.document = document
         state.screen.phase = .loaded
         state.actions.dataEpoch = document.dataEpoch
         edit(&state)
-        return Store(initialState: state) { ReviewFeature() } withDependencies: { quiet(&$0) }
+        return Store(initialState: state) { CardDetailFeature() } withDependencies: { quiet(&$0) }
     }
 
-    static func review(state: ReviewFeature.State) -> StoreOf<ReviewFeature> {
-        Store(initialState: state) { ReviewFeature() } withDependencies: { quiet(&$0) }
+    static func cardDetail(state: CardDetailFeature.State) -> StoreOf<CardDetailFeature> {
+        Store(initialState: state) { CardDetailFeature() } withDependencies: { quiet(&$0) }
     }
 }

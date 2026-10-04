@@ -37,9 +37,9 @@ final class TriageFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.orderedIDs, queue)
         XCTAssertEqual(store.state.cards.ids, [ids.question, ids.information, ids.delivery])
-        XCTAssertEqual(store.state.currentCard?.title, "Restore the native review experience")
+        XCTAssertEqual(store.state.currentCard?.need, "Choose the welcome copy")
         XCTAssertNotNil(store.state.cards[id: ids.information]?.card)
-        XCTAssertEqual(store.state.badge, 4)
+        XCTAssertEqual(store.state.badge, 5)
         XCTAssertEqual(store.state.queueTitle, "Waiting for You")
     }
 
@@ -51,7 +51,7 @@ final class TriageFeatureTests: XCTestCase {
         await store.send(.task)
         await store.skipReceivedActions()
 
-        XCTAssertEqual(store.state.iconBadge, 4)
+        XCTAssertEqual(store.state.iconBadge, 5)
     }
 
     @MainActor
@@ -90,34 +90,71 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testSwipingEitherWayPastTheThresholdMovesOnToTheNextCard() async throws {
+    func testSwipingRightAnswersWithTheFirstButtonOfTheFrontCard() async throws {
+        let clock = TestClock()
+        let feed = try fullFeed()
+        let store = store(feed, clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+        let first = try XCTUnwrap(store.state.cards[id: ids.question]?.buttons.first)
+
+        await store.send(.dragChanged) { $0.swipe = .init(cardID: self.ids.question) }
+        await store.send(.dragEnded(translation: 120, predicted: 160)) {
+            $0.swipe?.released = true
+            $0.swipe?.leaving = .right
+            $0.swipe?.answering = first
+        }
+        XCTAssertEqual(store.state.currentID, ids.question, "the card leaves before the answer goes")
+        XCTAssertEqual(feed.requests, [])
+        await clock.advance(by: TriageFeature.leaveDuration)
+        await store.receive(\.swipeSettled)
+        await store.skipReceivedActions()
+        XCTAssertNil(store.state.swipe)
+        XCTAssertEqual(feed.requests.map(\.optionId), ["clear"], "the first button's option travels with the answer")
+        XCTAssertEqual(store.state.skips, 0, "answering is not browsing")
+    }
+
+    @MainActor
+    func testSwipingLeftAnswersWithTheLastButtonOfTheFrontCard() async throws {
         let clock = TestClock()
         let feed = try fullFeed()
         let store = store(feed, clock: clock)
         await store.send(.task)
         await store.skipReceivedActions()
 
-        await store.send(.dragChanged) { $0.swipe = .init(cardID: self.ids.question) }
-        await store.send(.dragEnded(translation: -120, predicted: -160)) {
-            $0.swipe?.released = true
-            $0.swipe?.leaving = .left
-        }
-        XCTAssertEqual(store.state.currentID, ids.question, "the card leaves before the next one comes forward")
-        await clock.advance(by: TriageFeature.leaveDuration)
-        await store.receive(\.swipeSettled)
-        XCTAssertNil(store.state.swipe)
-        XCTAssertEqual(store.state.currentID, ids.information)
+        await swipe(store, clock: clock, translation: -120, predicted: -160)
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.optionId), ["warm"])
+    }
 
-        await store.send(.dragChanged)
-        await store.send(.dragEnded(translation: 95, predicted: 95)) { $0.swipe?.leaving = .right }
-        await clock.advance(by: TriageFeature.leaveDuration)
-        await store.receive(\.swipeSettled)
-        XCTAssertEqual(store.state.currentID, ids.delivery, "a swipe to the right also moves forward")
+    @MainActor
+    func testAShortFlickCountsAsASwipe() async throws {
+        let clock = TestClock()
+        let feed = try fullFeed()
+        let store = store(feed, clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
 
         await swipe(store, clock: clock, translation: 40, predicted: 300)
-        XCTAssertEqual(store.state.currentID, ids.pullRequest, "a short flick counts")
-        XCTAssertEqual(store.state.skips, 3)
-        XCTAssertEqual(feed.requests, [], "swiping marks nothing")
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.optionId), ["clear"])
+    }
+
+    @MainActor
+    func testACardWhoseButtonNeedsMoreThanATapGoesToTheBackInsteadOfBeingAnswered() async throws {
+        let clock = TestClock()
+        let feed = try fullFeed()
+        let store = store(feed, clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+        await store.send(.next)
+        await store.send(.next)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.currentID, ids.delivery, "its first button is a merge menu behind a confirmation")
+
+        await swipe(store, clock: clock, translation: 120, predicted: 160)
+        XCTAssertEqual(store.state.currentID, ids.pullRequest)
+        XCTAssertEqual(feed.requests, [], "a swipe never merges")
     }
 
     @MainActor
@@ -139,16 +176,29 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testTheOnlyCardNeverLeaves() async throws {
+    func testTheOnlyCardWithoutAnAnswerableButtonNeverLeaves() async throws {
         let clock = TestClock()
-        let store = store(FeedStub([try Fixtures.home(queue: [ids.question]), try Fixtures.card(ids.question)]), clock: clock)
+        let store = store(FeedStub([try Fixtures.home(queue: [ids.pullRequest]), try Fixtures.card(ids.pullRequest)]), clock: clock)
         await store.send(.task)
         await store.skipReceivedActions()
 
         await swipe(store, clock: clock, translation: -200, predicted: -500)
         await store.send(.next)
-        XCTAssertEqual(store.state.currentID, ids.question)
+        XCTAssertEqual(store.state.currentID, ids.pullRequest)
         XCTAssertEqual(store.state.skips, 0)
+    }
+
+    @MainActor
+    func testTheOnlyCardIsAnsweredBySwipingItAway() async throws {
+        let clock = TestClock()
+        let feed = FeedStub([try Fixtures.home(queue: [ids.information]), try Fixtures.card(ids.information)])
+        let store = store(feed, clock: clock)
+        await store.send(.task)
+        await store.skipReceivedActions()
+
+        await swipe(store, clock: clock, translation: -200, predicted: -500)
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.actionId), ["read:\(ids.information)@1"])
     }
 
     @MainActor
@@ -397,9 +447,8 @@ final class TriageFeatureTests: XCTestCase {
     private func answer(
         _ store: TestStoreOf<TriageFeature>, id: String
     ) async throws -> AlondraContract.Action {
-        let action = try XCTUnwrap(store.state.cards[id: id]?.card?.actions.first { $0.presentation == .options })
-        let option = try XCTUnwrap(action.options.first)
-        await store.send(.cards(.element(id: id, action: .optionPicked(action, optionID: option.id))))
+        let action = try XCTUnwrap(store.state.cards[id: id]?.buttons.first)
+        await store.send(.cards(.element(id: id, action: .actionTapped(action))))
         await store.skipReceivedActions()
         return action
     }

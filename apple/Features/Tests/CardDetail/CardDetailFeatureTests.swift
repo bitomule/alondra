@@ -7,22 +7,22 @@ import ComposableArchitecture
 import Foundation
 import XCTest
 
-final class ReviewFeatureTests: XCTestCase {
-    private let deliveryKey = ViewKey.card(Fixtures.deliveryID)
+final class CardDetailFeatureTests: XCTestCase {
+    private let planText = "# Plan\n\nBuild the form first.\n\nWire the sheet after."
 
     @MainActor
     private func store(
         _ document: ViewDocument, feed: FeedStub = FeedStub(),
         content: (@Sendable (ContentRef) async throws -> String)? = nil,
         dismissed: LockIsolated<Int> = LockIsolated(0)
-    ) -> TestStoreOf<ReviewFeature> {
-        var state = ReviewFeature.State(key: ViewKey(rawValue: document.key))
+    ) -> TestStoreOf<CardDetailFeature> {
+        var state = CardDetailFeature.State(key: ViewKey(rawValue: document.key))
         state.screen.document = document
         state.screen.phase = .loaded
         state.actions.dataEpoch = document.dataEpoch
         let store = TestStore(initialState: state) {
             CombineReducers {
-                ReviewFeature()
+                CardDetailFeature()
                 Reduce { _, action in
                     if case .delegate(.handOff(let request)) = action { feed.deliver(request) }
                     return .none
@@ -38,58 +38,64 @@ final class ReviewFeatureTests: XCTestCase {
         return store
     }
 
-    private func labels(_ store: TestStoreOf<ReviewFeature>) -> [String] {
-        store.state.subject?.barActions.map(\.label) ?? []
+    /// The plan card with its text fetched, ready to be commented.
+    @MainActor
+    private func planStore(feed: FeedStub = FeedStub(), dismissed: LockIsolated<Int> = LockIsolated(0)) async throws
+        -> TestStoreOf<CardDetailFeature> {
+        let plan = try Fixtures.planCard()
+        let text = planText
+        let store = store(plan, feed: feed, content: { _ in text }, dismissed: dismissed)
+        await store.send(.screen(.loaded(plan)))
+        await store.skipReceivedActions()
+        return store
     }
 
-    // MARK: What the review offers
-
-    @MainActor
-    func testADeliveryOffersChangesAndAcceptAndNeverMarkAsRead() async throws {
-        let withRead = try Fixtures.card("card-delivery") { item in
-            var actions = try XCTUnwrap(item["actions"] as? [[String: Any]])
-            actions.removeAll()
-            actions.append(["id": "read:\(Fixtures.deliveryID)@1", "label": "Mark as read", "style": "secondary",
-                            "presentation": "button", "input": ["kind": "none"], "attachments": false, "enabled": true])
-            item["actions"] = actions
-        }
-        let store = store(withRead)
-        XCTAssertEqual(labels(store), [], "a delivery never offers Mark as Read")
-        let normal = self.store(try Fixtures.liveDelivery())
-        XCTAssertEqual(labels(normal), ["Request changes", "Accept"])
+    private func labels(_ store: TestStoreOf<CardDetailFeature>) -> [String] {
+        store.state.subject?.buttons.map(\.label) ?? []
     }
 
-    @MainActor
-    func testAReportKeepsItsMarkAsRead() async throws {
-        let store = store(try Fixtures.card(Fixtures.informationID))
-        XCTAssertEqual(labels(store), ["Mark as read", "Reply"])
-    }
+    // MARK: What the detail shows
 
     @MainActor
-    func testOnlyAClaudeDeliveryOffersToRescueComments() async throws {
-        let delivery = store(try Fixtures.liveDelivery())
-        let subject = try XCTUnwrap(delivery.state.subject)
-        let changes = try XCTUnwrap(subject.actions.first { $0.id?.hasPrefix("changes:") == true })
-        XCTAssertTrue(subject.isRescue(changes))
-
-        let plan = store(try Fixtures.planCard())
-        let planSubject = try XCTUnwrap(plan.state.subject)
-        let review = try XCTUnwrap(planSubject.actions.first { $0.id?.hasPrefix("changes:") == true })
-        XCTAssertFalse(planSubject.isRescue(review), "a plan to review is not a delivery to rescue")
-    }
-
-    @MainActor
-    func testAQuestionShowsItsOptionsInThePageAndNotInTheBar() async throws {
+    func testTheDetailHasTheCardsActionsAndItsReplyAndTheServersSectionsInOrder() async throws {
         let store = store(try Fixtures.card(Fixtures.questionID))
-        XCTAssertEqual(store.state.subject?.options?.options.map(\.label), ["Ship the concise copy", "Keep the warmer copy"])
-        XCTAssertEqual(labels(store), ["Need more context"])
+        let subject = try XCTUnwrap(store.state.subject)
+
+        XCTAssertEqual(subject.title, "Choose the welcome copy")
+        XCTAssertEqual(subject.card?.kind, .decide)
+        XCTAssertEqual(subject.sections.map(\.id), ["content", "context"])
+        XCTAssertEqual(labels(store), ["★ Ship the concise copy", "Keep the warmer copy"])
+        XCTAssertEqual(subject.menu.map(\.label), ["Write my own answer", "Request clarification"])
+        XCTAssertEqual(subject.replyAction?.id, "reply:\(Fixtures.questionID)@1")
+    }
+
+    @MainActor
+    func testAPullRequestsDiffOpensItsOwnScreenFromTheContent() async throws {
+        let store = store(try Fixtures.card(Fixtures.pullRequestID))
+        let reference = try XCTUnwrap(store.state.subject?.sections.first { $0.id == "content" }?.items.compactMap {
+            if case .contentRef(let reference) = $0 { reference } else { nil }
+        }.first)
+
+        XCTAssertEqual(CardDetailFeature.Subject.diffKey(of: reference), .pullRequest("github.com/example/repo#12"))
+        XCTAssertEqual(store.state.subject?.sections.map(\.id), ["content", "context"])
+    }
+
+    @MainActor
+    func testTheDetailOffersNoActionTheCardDoesNot() async throws {
+        let card = try Fixtures.card(Fixtures.pullRequestID)
+        let store = store(card)
+        let onTheCard = card.sections.flatMap(\.items).compactMap { item -> Card? in
+            if case .card(let card) = item { card } else { nil }
+        }.first
+        XCTAssertEqual(store.state.subject?.allActions.map(\.label),
+                       ((onTheCard?.actions.prefix(3).map(\.label) ?? []) + (onTheCard?.more.map(\.label) ?? []) + ["Reply"]))
     }
 
     // MARK: Block comments
 
     @MainActor
     func testACommentIsKeptPerBlockAndAnEmptyOneRemovesIt() async throws {
-        let store = store(try Fixtures.liveDelivery())
+        let store = try await planStore()
         let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
 
         await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
@@ -109,7 +115,7 @@ final class ReviewFeatureTests: XCTestCase {
 
     @MainActor
     func testDeletingAndCancellingACommentLeaveTheRestAlone() async throws {
-        let store = store(try Fixtures.liveDelivery())
+        let store = try await planStore()
         let blocks = store.state.blocks.filter(\.isCommentable)
         let first = try XCTUnwrap(blocks.first), second = try XCTUnwrap(blocks.dropFirst().first)
         for block in [first, second] {
@@ -134,8 +140,8 @@ final class ReviewFeatureTests: XCTestCase {
     func testRequestingChangesIsDisabledUntilThereIsFeedbackThenSendsTheCommentsInReadingOrder() async throws {
         let feed = FeedStub()
         let dismissed = LockIsolated(0)
-        let store = store(try Fixtures.liveDelivery(), feed: feed, dismissed: dismissed)
-        let changes = try XCTUnwrap(store.state.subject?.actions.first { $0.id?.hasPrefix("changes:") == true })
+        let store = try await planStore(feed: feed, dismissed: dismissed)
+        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
         XCTAssertFalse(store.state.isSendable(changes))
         await store.send(.actionTapped(changes))
         XCTAssertEqual(feed.requests, [], "nothing to send yet")
@@ -147,7 +153,7 @@ final class ReviewFeatureTests: XCTestCase {
             await store.send(.composingChanged("note on \(block.plainText)"))
             await store.send(.commentSaved)
         }
-        await store.send(.generalChanged("Overall: good"))
+        await store.send(.replyChanged("Overall: good"))
         XCTAssertTrue(store.state.isSendable(changes))
         await store.send(.actionTapped(changes))
         await store.skipReceivedActions()
@@ -156,16 +162,16 @@ final class ReviewFeatureTests: XCTestCase {
         XCTAssertEqual(request.actionId, changes.id)
         XCTAssertEqual(request.input.comments?.map(\.anchor), [first.draftKey, last.draftKey])
         XCTAssertEqual(request.input.text, "Overall: good")
-        XCTAssertEqual(dismissed.value, 1, "the review closes as it sends")
+        XCTAssertEqual(dismissed.value, 1, "the detail closes as it sends")
         XCTAssertTrue(store.state.comments.isEmpty)
-        XCTAssertEqual(store.state.general, "")
+        XCTAssertEqual(store.state.reply, "")
     }
 
     @MainActor
     func testBlockCommentsAloneSatisfyAChangeRequestThatRequiresText() async throws {
         let feed = FeedStub()
-        let store = store(try Fixtures.liveDelivery(), feed: feed)
-        let changes = try XCTUnwrap(store.state.subject?.actions.first { $0.id?.hasPrefix("changes:") == true })
+        let store = try await planStore(feed: feed)
+        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
         guard case .text(_, let required, _) = changes.input else { return XCTFail("the server asks for text") }
         XCTAssertTrue(required)
         let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
@@ -180,15 +186,15 @@ final class ReviewFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testAcceptingNeedsNoFeedbackAndClosesTheReview() async throws {
+    func testApprovingNeedsNoFeedbackAndClosesTheDetail() async throws {
         let feed = FeedStub()
         let dismissed = LockIsolated(0)
-        let store = store(try Fixtures.liveDelivery(), feed: feed, dismissed: dismissed)
-        let accept = try XCTUnwrap(store.state.subject?.actions.first { $0.id?.hasPrefix("accept:") == true })
+        let store = try await planStore(feed: feed, dismissed: dismissed)
+        let approve = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("accept:") == true })
 
-        await store.send(.actionTapped(accept))
+        await store.send(.actionTapped(approve))
         await store.skipReceivedActions()
-        XCTAssertEqual(feed.requests.map(\.actionId), [accept.id])
+        XCTAssertEqual(feed.requests.map(\.actionId), [approve.id])
         XCTAssertEqual(dismissed.value, 1)
     }
 
@@ -196,9 +202,12 @@ final class ReviewFeatureTests: XCTestCase {
     func testSendingLeavesAtOnceAndHandsTheRequestToTheAppWithoutWaitingForTheDaemon() async throws {
         let dismissed = LockIsolated(0)
         let performed = LockIsolated(0)
-        var state = ReviewFeature.State(key: deliveryKey)
-        state.screen.document = try Fixtures.liveDelivery()
-        let store = TestStore(initialState: state) { ReviewFeature() } withDependencies: {
+        let plan = try Fixtures.planCard()
+        var state = CardDetailFeature.State(key: .card("plan-1"))
+        state.screen.document = plan
+        state.content = planText
+        state.contentDigest = "plan-digest"
+        let store = TestStore(initialState: state) { CardDetailFeature() } withDependencies: {
             $0.viewsClient.perform = { _ in
                 performed.withValue { $0 += 1 }
                 throw CancellationError()
@@ -210,39 +219,90 @@ final class ReviewFeatureTests: XCTestCase {
         await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
         await store.send(.composingChanged("keep me"))
         await store.send(.commentSaved)
-        let changes = try XCTUnwrap(store.state.subject?.actions.first { $0.id?.hasPrefix("changes:") == true })
+        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
 
         await store.send(.actionTapped(changes))
         await store.receive(\.actions.sent)
         await store.receive(\.delegate.handOff)
         await store.finish()
         XCTAssertEqual(dismissed.value, 1)
-        XCTAssertEqual(performed.value, 0, "the app delivers it; the review never waits for the daemon")
+        XCTAssertEqual(performed.value, 0, "the app delivers it; the detail never waits for the daemon")
         XCTAssertTrue(store.state.comments.isEmpty)
     }
 
     @MainActor
-    func testPickingAnOptionOnAQuestionAnswersIt() async throws {
+    func testAnOptionButtonAnswersWithItsOptionID() async throws {
         let feed = FeedStub()
         let store = store(try Fixtures.card(Fixtures.questionID), feed: feed)
-        let answer = try XCTUnwrap(store.state.subject?.options)
+        let warm = try XCTUnwrap(store.state.subject?.buttons.last)
 
-        await store.send(.optionPicked(answer, optionID: "warm"))
+        await store.send(.actionTapped(warm))
         await store.skipReceivedActions()
         XCTAssertEqual(feed.requests.first?.optionId, "warm")
+        XCTAssertEqual(feed.requests.count, 1)
+    }
+
+    @MainActor
+    func testTheReplyFieldSendsItsTextToTheNodeAndIsEmptyUntilThereIsSome() async throws {
+        let feed = FeedStub()
+        let store = store(try Fixtures.card(Fixtures.questionID), feed: feed)
+        let reply = try XCTUnwrap(store.state.subject?.replyAction)
+        XCTAssertFalse(store.state.isSendable(reply), "an empty reply sends nothing")
+
+        await store.send(.replyChanged("Can you show both?"))
+        XCTAssertTrue(store.state.isSendable(reply))
+        await store.send(.actionTapped(reply))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.first?.actionId, reply.id)
+        XCTAssertEqual(feed.requests.first?.input.text, "Can you show both?")
+        XCTAssertNil(feed.requests.first?.optionId)
+    }
+
+    @MainActor
+    func testRequestingClarificationFromTheDetailAsksForTheReasonFirst() async throws {
+        let feed = FeedStub()
+        let store = store(try Fixtures.card(Fixtures.questionID), feed: feed)
+        let clarify = try XCTUnwrap(store.state.subject?.menu.first { $0.id?.hasPrefix("clarify:") == true })
+
+        await store.send(.actionTapped(clarify))
+        XCTAssertEqual(store.state.composition?.action, clarify)
+        XCTAssertEqual(feed.requests, [])
+        await store.send(.compositionConfirmed)
+        XCTAssertEqual(feed.requests, [], "no reason, nothing sent")
+        await store.send(.reasonChanged("unclear"))
+        await store.send(.noteChanged("Which copy ships first?"))
+        await store.send(.compositionConfirmed)
+        await store.skipReceivedActions()
+
+        let request = try XCTUnwrap(feed.requests.first)
+        XCTAssertEqual(request.actionId, clarify.id)
+        XCTAssertEqual(request.optionId, "unclear")
+        XCTAssertEqual(request.input.text, "Which copy ships first?")
+        XCTAssertNil(store.state.composition)
     }
 
     @MainActor
     func testALinkActionOpensItsScreenInsteadOfSending() async throws {
         let feed = FeedStub()
-        let store = store(try Fixtures.liveDelivery(), feed: feed)
-        var action = try XCTUnwrap(store.state.subject?.actions.first)
-        action = try ContractCodec.decode(AlondraContract.Action.self, from: Data(
+        let store = store(try Fixtures.card(Fixtures.questionID), feed: feed)
+        let action = try ContractCodec.decode(AlondraContract.Action.self, from: Data(
             #"{"label":"Open","style":"secondary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"link":{"kind":"view","key":"task:t-1"}}"#.utf8))
 
         await store.send(.actionTapped(action))
         await store.receive(\.delegate.open, ViewKey(rawValue: "task:t-1"))
         XCTAssertEqual(feed.requests, [])
+    }
+
+    @MainActor
+    func testAnActionTheDaemonDisabledSendsNothing() async throws {
+        let feed = FeedStub()
+        let store = store(try Fixtures.card(Fixtures.pullRequestID), feed: feed)
+        let merge = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("merge:") == true })
+        XCTAssertFalse(merge.enabled)
+
+        await store.send(.actionTapped(merge))
+        XCTAssertEqual(feed.requests, [])
+        XCTAssertNil(store.state.actions.action)
     }
 
     // MARK: Document text
@@ -293,73 +353,26 @@ final class ReviewFeatureTests: XCTestCase {
     @MainActor
     func testADocumentOffersApproveAndRequestChangesFromItsActionBar() async throws {
         let store = store(try Fixtures.documentRevision())
-        XCTAssertEqual(store.state.subject?.icon, .document)
+        XCTAssertNil(store.state.subject?.card)
         XCTAssertEqual(store.state.subject?.title, "Release plan")
-        XCTAssertEqual(labels(store), ["Request changes", "Approve"])
+        XCTAssertEqual(labels(store), ["Approve", "Request changes"])
+        XCTAssertNil(store.state.subject?.replyAction)
         XCTAssertTrue(store.state.canComment)
-    }
-
-    @MainActor
-    func testAHeldPlanIsReadInFullCommentedAndApprovedOrSentBackFromTheBar() async throws {
-        let feed = FeedStub()
-        let store = store(try Fixtures.heldPlanCard(), feed: feed)
-        XCTAssertEqual(store.state.markdown, "# Ship the parser\n\n1. Split the lexer\n2. Add tests")
-        XCTAssertEqual(labels(store), ["Request changes", "Approve"])
-        XCTAssertNil(store.state.subject?.options, "Approve and Request changes are not repeated in the page")
-        XCTAssertTrue(store.state.acceptsFeedback)
-
-        let block = try XCTUnwrap(store.state.blocks.last { $0.isCommentable })
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
-        await store.send(.composingChanged("Keep the old tests"))
-        await store.send(.commentSaved)
-        let changes = try XCTUnwrap(store.state.subject?.barActions.first)
-        await store.send(.actionTapped(changes))
-        await store.skipReceivedActions()
-        XCTAssertEqual(feed.requests.first?.actionId, "changes:hold-1@1")
-        XCTAssertEqual(feed.requests.first?.input.comments?.map(\.text), ["Keep the old tests"])
-
-        let approving = self.store(try Fixtures.heldPlanCard(), feed: feed)
-        let approve = try XCTUnwrap(approving.state.subject?.barActions.last)
-        await approving.send(.actionTapped(approve))
-        await approving.skipReceivedActions()
-        XCTAssertEqual(feed.requests.last?.actionId, "accept:hold-1@1")
-    }
-
-    @MainActor
-    func testAPlanTheNodeAskedAboutOffersItsOptionsAndRequestChangesWithComments() async throws {
-        let feed = FeedStub()
-        let store = store(try Fixtures.planQuestionCard(), feed: feed, content: { _ in "# Plan\n\nOne task per node." })
-        await store.send(.screen(.loaded(try Fixtures.planQuestionCard())))
-        await store.skipReceivedActions()
-        XCTAssertEqual(store.state.subject?.icon, .document)
-        XCTAssertEqual(store.state.subject?.options?.options.map(\.label), ["Approve; messaging in its own PR"])
-        XCTAssertEqual(labels(store), ["Request changes"])
-        XCTAssertTrue(store.state.canComment)
-
-        let block = try XCTUnwrap(store.state.blocks.first { $0.isCommentable })
-        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
-        await store.send(.composingChanged("Split it"))
-        await store.send(.commentSaved)
-        let changes = try XCTUnwrap(store.state.subject?.barActions.first)
-        await store.send(.actionTapped(changes))
-        await store.skipReceivedActions()
-        XCTAssertEqual(feed.requests.first?.actionId, "changes:q-1@1")
-        XCTAssertEqual(feed.requests.first?.input.comments?.map(\.text), ["Split it"])
     }
 
     @MainActor
     func testTheScreenObservesItsOwnKeyAndStopsWhenAsked() async throws {
-        let feed = FeedStub([try Fixtures.liveDelivery()])
-        var state = ReviewFeature.State(key: deliveryKey)
-        state.actions.dataEpoch = ""
-        let store = TestStore(initialState: state) { ReviewFeature() } withDependencies: {
+        let card = try Fixtures.card(Fixtures.questionID)
+        let feed = FeedStub([card])
+        let state = CardDetailFeature.State(key: ViewKey(rawValue: card.key))
+        let store = TestStore(initialState: state) { CardDetailFeature() } withDependencies: {
             $0.viewsClient.observe = feed.observe
         }
         store.exhaustivity = .off
 
         await store.send(.task)
         await store.skipReceivedActions()
-        XCTAssertEqual(store.state.subject?.title, "Restore the native review experience")
+        XCTAssertEqual(store.state.subject?.title, "Choose the welcome copy")
         XCTAssertEqual(store.state.actions.dataEpoch, "test-epoch")
     }
 }

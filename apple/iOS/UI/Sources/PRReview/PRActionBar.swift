@@ -4,7 +4,7 @@ import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
 
-/// The PR's buttons: ask or request changes, then the main action (merge by method, or hand the
+/// The PR's buttons: request changes, then the main action (merge by method, or hand the
 /// conflicts back). Opening the PR on its host lives in the toolbar.
 struct PRActionBar: View {
     let store: StoreOf<PRReviewFeature>
@@ -12,24 +12,12 @@ struct PRActionBar: View {
 
     var body: some View {
         GlassActionBar {
-            if review.ask != nil || review.requestChanges != nil {
-                GlassBarRow {
-                    if let ask = review.ask {
-                        Button { store.send(.perform(ask)) } label: {
-                            GlassBarLabel(String(localized: "Ask"))
-                        }
-                        .buttonStyle(.glass)
-                        .disabled(!ask.enabled)
-                        .accessibilityLabel(ask.label)
-                    }
-                    if let changes = review.requestChanges {
-                        Button { store.send(.perform(changes)) } label: {
-                            GlassBarLabel(changesTitle(changes))
-                        }
-                        .buttonStyle(.glass)
-                        .disabled(!changes.enabled)
-                    }
+            if let changes = review.requestChanges {
+                Button { store.send(.perform(changes)) } label: {
+                    GlassBarLabel(changesTitle(changes))
                 }
+                .buttonStyle(.glass)
+                .disabled(!changes.enabled)
             }
             if let conflicts = review.resolveConflicts {
                 Button { store.send(.perform(conflicts)) } label: {

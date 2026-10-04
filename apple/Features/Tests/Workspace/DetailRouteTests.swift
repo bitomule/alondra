@@ -28,7 +28,7 @@ final class DetailRouteTests: XCTestCase {
         }
 
         for key in ["card:i-1", "document:rev-1"] {
-            guard case .review = try route(key) else { return XCTFail("\(key) must open the review") }
+            guard case .cardDetail = try route(key) else { return XCTFail("\(key) must open the card detail") }
         }
         guard case .taskDetail = try route("task:t-1") else { return XCTFail("task") }
         guard case .schedules = try route("schedules") else { return XCTFail("schedules") }

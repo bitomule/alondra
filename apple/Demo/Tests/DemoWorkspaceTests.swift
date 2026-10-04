@@ -17,10 +17,10 @@ import Testing
         await store.send(.task).finish()
         let state = store.withState { $0 }
         let ids = state.orderedIDs
-        #expect(ids.count == 4)
-        #expect(state.cards[id: ids[0]]?.card?.icon == .question)
-        #expect(state.cards[id: ids[1]]?.card?.icon == .notice)
-        #expect(state.cards[id: ids[0]]?.card?.body?.text != state.cards[id: ids[1]]?.card?.body?.text)
+        #expect(ids.count == 5)
+        #expect(state.cards[id: ids[0]]?.card?.kind == .decide)
+        #expect(state.cards[id: ids[2]]?.card?.kind == .review)
+        #expect(state.cards[id: ids[0]]?.card?.need != state.cards[id: ids[2]]?.card?.need)
         store.send(.disappeared)
     }
 
@@ -31,7 +31,7 @@ import Testing
             return
         }
         let ids = try #require(home.sections.first { $0.id == "queue" }?.cardIds)
-        #expect(ids.count == 4)
+        #expect(ids.count == 5)
         #expect(home.sections.first { $0.id == "queue" }?.items.isEmpty == true)
 
         for id in ids {
@@ -50,29 +50,28 @@ import Testing
         let questionCard = try #require(question.sections.flatMap(\.items).compactMap { item -> Card? in
             if case let .card(card) = item { card } else { nil }
         }.first)
-        #expect(questionCard.title == "Restore the native review experience")
-        #expect(questionCard.body?.text.contains("Body 0") == false)
-        let answer = try #require(questionCard.actions.first { $0.presentation == .options })
-        #expect(answer.options.map(\.label) == ["Ship the concise copy", "Keep the warmer copy"])
-        guard case let .document(information) = try await client.load(.card(ids[1]), nil) else {
+        #expect(questionCard.need == "Choose the welcome copy")
+        #expect(questionCard.actions.compactMap(\.optionId) == ["clear", "warm"])
+        guard case let .document(information) = try await client.load(.card(ids[3]), nil) else {
             Issue.record("The information demo card must load")
             return
         }
         let informationCard = try #require(information.sections.flatMap(\.items).compactMap { item -> Card? in
             if case let .card(card) = item { card } else { nil }
         }.first)
-        #expect(informationCard.icon == .notice)
-        #expect(informationCard.body?.text.contains("simulator pass completed") == true)
-        func contextID(_ icon: Icon) throws -> String {
-            let context = try #require(questionCard.context.first { $0.icon == icon })
-            guard case let .view(key)? = context.link else {
+        #expect(informationCard.kind == .know)
+        func linkedID(_ link: Link?) -> String {
+            guard case let .view(key)? = link else {
                 Issue.record("The demo context must link to its screen")
                 return ""
             }
             return String(key.split(separator: ":").last ?? "")
         }
-        let nodeID = try contextID(.node)
-        let taskID = try contextID(.task)
+        let nodeID = linkedID(questionCard.context.first { $0.icon == .node }?.link)
+        let taskFact = question.sections.flatMap(\.items).compactMap { item -> Fact? in
+            if case let .facts(facts) = item { facts.items.first { $0.label == "Task" } } else { nil }
+        }.first
+        let taskID = linkedID(taskFact?.link)
         for key in [ViewKey.tasks, .fleet, .node(nodeID), .task(taskID),
                     .newRequest(), .machine, .schedules, .schedule("new")] {
             guard case let .document(screen) = try await client.load(key, nil) else {
@@ -114,8 +113,7 @@ import Testing
             Issue.record("The demo delivery card must load")
             return
         }
-        #expect(deliveryCard.title == "Restore the native review experience")
-        #expect(deliveryCard.body?.text.contains("The candidate is ready for your final approval.") == true)
+        #expect(deliveryCard.need == "Review the beta candidate")
     }
 
     @Test func pullRequestOpensDiffAndContextNoteIsOptional() async throws {
@@ -124,7 +122,7 @@ import Testing
             Issue.record("The demo home must load")
             return
         }
-        let prID = try #require(home.sections.first?.cardIds?.last)
+        let prID = "github.com/example/repo#12"
         guard case let .document(pr) = try await client.load(.pullRequest(prID), nil) else {
             Issue.record("Missing demo pull request")
             return
@@ -141,7 +139,6 @@ import Testing
             return []
         }
         #expect(actions.contains { $0.label == "Request changes" && $0.comments?.kind == .diffLines })
-        #expect(actions.contains { $0.id?.hasPrefix("ask_pr:\(prID)@") == true })
 
         guard case let .document(prCardView) = try await client.load(.card(prID), nil),
               case let .card(prCard) = try #require(prCardView.sections.flatMap(\.items).first) else {
@@ -159,9 +156,9 @@ import Testing
             Issue.record("Missing demo question card")
             return
         }
-        let context = try #require(card.actions.first { $0.label == "Need more context" })
+        let context = try #require(card.more.first { $0.id?.hasPrefix("clarify:") == true })
         guard case let .text(_, required, _) = context.input else {
-            Issue.record("The context action must retain its text input")
+            Issue.record("The clarification must retain its optional note")
             return
         }
         #expect(!required)

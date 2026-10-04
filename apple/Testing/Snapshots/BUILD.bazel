@@ -74,6 +74,7 @@ ios_unit_test(
     data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + [
         "//apple/Testing/Samples:all",
         "//fixtures/views:all",
+        "//fixtures/views:cards",
     ],
     env = {"SNAPSHOT_ROOT": "apple/Testing/Snapshots/Tests/__Snapshots__"},
     minimum_os_version = "26.0",

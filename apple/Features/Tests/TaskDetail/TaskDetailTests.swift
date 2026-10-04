@@ -53,7 +53,7 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.state, "Needs you")
         XCTAssertEqual(detail.stateTone, .warning, "the daemon tints the state with the task's tone")
         XCTAssertNotNil(detail.since)
-        XCTAssertEqual(detail.waiting.elements.count, 4)
+        XCTAssertEqual(detail.waiting.elements.count, 5)
         XCTAssertEqual(detail.pullRequests.elements.count, 1)
         XCTAssertEqual(detail.dependencies.elements.count, 0)
         XCTAssertNil(detail.node, "this task has no node yet")

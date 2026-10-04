@@ -18,7 +18,7 @@ final class ViewsUITests: XCTestCase {
     func testGoldenComponentDocumentsCanBeComposedBySharedRenderers() throws {
         let fixtureRoot = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
             .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
-            .appendingPathComponent("fixtures/views")
+            .appendingPathComponent("fixtures/views/cards")
 
         for name in ["home-ios", "card-question", "card-pr", "card-delivery"] {
             let data = try Data(contentsOf: fixtureRoot.appendingPathComponent("\(name).json"))
@@ -138,7 +138,7 @@ final class ScheduleEditorRulesTests: XCTestCase {
     private func form() throws -> WireForm {
         let root = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
             .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
-            .appendingPathComponent("fixtures/views/schedule-new-ios.json")
+            .appendingPathComponent("fixtures/views/cards/schedule-new-ios.json")
         let document = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root))
         return try XCTUnwrap(document.sections.lazy.flatMap(\.items).compactMap { item -> WireForm? in
             if case let .form(form) = item { form } else { nil }
@@ -170,83 +170,5 @@ final class ScheduleEditorRulesTests: XCTestCase {
         XCTAssertEqual(ScheduleEditorRules.repeatMode("weekly"), "weekly")
         XCTAssertEqual(ScheduleEditorRules.repeatValue(forMode: "custom"), "every_hours")
         XCTAssertEqual(ScheduleEditorRules.repeatValue(forMode: "once"), "once")
-    }
-}
-
-final class CardActionPresentationTests: XCTestCase {
-    private func card(
-        named name: String, replacingIcon icon: String? = nil, linkingArtifact: Bool = false
-    ) throws -> Card {
-        let root = URL(fileURLWithPath: try XCTUnwrap(ProcessInfo.processInfo.environment["TEST_SRCDIR"]))
-            .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
-            .appendingPathComponent("fixtures/views/\(name).json")
-        var text = try String(contentsOf: root, encoding: .utf8)
-        if let icon { text = text.replacingOccurrences(of: "\"icon\": \"delivery\"", with: "\"icon\": \"\(icon)\"") }
-        if linkingArtifact { text = text.replacingOccurrences(of: "ready for your final approval.", with: "ready: https://claude.ai/artifact/abc123") }
-        let document = try ContractCodec.decode(ViewDocument.self, from: Data(text.utf8))
-        return try XCTUnwrap(document.sections.lazy.flatMap(\.items).compactMap { item -> Card? in
-            if case let .card(card) = item { card } else { nil }
-        }.first)
-    }
-
-    private func addingRequestChanges(_ card: Card) throws -> Card {
-        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: ContractCodec.encode(card)) as? [String: Any])
-        var actions = try XCTUnwrap(json["actions"] as? [[String: Any]])
-        actions.append([
-            "id": "changes:\(card.id)@1", "label": "Request changes", "style": "secondary", "presentation": "button",
-            "input": ["kind": "none"], "attachments": false, "enabled": true, "comments": ["kind": "blocks"],
-        ])
-        json["actions"] = actions
-        return try ContractCodec.decode(Card.self, from: JSONSerialization.data(withJSONObject: json))
-    }
-
-    func testDeliveryWithAnArtifactRequestChangesIsRescueComments() throws {
-        let delivery = try addingRequestChanges(card(named: "card-delivery", linkingArtifact: true))
-        let changes = try XCTUnwrap(delivery.actions.first { $0.id?.hasPrefix("changes:") == true })
-        XCTAssertTrue(CardActionPresentation.isRescueComments(card: delivery, action: changes))
-        XCTAssertTrue(CardActionPresentation.isDocumentReview(delivery))
-        let accept = try XCTUnwrap(delivery.actions.first { $0.id?.hasPrefix("accept:") == true })
-        XCTAssertFalse(CardActionPresentation.isRescueComments(card: delivery, action: accept))
-    }
-
-    func testDeliveryWithoutAnArtifactNeverRescuesComments() throws {
-        let plain = try card(named: "card-delivery")
-        XCTAssertFalse(plain.actions.contains { CardActionPresentation.isRescueComments(card: plain, action: $0) })
-        XCTAssertFalse(CardActionPresentation.isDocumentReview(plain))
-        let withoutLink = try addingRequestChanges(plain)
-        let commented = try XCTUnwrap(withoutLink.actions.first { $0.id?.hasPrefix("changes:") == true })
-        XCTAssertFalse(CardActionPresentation.isRescueComments(card: withoutLink, action: commented))
-    }
-
-    func testOtherDocumentsKeepTheirReviewActions() throws {
-        let document = try addingRequestChanges(card(named: "card-delivery", replacingIcon: "document", linkingArtifact: true))
-        let changes = try XCTUnwrap(document.actions.first { $0.id?.hasPrefix("changes:") == true })
-        XCTAssertFalse(CardActionPresentation.isRescueComments(card: document, action: changes))
-    }
-
-    func testPullRequestCardsNeverRescueComments() throws {
-        let pullRequest = try card(named: "card-pr")
-        XCTAssertFalse(pullRequest.actions.contains { CardActionPresentation.isRescueComments(card: pullRequest, action: $0) })
-    }
-
-    func testAPullRequestRequestsChangesFromItsReplyFieldAlone() throws {
-        let pullRequest = try card(named: "card-pr")
-        let changes = try XCTUnwrap(pullRequest.actions.first { $0.id?.hasPrefix("changes:") == true })
-        let ask = try XCTUnwrap(pullRequest.actions.first { $0.id?.hasPrefix("ask_pr:") == true })
-        XCTAssertFalse(CardActionPresentation.showsAsControl(changes, in: pullRequest, reply: changes))
-        XCTAssertTrue(CardActionPresentation.showsAsControl(ask, in: pullRequest, reply: changes))
-    }
-
-    func testADocumentKeepsItsReplyActionAsAButtonToItsComments() throws {
-        let document = try addingRequestChanges(card(named: "card-delivery", replacingIcon: "document", linkingArtifact: true))
-        let changes = try XCTUnwrap(document.actions.first { $0.id?.hasPrefix("changes:") == true })
-        XCTAssertTrue(CardActionPresentation.showsAsControl(changes, in: document, reply: changes))
-    }
-
-    func testOpenOnGitHubIsTheIdlessURLAction() throws {
-        let github = try ContractCodec.decode(AlondraContract.Action.self, from: Data(#"{"id":"","label":"Open on GitHub","style":"plain","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true,"link":{"kind":"url","url":"https://github.com/o/r/pull/1"}}"#.utf8))
-        XCTAssertTrue(CardActionPresentation.isOpenOnGitHub(github))
-        let pullRequest = try card(named: "card-pr")
-        XCTAssertTrue(pullRequest.actions.contains(where: CardActionPresentation.isOpenOnGitHub))
     }
 }

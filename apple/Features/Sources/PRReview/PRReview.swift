@@ -7,13 +7,11 @@ public struct PRReview: Equatable, Sendable {
     public var title: String
     public var facts: [Fact] = []
     public var checks: [Check] = []
-    public var attached: [Card] = []
     public var description: Markdown?
     public var diff: ContentRef?
     public var notices: [Notice]
     public var merge: WireAction?
     public var resolveConflicts: WireAction?
-    public var ask: WireAction?
     public var requestChanges: WireAction?
     public var pageURL: URL?
 
@@ -24,7 +22,6 @@ public struct PRReview: Equatable, Sendable {
             switch section.id {
             case "facts": facts = section.items.facts
             case "checks": checks = section.items.checks
-            case "children": attached = section.items.cards
             case "description": description = section.items.markdown
             case "diff": diff = section.items.diff
             case "actions": sortActions(section.items.actions)
@@ -42,7 +39,6 @@ public struct PRReview: Equatable, Sendable {
             switch action.id?.prefix(while: { $0 != ":" }) {
             case "merge": merge = action
             case "conflicts": resolveConflicts = action
-            case "ask_pr": ask = action
             case "changes": requestChanges = action
             default: break
             }
@@ -69,13 +65,6 @@ private extension Array where Element == ViewItem {
         flatMap { item -> [Check] in
             if case .checks(let value) = item { return value.items }
             return []
-        }
-    }
-
-    var cards: [Card] {
-        compactMap { item -> Card? in
-            if case .card(let value) = item { return value }
-            return nil
         }
     }
 
