@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "ios",
-  "version": "vdd391809d0a86585",
+  "version": "v218d7e546e7933e3",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -222,6 +222,21 @@
       "collapsed": false,
       "items": [
         {
+          "type": "markdown",
+          "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diff",
+          "size": 0,
+          "digest": "abcdef12",
+          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
+          "commentable": true
+        },
+        {
           "type": "checks",
           "items": [
             {
@@ -258,21 +273,6 @@
               "value": "4 files · +120 −30"
             }
           ]
-        },
-        {
-          "type": "markdown",
-          "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
-          "truncated": false,
-          "commentable": false
-        },
-        {
-          "type": "content_ref",
-          "kind": "diff",
-          "title": "Diff",
-          "size": 0,
-          "digest": "abcdef12",
-          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
-          "commentable": true
         }
       ]
     },
@@ -291,10 +291,6 @@
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               }
-            },
-            {
-              "label": "Mission",
-              "value": "Polish the Alondra beta"
             }
           ]
         }

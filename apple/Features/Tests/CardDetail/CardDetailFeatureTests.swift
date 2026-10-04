@@ -81,6 +81,24 @@ final class CardDetailFeatureTests: XCTestCase {
     }
 
     @MainActor
+    func testAPullRequestsDiffLoadsInsideTheDetail() async throws {
+        let card = try Fixtures.card(Fixtures.pullRequestID)
+        let fetched = LockIsolated<[String]>([])
+        let store = store(card, content: { reference in
+            fetched.withValue { $0.append(reference.fetch) }
+            return "diff --git a/a.swift b/a.swift\n--- a/a.swift\n+++ b/a.swift\n@@ -1 +1 @@\n-old\n+new\n"
+        })
+
+        await store.send(.screen(.loaded(card)))
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(fetched.value.count, 1)
+        XCTAssertEqual(fetched.value.first?.hasPrefix("/pull-requests/"), true)
+        XCTAssertEqual(store.state.diff?.count, 1)
+        XCTAssertFalse(store.state.diffFailed)
+    }
+
+    @MainActor
     func testTheDetailOffersNoActionTheCardDoesNot() async throws {
         let card = try Fixtures.card(Fixtures.pullRequestID)
         let store = store(card)

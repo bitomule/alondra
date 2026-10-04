@@ -1010,13 +1010,10 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let content = interaction.card.content.as_ref().filter(|content| !content.body.trim().is_empty());
     if let Some(pr) = pr_target(interaction, domain) {
         let (facts, checks, _) = pr_overview(pr, context);
-        out.extend(checks.map(Item::Checks));
-        out.push(Item::Facts(facts));
+        let report = content.filter(|c| c.kind != DomainContent::Diff).map(|c| c.body.clone());
+        out.extend(report.map(markdown));
         let live = context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0);
-        let description = live
-            .and_then(|detail| detail.body.clone())
-            .filter(|text| !text.trim().is_empty())
-            .or_else(|| content.filter(|c| c.kind != DomainContent::Diff).map(|c| c.body.clone()));
+        let description = live.and_then(|detail| detail.body.clone()).filter(|text| !text.trim().is_empty());
         out.extend(description.map(markdown));
         out.push(Item::ContentRef(ContentRef {
             kind: super::ContentKind::Diff,
@@ -1026,6 +1023,8 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
             fetch: format!("/pull-requests/{}/diff", super::id::path_segment(&pr.id.0)),
             commentable: true,
         }));
+        out.extend(checks.map(Item::Checks));
+        out.push(Item::Facts(facts));
         return out;
     }
     if let Some(revision_id) = reviewed_revision(interaction)
@@ -1058,40 +1057,14 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
 }
 
 fn context_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
-    let lang = context.lang;
-    let domain = context.domain;
-    let mut facts = vec![];
-    if let Some(task) = item.task_id.as_ref().and_then(|id| domain.tasks.get(id)) {
-        facts.push(Fact {
-            label: t!(lang, "Task", "Tarea").into(),
-            value: task.title.clone(),
-            tone: None,
-            link: Some(Link::View { key: format!("task:{}", task.id) }),
-        });
+    let task = item.task_id.as_ref().and_then(|id| context.domain.tasks.get(id)).map(|task| task.title.clone());
+    let node = item.agent_id.as_ref().map(|_| node_name(item, context));
+    let line = [task, node].into_iter().flatten().collect::<Vec<_>>().join(" · ");
+    if line.is_empty() {
+        return vec![];
     }
-    if let Some(request) = item.request_id.as_ref().and_then(|id| domain.requests.get(id)) {
-        facts.push(Fact {
-            label: t!(lang, "Mission", "Misión").into(),
-            value: clip(request.title.as_deref().unwrap_or(&request.body), 120),
-            tone: None,
-            link: (context.client != Client::Ios).then(|| Link::View { key: format!("request:{}", request.id) }),
-        });
-    }
-    let mut out = vec![];
-    if !facts.is_empty() {
-        out.push(Item::Facts(Facts { items: facts }));
-    }
-    let said = item
-        .agent_id
-        .as_ref()
-        .and_then(|agent_id| context.live.nodes.iter().find(|node| node.agent_id == agent_id.0))
-        .and_then(|node| node.last_message.as_deref())
-        .map(str::trim)
-        .filter(|text| !text.is_empty() && !text.starts_with("mcp__"));
-    if let Some(text) = said {
-        out.push(markdown(format!("**{}**\n\n{text}", t!(lang, "What the node said last", "Lo último que dijo el nodo"))));
-    }
-    out
+    let link = item.task_id.as_ref().map(|id| Link::View { key: format!("task:{id}") });
+    vec![Item::Facts(Facts { items: vec![Fact { label: t!(context.lang, "Task", "Tarea").into(), value: line, tone: None, link }] })]
 }
 
 fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
