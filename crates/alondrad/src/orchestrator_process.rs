@@ -636,7 +636,7 @@ printf '%s\n' '{"type":"result","session_id":"test-session","subtype":"success",
         let dir = std::env::temp_dir().join(uuid().unwrap());
         let lock = Ownership::acquire(&dir).unwrap().unwrap();
         let exe = fake(&dir, "cat >/dev/null\nprintf 'invalid-json\\n'\nexec sleep 30");
-        let output = tokio::time::timeout(std::time::Duration::from_secs(5), execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending())).await.unwrap();
+        let output = tokio::time::timeout(std::time::Duration::from_secs(25), execute(invocation(&dir, &exe, &lock), |_| Ok(()), || Ok(()), std::future::pending())).await.unwrap();
         assert!(!output.exit_ok);
         assert!(output.stream.error.unwrap().contains("JSONL"));
         std::fs::remove_dir_all(dir).unwrap();

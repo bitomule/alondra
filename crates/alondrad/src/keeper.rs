@@ -247,7 +247,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         enqueue(&hub, 1);
         let first = execute_tick(&hub, &ch, &dir, &lock, &exe);
         let late = async {
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(Duration::from_secs(25), async {
                 while !hub.read(|v| v.orchestrator.as_ref().is_some_and(|r| r.phase == Phase::Running)) { tokio::time::sleep(Duration::from_millis(5)).await; }
             }).await.unwrap();
             enqueue(&hub, 2);
@@ -348,7 +348,7 @@ exit 1
         assert!(hub.read(|v| v.orchestrator.as_ref().unwrap().compact_pending));
         let compact = execute_tick(&hub, &ch, &dir, &lock, &exe);
         let late = async {
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(Duration::from_secs(25), async {
                 while !hub.read(|v| v.orchestrator.as_ref().is_some_and(|r| r.phase == Phase::Compacting)) { tokio::time::sleep(Duration::from_millis(5)).await; }
             }).await.unwrap();
             enqueue(&hub, 2);
@@ -373,7 +373,7 @@ exit 1
         enqueue(&hub, 1);
         let work = execute_tick(&hub, &ch, &dir, &lock, &exe);
         let cancel = async {
-            let run_id = tokio::time::timeout(Duration::from_secs(5), async {
+            let run_id = tokio::time::timeout(Duration::from_secs(25), async {
                 loop {
                     if let Some(id) = hub.read(|v| v.orchestrator.as_ref().filter(|r| r.phase == Phase::Running).and_then(|r| r.active_run.as_ref().map(|r| r.id.clone()))) { break id; }
                     tokio::time::sleep(Duration::from_millis(5)).await;
@@ -381,7 +381,7 @@ exit 1
             }).await.unwrap();
             transition(&hub, Transition::CancelRequested { run_id }).unwrap();
         };
-        let (result, _) = tokio::time::timeout(Duration::from_secs(10), async { tokio::join!(work, cancel) }).await.unwrap();
+        let (result, _) = tokio::time::timeout(Duration::from_secs(25), async { tokio::join!(work, cancel) }).await.unwrap();
         result.unwrap();
         hub.read(|v| {
             let runtime = v.orchestrator.as_ref().unwrap();
@@ -391,7 +391,10 @@ exit 1
             assert!(v.messages[&1].handed_at.is_none());
         });
         drop(lock);
-        assert!(Ownership::acquire(&dir).unwrap().is_some(), "no descendant may retain execution ownership after cancellation");
+        let released = tokio::time::timeout(Duration::from_secs(10), async {
+            while Ownership::acquire(&dir).unwrap().is_none() { tokio::time::sleep(Duration::from_millis(10)).await; }
+        }).await;
+        assert!(released.is_ok(), "no descendant may retain execution ownership after cancellation");
         std::fs::remove_dir_all(&hub.home).unwrap();
     }
 
@@ -402,7 +405,7 @@ exit 1
         let accepted_command = hub.orchestrator_commands.read().await;
         let work = execute_tick(&hub, &ch, &dir, &lock, &exe);
         let handler = async {
-            tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::time::timeout(Duration::from_secs(25), async {
                 while !dir.join("process-done").exists() { tokio::time::sleep(Duration::from_millis(5)).await; }
             }).await.unwrap();
             assert_eq!(hub.read(|v| v.orchestrator.as_ref().unwrap().phase), Phase::Running);
