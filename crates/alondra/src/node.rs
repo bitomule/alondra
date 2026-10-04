@@ -124,7 +124,8 @@ fn permission_card(payload: &Value, id: &str) -> Option<Value> {
         return None;
     }
     Some(json!({"session_id": session_id, "id": id, "kind": "permission", "tool": tool,
-        "input": payload.get("tool_input").cloned().unwrap_or(Value::Null), "withdraw_when_gone": true}))
+        "input": payload.get("tool_input").cloned().unwrap_or(Value::Null),
+        "suggestions": payload.get("permission_suggestions").cloned().unwrap_or(Value::Null), "withdraw_when_gone": true}))
 }
 
 fn permission_decision(answer: &Value) -> Option<Value> {
@@ -132,7 +133,10 @@ fn permission_decision(answer: &Value) -> Option<Value> {
         return None;
     }
     let decision = if answer.get("allowed") == Some(&Value::Bool(true)) {
-        json!({"behavior": "allow"})
+        match answer.get("permissions") {
+            Some(permissions) => json!({"behavior": "allow", "updatedPermissions": permissions}),
+            None => json!({"behavior": "allow"}),
+        }
     } else {
         let reason = answer.get("reason").and_then(Value::as_str).unwrap_or("The user denied it");
         json!({"behavior": "deny", "message": reason})
@@ -202,7 +206,12 @@ mod tests {
     fn prompt() -> Value {
         json!({"session_id": "session-1", "hook_event_name": "PermissionRequest", "permission_mode": "auto",
             "tool_name": "Bash", "tool_input": {"command": "git push origin main", "description": "Push"},
-            "permission_suggestions": []})
+            "permission_suggestions": [suggestion()]})
+    }
+
+    fn suggestion() -> Value {
+        json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "git push origin main"}],
+            "behavior": "allow", "destination": "localSettings"})
     }
 
     fn scratch() -> std::path::PathBuf {
@@ -215,7 +224,7 @@ mod tests {
     fn a_permission_prompt_becomes_a_permission_card_withdrawn_with_its_hook() {
         assert_eq!(permission_card(&prompt(), "permission-1"), Some(json!({"session_id": "session-1", "id": "permission-1",
             "kind": "permission", "tool": "Bash", "input": {"command": "git push origin main", "description": "Push"},
-            "withdraw_when_gone": true})));
+            "suggestions": [suggestion()], "withdraw_when_gone": true})));
     }
 
     #[test]
@@ -238,6 +247,19 @@ mod tests {
         assert_eq!(permission_decision(&json!({"held": true, "allowed": false, "reason": "David denied it: not now"})),
             Some(json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
                 "decision": {"behavior": "deny", "message": "David denied it: not now"}}})));
+    }
+
+    #[test]
+    fn always_answers_allow_with_the_permission_update_to_apply() {
+        assert_eq!(permission_decision(&json!({"held": true, "allowed": true, "permissions": [suggestion()]})),
+            Some(json!({"hookSpecificOutput": {"hookEventName": "PermissionRequest",
+                "decision": {"behavior": "allow", "updatedPermissions": [suggestion()]}}})));
+    }
+
+    #[test]
+    fn a_denial_never_carries_permission_updates() {
+        let decision = permission_decision(&json!({"held": true, "allowed": false, "reason": "no", "permissions": [suggestion()]})).unwrap();
+        assert_eq!(decision["hookSpecificOutput"]["decision"], json!({"behavior": "deny", "message": "no"}));
     }
 
     #[test]

@@ -556,6 +556,7 @@ pub enum Hold {
 impl Hold {
     pub const ALLOW: &'static str = "allow";
     pub const DENY: &'static str = "deny";
+    pub const ALWAYS: &'static str = "always";
     pub const APPROVE: &'static str = "approve";
     pub const REQUEST_CHANGES: &'static str = "request_changes";
     pub const ACCEPT: &'static str = "accept";
@@ -565,19 +566,47 @@ impl Hold {
     /// The fixed yes/no options of a permission, plan or elicitation; a question brings its own.
     /// A permission's or plan's no, and an elicitation's accept, take optional text.
     pub fn options(self) -> Vec<QuestionOption> {
+        self.options_offering(false)
+    }
+
+    /// `always` adds a permission's "allow and remember" between its yes and its no.
+    pub fn options_offering(self, always: bool) -> Vec<QuestionOption> {
         let note = || vec![InputSpec { id: Self::NOTE.into(), kind: InputKind::Text, required: false }];
         let option = |id: &str, label: &str, description: Option<&str>, inputs: Vec<InputSpec>| QuestionOption {
             id: id.into(), label: label.into(), description: description.map(Into::into), inputs,
         };
         match self {
-            Hold::Permission => vec![option(Self::ALLOW, "Allow", None, vec![]),
-                option(Self::DENY, "Deny", Some("Write the reason"), note())],
+            Hold::Permission => {
+                let mut options = vec![option(Self::ALLOW, "Allow", None, vec![])];
+                if always {
+                    options.push(option(Self::ALWAYS, "Always for this", None, vec![]));
+                }
+                options.push(option(Self::DENY, "Deny", Some("Write the reason"), note()));
+                options
+            }
             Hold::Plan => vec![option(Self::APPROVE, "Approve", None, vec![]),
                 option(Self::REQUEST_CHANGES, "Request changes", Some("Write what to change"), note())],
             Hold::Elicitation => vec![option(Self::ACCEPT, "Accept", None, note()),
                 option(Self::DECLINE, "Decline", None, vec![])],
             Hold::Question => vec![],
         }
+    }
+
+    /// The permission update Claude Code suggested that "Always for this" applies: the first rule
+    /// that allows the call and is kept for the project, the narrowest place that outlives the
+    /// session (this checkout's local settings, then the project's shared ones, then the session
+    /// alone). Never the user's global settings, a mode change or a directory grant, which reach
+    /// further than the one call the user is answering.
+    pub fn always_suggestion(suggestions: &serde_json::Value) -> Option<serde_json::Value> {
+        const SCOPES: [&str; 3] = ["localSettings", "projectSettings", "session"];
+        let text = |entry: &serde_json::Value, key: &str| entry.get(key).and_then(serde_json::Value::as_str).map(str::to_owned);
+        let entries = suggestions.as_array()?;
+        SCOPES.iter().find_map(|scope| entries.iter().find(|entry| {
+            text(entry, "type").as_deref() == Some("addRules")
+                && text(entry, "behavior").as_deref() == Some("allow")
+                && text(entry, "destination").as_deref() == Some(scope)
+                && entry.get("rules").and_then(serde_json::Value::as_array).is_some_and(|rules| !rules.is_empty())
+        })).cloned()
     }
 
     pub fn approves(self, option_id: &str) -> bool {
