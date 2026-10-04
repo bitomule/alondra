@@ -42,6 +42,7 @@ struct Fixture {
     agent: String,
     next_id: u64,
     github: Arc<crate::domain_github::FakeObserver>,
+    pr_view: Arc<crate::v2_client_routes::FakePrView>,
     // Dropped after the runtime, including when an assertion panics.
     _cleanup: Cleanup,
 }
@@ -69,6 +70,8 @@ impl Fixture {
         let github = Arc::new(crate::domain_github::FakeObserver::new());
         let state = V2Only::open_with(&home, Box::new(github.clone())).unwrap();
         let domain = state.domain();
+        let pr_view = Arc::new(crate::v2_client_routes::FakePrView::default());
+        state.client().use_pr_view(pr_view.clone());
         let registration = CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: epoch.clone().into(),
@@ -125,6 +128,7 @@ impl Fixture {
             agent,
             next_id: 0,
             github,
+            pr_view,
             _cleanup: Cleanup(home),
         }
     }
@@ -392,6 +396,57 @@ async fn http_pr_flow_replays_same_receipt_and_rejects_old_epoch() {
     assert_eq!(persisted.pull_requests[&"pr-1".into()].task_id.0, "pr-task");
     assert!(persisted.interactions.contains_key(&"pr-delivery".into()));
     drop(reopened);
+    fixture.finish().await;
+}
+
+fn user_pushes(domain: &DomainRuntime) -> Vec<Option<String>> {
+    domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        .filter(|message| message.recipient_kind == "user")
+        .map(|message| message.interaction_id)
+        .collect()
+}
+
+#[tokio::test]
+async fn http_presenting_a_conflicting_pr_is_refused_before_any_card_or_push() {
+    let mut fixture = Fixture::start().await;
+    fixture.task("pr-task", true).await;
+    fixture.producer(false, json!({"kind":"register_pr", "task_id":"pr-task",
+        "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
+        "number":7, "head":"0123456789abcdef", "base":"main", "allowed_methods":["squash"]})).await;
+    let pushes_before = user_pushes(&fixture.domain);
+    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef",
+        "mergeable":"CONFLICTING", "mergeStateStatus":"DIRTY"})));
+    let present = json!({"kind":"present_result", "task_id":"pr-task",
+        "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
+        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]});
+    let envelope = fixture.envelope(present.clone());
+    let (status, refused) = fixture.post(&fixture.agent, &envelope).await;
+    assert_eq!(status, StatusCode::CONFLICT, "{refused}");
+    assert_eq!(refused["code"], "pr_conflicts");
+    assert!(refused["message"].as_str().unwrap().contains("bring main into the branch"), "{refused}");
+    assert!(!fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()), "no card");
+    assert_eq!(user_pushes(&fixture.domain), pushes_before, "no push");
+
+    fixture.pr_view.answer(Some(json!({"state":"OPEN", "headRefOid":"0123456789abcdef",
+        "mergeable":"MERGEABLE", "mergeStateStatus":"CLEAN"})));
+    fixture.producer(false, present).await;
+    let state = fixture.domain.state().unwrap();
+    assert!(state.interactions.contains_key(&"pr-delivery".into()));
+    assert!(user_pushes(&fixture.domain).contains(&Some("pr-delivery".into())), "the push follows the card");
+    fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_presenting_a_pr_github_cannot_report_still_creates_the_card() {
+    let mut fixture = Fixture::start().await;
+    fixture.task("pr-task", true).await;
+    fixture.producer(false, json!({"kind":"register_pr", "task_id":"pr-task",
+        "pr_id":"pr-1", "host":"github.com", "repository":"example/project",
+        "number":7, "head":"0123456789abcdef", "base":"main", "allowed_methods":["squash"]})).await;
+    fixture.producer(false, json!({"kind":"present_result", "task_id":"pr-task",
+        "interaction_id":"pr-delivery", "body":"Code ready", "is_final":true,
+        "targets":[{"kind":"pull_request", "pr_id":"pr-1", "head":"0123456789abcdef"}]})).await;
+    assert!(fixture.domain.state().unwrap().interactions.contains_key(&"pr-delivery".into()));
     fixture.finish().await;
 }
 

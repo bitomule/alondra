@@ -2,8 +2,8 @@
 //! title, checks and whether it merges cleanly. Refreshed in the background and read from
 //! memory, so a client's poll never waits on `gh`.
 use alondra_core::domain_v2::{
-    Actor, Command, CommandEnvelope, DeliveryTarget, DomainState, Instruction, InteractionPayload, PrState,
-    PROTOCOL_VERSION,
+    Actor, Command, CommandEnvelope, DeliveryTarget, DomainError, DomainState, Instruction, InteractionPayload,
+    PrState, PullRequest, PROTOCOL_VERSION,
 };
 use alondra_core::pr::Check;
 use serde::Serialize;
@@ -11,7 +11,8 @@ use serde_json::Value;
 use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub(crate) type Viewed<'a> = Pin<Box<dyn Future<Output = Option<Value>> + Send + 'a>>;
 
@@ -21,6 +22,26 @@ pub(crate) trait PrView: Send + Sync + 'static {
 }
 
 pub(crate) struct GhView;
+
+/// GitHub as a test sets it: `None` is GitHub not answering.
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct FakePrView(pub Mutex<Option<Value>>);
+
+#[cfg(test)]
+impl FakePrView {
+    pub(crate) fn answer(&self, view: Option<Value>) {
+        *self.0.lock().unwrap() = view;
+    }
+}
+
+#[cfg(test)]
+impl PrView for FakePrView {
+    fn view<'a>(&'a self, _: &'a str) -> Viewed<'a> {
+        let view = self.0.lock().unwrap().clone();
+        Box::pin(async move { view })
+    }
+}
 
 impl PrView for GhView {
     fn view<'a>(&'a self, url: &'a str) -> Viewed<'a> {
@@ -33,6 +54,7 @@ pub(crate) struct Details {
     pub title: Option<String>,
     pub body: Option<String>,
     pub head_ref: Option<String>,
+    pub head_sha: Option<String>,
     pub base_ref: Option<String>,
     pub checks: Vec<Check>,
     pub additions: u64,
@@ -40,6 +62,26 @@ pub(crate) struct Details {
     pub changed_files: u64,
     pub conflicts: bool,
     pub mergeability_unknown: bool,
+}
+
+/// Whether a PR merges into its base, as far as GitHub has told us.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Merge {
+    Clean,
+    Conflicts,
+    Unknown,
+}
+
+impl Details {
+    fn merge(&self) -> Merge {
+        if self.conflicts {
+            Merge::Conflicts
+        } else if self.mergeability_unknown {
+            Merge::Unknown
+        } else {
+            Merge::Clean
+        }
+    }
 }
 
 #[derive(Default)]
@@ -67,6 +109,67 @@ impl PrDetails {
             self.record(&pr.id.0, parse(&pr.id.0, pr.number, &view));
         }
     }
+}
+
+impl super::Client {
+    pub(crate) fn use_pr_view(&self, view: Arc<dyn PrView>) {
+        *self.pr_view.lock().expect("pull request view poisoned") = view;
+    }
+
+    /// Whether `pr` merges at `head`, asked up to `attempts` times while GitHub is still computing.
+    /// A clean answer for this head is trusted; a conflict or an unknown is asked again, since a
+    /// base that moved can clear either without a new head.
+    pub(crate) async fn merge_state(&self, pr: &PullRequest, head: &str, attempts: usize, pause: Duration) -> Merge {
+        if self.details.get(&pr.id.0)
+            .is_some_and(|details| details.head_sha.as_deref() == Some(head) && details.merge() == Merge::Clean)
+        {
+            return Merge::Clean;
+        }
+        let view = self.pr_view.lock().expect("pull request view poisoned").clone();
+        let url = alondra_core::pr::canonical(&pr.repository, pr.number);
+        for attempt in 0..attempts {
+            if attempt > 0 {
+                tokio::time::sleep(pause).await;
+            }
+            let Some(answer) = view.view(&url).await else { return Merge::Unknown };
+            let details = parse(&pr.id.0, pr.number, &answer);
+            let merge = details.merge();
+            self.details.record(&pr.id.0, details);
+            if merge != Merge::Unknown {
+                return merge;
+            }
+        }
+        Merge::Unknown
+    }
+
+    /// A node presenting a PR that GitHub says conflicts is told to resolve it first: the card and
+    /// its push would only reach the user to be handed back a minute later.
+    pub(crate) async fn verify_presentation(&self, command: &Command) -> Result<(), DomainError> {
+        let Command::PresentResult { targets, interaction_id, .. } = command else { return Ok(()) };
+        let Ok(state) = self.domain.state() else { return Ok(()) };
+        if state.interactions.contains_key(interaction_id) {
+            return Ok(());
+        }
+        for target in targets {
+            let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
+            let Some(pr) = state.pull_requests.get(pr_id).filter(|pr| pr.state == PrState::Open) else { continue };
+            if self.merge_state(pr, head, PRESENT_ATTEMPTS, PRESENT_PAUSE).await == Merge::Conflicts {
+                return Err(DomainError::new("pr_conflicts", presentation_conflicts_text(pr)));
+            }
+        }
+        Ok(())
+    }
+}
+
+const PRESENT_ATTEMPTS: usize = 3;
+const PRESENT_PAUSE: Duration = Duration::from_secs(2);
+
+fn presentation_conflicts_text(pr: &PullRequest) -> String {
+    let url = alondra_core::pr::canonical(&pr.repository, pr.number);
+    let base = &pr.base;
+    format!("GitHub reports that {url} conflicts with {base}, so nothing was presented: bring {base} into the branch, \
+        resolve the conflicts, run the tests and push, then present the PR again with present_result and its new head. \
+        If you cannot resolve them, ask the user.")
 }
 
 /// A presented PR that GitHub says conflicts goes back to its Agent with the words of the user's
@@ -120,6 +223,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
         title: Some(card.title.clone()),
         body: card.body.clone(),
         head_ref: card.head.clone(),
+        head_sha: card.head_sha.clone(),
         base_ref: card.base.clone(),
         conflicts: card.conflicts(),
         mergeability_unknown: card.mergeability_unknown(),

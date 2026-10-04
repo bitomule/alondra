@@ -26,7 +26,9 @@ use std::time::Duration;
 pub(crate) use close::Sessions;
 pub(crate) use new_work::Github;
 pub(crate) use live::Live;
-pub(crate) use pr_details::{GhView, PrView};
+pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, PrView};
+#[cfg(test)]
+pub(crate) use pr_details::FakePrView;
 
 const DETAILS_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -36,6 +38,7 @@ pub(crate) struct Client {
     pub(crate) gauges: crate::machine::Gauges,
     pub(crate) views_gauges: std::sync::Mutex<Option<(std::time::Instant, Vec<alondra_core::views::Gauge>, Vec<alondra_core::views::Gauge>)>>,
     pub(crate) details: pr_details::PrDetails,
+    pr_view: std::sync::Mutex<Arc<dyn PrView>>,
     pub(crate) views: crate::views::cache::Cache,
     pub(crate) feeds: crate::views::feed::Feeds,
     sessions: std::sync::Mutex<Arc<dyn Sessions>>,
@@ -244,6 +247,7 @@ impl Client {
             gauges,
             views_gauges: Default::default(),
             details: Default::default(),
+            pr_view: std::sync::Mutex::new(Arc::new(GhView)),
             views: Default::default(),
             feeds: Default::default(),
             sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
@@ -310,6 +314,7 @@ impl Client {
 
     /// Keeps the GitHub details of open pull requests current until the daemon stops.
     pub(crate) async fn run(self: Arc<Self>, source: Arc<dyn PrView>) {
+        self.use_pr_view(source.clone());
         loop {
             match self.domain.state() {
                 Ok(state) => {
