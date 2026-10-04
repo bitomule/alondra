@@ -5,11 +5,12 @@ import AlondraFeed
 import ComposableArchitecture
 import Foundation
 
-/// Reading a document, a delivery or any card in full, with a comment on any block, and the
-/// actions the server allows for it. The comments, the general note and the attachments are drafts
-/// until one of those actions is sent.
+/// A card opened in full, whatever it is: the sections the daemon sends (content, context,
+/// history) and the same actions the card has, pinned at the bottom with the reply field. The text
+/// of a document can be commented block by block; the comments, the reply and the attachments are
+/// drafts until one of the actions is sent.
 @Reducer
-public struct ReviewFeature: Sendable {
+public struct CardDetailFeature: Sendable {
     public init() {}
 
     @ObservableState
@@ -21,8 +22,9 @@ public struct ReviewFeature: Sendable {
         public var contentDigest: String?
         public var contentFailed = false
         public var comments: [String: ActionComment] = [:]
-        public var general = ""
+        public var reply = ""
         public var composing: Composing?
+        public var composition: TriageCardFeature.Composition?
         public var preview: AttachmentPreview?
         public var awaitingAttachments = false
 
@@ -33,15 +35,12 @@ public struct ReviewFeature: Sendable {
 
         public var subject: Subject? { Subject(document: screen.document, key: screen.key) }
         public var contentPending: Bool { contentDigest != nil && content == nil && !contentFailed }
-        public var markdown: String { content ?? subject?.body ?? "" }
+        public var markdown: String { content ?? "" }
         public var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: markdown) }
         public var feedback: [ActionComment] { blocks.compactMap { comments[$0.draftKey] } }
-        public var canComment: Bool { subject?.actions.contains { $0.comments?.kind == .blocks } == true }
-        public var acceptsFeedback: Bool {
-            canComment || subject?.actions.contains { $0.id?.hasPrefix("reply:") == true } == true
-        }
+        public var canComment: Bool { subject?.allActions.contains { $0.comments?.kind == .blocks } == true }
         public var hasFeedback: Bool {
-            !comments.isEmpty || !general.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            !comments.isEmpty || !reply.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 || !attachments.entries.isEmpty
         }
 
@@ -52,79 +51,47 @@ public struct ReviewFeature: Sendable {
         }
     }
 
-    /// What the review shows, whether the server sent a card or a document revision.
+    /// What the detail shows, whether the daemon sent a card or a document revision.
     public struct Subject: Equatable, Sendable {
-        public let icon: Icon
+        public let card: Card?
         public let title: String
-        public let nodeName: String?
-        public let createdAt: String?
-        public let body: String?
-        public let facts: Facts?
-        public let checks: Checks?
-        public let attachments: [Attachment]
-        public let children: [Card]
-        public let actions: [WireAction]
+        public let sections: [ViewSection]
+        public let buttons: [WireAction]
+        public let menu: [WireAction]
+        public let replyAction: WireAction?
 
         init?(document: ViewDocument?, key: ViewKey) {
             guard let document else { return nil }
-            let items = document.sections.flatMap(\.items)
-            let bar = items.flatMap { item -> [WireAction] in
-                if case .actions(let bar) = item { bar.actions } else { [] }
-            }
-            let card: Card? = key.rawValue.hasPrefix("card:")
-                ? items.lazy.compactMap { item -> Card? in if case .card(let card) = item { card } else { nil } }.first
-                : nil
-            var seen = Set<String>()
-            actions = ((card?.actions ?? []) + bar).filter { action in
-                guard let id = action.id, !id.isEmpty else { return true }
-                return seen.insert(id).inserted
-            }
-            icon = card?.icon ?? .document
-            title = card?.title ?? document.title ?? ""
-            nodeName = card?.context.first { $0.icon == .node }?.text
-            createdAt = card?.timestamps.first?.at
-            body = card?.body?.text
-            let documentFacts = items.lazy.compactMap { item -> Facts? in
-                if case .facts(let facts) = item { facts } else { nil }
+            let card = document.sections.lazy.flatMap(\.items).compactMap { item -> Card? in
+                if case .card(let card) = item { card } else { nil }
             }.first
-            facts = card?.facts ?? documentFacts
-            checks = card?.checks
-            attachments = card?.attachments ?? []
-            children = card?.children ?? []
-        }
-
-        /// The actions the bar offers, in the order they read: change requests first, then the
-        /// approval. A delivery never offers "Mark as Read"; the question's options sit in the page.
-        public var barActions: [WireAction] {
-            let review = actions.filter { Self.verb($0) == "changes" || Self.verb($0) == "accept" }
-            let candidates = review.isEmpty ? actions : review
-            return candidates
-                .filter { $0.presentation != .options }
-                .filter { !(icon == .delivery && Self.verb($0) == "read") }
-                .sorted { Self.rank($0) < Self.rank($1) }
-        }
-
-        /// A question's options in the page; a plan approved from the bar does not repeat them.
-        public var options: WireAction? {
-            guard [Icon.question, .action, .document].contains(icon),
-                  !actions.contains(where: { Self.verb($0) == "accept" }) else { return nil }
-            return actions.first { $0.presentation == .options && $0.enabled }
-        }
-
-        public func isRescue(_ action: WireAction) -> Bool {
-            icon == .delivery && Self.verb(action) == "changes" && action.comments != nil
-        }
-
-        public static func verb(_ action: WireAction) -> String {
-            action.id?.split(separator: ":", maxSplits: 1).first.map(String.init) ?? ""
-        }
-
-        private static func rank(_ action: WireAction) -> Int {
-            switch verb(action) {
-            case "changes": 0
-            case "accept": 1
-            default: 2
+            self.card = card
+            title = card?.need ?? card?.title ?? document.title ?? ""
+            sections = document.sections.filter { $0.id != "card" && $0.id != "actions" }
+            if let card {
+                buttons = Array(card.actions.prefix(TriageCardFeature.State.visibleLimit))
+                menu = Array(card.actions.dropFirst(TriageCardFeature.State.visibleLimit)) + card.more
+                replyAction = card.reply
+            } else {
+                let bar = document.sections.flatMap(\.items).flatMap { item -> [WireAction] in
+                    if case .actions(let bar) = item { bar.actions } else { [] }
+                }
+                buttons = Array(bar.prefix(TriageCardFeature.State.visibleLimit))
+                menu = Array(bar.dropFirst(TriageCardFeature.State.visibleLimit))
+                replyAction = nil
             }
+        }
+
+        public var allActions: [WireAction] { buttons + menu + (replyAction.map { [$0] } ?? []) }
+
+        /// The view that opens the diff a `content_ref` points at: the pull request's own screen.
+        public static func diffKey(of reference: ContentRef) -> ViewKey? {
+            let prefix = "/pull-requests/"
+            guard reference.kind == .diff, reference.fetch.hasPrefix(prefix) else { return nil }
+            let rest = reference.fetch.dropFirst(prefix.count)
+            guard let end = rest.range(of: "/diff") else { return nil }
+            guard let id = String(rest[..<end.lowerBound]).removingPercentEncoding, !id.isEmpty else { return nil }
+            return .pullRequest(id)
         }
     }
 
@@ -153,9 +120,13 @@ public struct ReviewFeature: Sendable {
         case commentSaved
         case commentDeleted
         case commentCancelled
-        case generalChanged(String)
+        case replyChanged(String)
         case actionTapped(WireAction)
-        case optionPicked(WireAction, optionID: String)
+        case menuOptionPicked(WireAction, optionID: String)
+        case reasonChanged(String)
+        case noteChanged(String)
+        case compositionConfirmed
+        case compositionCancelled
         case attachmentTapped(Attachment)
         case attachmentLoaded(Attachment, Data)
         case previewClosed
@@ -218,21 +189,43 @@ public struct ReviewFeature: Sendable {
             case .commentCancelled:
                 state.composing = nil
                 return .none
-            case .generalChanged(let text):
-                state.general = text
+            case .replyChanged(let text):
+                state.reply = text
                 return .none
             case .actionTapped(let action):
                 if case .view(let key) = action.link { return .send(.opened(ViewKey(rawValue: key))) }
-                guard state.isSendable(action) else { return .none }
+                guard action.link == nil, state.isSendable(action) else { return .none }
+                if action.comments == nil, action.id?.hasPrefix("reply:") != true, TriageCardFeature.asksForWords(action) {
+                    state.composition = TriageCardFeature.Composition(action: action)
+                    return .none
+                }
                 return .concatenate(
                     .send(.actions(.present(action))),
                     .send(.actions(.commentsChanged(state.feedback))),
-                    .send(.actions(.textChanged(state.general))),
+                    .send(.actions(.textChanged(state.reply))),
                     .send(.submit)
                 )
-            case .optionPicked(let action, let optionID):
+            case .menuOptionPicked(let action, let optionID):
                 return .concatenate(
                     .send(.actions(.present(action))), .send(.actions(.chooseOption(optionID))), .send(.submit)
+                )
+            case .reasonChanged(let reason):
+                state.composition?.reason = reason
+                return .none
+            case .noteChanged(let note):
+                state.composition?.note = note
+                return .none
+            case .compositionCancelled:
+                state.composition = nil
+                return .none
+            case .compositionConfirmed:
+                guard let composition = state.composition, composition.canSend else { return .none }
+                state.composition = nil
+                return .concatenate(
+                    .send(.actions(.present(composition.action))),
+                    composition.reason.map { .send(.actions(.chooseOption($0))) } ?? .none,
+                    composition.note.isEmpty ? .none : .send(.actions(.textChanged(composition.note))),
+                    .send(.submit)
                 )
             case .attachmentTapped(let attachment):
                 return .run { [viewsClient] send in
@@ -273,7 +266,7 @@ public struct ReviewFeature: Sendable {
                 return state.attachments.allReady ? .send(.submit) : .none
             case .actions(.sent(let request)):
                 state.comments = [:]
-                state.general = ""
+                state.reply = ""
                 return .merge(.send(.delegate(.handOff(request))), .run { [dismiss] _ in await dismiss() })
             case .actions:
                 return .none

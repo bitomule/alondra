@@ -97,14 +97,22 @@ enum DemoWorkspace {
             let root = URL(fileURLWithPath: sourceDirectory)
                 .appendingPathComponent(ProcessInfo.processInfo.environment["TEST_WORKSPACE"] ?? "_main")
                 .appendingPathComponent("fixtures/views")
-            return try Data(contentsOf: root.appendingPathComponent("\(name).json"))
+            return try firstExisting(root, name)
         }
         if let bundled = Bundle.main.url(forResource: name, withExtension: "json", subdirectory: "fixtures/views")
             ?? Bundle.main.url(forResource: name, withExtension: "json", subdirectory: "views")
             ?? Bundle.main.url(forResource: name, withExtension: "json") {
             return try Data(contentsOf: bundled)
         }
-        return try Data(contentsOf: fixtureRoot().appendingPathComponent("\(name).json"))
+        return try firstExisting(fixtureRoot(), name)
+    }
+
+    /// The card redesign's fixtures sit in `cards/`; the views the Mac and the terminal still draw sit beside it.
+    private static func firstExisting(_ root: URL, _ name: String) throws -> Data {
+        for directory in [root.appendingPathComponent("cards"), root] {
+            if let data = try? Data(contentsOf: directory.appendingPathComponent("\(name).json")) { return data }
+        }
+        throw ViewsClientError.missingView
     }
 
     private static func replacingCardID(in value: Any, with newID: String) -> Any {

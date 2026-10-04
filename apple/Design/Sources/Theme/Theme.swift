@@ -13,6 +13,11 @@ public enum Palette {
     public static let sage = dynamic(light: 0x3F7D4E, dark: 0x8CCB94)
     public static let rose = dynamic(light: 0xB83A4B, dark: 0xFF8A9A)
     public static let slate = dynamic(light: 0x6B6F7A, dark: 0xA6ABB8)
+    public static let gold = dynamic(light: 0x9A7414, dark: 0xD6B35A)
+    public static let violet = dynamic(light: 0x6B4FB5, dark: 0xA58BD6)
+    public static let sand = dynamic(light: 0x7D766A, dark: 0xC9C3BA)
+    public static let advance = dynamic(light: 0x2F7A45, dark: 0x5E9C70)
+    public static let risk = dynamic(light: 0xB83A4B, dark: 0xD9697A)
 
     public static let night = dynamic(light: 0xF6F1EA, dark: 0x0C0D12)
     public static let dusk = dynamic(light: 0xEDE4D8, dark: 0x171922)
@@ -87,26 +92,30 @@ extension Font {
     }
 }
 
+/// What a card asks of the person, named and coloured the way the card board defines it. The
+/// kind comes from the server; a card that carries none reads as a notice.
 public struct Kind {
-    public let label: String
+    public let label: LocalizedStringKey
     public let symbol: String
     public let tint: Color
 
-    public init(_ card: AlondraContract.Card) { self.init(icon: card.icon) }
+    public init(_ card: AlondraContract.Card) { self.init(card.kind) }
 
-    public init(icon: AlondraContract.Icon) {
-        switch icon {
-        case .action: self.init(String(localized: "Your turn"), "hand.point.right", Palette.ember)
-        case .question: self.init(String(localized: "Question"), "questionmark.bubble", Palette.dawn)
-        case .pullRequest: self.init(String(localized: "Pull request"), "arrow.triangle.pull", Palette.sage)
-        case .document: self.init(String(localized: "Document"), "doc.richtext", Palette.sky)
-        case .delivery: self.init(String(localized: "Finished"), "flag.checkered", Palette.sage)
-        case .warning: self.init(String(localized: "Permission"), "lock.shield", Palette.rose)
-        default: self.init(String(localized: "Notice"), "bell", Palette.slate)
+    public init(_ kind: AlondraContract.CardKind?) {
+        switch kind {
+        case .decide: self.init("Decide", "questionmark.bubble", Palette.dawn)
+        case .review: self.init("Review", "checkmark.seal", Palette.sage)
+        case .authorize: self.init("Authorize", "lock.shield", Palette.rose)
+        case .provide: self.init("Provide", "tray.and.arrow.up", Palette.violet)
+        case .test: self.init("Test", "iphone.gen3", Palette.sage)
+        case .do: self.init("Do", "hand.raised", Palette.sky)
+        case .problem: self.init("Problem", "exclamationmark.triangle", Palette.gold)
+        case .propose: self.init("Propose", "lightbulb", Palette.sand)
+        case .know, nil: self.init("Know", "bell", Palette.slate)
         }
     }
 
-    private init(_ label: String, _ symbol: String, _ tint: Color) {
+    private init(_ label: LocalizedStringKey, _ symbol: String, _ tint: Color) {
         self.label = label
         self.symbol = symbol
         self.tint = tint
@@ -166,6 +175,8 @@ public struct KindBadge: View {
     public var body: some View {
         Label(kind.label, systemImage: kind.symbol)
             .font(.caption.weight(.semibold))
+            .lineLimit(1)
+            .fixedSize()
             .textCase(.uppercase)
             .kerning(0.6)
             .foregroundStyle(kind.tint)

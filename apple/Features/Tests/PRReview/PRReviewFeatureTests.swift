@@ -92,14 +92,12 @@ final class PRReviewFeatureTests: XCTestCase {
 
         XCTAssertEqual(review.title, "Add the compact schedule editor")
         XCTAssertEqual(review.facts.map(\.value),
-                       ["example/repo", "main", "feature/compact-schedule-editor", "+120 −30 in 4 files"])
+                       ["example/repo", "main", "feature/compact-schedule-editor", "4 files · +120 −30"])
         XCTAssertEqual(review.checks.map(\.name), ["Build", "Unit tests", "Lint"])
         XCTAssertEqual(review.checks.map(\.state), [.pass, .pass, .pending])
-        XCTAssertEqual(review.attached.map(\.icon), [.question, .notice])
         XCTAssertTrue(review.description?.text.hasPrefix("Replaces the long schedule form") == true)
         XCTAssertEqual(review.diff?.digest, "abcdef12")
         XCTAssertEqual(review.pageURL, URL(string: "https://github.com/example/repo/pull/12"))
-        XCTAssertEqual(review.ask?.label, "Ask about the PR")
         XCTAssertEqual(review.requestChanges?.comments?.kind, .diffLines)
         XCTAssertEqual(review.merge?.options.map(\.id), ["merge", "squash"])
         XCTAssertNotNil(review.resolveConflicts)

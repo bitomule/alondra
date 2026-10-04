@@ -225,11 +225,11 @@ struct RootView<AccountContent: View>: View {
             PRReviewView(store: screen)
         case .nodeDetail(let screen):
             NodeDetailView(store: screen)
-        case .review(let review):
+        case .cardDetail(let review):
             if tab == .inbox {
-                ReviewView(store: review).navigationTransition(.zoom(sourceID: String(review.screen.key.rawValue.dropFirst("card:".count)), in: triageZoom))
+                CardDetailView(store: review).navigationTransition(.zoom(sourceID: String(review.screen.key.rawValue.dropFirst("card:".count)), in: triageZoom))
             } else {
-                ReviewView(store: review)
+                CardDetailView(store: review)
             }
         }
     }

@@ -7,13 +7,13 @@ final class ViewModelsTests: XCTestCase {
         let env = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))
             .appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
-            .appendingPathComponent("fixtures/views")
+            .appendingPathComponent("fixtures/views/cards")
         for name in ["home-ios", "home-ios-es", "home-tui", "card-question", "card-pr", "card-delivery"] {
             let data = try Data(contentsOf: root.appendingPathComponent("\(name).json"))
             let view = try ContractCodec.decode(ViewDocument.self, from: data)
             XCTAssertEqual(view.protocolVersion, 1, name)
             if name.hasPrefix("home-ios") {
-                XCTAssertEqual(view.sections.first?.cardIds?.count, 4, name)
+                XCTAssertEqual(view.sections.first?.cardIds?.count, 5, name)
                 XCTAssertEqual(view.sections.first?.items.count, 0, name)
             }
         }

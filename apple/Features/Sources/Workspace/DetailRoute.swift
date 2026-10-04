@@ -11,7 +11,7 @@ public enum DetailRoute {
     case taskDetail(TaskDetailFeature)
     case schedules(SchedulesFeature)
     case scheduleEditor(ScheduleEditorFeature)
-    case review(ReviewFeature)
+    case cardDetail(CardDetailFeature)
     case prReview(PRReviewFeature)
     case nodeDetail(NodeDetailFeature)
 }
@@ -49,7 +49,7 @@ public extension DetailRoute.State {
         switch DetailRoute.Kind(key: key) {
         case .card where key.pullRequestID != nil:
             self = .prReview(PRReviewFeature.State(key: .pullRequest(key.pullRequestID ?? "")))
-        case .card, .document: self = .review(ReviewFeature.State(key: key))
+        case .card, .document: self = .cardDetail(CardDetailFeature.State(key: key))
         case .task: self = .taskDetail(TaskDetailFeature.State(key: key))
         case .schedules: self = .schedules(SchedulesFeature.State())
         case .schedule: self = .scheduleEditor(ScheduleEditorFeature.State(key: key))
@@ -63,7 +63,7 @@ public extension DetailRoute.State {
     var key: ViewKey {
         switch self {
         case .legacy(let state): state.key
-        case .review(let state): state.screen.key
+        case .cardDetail(let state): state.screen.key
         case .taskDetail(let state): state.screen.key
         case .schedules(let state): state.screen.key
         case .scheduleEditor(let state): state.screen.key
@@ -78,9 +78,9 @@ public extension DetailRoute.Action {
     var delegate: ScreenDelegate? {
         switch self {
         case .legacy(.action(.delegate(let outcome))): ScreenDelegate(outcome)
-        case .review(.delegate(.open(let key))): .open(key)
-        case .review(.delegate(.handOff(let request))): .handOff(request)
-        case .review(.actions(.delegate(let outcome))): ScreenDelegate(outcome)
+        case .cardDetail(.delegate(.open(let key))): .open(key)
+        case .cardDetail(.delegate(.handOff(let request))): .handOff(request)
+        case .cardDetail(.actions(.delegate(let outcome))): ScreenDelegate(outcome)
         case .taskDetail(.delegate(let delegate)),
              .schedules(.delegate(let delegate)),
              .scheduleEditor(.delegate(let delegate)),

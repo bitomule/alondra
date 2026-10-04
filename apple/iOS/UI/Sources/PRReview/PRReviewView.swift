@@ -65,12 +65,6 @@ public struct PRReviewView: View {
                 ForEach(review.notices, id: \.text) { NoticeView(notice: $0) }
                 if !review.facts.isEmpty { PRFacts(facts: review.facts) }
                 PRStatusView(review: review)
-                ForEach(review.attached, id: \.id) { card in
-                    AttachedCardView(card: card,
-                                     perform: { store.send(.perform($0)) },
-                                     open: { store.send(.follow($0)) },
-                                     showAttachment: { store.send(.showAttachment($0)) })
-                }
                 if let description = review.description, !description.text.isEmpty {
                     PRDescription(markdown: description)
                 }

@@ -4,8 +4,9 @@ import AlondraContract
 import ComposableArchitecture
 import SwiftUI
 
-/// Waiting for You: a stack of cards in the order the server sends them. Swiping either way sends
-/// the front card to the back; tapping opens it; nothing is marked until a card's own controls are used.
+/// Waiting for You: a stack of cards in the order the server sends them. Swiping right answers with
+/// a card's first button and swiping left with its last; a card whose button needs words or a
+/// choice goes to the back of the stack instead. Tapping opens the card.
 public struct TriageView: View {
     @Bindable var store: StoreOf<TriageFeature>
     let zoom: Namespace.ID
@@ -15,6 +16,7 @@ public struct TriageView: View {
     @State private var keyboardVisible = false
     @State private var screenWidth: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     public init(store: StoreOf<TriageFeature>, zoom: Namespace.ID) {
         self.store = store
@@ -45,7 +47,7 @@ public struct TriageView: View {
             } else if store.orderedIDs.isEmpty {
                 empty
             } else {
-                stack.padding(.horizontal, 14).padding(.bottom, 8)
+                queue
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -118,13 +120,25 @@ public struct TriageView: View {
         .accessibilityLabel("\(store.index + 1) of \(store.orderedIDs.count) pending")
     }
 
+    /// The cards never scroll inside; at accessibility text sizes the whole stack does, so a card
+    /// taller than the screen can still be read to its last button.
+    @ViewBuilder private var queue: some View {
+        if typeSize.isAccessibilitySize {
+            ScrollView { stack.padding(.horizontal, 14).padding(.bottom, 8) }
+                .scrollIndicators(.hidden)
+                .scrollDismissesKeyboard(.interactively)
+        } else {
+            stack.padding(.horizontal, 14).padding(.bottom, 8)
+        }
+    }
+
     private var stack: some View {
         let ids = store.visibleIDs
         let browsable = store.orderedIDs.count > 1
         return ZStack(alignment: .top) {
             ForEach(ids.reversed(), id: \.self) { id in
                 let depth = ids.firstIndex(of: id) ?? 0
-                let dragged = browsable && id == store.swipe?.cardID
+                let dragged = id == store.swipe?.cardID
                 Group {
                     if let cardStore = store.scope(state: \.cards[id: id], action: \.cards[id: id]) {
                         if let card = cardStore.card {
@@ -159,7 +173,7 @@ public struct TriageView: View {
             }
         }
         .padding(.top, CGFloat(max(0, ids.count - 1)) * 11)
-        .simultaneousGesture(swipe(browsable: browsable))
+        .simultaneousGesture(swipe)
         .onChange(of: dragging) { _, now in
             guard !now else { return }
             Task { @MainActor in
@@ -183,12 +197,12 @@ public struct TriageView: View {
         .animation(.spring(duration: 0.5, bounce: 0.22), value: ids)
     }
 
-    private func swipe(browsable: Bool) -> some Gesture {
+    private var swipe: some Gesture {
         DragGesture(minimumDistance: 24)
             .updating($dragging) { _, dragging, _ in dragging = true }
             .onChanged { value in
                 if store.swipe == nil { store.send(.dragChanged) }
-                guard browsable, store.swipe?.released == false,
+                guard store.swipe?.released == false,
                       abs(value.translation.width) > abs(value.translation.height) * 1.4 else { return }
                 drag = value.translation.width
             }

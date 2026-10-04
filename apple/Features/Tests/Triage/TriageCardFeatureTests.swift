@@ -26,9 +26,11 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     private func action(
-        _ store: TestStoreOf<TriageCardFeature>, verb: String
+        _ store: TestStoreOf<TriageCardFeature>, verb: String, label: String? = nil
     ) throws -> AlondraContract.Action {
-        try XCTUnwrap(store.state.allActions.first { $0.id?.hasPrefix(verb + ":") == true }, verb)
+        try XCTUnwrap(store.state.allActions.first {
+            $0.id?.hasPrefix(verb + ":") == true && (label == nil || $0.label == label)
+        }, verb)
     }
 
     // MARK: Loading
@@ -39,60 +41,81 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.send(.screen(.task))
         await store.skipReceivedActions()
 
-        XCTAssertEqual(store.state.card?.title, "Restore the native review experience")
+        XCTAssertEqual(store.state.card?.need, "Choose the welcome copy")
         XCTAssertEqual(store.state.actions.dataEpoch, "test-epoch")
     }
 
-    // MARK: Options and the reply field
+    // MARK: The buttons
 
     @MainActor
-    func testTappingAnOptionThatNeedsNoTextAnswersWithItAtOnce() async throws {
-        let feed = FeedStub()
-        let store = try await store("plan-r1", feed: feed, loaded: try Fixtures.planQuestionCard())
-        let answer = try XCTUnwrap(store.state.replyAction)
-        XCTAssertEqual(answer.presentation, .options)
-        let option = try XCTUnwrap(answer.options.first)
+    func testTheButtonsAreTheDaemonsActionsInItsOrderAndMoreHoldsTheExtras() async throws {
+        let store = try await store(Fixtures.questionID, loaded: try Fixtures.card(Fixtures.questionID))
 
-        await store.send(.optionPicked(answer, optionID: option.id))
+        XCTAssertEqual(store.state.buttons.map(\.label), ["★ Ship the concise copy", "Keep the warmer copy"])
+        XCTAssertEqual(store.state.buttons.map(\.role), [.advance, .neutral])
+        XCTAssertEqual(store.state.menu.map(\.label), ["Write my own answer", "Request clarification"])
+        XCTAssertEqual(store.state.replyAction?.id, "reply:\(Fixtures.questionID)@1")
+    }
+
+    @MainActor
+    func testAtMostThreeButtonsShowAndTheRestGoUnderMoreBeforeTheExtras() async throws {
+        let store = try await store("decide-5", loaded: try Fixtures.crowdedDecision())
+
+        XCTAssertEqual(store.state.buttons.count, 3)
+        XCTAssertEqual(store.state.buttons.map(\.label), ["★ Stable", "Beta", "Nightly"])
+        XCTAssertEqual(
+            store.state.menu.map(\.label), ["Preview", "Internal", "Write my own answer", "Request clarification"]
+        )
+        XCTAssertEqual(store.state.allActions.count, 8, "three buttons, four in More, and the reply field")
+    }
+
+    @MainActor
+    func testACardWithTwoButtonsShowsTwoAndAnEmptyMoreMenuWhenThereIsNothingElse() async throws {
+        let store = try await store(Fixtures.informationID, loaded: try Fixtures.card(Fixtures.informationID))
+        XCTAssertEqual(store.state.buttons.map(\.label), ["Seen"])
+        XCTAssertTrue(store.state.menu.isEmpty)
+    }
+
+    // MARK: One tap answers
+
+    @MainActor
+    func testTappingAnOptionButtonAnswersWithItsOptionIDAtOnce() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+        let warm = store.state.buttons[1]
+
+        await store.send(.actionTapped(warm))
         await store.skipReceivedActions()
-        let request = try XCTUnwrap(feed.requests.first, "tapping the option is the answer")
+        let request = try XCTUnwrap(feed.requests.first, "tapping the button is the answer")
         XCTAssertEqual(feed.requests.count, 1)
-        XCTAssertEqual(request.actionId, answer.id)
-        XCTAssertEqual(request.optionId, option.id)
+        XCTAssertEqual(request.actionId, "ans:\(Fixtures.questionID)@1")
+        XCTAssertEqual(request.optionId, "warm", "the button's own option_id travels with the answer")
         XCTAssertNil(request.input.text)
         XCTAssertEqual(request.dataEpoch, "test-epoch")
         XCTAssertEqual(store.state.stamp, "Answered", "the stamp shows once the server applied it")
     }
 
     @MainActor
-    func testAnOptionThatNeedsTextIsPickedAndTheReplyFieldSendsItWithTheText() async throws {
+    func testEachOptionButtonOfTheSameQuestionSendsItsOwnOption() async throws {
         let feed = FeedStub()
-        let store = try await store("hold-1", feed: feed, loaded: try Fixtures.heldPlanCard())
-        let answer = try XCTUnwrap(store.state.replyAction)
+        let store = try await store("perm-1", feed: feed, loaded: try Fixtures.authorizeCard())
 
-        await store.send(.optionPicked(answer, optionID: "request_changes"))
-        await store.skipReceivedActions()
-        XCTAssertEqual(store.state.actions.selectedOptionID, "request_changes")
-        XCTAssertEqual(feed.requests, [], "an option that asks for text waits for the reply field")
-
-        await store.send(.replyChanged("Split the lexer first"))
-        await store.send(.replySent(answer))
-        await store.skipReceivedActions()
-        let request = try XCTUnwrap(feed.requests.first)
-        XCTAssertEqual(request.optionId, "request_changes")
-        XCTAssertEqual(request.input.text, "Split the lexer first")
+        for button in store.state.buttons {
+            await store.send(.actionTapped(button))
+            await store.skipReceivedActions()
+        }
+        XCTAssertEqual(feed.requests.map(\.optionId), ["allow", "always", "deny"])
     }
 
     @MainActor
-    private func flakyStore(
-        _ id: String, loaded document: ViewDocument
-    ) -> (TestStoreOf<TriageCardFeature>, LockIsolated<[ActionRequest]>, LockIsolated<Bool>) {
+    func testRetryingTheSameButtonAfterAFailureKeepsItsCommandAndAnotherButtonIsANewCommand() async throws {
         let attempts = LockIsolated<[ActionRequest]>([])
         let failing = LockIsolated(true)
-        var state = TriageCardFeature.State(id: id)
-        state.screen.document = document
+        let card = try Fixtures.authorizeCard()
+        var state = TriageCardFeature.State(id: "perm-1")
+        state.screen.document = card
         state.screen.phase = .loaded
-        state.actions.dataEpoch = document.dataEpoch
+        state.actions.dataEpoch = card.dataEpoch
         let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
             $0.viewsClient.perform = { request in
                 attempts.withValue { $0.append(request) }
@@ -103,24 +126,17 @@ final class TriageCardFeatureTests: XCTestCase {
             $0.uuid = .incrementing
         }
         store.exhaustivity = .off
-        return (store, attempts, failing)
-    }
+        let yes = store.state.buttons[0]
+        let no = store.state.buttons[2]
 
-    @MainActor
-    func testRetryingTheSameOptionAfterAFailureKeepsItsCommandAndAnotherOptionIsANewCommand() async throws {
-        let (store, attempts, failing) = flakyStore("perm-1", loaded: try Fixtures.permissionCard())
-        let answer = try XCTUnwrap(store.state.replyAction)
-
-        await store.send(.optionPicked(answer, optionID: "allow"))
+        await store.send(.actionTapped(yes))
         await store.skipReceivedActions()
         XCTAssertFalse(store.state.actions.inFlight)
         XCTAssertEqual(store.state.actions.error, "Couldn’t send. Try again.")
-
-        await store.send(.optionPicked(answer, optionID: "allow"))
+        await store.send(.actionTapped(yes))
         await store.skipReceivedActions()
         failing.setValue(false)
-        await store.send(.optionPicked(answer, optionID: "deny"))
-        await store.send(.replySent(answer))
+        await store.send(.actionTapped(no))
         await store.skipReceivedActions()
 
         let sent = attempts.value
@@ -132,31 +148,11 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testEditingTheReplyAfterAFailureSendsTheNewTextAsANewCommand() async throws {
-        let (store, attempts, failing) = flakyStore(Fixtures.questionID, loaded: try Fixtures.card(Fixtures.questionID))
-        let answer = try XCTUnwrap(store.state.replyAction)
-
-        await store.send(.replyChanged("Ship the warm one"))
-        await store.send(.replySent(answer))
-        await store.skipReceivedActions()
-        failing.setValue(false)
-        await store.send(.replyChanged("Ship the clear one"))
-        await store.send(.replySent(answer))
-        await store.skipReceivedActions()
-
-        let sent = attempts.value
-        XCTAssertEqual(sent.map(\.input.text), ["Ship the warm one", "Ship the clear one"])
-        guard sent.count == 2 else { return }
-        XCTAssertNotEqual(sent[0].commandId, sent[1].commandId)
-    }
-
-    @MainActor
     func testTheStampShowsTheMomentTheAnswerIsSentWithoutWaitingForTheServer() async throws {
         let feed = FeedStub()
         let (gate, release) = AsyncStream<Void>.makeStream()
-        let card = try Fixtures.card(Fixtures.questionID)
         var state = TriageCardFeature.State(id: Fixtures.questionID)
-        state.screen.document = card
+        state.screen.document = try Fixtures.card(Fixtures.questionID)
         let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
             $0.viewsClient.perform = { request in
                 for await _ in gate { break }
@@ -164,11 +160,9 @@ final class TriageCardFeatureTests: XCTestCase {
             }
         }
         store.exhaustivity = .off
-        let answer = try XCTUnwrap(store.state.replyAction)
-        let option = try XCTUnwrap(answer.options.first { if case .none = $0.input { true } else { false } })
 
-        await store.send(.optionPicked(answer, optionID: option.id))
-        await store.receive(\.actions.submit)
+        await store.send(.actionTapped(store.state.buttons[0]))
+        await store.receive(\.submit)
         await store.receive(\.actions.sent)
         XCTAssertTrue(store.state.actions.inFlight)
         XCTAssertEqual(store.state.stamp, "Answered", "the stamp does not wait for the daemon")
@@ -179,44 +173,106 @@ final class TriageCardFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testTypingAfterAFailedOptionThatNeedsNoTextDropsThePick() async throws {
-        let card = try Fixtures.card(Fixtures.questionID)
-        var state = TriageCardFeature.State(id: Fixtures.questionID)
-        state.screen.document = card
-        let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
-            $0.viewsClient.perform = { _ in throw URLError(.notConnectedToInternet) }
-        }
-        store.exhaustivity = .off
-        let answer = try XCTUnwrap(store.state.replyAction)
-        let plain = try XCTUnwrap(answer.options.first { if case .none = $0.input { true } else { false } })
+    func testADisabledButtonSendsNothing() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: try Fixtures.card(Fixtures.pullRequestID))
+        let merge = try action(store, verb: "merge")
+        XCTAssertFalse(merge.enabled)
+        XCTAssertNotNil(merge.disabledReason, "the card says why")
 
-        await store.send(.optionPicked(answer, optionID: plain.id))
-        await store.skipReceivedActions()
-        XCTAssertEqual(store.state.actions.selectedOptionID, plain.id)
-        await store.send(.replyChanged("Actually, neither"))
-        await store.skipReceivedActions()
-        XCTAssertNil(store.state.actions.selectedOptionID)
-        XCTAssertEqual(store.state.replyDraft, "Actually, neither")
+        await store.send(.actionTapped(merge))
+        XCTAssertNil(store.state.actions.action)
+        XCTAssertEqual(feed.requests, [])
     }
 
     @MainActor
-    func testASentFreeTextReplyCarriesTheDraftAndTheDraftIsClearedOnceApplied() async throws {
+    func testMarkingAReportAsSeenSendsStraightAway() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.informationID, feed: feed, loaded: try Fixtures.card(Fixtures.informationID))
+        let seen = try action(store, verb: "read")
+
+        await store.send(.actionTapped(seen))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.actionId), [seen.id])
+    }
+
+    // MARK: Merging
+
+    @MainActor
+    func testMergingAsksForConfirmationAndSendsTheChosenMethod() async throws {
+        let feed = FeedStub()
+        let pullRequest = try Fixtures.unblocked(try Fixtures.card(Fixtures.pullRequestID))
+        let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: pullRequest)
+        let merge = try action(store, verb: "merge")
+        XCTAssertEqual(merge.presentation, .menu)
+
+        await store.send(.menuOptionPicked(merge, optionID: "squash"))
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.actions.confirmation?.title, "Merge PR #12?")
+        XCTAssertEqual(feed.requests, [], "nothing goes before the confirmation")
+        await store.send(.actions(.confirm))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.optionId), ["squash"])
+    }
+
+    @MainActor
+    func testRequestingChangesOnAPullRequestOpensItsDiffToComment() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: try Fixtures.card(Fixtures.pullRequestID))
+        let changes = try action(store, verb: "changes")
+        XCTAssertEqual(changes.comments?.kind, .diffLines)
+
+        await store.send(.actionTapped(changes))
+        await store.receive(\.opened, .pullRequest("github.com/example/repo#12"))
+        await store.receive(\.delegate.open, .pullRequest("github.com/example/repo#12"))
+        XCTAssertEqual(feed.requests, [])
+    }
+
+    @MainActor
+    func testOpenOnGitHubIsLeftToTheViewToOpen() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: try Fixtures.card(Fixtures.pullRequestID))
+        let github = try XCTUnwrap(store.state.menu.first { $0.label == "Open on GitHub" })
+
+        await store.send(.actionTapped(github))
+        XCTAssertNil(store.state.actions.action)
+        XCTAssertEqual(feed.requests, [])
+    }
+
+    // MARK: Writing to the node
+
+    @MainActor
+    func testASentReplyCarriesTheDraftAndTheDraftIsClearedOnceApplied() async throws {
         let feed = FeedStub()
         let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
-        let answer = try XCTUnwrap(store.state.replyAction)
+        let reply = try XCTUnwrap(store.state.replyAction)
 
         await store.send(.replyChanged("Ship the warmer one"))
         XCTAssertEqual(store.state.replyDraft, "Ship the warmer one")
-        await store.send(.replySent(answer))
+        await store.send(.replySent(reply))
         await store.skipReceivedActions()
 
         let request = try XCTUnwrap(feed.requests.first)
+        XCTAssertEqual(request.actionId, reply.id)
+        XCTAssertNil(request.optionId, "a reply answers no option")
         XCTAssertEqual(request.input.text, "Ship the warmer one")
         XCTAssertEqual(store.state.replyDraft, "")
     }
 
     @MainActor
-    func testAFailedSendKeepsTheDraftAndReportsUpward() async throws {
+    func testEveryKindOfCardHasTheReplyField() async throws {
+        for document in [
+            try Fixtures.card(Fixtures.questionID), try Fixtures.card(Fixtures.informationID),
+            try Fixtures.card(Fixtures.pullRequestID), try Fixtures.authorizeCard(), try Fixtures.problemCard(),
+            try Fixtures.planCard(),
+        ] {
+            let store = try await store("x", loaded: document)
+            XCTAssertEqual(store.state.replyAction?.id?.hasPrefix("reply:"), true, document.key)
+        }
+    }
+
+    @MainActor
+    func testAFailedReplyKeepsTheDraftAndReportsUpward() async throws {
         struct Offline: Error {}
         var state = TriageCardFeature.State(id: Fixtures.questionID)
         state.screen.document = try Fixtures.card(Fixtures.questionID)
@@ -224,10 +280,10 @@ final class TriageCardFeatureTests: XCTestCase {
             $0.viewsClient.perform = { _ in throw Offline() }
         }
         store.exhaustivity = .off
-        let answer = try XCTUnwrap(store.state.replyAction)
+        let reply = try XCTUnwrap(store.state.replyAction)
 
         await store.send(.replyChanged("Ship the warmer one"))
-        await store.send(.replySent(answer))
+        await store.send(.replySent(reply))
         await store.receive(\.actions.failed)
         await store.receive(\.actions.delegate.failed)
         XCTAssertEqual(store.state.replyDraft, "Ship the warmer one")
@@ -235,110 +291,125 @@ final class TriageCardFeatureTests: XCTestCase {
         XCTAssertFalse(store.state.actions.inFlight, "the card can be answered again")
     }
 
-    // MARK: I need more context
-
     @MainActor
-    func testAskingForContextCollectsAnOptionalNoteThenSendsIt() async throws {
-        let feed = FeedStub()
-        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
-        let context = try action(store, verb: "ctx")
-
-        await store.send(.actionTapped(context))
-        XCTAssertEqual(store.state.contextRequest?.action, context)
-        XCTAssertEqual(feed.requests, [], "the alert comes first")
-        await store.send(.contextNoteChanged("What does the old copy say?"))
-        await store.send(.contextConfirmed)
-        await store.skipReceivedActions()
-
-        let request = try XCTUnwrap(feed.requests.first)
-        XCTAssertEqual(request.actionId, context.id)
-        XCTAssertEqual(request.input.text, "What does the old copy say?")
-        XCTAssertNil(store.state.contextRequest)
-    }
-
-    @MainActor
-    func testCancellingTheContextAlertSendsNothing() async throws {
-        let feed = FeedStub()
-        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
-        await store.send(.actionTapped(try action(store, verb: "ctx")))
-        await store.send(.contextCancelled)
-        XCTAssertNil(store.state.contextRequest)
-        XCTAssertEqual(feed.requests, [])
-    }
-
-    // MARK: Reports and deliveries
-
-    @MainActor
-    func testRescuingCommentsOpensTheDeliveryInsteadOfSending() async throws {
-        let feed = FeedStub()
-        let store = try await store(Fixtures.deliveryID, feed: feed, loaded: try Fixtures.liveDelivery())
-        let rescue = try action(store, verb: "changes")
-        XCTAssertEqual(rescue.comments?.kind, .blocks)
-        XCTAssertEqual(try action(store, verb: "reply").id, store.state.replyAction?.id)
-
-        await store.send(.actionTapped(rescue))
-        await store.receive(\.opened, .card(Fixtures.deliveryID))
-        await store.receive(\.delegate.open, .card(Fixtures.deliveryID))
-        XCTAssertEqual(feed.requests, [])
-    }
-
-    @MainActor
-    func testADeliveryWithoutADocumentRepliesToTheNodeAndNeverRescuesComments() async throws {
-        let feed = FeedStub()
-        let store = try await store(Fixtures.deliveryID, feed: feed, loaded: try Fixtures.livePlainDelivery())
+    func testEditingTheReplyAfterAFailureSendsTheNewTextAsANewCommand() async throws {
+        let attempts = LockIsolated<[ActionRequest]>([])
+        let failing = LockIsolated(true)
+        var state = TriageCardFeature.State(id: Fixtures.questionID)
+        state.screen.document = try Fixtures.card(Fixtures.questionID)
+        let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
+            $0.viewsClient.perform = { request in
+                attempts.withValue { $0.append(request) }
+                if failing.value { throw URLError(.timedOut) }
+                return try ContractCodec.decode(ActionResponse.self, from: Data(
+                    #"{"protocol":1,"outcome":"applied","message":"Done","stamp":"Sent"}"#.utf8))
+            }
+            $0.uuid = .incrementing
+        }
+        store.exhaustivity = .off
         let reply = try XCTUnwrap(store.state.replyAction)
-        XCTAssertEqual(reply.id, try action(store, verb: "reply").id)
-        XCTAssertNil(reply.comments)
-        XCTAssertNil(store.state.allActions.first { $0.id?.hasPrefix("changes:") == true })
-        guard case let .text(placeholder, _, _) = reply.input else { return XCTFail("reply input is text") }
-        XCTAssertEqual(placeholder, "Reply to this node…")
-        let card = try XCTUnwrap(store.state.card)
-        XCTAssertFalse(CardActionPresentation.isRescueComments(card: card, action: reply))
 
-        await store.send(.replyChanged("Looks good, one more pass"))
+        await store.send(.replyChanged("Ship the warm one"))
         await store.send(.replySent(reply))
         await store.skipReceivedActions()
-        XCTAssertEqual(feed.requests.first?.actionId, reply.id)
-        XCTAssertEqual(feed.requests.first?.input.text, "Looks good, one more pass")
-        XCTAssertEqual(feed.requests.count, 1)
+        failing.setValue(false)
+        await store.send(.replyChanged("Ship the clear one"))
+        await store.send(.replySent(reply))
+        await store.skipReceivedActions()
+
+        let sent = attempts.value
+        XCTAssertEqual(sent.map(\.input.text), ["Ship the warm one", "Ship the clear one"])
+        guard sent.count == 2 else { return }
+        XCTAssertNotEqual(sent[0].commandId, sent[1].commandId)
     }
 
     @MainActor
-    func testAcceptingADeliverySendsStraightAway() async throws {
+    func testWritingMyOwnAnswerOpensTheSheetAndSendsTheWords() async throws {
         let feed = FeedStub()
-        let store = try await store(Fixtures.deliveryID, feed: feed, loaded: try Fixtures.liveDelivery())
-        let accept = try action(store, verb: "accept")
+        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+        let own = try action(store, verb: "ans", label: "Write my own answer")
 
-        await store.send(.actionTapped(accept))
+        await store.send(.actionTapped(own))
+        XCTAssertEqual(store.state.composition?.action, own)
+        XCTAssertEqual(store.state.composition?.canSend, false, "the words are required")
+        XCTAssertEqual(feed.requests, [], "the sheet comes first")
+        await store.send(.noteChanged("Neither: keep the old copy"))
+        XCTAssertEqual(store.state.composition?.canSend, true)
+        await store.send(.compositionConfirmed)
         await store.skipReceivedActions()
-        XCTAssertEqual(feed.requests.map(\.actionId), [accept.id])
-    }
 
-    @MainActor
-    func testMarkingAReportAsReadSendsStraightAway() async throws {
-        let feed = FeedStub()
-        let store = try await store(Fixtures.informationID, feed: feed, loaded: try Fixtures.card(Fixtures.informationID))
-        let read = try action(store, verb: "read")
-
-        await store.send(.actionTapped(read))
-        await store.skipReceivedActions()
-        XCTAssertEqual(feed.requests.map(\.actionId), [read.id])
-    }
-
-    // MARK: Pull requests
-
-    @MainActor
-    func testAskingAboutAPullRequestSendsTheDraftAsTheQuestion() async throws {
-        let feed = FeedStub()
-        let store = try await store(Fixtures.pullRequestID, feed: feed, loaded: try Fixtures.card(Fixtures.pullRequestID))
-        let ask = try action(store, verb: "ask_pr")
-
-        await store.send(.replyChanged("Why a new cache?"))
-        await store.send(.actionTapped(ask))
-        await store.skipReceivedActions()
         let request = try XCTUnwrap(feed.requests.first)
-        XCTAssertEqual(request.actionId, ask.id)
-        XCTAssertEqual(request.input.text, "Why a new cache?")
+        XCTAssertEqual(request.actionId, own.id)
+        XCTAssertEqual(request.input.text, "Neither: keep the old copy")
+        XCTAssertNil(store.state.composition)
+    }
+
+    // MARK: Request clarification
+
+    @MainActor
+    func testRequestingClarificationAsksForTheReasonThenSendsItWithTheNote() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+        let clarify = try action(store, verb: "clarify")
+        XCTAssertEqual(clarify.options.map(\.id), ["unclear", "contradicts", "missing_context"])
+
+        await store.send(.actionTapped(clarify))
+        XCTAssertEqual(store.state.composition?.needsReason, true)
+        XCTAssertEqual(store.state.composition?.canSend, false, "a reason has to be picked first")
+        await store.send(.compositionConfirmed)
+        XCTAssertEqual(feed.requests, [], "no reason, nothing sent")
+
+        await store.send(.reasonChanged("contradicts"))
+        await store.send(.noteChanged("The two options say opposite things"))
+        XCTAssertEqual(store.state.composition?.canSend, true)
+        await store.send(.compositionConfirmed)
+        await store.skipReceivedActions()
+
+        let request = try XCTUnwrap(feed.requests.first)
+        XCTAssertEqual(request.actionId, clarify.id)
+        XCTAssertEqual(request.optionId, "contradicts")
+        XCTAssertEqual(request.input.text, "The two options say opposite things")
+    }
+
+    @MainActor
+    func testTheClarificationNoteIsOptional() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+
+        await store.send(.actionTapped(try action(store, verb: "clarify")))
+        await store.send(.reasonChanged("missing_context"))
+        await store.send(.compositionConfirmed)
+        await store.skipReceivedActions()
+
+        let request = try XCTUnwrap(feed.requests.first)
+        XCTAssertEqual(request.optionId, "missing_context")
+        XCTAssertNil(request.input.text)
+    }
+
+    @MainActor
+    func testCancellingTheSheetSendsNothing() async throws {
+        let feed = FeedStub()
+        let store = try await store(Fixtures.questionID, feed: feed, loaded: try Fixtures.card(Fixtures.questionID))
+        await store.send(.actionTapped(try action(store, verb: "clarify")))
+        await store.send(.compositionCancelled)
+        XCTAssertNil(store.state.composition)
+        XCTAssertEqual(feed.requests, [])
+    }
+
+    // MARK: Reviewing
+
+    @MainActor
+    func testApprovingAPlanSendsAndRequestingChangesOpensItsDetailToComment() async throws {
+        let feed = FeedStub()
+        let store = try await store("plan-1", feed: feed, loaded: try Fixtures.planCard())
+        XCTAssertEqual(store.state.card?.kind, .review)
+
+        await store.send(.actionTapped(try action(store, verb: "changes")))
+        await store.receive(\.delegate.open, .card("plan-1"))
+        XCTAssertEqual(feed.requests, [])
+        await store.send(.actionTapped(try action(store, verb: "accept")))
+        await store.skipReceivedActions()
+        XCTAssertEqual(feed.requests.map(\.actionId), [try action(store, verb: "accept").id])
     }
 
     @MainActor
@@ -348,41 +419,30 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.receive(\.delegate.open, .node("n-1"))
     }
 
-    // MARK: Permission and plan cards
+    // MARK: The swipe
 
     @MainActor
-    func testAPermissionCardOffersAllowAndDenyAsTheOptionsToPickFrom() async throws {
-        let feed = FeedStub()
-        let permission = try Fixtures.permissionCard()
-        let store = try await store("perm-1", feed: feed, loaded: permission)
-        let answer = try XCTUnwrap(store.state.replyAction)
-        XCTAssertEqual(answer.options.map(\.label), ["Allow", "Deny"])
-        XCTAssertEqual(store.state.card?.icon, .warning)
-        XCTAssertEqual(store.state.card.map { Kind($0).label }, "Permission")
-        XCTAssertTrue(store.state.card?.body?.text.hasPrefix("```") == true, "the prompt arrives as a code block")
+    func testSwipingRightAnswersWithTheFirstButtonAndLeftWithTheLast() async throws {
+        let store = try await store("perm-1", loaded: try Fixtures.authorizeCard())
+        XCTAssertEqual(store.state.swipeButton(.right)?.label, "Yes")
+        XCTAssertEqual(store.state.swipeButton(.left)?.label, "No")
 
-        await store.send(.optionPicked(answer, optionID: "deny"))
-        await store.skipReceivedActions()
-        XCTAssertTrue(feed.requests.isEmpty, "Deny waits for an optional reason")
-        await store.send(.replyChanged("Use the existing helper"))
-        await store.send(.replySent(answer))
-        await store.skipReceivedActions()
-        let request = try XCTUnwrap(feed.requests.first)
-        XCTAssertEqual(request.optionId, "deny")
-        XCTAssertEqual(request.input.text, "Use the existing helper")
+        let crowded = try await self.store("decide-5", loaded: try Fixtures.crowdedDecision())
+        XCTAssertEqual(crowded.state.swipeButton(.right)?.label, "★ Stable")
+        XCTAssertEqual(crowded.state.swipeButton(.left)?.label, "Nightly", "the last of the three showing, not of More")
+
+        let report = try await self.store(Fixtures.informationID, loaded: try Fixtures.card(Fixtures.informationID))
+        XCTAssertEqual(report.state.swipeButton(.right)?.label, "Seen")
+        XCTAssertEqual(report.state.swipeButton(.left)?.label, "Seen")
     }
 
     @MainActor
-    func testAPlanCardApprovesOrOpensTheDocumentToReview() async throws {
-        let feed = FeedStub()
-        let plan = try Fixtures.planCard()
-        let store = try await store("plan-1", feed: feed, loaded: plan)
-        XCTAssertEqual(store.state.card?.icon, .document)
+    func testOnlyAButtonOneTapAnswersCanBeSwiped() async throws {
+        let pullRequest = try await store(Fixtures.pullRequestID, loaded: try Fixtures.card(Fixtures.pullRequestID))
+        XCTAssertFalse(pullRequest.state.buttons[0].answersOnATap, "a disabled merge menu with a confirmation")
+        XCTAssertFalse(pullRequest.state.buttons[1].answersOnATap, "request changes opens the diff")
 
-        await store.send(.actionTapped(try action(store, verb: "changes")))
-        await store.receive(\.delegate.open, .card("plan-1"))
-        await store.send(.actionTapped(try action(store, verb: "accept")))
-        await store.skipReceivedActions()
-        XCTAssertEqual(feed.requests.map(\.actionId), [try action(store, verb: "accept").id])
+        let authorize = try await store("perm-1", loaded: try Fixtures.authorizeCard())
+        XCTAssertTrue(authorize.state.buttons.allSatisfy(\.answersOnATap))
     }
 }

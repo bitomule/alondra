@@ -124,8 +124,8 @@ private struct BlockButtonStyle: ButtonStyle {
 }
 
 public struct CommentSheet: View {
-    @Bindable var store: StoreOf<ReviewFeature>
-    let composing: ReviewFeature.Composing
+    @Bindable var store: StoreOf<CardDetailFeature>
+    let composing: CardDetailFeature.Composing
 
     @Environment(\.dismiss) private var dismiss
     @FocusState private var focused: Bool
@@ -135,7 +135,7 @@ public struct CommentSheet: View {
         Binding(get: { store.composing?.text ?? "" }, set: { store.send(.composingChanged($0)) })
     }
 
-    public init(store: StoreOf<ReviewFeature>, composing: ReviewFeature.Composing) {
+    public init(store: StoreOf<CardDetailFeature>, composing: CardDetailFeature.Composing) {
         self.store = store
         self.composing = composing
     }

@@ -8,7 +8,7 @@ enum Fixtures {
         let environment = ProcessInfo.processInfo.environment
         return URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
             .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
-            .appendingPathComponent("fixtures/views")
+            .appendingPathComponent("fixtures/views/cards")
     }
 
     static func urls() throws -> [URL] {

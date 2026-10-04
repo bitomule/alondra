@@ -121,6 +121,33 @@ final class NotificationPayloadTests: XCTestCase {
         XCTAssertFalse(item.actions.contains { $0.opens })
     }
 
+    func testEveryPushedCardEndsWithItsReplyAsATextAction() throws {
+        let cases = try XCTUnwrap(try fixture()["cases"] as? [[String: Any]])
+        for pushed in cases {
+            let push = try XCTUnwrap(pushed["payload"] as? [String: Any])
+            let item = try XCTUnwrap(NotificationPayload.Item(userInfo: push), "\(pushed["interaction"] ?? "")")
+            let reply = try XCTUnwrap(item.actions.last, "\(pushed["interaction"] ?? "")")
+            XCTAssertTrue(reply.id.hasPrefix("reply:") || reply.id.hasPrefix("msg:"), reply.id)
+            XCTAssertTrue(reply.text, "the reply is the text-input action of the notification")
+            XCTAssertNotNil(reply.placeholder)
+            XCTAssertLessThanOrEqual(item.actions.count, 4, "a category shows four buttons at most")
+        }
+    }
+
+    func testThePayloadSaysHowLoudlyAndUnderWhichThreadItArrives() throws {
+        let cases = try XCTUnwrap(try fixture()["cases"] as? [[String: Any]])
+        func alert(_ interaction: String) throws -> NotificationAlert {
+            let push = try XCTUnwrap(cases.first { $0["interaction"] as? String == interaction }?["payload"] as? [String: Any])
+            return NotificationAlert(aps: try XCTUnwrap(push["aps"] as? [String: Any]))
+        }
+        XCTAssertEqual(try alert("action_request").level, .timeSensitive)
+        XCTAssertEqual(try alert("question").level, .active)
+        XCTAssertEqual(try alert("information").level, .passive)
+        XCTAssertEqual(try alert("question").thread, "orchestrator")
+        XCTAssertNil(NotificationAlert(aps: ["interruption-level": "critical", "thread-id": ""]).level)
+        XCTAssertNil(NotificationAlert(aps: ["thread-id": ""]).thread)
+    }
+
     func testFourButtonTextActionCategoryIsBuiltFromPayload() throws {
         let item = try XCTUnwrap(NotificationPayload.Item(userInfo: payload(#"{"alondra":{"protocol":1,"kind":"question","card":"q-1","data_epoch":"e","actions":[{"id":"a","label":"One"},{"id":"b","label":"Two"},{"id":"c","label":"Three","text":true,"placeholder":"Explain"},{"id":"d","label":"Four"}]}}"#)))
         XCTAssertEqual(item.actions.count, 4)

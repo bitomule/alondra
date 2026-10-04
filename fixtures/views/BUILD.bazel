@@ -4,10 +4,18 @@ filegroup(
     visibility = ["//visibility:public"],
 )
 
-# What the daemon renders since the card redesign. The files above are the shape the apps
-# still draw; the apps move to these with their own redesign and the old ones go then.
+# What the daemon renders since the card redesign. The files above are the shape the Mac and the
+# terminal still draw; they move to these with their own redesign and the old ones go then.
 filegroup(
     name = "cards",
     srcs = glob(["cards/*.json"], allow_empty = True),
+    visibility = ["//visibility:public"],
+)
+
+# The cards the iPhone app and the demo bundle: a bundle keeps no folders, so the Mac and terminal
+# files, which share their names with the top-level ones, stay out.
+filegroup(
+    name = "cards_ios",
+    srcs = glob(["cards/*.json"], exclude = ["cards/*-mac.json", "cards/*-tui.json"], allow_empty = True),
     visibility = ["//visibility:public"],
 )

@@ -43,7 +43,7 @@ final class FleetFeatureTests: XCTestCase {
         XCTAssertNil(node.subtitle)
         XCTAssertEqual(node.badges, [], "context and cost stay on the node's screen")
         XCTAssertEqual(overview.orchestrator?.state?.text, "Idle")
-        XCTAssertEqual(node.pending, 1)
+        XCTAssertEqual(node.pending, 2)
         XCTAssertEqual(node.activity, "The simulator pass completed successfully.")
         XCTAssertEqual(node.activityAt, "2026-09-30T09:58:00Z")
         XCTAssertEqual(node.link, .view(key: "node:d887a34b-249e-4487-a89b-57de38c26372"))
