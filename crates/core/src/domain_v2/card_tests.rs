@@ -475,6 +475,50 @@ fn a_proposal_can_be_answered_after_its_task_is_done() {
     assert!(s.requests.contains_key(&"proposal-p".into()));
 }
 
+#[test]
+fn a_proposal_stays_pending_and_answerable_after_its_task_ends() {
+    let mut s = fixture();
+    proposal(&mut s);
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    let item = s.projection().inbox.into_iter().find(|item| item.id == "interaction:p").unwrap();
+    assert!(item.pending);
+    let action = item.available_actions.iter().find(|action| action.kind == "answer_question").unwrap();
+    assert_eq!((action.enabled, action.disabled_reason.as_deref()), (true, None));
+}
+
+#[test]
+fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
+    let mut s = fixture();
+    let with_verify = |kind: CardKind, need: &str| {
+        let mut card = CardSpec::new(kind, need).why("Because");
+        card.verify = Some("I check it".into());
+        card
+    };
+    ok(&mut s, agent(), ask("decide", "t", false, decide("Pick a name")));
+    ok(&mut s, agent(), ask("test", "t", false, CardSpec::new(CardKind::Test, "Try the build").why("Because")));
+    ok(&mut s, agent(), ask("provide", "t", false, CardSpec::new(CardKind::Provide, "Send the key").why("Because")));
+    ok(&mut s, agent(), Command::RequestAction {
+        attachments: vec![], interaction_id: "do".into(), scope: scope("t"), recipient: Recipient::User,
+        body: "Log in".into(), blocking: false, options: two(), card: with_verify(CardKind::Do, "Log in"),
+    });
+    ok(&mut s, agent(), inform("know", scope("t"), "Heads up"));
+    ok(&mut s, agent(), present("review", text(), true, review()));
+    proposal(&mut s);
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    let items = s.projection().inbox;
+    assert!(items.iter().any(|item| item.pending), "the notice and the proposal remain");
+    for item in items.iter().filter(|item| item.pending) {
+        assert!(
+            item.available_actions.iter().any(|action| action.enabled),
+            "{} is shown as pending with every action disabled: {:?}",
+            item.id, item.available_actions.iter().map(|action| action.disabled_reason.clone()).collect::<Vec<_>>()
+        );
+    }
+    let mut pending: Vec<&str> = items.iter().filter(|item| item.pending).map(|item| item.id.as_str()).collect();
+    pending.sort();
+    assert_eq!(pending, ["interaction:know", "interaction:p"], "a card nobody can answer leaves the inbox: {pending:?}");
+}
+
 // F2: the inbox is one item per interaction, in the order the user should meet them.
 
 fn inbox_ids(s: &DomainState) -> Vec<String> {
