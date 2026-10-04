@@ -606,6 +606,7 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
     let yes = hold.approves(&option.id);
     let (label, placeholder): (&str, &str) = match (hold, yes) {
         (Hold::Permission, true) => (t!(lang, "Allow", "Permitir"), ""),
+        (Hold::Permission, false) if option.id == Hold::ALWAYS => (t!(lang, "Always for this", "Siempre para esto"), ""),
         (Hold::Permission, false) => (t!(lang, "Deny", "Denegar"), t!(lang, "Write the reason", "Escribe el motivo")),
         (Hold::Plan, true) => (t!(lang, "Approve", "Aprobar"), ""),
         (Hold::Plan, false) => (t!(lang, "Request changes", "Pedir cambios"), t!(lang, "Write what to change", "Escribe qué cambiar")),

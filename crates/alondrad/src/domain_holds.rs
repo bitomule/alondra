@@ -44,6 +44,9 @@ pub(crate) struct Card {
     pub tool: Option<String>,
     #[serde(default)]
     pub input: Value,
+    /// Claude Code's `permission_suggestions` for a permission prompt.
+    #[serde(default)]
+    pub suggestions: Value,
     #[serde(default)]
     pub withdraw_when_gone: bool,
 }
@@ -63,7 +66,7 @@ pub(crate) fn hold_elicitation(domain: &DomainRuntime, payload: &Value, backgrou
     let Some(session_id) = str_field(payload, "session_id") else { return Ok(None) };
     let input = payload.get("requested_schema").cloned().unwrap_or(Value::Null);
     let id = InteractionId(format!("hold-{}", crate::auth::random_hex(16)));
-    open(domain, &session_id, id, Hold::Elicitation, None, input, Some(payload))
+    open(domain, &session_id, id, Hold::Elicitation, None, input, &Value::Null, Some(payload))
 }
 
 pub(crate) enum Posted {
@@ -95,7 +98,7 @@ pub(crate) fn post(domain: &DomainRuntime, card: &Card, background: bool) -> Res
     {
         return Ok(Posted::Denied(reason));
     }
-    Ok(match open(domain, &card.session_id, id, hold, card.tool.clone(), card.input.clone(), None)? {
+    Ok(match open(domain, &card.session_id, id, hold, card.tool.clone(), card.input.clone(), &card.suggestions, None)? {
         Some(held) => Posted::Held(held.id),
         None => Posted::NotHeld,
     })
@@ -146,7 +149,7 @@ fn hold_card(hold: Hold, body: &str, input: &Value, options: &[QuestionOption], 
 }
 
 fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold, tool: Option<String>, input: Value,
-    elicitation: Option<&Value>) -> Result<Option<Held>> {
+    suggestions: &Value, elicitation: Option<&Value>) -> Result<Option<Held>> {
     let agent_id = AgentId(session_id.to_owned());
     let state = domain.state()?;
     let Some(task) = state.tasks.values()
@@ -158,7 +161,7 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
         Some(detail) => format!("{title}\n\n{detail}"),
         None => title,
     };
-    let mut options = hold.options();
+    let mut options = hold.options_offering(Hold::always_suggestion(suggestions).is_some());
     let mut title = None;
     let body = match hold {
         Hold::Permission => {
@@ -308,7 +311,7 @@ fn question_answer(input: &Value, answer: &Answer) -> String {
 
 /// What the mod needs from the user's answer to its card. The words the user wrote when turning a
 /// permission or plan down travel in the refusal, so the node reads them with the denial.
-pub(crate) fn mod_reply(hold: Hold, input: &Value, answer: &Answer, user: &str) -> Value {
+pub(crate) fn mod_reply(hold: Hold, input: &Value, suggestions: &Value, answer: &Answer, user: &str) -> Value {
     let approved = hold.approves(&answer.option_id);
     let refusal = |plain: &str, with_note: &str| match note(answer) {
         Some(said) => format!("{user} {with_note}: {said}"),
@@ -326,6 +329,11 @@ pub(crate) fn mod_reply(hold: Hold, input: &Value, answer: &Answer, user: &str) 
         Hold::Plan if approved => json!({"held": true, "approved": true}),
         Hold::Plan => json!({"held": true, "approved": false,
             "feedback": refusal("requests changes to the plan", "requested changes to the plan")}),
+        Hold::Permission if answer.option_id == Hold::ALWAYS => match Hold::always_suggestion(suggestions) {
+            Some(update) => json!({"held": true, "allowed": true, "reason": format!("{user} allowed this call and similar ones"),
+                "permissions": [update]}),
+            None => json!({"held": true, "allowed": true, "reason": format!("{user} allowed this call")}),
+        },
         Hold::Permission if approved => json!({"held": true, "allowed": true, "reason": format!("{user} allowed this call")}),
         Hold::Permission => json!({"held": true, "allowed": false, "reason": refusal("denies it", "denied it")}),
         Hold::Elicitation => unreachable!("an elicitation is answered through its hook"),

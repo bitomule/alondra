@@ -2733,6 +2733,19 @@ fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
 }
 
 #[test]
+fn a_permission_card_with_a_suggestion_offers_yes_always_and_no_in_that_order() {
+    use crate::domain_v2::{CardKind, Hold};
+    let mut state = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow cleaning the build", ""));
+    state.interactions.get_mut(&"i-1".into()).unwrap().payload =
+        InteractionPayload::Question { options: Hold::Permission.options_offering(true), answer: None };
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    let card = card_of(&view);
+    assert_eq!(answers(card).iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str(), a.role)).collect::<Vec<_>>(),
+        [("allow", "Permitir", Some(Role::Risk)), ("always", "Siempre para esto", Some(Role::Neutral)),
+         ("deny", "Denegar", Some(Role::Neutral))]);
+}
+
+#[test]
 fn a_held_ask_user_question_card_shows_the_question_and_its_options() {
     use crate::domain_v2::{CardKind, Hold};
     let mut state = held_fixture(Hold::Question, spec(CardKind::Decide, "Which database?", "The migration depends on it."));

@@ -3002,3 +3002,35 @@ fn alondra_alone_sends_only_conflicts_and_an_agent_never_sends_back() {
     let InteractionPayload::Delivery { feedback, .. } = &s.interactions[&"d".into()].payload else { unreachable!() };
     assert_eq!((feedback[0].user_id.as_str(), feedback[0].instruction), (Feedback::ALONDRA, Instruction::Conflicts));
 }
+
+fn rule_suggestion(destination: &str, rule: &str) -> serde_json::Value {
+    serde_json::json!({"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": rule}], "behavior": "allow", "destination": destination})
+}
+
+#[test]
+fn a_permission_offers_always_between_allow_and_deny_only_when_asked() {
+    let ids = |always| Hold::Permission.options_offering(always).into_iter().map(|o| o.id).collect::<Vec<_>>();
+    assert_eq!(ids(true), ["allow", "always", "deny"]);
+    assert_eq!(ids(false), ["allow", "deny"]);
+    assert_eq!(Hold::Permission.options(), Hold::Permission.options_offering(false));
+    assert!(!Hold::Permission.approves(Hold::ALWAYS), "always is its own answer, not the plain yes");
+}
+
+#[test]
+fn always_applies_the_narrowest_kept_allow_rule_claude_suggested() {
+    use serde_json::json;
+    let user = rule_suggestion("userSettings", "git *");
+    let project = rule_suggestion("projectSettings", "git push *");
+    let local = rule_suggestion("localSettings", "git push origin main");
+    let session = rule_suggestion("session", "git push origin main");
+    assert_eq!(Hold::always_suggestion(&json!([user, project, local])), Some(local.clone()));
+    assert_eq!(Hold::always_suggestion(&json!([user, session, project])), Some(project));
+    assert_eq!(Hold::always_suggestion(&json!([user, session])), Some(session));
+    assert_eq!(Hold::always_suggestion(&json!([user])), None, "never the user's global settings");
+    assert_eq!(Hold::always_suggestion(&json!([{"type": "setMode", "mode": "acceptEdits", "destination": "localSettings"},
+        {"type": "addDirectories", "directories": ["/tmp"], "destination": "localSettings"},
+        {"type": "addRules", "rules": [{"toolName": "Bash"}], "behavior": "deny", "destination": "localSettings"},
+        {"type": "addRules", "rules": [], "behavior": "allow", "destination": "localSettings"}])), None);
+    assert_eq!(Hold::always_suggestion(&json!([])), None);
+    assert_eq!(Hold::always_suggestion(&serde_json::Value::Null), None);
+}
