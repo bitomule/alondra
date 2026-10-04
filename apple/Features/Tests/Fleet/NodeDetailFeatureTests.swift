@@ -9,7 +9,7 @@ final class NodeDetailFeatureTests: XCTestCase {
     private let node = "d887a34b-249e-4487-a89b-57de38c26372"
     private var key: ViewKey { .node(node) }
 
-    private func document(revision: Int = 0) throws -> ViewDocument {
+    private func document(revision: Int = 6) throws -> ViewDocument {
         try Fixtures.document("node-ios", edit: { object in
             var sections = object["sections"] as? [[String: Any]] ?? []
             for index in sections.indices where sections[index]["id"] as? String == "actions" {
@@ -17,7 +17,7 @@ final class NodeDetailFeatureTests: XCTestCase {
                 var actions = bar[0]["actions"] as? [[String: Any]] ?? []
                 for action in actions.indices {
                     let id = actions[action]["id"] as? String ?? ""
-                    actions[action]["id"] = id.replacingOccurrences(of: "@0", with: "@\(revision)")
+                    actions[action]["id"] = id.replacingOccurrences(of: "@6", with: "@\(revision)")
                 }
                 bar[0]["actions"] = actions
                 sections[index]["items"] = bar
@@ -70,8 +70,8 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertEqual(detail.lastMessageAt, "2026-09-30T09:58:00Z")
         XCTAssertEqual(detail.now.map(\.title), ["Reading the localization catalog"])
         XCTAssertEqual(detail.now.first?.detail, "Task Check the Spanish strings")
-        XCTAssertEqual(detail.message?.id, "msg:\(node)@0")
-        XCTAssertEqual(detail.close?.id, "close:\(node)@0")
+        XCTAssertEqual(detail.message?.id, "msg:\(node)@6")
+        XCTAssertEqual(detail.close?.id, "close:\(node)@6")
         XCTAssertTrue(detail.orchestratorActions.isEmpty)
     }
 
@@ -115,7 +115,7 @@ final class NodeDetailFeatureTests: XCTestCase {
         await store.send(.screen(.loaded(try document())))
         await store.receive(\.composer.present)
 
-        XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@0")
+        XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@6")
         XCTAssertEqual(store.state.composer.dataEpoch, "test-epoch")
     }
 
@@ -127,14 +127,14 @@ final class NodeDetailFeatureTests: XCTestCase {
         await store.send(.draftChanged("Almost done"))
         await store.send(.composer(.textChanged("Almost done")))
 
-        await store.send(.screen(.loaded(try document(revision: 4))))
+        await store.send(.screen(.loaded(try document(revision: 7))))
 
-        XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@4")
+        XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@7")
         XCTAssertEqual(store.state.composer.text, "Almost done")
         XCTAssertEqual(store.state.draft, "Almost done")
         await store.send(.send)
         await store.skipReceivedActions()
-        XCTAssertEqual(requests.value.map(\.actionId), ["msg:\(node)@4"])
+        XCTAssertEqual(requests.value.map(\.actionId), ["msg:\(node)@7"])
     }
 
     func testSendingAMessageSendsTheTextAndThenClearsTheComposer() async throws {
@@ -151,7 +151,7 @@ final class NodeDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.draft, "")
         XCTAssertEqual(store.state.composer.text, "")
         XCTAssertNil(store.state.composer.stamp)
-        XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@0", "the composer stays ready for the next message")
+        XCTAssertEqual(store.state.composer.action?.id, "msg:\(node)@6", "the composer stays ready for the next message")
     }
 
     func testAFailedSendKeepsTheDraftAndSaysSo() async throws {

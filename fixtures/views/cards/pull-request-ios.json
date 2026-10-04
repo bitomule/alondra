@@ -4,7 +4,7 @@
   "view": "pull_request",
   "key": "pull_request:github.com/example/repo#12",
   "client": "ios",
-  "version": "v033c5cf42ef6c5f3",
+  "version": "v7b75753c017f1a90",
   "cursor": "cursor-1",
   "title": "Add the compact schedule editor",
   "status": {
@@ -167,7 +167,7 @@
               "stamp": "Merged"
             },
             {
-              "id": "changes:github.com/example/repo#12@0~abcdef12",
+              "id": "changes:github.com/example/repo#12@6~abcdef12",
               "label": "Request changes",
               "style": "secondary",
               "role": "neutral",

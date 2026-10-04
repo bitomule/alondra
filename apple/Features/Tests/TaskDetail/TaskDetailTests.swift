@@ -38,13 +38,12 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(spanish.waiting.title, "Te espera")
     }
 
-    func testCancelReopenAndArchiveCarryTheirEnabledState() throws {
+    func testOnlyTheActionsTheTaskAllowsAreOffered() throws {
         let detail = TaskDetail(document: try Samples.document("task-detail"))
 
         XCTAssertEqual(detail.cancel?.enabled, true)
-        XCTAssertEqual(detail.reopen?.enabled, false)
-        XCTAssertEqual(detail.archive?.enabled, false)
-        XCTAssertEqual(detail.archive?.disabledReason, "Only finished tasks can be archived")
+        XCTAssertNil(detail.reopen, "an older daemon still sends it switched off")
+        XCTAssertNil(detail.archive, "an older daemon still sends it switched off")
     }
 
     func testTheDaemonsOwnFixtureProjectsToo() throws {
@@ -57,6 +56,7 @@ final class TaskDetailTests: XCTestCase {
         XCTAssertEqual(detail.pullRequests.elements.count, 1)
         XCTAssertEqual(detail.dependencies.elements.count, 0)
         XCTAssertNil(detail.node, "this task has no node yet")
+        XCTAssertEqual(detail.actions.map(\.command), ["cancel"], "an open task can only be cancelled")
     }
 
     func testASectionTheScreenDoesNotKnowIsIgnored() throws {

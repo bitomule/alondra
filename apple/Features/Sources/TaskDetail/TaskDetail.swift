@@ -90,7 +90,7 @@ public extension TaskDetail {
             }),
             actions: items("actions").flatMap { item -> [WireAction] in
                 if case .actions(let bar) = item { bar.actions } else { [] }
-            }
+            }.filter(\.enabled)
         )
     }
 }

@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:github.com/example/repo#12",
   "client": "mac",
-  "version": "v1f0d3668a7f8ad9d",
+  "version": "vf2ba8bff7143c283",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -196,7 +196,7 @@
               "key": "1"
             },
             {
-              "id": "changes:github.com/example/repo#12@0~abcdef12",
+              "id": "changes:github.com/example/repo#12@6~abcdef12",
               "label": "Request changes",
               "style": "secondary",
               "role": "neutral",

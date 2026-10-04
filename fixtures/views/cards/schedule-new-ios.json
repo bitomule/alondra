@@ -4,7 +4,7 @@
   "view": "schedule",
   "key": "schedule:new",
   "client": "ios",
-  "version": "v9896febaf4769098",
+  "version": "vbd531eacca2d6627",
   "cursor": "cursor-1",
   "title": "New Schedule",
   "status": {
@@ -323,7 +323,7 @@
             }
           ],
           "submit": {
-            "id": "sched_save:view@0",
+            "id": "sched_save:view@6",
             "label": "Save Schedule",
             "style": "primary",
             "presentation": "button",
