@@ -4,7 +4,7 @@
   "view": "sidebar",
   "key": "sidebar",
   "client": "mac",
-  "version": "v20c0e267521d38cb",
+  "version": "v0ede45e0a21657aa",
   "cursor": "cursor-1",
   "status": {
     "version": "v7675bad0b5fdf15f",
@@ -62,7 +62,7 @@
     {
       "id": "waiting",
       "title": "Waiting for You",
-      "count": 4,
+      "count": 5,
       "collapsed": false,
       "items": [
         {
@@ -74,9 +74,16 @@
           },
           "icon": "question",
           "title": "Choose the welcome copy",
-          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
+          "subtitle": "Alondra · iOS · Demo Garden",
+          "badges": [
+            {
+              "text": "Decide",
+              "tone": "accent"
+            }
+          ],
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "kind": "decide"
         },
         {
           "type": "row",
@@ -87,9 +94,36 @@
           },
           "icon": "question",
           "title": "Ship the compact schedule editor with this beta?",
-          "subtitle": "The review of the pull request waits for your answer.",
+          "subtitle": "Alondra",
+          "badges": [
+            {
+              "text": "Decide",
+              "tone": "accent"
+            }
+          ],
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "kind": "decide"
+        },
+        {
+          "type": "row",
+          "id": "hf-weekly-2026-09-30",
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "title": "Review the beta candidate",
+          "subtitle": "Alondra",
+          "badges": [
+            {
+              "text": "Review · PR #12",
+              "tone": "accent"
+            }
+          ],
+          "depth": 0,
+          "struck": false,
+          "kind": "review"
         },
         {
           "type": "row",
@@ -100,9 +134,16 @@
           },
           "icon": "notice",
           "title": "The simulator pass is clean",
-          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "subtitle": "Alondra",
+          "badges": [
+            {
+              "text": "FYI",
+              "tone": "neutral"
+            }
+          ],
           "depth": 0,
-          "struck": false
+          "struck": false,
+          "kind": "know"
         },
         {
           "type": "row",
@@ -113,29 +154,16 @@
           },
           "icon": "notice",
           "title": "The pull request checks passed",
+          "subtitle": "Alondra · iOS · Demo Garden",
+          "badges": [
+            {
+              "text": "FYI",
+              "tone": "neutral"
+            }
+          ],
           "depth": 0,
-          "struck": false
-        }
-      ]
-    },
-    {
-      "id": "pull_requests",
-      "title": "Pull requests",
-      "count": 1,
-      "collapsed": false,
-      "items": [
-        {
-          "type": "row",
-          "id": "hf-weekly-2026-09-30",
-          "link": {
-            "kind": "view",
-            "key": "card:hf-weekly-2026-09-30"
-          },
-          "icon": "pull_request",
-          "title": "Review the beta candidate",
-          "subtitle": "All required checks passed and the branch is up to date with main.",
-          "depth": 0,
-          "struck": false
+          "struck": false,
+          "kind": "know"
         }
       ]
     },
@@ -183,7 +211,6 @@
               },
               "icon": "action",
               "title": "Restore the native review experience",
-              "subtitle": "Needs you",
               "badges": [
                 {
                   "text": "Needs you",
@@ -216,10 +243,6 @@
               "tone": "neutral"
             }
           ],
-          "trailing": {
-            "kind": "text",
-            "text": "Idle"
-          },
           "depth": 0,
           "struck": false
         }

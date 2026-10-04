@@ -139,7 +139,7 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
             let state = domain.state()?;
             match (answer, state.holds.get(&id)) {
                 (Some(answer), Some(hold)) => {
-                    crate::domain_holds::mod_reply(*hold, &card.input, &answer, &crate::domain_messages::user_name())
+                    crate::domain_holds::mod_reply(*hold, &card.input, &card.suggestions, &answer, &crate::domain_messages::user_name())
                 }
                 _ => json!({"held": false}),
             }
@@ -1263,6 +1263,52 @@ mod tests {
             assert!(state.interactions[&id].body.contains("Bash: Clean the build"), "{}", state.interactions[&id].body);
             assert!(agent_outbox(&domain, "agent-a").is_empty());
             assert!(crate::domain_messages::take_held(&domain, &"agent-a".into()).is_empty(), "the denial carries the words");
+        }
+    }
+
+    fn suggested(agent: &str) -> Value {
+        let mut card = permission(agent);
+        card["suggestions"] = json!([
+            {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}], "behavior": "allow", "destination": "userSettings"},
+            {"type": "addRules", "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}], "behavior": "allow", "destination": "localSettings"}]);
+        card
+    }
+
+    #[tokio::test]
+    async fn always_allows_the_call_and_hands_back_the_suggested_rule() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let (reply, id) = held_card(&domain, suggested("agent-a"), Hold::ALWAYS, None).await;
+        assert_eq!((reply["held"].as_bool(), reply["allowed"].as_bool()), (Some(true), Some(true)), "{reply}");
+        assert_eq!(reply["permissions"], json!([{"type": "addRules", "behavior": "allow", "destination": "localSettings",
+            "rules": [{"toolName": "Bash", "ruleContent": "rm -rf build"}]}]));
+        let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[&id].payload else { panic!("question") };
+        assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["allow", "always", "deny"]);
+    }
+
+    #[tokio::test]
+    async fn plain_allow_and_deny_carry_no_rule_even_when_claude_suggested_one() {
+        for option in [Hold::ALLOW, Hold::DENY] {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            working_agent(&domain, "agent-a");
+            let (reply, _) = held_card(&domain, suggested("agent-a"), option, None).await;
+            assert!(reply.get("permissions").is_none(), "{option}: {reply}");
+        }
+    }
+
+    #[tokio::test]
+    async fn without_a_usable_suggestion_there_is_no_always() {
+        for suggestions in [json!([]), Value::Null, json!([{"type": "setMode", "mode": "acceptEdits", "destination": "session"}])] {
+            let fixture = Fixture::new();
+            let domain = fixture.open();
+            working_agent(&domain, "agent-a");
+            let mut card = permission("agent-a");
+            card["suggestions"] = suggestions.clone();
+            let (_, id) = held_card(&domain, card, Hold::ALLOW, None).await;
+            let InteractionPayload::Question { options, .. } = &domain.state().unwrap().interactions[&id].payload else { panic!("question") };
+            assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["allow", "deny"], "{suggestions}");
         }
     }
 

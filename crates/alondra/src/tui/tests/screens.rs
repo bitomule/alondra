@@ -420,6 +420,7 @@ fn review_pr_detail_shows_what_blocks_it_and_greys_the_disabled_merge() {
     let screen = rendered(&mut app, 120, 46);
     dump("detail: Review PR, blocked", &screen);
     assert!(screen.contains("◎ REVIEW · PR #12"), "{screen}");
+    assert!(screen.contains("▤ Diff · 4 files · +120 −30") && !screen.contains("0 B"), "{screen}");
     assert!(screen.contains("blocked by Ship the compact schedule editor"), "{screen}");
     assert!(screen.contains(" 1  Merge"), "{screen}");
     assert!(screen.contains("    Answer “Ship the compact schedule editor with this beta?” first"), "the reason sits under the button: {screen}");

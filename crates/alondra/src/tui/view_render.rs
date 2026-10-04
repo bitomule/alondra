@@ -395,6 +395,19 @@ pub fn menu_lines(menu: &Menu) -> Vec<Line<'static>> {
     lines
 }
 
+/// A diff says what it changes ("4 files · +120 −30"), the size of a body only when it has one.
+fn content_ref_label(view: &View, content: &alondra_core::views::ContentRef) -> String {
+    let summary = detail_card(view)
+        .and_then(|card| card.content_row.as_ref())
+        .filter(|row| row.kind == "diff" && content.kind == alondra_core::views::ContentKind::Diff)
+        .map(|row| row.summary.clone());
+    match summary {
+        Some(summary) => format!("{} · {summary}", content.title),
+        None if content.size == 0 => content.title.clone(),
+        None => format!("{} · {} B", content.title, content.size),
+    }
+}
+
 pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     let cards_title = |title: &String| {
@@ -442,7 +455,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                 }
                 Item::ContentRef(content) => lines.push(Line::from(vec![
                     Span::styled("▤ ", Style::new().fg(Color::Cyan)),
-                    Span::raw(format!("{} · {} B", content.title, content.size)),
+                    Span::raw(content_ref_label(view, content)),
                 ])),
                 Item::Facts(facts) => {
                     for fact in &facts.items {

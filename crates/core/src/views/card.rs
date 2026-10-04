@@ -72,9 +72,6 @@ pub(super) fn is_review_delivery(item: &InboxItem, domain: &DomainState) -> bool
             && (pr_target(interaction, domain).is_some() || reviewed_revision(interaction).is_some())
     })
 }
-pub(super) fn carries_pull_request(item: &InboxItem, domain: &DomainState) -> bool {
-    interaction_of(item, domain).is_some_and(|interaction| pr_target(interaction, domain).is_some())
-}
 /// The pending card that stands for a pull request, whichever way it is addressed.
 pub(super) fn item_for_pr<'a>(projection: &'a DomainProjection, pr_id: &PrId, domain: &DomainState) -> Option<&'a InboxItem> {
     projection.inbox.iter().find(|item| {
@@ -606,6 +603,7 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
     let yes = hold.approves(&option.id);
     let (label, placeholder): (&str, &str) = match (hold, yes) {
         (Hold::Permission, true) => (t!(lang, "Allow", "Permitir"), ""),
+        (Hold::Permission, false) if option.id == Hold::ALWAYS => (t!(lang, "Always for this", "Siempre para esto"), ""),
         (Hold::Permission, false) => (t!(lang, "Deny", "Denegar"), t!(lang, "Write the reason", "Escribe el motivo")),
         (Hold::Plan, true) => (t!(lang, "Approve", "Aprobar"), ""),
         (Hold::Plan, false) => (t!(lang, "Request changes", "Pedir cambios"), t!(lang, "Write what to change", "Escribe qué cambiar")),

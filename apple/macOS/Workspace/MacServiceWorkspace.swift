@@ -91,8 +91,8 @@ public struct MacServiceSidebar: View {
                         sectionHeader(section)
                     }
                 }
-                ForEach(document.sections.flatMap(\.items).compactMap(summary), id: \.text) { notice in
-                    MacSidebarSummary(notice: notice) { presentation.send(.select(.viewKey($0))) }
+                if let summary = waitingSummary(document) {
+                    MacSidebarSummary(summary: summary) { presentation.send(.select(.viewKey($0))) }
                 }
             } else if let error = presentation.viewError {
                 VStack(spacing: 10) {
@@ -111,8 +111,20 @@ public struct MacServiceSidebar: View {
         section.items.contains { if case .row = $0 { true } else { false } }
     }
 
-    private func summary(_ item: ViewItem) -> Notice? {
-        if case let .notice(notice) = item { notice } else { nil }
+    /// What waits for the person once the answers already sent are left out.
+    private func waitingSummary(_ document: ViewDocument) -> WaitingSummary? {
+        guard let waiting = document.sections.first(where: { $0.id == "waiting" }) else {
+            let notice = document.sections.flatMap(\.items).compactMap { item -> Notice? in
+                if case let .notice(notice) = item { notice } else { nil }
+            }.first
+            guard let notice, case let .view(key)? = notice.action?.link else { return nil }
+            return WaitingSummary(text: notice.text, actionLabel: notice.action?.label ?? "", key: key)
+        }
+        let open = visibleRows(waiting)
+        if let first = open.first, case let .view(key)? = first.link {
+            return WaitingSummary(text: String(localized: "\(open.count) things waiting for you"), actionLabel: String(localized: "Start"), key: key)
+        }
+        return WaitingSummary(text: String(localized: "All caught up"), actionLabel: String(localized: "Ask for Something New…"), key: "new_request")
     }
 
     private func sidebarSectionExpanded(_ section: ViewSection) -> Bool {
@@ -142,7 +154,7 @@ public struct MacServiceSidebar: View {
 
     private func waitingCount(_ section: ViewSection) -> Int {
         let count = Int(section.count ?? 0)
-        guard section.id == "waiting" || section.id == "pull_requests" else { return count }
+        guard section.id == "waiting" else { return count }
         let hidden = section.items.filter { item in
             if case let .row(row) = item { presentation.optimistic.hides(row.id) } else { false }
         }.count
@@ -163,21 +175,26 @@ public struct MacServiceSidebar: View {
                         .help("\(urgent) nodes waiting")
                 }
             }
-        } else {
-            SidebarCountHeader(title: section.title ?? section.id.capitalized,
-                               count: waitingCount(section), tint: sectionTint(section.id))
+        } else if let title = section.title {
+            SidebarCountHeader(title: title, count: waitingCount(section), tint: sectionTint(section.id))
         }
     }
 }
 
+private struct WaitingSummary {
+    let text: String
+    let actionLabel: String
+    let key: String
+}
+
 private struct MacSidebarSummary: View {
-    let notice: Notice
+    let summary: WaitingSummary
     let open: (String) -> Void
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text(notice.text).font(.callout).foregroundStyle(.secondary)
-            if let action = notice.action, case let .view(key)? = action.link {
-                Button(action.label) { open(key) }.buttonStyle(.link)
+            Text(summary.text).font(.callout).foregroundStyle(.secondary)
+            if !summary.actionLabel.isEmpty {
+                Button(summary.actionLabel) { open(summary.key) }.buttonStyle(.link)
             }
         }
         .padding(.vertical, 4)
@@ -188,7 +205,6 @@ private struct MacSidebarSummary: View {
 private func sectionTint(_ id: String) -> Color {
     switch id {
     case "waiting": .orange
-    case "pull_requests": .purple
     case "tasks": .gray
     case "orchestrator": .orange
     default: .secondary
@@ -202,19 +218,24 @@ public struct MacServiceDetail: View {
     public var body: some View {
         Group {
             if let document = presentation.detailDocument {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
-                        if let title = document.title { Text(title).font(.title2.weight(.semibold)) }
-                        ForEach(document.sections, id: \.id) { section in
-                            SectionView(section: section,
-                                        onAction: perform,
-                                        onLink: openLink,
-                                        onMore: { presentation.send(.select(.viewKey($0))) },
-                                        onForm: { presentation.send(.beginViewForm($0)) },
-                                        onContent: { presentation.send(.contentRequested($0)) },
-                                        onAttachment: { presentation.send(.attachmentRequested($0)) })
-                        }
-                    }.frame(maxWidth: 900, alignment: .leading).padding(24)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 18) {
+                            if let title = document.title, !showsCard(document) { Text(title).font(.title2.weight(.semibold)) }
+                            ForEach(document.sections, id: \.id) { section in
+                                MacSectionView(section: section,
+                                               onAction: perform,
+                                               onReply: { presentation.send(.sendReply($0, text: $1)) },
+                                               onLink: openLink,
+                                               onMore: { presentation.send(.select(.viewKey($0))) },
+                                               onForm: { presentation.send(.beginViewForm($0)) },
+                                               onContent: { presentation.send(.contentRequested($0)) },
+                                               onAttachment: { presentation.send(.attachmentRequested($0)) },
+                                               onContentRow: { showContent(of: document, scrollTo: proxy) })
+                                    .id(section.id)
+                            }
+                        }.frame(maxWidth: 900, alignment: .leading).padding(24)
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .overlay(alignment: .top) {
@@ -254,6 +275,22 @@ public struct MacServiceDetail: View {
         }
     }
 
+    private func showsCard(_ document: ViewDocument) -> Bool {
+        document.sections.contains { $0.items.contains { if case let .card(card) = $0 { card.need != nil } else { false } } }
+    }
+
+    private func showContent(of document: ViewDocument, scrollTo proxy: ScrollViewProxy) {
+        let content = document.sections.first { $0.id == "content" }
+        let diff = content?.items.lazy.compactMap { item -> ContentRef? in
+            if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
+        }.first
+        if let diff {
+            presentation.send(.contentRequested(diff))
+        } else if content != nil {
+            withAnimation(.smooth) { proxy.scrollTo("content", anchor: .top) }
+        }
+    }
+
     private func perform(_ action: AlondraContract.Action) {
         if let link = action.link { openLink(link) }
         else { presentation.send(.beginViewAction(action)) }
@@ -278,9 +315,8 @@ public struct MacServiceDetail: View {
     }
     private func keyedActions(_ item: ViewItem) -> [AlondraContract.Action] {
         switch item {
-        case let .card(card): return card.actions + card.children.flatMap { $0.actions }
+        case let .card(card): return card.need == nil ? card.actions + card.children.flatMap { $0.actions } : []
         case let .row(row): return row.actions + row.children.flatMap { $0.actions }
-        case let .actions(bar): return bar.actions
         case let .form(form): return [form.submit]
         case let .notice(notice): return [notice.action].compactMap { $0 }
         default: return []
@@ -320,17 +356,22 @@ private struct MacContentViewer: View {
     }
 }
 
-private struct MacViewActionSheet: View {
+public struct MacViewActionSheet: View {
     let presentation: StoreOf<MacPresentationFeature>
     let form: AlondraContract.Form?
     let onDismiss: () -> Void
+    public init(presentation: StoreOf<MacPresentationFeature>, form: AlondraContract.Form? = nil, onDismiss: @escaping () -> Void = {}) {
+        self.presentation = presentation; self.form = form; self.onDismiss = onDismiss
+    }
     private var store: StoreOf<ActionFeature> {
         presentation.scope(state: \.actionFeature, action: \.action)
     }
 
-    var body: some View {
+    public var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            if let action = store.action {
+            if let action = store.action, action.asksForClarification {
+                MacClarifyForm(store: store, action: action, onDismiss: onDismiss)
+            } else if let action = store.action {
                 Text(action.label).font(.title3.weight(.semibold))
                 ActionInputView(store: store, form: form,
                                 showCommentEditor: store.action?.comments?.kind != .diffLines,
@@ -365,6 +406,69 @@ private struct MacViewActionSheet: View {
         } message: {
             if let changed = store.changed { Text(changed.button) }
         }
+    }
+}
+
+extension AlondraContract.Action {
+    public var asksForClarification: Bool { id?.hasPrefix("clarify:") == true && presentation == .options }
+}
+
+/// The reason for asking the node to clarify, and what it should explain, if anything.
+private struct MacClarifyForm: View {
+    @Bindable var store: StoreOf<ActionFeature>
+    let action: AlondraContract.Action
+    let onDismiss: () -> Void
+    @FocusState private var noteFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(action.label).font(.title3.weight(.semibold))
+                Text("The node replaces this card with a clearer one.").font(.callout).foregroundStyle(.secondary)
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(action.options, id: \.id) { option in reason(option) }
+            }
+            VStack(alignment: .leading, spacing: 6) {
+                Text("What should it clarify? (optional)").font(.subheadline.weight(.semibold))
+                TextField(placeholder, text: Binding(get: { store.text }, set: { store.send(.textChanged($0)) }), axis: .vertical)
+                    .textFieldStyle(.plain).lineLimit(3...6).focused($noteFocused)
+                    .padding(10)
+                    .background(.quaternary.opacity(0.4), in: .rect(cornerRadius: 8))
+            }
+            if let error = store.error { Text(error).font(.callout).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("Cancel") { store.send(.dismiss); onDismiss() }.keyboardShortcut(.cancelAction)
+                Button("Request clarification") { store.send(.submit) }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(store.selectedOptionID == nil || !action.enabled || store.inFlight)
+            }
+        }
+    }
+
+    private var placeholder: String {
+        if case let .text(placeholder, _, _) = action.input, let placeholder { return placeholder }
+        return String(localized: "What should it clarify?")
+    }
+
+    private func reason(_ option: ActionOption) -> some View {
+        let chosen = store.selectedOptionID == option.id
+        return Button { store.send(.chooseOption(option.id)) } label: {
+            HStack(spacing: 10) {
+                Image(systemName: chosen ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(chosen ? Color.accentColor : .secondary)
+                Text(option.label)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(chosen ? Color.accentColor.opacity(0.12) : .clear, in: .rect(cornerRadius: 8))
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(chosen ? .isSelected : [])
     }
 }
 
@@ -466,22 +570,39 @@ private struct MacViewSidebarRow: View {
                 trailingLabel
             }.font(.callout)
         } else if row.icon == .node || row.icon == .orchestrator {
-            HStack(spacing: 8) {
-                StatusDot(color: nodeTint).frame(width: 16)
-                Text(shortName(row.title)).lineLimit(1)
-                if row.icon == .orchestrator { Image(systemName: "sparkle").font(.caption2).foregroundStyle(.secondary) }
-                if let subtitle = row.subtitle {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 8) {
+                    StatusDot(color: nodeTint).frame(width: 16)
+                    Text(shortName(row.title)).fontWeight(.medium).lineLimit(1)
+                    if row.icon == .orchestrator { Image(systemName: "sparkle").font(.caption2).foregroundStyle(.secondary) }
                     Spacer(minLength: 4)
-                    Text(verbatim: subtitle).font(.caption).foregroundStyle(nodeTint == .yellow ? .orange : .secondary).lineLimit(1)
+                    trailingLabel
                 }
-                if let badge = row.badges.first {
-                    Text(badge.text).font(.caption)
-                        .foregroundStyle(badge.tone == .warning || badge.tone == .critical ? .orange : .secondary)
-                        .lineLimit(1)
+                if let subtitle = row.subtitle {
+                    Text(verbatim: subtitle).font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
                 }
-                trailingLabel
+                if !row.badges.isEmpty {
+                    Text(row.badges.map(\.text).joined(separator: " · ")).font(.caption)
+                        .foregroundStyle(nodeTint == .yellow ? .orange : .secondary)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true).padding(.leading, 24)
+                }
             }
+            .padding(.vertical, 2)
             .help(([row.title, row.subtitle].compactMap { $0 } + row.badges.map(\.text)).filter { !$0.isEmpty }.joined(separator: " · "))
+            .accessibilityElement(children: .combine)
+        } else if let kind = row.kind {
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(row.badges.first?.text ?? "").font(.caption2.weight(.bold)).kerning(0.8).textCase(.uppercase)
+                        .foregroundStyle(MacCardPalette.kind(kind)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    trailingLabel
+                }
+                Text(row.title).fontWeight(.medium).strikethrough(row.struck).lineLimit(2)
+                if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1) }
+            }
+            .padding(.vertical, 3)
             .accessibilityElement(children: .combine)
         } else {
         VStack(alignment: .leading, spacing: 2) {
@@ -492,7 +613,7 @@ private struct MacViewSidebarRow: View {
                 trailingLabel
             }
             if let subtitle = row.subtitle { Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1).padding(.leading, 24) }
-            if !row.badges.isEmpty { Text(row.badges.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).padding(.leading, 24).lineLimit(1) }
+            if !row.badges.isEmpty && row.children.isEmpty { Text(row.badges.map(\.text).joined(separator: " · ")).font(.caption).foregroundStyle(.secondary).padding(.leading, 24).lineLimit(1) }
         }
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
@@ -536,19 +657,22 @@ private struct MacViewSidebarRow: View {
         case .request: "paperplane"
         case .schedule: "calendar.badge.clock"
         case .task: "checklist"
+        case .check: "checkmark.circle"
+        case .branch: "arrow.branch"
+        case .warning: "exclamationmark.triangle"
         default: "bell.fill"
         }
     }
     private var tint: Color {
+        if !row.children.isEmpty { return color(forTaskRow: row) }
         switch row.icon {
-        case .question: .orange
-        case .action: .pink
-        case .document: .blue
-        case .pullRequest: .green
-        case .notice: .purple
-        case .node: nodeTint
-        case .task: .secondary
-        default: .secondary
+        case .question: return .orange
+        case .action: return .pink
+        case .document: return .blue
+        case .pullRequest: return .green
+        case .notice: return .purple
+        case .node: return nodeTint
+        default: return .secondary
         }
     }
     private var nodeTint: Color { SidebarTint.node(row.badges.first?.tone) }

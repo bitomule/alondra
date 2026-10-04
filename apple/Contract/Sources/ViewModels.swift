@@ -216,7 +216,9 @@ public struct Card: Codable, Equatable, Sendable {
 public struct Row: Codable, Equatable, Sendable {
     public let id: String; public let link: Link?; public let icon: Icon; public let title: String; public let subtitle: String?; public let badges: [Label]
     public let trailing: Trailing?; public let depth: UInt8; public let struck: Bool; public let children: [Row]; public let actions: [Action]
-    enum CodingKeys: String, CodingKey { case id, link, icon, title, subtitle, badges, trailing, depth, struck, children, actions }
+    /// The kind of the card this row stands for, so a list colours it like the card.
+    public let kind: CardKind?
+    enum CodingKeys: String, CodingKey { case id, link, icon, title, subtitle, badges, trailing, depth, struck, children, actions, kind }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); link = try c.decodeIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
@@ -224,6 +226,7 @@ public struct Row: Codable, Equatable, Sendable {
         badges = try c.decodeIfPresent([Label].self, forKey: .badges) ?? []; trailing = try c.decodeIfPresent(Trailing.self, forKey: .trailing)
         depth = try c.decode(UInt8.self, forKey: .depth); struck = try c.decode(Bool.self, forKey: .struck)
         children = try c.decodeIfPresent([Row].self, forKey: .children) ?? []; actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        kind = (try? c.decodeIfPresent(CardKind.self, forKey: .kind)) ?? nil
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -232,6 +235,7 @@ public struct Row: Codable, Equatable, Sendable {
         if !badges.isEmpty { try c.encode(badges, forKey: .badges) }; try c.encodeIfPresent(trailing, forKey: .trailing)
         try c.encode(depth, forKey: .depth); try c.encode(struck, forKey: .struck)
         if !children.isEmpty { try c.encode(children, forKey: .children) }; if !actions.isEmpty { try c.encode(actions, forKey: .actions) }
+        try c.encodeIfPresent(kind, forKey: .kind)
     }
 }
 public struct Markdown: Codable, Equatable, Sendable { public let text: String; public let truncated: Bool; public let more: Link?; public let commentable: Bool }

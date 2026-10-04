@@ -8,7 +8,7 @@ swift_test(
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
     args = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
     srcs = glob(["Tests/*.swift"]) + ["//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift"],
-    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + ["//fixtures/views:all"],
+    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + ["//fixtures/views:cards"],
     env = {
         "SNAPSHOT_ROOT": "apple/Testing/MacSnapshots/Tests/__Snapshots__",
         "TZ": "UTC",
