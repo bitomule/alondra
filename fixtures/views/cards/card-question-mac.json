@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:a98d034b-249e-4487-a89b-57de38c26372",
   "client": "mac",
-  "version": "v97bce33deb074e59",
+  "version": "ve28cd9a986f4a0e7",
   "cursor": "cursor-1",
   "title": "Choose the welcome copy",
   "status": {
@@ -250,27 +250,13 @@
           "items": [
             {
               "label": "Task",
-              "value": "Restore the native review experience",
+              "value": "Restore the native review experience · Alondra · iOS",
               "link": {
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               }
-            },
-            {
-              "label": "Mission",
-              "value": "Polish the Alondra beta",
-              "link": {
-                "kind": "view",
-                "key": "request:r-9f2156b5a8894e53901f0af576dff6a2"
-              }
             }
           ]
-        },
-        {
-          "type": "markdown",
-          "text": "**What the node said last**\n\nThe simulator pass completed successfully.",
-          "truncated": false,
-          "commentable": false
         }
       ]
     }
