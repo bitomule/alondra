@@ -23,10 +23,10 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task at a time: work only on your assigned Task; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why` (one or two sentences, at most 240): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts one decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`); end your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. `propose` suggests extra work without stopping you. `publish_information` tells {user} something they only read. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
+            "{common} A node works on one Task at a time: work only on your assigned Task; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why` (one or two sentences, at most 240): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts one decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`); end your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. `propose` suggests extra work without stopping you. `publish_information` tells {user} something they only read and that changes something for them (a final summary, a finding, a result); no status chatter, no notes that you are waiting for something, no questions (use ask), and a correction replaces the earlier notice with `replaces` instead of becoming a new card. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
-            "{common} Define cohesive Tasks under Requests with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
+            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt), then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
         ),
     }
 }
@@ -197,8 +197,8 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     );
     add(
         "publish_information",
-        format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Sending the same unread notice twice returns the first one."),
-        json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"content":content_schema(),"attachments":attachments}),
+        format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Only for what changes something for {user}: final summaries, findings, results; never status chatter, never a question or a request: anything that needs {user} to answer or do something is an ask, request_input or request_action, never a note that you are waiting. To correct an earlier notice of yours that is still open, send the correction with replaces set to its id: it takes the old card's place instead of adding a card. Sending the same unread notice twice returns the first one."),
+        json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "body"],
     );
     if node {
@@ -358,6 +358,12 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
             vec!["request_id"],
         ),
         (
+            "title_request",
+            "Name a Request with a short user-facing title (a few words, at most 60 characters, in the user's language, saying what it is about; never a copy of the prompt). Do this for every Request you split into Tasks.",
+            json!({"request_id":{"type":"string"},"title":{"type":"string","maxLength":60}}),
+            vec!["request_id", "title"],
+        ),
+        (
             "create_task",
             "Create a cohesive Task under an open Request and optionally assign a free node (a node works on one Task at a time).",
             json!({"task_id":{"type":"string"},"request_id":{"type":"string"},"title":{"type":"string"},"agent_id":{"type":["string","null"]},"review_prs":{"type":"boolean"},"dependencies":{"type":"array","items":{"type":"string"}},"stack":{"type":["object","null"],"properties":{"upstream_task":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["upstream_task","presentation_id","pr_id","head"],"additionalProperties":false}}),
@@ -472,6 +478,7 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
     match name {
         "create_request"
         | "close_request"
+        | "title_request"
         | "create_task"
         | "assign_task"
         | "retitle_task"
@@ -547,6 +554,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "answer_question"
         | "create_request"
         | "close_request"
+        | "title_request"
         | "create_task"
         | "assign_task"
         | "retitle_task"
@@ -745,6 +753,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "authorize_merge" => ("POST", format!("/interactions/{}/merge-authorizations", id("presentation_id")?)),
         "create_request" => ("POST", "/requests".to_owned()),
         "close_request" => ("POST", format!("/requests/{}/close", id("request_id")?)),
+        "title_request" => ("POST", format!("/requests/{}/title", id("request_id")?)),
         "create_task" => ("POST", format!("/requests/{}/tasks", id("request_id")?)),
         "assign_task" => ("PUT", format!("/tasks/{}/assignee", id("task_id")?)),
         "retitle_task" => ("PATCH", format!("/tasks/{}", id("task_id")?)),
@@ -777,6 +786,7 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "answer_question" => "answer_question",
         "create_request" => "create_request",
         "close_request" => "close_request",
+        "title_request" => "title_request",
         "create_task" => "create_task",
         "assign_task" => "assign_task",
         "retitle_task" => "retitle_task",
@@ -807,6 +817,12 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         command.remove(key);
     }
     attach_card(name, &mut command)?;
+    if name == "register_pr" {
+        if let Some(host) = command.get("host").and_then(Value::as_str) {
+            let host = alondra_core::domain_v2::normalize_pr_host(host);
+            command.insert("host".into(), Value::String(host));
+        }
+    }
     command.insert("kind".into(), Value::String(kind.into()));
     let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
         "command_id":command_id,"expected_revision":0,"command":command});
@@ -1313,6 +1329,22 @@ fn serve_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn register_pr_normalizes_the_host_a_node_got_slightly_wrong() {
+        for (given, expected) in [
+            ("github", "github.com"),
+            ("GitHub.com", "github.com"),
+            ("https://github.com/", "github.com"),
+            ("https://github.com/org/repo/pull/12", "github.com"),
+            ("git.example.com", "git.example.com"),
+        ] {
+            let args = json!({"task_id":"task-a","pr_id":"pr-a","host":given,"repository":"org/repo",
+                "number":12,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
+            let envelope = domain_envelope("register_pr", &args, "epoch", "register-one").unwrap();
+            assert_eq!(envelope["command"]["host"], expected, "{given}");
+        }
+    }
 
     #[test]
     fn register_pr_tool_constructs_a_typed_command() {

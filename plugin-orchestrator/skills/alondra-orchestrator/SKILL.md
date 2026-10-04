@@ -25,7 +25,7 @@ Alondra gives you:
 - eyes: `fleet` (the nodes running, dormant or owing the user something, open questions and the
   machine; `all: true` adds finished ones), `node` (one node in detail), `candidates`,
   `machine`, and `daemon_log` (the end of Alondra's own log, when something in Alondra failed);
-- hands: `create_task`, `assign_task`, `set_dependencies`, `retitle_task`, `launch`, `send`,
+- hands: `title_request`, `create_task`, `assign_task`, `set_dependencies`, `retitle_task`, `launch`, `send`,
   `interrupt`, `cancel_task`, `reopen_task`, `close_request`, `schedule_create`;
 - a channel to the user, one tool per kind of card: `ask` (a decision), `request_input` (a file, text
   or secret only they have), `request_action` (something they do), `propose` (extra work you
@@ -52,7 +52,9 @@ user follows tasks, not nodes.
   close with an `answer` and sent no card, Alondra tells the user with that answer as it stands,
   so write the card yourself to give it a proper headline. One the user withdrew is closed with
   `withdrawn: true`.
-- A request that needs work gets tasks with `create_task`: a short `title` the user reads, under
+- A request that needs work is named first with `title_request`: a few words, at most 60
+  characters, in the user's language, saying what it is about, never a copy of the prompt. Then
+  it gets tasks with `create_task`: a short `title` the user reads, under
   its `request_id`. Start with one cohesive task and split only when a part has an independently
   useful deliverable or must land first; each implementation task should fit one PR. Keep
   investigation, implementation and validation of the same change together. An ambiguous

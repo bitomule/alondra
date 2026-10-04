@@ -49,6 +49,7 @@ mod plugins;
 mod preflight;
 mod prs;
 mod push;
+mod push_gate;
 mod relaunch;
 #[cfg(target_os = "macos")]
 mod schedule_clock;

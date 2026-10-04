@@ -1313,6 +1313,46 @@ fn tasks_hide_zero_scheduled_count_and_archive_action_until_completed_tasks_exis
         matches!(item, Item::Actions(actions) if actions.actions.iter().any(|action| action.id.starts_with("archive_done:")))));
 }
 
+fn request_title(state: &DomainState, client: Client, lang: Lang) -> String {
+    let view = render(state, &LiveSnapshot::default(), client, lang, "tasks", "");
+    view.sections.iter().flat_map(|section| &section.items).find_map(|item| match item {
+        Item::Row(row) if row.id == "r-1" => Some(row.title.clone()),
+        _ => None,
+    }).unwrap()
+}
+
+fn two_tasks_with_body(body: &str) -> DomainState {
+    let mut state = fixture();
+    let mut second = state.tasks[&"t-1".into()].clone();
+    second.id = "t-2".into();
+    state.tasks.insert("t-2".into(), second);
+    state.requests.get_mut(&"r-1".into()).unwrap().body = body.into();
+    state
+}
+
+#[test]
+fn a_request_with_several_tasks_shows_the_orchestrators_title_and_never_the_prompt_on_the_iphone() {
+    let body = "Can Alondra detect conflicts before sending the PR push? I got the push and then there was no card";
+    let mut state = two_tasks_with_body(body);
+    for lang in [Lang::En, Lang::Es] {
+        assert_eq!(request_title(&state, Client::Ios, lang), "");
+    }
+    state.requests.get_mut(&"r-1".into()).unwrap().title = Some("Push without a card".into());
+    for lang in [Lang::En, Lang::Es] {
+        assert_eq!(request_title(&state, Client::Ios, lang), "Push without a card");
+    }
+}
+
+#[test]
+fn outside_the_iphone_an_untitled_request_is_named_by_its_prompt_cut_at_a_word() {
+    let state = two_tasks_with_body("Can Alondra detect conflicts before sending the PR push? I got the push and then there was no card");
+    let title = request_title(&state, Client::Mac, Lang::En);
+    assert_eq!(title, "Can Alondra detect conflicts before sending the PR push? I…");
+    assert!(title.chars().count() <= 61);
+    let short = two_tasks_with_body("Short ask");
+    assert_eq!(request_title(&short, Client::Mac, Lang::Es), "Short ask");
+}
+
 #[test]
 fn a_request_row_links_to_its_most_recently_changed_task() {
     let mut state = fixture();

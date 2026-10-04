@@ -252,7 +252,8 @@ mod tests {
                 domain.live.mods.connect(hello(), 3);
             }
         });
-        revive(&domain, SESSION, &claude, &FAST).await;
+        let patient = Timing { grace: Duration::from_secs(10), ..FAST };
+        revive(&domain, SESSION, &claude, &patient).await;
         back.await.unwrap();
         assert_eq!(claude.calls(), 0);
     }
