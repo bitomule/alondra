@@ -2180,21 +2180,40 @@ impl DomainState {
                 self.assigned(actor, task_id)?;
                 id(&pr_id.0)?;
                 canonical_pr(host, repository, *number)?;
+                if !host.contains('.') {
+                    return refuse(
+                        "invalid_input",
+                        "host",
+                        &format!("host \"{host}\" is not a real host: use github.com (or your GitHub Enterprise host)"),
+                    );
+                }
                 head(sha)?;
                 nonempty(base)?;
                 if allowed_methods.is_empty() {
                     return fail("invalid_input", "Merge methods required");
                 };
-                if let Some(existing) = &self.task(task_id)?.pr_id {
-                    let p = &self.pull_requests[existing];
-                    if existing == pr_id
+                if let Some(existing) = self.task(task_id)?.pr_id.clone() {
+                    let p = &self.pull_requests[&existing];
+                    if p.repository != *repository || p.number != *number {
+                        return fail("task_already_has_pr", "Task already owns a lifetime PR");
+                    }
+                    if existing == *pr_id
                         && p.host == *host
-                        && p.repository == *repository
-                        && p.number == *number
+                        && p.head == *sha
+                        && p.base == *base
+                        && p.allowed_methods == *allowed_methods
                     {
                         return Ok(());
                     }
-                    return fail("task_already_has_pr", "Task already owns a lifetime PR");
+                    if p.state != PrState::Open {
+                        return fail("task_already_has_pr", "Task already owns a lifetime PR");
+                    }
+                    let corrected = self.pull_requests.get_mut(&existing).unwrap();
+                    corrected.host = host.clone();
+                    corrected.head = sha.clone();
+                    corrected.base = base.clone();
+                    corrected.allowed_methods = allowed_methods.clone();
+                    return Ok(());
                 };
                 if self.pull_requests.values().any(|p| {
                     p.id == *pr_id

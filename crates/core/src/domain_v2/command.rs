@@ -392,6 +392,17 @@ pub struct SupersededAcceptance {
     pub user_id: String,
     pub accepted_at: Revision,
 }
+/// A PR host as a node tends to get it slightly wrong: a scheme, a path, a
+/// trailing slash, capitals, or the bare name "github" for "github.com".
+pub fn normalize_pr_host(host: &str) -> String {
+    let host = host.trim().to_ascii_lowercase();
+    let host = host.split_once("://").map_or(host.as_str(), |(_, rest)| rest);
+    let host = host.split('/').next().unwrap_or_default();
+    match host {
+        "github" => "github.com".to_owned(),
+        other => other.to_owned(),
+    }
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DomainError {
     pub code: String,

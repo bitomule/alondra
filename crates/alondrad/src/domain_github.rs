@@ -5,11 +5,11 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain_v2::{
     Actor, AuthorizationId, Command, CommandEnvelope, DomainState, MergeAttemptState,
-    PrState, PullRequest, PROTOCOL_VERSION,
+    clip, CardSpec, PrId, PrState, PullRequest, Scope, PROTOCOL_VERSION,
 };
 use anyhow::Result;
 use serde_json::Value;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -56,7 +56,7 @@ impl GhCli {
 impl PrObserver for GhCli {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         Box::pin(async move {
-            let url = format!("https://{host}/{repository}/pull/{number}");
+            let url = format!("https://{}/{repository}/pull/{number}", alondra_core::domain_v2::normalize_pr_host(host));
             let run = tokio::process::Command::new(&self.program)
                 .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName"])
                 .kill_on_drop(true)
@@ -113,19 +113,63 @@ fn watched(state: &DomainState) -> Vec<PullRequest> {
 
 /// Bring the domain's view of each watched PR up to date with GitHub. A PR
 /// GitHub cannot report is left as it was.
-pub(crate) async fn reconcile(domain: &DomainRuntime, observer: &impl PrObserver) -> Result<()> {
+pub(crate) async fn reconcile(
+    domain: &DomainRuntime, observer: &impl PrObserver, failures: &mut ObservationFailures,
+) -> Result<()> {
     let state = domain.state()?;
     for pr in watched(&state) {
         let facts = match observer.observe(&pr.host, &pr.repository, pr.number).await {
             Ok(facts) => facts,
             Err(reason) => {
-                log!("GitHub could not report {}/{}#{}: {reason}", pr.host, pr.repository, pr.number);
+                failures.failed(domain, &pr, &reason);
                 continue;
             }
         };
+        failures.recovered(domain, &pr);
         apply(domain, &state, &pr, &facts)?;
     }
     Ok(())
+}
+
+const OBSERVATION_FAILURES_BEFORE_PROBLEM: u32 = 5;
+
+/// Consecutive failed reads per PR. The log records each failure up to the
+/// threshold; at the threshold the user gets one Problem and the log stops
+/// repeating itself.
+#[derive(Default)]
+pub(crate) struct ObservationFailures(BTreeMap<PrId, u32>);
+
+impl ObservationFailures {
+    fn recovered(&mut self, domain: &DomainRuntime, pr: &PullRequest) {
+        let reported = self.0.remove(&pr.id).is_some_and(|count| count >= OBSERVATION_FAILURES_BEFORE_PROBLEM);
+        if reported {
+            let _ = domain.withdraw_problem(&format!("problem-pr-unreadable-{}", pr.id).into());
+        }
+    }
+
+    fn failed(&mut self, domain: &DomainRuntime, pr: &PullRequest, reason: &str) {
+        let count = self.0.entry(pr.id.clone()).or_default();
+        *count += 1;
+        let url = format!("{}/{}#{}", pr.host, pr.repository, pr.number);
+        if *count < OBSERVATION_FAILURES_BEFORE_PROBLEM {
+            log!("GitHub could not report {url}: {reason}");
+            return;
+        }
+        if *count > OBSERVATION_FAILURES_BEFORE_PROBLEM {
+            return;
+        }
+        log!("GitHub could not report {url} {count} times in a row: {reason}; raising a Problem");
+        let need = clip(&format!("Alondra cannot read PR {}#{} on GitHub", pr.repository, pr.number), CardSpec::NEED_MAX);
+        let why = clip(&format!("{reason} (host \"{}\")", pr.host), CardSpec::WHY_MAX);
+        let diagnosis = format!(
+            "Alondra asked GitHub about {url} {count} times in a row and every read failed, so it cannot see new pushes, merges or closes of this PR. Last error: {reason}. If the host looks wrong, the node can register the same PR again with the right host."
+        );
+        let _ = domain.raise_problem(
+            &format!("problem-pr-unreadable-{}", pr.id),
+            Scope::Task { task_id: pr.task_id.clone() },
+            need, why, diagnosis, vec![],
+        );
+    }
 }
 
 fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &PrFacts) -> Result<()> {
@@ -168,6 +212,7 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
 
 pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserver>) -> Result<()> {
     let mut changed = domain.subscribe();
+    let mut failures = ObservationFailures::default();
     loop {
         let mut open = watched(&domain.state()?);
         if open.is_empty() {
@@ -177,7 +222,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
             continue;
         }
         let mut known: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
-        reconcile(&domain, &*observer).await?;
+        reconcile(&domain, &*observer, &mut failures).await?;
         open = watched(&domain.state()?);
         if open.is_empty() {
             continue;
@@ -188,7 +233,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
         loop {
             tokio::select! {
                 change = changed.changed() => { change?; }
-                _ = interval.tick() => { reconcile(&domain, &*observer).await?; }
+                _ = interval.tick() => { reconcile(&domain, &*observer, &mut failures).await?; }
             }
             open = watched(&domain.state()?);
             if open.is_empty() {
@@ -197,7 +242,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
             let current: BTreeSet<_> = open.iter().map(|pr| pr.id.clone()).collect();
             if !current.is_subset(&known) {
                 // A hook or register_pr committed a newly registered PR.
-                reconcile(&domain, &*observer).await?;
+                reconcile(&domain, &*observer, &mut failures).await?;
             }
             known = current;
         }
@@ -345,7 +390,7 @@ mod tests {
             presented(&domain, auto_merge);
             let observer = FakeObserver::new();
             observer.set(7, Ok(facts(HEAD, PrState::Merged)));
-            reconcile(&domain, &observer).await.unwrap();
+            reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
             assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Merged);
             let done = complete(&domain);
             assert_eq!(done.as_ref().err().map(|error| match error {
@@ -385,11 +430,11 @@ mod tests {
             assert_eq!(watched(&domain.state().unwrap()).len(), 1);
             let observer = FakeObserver::new();
             observer.set(7, Ok(facts(HEAD, remote)));
-            reconcile(&domain, &observer).await.unwrap();
+            reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
             assert!(watched(&domain.state().unwrap()).is_empty());
             observer.set(7, Err("should not be queried again".into()));
             let before = domain.state().unwrap().revision;
-            reconcile(&domain, &observer).await.unwrap();
+            reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
             assert_eq!(domain.state().unwrap().revision, before);
         }
     }
@@ -506,17 +551,17 @@ mod tests {
         authorized(&domain);
         let observer = FakeObserver::new();
         let before = domain.state().unwrap().revision;
-        reconcile(&domain, &observer).await.unwrap();
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         assert_eq!(domain.state().unwrap().revision, before, "an unreported PR is left alone");
         observer.set(7, Ok(facts(HEAD, PrState::Open)));
-        reconcile(&domain, &observer).await.unwrap();
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         assert_eq!(domain.state().unwrap().revision, before, "unchanged facts write nothing");
 
         command(&domain, Actor::Agent { agent_id: "a".into() }, "claim", Command::ClaimMergeAuthorization {
             authorization_id: "auth".into(), remote_head: HEAD.into(), remote_base: "main".into(), base_verified: true,
         });
         observer.set(7, Ok(facts(HEAD, PrState::Merged)));
-        reconcile(&domain, &observer).await.unwrap();
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         let state = domain.state().unwrap();
         let pr = &state.pull_requests[&"pr".into()];
         assert_eq!(pr.state, PrState::Merged);
@@ -535,7 +580,7 @@ mod tests {
             });
             let observer = FakeObserver::new();
             observer.set(7, Ok(remote.clone()));
-            reconcile(&domain, &observer).await.unwrap();
+            reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
             let state = domain.state().unwrap();
             assert_eq!(state.pull_requests[&"pr".into()].state, remote.state, "{tag}");
             assert_eq!(state.merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Failed, "{tag}");
@@ -589,5 +634,43 @@ mod tests {
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName"), "{calls}");
         assert!(!calls.contains("merge"), "the daemon never merges a v2 PR");
+    }
+
+    #[tokio::test]
+    async fn a_registration_with_the_bare_host_github_is_polled_at_github_com() {
+        let (fixture, _) = open("bare-host");
+        let program = fixture.0.join("gh");
+        let log = fixture.0.join("calls");
+        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nprintf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n", log.display())).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        GhCli::at(program).observe("github", "owner/repo", 7).await.unwrap();
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7"), "{calls}");
+    }
+
+    #[tokio::test]
+    async fn a_pr_that_cannot_be_read_five_times_raises_one_problem_and_recovery_withdraws_it() {
+        let (_fixture, domain) = open("unreadable");
+        presented(&domain, false);
+        let observer = FakeObserver::new();
+        observer.set(7, Err("error connecting to github".into()));
+        let mut failures = ObservationFailures::default();
+        let problems = |domain: &DomainRuntime| domain.state().unwrap().interactions.into_values()
+            .filter(|card| card.card.kind == alondra_core::domain_v2::CardKind::Problem)
+            .collect::<Vec<_>>();
+        for _ in 0..4 {
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+        }
+        assert!(problems(&domain).is_empty(), "a few failures are a flaky network");
+        for _ in 0..3 {
+            reconcile(&domain, &observer, &mut failures).await.unwrap();
+        }
+        let raised = problems(&domain);
+        assert_eq!(raised.len(), 1, "one Problem however long it keeps failing");
+        assert_eq!(raised[0].scope, Scope::Task { task_id: "t".into() });
+        assert!(raised[0].body.contains("error connecting to github") && raised[0].body.contains("github.com/owner/repo#7"));
+        observer.set(7, Ok(facts(HEAD, PrState::Open)));
+        reconcile(&domain, &observer, &mut failures).await.unwrap();
+        assert!(problems(&domain).iter().all(|card| card.withdrawn), "reading works again");
     }
 }

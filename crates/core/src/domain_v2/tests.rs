@@ -680,6 +680,53 @@ fn register(s: &mut DomainState) {
     )
     .unwrap();
 }
+fn register_with(host: &str, head: &str) -> Command {
+    Command::RegisterPr {
+        task_id: "t".into(),
+        pr_id: "pr".into(),
+        host: host.into(),
+        repository: "owner/repo".into(),
+        number: 1,
+        head: head.into(),
+        base: "main".into(),
+        allowed_methods: vec![MergeMethod::Squash],
+    }
+}
+#[test]
+fn a_host_that_is_not_a_real_host_is_refused_with_the_fix() {
+    let mut s = fixture();
+    for host in ["github", "localhost"] {
+        let error = exec(&mut s, agent(), register_with(host, "head1")).unwrap_err();
+        assert_eq!(error.code, "invalid_input");
+        assert!(error.message.contains("use github.com"), "{}", error.message);
+    }
+    assert!(s.pull_requests.is_empty());
+    exec(&mut s, agent(), register_with("github.example.com", "head1")).unwrap();
+}
+#[test]
+fn the_owning_task_corrects_its_registration_of_the_same_pr() {
+    let mut s = fixture();
+    register(&mut s);
+    exec(&mut s, agent(), register_with("github.com", "head2")).unwrap();
+    let pr = &s.pull_requests[&"pr".into()];
+    assert_eq!((pr.host.as_str(), pr.head.as_str()), ("github.com", "head2"));
+    assert_eq!(s.pull_requests.len(), 1);
+    reject_unchanged(
+        &mut s,
+        agent(),
+        Command::RegisterPr {
+            task_id: "t".into(),
+            pr_id: "pr".into(),
+            host: "github.com".into(),
+            repository: "owner/repo".into(),
+            number: 9,
+            head: "head3".into(),
+            base: "main".into(),
+            allowed_methods: vec![MergeMethod::Squash],
+        },
+        "task_already_has_pr",
+    );
+}
 fn pr_targets() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::PullRequest {
         pr_id: "pr".into(),

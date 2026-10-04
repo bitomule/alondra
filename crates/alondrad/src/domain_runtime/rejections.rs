@@ -56,6 +56,26 @@ impl DomainRuntime {
         if let (true, Some(error)) = (raise, rejection) {
             self.raise_stuck_problem(&owner, interaction_id, scope, error);
         }
+        let handled = rejection.is_none()
+            && matches!(envelope.command, Command::AskQuestion { .. } | Command::PresentResult { .. });
+        if handled {
+            self.withdraw_stuck_problems(&owner);
+        }
+    }
+
+    /// The node is handling what got its card refused (it asked or delivered), so the
+    /// Problem Alondra raised for it would only be a second card for the same issue.
+    fn withdraw_stuck_problems(&self, owner: &str) {
+        let Ok(state) = self.state() else { return };
+        let prefix = format!("problem-{owner}-");
+        let open: Vec<InteractionId> = state.interactions.values()
+            .filter(|card| card.id.0.starts_with(&prefix) && !card.withdrawn)
+            .filter(|card| matches!(card.payload, InteractionPayload::Question { answer: None, .. }))
+            .map(|card| card.id.clone())
+            .collect();
+        for id in open {
+            let _ = self.withdraw_problem(&id);
+        }
     }
 
     fn raise_stuck_problem(&self, owner: &str, card: &InteractionId, scope: Scope, last: &DomainError) {

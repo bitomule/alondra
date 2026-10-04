@@ -197,6 +197,19 @@ fn three_rejections_of_the_same_card_raise_a_problem() {
 }
 
 #[test]
+fn the_node_asking_after_a_stuck_problem_withdraws_it() {
+    let mut fixture = Fixture::new();
+    fixture.task("t1", false);
+    let one_option = json!([{"id":"a", "label":"Atlas", "inputs":[]}]);
+    for _ in 0..3 {
+        fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err();
+    }
+    assert!(problems(&fixture).iter().all(|p| !p.withdrawn) && problems(&fixture).len() == 1);
+    fixture.agent(decision("other-card", "t1", names())).unwrap();
+    assert!(problems(&fixture).iter().all(|p| p.withdrawn), "the node is handling it: the Problem is a duplicate card");
+}
+
+#[test]
 fn rejections_of_different_cards_or_broken_by_a_success_do_not_add_up() {
     let mut fixture = Fixture::new();
     fixture.task("t1", false);
