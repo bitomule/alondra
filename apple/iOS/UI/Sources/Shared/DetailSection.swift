@@ -33,7 +33,6 @@ struct ActionButton: View {
     let title: String
     let symbol: String
     let tint: Color
-    let enabled: Bool
     let action: () -> Void
 
     var body: some View {
@@ -41,14 +40,10 @@ struct ActionButton: View {
             Label(title, systemImage: symbol)
                 .font(.body.weight(.semibold))
                 .frame(maxWidth: .infinity, minHeight: 50)
-                .foregroundStyle(enabled ? AnyShapeStyle(tint) : AnyShapeStyle(.tertiary))
-                .background(
-                    enabled ? AnyShapeStyle(tint.opacity(0.12)) : AnyShapeStyle(Palette.hairline),
-                    in: .rect(cornerRadius: 18, style: .continuous)
-                )
+                .foregroundStyle(tint)
+                .background(tint.opacity(0.12), in: .rect(cornerRadius: 18, style: .continuous))
                 .contentShape(.rect)
         }
         .buttonStyle(PressStyle())
-        .disabled(!enabled)
     }
 }

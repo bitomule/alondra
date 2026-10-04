@@ -546,7 +546,15 @@ fn golden_fixture() -> DomainState {
     }
     if let Some(task) = state.tasks.get_mut(&task_id.into()) {
         task.final_presentation = Some("hf-weekly-2026-09-30".into());
+        task.pr_id = Some(pr_id.into());
     }
+    for interaction in state.interactions.values_mut() {
+        if matches!(interaction.payload, InteractionPayload::Delivery { .. }) { interaction.blocking = false; }
+    }
+    state.revision = state.tasks.values().map(|task| task.revision)
+        .chain(state.interactions.values().flat_map(|interaction| [interaction.revision, interaction.order]))
+        .max()
+        .unwrap_or(state.revision);
     if let Some(pr) = state.pull_requests.get_mut(&pr_id.into()) {
         pr.allowed_methods = vec![crate::domain_v2::MergeMethod::Squash, crate::domain_v2::MergeMethod::Merge];
     }
@@ -1147,25 +1155,40 @@ fn an_empty_tui_inbox_has_no_section_titles_only_its_empty_state() {
 }
 
 #[test]
-fn tui_task_actions_hide_what_does_not_apply_and_ios_reasons_say_why() {
+fn task_detail_offers_only_the_actions_its_state_allows() {
     let mut state = fixture();
     state.revision = 5;
     state.interactions.clear();
     state.tasks.get_mut(&"t-1".into()).unwrap().final_presentation = None;
-    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
-    let actions = |client| {
-        let view = render(&state, &LiveSnapshot::default(), client, Lang::Es, "task:t-1", "");
-        tui_document_actions(&view)
-    };
-    let tui = actions(Client::Tui);
-    assert!(tui.iter().all(|action| action.enabled), "{tui:?}");
-    assert_eq!(tui.iter().map(|action| action.label.as_str()).collect::<Vec<_>>(), ["Cancelar tarea"], "{:?}", actions(Client::Ios));
-    assert_eq!(tui[0].key.as_deref(), Some("x"));
-    let ios = actions(Client::Ios);
-    let reason = |label: &str| ios.iter().find(|action| action.label == label).and_then(|action| action.disabled_reason.clone());
-    assert_eq!(reason("Reabrir").as_deref(), Some("La tarea sigue abierta"));
-    assert_eq!(reason("Archivar").as_deref(), Some("Solo se archivan tareas terminadas"));
-    assert!(ios.iter().all(|action| action.key.is_none()), "keys are a terminal thing");
+    let cases = [
+        (TaskState::NotStarted, false, false, &["Cancel Task"][..]),
+        (TaskState::Running, false, false, &["Cancel Task"]),
+        (TaskState::NeedsYou, false, false, &["Cancel Task"]),
+        (TaskState::InReview, false, false, &["Cancel Task"]),
+        (TaskState::WaitingDependency, false, false, &["Cancel Task"]),
+        (TaskState::Closing, false, false, &["Cancel Task"]),
+        (TaskState::Done, false, false, &["Reopen", "Archive"]),
+        (TaskState::Cancelled, false, false, &["Reopen", "Archive"]),
+        (TaskState::Done, true, false, &["Reopen", "Unarchive"]),
+        (TaskState::Done, false, true, &["Archive"]),
+        (TaskState::Cancelled, true, true, &["Unarchive"]),
+    ];
+    for (task_state, archived, request_closed, expected) in cases {
+        let task = state.tasks.get_mut(&"t-1".into()).unwrap();
+        task.state = task_state;
+        task.archived = archived;
+        state.requests.get_mut(&"r-1".into()).unwrap().closed = request_closed;
+        for client in [Client::Ios, Client::Mac, Client::Tui] {
+            let view = render(&state, &LiveSnapshot::default(), client, Lang::En, "task:t-1", "");
+            let actions = tui_document_actions(&view);
+            let case = format!("{task_state:?} archived={archived} request_closed={request_closed} {client:?}");
+            assert!(actions.iter().all(|action| action.enabled && action.disabled_reason.is_none()), "{case}: {actions:?}");
+            let labels: Vec<&str> = actions.iter().map(|action| action.label.as_str())
+                .filter(|label| *label != "Message").collect();
+            assert_eq!(labels, expected, "{case}");
+            assert_eq!(actions.iter().any(|action| action.key.is_some()), client == Client::Tui, "{case}: keys are a terminal thing");
+        }
+    }
 }
 
 #[test]
@@ -3099,7 +3122,7 @@ fn failed_launch_fixture(error: &str) -> DomainState {
     state.tasks.clear();
     state.requests.clear();
     let run = |state: &mut DomainState, command| {
-        state.execute(&Actor::System, &CommandEnvelope {
+        state.execute(&Actor::System, &crate::domain_v2::CommandEnvelope {
             protocol_version: 2,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("c-{}", state.revision).into(),
@@ -3169,7 +3192,7 @@ fn the_tui_cancels_a_task_with_x() {
 fn answered_and_closed_request() -> DomainState {
     use crate::domain_v2::{Actor, Command, CommandEnvelope, DomainEffect, PROTOCOL_VERSION};
     let run = |state: &mut DomainState, actor: Actor, command: Command| {
-        state.execute(&actor, &CommandEnvelope {
+        state.execute(&actor, &crate::domain_v2::CommandEnvelope {
             protocol_version: PROTOCOL_VERSION,
             data_epoch: state.data_epoch.clone(),
             command_id: format!("c-{}", state.revision).into(),

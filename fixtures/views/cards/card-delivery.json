@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:hf-weekly-2026-09-30",
   "client": "ios",
-  "version": "v7ea42d6eb6d9a976",
+  "version": "vc71051c2d52579c3",
   "cursor": "cursor-1",
   "title": "Review the beta candidate",
   "status": {
@@ -190,7 +190,7 @@
               "stamp": "Merged"
             },
             {
-              "id": "changes:github.com/example/repo#12@0~abcdef12",
+              "id": "changes:github.com/example/repo#12@6~abcdef12",
               "label": "Request changes",
               "style": "secondary",
               "role": "neutral",

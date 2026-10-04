@@ -78,7 +78,7 @@ final class NewRequestFeatureTests: XCTestCase {
         await store.receive(\.delegate.completed)
 
         let request = try XCTUnwrap(sent.requests.first)
-        XCTAssertEqual(request.actionId, "new_request:view@0")
+        XCTAssertEqual(request.actionId, "new_request:view@6")
         XCTAssertEqual(request.input.fields?["text"], .string("Polish the beta"))
         XCTAssertEqual(request.input.fields?["effort"], .string("hard"))
         XCTAssertEqual(delegates.value, [.completed("Sent to the orchestrator")])

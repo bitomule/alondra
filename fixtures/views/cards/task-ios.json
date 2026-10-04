@@ -4,7 +4,7 @@
   "view": "task",
   "key": "task:t-651c38484cd2f34e74d5107ba05f7f15",
   "client": "ios",
-  "version": "v46a4e1ed25e5f7d7",
+  "version": "v33eba0bbc8e897fa",
   "cursor": "cursor-1",
   "title": "Restore the native review experience",
   "status": {
@@ -408,7 +408,7 @@
           "type": "actions",
           "actions": [
             {
-              "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@0",
+              "id": "cancel:t-651c38484cd2f34e74d5107ba05f7f15@6",
               "label": "Cancel Task",
               "style": "destructive",
               "presentation": "button",
@@ -421,32 +421,7 @@
                 "message": "Cancel this task?",
                 "button": "Cancel Task"
               },
-              "enabled": false,
-              "disabled_reason": "This card has changed"
-            },
-            {
-              "id": "reopen:t-651c38484cd2f34e74d5107ba05f7f15@0",
-              "label": "Reopen",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": false,
-              "disabled_reason": "This card has changed"
-            },
-            {
-              "id": "archive:t-651c38484cd2f34e74d5107ba05f7f15@0",
-              "label": "Archive",
-              "style": "secondary",
-              "presentation": "button",
-              "input": {
-                "kind": "none"
-              },
-              "attachments": false,
-              "enabled": false,
-              "disabled_reason": "This card has changed"
+              "enabled": true
             }
           ]
         }

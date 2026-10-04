@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "mac",
-  "version": "vf2aca3c4436f236d",
+  "version": "vf1bfc03d13a2447e",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -117,7 +117,7 @@
           "struck": false,
           "actions": [
             {
-              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@0",
+              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
               "label": "Close Node",
               "style": "destructive",
               "presentation": "button",
