@@ -74,6 +74,19 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     row
 }
 
+const REQUEST_FALLBACK_CHARS: usize = 60;
+
+fn clip_at_word(text: &str, limit: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= limit {
+        return text.into();
+    }
+    let head: String = text.chars().take(limit + 1).collect();
+    let cut = head.rfind(char::is_whitespace).filter(|at| *at > 0).unwrap_or(head.len());
+    let clipped: String = head[..cut].chars().take(limit).collect();
+    format!("{}…", clipped.trim_end())
+}
+
 fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
     let tasks: Vec<_> = context
         .domain
@@ -85,15 +98,9 @@ fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
         .title
         .clone()
         .or_else(|| (tasks.len() == 1).then(|| tasks[0].title.clone()))
-        .unwrap_or_else(|| {
-            request
-                .body
-                .lines()
-                .next()
-                .unwrap_or("")
-                .chars()
-                .take(120)
-                .collect()
+        .unwrap_or_else(|| match context.client {
+            super::Client::Ios => String::new(),
+            _ => clip_at_word(request.body.lines().next().unwrap_or(""), REQUEST_FALLBACK_CHARS),
         });
     let mut row = common::row(
         &request.id.0,

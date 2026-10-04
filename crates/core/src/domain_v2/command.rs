@@ -80,6 +80,10 @@ pub enum Command {
         #[serde(default)]
         title: Option<String>,
     },
+    TitleRequest {
+        request_id: RequestId,
+        title: String,
+    },
     RegisterAgent {
         agent_id: AgentId,
         name: String,

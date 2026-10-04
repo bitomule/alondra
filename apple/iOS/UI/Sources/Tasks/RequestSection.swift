@@ -3,7 +3,7 @@ import AlondraDesign
 import AlondraFeatures
 import SwiftUI
 
-/// One request: who and when, what was asked, and its tasks as Fleet-style cards. A request the
+/// One request: who and when, its title if the orchestrator named it, and its tasks as Fleet-style cards. A request the
 /// orchestrator is still splitting says so once, under what was asked.
 struct RequestSection: View {
     let request: TasksBoard.Request
@@ -38,7 +38,7 @@ struct RequestSection: View {
         HStack(alignment: .top, spacing: 8) {
             VStack(alignment: .leading, spacing: 6) {
                 meta
-                if !request.isSingleTask {
+                if !request.isSingleTask, !request.title.isEmpty {
                     Text(verbatim: request.title)
                         .font(.headline)
                         .foregroundStyle(Palette.ink)
