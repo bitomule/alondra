@@ -2,6 +2,7 @@ version: 1
 satisfied:
 - {check: "root/apple-tests", scope_hash: "0335ad65eca952ac0d014a2af27c2a479b822dec8a6717bde0cfc5625da76d5f"}
 - {check: "root/apple-tests", scope_hash: "05399fcdebd41faaf46064b8ea8e921bb084734835a3295f68f8d41728c3469e"}
+- {check: "root/apple-tests", scope_hash: "05440bb7f5829af414ce7dc4b71f2426d0140f8d44d4d734b3f25cac1390f459"}
 - {check: "root/apple-tests", scope_hash: "0611b1e9189a0a0b3fd8775b0d80346077f7801aff0b21587772e998c2e889ed"}
 - {check: "root/apple-tests", scope_hash: "064863f9bae07d586224ab0cc5441b3400d704cb76010bcd49f407c4dbedda6a"}
 - {check: "root/apple-tests", scope_hash: "0b0ec629ca3e8c54fb8fd2831a77e8eb2d316796697c72a35e137933ee2b0ba6"}
@@ -240,6 +241,7 @@ satisfied:
 - {check: "root/bazel-build", scope_hash: "5e54da15cf94fd7168d5bca97fbdc770f3f1f36864e5ba5dcb52ab16d19d4a68"}
 - {check: "root/bazel-build", scope_hash: "5fcad2acea8f13ff98807b654764ca9cde8e93dab21faa6f4e3aa44a99b80700"}
 - {check: "root/bazel-build", scope_hash: "606bc4dc1cd6a56e4da32cd6af46f6077732dcd022d0b6d67ca27a1916a0c15f"}
+- {check: "root/bazel-build", scope_hash: "60bcbbc2e5925d21d70805025ee6f6f353d96f2412e056613bbc99a2973a9f5f"}
 - {check: "root/bazel-build", scope_hash: "60f861ce3405eaeed6c6310a0bd088b777c9149606697447f37554cf4fab12b3"}
 - {check: "root/bazel-build", scope_hash: "61d63267ec7fb73ac99228754c21bb0813be1e93ed8a3c01bf11134960614bcc"}
 - {check: "root/bazel-build", scope_hash: "61f18e9f1df974e22a953f1e973fe3dfd20bb23778bb3366efdba8d0ed8a2839"}
