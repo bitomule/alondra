@@ -24,16 +24,11 @@ impl Fixture {
         std::fs::create_dir_all(root.join("bin")).unwrap();
         let bin = root.join("bin/alondrad");
         install(&bin, Path::new(env!("CARGO_BIN_EXE_alondrad")));
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
         Self {
             root,
             home,
             bin,
-            port,
+            port: free_port(),
         }
     }
 
@@ -130,6 +125,35 @@ fn stderr(child: &mut Child) -> String {
     text
 }
 
+fn free_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
+}
+
+/// The probe port is released before the daemon binds it, so a concurrent test can take
+/// it first. That daemon exits at once with "Address already in use"; try another port.
+fn serve(fixture: &mut Fixture, supervised: bool) -> Running {
+    for _ in 0..5 {
+        let mut daemon = Running(fixture.command(supervised).spawn().unwrap());
+        let taken = until(Duration::from_secs(30), "the daemon to serve", || {
+            if let Some(status) = daemon.0.try_wait().unwrap() {
+                let log = stderr(&mut daemon.0);
+                assert!(log.contains("Address already in use"), "daemon exited {status}: {log}");
+                return Some(true);
+            }
+            fixture.health().map(|_| false)
+        });
+        if !taken {
+            return daemon;
+        }
+        fixture.port = free_port();
+    }
+    panic!("no free port after 5 attempts");
+}
+
 fn serving(fixture: &Fixture, daemon: &mut Running) {
     until(Duration::from_secs(30), "the daemon to serve", || {
         if let Some(status) = daemon.0.try_wait().unwrap() {
@@ -176,9 +200,8 @@ fn preflight_checks_the_home_without_changing_it() {
 
 #[test]
 fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() {
-    let fixture = Fixture::new("relaunch");
-    let mut daemon = Running(fixture.command(true).spawn().unwrap());
-    serving(&fixture, &mut daemon);
+    let mut fixture = Fixture::new("relaunch");
+    let mut daemon = serve(&mut fixture, true);
     assert!(
         !fixture.home.join("startup-failures.json").exists(),
         "a start that serves clears its record"
@@ -224,9 +247,8 @@ fn a_launchd_daemon_restarts_into_a_replacement_only_once_it_passes_preflight() 
 
 #[test]
 fn a_daemon_started_by_hand_never_relaunches() {
-    let fixture = Fixture::new("manual");
-    let mut daemon = Running(fixture.command(false).spawn().unwrap());
-    serving(&fixture, &mut daemon);
+    let mut fixture = Fixture::new("manual");
+    let mut daemon = serve(&mut fixture, false);
     install_script(&fixture.bin, "#!/bin/sh\nexit 0\n");
     for _ in 0..20 {
         std::thread::sleep(Duration::from_millis(100));

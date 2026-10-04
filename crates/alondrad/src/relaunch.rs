@@ -118,10 +118,24 @@ pub fn run_preflight(path: &Path) -> Outcome {
     Outcome { version, passed }
 }
 
+/// A binary just written can still be held open for writing by a sibling process forked at
+/// that moment; exec then fails with ETXTBSY until the sibling execs away.
+fn spawn_when_not_being_written(path: &Path, arg: &str) -> Option<std::process::Child> {
+    const TEXT_FILE_BUSY: i32 = 26;
+    for _ in 0..100 {
+        match std::process::Command::new(path).arg(arg)
+            .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+            .spawn()
+        {
+            Err(error) if error.raw_os_error() == Some(TEXT_FILE_BUSY) => std::thread::sleep(Duration::from_millis(50)),
+            spawned => return spawned.ok(),
+        }
+    }
+    None
+}
+
 fn output(path: &Path, arg: &str, timeout: Duration) -> Option<(bool, String)> {
-    let child = std::process::Command::new(path).arg(arg)
-        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
-        .spawn().ok()?;
+    let child = spawn_when_not_being_written(path, arg)?;
     let pid = child.id();
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || { let _ = tx.send(child.wait_with_output()); });

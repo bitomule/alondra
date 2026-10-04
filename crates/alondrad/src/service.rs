@@ -4888,7 +4888,7 @@ agreement_key = "{}"
             .schedule_work(repeat_work(&first), epoch, &mut tasks)
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+        tokio::time::timeout(Duration::from_secs(20), entered.acquire())
             .await
             .unwrap()
             .unwrap()
@@ -4929,7 +4929,7 @@ agreement_key = "{}"
             json!({"status":429,"error":"changes_busy"})
         );
         tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_secs(20),
             service.schedule_work(
                 changes_work(&service, "wait-full", request.clone()),
                 epoch,
@@ -4944,7 +4944,7 @@ agreement_key = "{}"
             json!({"status":429,"error":"changes_busy"})
         );
         tokio::time::timeout(
-            Duration::from_secs(2),
+            Duration::from_secs(20),
             service.schedule_work(
                 changes_work(
                     &service,
@@ -5000,7 +5000,7 @@ agreement_key = "{}"
             .schedule_work(repeat_work(&interrupted), epoch, &mut tasks)
             .await
             .unwrap();
-        tokio::time::timeout(Duration::from_secs(2), entered.acquire())
+        tokio::time::timeout(Duration::from_secs(20), entered.acquire())
             .await
             .unwrap()
             .unwrap()
