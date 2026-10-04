@@ -36,7 +36,6 @@ enum ScreenStores {
         let document = try home ?? Fixtures.home(queue: queue)
         state.screen.document = document
         state.screen.phase = .loaded
-        state.status = document.status
         state.orderedIDs = queue
         state.cards = IdentifiedArray(uniqueElements: cards.map(cardState))
         edit(&state)

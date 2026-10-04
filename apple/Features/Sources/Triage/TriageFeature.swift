@@ -15,7 +15,6 @@ public struct TriageFeature: Sendable {
     public struct State: Equatable {
         public init() {}
         public var screen = ScreenFeature.State(key: .home)
-        public var status: ViewStatus?
         public var cards: IdentifiedArrayOf<TriageCardFeature.State> = []
         public var orderedIDs: [String] = []
         public var index = 0
@@ -32,9 +31,11 @@ public struct TriageFeature: Sendable {
             guard !orderedIDs.isEmpty else { return [] }
             return (0 ..< min(TriageFeature.depth, orderedIDs.count)).map { orderedIDs[(index + $0) % orderedIDs.count] }
         }
-        public var badge: Int { iconBadge ?? 0 }
-        /// What waits for the user, as the server counts it; nil until the first status arrives.
-        public var iconBadge: Int? { (status?.badge ?? screen.document?.status.badge).map(Int.init) }
+        public var status: ViewStatus? { screen.document?.status }
+        /// The cards the queue shows, so the tab and the app icon never count one the queue hides.
+        public var badge: Int { orderedIDs.count }
+        /// Nil until the first queue arrives, so a fresh launch keeps the number a push set.
+        public var iconBadge: Int? { screen.document == nil ? nil : badge }
         public var queueTitle: String? { screen.document?.sections.first { $0.id == "queue" }?.title }
         public var isOffline: Bool {
             if case .failed = screen.phase { return screen.document != nil }
@@ -76,7 +77,6 @@ public struct TriageFeature: Sendable {
         case task
         case disappeared
         case focus(String)
-        case feedStatus(ViewStatus)
         case screen(ScreenFeature.Action)
         case cards(IdentifiedActionOf<TriageCardFeature>)
         case next
@@ -138,9 +138,6 @@ public struct TriageFeature: Sendable {
                 state.cards.removeAll { !optimistic.isSending($0.id) }
                 state.newerQueueWaiting = false
                 return .send(.screen(.task))
-            case .feedStatus(let status):
-                state.status = status
-                return .none
             case .screen(.task), .screen(.retry):
                 guard state.screen.document == nil else { return .none }
                 return .run { [clock] send in
@@ -157,7 +154,6 @@ public struct TriageFeature: Sendable {
                 return .send(.screen(.task))
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
-                state.status = document.status
                 state.optimistic.reconcile(document.version)
                 if state.stampShowing {
                     state.newerQueueWaiting = true

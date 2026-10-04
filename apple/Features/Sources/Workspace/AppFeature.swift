@@ -4,9 +4,10 @@ import ComposableArchitecture
 import Foundation
 
 /// The iPhone's root: four tabs, each with its own stack of pushed screens, the settings sheet, the
-/// toast, where a tapped notification lands, and the delivery of what a screen sent as it left. It subscribes to the feed for the app-level status
-/// and for the screens that still refresh through the root (`legacy`); the rebuilt screens observe
-/// their own key.
+/// toast, where a tapped notification lands, and the delivery of what a screen sent as it left. It keeps
+/// the Waiting for You queue observed on every tab, since its badge counts that queue, and subscribes
+/// to the feed for the screens that still refresh through the root (`legacy`); the rebuilt screens
+/// observe their own key.
 @Reducer
 public struct AppFeature: Sendable {
     public init() {}
@@ -55,7 +56,7 @@ public struct AppFeature: Sendable {
 
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.continuousClock) var clock
-    private enum CancelID { case feed, notice }
+    private enum CancelID { case feed, queue, notice }
 
     public var body: some ReducerOf<Self> {
         Scope(state: \.triage, action: \.triage) { TriageFeature() }
@@ -80,11 +81,18 @@ public struct AppFeature: Sendable {
     private func reduce(_ state: inout State, _ action: Action) -> Effect<Action> {
         switch action {
         case .appeared:
-            return .run { [viewsClient] send in
-                for await event in await viewsClient.feed() { await send(.viewsFeed(event)) }
-            }.cancellable(id: CancelID.feed, cancelInFlight: true)
+            return .merge(
+                .run { [viewsClient] send in
+                    for await event in await viewsClient.feed() { await send(.viewsFeed(event)) }
+                }.cancellable(id: CancelID.feed, cancelInFlight: true),
+                .run { [viewsClient] send in
+                    for try await fetch in viewsClient.observe(.home) {
+                        if case .document(let document) = fetch { await send(.triage(.screen(.loaded(document)))) }
+                    }
+                } catch: { _, _ in }.cancellable(id: CancelID.queue, cancelInFlight: true)
+            )
         case .disappeared:
-            return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed))
+            return .merge(.send(.triage(.disappeared)), .cancel(id: CancelID.feed), .cancel(id: CancelID.queue))
         case .tabSelected(let tab):
             state.tab = tab
             return .none
@@ -129,9 +137,7 @@ public struct AppFeature: Sendable {
         case .viewsFeed(.reset):
             return Self.refreshPaths(state, .reset)
         case .viewsFeed(.snapshot(let snapshot)):
-            if snapshot.reset { return .send(.viewsFeed(.reset)) }
-            if let status = snapshot.status { return .send(.triage(.feedStatus(status))) }
-            return .none
+            return snapshot.reset ? .send(.viewsFeed(.reset)) : .none
         case .newRequest(.delegate(.open(let key))):
             Self.push(key, onto: &state.newRequestPath, owner: "ios.new_request")
             return .none

@@ -39,7 +39,7 @@ final class TriageFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.cards.ids, [ids.question, ids.information, ids.delivery])
         XCTAssertEqual(store.state.currentCard?.need, "Choose the welcome copy")
         XCTAssertNotNil(store.state.cards[id: ids.information]?.card)
-        XCTAssertEqual(store.state.badge, 5)
+        XCTAssertEqual(store.state.badge, 4)
         XCTAssertEqual(store.state.queueTitle, "Waiting for You")
     }
 
@@ -51,7 +51,42 @@ final class TriageFeatureTests: XCTestCase {
         await store.send(.task)
         await store.skipReceivedActions()
 
-        XCTAssertEqual(store.state.iconBadge, 5)
+        XCTAssertEqual(store.state.iconBadge, 4)
+    }
+
+    /// David saw "Waiting for You" badged 1 over an empty queue: the badge read the server's count
+    /// while the queue left out the card he had just answered.
+    @MainActor
+    func testTheBadgeCountsExactlyTheCardsTheQueueShows() async throws {
+        let clock = TestClock<Duration>()
+        let gate = Gate()
+        let home = try Fixtures.document("home-ios") { object in
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            sections[0]["card_ids"] = [ids.question]
+            object["sections"] = sections
+            var status = try XCTUnwrap(object["status"] as? [String: Any])
+            status["badge"] = 1
+            object["status"] = status
+        }
+        let store = gated(FeedStub([home, try Fixtures.card(ids.question)]), clock: clock, gate: gate) {
+            try Responses.rejected("It already moved on")
+        }
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.badge, 1)
+
+        _ = try await answer(store, id: ids.question)
+        await Task.megaYield()
+        await clock.advance(by: TriageFeature.stampDuration)
+        await store.receive(\.stampElapsed)
+        XCTAssertEqual(store.state.orderedIDs, [])
+        XCTAssertEqual(store.state.badge, 0, "an answered card leaves the badge with the queue")
+        XCTAssertEqual(store.state.iconBadge, 0)
+
+        await gate.open()
+        await store.receive(\.cards[id: ids.question].actions.settled)
+        XCTAssertEqual(store.state.orderedIDs, [ids.question])
+        XCTAssertEqual(store.state.badge, 1, "and comes back with it when the daemon refuses the answer")
     }
 
     @MainActor
@@ -339,7 +374,6 @@ final class TriageFeatureTests: XCTestCase {
     @MainActor
     func testOpeningANotificationForACardAlreadyGoneShowsTheLiveQueue() async throws {
         let store = store(try liveFeed())
-        await store.send(.feedStatus(try Samples.document("live-home-es").status))
 
         await store.send(.focus("hold-permission-toolu_01AlreadyAnswered"))
         await store.receive(\.delegate.noLongerPending)
@@ -637,11 +671,12 @@ final class TriageFeatureTests: XCTestCase {
     }
 
     @MainActor
-    func testStatusArrivesFromTheAppAndTheMachinePopoverToggles() async throws {
-        let store = store(FeedStub())
-        let status = try Fixtures.home(queue: []).status
-        await store.send(.feedStatus(status))
-        XCTAssertEqual(store.state.status, status)
+    func testStatusComesFromTheQueueAndTheMachinePopoverToggles() async throws {
+        let home = try Fixtures.home(queue: [])
+        let store = store(FeedStub([home]))
+        await store.send(.task)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.status, home.status)
         await store.send(.machinePresented(true))
         XCTAssertTrue(store.state.machinePresented)
         await store.send(.machinePresented(false))

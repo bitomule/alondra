@@ -77,7 +77,7 @@ public struct TriageView: View {
     }
 
     private var gauges: [AlondraContract.Gauge] {
-        store.status?.gauges ?? store.screen.document?.status.gauges ?? []
+        store.status?.gauges ?? []
     }
 
     private var header: some View {
@@ -88,7 +88,7 @@ public struct TriageView: View {
                 Label("saved data · connection lost", systemImage: "wifi.slash")
                     .font(.subheadline.weight(.medium)).foregroundStyle(Palette.rose).lineLimit(1)
             } else {
-                Text(store.status?.summary ?? store.screen.document?.status.summary ?? String(localized: "Connecting to the fleet…"))
+                Text(store.status?.summary ?? String(localized: "Connecting to the fleet…"))
                     .font(.subheadline.weight(.medium)).foregroundStyle(.secondary).lineLimit(1)
                     .contentTransition(.numericText())
             }
@@ -237,7 +237,7 @@ public struct TriageView: View {
     }
 
     private func statusCount(_ id: String) -> Int {
-        Int((store.status ?? store.screen.document?.status)?.counts.first(where: { $0.id == id })?.value ?? 0)
+        Int(store.status?.counts.first(where: { $0.id == id })?.value ?? 0)
     }
 
     private func emptyStat(_ label: LocalizedStringKey, count: Int, tint: Color) -> some View {
