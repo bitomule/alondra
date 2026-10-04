@@ -12,7 +12,6 @@ public struct TriageView: View {
     let zoom: Namespace.ID
     @State private var drag: CGFloat = 0
     @GestureState private var dragging = false
-    @State private var frontHeight: CGFloat?
     @State private var keyboardVisible = false
     @State private var screenWidth: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -120,20 +119,25 @@ public struct TriageView: View {
         .accessibilityLabel("\(store.index + 1) of \(store.orderedIDs.count) pending")
     }
 
-    /// The cards never scroll inside; at accessibility text sizes the whole stack does, so a card
-    /// taller than the screen can still be read to its last button.
+    /// The cards never scroll inside and all share one height, the room the stack has, so the ones
+    /// behind line up with the front one. At accessibility text sizes the whole stack scrolls and
+    /// cards keep their own height, so a card taller than the screen can still be read to its last
+    /// button.
     @ViewBuilder private var queue: some View {
         if typeSize.isAccessibilitySize {
-            ScrollView { stack.padding(.horizontal, 14).padding(.bottom, 8) }
+            ScrollView { stack(height: nil).padding(.horizontal, 14).padding(.bottom, 8) }
                 .scrollIndicators(.hidden)
                 .scrollDismissesKeyboard(.interactively)
         } else {
-            stack.padding(.horizontal, 14).padding(.bottom, 8)
+            GeometryReader { proxy in
+                stack(height: proxy.size.height - 8).padding(.horizontal, 14).padding(.bottom, 8)
+            }
         }
     }
 
-    private var stack: some View {
+    private func stack(height: CGFloat?) -> some View {
         let ids = store.visibleIDs
+        let cardHeight = height.map { max(0, $0 - CGFloat(max(0, ids.count - 1)) * 11) }
         let browsable = store.orderedIDs.count > 1
         return ZStack(alignment: .top) {
             ForEach(ids.reversed(), id: \.self) { id in
@@ -155,10 +159,7 @@ public struct TriageView: View {
                     }
                 }
                 .id(id)
-                .frame(maxHeight: depth == 0 ? nil : frontHeight, alignment: .top)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
-                    if depth == 0 { frontHeight = height }
-                }
+                .frame(height: cardHeight, alignment: .top)
                 .scaleEffect(1 - CGFloat(depth) * 0.05, anchor: .top)
                 .offset(y: CGFloat(depth) * -11)
                 .brightness(depth == 0 ? 0 : -0.04 * Double(depth))

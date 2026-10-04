@@ -634,3 +634,20 @@ fn a_stacked_pr_is_blocked_by_the_delivery_it_sits_on() {
     assert!(item("below").blocked_by.is_empty());
     assert_eq!(inbox_ids(&s), ["below", "above"], "the PR below comes first even though the one above is older");
 }
+
+fn notice(id: &str, need: &str, replaces: Option<&str>) -> Command {
+    let mut card = CardSpec::new(CardKind::Know, need);
+    card.replaces = replaces.map(Into::into);
+    Command::PublishInformation {
+        attachments: vec![], interaction_id: id.into(), scope: scope("t"), recipient: Recipient::User, body: "body".into(), card,
+    }
+}
+
+#[test]
+fn a_correction_replaces_the_earlier_notice() {
+    let mut s = fixture();
+    ok(&mut s, agent(), notice("n1", "Build is green", None));
+    ok(&mut s, agent(), notice("n2", "Correction: build is red", Some("n1")));
+    assert!(s.interactions[&"n1".into()].withdrawn);
+    assert!(s.open(&s.interactions[&"n2".into()]));
+}
