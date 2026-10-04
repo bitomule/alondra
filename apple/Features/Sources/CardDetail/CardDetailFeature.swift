@@ -21,6 +21,10 @@ public struct CardDetailFeature: Sendable {
         public var content: String?
         public var contentDigest: String?
         public var contentFailed = false
+        public var diff: [DiffFile]?
+        public var diffDigest: String?
+        public var diffFailed = false
+        public var collapsedFiles: Set<String> = []
         public var comments: [String: ActionComment] = [:]
         public var reply = ""
         public var composing: Composing?
@@ -115,6 +119,10 @@ public struct CardDetailFeature: Sendable {
         case attachments(AttachmentFeature.Action)
         case contentLoaded(digest: String?, String)
         case contentFailed
+        case diffLoaded(digest: String?, [DiffFile])
+        case diffFailed(digest: String?)
+        case retryDiff
+        case toggleFile(String)
         case blockTapped(anchor: String, quote: String)
         case composingChanged(String)
         case commentSaved
@@ -161,7 +169,24 @@ public struct CardDetailFeature: Sendable {
                     state.contentFailed = false
                     return .none
                 }
-                return fetchContent(of: document, state: &state)
+                return .merge(fetchContent(of: document, state: &state), fetchDiff(of: document, state: &state))
+            case .diffLoaded(let digest, let files):
+                guard digest == state.diffDigest else { return .none }
+                state.diff = files
+                state.diffFailed = false
+                state.collapsedFiles = Set(files.filter(\.startsCollapsed).map(\.id))
+                return .none
+            case .diffFailed(let digest):
+                guard digest == state.diffDigest else { return .none }
+                state.diffFailed = true
+                return .none
+            case .retryDiff:
+                guard let document = state.screen.document else { return .none }
+                state.diffDigest = nil
+                return fetchDiff(of: document, state: &state)
+            case .toggleFile(let id):
+                if !state.collapsedFiles.insert(id).inserted { state.collapsedFiles.remove(id) }
+                return .none
             case .screen, .delegate:
                 return .none
             case .opened(let key):
@@ -298,6 +323,20 @@ public struct CardDetailFeature: Sendable {
             do { await send(.contentLoaded(digest: reference.digest, try await viewsClient.fetchContent(reference))) }
             catch is CancellationError { return }
             catch { await send(.contentFailed) }
+        }
+    }
+
+    private func fetchDiff(of document: ViewDocument, state: inout State) -> Effect<Action> {
+        guard let reference = document.sections.lazy.flatMap(\.items).compactMap({ item -> ContentRef? in
+            if case .contentRef(let reference) = item, reference.kind == .diff { reference } else { nil }
+        }).first, reference.digest != state.diffDigest else { return .none }
+        state.diffDigest = reference.digest
+        state.diff = nil
+        state.diffFailed = false
+        return .run { [viewsClient] send in
+            do { await send(.diffLoaded(digest: reference.digest, UnifiedDiff.parse(try await viewsClient.fetchContent(reference)))) }
+            catch is CancellationError { return }
+            catch { await send(.diffFailed(digest: reference.digest)) }
         }
     }
 }

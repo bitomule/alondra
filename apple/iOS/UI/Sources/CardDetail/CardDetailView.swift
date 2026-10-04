@@ -193,22 +193,25 @@ public struct CardDetailView: View {
         case .document:
             documentBody
         case .diff:
-            if let key = CardDetailFeature.Subject.diffKey(of: reference) {
-                Button { store.send(.opened(key)) } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "plusminus").font(.title3).foregroundStyle(kind.tint)
-                        Text(reference.title).font(.headline).foregroundStyle(Palette.ink)
-                        Spacer()
-                        Image(systemName: "chevron.right").font(.footnote.weight(.bold)).foregroundStyle(.tertiary)
-                    }
-                    .padding(14)
-                    .background(kind.tint.opacity(0.10), in: .rect(cornerRadius: 16, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).strokeBorder(kind.tint.opacity(0.25)))
-                }
-                .buttonStyle(PressStyle())
-            }
+            diffBody(reference)
         case .file:
             EmptyView()
+        }
+    }
+
+    @ViewBuilder private func diffBody(_ reference: ContentRef) -> some View {
+        if let files = store.diff {
+            PRDiffView(files: files, collapsed: store.collapsedFiles, comments: [:],
+                       toggle: { store.send(.toggleFile($0)) }, comment: { _, _ in })
+                .id(store.diffDigest)
+        } else if store.diffFailed {
+            VStack(spacing: 8) {
+                Label("Couldn’t load the diff. Try again.", systemImage: "exclamationmark.triangle").foregroundStyle(.secondary)
+                Button("Try Again") { store.send(.retryDiff) }
+            }
+            .frame(maxWidth: .infinity)
+        } else {
+            RoundedRectangle(cornerRadius: 6).fill(Palette.hairline).frame(height: 14).frame(maxWidth: .infinity)
         }
     }
 

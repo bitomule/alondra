@@ -1736,57 +1736,12 @@ fn archived_interaction_detail_remains_addressable() {
     assert!(matches!(&view.sections[0].items[0], Item::Card(card) if card.id == "i-1"));
 }
 #[test]
-fn node_quote_filters_raw_tool_calls() {
-    let state = fixture();
-    let mut live = LiveSnapshot::default();
-    live.nodes.push(live::LiveNode {
-        project: None,
-        state_label: None,
-        summary: None,
-        needs: None,
-        background: vec![],
-        background_badge: None,
-        background_suspect: false,
-        agent_id: "a-1".into(),
-        short_id: Some("a-1".into()),
-        cwd: None,
-        name: "Node One".into(),
-        state_key: None,
-        working: true,
-        waiting: false,
-        last_message: Some(" mcp__tools__call ".into()),
-        state_since: None,
-        last_message_at: None, ..Default::default()
-    });
-    let hidden = render(
-        &state,
-        &live,
-        Client::Ios,
-        Lang::En,
-        "card:i-1",
-        "2026-09-30T10:00:00Z",
-    );
-    let said = |view: &View| view.sections.iter().find(|section| section.id == "context").and_then(|section| {
-        section.items.iter().find_map(|item| match item {
-            Item::Markdown(markdown) => Some(markdown.text.clone()),
-            _ => None,
-        })
-    });
-    assert_eq!(said(&hidden), None, "a raw tool call is not what the node said");
-    live.nodes[0].last_message = Some("The tests passed".into());
-    let visible = render(
-        &state,
-        &live,
-        Client::Ios,
-        Lang::En,
-        "card:i-1",
-        "2026-09-30T10:00:00Z",
-    );
-    let Item::Card(card) = &visible.sections[0].items[0] else {
-        panic!("card")
-    };
-
-    assert!(said(&visible).is_some_and(|text| text.contains("The tests passed")));
+fn card_detail_context_is_one_line_with_no_task_state() {
+    let view = render(&fixture(), &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "2026-09-30T10:00:00Z");
+    let context = view.sections.iter().find(|section| section.id == "context").expect("context line");
+    assert_eq!(context.items.len(), 1);
+    assert!(matches!(&context.items[0], Item::Facts(facts) if facts.items.len() == 1));
+    assert!(view.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::Actions(_))));
 }
 
 #[test]
@@ -2518,6 +2473,19 @@ fn content_facts(view: &View) -> &[Fact] {
 fn content_checks(view: &View) -> Option<&Checks> {
     let section = view.sections.iter().find(|section| section.id == "content")?;
     section.items.iter().find_map(|item| if let Item::Checks(checks) = item { Some(checks) } else { None })
+}
+
+#[test]
+fn a_pull_request_detail_reads_node_report_then_description_then_diff() {
+    let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    let content = view.sections.iter().find(|section| section.id == "content").expect("content section");
+    let position = |wanted: &dyn Fn(&Item) -> bool| content.items.iter().position(wanted).expect("item present");
+    let description = position(&|item| matches!(item, Item::Markdown(body) if body.text.starts_with("Replaces the long schedule form")));
+    let diff = position(&|item| matches!(item, Item::ContentRef(reference) if reference.kind == super::ContentKind::Diff));
+    let facts = position(&|item| matches!(item, Item::Facts(_)));
+    assert!(description < diff && diff < facts, "description, then the diff, then the details");
+    let sections = view.sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>();
+    assert!(sections.iter().position(|id| *id == "content") < sections.iter().position(|id| *id == "context"));
 }
 
 #[test]

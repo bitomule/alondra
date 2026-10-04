@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "vd36be40f85a1dc93",
+  "version": "v2afad3c359e2519f",
   "cursor": "cursor-1",
   "title": "The simulator pass is clean",
   "status": {
@@ -155,10 +155,6 @@
                 "kind": "view",
                 "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
               }
-            },
-            {
-              "label": "Mission",
-              "value": "Polish the Alondra beta"
             }
           ]
         }
