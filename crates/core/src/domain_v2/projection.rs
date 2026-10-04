@@ -35,14 +35,6 @@ pub enum InboxSubject {
     Interaction {
         interaction_id: InteractionId,
     },
-    PullRequest {
-        pr_id: PrId,
-    },
-    DocumentReview {
-        task_id: TaskId,
-        document_id: DocumentId,
-        revision_id: DocumentRevisionId,
-    },
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct InboxItem {
@@ -57,8 +49,6 @@ pub struct InboxItem {
     pub revision: Revision,
     pub order: Revision,
     pub pending: bool,
-    /// Always empty: every interaction is its own item. Removed with the old grouping in F6.
-    pub children: Vec<InboxItem>,
     pub available_actions: Vec<AvailableAction>,
     pub card: CardSpec,
     /// The deliveries this card holds back until it is answered.
@@ -314,7 +304,6 @@ impl DomainState {
             revision: i.revision,
             order: i.order,
             pending,
-            children: vec![],
             available_actions: actions,
             card: i.card.clone(),
             blocks: self.blocked_deliveries(i),
@@ -373,20 +362,18 @@ impl DomainState {
         }
     }
     fn order_inbox(&self, items: Vec<InboxItem>) -> Vec<InboxItem> {
-        let blocking = |item: &InboxItem| match &item.subject {
-            InboxSubject::Interaction { interaction_id } => {
-                self.interactions.get(interaction_id).is_some_and(|i| i.blocking)
-            }
-            _ => false,
+        let blocking = |item: &InboxItem| {
+            let InboxSubject::Interaction { interaction_id } = &item.subject;
+            self.interactions.get(interaction_id).is_some_and(|i| i.blocking)
         };
         let mut sorted: Vec<(u8, InboxItem)> = items
             .into_iter()
             .map(|item| (Self::inbox_rank(&item, blocking(&item)), item))
             .collect();
         sorted.sort_by(|(ra, a), (rb, b)| (ra, a.order, &a.id).cmp(&(rb, b.order, &b.id)));
-        let interaction_of = |item: &InboxItem| match &item.subject {
-            InboxSubject::Interaction { interaction_id } => Some(interaction_id.clone()),
-            _ => None,
+        let interaction_of = |item: &InboxItem| {
+            let InboxSubject::Interaction { interaction_id } = &item.subject;
+            Some(interaction_id.clone())
         };
         let position: BTreeMap<InteractionId, usize> = sorted
             .iter()

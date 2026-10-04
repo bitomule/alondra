@@ -107,12 +107,9 @@ enum DemoWorkspace {
         return try firstExisting(fixtureRoot(), name)
     }
 
-    /// The card redesign's fixtures sit in `cards/`; the views the Mac and the terminal still draw sit beside it.
     private static func firstExisting(_ root: URL, _ name: String) throws -> Data {
-        for directory in [root.appendingPathComponent("cards"), root] {
-            if let data = try? Data(contentsOf: directory.appendingPathComponent("\(name).json")) { return data }
-        }
-        throw ViewsClientError.missingView
+        guard let data = try? Data(contentsOf: root.appendingPathComponent("cards/\(name).json")) else { throw ViewsClientError.missingView }
+        return data
     }
 
     private static func replacingCardID(in value: Any, with newID: String) -> Any {

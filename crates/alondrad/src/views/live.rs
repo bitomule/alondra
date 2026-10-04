@@ -224,11 +224,7 @@ pub(crate) async fn gather(
             .projection()
             .inbox
             .into_iter()
-            .flat_map(|root| {
-                let root_order = (root.id, root.order);
-                std::iter::once(root_order)
-                    .chain(root.children.into_iter().map(|child| (child.id, child.order)))
-            })
+            .map(|item| (item.id, item.order))
             .collect::<Vec<_>>();
         let revisions = orders.iter().map(|(_, order)| *order).collect::<Vec<_>>();
         client

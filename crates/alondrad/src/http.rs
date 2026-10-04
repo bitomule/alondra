@@ -72,7 +72,7 @@ fn has_artifact_link(links: &[Link], body: Option<&str>) -> bool {
 /// attached). Refused for every plugin version, old or new.
 fn document_refusal(user: &str) -> String {
     format!(
-        "A document does not move your task. If it is the answer, send it as report kind final with the file in \
+        "A document does not move your task. If it is the answer, send it with present_result and is_final true, the file in \
          attachments. If {user} has to decide, send an ask with the file attached and the options."
     )
 }
@@ -1464,7 +1464,7 @@ fn task_refusal_text(task: &str, refused: &alondra_core::tasks::Anomaly, user: &
     let what = match &refused.event {
         TaskEvent::BlockerRaised { .. } | TaskEvent::DocumentSent { .. } | TaskEvent::PrOpened { .. } if finished => format!(
             "Task {task} is {}: {user} gets nothing more to decide or review for it. If there is more to do, ask the orchestrator \
-             (to_orchestrator: true), or hand the follow-up to it with report(kind: final, to_orchestrator: true).",
+             (to_orchestrator: true), or hand the follow-up to it with present_result(is_final: true, to_orchestrator: true).",
             refused.state.label()
         ),
         TaskEvent::BlockerRaised { .. } if refused.reason.ends_with(alondra_core::tasks::STILL_OPEN) => format!(
@@ -3398,7 +3398,7 @@ mod tests {
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{said}");
         let error = said["error"].as_str().unwrap_or_default();
         assert!(error.contains("A document does not move your task"), "{said}");
-        assert!(error.contains("report kind final with the file in"), "{said}");
+        assert!(error.contains("present_result and is_final true, the file in"), "{said}");
         assert!(error.contains("ask with the file attached and the options"), "{said}");
         assert_eq!(hub.read(|v| v.reports.len()), 0, "nothing recorded");
     }

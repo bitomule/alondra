@@ -22,21 +22,16 @@ pub(super) fn plain_id(id: &str) -> bool {
     super::id::valid(id)
 }
 pub(super) fn public_id(item: &InboxItem) -> &str {
-    match &item.subject {
-        InboxSubject::Interaction { interaction_id } => &interaction_id.0,
-        InboxSubject::PullRequest { pr_id } => &pr_id.0,
-        InboxSubject::DocumentReview { revision_id, .. } => &revision_id.0,
-    }
+    let InboxSubject::Interaction { interaction_id } = &item.subject;
+    &interaction_id.0
 }
 pub(super) fn card_key(item: &InboxItem) -> String {
     format!("card:{}", public_id(item))
 }
 
 fn interaction_of<'a>(item: &InboxItem, domain: &'a DomainState) -> Option<&'a Interaction> {
-    match &item.subject {
-        InboxSubject::Interaction { interaction_id } => domain.interactions.get(interaction_id),
-        _ => None,
-    }
+    let InboxSubject::Interaction { interaction_id } = &item.subject;
+    domain.interactions.get(interaction_id)
 }
 fn targets_of(interaction: &Interaction) -> &[DeliveryTarget] {
     match &interaction.payload {
@@ -371,10 +366,6 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         detail: if included { Detail::Included } else { Detail::Reference },
         body: None,
         attachments: vec![],
-        quotes: vec![],
-        children: vec![],
-        facts: None,
-        checks: None,
         actions: vec![],
     };
     if !included {

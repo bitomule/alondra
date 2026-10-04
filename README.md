@@ -121,7 +121,7 @@ not support that cadence. The hook does not affect Claude sessions outside Alond
 ### The TUI
 
 - **Waiting for you**: questions from the nodes (structured, menu, permissions and plans), PR
-  cards and reports, grouped by the task they belong to (`docs/card-rules.md`). `Enter` opens them
+  cards and reports, grouped by the task they belong to (`docs/cards.md`). `Enter` opens them
   with all their context, `1`–`4` picks an option and `r` answers with text.
 - **Tasks**: each request with its tasks, what depends on what, each task's state (waiting for
   another, running, needs you, in review, closing, done, cancelled) and what its node is doing.

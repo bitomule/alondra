@@ -19,9 +19,6 @@ fn view_action(view: &View, predicate: impl Fn(&Action) -> bool) -> Option<Actio
             match item {
                 Item::Card(card) => {
                     if let Some(action) = card.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); }
-                    for child in &card.children {
-                        if let Some(action) = child.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); }
-                    }
                 }
                 Item::Actions(bar) => if let Some(action) = bar.actions.iter().find(|a| predicate(a)) { return Some(action.clone()); },
                 Item::Row(row) => {
@@ -81,7 +78,7 @@ pub fn agent(d: &DomainProjection, runtime: Option<&Runtime>, name: &str) -> Res
 }
 
 fn inbox_item<'a>(d: &'a DomainProjection, id: &InteractionId) -> Option<&'a InboxItem> {
-    d.inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children)).find(|i| matches!(&i.subject, alondra_core::domain_v2::InboxSubject::Interaction { interaction_id } if interaction_id == id))
+    d.inbox.iter().find(|i| matches!(&i.subject, alondra_core::domain_v2::InboxSubject::Interaction { interaction_id } if interaction_id == id))
 }
 
 fn options_text(options: &[QuestionOption]) -> String {
