@@ -39,6 +39,17 @@ struct RoleButtonStyle: ButtonStyle {
     }
 }
 
+extension View {
+    /// A bar button as Liquid Glass: tinted and prominent to advance or to risk, plain glass otherwise.
+    @ViewBuilder func glassRole(_ role: ActionRole) -> some View {
+        if let fill = role.fill {
+            buttonStyle(.glassProminent).tint(fill)
+        } else {
+            buttonStyle(.glass)
+        }
+    }
+}
+
 extension WireAction {
     var cardRole: ActionRole { role ?? (style == .primary ? .advance : style == .destructive ? .risk : .neutral) }
 }

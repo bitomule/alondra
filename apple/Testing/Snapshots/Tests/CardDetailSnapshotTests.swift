@@ -12,10 +12,15 @@ import XCTest
 final class CardDetailSnapshotTests: XCTestCase {
     override func setUp() async throws { ScreenStores.pinTime() }
 
-    private struct Harness: View {
-        let store: StoreOf<CardDetailFeature>
-
-        var body: some View {
+    /// Drawn in the key window, where the floating Liquid Glass bar and its scroll edge exist; drawn
+    /// outside one, the bar's glass and its safe area render nothing.
+    private func assertDetail(
+        _ store: StoreOf<CardDetailFeature>,
+        language: SnapshotLanguage = .english,
+        testName: String = #function,
+        line: UInt = #line
+    ) {
+        assertScreen(language: language, inWindow: true, testName: testName, line: line) {
             ScreenFrame(height: 852) { CardDetailView(store: store) }
         }
     }
@@ -49,69 +54,67 @@ final class CardDetailSnapshotTests: XCTestCase {
     // MARK: Loading
 
     func test_loading() {
-        assertVariants {
-            Harness(store: Store(initialState: CardDetailFeature.State(key: .card("c-1"))) { CardDetailFeature() })
-        }
+        assertDetail(Store(initialState: CardDetailFeature.State(key: .card("c-1"))) { CardDetailFeature() })
     }
 
     func test_noLongerAvailable() {
         var state = CardDetailFeature.State(key: .card("c-1"))
         state.screen.phase = .missing
-        assertVariants { Harness(store: ScreenStores.cardDetail(state: state)) }
+        assertDetail(ScreenStores.cardDetail(state: state))
     }
 
     // MARK: Each kind of card in full
 
     func test_decide() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID))
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_decide_es() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID))
-        assertVariants(language: .spanish) { Harness(store: store) }
+        assertDetail(store, language: .spanish)
     }
 
     func test_decideWithItsHistory() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID).withHistory())
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_authorize() throws {
         let store = ScreenStores.cardDetail(try Fixtures.authorizeCard())
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_problem() throws {
         let store = ScreenStores.cardDetail(try Fixtures.problemCard())
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_know() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.informationID))
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_pullRequestHeldBackByAnotherCard() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.pullRequestID))
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_pullRequestReadyToMerge() throws {
         let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.card(Fixtures.pullRequestID)))
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_pullRequestReadyToMerge_es() throws {
         let store = ScreenStores.cardDetail(try Fixtures.unblocked(try Fixtures.card(Fixtures.pullRequestID)))
-        assertVariants(language: .spanish) { Harness(store: store) }
+        assertDetail(store, language: .spanish)
     }
 
     // MARK: A plan to comment on
 
     func test_plan() throws {
         let store = try fetchedPlan()
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_planWithComments() throws {
@@ -123,7 +126,7 @@ final class CardDetailSnapshotTests: XCTestCase {
             }
             state.reply = "Looks right overall."
         }
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_planWithComments_es() throws {
@@ -134,12 +137,12 @@ final class CardDetailSnapshotTests: XCTestCase {
                 )
             }
         }
-        assertVariants(language: .spanish) { Harness(store: store) }
+        assertDetail(store, language: .spanish)
     }
 
     func test_planFetching() throws {
         let store = ScreenStores.cardDetail(try Fixtures.planCard()) { $0.contentDigest = "plan-digest" }
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_planThatCouldNotBeFetched() throws {
@@ -147,7 +150,33 @@ final class CardDetailSnapshotTests: XCTestCase {
             state.contentDigest = "plan-digest"
             state.contentFailed = true
         }
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
+    }
+
+    // MARK: A plan Claude Code holds, annotated
+
+    private func heldPlan(annotating count: Int, edit: (inout CardDetailFeature.State) -> Void = { _ in }) throws
+        -> StoreOf<CardDetailFeature> {
+        ScreenStores.cardDetail(try Fixtures.heldPlanCard(text: plan)) { state in
+            state.content = plan
+            let notes = ["Say which simulator", "Who approves the notes?"]
+            for (block, note) in zip(state.blocks.filter(\.isCommentable).dropFirst(), notes).prefix(count) {
+                state.comments[block.draftKey] = ActionComment(anchor: block.draftKey, text: note, quote: block.plainText)
+            }
+            edit(&state)
+        }
+    }
+
+    func test_heldPlan() throws {
+        assertDetail(try heldPlan(annotating: 0))
+    }
+
+    func test_heldPlanWithTwoAnnotations() throws {
+        assertDetail(try heldPlan(annotating: 2))
+    }
+
+    func test_heldPlanWithTwoAnnotations_es() throws {
+        assertDetail(try heldPlan(annotating: 2), language: .spanish)
     }
 
     // MARK: A document opened by itself
@@ -156,7 +185,7 @@ final class CardDetailSnapshotTests: XCTestCase {
         let store = ScreenStores.cardDetail(try Fixtures.documentRevision()) { state in
             state.contentDigest = "digest-1"
         }
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     func test_document() throws {
@@ -164,7 +193,7 @@ final class CardDetailSnapshotTests: XCTestCase {
             state.contentDigest = "digest-1"
             state.content = plan
         }
-        assertVariants { Harness(store: store) }
+        assertDetail(store)
     }
 
     // MARK: Commenting

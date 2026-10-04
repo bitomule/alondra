@@ -127,7 +127,6 @@ public struct CardDetailView: View {
             .padding(.horizontal, 20).padding(.bottom, 24)
         }
         .scrollDismissesKeyboard(.interactively)
-        .scrollEdgeEffectHidden(true, for: .bottom)
         .safeAreaBar(edge: .bottom) { actionBar(subject) }
     }
 
@@ -166,8 +165,12 @@ public struct CardDetailView: View {
     @ViewBuilder private func itemView(_ item: ViewItem) -> some View {
         switch item {
         case .markdown(let markdown):
-            ArtifactLinks(text: markdown.text, tint: kind.tint)
-            MarkdownView(markdown: markdown)
+            if markdown.commentable, store.canComment {
+                commentableText
+            } else {
+                ArtifactLinks(text: markdown.text, tint: kind.tint)
+                MarkdownView(markdown: markdown)
+            }
         case .facts(let facts):
             FactsView(facts: facts, onLink: follow)
         case .checks(let checks):
@@ -236,6 +239,12 @@ public struct CardDetailView: View {
         } else if store.contentPending {
             skeleton
         } else {
+            commentableText
+        }
+    }
+
+    private var commentableText: some View {
+        VStack(alignment: .leading, spacing: 16) {
             ArtifactLinks(text: store.markdown, tint: kind.tint)
             LazyVStack(alignment: .leading, spacing: 6) {
                 ForEach(MarkdownParser.segments(store.blocks)) { segment in
@@ -302,22 +311,23 @@ public struct CardDetailView: View {
                 composer(reply)
             }
         }
-        .background(Palette.night)
-        .overlay(alignment: .top) { Palette.hairline.frame(height: 1) }
+    }
+
+    private func title(of action: AlondraContract.Action) -> String {
+        guard action.comments != nil, !store.feedback.isEmpty else { return action.label }
+        return "\(action.label) (\(store.feedback.count))"
     }
 
     @ViewBuilder private func barButton(_ action: AlondraContract.Action) -> some View {
         let disabled = !store.state.isSendable(action)
         VStack(spacing: 4) {
-            if action.presentation == .menu, !action.options.isEmpty {
-                Button { methodChoice = action } label: { Text(action.label) }
-                    .buttonStyle(RoleButtonStyle(role: action.cardRole))
-                    .disabled(disabled)
-            } else {
-                Button { perform(action) } label: { Text(action.label).multilineTextAlignment(.center) }
-                    .buttonStyle(RoleButtonStyle(role: action.cardRole))
-                    .disabled(disabled)
+            Button {
+                if action.presentation == .menu, !action.options.isEmpty { methodChoice = action } else { perform(action) }
+            } label: {
+                GlassBarLabel(title(of: action)).lineLimit(2).multilineTextAlignment(.center)
             }
+            .glassRole(action.cardRole)
+            .disabled(disabled)
             if !action.enabled, let reason = action.disabledReason {
                 Text(reason).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }

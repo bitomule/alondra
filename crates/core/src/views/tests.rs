@@ -2756,6 +2756,23 @@ fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes() {
     assert!(card_of(&ios).actions.iter().all(|action| action.key.is_none()));
 }
 
+fn markdown_items(view: &View) -> Vec<&Markdown> {
+    view.sections.iter().filter(|section| section.id == "content").flat_map(|section| &section.items)
+        .filter_map(|item| if let Item::Markdown(markdown) = item { Some(markdown) } else { None }).collect()
+}
+
+#[test]
+fn the_text_of_a_held_plan_can_be_commented_block_by_block_and_other_text_cannot() {
+    use crate::domain_v2::{CardKind, ContentKind as Content, Hold};
+    let plan = "1. Split the lexer\n2. Add tests";
+    let held = held_fixture(Hold::Plan, spec(CardKind::Review, "Ship the parser", "Two steps.").content(Content::Report, plan));
+    let view = render(&held, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert_eq!(markdown_items(&view).iter().map(|m| (m.text.as_str(), m.commentable)).collect::<Vec<_>>(), [(plan, true)]);
+    let permission = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow", "").content(Content::Command, "rm -rf build"));
+    let view = render(&permission, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(markdown_items(&view).iter().all(|m| !m.commentable));
+}
+
 #[test]
 fn a_held_plan_is_reviewed_with_block_comments_request_changes_and_approve() {
     use crate::domain_v2::{CardKind, Hold};

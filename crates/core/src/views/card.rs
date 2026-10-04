@@ -975,6 +975,10 @@ fn markdown(text: String) -> Item {
     Item::Markdown(Markdown { text, truncated: false, more: None, commentable: false })
 }
 
+fn commentable_markdown(text: String) -> Item {
+    Item::Markdown(Markdown { text, truncated: false, more: None, commentable: true })
+}
+
 fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let lang = context.lang;
     let domain = context.domain;
@@ -1015,7 +1019,12 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         }));
         return out;
     }
+    let plan_held = domain.holds.get(&interaction.id) == Some(&Hold::Plan);
     if let Some(content) = content {
+        if plan_held {
+            out.push(commentable_markdown(content.body.clone()));
+            return out;
+        }
         out.push(markdown(match content.kind {
             DomainContent::Command => fenced(&content.body, ""),
             DomainContent::Diff if summary::diff_stats(&content.body).is_some() => fenced(&content.body, "diff"),
