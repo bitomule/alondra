@@ -1345,7 +1345,6 @@ fn question_explicitly_linked_to_pr_keeps_identity_and_answer() {
     let p = s.projection();
     assert_eq!(p.inbox.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["interaction:q"],
         "a question about a PR is a card of its own, never a group under the PR");
-    assert!(p.inbox[0].children.is_empty());
     assert!(matches!(
         s.interactions[&"q".into()].payload,
         InteractionPayload::Question {

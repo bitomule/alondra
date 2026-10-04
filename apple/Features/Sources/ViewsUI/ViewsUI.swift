@@ -217,7 +217,6 @@ public struct CardView: View {
                     .onTapGesture { if let link = line.link { onLink(link) } }
             }
             ForEach(Array(card.timestamps.enumerated()), id: \.offset) { _, stamp in Label(ViewsDate.display(stamp.at, format: stamp.format), systemImage: "clock").font(.caption).foregroundStyle(.secondary) }
-            ForEach(Array(card.quotes.enumerated()), id: \.offset) { _, quote in VStack(alignment: .leading, spacing: 4) { Text(quote.label).font(.caption.weight(.semibold)).foregroundStyle(.secondary); Text(quote.text).font(.callout).italic() }.padding(10).frame(maxWidth: .infinity, alignment: .leading).background(ViewPalette.night.opacity(0.6), in: .rect(cornerRadius: 10)) }
             if let body = card.body { MarkdownView(markdown: body) }
             if !card.attachments.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
@@ -234,9 +233,6 @@ public struct CardView: View {
                     }
                 }
             }
-            if let facts = card.facts { FactsView(facts: facts, onLink: onLink) }
-            if let checks = card.checks { ChecksView(checks: checks, onLink: onLink) }
-            ForEach(Array(card.children.enumerated()), id: \.offset) { _, child in CardView(card: child, onAction: onAction, onLink: onLink, onAttachment: onAttachment, excludingActionIDs: excludedActionIDs) }
             let actions = card.actions.filter { $0.id.map(excludedActionIDs.contains) != true }
             if !actions.isEmpty { ActionButtons(actions: actions, onAction: onAction, onLink: onLink) }
         }

@@ -509,7 +509,6 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
     for item in &projection.inbox {
         assert!(item.id.starts_with("interaction:"), "{}: no PR or document root", item.id);
         assert!(matches!(item.subject, InboxSubject::Interaction { .. }));
-        assert!(item.children.is_empty(), "{}: no card holds another", item.id);
         assert!(!matches!(item.kind.as_str(), "pull_request" | "document_review"));
     }
 }

@@ -172,13 +172,12 @@ public struct BlockChip: Codable, Equatable, Sendable { public let id: String; p
 public struct Card: Codable, Equatable, Sendable {
     public let id: String; public let link: Link?; public let icon: Icon; public let eyebrow: Label?; public let title: String; public let subtitle: String?
     public let badges: [Label]; public let context: [ContextLine]; public let timestamps: [Stamp]; public let state: Label?; public let detail: Detail
-    public let body: Markdown?; public let attachments: [Attachment]; public let quotes: [Quote]; public let children: [Card]
-    public let facts: Facts?; public let checks: Checks?; public let actions: [Action]
+    public let body: Markdown?; public let attachments: [Attachment]; public let actions: [Action]
     /// The card anatomy: what is needed, why, who and where, one line of content, what it holds back, and the reply.
     public let kind: CardKind?; public let need: String?; public let why: String?; public let meta: String?; public let contentRow: ContentRow?
     public let blocks: [BlockChip]; public let blockedBy: [BlockChip]; public let reply: Action?; public let more: [Action]
     enum CodingKeys: String, CodingKey {
-        case id, link, icon, eyebrow, title, subtitle, badges, context, timestamps, state, detail, body, attachments, quotes, children, facts, checks, actions
+        case id, link, icon, eyebrow, title, subtitle, badges, context, timestamps, state, detail, body, attachments, actions
         case kind, need, why, meta, blocks, reply, more; case contentRow = "content_row"; case blockedBy = "blocked_by"
     }
     public init(from decoder: Decoder) throws {
@@ -188,9 +187,8 @@ public struct Card: Codable, Equatable, Sendable {
         badges = try c.decodeIfPresent([Label].self, forKey: .badges) ?? []; context = try c.decodeIfPresent([ContextLine].self, forKey: .context) ?? []
         timestamps = try c.decodeIfPresent([Stamp].self, forKey: .timestamps) ?? []; state = try c.decodeIfPresent(Label.self, forKey: .state)
         detail = try c.decode(Detail.self, forKey: .detail); body = try c.decodeIfPresent(Markdown.self, forKey: .body)
-        attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []; quotes = try c.decodeIfPresent([Quote].self, forKey: .quotes) ?? []
-        children = try c.decodeIfPresent([Card].self, forKey: .children) ?? []; facts = try c.decodeIfPresent(Facts.self, forKey: .facts)
-        checks = try c.decodeIfPresent(Checks.self, forKey: .checks); actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []
+        actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
         kind = (try? c.decodeIfPresent(CardKind.self, forKey: .kind)) ?? nil
         need = try c.decodeIfPresent(String.self, forKey: .need); why = try c.decodeIfPresent(String.self, forKey: .why); meta = try c.decodeIfPresent(String.self, forKey: .meta)
         contentRow = try c.decodeIfPresent(ContentRow.self, forKey: .contentRow)
@@ -204,9 +202,8 @@ public struct Card: Codable, Equatable, Sendable {
         if !badges.isEmpty { try c.encode(badges, forKey: .badges) }; if !context.isEmpty { try c.encode(context, forKey: .context) }
         if !timestamps.isEmpty { try c.encode(timestamps, forKey: .timestamps) }; try c.encodeIfPresent(state, forKey: .state)
         try c.encode(detail, forKey: .detail); try c.encodeIfPresent(body, forKey: .body)
-        if !attachments.isEmpty { try c.encode(attachments, forKey: .attachments) }; if !quotes.isEmpty { try c.encode(quotes, forKey: .quotes) }
-        if !children.isEmpty { try c.encode(children, forKey: .children) }; try c.encodeIfPresent(facts, forKey: .facts)
-        try c.encodeIfPresent(checks, forKey: .checks); if !actions.isEmpty { try c.encode(actions, forKey: .actions) }
+        if !attachments.isEmpty { try c.encode(attachments, forKey: .attachments) }
+        if !actions.isEmpty { try c.encode(actions, forKey: .actions) }
         try c.encodeIfPresent(kind, forKey: .kind); try c.encodeIfPresent(need, forKey: .need); try c.encodeIfPresent(why, forKey: .why)
         try c.encodeIfPresent(meta, forKey: .meta); try c.encodeIfPresent(contentRow, forKey: .contentRow)
         if !blocks.isEmpty { try c.encode(blocks, forKey: .blocks) }; if !blockedBy.isEmpty { try c.encode(blockedBy, forKey: .blockedBy) }
@@ -265,7 +262,6 @@ public struct Notice: Codable, Equatable, Sendable { public let text: String; pu
 public struct ActionBar: Codable, Equatable, Sendable { public let actions: [Action] }
 public struct ContextLine: Codable, Equatable, Sendable { public let icon: Icon; public let text: String; public let link: Link?; public let chip: Label?; public let state: Label? }
 public struct Stamp: Codable, Equatable, Sendable { public let role: String; public let at: String; public let format: TimeFormat }
-public struct Quote: Codable, Equatable, Sendable { public let label: String; public let text: String; public let at: String? }
 
 public enum Trailing: Codable, Equatable, Sendable {
     case count(value: UInt32), time(at: String, format: TimeFormat), text(text: String)

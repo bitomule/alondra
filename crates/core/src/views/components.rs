@@ -243,14 +243,6 @@ pub struct Card {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<Attachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub quotes: Vec<Quote>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub children: Vec<Card>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub facts: Option<Facts>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub checks: Option<Checks>,
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -291,13 +283,6 @@ pub struct Stamp {
     pub role: String,
     pub at: String,
     pub format: TimeFormat,
-}
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub struct Quote {
-    pub label: String,
-    pub text: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub at: Option<String>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Row {

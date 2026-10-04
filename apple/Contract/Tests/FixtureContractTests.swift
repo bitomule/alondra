@@ -2,24 +2,18 @@ import AlondraContract
 import Foundation
 import XCTest
 
-/// The daemon's own tests compare what it renders with `fixtures/views/*.json`. These tests make
+/// The daemon's own tests compare what it renders with `fixtures/views/cards/*.json`. These tests make
 /// the same files the Swift contract: a renamed section or field breaks the build here instead of
 /// leaving an empty screen on the phone.
 final class FixtureContractTests: XCTestCase {
-    private static let notViews: Set<String> = ["push-payloads.json"]
-
-    /// The shape the apps still draw, and the one the daemon renders since the card redesign.
     private func fixtureURLs() throws -> [URL] {
         let environment = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
             .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
-            .appendingPathComponent("fixtures/views")
-        return try ["", "cards"].flatMap { subdirectory -> [URL] in
-            let directory = subdirectory.isEmpty ? root : root.appendingPathComponent(subdirectory)
-            return try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
-                .filter { $0.pathExtension == "json" && !Self.notViews.contains($0.lastPathComponent) }
-                .sorted { $0.lastPathComponent < $1.lastPathComponent }
-        }
+            .appendingPathComponent("fixtures/views/cards")
+        return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+            .filter { $0.pathExtension == "json" }
+            .sorted { $0.lastPathComponent < $1.lastPathComponent }
     }
 
     func testEveryViewFixtureDecodesIntoItsDocument() throws {
@@ -87,7 +81,6 @@ final class FixtureContractTests: XCTestCase {
         }
         XCTAssertEqual(links.count, waiting.items.count)
         XCTAssertTrue(links.allSatisfy { $0.hasPrefix("card:") })
-        XCTAssertNotNil(sidebar.sections.first { $0.id == "pull_requests" })
     }
 
     func testMacCardActionsCarryKeyboardShortcuts() throws {

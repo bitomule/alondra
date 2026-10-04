@@ -31,7 +31,7 @@ pub(crate) struct Snapshot {
     state: DomainState,
     projection: DomainProjection,
     sections: BTreeMap<String, SectionInfo>,
-    inbox_by_id: HashMap<String, (usize, Option<usize>)>,
+    inbox_by_id: HashMap<String, usize>,
     interactions_ordered: Vec<usize>,
     interactions_by_task: HashMap<TaskId, Vec<usize>>,
     interactions_orchestrator: Vec<usize>,
@@ -69,10 +69,7 @@ impl Snapshot {
         let projection = state.projection();
         let mut inbox_by_id = HashMap::new();
         for (r, root) in projection.inbox.iter().enumerate() {
-            inbox_by_id.insert(root.id.clone(), (r, None));
-            for (c, child) in root.children.iter().enumerate() {
-                inbox_by_id.insert(child.id.clone(), (r, Some(c)));
-            }
+            inbox_by_id.insert(root.id.clone(), r);
         }
         let mut by_task: HashMap<TaskId, Vec<(usize, &Interaction)>> = HashMap::new();
         let mut orchestrator = vec![];
@@ -116,10 +113,7 @@ impl Snapshot {
     }
     /// Each inbox row with the revision that put it there.
     pub(crate) fn inbox_orders(&self) -> Vec<(String, Revision)> {
-        self.inbox_by_id.iter().map(|(id, (root, child))| {
-            let root = &self.projection.inbox[*root];
-            (id.clone(), child.map_or(root.order, |child| root.children[child].order))
-        }).collect()
+        self.inbox_by_id.iter().map(|(id, item)| (id.clone(), self.projection.inbox[*item].order)).collect()
     }
     pub(crate) fn section_tokens(&self) -> BTreeMap<String, String> {
         self.sections.iter().map(|(k, v)| (k.clone(), v.revision.clone())).collect()
@@ -649,11 +643,10 @@ pub(crate) fn respond(domain: &DomainRuntime, route: &Route) -> Response {
         Route::Summary(q) => summary(s, q),
         Route::Inbox(q) => paged(inbox_page(s, q, MAX_PAGE_BYTES)),
         Route::InboxItem(id) => match s.inbox_by_id.get(id) {
-            Some(&(r, child)) => {
-                let root = &p.inbox[r];
-                let item = child.map_or(root, |c| &root.children[c]);
+            Some(&r) => {
+                let item = &p.inbox[r];
                 let (protocol_version, data_epoch, revision) = s.envelope();
-                let mut value = to_value(&InboxLookup { protocol_version, data_epoch, revision, item: item.clone(), root_id: root.id.clone() });
+                let mut value = to_value(&InboxLookup { protocol_version, data_epoch, revision, item: item.clone(), root_id: item.id.clone() });
                 fit(&mut value, MAX_PAGE_BYTES);
                 Json(value).into_response()
             }

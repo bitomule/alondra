@@ -464,7 +464,7 @@ private func viewRowIDs(_ items: [ViewItem]) -> [String] {
     items.flatMap { item -> [String] in
         switch item {
         case let .row(row): return [row.id] + row.children.flatMap { viewRowIDs([.row($0)]) }
-        case let .card(card): return [card.id] + card.children.flatMap { viewRowIDs([.card($0)]) }
+        case let .card(card): return [card.id]
         default: return []
         }
     }
