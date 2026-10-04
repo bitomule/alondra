@@ -5,15 +5,18 @@ use super::{
 use crate::domain_v2::{Task, TaskState};
 use std::collections::BTreeMap;
 
-fn task_subtitle(task: &Task, context: &RenderContext<'_>) -> String {
+fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) -> Option<String> {
     let project = task.agent_id.as_ref().and_then(|id| context.live.nodes.iter()
         .find(|node| node.agent_id == id.0).and_then(|node| node.project.as_deref()));
     let state = common::instruction_label(task, context.domain, context.lang)
         .or_else(|| common::failed_launch(task, context.domain).map(|_| common::launch_failed_label(context.lang)))
         .unwrap_or_else(|| task_state_label(task.state, context.lang));
-    match project {
-        Some(project) if !project.is_empty() && project != "others" => format!("{project} · {state}"),
-        _ => state.into(),
+    let project = project.filter(|project| !project.is_empty() && *project != "others");
+    let state = (group != Some(state)).then_some(state);
+    match (project, state) {
+        (Some(project), Some(state)) => Some(format!("{project} · {state}")),
+        (Some(text), None) | (None, Some(text)) => Some(text.into()),
+        (None, None) => None,
     }
 }
 
@@ -48,7 +51,7 @@ fn task_groups(context: &RenderContext<'_>) -> super::Section {
             .map(|task| {
                 let (icon, tone) = common::task_presentation(state);
                 let mut row = common::row(&task.id.0, &format!("task:{}", task.id),
-                    icon, task.title.clone(), Some(task_subtitle(task, context)));
+                    icon, task.title.clone(), task_subtitle(task, context, Some(title)));
                 row.struck = state == TaskState::Cancelled;
                 row.badges.push(Label { text: title.into(), tone });
                 row.depth = 1;
@@ -138,7 +141,7 @@ fn project_sections(context: &RenderContext<'_>) -> Vec<super::Section> {
             .map(|task| {
                 let (icon, tone) = common::task_presentation(task.state);
                 let mut child = common::row(&task.id.0, &format!("task:{}", task.id), icon,
-                    task.title.clone(), Some(task_subtitle(task, context)));
+                    task.title.clone(), task_subtitle(task, context, None));
                 child.depth = 1;
                 child.badges.push(Label { text: common::instruction_label(task, context.domain, context.lang)
                     .unwrap_or_else(|| task_state_label(task.state, context.lang)).into(), tone });
@@ -160,45 +163,38 @@ pub(super) fn build(context: &RenderContext<'_>) -> Result<View, BuildError> {
     let projection = context.domain.projection();
     let mut view = common::view("sidebar", "sidebar", None, context, vec![]);
     let pending = super::home::waiting(&projection);
-    for (id, title, pr) in [
-        (
-            "waiting",
-            t!(context.lang, "Waiting for You", "Te espera"),
-            false,
-        ),
-        (
-            "pull_requests",
-            t!(context.lang, "Pull requests", "Solicitudes de cambios"),
-            true,
-        ),
-    ] {
-        let cards: Vec<_> = pending
+    let mut waiting = common::section(
+        "waiting",
+        Some(t!(context.lang, "Waiting for You", "Te espera").into()),
+        pending
             .iter()
-            .filter(|item| super::card::carries_pull_request(item, context.domain) == pr)
-            .collect();
-        let mut section = common::section(
-            id,
-            Some(title.into()),
-            cards
-                .iter()
-                .map(|item| {
-                    let card = super::card::from_item(item, context, false)?;
-                    Ok(Item::Row(common::row(
-                        &card.id,
-                        &format!("card:{}", card.id),
-                        card.icon,
-                        card.title,
-                        card.subtitle,
-                    )))
-                })
-                .collect::<Result<Vec<_>, BuildError>>()?,
-        );
-        section.count = Some(section.items.len() as u32);
-        view.sections.push(section);
-    }
+            .map(|item| {
+                let card = super::card::from_item(item, context, false)?;
+                let mut row = common::row(
+                    &card.id,
+                    &format!("card:{}", card.id),
+                    card.icon,
+                    card.need.unwrap_or(card.title),
+                    card.meta.or(card.subtitle),
+                );
+                row.badges.extend(card.eyebrow);
+                row.kind = card.kind;
+                Ok(Item::Row(row))
+            })
+            .collect::<Result<Vec<_>, BuildError>>()?,
+    );
+    waiting.count = Some(waiting.items.len() as u32);
+    view.sections.push(waiting);
     view.sections.push(task_groups(context));
     let fleet = super::fleet::list(context);
-    view.sections.extend(fleet.sections.into_iter().filter(|section| section.id == "orchestrator"));
+    view.sections.extend(fleet.sections.into_iter().filter(|section| section.id == "orchestrator").map(|mut section| {
+        for item in &mut section.items {
+            if let Item::Row(row) = item {
+                row.trailing = None;
+            }
+        }
+        section
+    }));
     view.sections.extend(project_sections(context));
     let (message, action) = if pending.is_empty() {
         (

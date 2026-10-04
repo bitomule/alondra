@@ -18,14 +18,21 @@ private func cardRows(_ ids: [String]) -> String {
     }.joined(separator: ",")
 }
 
-private func sidebar(version: String = "v1", waiting: [String], pullRequests: [String] = []) throws -> ViewDocument {
-    let sections = #"[{"id":"waiting","collapsed":false,"items":[\#(cardRows(waiting))]},{"id":"pull_requests","collapsed":false,"items":[\#(cardRows(pullRequests))]},{"id":"summary","collapsed":false,"items":[{"type":"notice","text":"Waiting","tone":"neutral"}]}]"#
+private func sidebar(version: String = "v1", waiting: [String]) throws -> ViewDocument {
+    let sections = #"[{"id":"waiting","collapsed":false,"items":[\#(cardRows(waiting))]},{"id":"summary","collapsed":false,"items":[{"type":"notice","text":"Waiting","tone":"neutral"}]}]"#
     return try makeDocument(key: "sidebar", version: version, sections: sections)
 }
 
+private func decodeAction(_ json: String) throws -> AlondraContract.Action {
+    try JSONDecoder().decode(AlondraContract.Action.self, from: Data(json.utf8))
+}
+
 private func answer() throws -> AlondraContract.Action {
-    let json = #"{"id":"answer:x@1","label":"Answer","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#
-    return try JSONDecoder().decode(AlondraContract.Action.self, from: Data(json.utf8))
+    try decodeAction(#"{"id":"answer:x@1","label":"Answer","style":"primary","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":false,"enabled":true}"#)
+}
+
+private func optionButton() throws -> AlondraContract.Action {
+    try decodeAction(#"{"id":"ans:x@1","label":"Ship it","style":"primary","role":"advance","option_id":"clear","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#)
 }
 
 private func request(_ command: String) -> ActionRequest {
@@ -36,13 +43,19 @@ private func response(_ outcome: String) throws -> ActionResponse {
     try JSONDecoder().decode(ActionResponse.self, from: Data(#"{"protocol":1,"outcome":"\#(outcome)"}"#.utf8))
 }
 
+private let unchangedSidebar: @Sendable (ViewKey) throws -> ViewFetch = { key in
+    key.rawValue == "sidebar"
+        ? .document(try sidebar(waiting: ["a", "b"]))
+        : .document(try makeDocument(key: key.rawValue, version: "d1"))
+}
+
 @MainActor
 private func makeStore(
-    waiting: [String], pullRequests: [String] = [], selected: String? = nil,
+    waiting: [String], selected: String? = nil,
     load: @escaping @Sendable (ViewKey) throws -> ViewFetch = { .document(try makeDocument(key: $0.rawValue, version: "d1")) }
 ) throws -> TestStoreOf<MacPresentationFeature> {
     var state = MacPresentationFeature.State()
-    state.sidebarDocument = try sidebar(waiting: waiting, pullRequests: pullRequests)
+    state.sidebarDocument = try sidebar(waiting: waiting)
     if let selected {
         state.selection = .viewKey(selected)
         state.selectedViewKey = selected
@@ -147,12 +160,57 @@ struct MacAnsweringTests {
     }
 
     @Test
-    func whenNothingWaitsTheNextPullRequestIsOpened() async throws {
-        let store = try makeStore(waiting: ["a"], pullRequests: ["p"], selected: "card:a")
-        await store.send(.beginViewAction(try answer()))
-        await store.send(.action(.sent(request("1"))))
+    func aButtonThatNeedsNothingMoreSendsAtOnceWithItsOption() async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        await store.send(.beginViewAction(try optionButton()))
         await store.skipReceivedActions()
-        #expect(store.state.selection == .viewKey("card:p"))
+        #expect(sent.value.map(\.actionId) == ["ans:x@1"])
+        #expect(sent.value.map(\.optionId) == ["clear"])
+        #expect(!store.state.actionPresented)
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
+    }
+
+    @Test
+    func aReplyGoesWithoutHidingTheCard() async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a", load: unchangedSidebar)
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        let reply = try decodeAction(#"{"id":"reply:a@1","label":"Reply","style":"secondary","role":"neutral","presentation":"button","input":{"kind":"text","required":true,"multiline":true},"attachments":true,"enabled":true}"#)
+        await store.send(.sendReply(reply, text: "Use the compact one"))
+        await store.skipReceivedActions()
+        #expect(sent.value.map(\.actionId) == ["reply:a@1"])
+        #expect(sent.value.first?.input.text == "Use the compact one")
+        #expect(!store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:a"))
+    }
+
+    @Test
+    func clarifyingSendsTheReasonAndTheOptionalText() async throws {
+        let sent = LockIsolated<[ActionRequest]>([])
+        let store = try makeStore(waiting: ["a"], selected: "card:a")
+        store.dependencies.viewsClient.perform = { request in
+            sent.withValue { $0.append(request) }
+            return try response("applied")
+        }
+        let clarify = try decodeAction(#"{"id":"clarify:a@1","label":"Request clarification","style":"secondary","role":"neutral","presentation":"options","options":[{"id":"unclear","label":"It is unclear","style":"secondary","input":{"kind":"none"}},{"id":"missing_context","label":"It lacks context","style":"secondary","input":{"kind":"none"}}],"input":{"kind":"text","required":false,"multiline":true},"attachments":false,"enabled":true}"#)
+        await store.send(.beginViewAction(clarify))
+        #expect(store.state.actionPresented, "a reason is still to be chosen")
+        await store.skipReceivedActions()
+        await store.send(.action(.chooseOption("missing_context")))
+        await store.send(.action(.textChanged("Which build?")))
+        await store.send(.action(.submit))
+        await store.skipReceivedActions()
+        #expect(sent.value.map(\.optionId) == ["missing_context"])
+        #expect(sent.value.first?.input.text == "Which build?")
     }
 
     @Test
@@ -408,7 +466,7 @@ struct MacSearchTests {
 struct MacWaitingQueueTests {
     @Test
     func theNextCardFollowsTheSidebarOrderAndSkipsWhatIsGone() throws {
-        let document = try sidebar(waiting: ["a", "b", "c"], pullRequests: ["p"])
+        let document = try sidebar(waiting: ["a", "b", "c", "p"])
         let all: Set = ["card:a", "card:b", "card:c", "card:p"]
         #expect(MacPresentationFeature.nextKey(after: "card:a", in: document, available: all) == "card:b")
         #expect(MacPresentationFeature.nextKey(after: "card:a", in: document, available: all.subtracting(["card:b"])) == "card:c")

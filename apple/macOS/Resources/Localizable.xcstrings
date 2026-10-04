@@ -1,6 +1,15 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "More…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más…"}}}},
+    "Show the details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ver los detalles"}}}},
+    "Reply to the node…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Responder al nodo…"}}}},
+    "Send the reply": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviar la respuesta"}}}},
+    "The node replaces this card with a clearer one.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El nodo sustituirá esta tarjeta por otra más clara."}}}},
+    "What should it clarify? (optional)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Qué debería aclarar? (opcional)"}}}},
+    "What should it clarify?": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "¿Qué debería aclarar?"}}}},
+    "Request clarification": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir aclaración"}}}},
+    "Show %lld more": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Mostrar %lld más"}}}},
     "Advanced": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Avanzado"}}}},
     "Anchor": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ancla"}}}},
     "Ask for new work (⌘N)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pedir trabajo nuevo (⌘N)"}}}},

@@ -30,7 +30,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         let environment = ProcessInfo.processInfo.environment
         let root = URL(fileURLWithPath: try XCTUnwrap(environment["TEST_SRCDIR"]))
             .appendingPathComponent(environment["TEST_WORKSPACE"] ?? "_main")
-        let url = root.appendingPathComponent("fixtures/views/\(name).json")
+        let url = root.appendingPathComponent("fixtures/views/cards/\(name).json")
         return try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))
     }
 
@@ -71,7 +71,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
 
     func test_sidebar_listsWhatWaitsForYou() throws {
         let store = try presentation(edit: { $0.selection = .viewKey("card:a98d034b-249e-4487-a89b-57de38c26372") })
-        assertWindow(size: CGSize(width: 320, height: 640)) { MacServiceSidebar(presentation: store) }
+        assertWindow(size: CGSize(width: 320, height: 880)) { MacServiceSidebar(presentation: store) }
     }
 
     func test_sidebar_hidesTheCardThatJustLeft() throws {
@@ -79,7 +79,7 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
             let request = ActionRequest(commandId: "c1", dataEpoch: "", client: .mac, lang: "en", actionId: "answer")
             state.optimistic.begin("a98d034b-249e-4487-a89b-57de38c26372", request)
         })
-        assertWindow(size: CGSize(width: 320, height: 640)) { MacServiceSidebar(presentation: store) }
+        assertWindow(size: CGSize(width: 320, height: 880)) { MacServiceSidebar(presentation: store) }
     }
 
     func test_card_questionWithItsAnswers() throws {
@@ -90,6 +90,24 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
     func test_card_pullRequestWithItsShortcuts() throws {
         let store = try presentation(detail: "card-pr-mac")
         assertWindow(size: CGSize(width: 900, height: 700)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_noticeThatBlocksNothing() throws {
+        let store = try presentation(detail: "card-information-mac")
+        assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
+    }
+
+    func test_card_clarificationSheet() throws {
+        let store = try presentation(detail: "card-question-mac", edit: { state in
+            let card = state.detailDocument?.sections.flatMap(\.items).compactMap { item -> Card? in
+                if case let .card(card) = item { card } else { nil }
+            }.first
+            state.actionFeature.action = card?.more.first { $0.asksForClarification }
+            state.actionFeature.selectedOptionID = "missing_context"
+            state.actionFeature.text = "Which build do you mean?"
+            state.actionPresented = true
+        })
+        assertWindow(size: CGSize(width: 460, height: 460)) { MacViewActionSheet(presentation: store) }
     }
 
     func test_pullRequest_detail() throws {

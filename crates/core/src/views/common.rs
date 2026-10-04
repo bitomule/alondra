@@ -58,6 +58,7 @@ pub(super) fn row(
         trailing: None,
         depth: 0,
         struck: false,
+        kind: None,
         children: vec![],
         actions: vec![],
     }
