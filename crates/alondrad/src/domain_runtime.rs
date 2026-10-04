@@ -342,6 +342,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         }
         Command::CreateRequest { .. }
         | Command::CloseRequest { .. }
+        | Command::TitleRequest { .. }
         | Command::CreateSchedule { .. }
         | Command::UpdateSchedule { .. }
         | Command::DeleteSchedule { .. }

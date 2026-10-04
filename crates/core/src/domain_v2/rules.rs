@@ -44,6 +44,7 @@ impl Source {
     }
 }
 /// The option of a Propose card that turns it into a Request.
+pub const REQUEST_TITLE_LIMIT: usize = 60;
 pub const PROPOSAL_ACCEPTED: &str = "do_it";
 fn kind_name(kind: CardKind) -> String {
     serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
@@ -1633,6 +1634,17 @@ impl DomainState {
                     self.invalidate(task_id);
                     self.tasks.get_mut(task_id).unwrap().agent_id = Some(agent_id.clone());
                 }
+            }
+            Command::TitleRequest { request_id, title } => {
+                self.manager(actor)?;
+                nonempty(title)?;
+                if title.chars().count() > REQUEST_TITLE_LIMIT {
+                    return fail("invalid_input", "Request title is too long");
+                }
+                self.requests
+                    .get_mut(request_id)
+                    .ok_or_else(|| DomainError::new("not_found", "Request missing"))?
+                    .title = Some(title.clone());
             }
             Command::RetitleTask { task_id, title } => {
                 self.manager(actor)?;

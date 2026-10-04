@@ -902,6 +902,17 @@ fn a_request_that_needed_no_task_closes_with_its_answer_title_or_withdrawal() {
     reject_unchanged(&mut s, user(), Command::CloseRequest { request_id: "r".into(), answer: None, withdrawn: true, title: None }, "task_not_active");
 }
 #[test]
+fn the_orchestrator_names_a_request_with_a_short_title() {
+    let mut s = fixture();
+    reject_unchanged(&mut s, agent(), Command::TitleRequest { request_id: "r".into(), title: "Mine".into() }, "forbidden");
+    reject_unchanged(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: " ".into() }, "invalid_input");
+    reject_unchanged(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "x".repeat(61) }, "invalid_input");
+    reject_unchanged(&mut s, orchestrator(), Command::TitleRequest { request_id: "missing".into(), title: "X".into() }, "not_found");
+    exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "x".repeat(60) }).unwrap();
+    exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Conflicts before push".into() }).unwrap();
+    assert_eq!(s.requests[&"r".into()].title.as_deref(), Some("Conflicts before push"));
+}
+#[test]
 fn a_manager_retitles_a_task_and_moves_its_revision() {
     let mut s = fixture();
     let before = s.tasks[&"t".into()].revision;
@@ -2610,9 +2621,10 @@ fn variant_index(c: &Command) -> usize {
         Command::HoldHook { .. } => 43,
         Command::RequestClarification { .. } => 44,
         Command::RaiseProblem { .. } => 45,
+        Command::TitleRequest { .. } => 46,
     }
 }
-const COMMAND_KINDS: usize = 46;
+const COMMAND_KINDS: usize = 47;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2652,6 +2664,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::CreateTask { task_id: "fresh-task".into(), request_id: ids.request.into(),
             title: "Fresh".into(), agent_id: Some(ids.agent.into()), review_prs: false,
             dependencies: BTreeSet::new(), stack: None }, false),
+        (Command::TitleRequest { request_id: ids.request.into(), title: "Named".into() }, false),
         (Command::AssignTask { task_id: ids.task.into(), agent_id: ids.agent.into() }, false),
         (Command::RetitleTask { task_id: ids.task.into(), title: "Renamed".into() }, false),
         (Command::SetDependencies { task_id: ids.task.into(), dependencies: BTreeSet::new(), stack: None }, false),

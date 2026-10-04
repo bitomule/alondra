@@ -71,7 +71,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route("/problems", post(resource_command::<H>))
         .route("/document-revisions/{id}/content", get(document_content::<H>));
     let mutations = [
-        ("/requests/{id}/close", "POST"),
+        ("/requests/{id}/close", "POST"), ("/requests/{id}/title", "POST"),
         ("/requests/{request_id}/tasks", "POST"),
         ("/tasks/{id}/assignee", "PUT"),
         ("/tasks/{id}/dependencies", "PUT"), ("/tasks/{id}/start", "POST"),
@@ -914,6 +914,7 @@ pub(crate) fn resource_envelope(
         ("POST", "/action-requests") => ("request_action", None),
         ("POST", "/messages") => ("publish_information", None),
         ("POST", "/problems") => ("raise_problem", None),
+        ("POST", p) if p.starts_with("/requests/") && p.ends_with("/title") => ("title_request", Some(("request_id", params.get("id")?))),
         ("POST", p) if p.starts_with("/requests/") && p.ends_with("/close") => ("close_request", Some(("request_id", params.get("id")?))),
         ("POST", p) if p.starts_with("/requests/") && p.ends_with("/tasks") => ("create_task", Some(("request_id", request?))),
         ("PATCH", p) if p.starts_with("/tasks/") => ("retitle_task", Some(("task_id", task?))),
@@ -980,7 +981,7 @@ pub(crate) fn resource_envelope_from_path(method: &str, path: &str, body: Value)
     let segments: Vec<_> = path.strip_prefix('/')?.split('/').collect();
     let mut params = HashMap::new();
     match segments.as_slice() {
-        ["requests", id, "close"] => { params.insert("id".into(), decode_path_id(id)?); }
+        ["requests", id, "close" | "title"] => { params.insert("id".into(), decode_path_id(id)?); }
         ["requests", request_id, "tasks"] => { params.insert("request_id".into(), decode_path_id(request_id)?); }
         ["tasks", id, "documents", document_id] => {
             params.insert("id".into(), decode_path_id(id)?);
@@ -1000,7 +1001,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
     let segments: Vec<_> = path.strip_prefix('/').unwrap_or_default().split('/').collect();
     let registered = match (method, segments.as_slice()) {
         ("POST", ["requests"] | ["questions"] | ["action-requests"] | ["messages"] | ["problems"])
-        | ("POST", ["requests", _, "close"] | ["requests", _, "tasks"])
+        | ("POST", ["requests", _, "close"] | ["requests", _, "title"] | ["requests", _, "tasks"])
         | ("POST", ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
             | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
             | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"]
