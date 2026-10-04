@@ -491,7 +491,7 @@ impl Resolved {
             lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
         }
         lines.push(String::new());
-        lines.push("When you reach this point, send `report` kind final: the orchestrator closes you.".into());
+        lines.push("When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.".into());
         lines.join("\n")
     }
 
@@ -664,7 +664,7 @@ on = "Run /review-loop before the merge."
             "- Try on device: yes. Ask the user to try it on a device.",
             "- Adversarial review: yes. Run /review-loop before the merge.",
             "",
-            "When you reach this point, send `report` kind final: the orchestrator closes you.",
+            "When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.",
         ];
         assert_eq!(s, expected.join("\n"));
         let off = file().resolve(None, &chosen(&[("how_far", val("merge"))])).unwrap().mission_section(None);

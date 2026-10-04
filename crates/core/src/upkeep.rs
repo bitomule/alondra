@@ -88,7 +88,7 @@ pub fn resumes_given_up_message(view: &View, node: &Node, at: Millis) -> Option<
 pub fn resumed_text(task: &Task) -> String {
     format!(
         "{RESUMED_PREFIX} while your task “{}” was still open, and Alondra restarted it. Carry on where you left off. \
-         If you had already finished, say so through Alondra (`report` with kind final).",
+         If you had already finished, say so through Alondra (`present_result` with is_final true).",
         task.title
     )
 }

@@ -32,6 +32,8 @@ public struct NewRequestView: View {
                 }
             }
             .padding(20)
+            .contentShape(Rectangle())
+            .onTapGesture { focused = false }
         }
         .scrollDismissesKeyboard(.interactively)
         .background(DawnBackground(glow: Palette.ember))
@@ -162,7 +164,10 @@ public struct NewRequestView: View {
     }
 
     private var sendBar: some View {
-        Button { store.send(.send) } label: {
+        Button {
+            focused = false
+            store.send(.send)
+        } label: {
             Label {
                 Text("Ask the Orchestrator")
             } icon: {

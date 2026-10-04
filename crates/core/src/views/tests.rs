@@ -361,7 +361,6 @@ fn a_question_about_a_pr_is_its_own_card_and_no_card_holds_another() {
     let Item::Card(question) = &detail.sections[0].items[0] else {
         panic!("the question must be a card")
     };
-    assert!(question.children.is_empty(), "no card holds another card");
     assert!(question.actions.len() <= 3);
 }
 
@@ -882,7 +881,6 @@ fn a_question_about_a_plan_opens_the_plan_for_review_with_its_options_and_reques
         assert_eq!((changes.label.as_str(), changes.stamp.as_deref(), changes.enabled), ("Pedir cambios", Some("Cambios solicitados"), true));
         assert_eq!(changes.comments, Some(CommentSpec { kind: CommentKind::Blocks }));
         assert!(changes.key.is_none());
-        assert!(card.children.is_empty());
     }
 }
 
@@ -1747,7 +1745,7 @@ fn node_quote_filters_raw_tool_calls() {
     let Item::Card(card) = &visible.sections[0].items[0] else {
         panic!("card")
     };
-    assert!(card.quotes.is_empty(), "what the node said last lives in the detail's context");
+
     assert!(said(&visible).is_some_and(|text| text.contains("The tests passed")));
 }
 
@@ -2492,7 +2490,7 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     assert_eq!(card.eyebrow.as_ref().unwrap().text, "Review · PR #12");
     assert_eq!(card.icon, Icon::PullRequest);
     assert_eq!(card.title, "Review the beta candidate");
-    assert!(card.body.is_none() && card.facts.is_none() && card.checks.is_none(), "the card holds none of it");
+    assert!(card.body.is_none(), "the card holds none of it");
     let row = card.content_row.as_ref().expect("content row");
     assert_eq!((row.kind.as_str(), row.label.as_str(), row.summary.as_str()), ("diff", "Changes", "4 files · +120 −30"));
     let facts = content_facts(&view);
@@ -2589,7 +2587,7 @@ fn every_content_kind_has_a_one_line_row_and_the_card_has_no_body() {
         }).collect();
         let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
         let card = card_of(&view).clone();
-        assert!(card.body.is_none() && card.quotes.is_empty() && card.children.is_empty());
+        assert!(card.body.is_none());
         card.content_row
     };
     let summary = |row: Option<ContentRow>| row.map(|row| (row.kind, row.summary, row.more_count));
@@ -2777,6 +2775,76 @@ fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes() {
         "the lock screen approves or replies; changes need the comments only the app takes");
     let ios = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
     assert!(card_of(&ios).actions.iter().all(|action| action.key.is_none()));
+}
+
+fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        ("request_action", vec![("done", "Done"), ("cannot", "I can't do it")]),
+        ("request_test", vec![("works", "Works"), ("fails", "Doesn't work")]),
+        ("propose", vec![("do_it", "Do it"), ("not_now", "Not now")]),
+        ("request_input", vec![("provide", "Send the file"), ("skip", "I can't provide it")]),
+        ("request_input", vec![("provide", "Send the text"), ("skip", "I can't provide it")]),
+        ("request_input", vec![("provide", "Send the secret"), ("skip", "I can't provide it")]),
+        ("problem", vec![("retry", "Retry the batch"), ("continue", "Continue without it"), ("stop", "Stop it")]),
+    ]
+}
+
+fn proposal_options(options: &[(&str, &str)]) -> InteractionPayload {
+    InteractionPayload::Question {
+        options: options.iter().map(|(id, label)| crate::domain_v2::QuestionOption { id: (*id).into(), label: (*label).into(), description: None, inputs: vec![] }).collect(),
+        answer: None,
+    }
+}
+
+fn option_labels(options: &[(&str, &str)], lang: Lang) -> Vec<String> {
+    let mut state = fixture();
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = proposal_options(options);
+    interaction.card = spec(crate::domain_v2::CardKind::Propose, "Fix it", "Because.");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "card:i-1", "");
+    answers(card_of(&view)).iter().map(|action| action.label.clone()).collect()
+}
+
+#[test]
+fn the_options_the_system_words_itself_read_in_the_language_of_the_view() {
+    for (tool, options) in fixed_options() {
+        let spanish = option_labels(&options, Lang::Es);
+        let english = option_labels(&options, Lang::En);
+        let source: Vec<String> = options.iter().map(|(_, label)| (*label).to_owned()).collect();
+        assert_eq!(english, source, "{tool}: English reads as it was written");
+        assert!(spanish.iter().zip(&english).all(|(es, en)| es != en), "{tool}: {spanish:?} is not Spanish");
+    }
+    assert_eq!(option_labels(&[("done", "Hecho a mi manera")], Lang::Es), ["Hecho a mi manera"], "a label someone wrote is never replaced");
+}
+
+#[test]
+fn a_proposal_whose_task_ended_is_still_answerable_in_the_card() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = proposal_options(&[("do_it", "Do it"), ("not_now", "Not now")]);
+    interaction.card = spec(crate::domain_v2::CardKind::Propose, "Fix it", "Because.");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    let buttons = answers(card_of(&view));
+    assert_eq!(buttons.iter().map(|a| (a.label.as_str(), a.enabled, a.disabled_reason.clone())).collect::<Vec<_>>(),
+        [("Hazlo", true, None), ("Ahora no", true, None)]);
+}
+
+fn markdown_items(view: &View) -> Vec<&Markdown> {
+    view.sections.iter().filter(|section| section.id == "content").flat_map(|section| &section.items)
+        .filter_map(|item| if let Item::Markdown(markdown) = item { Some(markdown) } else { None }).collect()
+}
+
+#[test]
+fn the_text_of_a_held_plan_can_be_commented_block_by_block_and_other_text_cannot() {
+    use crate::domain_v2::{CardKind, ContentKind as Content, Hold};
+    let plan = "1. Split the lexer\n2. Add tests";
+    let held = held_fixture(Hold::Plan, spec(CardKind::Review, "Ship the parser", "Two steps.").content(Content::Report, plan));
+    let view = render(&held, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert_eq!(markdown_items(&view).iter().map(|m| (m.text.as_str(), m.commentable)).collect::<Vec<_>>(), [(plan, true)]);
+    let permission = held_fixture(Hold::Permission, spec(CardKind::Authorize, "Allow", "").content(Content::Command, "rm -rf build"));
+    let view = render(&permission, &LiveSnapshot::default(), Client::Ios, Lang::En, "card:i-1", "");
+    assert!(markdown_items(&view).iter().all(|m| !m.commentable));
 }
 
 #[test]

@@ -552,7 +552,7 @@ pub fn stale_wait_messages(view: &View, node: &Node, user: &str, now: Millis) ->
                     continue;
                 }
                 let text = format!(
-                    "[Alondra] {url}, which your last message names, has no card in Alondra, so {user} does not see it. If it waits for {user}'s review, `report` with a link to it: that gives it its card."
+                    "[Alondra] {url}, which your last message names, has no card in Alondra, so {user} does not see it. If it waits for {user}'s review, deliver it with `present_result`: that gives it its card."
                 );
                 (text, None)
             }

@@ -1,4 +1,4 @@
-//! The inbox: the daemon's roots and their children, each key mapped to the one semantic command
+//! The inbox: the daemon's items, each key mapped to the one semantic command
 //! the item offers. Reading is not replying, and authorizing a merge is not a merge.
 
 use std::collections::BTreeMap;

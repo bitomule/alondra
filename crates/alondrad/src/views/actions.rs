@@ -275,8 +275,9 @@ async fn execute_external(
                 Scope::Orchestrator { .. } => return Ok(no_longer_available(lang, "This item has no active node")),
             };
             if !state.agents.contains_key(&agent) { return Ok(no_longer_available(lang, "This node is no longer available")); }
-            let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
-            let text = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
+            let comments: Vec<_> = request.input.comments.iter()
+                .map(|comment| (comment.anchor.clone(), comment.text.clone(), comment.quote.clone())).collect();
+            let text = alondra_core::views::review_export::text_with_quotes(&comments, request.input.text.as_deref().unwrap_or_default());
             if text.is_empty() { return Ok(error_value_lang(lang, "invalid_input", "text is required")); }
             let mark_read = matches!(interaction.payload, InteractionPayload::Information { .. });
             let body = json!({"text":text,"attachments":attachments,"kind":"reply",
@@ -788,8 +789,9 @@ fn map_domain_action(
         Verb::Reply => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             let InteractionPayload::Delivery { targets, .. } = &interaction.payload else { return None; };
-            let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
-            let text = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
+            let comments: Vec<_> = request.input.comments.iter()
+                .map(|comment| (comment.anchor.clone(), comment.text.clone(), comment.quote.clone())).collect();
+            let text = alondra_core::views::review_export::text_with_quotes(&comments, request.input.text.as_deref().unwrap_or_default());
             if text.trim().is_empty() { return None; }
             Some((Command::SubmitFeedback { presentation_id: interaction.id.clone(), targets: targets.clone(),
                 body: text, attachments: attachments.to_vec(), instruction: Instruction::Reply },
@@ -850,8 +852,9 @@ fn map_domain_action(
             } else {
                 (state.interactions.get(&InteractionId(action.subject.clone()))?, None)
             };
-            let comments: Vec<_> = request.input.comments.iter().map(|comment| (comment.anchor.clone(), comment.text.clone())).collect();
-            let body = alondra_core::views::review_export::text(&comments, request.input.text.as_deref().unwrap_or_default());
+            let comments: Vec<_> = request.input.comments.iter()
+                .map(|comment| (comment.anchor.clone(), comment.text.clone(), comment.quote.clone())).collect();
+            let body = alondra_core::views::review_export::text_with_quotes(&comments, request.input.text.as_deref().unwrap_or_default());
             if body.trim().is_empty() && request.input.comments.is_empty() { return None; }
             if let InteractionPayload::Question { answer: None, .. } | InteractionPayload::ActionRequest { answer: None, .. } = &interaction.payload {
                 let option_id = if held_plan(state, interaction) {
@@ -1493,6 +1496,13 @@ mod tests {
         assert_eq!(option_id, Hold::REQUEST_CHANGES);
         assert_eq!(inputs.get(Hold::NOTE), Some(&InputValue::Text(
             "I reviewed your code and have the following comments. Please address them.\n\n1. `p-1` - Keep the lexer".into())));
+        let quoted = ActionRequest { input: ActionInput { text: Some("Looks right.".into()),
+            comments: vec![Comment { anchor: "paragraph:1:0".into(), text: "Keep the lexer".into(), quote: Some("Split the lexer".into()) }],
+            ..Default::default() }, ..request.clone() };
+        let Some((Command::AnswerQuestion { inputs, .. }, _)) =
+            map_domain_action(&state, &changes, &quoted, &[], Lang::En) else { panic!("changes answer the plan") };
+        assert_eq!(inputs.get(Hold::NOTE), Some(&InputValue::Text(
+            "I reviewed this and have the following comments. Please address them.\n\n> Split the lexer\nKeep the lexer\n\nLooks right.".into())));
         let approve = ActionId::new(Verb::Accept, "hold-1", 1, None).unwrap();
         let Some((Command::AnswerQuestion { option_id, inputs, .. }, stamp)) =
             map_domain_action(&state, &approve, &request, &[], Lang::En) else { panic!("approve answers the plan") };

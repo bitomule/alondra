@@ -34,7 +34,6 @@ final class ViewModelsTests: XCTestCase {
         XCTAssertEqual(card.blockedBy.count, 1)
         XCTAssertNotNil(card.reply)
         XCTAssertEqual(card.actions.first?.role, .advance)
-        XCTAssertTrue(card.children.isEmpty)
         XCTAssertTrue(card.more.contains { $0.link != nil })
         let question = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("card-question.json")))
         let decide = try XCTUnwrap(question.sections.flatMap(\.items).compactMap { item -> Card? in
@@ -63,7 +62,7 @@ final class ViewModelsTests: XCTestCase {
     }
 
     func testDecodesAndReencodesViewWithInternallyTaggedItems() throws {
-        let json = #"{"protocol":1,"view":"home","key":"home","client":"ios","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"1 question","badge":1,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"queue","collapsed":false,"card_ids":["i-42","i-43"],"items":[{"type":"card","id":"i-42","icon":"question","title":"Review this","badges":[],"context":[],"timestamps":[],"detail":"included","attachments":[],"quotes":[],"children":[],"actions":[]},{"type":"markdown","text":"Hello","truncated":false,"commentable":true}]}],"notices":[]}"#.data(using: .utf8)!
+        let json = #"{"protocol":1,"view":"home","key":"home","client":"ios","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"1 question","badge":1,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"queue","collapsed":false,"card_ids":["i-42","i-43"],"items":[{"type":"card","id":"i-42","icon":"question","title":"Review this","badges":[],"context":[],"timestamps":[],"detail":"included","attachments":[],"actions":[]},{"type":"markdown","text":"Hello","truncated":false,"commentable":true}]}],"notices":[]}"#.data(using: .utf8)!
         let document = try ContractCodec.decode(ViewDocument.self, from: json)
         XCTAssertEqual(document.protocolVersion, 1)
         XCTAssertEqual(document.sections[0].items.count, 2)

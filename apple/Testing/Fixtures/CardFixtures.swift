@@ -132,6 +132,17 @@ extension Fixtures {
         ])
     }
 
+    /// A plan Claude Code holds, as the daemon sends it: the text rides inside the card, commentable.
+    static func heldPlanCard(id: String = "plan-1", text: String) throws -> ViewDocument {
+        let document = try planCard(id: id)
+        return try document.replacingSections([
+            ["id": "card", "collapsed": false, "items": try document.itemsJSON(of: "card")],
+            ["id": "content", "title": "Content", "collapsed": false, "items": [[
+                "type": "markdown", "text": text, "truncated": false, "commentable": true,
+            ]]],
+        ])
+    }
+
     /// A document revision as `document:{id}` serves it: the text arrives by digest.
     static func documentRevision(digest: String = "digest-1") throws -> ViewDocument {
         try document("card-delivery") { object in

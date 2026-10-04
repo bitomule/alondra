@@ -57,8 +57,8 @@ pub fn announcement(v: &View, orchestrator: &Node, at: Millis) -> Report {
 pub fn mission(user: &str) -> String {
     format!(
         "You are {user}'s orchestrator with Alondra. Alondra launched you because no orchestrator was running. \
-         Load the alondra-orchestrator skill and follow it. Call `fleet` first; then send {user} one `report` \
-         (kind notice) with only what needs their attention, most important first. Do not close nodes or merge \
+         Load the alondra-orchestrator skill and follow it. Call `fleet` first; then send {user} one `publish_information` \
+         card with only what needs their attention, most important first. Do not close nodes or merge \
          anything without asking {user} with `ask`."
     )
 }

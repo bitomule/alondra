@@ -124,7 +124,7 @@ const ACTIVITY_EVERY_MS: i64 = 60_000;
 const THREADS_EVERY_MS: i64 = 10_000;
 const PREVIEW_PIXELS: u32 = 480;
 
-/// An inbox item by the id the daemon gave it; roots and children keep their own ids.
+/// An inbox item by the id the daemon gave it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Key(pub String);
 

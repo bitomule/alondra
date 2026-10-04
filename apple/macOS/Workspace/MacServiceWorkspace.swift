@@ -315,7 +315,7 @@ public struct MacServiceDetail: View {
     }
     private func keyedActions(_ item: ViewItem) -> [AlondraContract.Action] {
         switch item {
-        case let .card(card): return card.need == nil ? card.actions + card.children.flatMap { $0.actions } : []
+        case .card: return []
         case let .row(row): return row.actions + row.children.flatMap { $0.actions }
         case let .form(form): return [form.submit]
         case let .notice(notice): return [notice.action].compactMap { $0 }

@@ -134,6 +134,63 @@ final class CardDetailFeatureTests: XCTestCase {
         XCTAssertEqual(store.state.comments[second.draftKey]?.text, "note on \(second.plainText)")
     }
 
+    // MARK: A plan Claude Code holds, carried inside the card
+
+    @MainActor
+    private func heldPlanStore(feed: FeedStub = FeedStub()) async throws -> TestStoreOf<CardDetailFeature> {
+        let plan = try Fixtures.heldPlanCard(text: planText)
+        let store = store(plan, feed: feed, content: { _ in XCTFail("a held plan is not fetched"); return "" })
+        await store.send(.screen(.loaded(plan)))
+        return store
+    }
+
+    @MainActor
+    func testAHeldPlansTextIsTheCardsOwnAndCanBeCommented() async throws {
+        let store = try await heldPlanStore()
+
+        XCTAssertEqual(store.state.markdown, planText)
+        XCTAssertNil(store.state.contentDigest)
+        XCTAssertTrue(store.state.canComment)
+        XCTAssertFalse(store.state.blocks.filter(\.isCommentable).isEmpty)
+    }
+
+    @MainActor
+    func testAnAnnotationOnAHeldPlanCanBeAddedThenRemoved() async throws {
+        let store = try await heldPlanStore()
+        let block = try XCTUnwrap(store.state.blocks.first { $0.plainText.hasPrefix("Build the form") })
+
+        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.composingChanged("Which form?"))
+        await store.send(.commentSaved)
+        XCTAssertEqual(store.state.feedback.map(\.text), ["Which form?"])
+
+        await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+        await store.send(.commentDeleted)
+        XCTAssertTrue(store.state.feedback.isEmpty)
+        XCTAssertFalse(store.state.hasFeedback)
+    }
+
+    @MainActor
+    func testRequestingChangesOnAHeldPlanSendsEveryAnnotationWithTheBlockItIsAbout() async throws {
+        let feed = FeedStub()
+        let store = try await heldPlanStore(feed: feed)
+        let blocks = store.state.blocks.filter(\.isCommentable)
+        let first = try XCTUnwrap(blocks.first), last = try XCTUnwrap(blocks.last)
+        for block in [last, first] {
+            await store.send(.blockTapped(anchor: block.draftKey, quote: block.plainText))
+            await store.send(.composingChanged("note on \(block.plainText)"))
+            await store.send(.commentSaved)
+        }
+        let changes = try XCTUnwrap(store.state.subject?.buttons.first { $0.id?.hasPrefix("changes:") == true })
+
+        await store.send(.actionTapped(changes))
+        await store.skipReceivedActions()
+
+        let comments = try XCTUnwrap(feed.requests.first?.input.comments)
+        XCTAssertEqual(comments.map(\.anchor), [first.draftKey, last.draftKey])
+        XCTAssertEqual(comments.map(\.quote), [first.plainText, last.plainText])
+    }
+
     // MARK: Sending
 
     @MainActor
