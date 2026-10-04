@@ -817,6 +817,12 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         command.remove(key);
     }
     attach_card(name, &mut command)?;
+    if name == "register_pr" {
+        if let Some(host) = command.get("host").and_then(Value::as_str) {
+            let host = alondra_core::domain_v2::normalize_pr_host(host);
+            command.insert("host".into(), Value::String(host));
+        }
+    }
     command.insert("kind".into(), Value::String(kind.into()));
     let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
         "command_id":command_id,"expected_revision":0,"command":command});
@@ -1323,6 +1329,22 @@ fn serve_server(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn register_pr_normalizes_the_host_a_node_got_slightly_wrong() {
+        for (given, expected) in [
+            ("github", "github.com"),
+            ("GitHub.com", "github.com"),
+            ("https://github.com/", "github.com"),
+            ("https://github.com/org/repo/pull/12", "github.com"),
+            ("git.example.com", "git.example.com"),
+        ] {
+            let args = json!({"task_id":"task-a","pr_id":"pr-a","host":given,"repository":"org/repo",
+                "number":12,"head":"0123456789abcdef","base":"main","allowed_methods":["merge"]});
+            let envelope = domain_envelope("register_pr", &args, "epoch", "register-one").unwrap();
+            assert_eq!(envelope["command"]["host"], expected, "{given}");
+        }
+    }
 
     #[test]
     fn register_pr_tool_constructs_a_typed_command() {

@@ -497,7 +497,7 @@ async fn http_merge_claim_is_admitted_only_with_github_confirmation_and_the_merg
     assert_eq!(replay, body, "the exact claim replays its receipt");
     fixture.github.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Merged,
         merged_head: Some(head.into()) }));
-    crate::domain_github::reconcile(&fixture.domain, &fixture.github).await.unwrap();
+    crate::domain_github::reconcile(&fixture.domain, &fixture.github, &mut Default::default()).await.unwrap();
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.merge_authorizations[&"auth-7".into()].attempt, MergeAttemptState::Confirmed);
     assert_eq!(state.pull_requests[&"pr-7".into()].merged_head.as_deref(), Some(head));
