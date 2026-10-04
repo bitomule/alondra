@@ -53,6 +53,9 @@ async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
     let mut input = vec![0; len as usize];
     stream.read_exact(&mut input).await?;
     let mut frame: Value = serde_json::from_slice(&input).context("invalid local hook envelope")?;
+    if frame.get("probe").is_some() {
+        return Ok(());
+    }
     if let Some(report) = frame.get_mut("node_event").map(Value::take) {
         return node_event(stream, domain, report).await;
     }

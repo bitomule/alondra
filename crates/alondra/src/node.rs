@@ -283,6 +283,9 @@ mod tests {
         let listener = UnixListener::bind(&socket).unwrap();
         let daemon = std::thread::spawn(move || {
             let (mut stream, _) = listener.accept().unwrap();
+            let mut len = [0u8; 4];
+            stream.read_exact(&mut len).unwrap();
+            stream.read_exact(&mut vec![0; u32::from_be_bytes(len) as usize]).unwrap();
             stream.write_all(&400u16.to_be_bytes()).unwrap();
             stream.write_all(b"invalid hold").unwrap();
         });
