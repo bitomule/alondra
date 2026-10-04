@@ -9,12 +9,17 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use tokio::net::UnixListener;
 
-const OWNER_ANSWERS_WITHIN: Duration = Duration::from_secs(2);
+const OWNER_ANSWERS_WITHIN: Duration = Duration::from_secs(5);
+const ACK_PREFIX: &[u8] = b"alondrad:";
+
+pub(crate) fn probe_ack() -> Vec<u8> {
+    format!("alondrad:{}\n", std::process::id()).into_bytes()
+}
 
 /// A listening socket outlives its daemon when a child forked at the wrong moment inherited the
 /// descriptor (macOS cannot create sockets close-on-exec atomically). The kernel keeps queueing
-/// connections on it, so a successful connect does not prove a daemon is serving: the owner has to
-/// answer the probe frame by hanging up on it.
+/// connections on it, and when that child exits the queued connections are hung up on, so neither a
+/// successful connect nor an EOF proves a daemon is serving. Only the daemon's explicit ack does.
 fn owner_is_serving(stream: &mut UnixStream) -> bool {
     let probe = br#"{"probe":true}"#;
     let sent = stream.set_read_timeout(Some(OWNER_ANSWERS_WITHIN)).is_ok()
@@ -24,10 +29,8 @@ fn owner_is_serving(stream: &mut UnixStream) -> bool {
     if !sent {
         return false;
     }
-    match stream.read(&mut [0u8; 1]) {
-        Ok(_) => true,
-        Err(e) => !matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut),
-    }
+    let mut ack = [0u8; ACK_PREFIX.len()];
+    stream.read_exact(&mut ack).is_ok() && ack == ACK_PREFIX
 }
 
 pub async fn bind(home: &Path) -> Result<UnixListener> {
@@ -71,6 +74,7 @@ mod tests {
                 let _ = stream.read_exact(&mut len).await;
                 let mut frame = vec![0; u32::from_be_bytes(len) as usize];
                 let _ = stream.read_exact(&mut frame).await;
+                let _ = stream.write_all(&probe_ack()).await;
                 let _ = stream.shutdown().await;
             }
         })
@@ -84,6 +88,23 @@ mod tests {
         assert!(AsyncStream::connect(home.join("hooks.sock")).await.is_ok());
         owner.abort();
         let _ = owner.await;
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_listener_that_hangs_up_without_the_ack_is_not_an_owner() {
+        let home = scratch("hook-hangup");
+        let stray = bind(&home).await.unwrap();
+        let hanging_up = tokio::spawn(async move {
+            while let Ok((mut stream, _)) = stray.accept().await {
+                let _ = stream.shutdown().await;
+            }
+        });
+        let started = std::time::Instant::now();
+        let replacement = bind(&home).await.unwrap();
+        assert!(started.elapsed() < OWNER_ANSWERS_WITHIN);
+        hanging_up.abort();
+        drop(replacement);
         std::fs::remove_dir_all(home).unwrap();
     }
 
