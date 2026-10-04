@@ -1,0 +1,286 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "sidebar",
+  "key": "sidebar",
+  "client": "mac",
+  "version": "v20c0e267521d38cb",
+  "cursor": "cursor-1",
+  "status": {
+    "version": "v7675bad0b5fdf15f",
+    "summary": "5 pending · 1 nodes",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "waiting",
+      "title": "Waiting for You",
+      "count": 4,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "a98d034b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "title": "Choose the welcome copy",
+          "subtitle": "The new empty state is ready; the beta ships with the copy you pick.",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "8fa4034b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "title": "Ship the compact schedule editor with this beta?",
+          "subtitle": "The review of the pull request waits for your answer.",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "title": "The simulator pass is clean",
+          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "cc2d034b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "card:cc2d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "title": "The pull request checks passed",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "pull_requests",
+      "title": "Pull requests",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "hf-weekly-2026-09-30",
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "title": "Review the beta candidate",
+          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "title": "Tasks",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Scheduled Tasks",
+          "depth": 0,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "needs_you",
+          "icon": "action",
+          "title": "Needs you",
+          "badges": [
+            {
+              "text": "Needs you",
+              "tone": "warning"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 1
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-651c38484cd2f34e74d5107ba05f7f15",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              },
+              "icon": "action",
+              "title": "Restore the native review experience",
+              "subtitle": "Needs you",
+              "badges": [
+                {
+                  "text": "Needs you",
+                  "tone": "warning"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "orchestrator",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "orchestrator",
+          "link": {
+            "kind": "view",
+            "key": "node:orchestrator"
+          },
+          "icon": "orchestrator",
+          "title": "Orchestrator",
+          "badges": [
+            {
+              "text": "Idle",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "Idle"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "project:Demo Garden",
+      "title": "Demo Garden",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "d887a34b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "node",
+          "title": "Alondra · iOS",
+          "subtitle": "Reviewing the native beta experience",
+          "badges": [
+            {
+              "text": "Waiting for an answer",
+              "tone": "warning"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 2
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "summary",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "notice",
+          "text": "5 things waiting",
+          "tone": "neutral",
+          "action": {
+            "id": "",
+            "label": "Start",
+            "style": "plain",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": false,
+            "enabled": true,
+            "link": {
+              "kind": "view",
+              "key": "card:a98d034b-249e-4487-a89b-57de38c26372"
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

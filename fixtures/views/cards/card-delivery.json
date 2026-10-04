@@ -1,0 +1,304 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:hf-weekly-2026-09-30",
+  "client": "ios",
+  "version": "va4a2cc2b4ae94c20",
+  "cursor": "cursor-1",
+  "title": "Review the beta candidate",
+  "status": {
+    "version": "v29e230088bd2c22c",
+    "summary": "2 questions · 3 to read · 0 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "hf-weekly-2026-09-30",
+          "kind": "review",
+          "need": "Review the beta candidate",
+          "why": "All required checks passed and the branch is up to date with main.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "diff",
+            "icon": "pull_request",
+            "label": "Changes",
+            "summary": "4 files · +120 −30"
+          },
+          "blocked_by": [
+            {
+              "id": "8fa4034b-249e-4487-a89b-57de38c26372",
+              "label": "blocked by Ship the compact schedule editor with this beta?",
+              "link": {
+                "kind": "view",
+                "key": "card:8fa4034b-249e-4487-a89b-57de38c26372"
+              }
+            }
+          ],
+          "reply": {
+            "id": "reply:hf-weekly-2026-09-30@1",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply to this node…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent"
+          },
+          "more": [
+            {
+              "id": "accept:hf-weekly-2026-09-30@1",
+              "label": "Accept without merging",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": false,
+              "disabled_reason": "Answer “Ship the compact schedule editor with this beta?” first",
+              "stamp": "Accepted"
+            },
+            {
+              "id": "",
+              "label": "Open on GitHub",
+              "style": "plain",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "link": {
+                "kind": "url",
+                "url": "https://github.com/example/repo/pull/12"
+              }
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:hf-weekly-2026-09-30"
+          },
+          "icon": "pull_request",
+          "eyebrow": {
+            "text": "Review · PR #12",
+            "tone": "accent"
+          },
+          "title": "Review the beta candidate",
+          "subtitle": "All required checks passed and the branch is up to date with main.",
+          "state": {
+            "text": "+120 −30 · ✓",
+            "tone": "success"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "merge:hf-weekly-2026-09-30@1~abcdef12-hf-weekly-2026-09-30",
+              "label": "Merge",
+              "style": "primary",
+              "role": "advance",
+              "presentation": "menu",
+              "options": [
+                {
+                  "id": "squash",
+                  "label": "squash",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "merge",
+                  "label": "Merge commit",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Merge PR #12?",
+                "message": "Add the compact schedule editor",
+                "button": "Merge"
+              },
+              "enabled": false,
+              "disabled_reason": "Answer “Ship the compact schedule editor with this beta?” first",
+              "stamp": "Merged"
+            },
+            {
+              "id": "changes:github.com/example/repo#12@0~abcdef12",
+              "label": "Request changes",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Describe the changes",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "comments": {
+                "kind": "diff_lines"
+              },
+              "enabled": true,
+              "stamp": "Changes requested",
+              "link": {
+                "kind": "view",
+                "key": "pull_request:github.com/example/repo#12"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "checks",
+          "items": [
+            {
+              "name": "Build",
+              "state": "pass"
+            },
+            {
+              "name": "Unit tests",
+              "state": "pass"
+            },
+            {
+              "name": "Lint",
+              "state": "pending"
+            }
+          ]
+        },
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Repository",
+              "value": "example/repo #12"
+            },
+            {
+              "label": "Base",
+              "value": "main"
+            },
+            {
+              "label": "Head",
+              "value": "feature/compact-schedule-editor"
+            },
+            {
+              "label": "Changes",
+              "value": "4 files · +120 −30"
+            }
+          ]
+        },
+        {
+          "type": "markdown",
+          "text": "Replaces the long schedule form with a compact editor.\n\n- Repeat and time on one row\n- Launch options in a sheet",
+          "truncated": false,
+          "commentable": false
+        },
+        {
+          "type": "content_ref",
+          "kind": "diff",
+          "title": "Diff",
+          "size": 0,
+          "digest": "abcdef12",
+          "fetch": "/pull-requests/github.com%2Fexample%2Frepo%2312/diff",
+          "commentable": true
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            },
+            {
+              "label": "Mission",
+              "value": "Polish the Alondra beta"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

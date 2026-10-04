@@ -19,6 +19,31 @@ final class ViewModelsTests: XCTestCase {
         }
     }
 
+    func testDecodesTheCardAnatomyOfTheRedesignedGoldens() throws {
+        let env = ProcessInfo.processInfo.environment
+        let root = URL(fileURLWithPath: try XCTUnwrap(env["TEST_SRCDIR"]))
+            .appendingPathComponent(env["TEST_WORKSPACE"] ?? "_main")
+            .appendingPathComponent("fixtures/views/cards")
+        let view = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("card-pr.json")))
+        let card = try XCTUnwrap(view.sections.flatMap(\.items).compactMap { item -> Card? in
+            if case let .card(card) = item { card } else { nil }
+        }.first)
+        XCTAssertEqual(card.kind, .review)
+        XCTAssertEqual(card.need, card.title)
+        XCTAssertEqual(card.contentRow?.kind, "diff")
+        XCTAssertEqual(card.blockedBy.count, 1)
+        XCTAssertNotNil(card.reply)
+        XCTAssertEqual(card.actions.first?.role, .advance)
+        XCTAssertTrue(card.children.isEmpty)
+        XCTAssertTrue(card.more.contains { $0.link != nil })
+        let question = try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: root.appendingPathComponent("card-question.json")))
+        let decide = try XCTUnwrap(question.sections.flatMap(\.items).compactMap { item -> Card? in
+            if case let .card(card) = item { card } else { nil }
+        }.first)
+        XCTAssertEqual(decide.actions.compactMap(\.optionId), ["clear", "warm"])
+        XCTAssertEqual(decide.actions.first?.description, "Use a short title and one explanatory sentence.")
+    }
+
     func testFeedStatusKeepsEveryClaudeGaugeTheMacSends() throws {
         let json = #"{"version":"v66b2a1f4b10ae439","summary":"0 nodos trabajando","badge":0,"counts":[],"gauges":[{"id":"claude_week","label":"Claude semana","value":0.83,"text":"83%","detail":"El límite semanal se reinicia 2026-10-05T02:00:00.000+02:00","level":"calm"},{"id":"claude_today","label":"Claude hoy","value":0.0,"text":"0/6%","detail":"Gastado 0% de la cuota diaria del 6%","level":"calm"},{"id":"claude_five_hours","label":"Claude 5 h","value":0.0,"text":"0%","detail":"El límite de 5 horas se reinicia 2026-10-03T04:40:00.000+02:00","level":"calm"},{"id":"memory","label":"RAM","value":0.39,"text":"39%","level":"calm"},{"id":"cpu","label":"CPU","value":0.2365247917175293,"text":"24%","level":"calm"},{"id":"disk","label":"Disco","value":0.8817196273397615,"text":"58 GB libres","level":"warm"}],"orchestrator":{"text":"inactivo","tone":"neutral"}}"#
         let status = try ContractCodec.decode(ViewStatus.self, from: Data(json.utf8))

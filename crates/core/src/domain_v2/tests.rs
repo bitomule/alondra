@@ -924,7 +924,7 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     exec(&mut s, agent(), Command::Withdraw { interaction_id: "q".into() }).unwrap();
     assert!(s.interactions[&"q".into()].withdrawn);
     assert_ne!(s.tasks[&"t".into()].state, TaskState::NeedsYou, "a withdrawn question no longer blocks");
-    let action = s.projection().inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children))
+    let action = s.projection().inbox.iter()
         .find(|i| matches!(&i.subject, InboxSubject::Interaction { interaction_id } if interaction_id.0 == "q"))
         .map(|i| i.available_actions[0].clone());
     assert_eq!(action.map(|a| (a.enabled, a.disabled_reason)), Some((false, Some("withdrawn".into()))));
@@ -1343,8 +1343,9 @@ fn question_explicitly_linked_to_pr_keeps_identity_and_answer() {
     )
     .unwrap();
     let p = s.projection();
-    assert_eq!(p.inbox[0].id, "pr:pr");
-    assert_eq!(p.inbox[0].children[0].id, "interaction:q");
+    assert_eq!(p.inbox.iter().map(|item| item.id.as_str()).collect::<Vec<_>>(), ["interaction:q"],
+        "a question about a PR is a card of its own, never a group under the PR");
+    assert!(p.inbox[0].children.is_empty());
     assert!(matches!(
         s.interactions[&"q".into()].payload,
         InteractionPayload::Question {

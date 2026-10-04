@@ -1,0 +1,215 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "new_request",
+  "key": "new_request",
+  "client": "ios",
+  "version": "v1d2595c9ea5bd1cb",
+  "cursor": "cursor-1",
+  "title": "Ask for Something New",
+  "status": {
+    "version": "v29e230088bd2c22c",
+    "summary": "2 questions · 3 to read · 0 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "form",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "form",
+          "id": "new_request",
+          "fields": [
+            {
+              "id": "text",
+              "label": "What do you want done?",
+              "kind": {
+                "kind": "multiline",
+                "placeholder": null
+              },
+              "value": "",
+              "required": true,
+              "reload_on_change": false
+            },
+            {
+              "id": "attachments",
+              "label": "Attachments",
+              "kind": {
+                "kind": "attachments"
+              },
+              "value": [],
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "project",
+              "label": "Project",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "",
+                    "label": "The orchestrator picks the project"
+                  },
+                  {
+                    "id": "Demo Garden",
+                    "label": "Demo Garden"
+                  }
+                ]
+              },
+              "value": "",
+              "required": false,
+              "reload_on_change": true
+            },
+            {
+              "id": "pr",
+              "label": "PRs",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "review",
+                    "label": "Review each one",
+                    "description": "Each PR the node opens is a card for you; the node waits for your merge"
+                  },
+                  {
+                    "id": "auto_merge",
+                    "label": "Auto-merge",
+                    "description": "The node merges its own PR once its checks pass"
+                  }
+                ]
+              },
+              "value": "review",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "effort",
+              "label": "Effort",
+              "kind": {
+                "kind": "choice",
+                "items": [
+                  {
+                    "id": "auto",
+                    "label": "Auto",
+                    "description": "The orchestrator picks the model and effort from the task"
+                  },
+                  {
+                    "id": "light",
+                    "label": "Light",
+                    "description": "A quick, cheaper model for small, clear work"
+                  },
+                  {
+                    "id": "normal",
+                    "label": "Normal",
+                    "description": "Claude's default model and effort"
+                  },
+                  {
+                    "id": "hard",
+                    "label": "Hard",
+                    "description": "The strongest model and the most effort"
+                  }
+                ]
+              },
+              "value": "auto",
+              "required": false,
+              "reload_on_change": false
+            },
+            {
+              "id": "issue",
+              "label": "Issue",
+              "kind": {
+                "kind": "picker",
+                "source": "issue_picker"
+              },
+              "value": "",
+              "required": false,
+              "help": "Choose an open issue or paste its GitHub link",
+              "reload_on_change": false
+            }
+          ],
+          "submit": {
+            "id": "new_request:view@0",
+            "label": "Send Request",
+            "style": "primary",
+            "presentation": "button",
+            "input": {
+              "kind": "none"
+            },
+            "attachments": true,
+            "enabled": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "sent",
+      "title": "Pending Requests",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d",
+          "icon": "request",
+          "title": "Import lists from Notes",
+          "badges": [
+            {
+              "text": "Queued",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    }
+  ]
+}

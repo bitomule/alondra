@@ -15,7 +15,7 @@ exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain_v2/tests.rs"])
 
 rust_test(
     name = "alondra_core_test",
-    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["//fixtures/views:all"],
+    compile_data = glob(["fixtures/*.jsonl", "fixtures/*.json"]) + ["//fixtures/views:all", "//fixtures/views:cards"],
     crate = ":alondra_core",
     edition = "2024",
 )

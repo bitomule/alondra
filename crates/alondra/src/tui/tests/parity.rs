@@ -6,10 +6,10 @@ pub(in crate::tui) fn view_fixture(name: &str) -> serde_json::Value {
     let path = match std::env::var("RUNFILES_DIR").or_else(|_| std::env::var("TEST_SRCDIR")) {
         Ok(root) => std::path::PathBuf::from(root)
             .join(std::env::var("TEST_WORKSPACE").unwrap_or_else(|_| "_main".into()))
-            .join("fixtures/views")
+            .join("fixtures/views/cards")
             .join(name),
         Err(_) => std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../../fixtures/views")
+            .join("../../fixtures/views/cards")
             .join(name),
     };
     serde_json::from_str(
@@ -244,20 +244,14 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
         rows,
         [
             "a98d034b-249e-4487-a89b-57de38c26372",
-            "hf-weekly-2026-09-30",
-            "github.com/example/repo#12",
             "8fa4034b-249e-4487-a89b-57de38c26372",
-            "cc2d034b-249e-4487-a89b-57de38c26372",
-            "f12d034b-249e-4487-a89b-57de38c26372"
+            "hf-weekly-2026-09-30",
+            "f12d034b-249e-4487-a89b-57de38c26372",
+            "cc2d034b-249e-4487-a89b-57de38c26372"
         ]
     );
     let list = screen(&mut app, 120, 26);
-    for label in [
-        "WAITING FOR YOU",
-        "PULL REQUESTS",
-        "TO READ",
-        "Restore the native review experience",
-    ] {
+    for label in ["WAITING FOR YOU", "Choose the welcome copy", "Review the beta candidate"] {
         assert!(list.contains(label), "{label}: {list}");
     }
 
@@ -267,7 +261,7 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
     });
     let detail = screen(&mut app, 120, 26);
     assert!(
-        detail.contains("The new empty state is ready.") && detail.contains("Need more context"),
+        detail.contains("The new empty state is ready") && detail.contains("Why each option"),
         "{detail}"
     );
 }
@@ -622,10 +616,12 @@ fn reader_comments_are_sent_as_anchored_comments() {
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
     let mut view = view_fixture("card-question.json");
-    view["sections"][0]["items"][0]["actions"][0]["options"] = serde_json::json!([
-        {"id":"changes", "label":"Request changes", "style":"secondary",
-         "input":{"kind":"text", "placeholder":"Explain", "required":true,"multiline":true}, "key":"1"}
-    ]);
+    view["sections"][0]["items"][0]["actions"] = serde_json::json!([{
+        "id": format!("ans:{}@1", question_id()), "label": "Answer", "style": "primary", "presentation": "options",
+        "attachments": false, "enabled": true, "input": {"kind": "none"},
+        "options": [{"id":"changes", "label":"Request changes", "style":"secondary",
+            "input":{"kind":"text", "placeholder":"Explain", "required":true,"multiline":true}, "key":"1"}]
+    }]);
     app.view_navigation.push(format!("card:{}", question_id()));
     app.card_view = Some(serde_json::from_value(view).unwrap());
     app.open_reader();
@@ -633,7 +629,7 @@ fn reader_comments_are_sent_as_anchored_comments() {
     typed(&mut app, "Tighter");
     press(&mut app, KeyCode::Enter);
     press(&mut app, KeyCode::Char('1'));
-    let anchored = "1. On \"Restore the native review experience\":\n   Tighter";
+    let anchored = "1. On \"Choose the welcome copy\":\n   Tighter";
     assert!(app.composer.as_ref().is_some_and(|composer| composer.input.text().contains(anchored)));
     press(&mut app, KeyCode::Enter);
     let sent = posted(&app);
@@ -936,7 +932,7 @@ fn schedules_screen_has_its_own_footer_with_the_create_hint() {
 #[test]
 fn detail_hides_the_disabled_accept_action() {
     let mut view = view_fixture("card-delivery.json");
-    let actions = view["sections"][0]["items"][0]["actions"].as_array().unwrap();
+    let actions = view["sections"][0]["items"][0]["more"].as_array().unwrap();
     assert!(actions.iter().any(|action| action["id"].as_str().is_some_and(|id| id.starts_with("accept:"))
         && action["enabled"] == serde_json::json!(false)));
     let document: alondra_core::views::View = serde_json::from_value(view.take()).unwrap();
@@ -965,16 +961,16 @@ fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
     let lines = text_of(&crate::tui::view_render::document_lines(&card, 80));
     let header = &lines[0];
     assert!(
-        header.starts_with("? Question · Alondra · iOS · Demo Garden · ") && header.ends_with(" ago"),
+        header.starts_with("? Decide · Alondra · iOS · Demo Garden · ") && header.ends_with(" ago"),
         "{header}"
     );
-    assert_eq!(lines[1], "Restore the native review experience");
+    assert_eq!(lines[1], "Choose the welcome copy");
     assert_eq!(
-        lines.iter().filter(|line| line.contains("Restore the native review experience")).count(),
+        lines.iter().filter(|line| line.contains("Choose the welcome copy")).count(),
         1,
         "{lines:#?}"
     );
-    assert!(lines.iter().any(|line| line == "Mission · Polish the Alondra beta"));
+    assert!(lines.iter().any(|line| line == "Mission: Polish the Alondra beta"), "{lines:#?}");
 }
 
 #[test]
@@ -989,7 +985,7 @@ fn detail_pane_is_titled_with_the_kind_of_the_card() {
         result: Ok(question_card()),
     });
     let shown = screen(&mut app, 120, 26);
-    assert!(shown.contains(" question "), "{shown}");
+    assert!(shown.contains(" decide "), "{shown}");
     assert!(!shown.contains(" Detail "), "{shown}");
 }
 
@@ -1004,7 +1000,7 @@ fn reader_header_names_the_real_kind_and_the_agent() {
     app.open_reader();
     let shown = screen(&mut app, 120, 20);
     assert!(
-        shown.contains("? question · Alondra · iOS · Restore the native review experience"),
+        shown.contains("? decide · Alondra · iOS · Choose the welcome copy"),
         "{shown}"
     );
     assert!(!shown.contains("item"), "{shown}");
@@ -1230,7 +1226,8 @@ fn held_plan_card() -> alondra_core::views::View {
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
     run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
         agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n1. Split the lexer".into(),
-        options: Hold::Plan.options(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Authorize, "Allow the call") });
+        options: Hold::Plan.options(), card: alondra_core::domain_v2::CardSpec::new(alondra_core::domain_v2::CardKind::Review, "Ship the parser")
+            .content(alondra_core::domain_v2::ContentKind::Plan, "1. Split the lexer") });
     let live = alondra_core::views::LiveSnapshot::default();
     alondra_core::views::build("card:hold-1", alondra_core::views::RenderContext {
         domain: &state, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,
@@ -1239,7 +1236,7 @@ fn held_plan_card() -> alondra_core::views::View {
 }
 
 #[test]
-fn a_held_plan_is_approved_with_a_and_sent_back_with_p_like_8ccd131() {
+fn a_held_plan_is_approved_with_1_and_sent_back_with_2() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let reader_on_plan = || {
         let (tx, _rx) = std::sync::mpsc::sync_channel(8);
@@ -1250,15 +1247,14 @@ fn a_held_plan_is_approved_with_a_and_sent_back_with_p_like_8ccd131() {
         app
     };
     let mut app = reader_on_plan();
-    press(&mut app, KeyCode::Char('a'));
-    assert_eq!(posted(&app)[0].1["option_id"], "approve");
+    press(&mut app, KeyCode::Char('1'));
+    assert!(posted(&app)[0].1["action_id"].as_str().is_some_and(|id| id.starts_with("accept:hold-1@")), "{:?}", posted(&app));
     let mut app = reader_on_plan();
-    press(&mut app, KeyCode::Char('p'));
+    press(&mut app, KeyCode::Char('2'));
     assert!(matches!(app.composer.as_ref().map(|composer| &composer.target),
-        Some(Target::ViewAction { option_id: Some(option), .. }) if option == "request_changes"));
+        Some(Target::ViewAction { action_id, .. }) if action_id.starts_with("changes:hold-1@")));
     typed(&mut app, "Split it in two PRs");
     press(&mut app, KeyCode::Enter);
-    assert_eq!(posted(&app)[0].1["option_id"], "request_changes");
     assert_eq!(posted(&app)[0].1["input"]["text"], "Split it in two PRs");
 }
 

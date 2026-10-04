@@ -55,6 +55,10 @@ public enum CheckState: String, Codable, Equatable, Sendable { case pass, fail, 
 public enum Style: String, Codable, Equatable, Sendable { case primary, secondary, destructive, plain }
 public enum Presentation: String, Codable, Equatable, Sendable { case button, options, menu }
 public enum CommentKind: String, Codable, Equatable, Sendable { case blocks, diffLines = "diff_lines" }
+/// What a card asks of the user. The daemon sends the stable string; an unknown one decodes as `nil`.
+public enum CardKind: String, Codable, Equatable, Sendable { case decide, review, authorize, know, provide, test, `do`, problem, propose }
+/// How a button reads: green to advance, red when advancing is risky, grey otherwise.
+public enum ActionRole: String, Codable, Equatable, Sendable { case advance, risk, neutral }
 
 public struct ViewDocument: Codable, Equatable, Sendable {
     public let protocolVersion: UInt32
@@ -147,12 +151,36 @@ public enum ViewItem: Codable, Equatable, Sendable {
     }
 }
 
+public struct ContentRow: Codable, Equatable, Sendable {
+    public let kind: String; public let icon: Icon; public let label: String; public let summary: String; public let moreCount: UInt32
+    enum CodingKeys: String, CodingKey { case kind, icon, label, summary; case moreCount = "more_count" }
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        kind = try c.decode(String.self, forKey: .kind); icon = try c.decode(Icon.self, forKey: .icon)
+        label = try c.decode(String.self, forKey: .label); summary = try c.decode(String.self, forKey: .summary)
+        moreCount = try c.decodeIfPresent(UInt32.self, forKey: .moreCount) ?? 0
+    }
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(kind, forKey: .kind); try c.encode(icon, forKey: .icon); try c.encode(label, forKey: .label); try c.encode(summary, forKey: .summary)
+        if moreCount > 0 { try c.encode(moreCount, forKey: .moreCount) }
+    }
+}
+/// "blocks PR #649" on the card that holds another back, "blocked by ..." on the one held back.
+public struct BlockChip: Codable, Equatable, Sendable { public let id: String; public let label: String; public let link: Link? }
+
 public struct Card: Codable, Equatable, Sendable {
     public let id: String; public let link: Link?; public let icon: Icon; public let eyebrow: Label?; public let title: String; public let subtitle: String?
     public let badges: [Label]; public let context: [ContextLine]; public let timestamps: [Stamp]; public let state: Label?; public let detail: Detail
     public let body: Markdown?; public let attachments: [Attachment]; public let quotes: [Quote]; public let children: [Card]
     public let facts: Facts?; public let checks: Checks?; public let actions: [Action]
-    enum CodingKeys: String, CodingKey { case id, link, icon, eyebrow, title, subtitle, badges, context, timestamps, state, detail, body, attachments, quotes, children, facts, checks, actions }
+    /// The card anatomy: what is needed, why, who and where, one line of content, what it holds back, and the reply.
+    public let kind: CardKind?; public let need: String?; public let why: String?; public let meta: String?; public let contentRow: ContentRow?
+    public let blocks: [BlockChip]; public let blockedBy: [BlockChip]; public let reply: Action?; public let more: [Action]
+    enum CodingKeys: String, CodingKey {
+        case id, link, icon, eyebrow, title, subtitle, badges, context, timestamps, state, detail, body, attachments, quotes, children, facts, checks, actions
+        case kind, need, why, meta, blocks, reply, more; case contentRow = "content_row"; case blockedBy = "blocked_by"
+    }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decode(String.self, forKey: .id); link = try c.decodeIfPresent(Link.self, forKey: .link); icon = try c.decode(Icon.self, forKey: .icon)
@@ -163,6 +191,11 @@ public struct Card: Codable, Equatable, Sendable {
         attachments = try c.decodeIfPresent([Attachment].self, forKey: .attachments) ?? []; quotes = try c.decodeIfPresent([Quote].self, forKey: .quotes) ?? []
         children = try c.decodeIfPresent([Card].self, forKey: .children) ?? []; facts = try c.decodeIfPresent(Facts.self, forKey: .facts)
         checks = try c.decodeIfPresent(Checks.self, forKey: .checks); actions = try c.decodeIfPresent([Action].self, forKey: .actions) ?? []
+        kind = (try? c.decodeIfPresent(CardKind.self, forKey: .kind)) ?? nil
+        need = try c.decodeIfPresent(String.self, forKey: .need); why = try c.decodeIfPresent(String.self, forKey: .why); meta = try c.decodeIfPresent(String.self, forKey: .meta)
+        contentRow = try c.decodeIfPresent(ContentRow.self, forKey: .contentRow)
+        blocks = try c.decodeIfPresent([BlockChip].self, forKey: .blocks) ?? []; blockedBy = try c.decodeIfPresent([BlockChip].self, forKey: .blockedBy) ?? []
+        reply = try c.decodeIfPresent(Action.self, forKey: .reply); more = try c.decodeIfPresent([Action].self, forKey: .more) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -174,6 +207,10 @@ public struct Card: Codable, Equatable, Sendable {
         if !attachments.isEmpty { try c.encode(attachments, forKey: .attachments) }; if !quotes.isEmpty { try c.encode(quotes, forKey: .quotes) }
         if !children.isEmpty { try c.encode(children, forKey: .children) }; try c.encodeIfPresent(facts, forKey: .facts)
         try c.encodeIfPresent(checks, forKey: .checks); if !actions.isEmpty { try c.encode(actions, forKey: .actions) }
+        try c.encodeIfPresent(kind, forKey: .kind); try c.encodeIfPresent(need, forKey: .need); try c.encodeIfPresent(why, forKey: .why)
+        try c.encodeIfPresent(meta, forKey: .meta); try c.encodeIfPresent(contentRow, forKey: .contentRow)
+        if !blocks.isEmpty { try c.encode(blocks, forKey: .blocks) }; if !blockedBy.isEmpty { try c.encode(blockedBy, forKey: .blockedBy) }
+        try c.encodeIfPresent(reply, forKey: .reply); if !more.isEmpty { try c.encode(more, forKey: .more) }
     }
 }
 public struct Row: Codable, Equatable, Sendable {
@@ -252,7 +289,13 @@ public struct Action: Codable, Equatable, Sendable {
     public let id: String?; public let label: String; public let style: Style; public let presentation: Presentation; public let options: [ActionOption]
     public let input: Input; public let attachments: Bool; public let comments: CommentSpec?; public let confirm: Confirm?; public let enabled: Bool
     public let disabledReason: String?; public let stamp: String?; public let key: String?; public let link: Link?
-    enum CodingKeys: String, CodingKey { case id, label, style, presentation, options, input, attachments, comments, confirm, enabled; case disabledReason = "disabled_reason"; case stamp, key, link }
+    /// Green to advance, red when risky, grey otherwise.
+    public let role: ActionRole?
+    /// A button that answers with this option of the action: send it as `option_id`.
+    public let optionId: String?
+    /// What choosing the option means, when its author explained it.
+    public let description: String?
+    enum CodingKeys: String, CodingKey { case id, label, style, presentation, options, input, attachments, comments, confirm, enabled; case disabledReason = "disabled_reason"; case stamp, key, link, role; case optionId = "option_id"; case description }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = try c.decodeIfPresent(String.self, forKey: .id); label = try c.decode(String.self, forKey: .label)
@@ -262,6 +305,8 @@ public struct Action: Codable, Equatable, Sendable {
         confirm = try c.decodeIfPresent(Confirm.self, forKey: .confirm); enabled = try c.decode(Bool.self, forKey: .enabled)
         disabledReason = try c.decodeIfPresent(String.self, forKey: .disabledReason); stamp = try c.decodeIfPresent(String.self, forKey: .stamp)
         key = try c.decodeIfPresent(String.self, forKey: .key); link = try c.decodeIfPresent(Link.self, forKey: .link)
+        role = (try? c.decodeIfPresent(ActionRole.self, forKey: .role)) ?? nil
+        optionId = try c.decodeIfPresent(String.self, forKey: .optionId); description = try c.decodeIfPresent(String.self, forKey: .description)
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -270,6 +315,7 @@ public struct Action: Codable, Equatable, Sendable {
         try c.encode(input, forKey: .input); try c.encode(attachments, forKey: .attachments); try c.encodeIfPresent(comments, forKey: .comments)
         try c.encodeIfPresent(confirm, forKey: .confirm); try c.encode(enabled, forKey: .enabled); try c.encodeIfPresent(disabledReason, forKey: .disabledReason)
         try c.encodeIfPresent(stamp, forKey: .stamp); try c.encodeIfPresent(key, forKey: .key); try c.encodeIfPresent(link, forKey: .link)
+        try c.encodeIfPresent(role, forKey: .role); try c.encodeIfPresent(optionId, forKey: .optionId); try c.encodeIfPresent(description, forKey: .description)
     }
 }
 public struct ActionOption: Codable, Equatable, Sendable { public let id: String; public let label: String; public let description: String?; public let style: Style; public let input: Input; public let key: String? }

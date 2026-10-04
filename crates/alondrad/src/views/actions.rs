@@ -810,6 +810,16 @@ fn map_domain_action(
             Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: targets.clone(),
                 body, attachments, instruction }, stamp))
         }
+        Verb::Clarify => {
+            let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
+            let reason = match request.option_id.as_deref().filter(|id| !id.is_empty()) {
+                Some(name) => alondra_core::views::action_id::clarification_reason(name)?,
+                None => alondra_core::domain_v2::ClarificationReason::Unclear,
+            };
+            let text = request.input.text.as_deref().map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned);
+            Some((Command::RequestClarification { interaction_id: interaction.id.clone(), reason, text },
+                stamp("Clarification requested", "Aclaración solicitada")))
+        }
         Verb::Read => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             Some((Command::MarkRead { interaction_id: interaction.id.clone() }, stamp("Marked as read", "Marcada como leída")))

@@ -184,6 +184,12 @@ pub fn card_lines(card: &Card, width: usize, depth: usize) -> Vec<Line<'static>>
     if let Some(subtitle) = &card.subtitle {
         out.push(Line::from(format!("{indent}{subtitle}").fg(DIM)));
     }
+    if let Some(row) = &card.content_row {
+        out.push(Line::from(format!("{indent}{} · {}", row.label, row.summary).fg(DIM)));
+    }
+    for chip in card.blocks.iter().chain(&card.blocked_by) {
+        out.push(Line::from(format!("{indent}{}", chip.label).fg(ACCENT)));
+    }
     for context in card
         .context
         .iter()
@@ -535,7 +541,7 @@ pub fn actions(view: &View) -> Vec<Action> {
     for section in sections(view) {
         for item in &section.items {
             match item {
-                Item::Card(card) => out.extend(card.actions.iter().cloned()),
+                Item::Card(card) => out.extend(card.actions.iter().chain(&card.reply).chain(&card.more).cloned()),
                 Item::Row(row) => row_actions(row, &mut out),
                 Item::Actions(bar) => out.extend(bar.actions.iter().cloned()),
                 Item::Form(_) => {}
@@ -545,7 +551,7 @@ pub fn actions(view: &View) -> Vec<Action> {
         }
     }
     let mut seen = std::collections::HashSet::new();
-    out.retain(|action| seen.insert(action.id.clone()));
+    out.retain(|action| seen.insert((action.id.clone(), action.option_id.clone(), action.id.is_empty().then(|| action.label.clone()))));
     out
 }
 
@@ -730,7 +736,7 @@ mod tests {
     #[test]
     fn actions_without_keyboard_bindings_do_not_render_empty_brackets() {
         let action = Action {
-            id: "message".into(), label: "Message".into(), style: Style::Primary,
+            id: "message".into(), label: "Message".into(), style: Style::Primary, role: None, option_id: None, description: None,
             presentation: Presentation::Button, options: vec![], input: Input::None,
             attachments: false, comments: None, confirm: None, enabled: true,
             disabled_reason: None, stamp: None, key: None, link: None,
@@ -775,7 +781,7 @@ mod action_tests {
 
     fn action(id: &str, label: &str) -> Action {
         Action {
-            id: id.into(), label: label.into(), style: Style::Plain,
+            id: id.into(), label: label.into(), style: Style::Plain, role: None, option_id: None, description: None,
             presentation: Presentation::Button, options: vec![], input: Input::None,
             attachments: false, comments: None, confirm: None, enabled: true,
             disabled_reason: None, stamp: None, key: None, link: None,

@@ -1,53 +1,236 @@
 {
-  "data_epoch": "epoch-1",
   "cases": [
     {
-      "interaction": "question",
       "id": "c92d0a11-7c47-4c47-b42b-36b8f22f5120",
+      "interaction": "question",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the question parser?"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
-        "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "c92d0a11-7c47-4c47-b42b-36b8f22f5120", "kind": "question", "actions": [{"id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1", "option": "yes", "label": "Yes"}, {"id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1", "option": "changes", "label": "Request changes", "text": true, "placeholder": "Add a note"}, {"id": "ctx:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1", "label": "Need more context", "text": true, "placeholder": "What is missing?"}]}
+        "alondra": {
+          "actions": [
+            {
+              "id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
+              "label": "★ Yes",
+              "option": "yes"
+            },
+            {
+              "id": "ans:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
+              "label": "Request changes",
+              "option": "changes",
+              "placeholder": "Add a note",
+              "text": true
+            },
+            {
+              "id": "reply:c92d0a11-7c47-4c47-b42b-36b8f22f5120@1",
+              "label": "Reply",
+              "placeholder": "Reply to this node…",
+              "text": true
+            }
+          ],
+          "card": "c92d0a11-7c47-4c47-b42b-36b8f22f5120",
+          "data_epoch": "epoch-1",
+          "kind": "question",
+          "protocol": 1
+        },
+        "aps": {
+          "alert": {
+            "body": "The lexer split is ready and its tests pass.",
+            "title": "Merge the question parser?"
+          },
+          "badge": 4,
+          "category": "ALONDRA_PUSH",
+          "interruption-level": "active",
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "orchestrator"
+        }
       }
     },
     {
-      "interaction": "action_request",
       "id": "a019b231-43d1-4aa9-a0c3-5713a8ac2150",
+      "interaction": "action_request",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the action_request parser?"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
-        "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "a019b231-43d1-4aa9-a0c3-5713a8ac2150", "kind": "action_request", "actions": [{"id": "ans:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1", "option": "yes", "label": "Yes"}, {"id": "ans:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1", "option": "changes", "label": "Request changes", "text": true, "placeholder": "Add a note"}, {"id": "ctx:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1", "label": "Need more context", "text": true, "placeholder": "What is missing?"}]}
+        "alondra": {
+          "actions": [
+            {
+              "id": "ans:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1",
+              "label": "Yes",
+              "option": "yes"
+            },
+            {
+              "id": "ans:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1",
+              "label": "Request changes",
+              "option": "changes",
+              "placeholder": "Add a note",
+              "text": true
+            },
+            {
+              "id": "reply:a019b231-43d1-4aa9-a0c3-5713a8ac2150@1",
+              "label": "Reply",
+              "placeholder": "Reply to this node…",
+              "text": true
+            }
+          ],
+          "card": "a019b231-43d1-4aa9-a0c3-5713a8ac2150",
+          "data_epoch": "epoch-1",
+          "kind": "action_request",
+          "protocol": 1
+        },
+        "aps": {
+          "alert": {
+            "body": "The lexer split is ready and its tests pass.",
+            "title": "Merge the action_request parser?"
+          },
+          "badge": 4,
+          "category": "ALONDRA_PUSH",
+          "interruption-level": "time-sensitive",
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "orchestrator"
+        }
       }
     },
     {
-      "interaction": "information",
       "id": "f0ab22dc-2a7a-4c90-b178-d5a91a6338d8",
+      "interaction": "information",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the information parser?"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
-        "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "f0ab22dc-2a7a-4c90-b178-d5a91a6338d8", "kind": "information", "actions": [{"id": "read:f0ab22dc-2a7a-4c90-b178-d5a91a6338d8@1", "label": "Mark as read"}, {"id": "reply:f0ab22dc-2a7a-4c90-b178-d5a91a6338d8@1", "label": "Reply", "text": true, "placeholder": "Write a reply"}]}
+        "alondra": {
+          "actions": [
+            {
+              "id": "read:f0ab22dc-2a7a-4c90-b178-d5a91a6338d8@1",
+              "label": "Seen"
+            },
+            {
+              "id": "reply:f0ab22dc-2a7a-4c90-b178-d5a91a6338d8@1",
+              "label": "Reply",
+              "placeholder": "Reply to this node…",
+              "text": true
+            }
+          ],
+          "card": "f0ab22dc-2a7a-4c90-b178-d5a91a6338d8",
+          "data_epoch": "epoch-1",
+          "kind": "information",
+          "protocol": 1
+        },
+        "aps": {
+          "alert": {
+            "body": "The lexer split is ready and its tests pass.",
+            "title": "Merge the information parser?"
+          },
+          "badge": 4,
+          "category": "ALONDRA_PUSH",
+          "interruption-level": "passive",
+          "mutable-content": 1,
+          "thread-id": "orchestrator"
+        }
       }
     },
     {
-      "interaction": "delivery_text",
       "id": "hf-weekly-2026-10-01",
+      "interaction": "delivery_text",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the delivery_text parser?"}, "sound": "default", "badge": 4, "mutable-content": 1},
-        "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hf-weekly-2026-10-01", "kind": "delivery", "actions": []}
+        "alondra": {
+          "actions": [
+            {
+              "id": "reply:hf-weekly-2026-10-01@1",
+              "label": "Reply",
+              "placeholder": "Reply to this node…",
+              "text": true
+            }
+          ],
+          "card": "hf-weekly-2026-10-01",
+          "data_epoch": "epoch-1",
+          "kind": "delivery",
+          "protocol": 1
+        },
+        "aps": {
+          "alert": {
+            "body": "The lexer split is ready and its tests pass.",
+            "title": "Merge the delivery_text parser?"
+          },
+          "badge": 4,
+          "category": "ALONDRA_PUSH",
+          "interruption-level": "active",
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "orchestrator"
+        }
       }
     },
     {
-      "interaction": "delivery_pull_request",
       "id": "hf-weekly-2026-10-02",
+      "interaction": "delivery_pull_request",
       "payload": {
-        "aps": {"alert": {"title": "Split the parser", "body": "Merge the delivery_pull_request parser?"}, "sound": "default", "badge": 4, "mutable-content": 1},
-        "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hf-weekly-2026-10-02", "kind": "delivery", "actions": []}
+        "alondra": {
+          "actions": [
+            {
+              "id": "reply:hf-weekly-2026-10-02@1",
+              "label": "Reply",
+              "placeholder": "Reply to this node…",
+              "text": true
+            }
+          ],
+          "card": "hf-weekly-2026-10-02",
+          "data_epoch": "epoch-1",
+          "kind": "delivery",
+          "protocol": 1
+        },
+        "aps": {
+          "alert": {
+            "body": "The lexer split is ready and its tests pass.",
+            "title": "Merge the delivery_pull_request parser?"
+          },
+          "badge": 4,
+          "category": "ALONDRA_PUSH",
+          "interruption-level": "active",
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "orchestrator"
+        }
       }
     },
     {
-      "interaction": "permission",
       "id": "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS",
+      "interaction": "permission",
       "payload": {
-        "aps": {"alert": {"title": "A node needs permission", "body": "Bash: Extract shared waiting-items helper in core views"}, "sound": "default", "badge": 4, "category": "ALONDRA_PUSH", "mutable-content": 1},
-        "alondra": {"protocol": 1, "data_epoch": "epoch-1", "card": "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS", "kind": "question", "actions": [{"id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1", "option": "allow", "label": "Allow"}, {"id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1", "option": "deny", "label": "Deny"}]}
+        "alondra": {
+          "actions": [
+            {
+              "id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1",
+              "label": "Allow",
+              "option": "allow"
+            },
+            {
+              "id": "ans:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1",
+              "label": "Deny",
+              "option": "deny",
+              "placeholder": "Write the reason",
+              "text": true
+            },
+            {
+              "id": "reply:hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS@1",
+              "label": "Reply",
+              "placeholder": "Reply to this node…",
+              "text": true
+            }
+          ],
+          "card": "hold-permission-toolu_01JWScmn532U7ZW6ruo7BjpS",
+          "data_epoch": "epoch-1",
+          "kind": "question",
+          "protocol": 1
+        },
+        "aps": {
+          "alert": {
+            "body": "It rewrites a few files in core views.",
+            "title": "Allow extracting the waiting-items helper"
+          },
+          "badge": 4,
+          "category": "ALONDRA_PUSH",
+          "interruption-level": "time-sensitive",
+          "mutable-content": 1,
+          "sound": "default",
+          "thread-id": "orchestrator"
+        }
       }
     }
-  ]
+  ],
+  "data_epoch": "epoch-1"
 }

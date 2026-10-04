@@ -1,0 +1,168 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:f12d034b-249e-4487-a89b-57de38c26372",
+  "client": "ios",
+  "version": "vd36be40f85a1dc93",
+  "cursor": "cursor-1",
+  "title": "The simulator pass is clean",
+  "status": {
+    "version": "v29e230088bd2c22c",
+    "summary": "2 questions · 3 to read · 0 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "f12d034b-249e-4487-a89b-57de38c26372",
+          "kind": "know",
+          "need": "The simulator pass is clean",
+          "why": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "meta": "Alondra",
+          "content_row": {
+            "kind": "report",
+            "icon": "notice",
+            "label": "Report",
+            "summary": "3 points"
+          },
+          "reply": {
+            "id": "reply:f12d034b-249e-4487-a89b-57de38c26372@1",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply to this node…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:f12d034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "notice",
+          "eyebrow": {
+            "text": "FYI",
+            "tone": "neutral"
+          },
+          "title": "The simulator pass is clean",
+          "subtitle": "Swipe navigation, inline replies and attachment previews are ready for review.",
+          "state": {
+            "text": "Doesn't block",
+            "tone": "neutral"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "read:f12d034b-249e-4487-a89b-57de38c26372@1",
+              "label": "Seen",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Read"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "content",
+      "title": "Content",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "- Swipe navigation\n- Inline replies\n- Attachment previews",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Restore the native review experience",
+              "link": {
+                "kind": "view",
+                "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+              }
+            },
+            {
+              "label": "Mission",
+              "value": "Polish the Alondra beta"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "request",
+  "key": "request:r-9f2156b5a8894e53901f0af576dff6a2",
+  "client": "ios",
+  "version": "vc0b5976e8c4a66d9",
+  "cursor": "cursor-1",
+  "title": "Polish the Alondra beta",
+  "status": {
+    "version": "v29e230088bd2c22c",
+    "summary": "2 questions · 3 to read · 0 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "facts",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "State",
+              "value": "Active"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "tasks",
+      "title": "Tasks",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "t-651c38484cd2f34e74d5107ba05f7f15",
+          "link": {
+            "kind": "view",
+            "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+          },
+          "icon": "action",
+          "title": "Restore the native review experience",
+          "subtitle": "Needs you",
+          "badges": [
+            {
+              "text": "Needs you",
+              "tone": "warning"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 5
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "body",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "markdown",
+          "text": "Prepare the next Alondra beta: restore the established review experience, verify the simulator build, and keep the release notes concise.",
+          "truncated": false,
+          "commentable": false
+        }
+      ]
+    },
+    {
+      "id": "actions",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "actions",
+          "actions": [
+            {
+              "id": "withdraw:r-9f2156b5a8894e53901f0af576dff6a2@0",
+              "label": "Withdraw Request",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Withdraw Request",
+                "message": "Withdraw this request?",
+                "button": "Withdraw Request"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

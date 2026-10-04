@@ -68,6 +68,9 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
     let inbox = context.domain.projection().inbox;
     let waiting = |kinds: &[&str]| inbox.iter()
         .any(|item| item.pending && item.agent_id.as_ref() == Some(agent) && kinds.contains(&item.kind.as_str()));
+    let reviewing = inbox.iter().any(|item| {
+        item.pending && item.agent_id.as_ref() == Some(agent) && super::card::is_review_delivery(item, context.domain)
+    });
     let tasks: Vec<TaskState> = context.domain.tasks.values()
         .filter(|task| task.agent_id.as_ref() == Some(agent) && !task.archived)
         .map(|task| task.state)
@@ -91,7 +94,7 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         (t!(lang, "Waiting for the machine", "Esperando máquina"), Tone::Neutral)
     } else if waiting(&["action_request"]) || tasks.contains(&TaskState::NeedsYou) {
         (t!(lang, "Your turn", "Te toca"), Tone::YourTurn)
-    } else if waiting(&["pull_request", "document_review"]) || tasks.contains(&TaskState::InReview) {
+    } else if reviewing || tasks.contains(&TaskState::InReview) {
         (t!(lang, "Waiting for your review", "Espera tu revisión"), Tone::Accent)
     } else if waiting(&["delivery"]) {
         (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success)
