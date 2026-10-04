@@ -116,8 +116,8 @@ fn input_value_schema() -> Value {
 }
 
 fn content_schema() -> Value {
-    json!({"type":"object","description":"The long part of the card, shown only in its detail: the plan, document, diff, command, report, steps, options, diagnosis or attachments. Put anything longer than a sentence here, never in why","properties":{
-        "kind":{"enum":["plan","document","diff","command","report","steps","options","diagnosis","attachments"]},
+    json!({"type":"object","description":"The long part of the card, shown only in its detail: the document, diff, command, report, steps, options, diagnosis or attachments. Put anything longer than a sentence here, never in why. Use steps for an ordered list and report for prose; the plan kind belongs to a plan Claude Code holds for approval, never to a card you send","properties":{
+        "kind":{"enum":["document","diff","command","report","steps","options","diagnosis","attachments"]},
         "summary":{"type":"string","maxLength":60,"description":"Optional one-line label such as \"6 files · +120 −40\"; Alondra computes one when you leave it out"},
         "body":{"type":"string"}
     },"required":["kind","body"],"additionalProperties":false})
@@ -191,7 +191,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     }
     add(
         "propose",
-        format!("Suggest something {user} did not ask for (a Propose card). It never holds you back: keep working. When {user} agrees, Alondra creates a new Request for it."),
+        format!("Suggest something {user} did not ask for (a Propose card). It never holds you back: keep working. When {user} agrees, Alondra creates a new Request for it. Put the detail in content as steps (a list) or report (prose), never as a plan: a plan is only what Claude Code holds in plan mode."),
         json!({"need":need_schema(),"why":why_schema(),"size":{"enum":["small","medium","large"],"description":"How big the work would be"},"replaces":replaces_schema(),"content":content_schema()}),
         &["need", "why", "size"],
     );
@@ -832,6 +832,19 @@ fn card_kind(name: &str, command: &serde_json::Map<String, Value>) -> Option<&'s
     })
 }
 
+/// Only a plan Claude Code holds is a plan: a node that labels its own content one gets a list of
+/// steps or a report, whichever the body is, so the card never claims a plan was approved.
+fn unplan_content(mut content: Value) -> Value {
+    if content["kind"].as_str() != Some("plan") {
+        return content;
+    }
+    let body = content["body"].as_str().unwrap_or_default();
+    let lines: Vec<&str> = body.lines().map(str::trim).filter(|line| !line.is_empty()).collect();
+    let listed = !lines.is_empty() && lines.iter().all(|line| line.starts_with("- ") || line.starts_with("* ") || line.chars().take_while(char::is_ascii_digit).count() > 0 && line.contains(". "));
+    content["kind"] = json!(if listed { "steps" } else { "report" });
+    content
+}
+
 fn choice(id: &str, label: &str, note: bool) -> Value {
     let inputs = if note { json!([{"id":"note","kind":"text","required":false}]) } else { json!([]) };
     json!({"id":id,"label":label,"inputs":inputs})
@@ -847,7 +860,7 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
     let Some(kind) = card_kind(name, command) else { return Ok(()) };
     let need = take_text(command, "need");
     let mut why = take_text(command, "why");
-    let mut content = command.remove("content").filter(|v| !v.is_null());
+    let mut content = command.remove("content").filter(|v| !v.is_null()).map(unplan_content);
     let mut card = serde_json::Map::new();
     for key in ["recommended", "blocks", "replaces", "verify"] {
         if let Some(value) = command.remove(key).filter(|v| !v.is_null()) {
@@ -1864,6 +1877,19 @@ mod card_tool_tests {
         assert_eq!(ids(&action), ["done", "cannot"]);
         assert_eq!(action["card"]["content"], json!({"kind":"steps","body":"1. Open the console\n2. Rotate it"}));
         assert_eq!(action["card"]["verify"], "I call it");
+    }
+
+    #[test]
+    fn content_a_node_calls_a_plan_is_a_list_of_steps_or_a_report() {
+        let kind_of = |body: &str| built("propose", with(json!({"need":"Fix the badge","why":"Stuck","size":"small","content":{"kind":"plan","body":body}})))["card"]["content"]["kind"].clone();
+        assert_eq!(kind_of("- Relay: add a push type\n- Daemon: send it\n- App: lower the badge"), "steps");
+        assert_eq!(kind_of("1. Relay\n2. Daemon"), "steps");
+        assert_eq!(kind_of("Today the push raises the number, nothing lowers it."), "report");
+        let asked = built("ask", with(json!({"need":"Pick","why":"Why","options":options(),"blocking":false,"content":{"kind":"plan","body":"Prose only"}})));
+        assert_eq!(asked["card"]["content"]["kind"], "report");
+        let kept = built("propose", with(json!({"need":"Fix","why":"Stuck","size":"small","content":{"kind":"diagnosis","body":"- a"}})));
+        assert_eq!(kept["card"]["content"]["kind"], "diagnosis");
+        assert!(!content_schema()["properties"]["kind"]["enum"].as_array().unwrap().contains(&json!("plan")));
     }
 
     #[test]

@@ -617,6 +617,37 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
     (label.to_owned(), input)
 }
 
+/// The words of an option the system writes itself, keyed by the id and English text it was
+/// built with, in the viewer's language. An option someone worded keeps its own label.
+fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
+    let (label, description): (&str, Option<&str>) = match (option.id.as_str(), option.label.as_str()) {
+        ("done", "Done") => (t!(lang, "Done", "Hecho"), None),
+        ("cannot", "I can't do it") => (t!(lang, "I can't do it", "No puedo hacerlo"), None),
+        ("works", "Works") => (t!(lang, "Works", "Funciona"), None),
+        ("fails", "Doesn't work") => (t!(lang, "Doesn't work", "No funciona"), None),
+        ("do_it", "Do it") => (t!(lang, "Do it", "Hazlo"), None),
+        ("not_now", "Not now") => (t!(lang, "Not now", "Ahora no"), None),
+        ("skip", "I can't provide it") => (t!(lang, "I can't provide it", "No puedo dárselo"), None),
+        ("provide", "Send the file") => (t!(lang, "Send the file", "Enviar el archivo"), None),
+        ("provide", "Send the text") => (t!(lang, "Send the text", "Enviar el texto"), None),
+        ("provide", "Send the secret") => (t!(lang, "Send the secret", "Enviar el secreto"), None),
+        ("retry", "Retry the batch") => (
+            t!(lang, "Retry the batch", "Reintentar el lote"),
+            Some(t!(lang, "Run the same batch again; check its effects first", "Ejecuta el mismo lote otra vez; revisa antes sus efectos")),
+        ),
+        ("continue", "Continue without it") => (
+            t!(lang, "Continue without it", "Continuar sin él"),
+            Some(t!(lang, "Do not replay it; the orchestrator is told it was interrupted", "No se repite; al orquestador se le avisa de que se interrumpió")),
+        ),
+        ("stop", "Stop it") => (
+            t!(lang, "Stop it", "Detenerlo"),
+            Some(t!(lang, "Drop the batch and leave the orchestrator idle", "Descarta el lote y deja al orquestador en reposo")),
+        ),
+        _ => return (option.label.clone(), option.description.clone()),
+    };
+    (label.to_owned(), description.map(str::to_owned).or_else(|| option.description.clone()))
+}
+
 fn answer_actions(
     item: &InboxItem,
     interaction: &Interaction,
@@ -655,10 +686,11 @@ fn answer_actions(
         for (index, option) in ordered.into_iter().enumerate() {
             let Some(id) = action_id(Verb::Ans, &interaction.id.0, revision, None) else { continue };
             let recommended = interaction.card.recommended.as_deref() == Some(option.id.as_str());
+            let (fixed_label, fixed_description) = fixed_option_text(option, lang);
             let (label, input) = match hold.filter(|hold| *hold != Hold::Question) {
                 Some(hold) => held_option(hold, option, lang),
                 None => (
-                    if recommended { format!("★ {}", option.label) } else { option.label.clone() },
+                    if recommended { format!("★ {fixed_label}") } else { fixed_label },
                     if option.inputs.is_empty() {
                         Input::None
                     } else {
@@ -678,7 +710,7 @@ fn answer_actions(
             };
             let mut action = button(id.to_string(), &label, role);
             action.option_id = Some(option.id.clone());
-            action.description = option.description.clone().filter(|_| matches!(hold, None | Some(Hold::Question)));
+            action.description = fixed_description.filter(|_| matches!(hold, None | Some(Hold::Question)));
             action.input = input;
             action.attachments = option.inputs.iter().any(|input| input.kind == crate::domain_v2::InputKind::Text);
             action.stamp = Some(t!(lang, "Answered", "Respondida").into());
@@ -1082,7 +1114,7 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     match &interaction.payload {
         InteractionPayload::Question { options, answer: Some(answer) }
         | InteractionPayload::ActionRequest { options, answer: Some(answer) } => {
-            let label = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.clone());
+            let label = options.iter().find(|option| option.id == answer.option_id).map(|option| fixed_option_text(option, lang).0);
             let text = answer.inputs.values().find_map(|value| match value {
                 crate::domain_v2::InputValue::Text(text) => Some(clip(text, 240)),
                 _ => None,

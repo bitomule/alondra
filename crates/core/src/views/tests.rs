@@ -2754,6 +2754,59 @@ fn a_held_plan_card_shows_the_plan_with_approve_and_request_changes() {
     assert!(card_of(&ios).actions.iter().all(|action| action.key.is_none()));
 }
 
+fn fixed_options() -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    vec![
+        ("request_action", vec![("done", "Done"), ("cannot", "I can't do it")]),
+        ("request_test", vec![("works", "Works"), ("fails", "Doesn't work")]),
+        ("propose", vec![("do_it", "Do it"), ("not_now", "Not now")]),
+        ("request_input", vec![("provide", "Send the file"), ("skip", "I can't provide it")]),
+        ("request_input", vec![("provide", "Send the text"), ("skip", "I can't provide it")]),
+        ("request_input", vec![("provide", "Send the secret"), ("skip", "I can't provide it")]),
+        ("problem", vec![("retry", "Retry the batch"), ("continue", "Continue without it"), ("stop", "Stop it")]),
+    ]
+}
+
+fn proposal_options(options: &[(&str, &str)]) -> InteractionPayload {
+    InteractionPayload::Question {
+        options: options.iter().map(|(id, label)| crate::domain_v2::QuestionOption { id: (*id).into(), label: (*label).into(), description: None, inputs: vec![] }).collect(),
+        answer: None,
+    }
+}
+
+fn option_labels(options: &[(&str, &str)], lang: Lang) -> Vec<String> {
+    let mut state = fixture();
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = proposal_options(options);
+    interaction.card = spec(crate::domain_v2::CardKind::Propose, "Fix it", "Because.");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, lang, "card:i-1", "");
+    answers(card_of(&view)).iter().map(|action| action.label.clone()).collect()
+}
+
+#[test]
+fn the_options_the_system_words_itself_read_in_the_language_of_the_view() {
+    for (tool, options) in fixed_options() {
+        let spanish = option_labels(&options, Lang::Es);
+        let english = option_labels(&options, Lang::En);
+        let source: Vec<String> = options.iter().map(|(_, label)| (*label).to_owned()).collect();
+        assert_eq!(english, source, "{tool}: English reads as it was written");
+        assert!(spanish.iter().zip(&english).all(|(es, en)| es != en), "{tool}: {spanish:?} is not Spanish");
+    }
+    assert_eq!(option_labels(&[("done", "Hecho a mi manera")], Lang::Es), ["Hecho a mi manera"], "a label someone wrote is never replaced");
+}
+
+#[test]
+fn a_proposal_whose_task_ended_is_still_answerable_in_the_card() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Done;
+    let interaction = state.interactions.get_mut(&"i-1".into()).unwrap();
+    interaction.payload = proposal_options(&[("do_it", "Do it"), ("not_now", "Not now")]);
+    interaction.card = spec(crate::domain_v2::CardKind::Propose, "Fix it", "Because.");
+    let view = render(&state, &LiveSnapshot::default(), Client::Ios, Lang::Es, "card:i-1", "");
+    let buttons = answers(card_of(&view));
+    assert_eq!(buttons.iter().map(|a| (a.label.as_str(), a.enabled, a.disabled_reason.clone())).collect::<Vec<_>>(),
+        [("Hazlo", true, None), ("Ahora no", true, None)]);
+}
+
 fn markdown_items(view: &View) -> Vec<&Markdown> {
     view.sections.iter().filter(|section| section.id == "content").flat_map(|section| &section.items)
         .filter_map(|item| if let Item::Markdown(markdown) = item { Some(markdown) } else { None }).collect()
