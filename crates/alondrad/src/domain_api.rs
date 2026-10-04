@@ -1075,6 +1075,11 @@ async fn execute_command<H: DomainHost>(
         if let Err(error) = crate::domain_github::verify_claim(host.domain(), host.pr_observer(), &envelope.command).await {
             return store_error(error);
         }
+        if let Some(client) = host.new_work_client() {
+            if let Err(error) = client.verify_presentation(&envelope.command).await {
+                return domain_error(error);
+            }
+        }
         return match host.domain().execute_bearer(token, &envelope) {
             Ok(outcome) => {
                 let mut answer = json!(outcome);

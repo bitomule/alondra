@@ -29,6 +29,7 @@ pub async fn run_v2(
 ) -> Result<()> {
     let mut changed = domain.subscribe();
     let mut retry_after: HashMap<i64, Instant> = HashMap::new();
+    let mut first_seen: HashMap<i64, Instant> = HashMap::new();
     loop {
         retry_after.retain(|_, at| at.elapsed() < RETRY_BACKOFF);
         let pending = {
@@ -39,11 +40,13 @@ pub async fn run_v2(
             )?;
             store.pending_messages()?
         };
+        first_seen.retain(|id, _| pending.iter().any(|message| message.id == *id));
         // SQLite errors stop this worker. The daemon supervisor then fails the
         // committed process instead of silently serving a dead outbox.
         for message in ready_messages_v2(pending, &retry_after) {
             let id = message.id;
-            deliver_one_v2(&domain, &home, &push, service.as_deref(), &client, message).await?;
+            let waited = first_seen.entry(id).or_insert_with(Instant::now).elapsed();
+            deliver_one_v2(&domain, &home, &push, service.as_deref(), &client, message, waited).await?;
             retry_after.insert(id, Instant::now());
         }
         tokio::select! {
@@ -60,6 +63,7 @@ async fn deliver_one_v2(
     service: Option<&Service>,
     client: &crate::v2_client_routes::Client,
     message: OutboxMessage,
+    waited: Duration,
 ) -> Result<()> {
     if matches!(message.recipient_kind.as_str(), "agent" | "orchestrator") {
         return Ok(());
@@ -70,7 +74,7 @@ async fn deliver_one_v2(
     };
     let Some(claim) = claim else { return Ok(()) };
     let outcome = match claim.message.recipient_kind.as_str() {
-        "user" => deliver_user_runtime(domain, home, push, service, Some(client), &claim.message).await,
+        "user" => deliver_user_runtime(domain, home, push, service, Some(client), &claim.message, waited).await,
         _ => Err((State::Uncertain, "unknown_recipient")),
     };
     let (state, reason) = match outcome {
@@ -179,7 +183,7 @@ async fn deliver_user(
     service: Option<&Service>,
     message: &OutboxMessage,
 ) -> std::result::Result<(), (State, &'static str)> {
-    deliver_user_runtime(&hub.domain, &hub.home, push, service, None, message).await
+    deliver_user_runtime(&hub.domain, &hub.home, push, service, None, message, Duration::ZERO).await
 }
 
 async fn deliver_user_runtime(
@@ -189,9 +193,18 @@ async fn deliver_user_runtime(
     service: Option<&Service>,
     client: Option<&crate::v2_client_routes::Client>,
     message: &OutboxMessage,
+    waited: Duration,
 ) -> std::result::Result<(), (State, &'static str)> {
     // DomainProjection is the durable user inbox. APNs is only a generic wake hint;
     // the receipt never means a person read or accepted this interaction.
+    let state = domain
+        .state()
+        .map_err(|_| (State::Retryable, "domain_read_failed"))?;
+    match crate::push_gate::check(&state, client, message.interaction_id.as_deref(), waited).await {
+        crate::push_gate::Gate::Send => {}
+        crate::push_gate::Gate::Wait(reason) => return Err((State::Retryable, reason)),
+        crate::push_gate::Gate::Drop(reason) => return Err((State::Discarded, reason)),
+    }
     let state = domain
         .state()
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
@@ -454,7 +467,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "user")
             .unwrap();
-        deliver_one_v2(&domain, &home, &push, None, &client, user.clone())
+        deliver_one_v2(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO)
             .await
             .unwrap();
         assert!(
@@ -493,7 +506,7 @@ mod tests {
             .into_iter()
             .find(|message| message.recipient_kind == "agent")
             .unwrap();
-        deliver_one_v2(&domain, &home, &push, None, &client, producer.clone())
+        deliver_one_v2(&domain, &home, &push, None, &client, producer.clone(), Duration::ZERO)
             .await
             .unwrap();
         let evidence = domain
@@ -1132,9 +1145,41 @@ mod tests {
         assert_eq!(payload["aps"]["thread-id"], "orchestrator");
         assert_eq!(payload["aps"]["badge"], 1, "the answer waits in the inbox the badge counts");
         let push = Push::open(&home).unwrap();
-        deliver_one_v2(&domain, &home, &push, None, &client, user[0].clone()).await.unwrap();
+        deliver_one_v2(&domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();
         assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
             .iter().any(|item| item.message_id == user[0].id && item.state == "handed"));
+    }
+
+    #[tokio::test]
+    async fn the_push_of_a_card_withdrawn_before_it_leaves_is_discarded_unsent() {
+        let home = std::env::temp_dir().join(format!("alondra-withdrawn-push-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let domain = Arc::new(DomainRuntime::open(&home).unwrap());
+        let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+        let agent = Actor::Agent { agent_id: "agent-a".into() };
+        v2_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false });
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
+            review_prs: false, dependencies: Default::default(), stack: None });
+        v2_command(&domain, agent.clone(), "question", Command::AskQuestion {
+            attachments: vec![], interaction_id: "question-a".into(), scope: Scope::Task { task_id: "task-a".into() },
+            recipient: Recipient::User, body: "Choose".into(), blocking: true,
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+            card: CardSpec::derived(CardKind::Provide, "Answer the question"),
+        });
+        v2_command(&domain, agent, "withdraw", Command::Withdraw { interaction_id: "question-a".into() });
+        let user = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some("question-a") && message.recipient_kind == "user")
+            .unwrap();
+        let push = Push::open(&home).unwrap();
+        deliver_one_v2(&domain, &home, &push, None, &client, user.clone(), Duration::ZERO).await.unwrap();
+        assert!(domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
+            .iter().any(|item| item.message_id == user.id && item.state == "discarded"),
+            "a card that is gone is never announced");
+        assert!(!domain.store.lock().unwrap().pending_messages().unwrap().iter().any(|message| message.id == user.id));
+        std::fs::remove_dir_all(home).unwrap();
     }
 
     #[test]
