@@ -7,7 +7,7 @@ import Foundation
 
 /// A card opened in full, whatever it is: the sections the daemon sends (content, context,
 /// history) and the same actions the card has, pinned at the bottom with the reply field. The text
-/// of a document can be commented block by block; the comments, the reply and the attachments are
+/// of a document or a plan can be commented block by block; the comments, the reply and the attachments are
 /// drafts until one of the actions is sent.
 @Reducer
 public struct CardDetailFeature: Sendable {
@@ -155,6 +155,12 @@ public struct CardDetailFeature: Sendable {
             case .screen(.loaded(let document)):
                 guard document.key == state.screen.key.rawValue else { return .none }
                 state.actions.dataEpoch = document.dataEpoch
+                if let inline = Self.commentableText(of: document) {
+                    state.content = inline
+                    state.contentDigest = nil
+                    state.contentFailed = false
+                    return .none
+                }
                 return fetchContent(of: document, state: &state)
             case .screen, .delegate:
                 return .none
@@ -272,6 +278,13 @@ public struct CardDetailFeature: Sendable {
                 return .none
             }
         }
+    }
+
+    /// The text a card carries itself, such as a plan Claude Code holds, when it can be commented on.
+    static func commentableText(of document: ViewDocument) -> String? {
+        document.sections.lazy.flatMap(\.items).compactMap { item -> String? in
+            if case .markdown(let markdown) = item, markdown.commentable { markdown.text } else { nil }
+        }.first
     }
 
     private func fetchContent(of document: ViewDocument, state: inout State) -> Effect<Action> {
