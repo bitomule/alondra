@@ -165,11 +165,17 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "ask",
         json!({
             "interaction_id":"question-one", "scope":{"kind":"task", "task_id":"task-one"},
-            "recipient":{"kind":"user"}, "body":"Which answer?", "blocking":true,
-            "options":[{"id":"yes", "label":"Yes", "inputs":[]}]
+            "recipient":{"kind":"user"}, "need":"Pick the answer", "why":"The task cannot go on without it",
+            "blocking":true, "recommended":"yes",
+            "options":[{"id":"yes", "label":"Yes", "inputs":[]}, {"id":"no", "label":"No", "inputs":[]}]
         }),
     );
     assert_eq!(forwarded.0, "post /questions http/1.1");
+    assert_eq!(forwarded.1["card"]["kind"], "decide");
+    assert_eq!(forwarded.1["card"]["need"], "Pick the answer");
+    assert_eq!(forwarded.1["card"]["recommended"], "yes");
+    assert!(forwarded.1.get("need").is_none() && forwarded.1.get("why").is_none());
+    assert_eq!(forwarded.1["command_id"], "mcp-ask-question-one", "a card is retried by its own id");
     assert!(forwarded.1["command_id"].as_str().unwrap().starts_with("mcp-"));
     assert_eq!(forwarded.1["interaction_id"], "question-one");
     assert!(forwarded.1.get("kind").is_none() && forwarded.1.get("protocol_version").is_none());
@@ -178,13 +184,15 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         "mcp-node",
         "present_result",
         json!({
-            "task_id":"task-one", "interaction_id":"answer-delivery", "body":"The requested answer",
+            "task_id":"task-one", "interaction_id":"answer-delivery", "need":"Review the answer",
+            "content":{"kind":"report", "body":"The requested answer"},
             "targets":[{"kind":"text", "text":"The requested answer"}], "is_final":true
         }),
     );
     assert_eq!(forwarded.0, "post /tasks/task-one/results http/1.1");
     assert!(forwarded.1["command_id"].as_str().unwrap().starts_with("mcp-"));
     assert_eq!(forwarded.1["body"], "The requested answer");
+    assert_eq!(forwarded.1["card"]["kind"], "review");
     assert!(forwarded.1.get("kind").is_none() && forwarded.1.get("protocol_version").is_none());
 
     let (node, forwarded) = mcp_exchange(
@@ -239,4 +247,100 @@ fn v2_mcp_without_a_producer_capability_fails_closed() {
             .unwrap()
             .contains("domain producer capability unavailable")
     );
+}
+
+/// One MCP session whose tool calls reach a daemon that answers each request with `reply`;
+/// returns every reply to a tool call and the commands the daemon received.
+fn mcp_session(calls: &[(&str, Value)], reply: impl Fn(&str) -> (u16, Value) + Send + 'static) -> (Vec<Value>, Vec<(String, Value)>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    listener.set_nonblocking(true).unwrap();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let stopped = stop.clone();
+    let server = std::thread::spawn(move || {
+        let mut received = vec![];
+        while !stopped.load(std::sync::atomic::Ordering::SeqCst) {
+            let Ok((stream, _)) = listener.accept() else {
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                continue;
+            };
+            stream.set_nonblocking(false).unwrap();
+            let (line, body) = request_body(&stream);
+            let path = line.split_whitespace().nth(1).unwrap().to_owned();
+            let (status, answer) = reply(&path);
+            let bytes = answer.to_string();
+            let mut stream = stream;
+            write!(stream, "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{bytes}", bytes.len()).unwrap();
+            if path != "/capabilities" {
+                received.push((path, body));
+            }
+        }
+        received
+    });
+    let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+        .arg("mcp-node")
+        .env("ALONDRA_HOME", std::env::temp_dir().join(format!("alondra-domain-mcp-session-{}-{port}", std::process::id())))
+        .env("ALONDRA_PORT", port.to_string())
+        .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    let stdin = child.stdin.as_mut().unwrap();
+    for (index, (tool, arguments)) in calls.iter().enumerate() {
+        writeln!(stdin, "{}", json!({"jsonrpc":"2.0","id":index + 1,"method":"tools/call","params":{"name":tool,"arguments":arguments}})).unwrap();
+    }
+    let output = child.wait_with_output().unwrap();
+    stop.store(true, std::sync::atomic::Ordering::SeqCst);
+    let replies = output.stdout.split(|byte| *byte == b'\n').filter(|line| !line.is_empty())
+        .map(|line| serde_json::from_slice::<Value>(line).unwrap()["result"].clone()).collect();
+    (replies, server.join().unwrap())
+}
+
+fn needy_ask(id: &str) -> Value {
+    json!({
+        "interaction_id":id, "scope":{"kind":"task", "task_id":"task-one"}, "recipient":{"kind":"user"},
+        "blocking":true, "options":[{"id":"a", "label":"A", "inputs":[]}, {"id":"b", "label":"B", "inputs":[]}]
+    })
+}
+
+#[test]
+fn a_refused_card_tells_the_node_the_field_and_the_fix_and_grants_nothing() {
+    let refusal = json!({"code":"invalid_input", "message":"card.need: Say in one line, in the imperative, what you need from the user",
+        "current_revision":null, "subject":"card.need"});
+    let (replies, received) = mcp_session(&[("ask", needy_ask("card-1"))], move |path| {
+        if path == "/capabilities" { (200, json!({"data_epoch":"epoch"})) } else { (422, refusal.clone()) }
+    });
+    assert_eq!(replies[0]["isError"], true);
+    let text = replies[0]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("invalid_input") && text.contains("card.need") && text.contains("what you need from the user"), "{text}");
+    assert!(text.contains("never an answer or a permission"), "{text}");
+    assert_eq!(received[0].1["card"]["need"], "", "the missing need is refused by the daemon, not invented by the producer");
+}
+
+#[test]
+fn a_retry_after_a_timeout_is_the_same_command() {
+    let (replies, received) = mcp_session(&[("ask", needy_ask("card-1")), ("ask", needy_ask("card-1"))], |path| {
+        if path == "/capabilities" { (200, json!({"data_epoch":"epoch"})) } else { (200, json!({"revision":2,"changed":true,"effects":[],"created_ids":["card-1"]})) }
+    });
+    assert!(replies.iter().all(|reply| reply["isError"] != true), "{replies:?}");
+    assert_eq!(received.len(), 2);
+    assert_eq!(received[0].1["command_id"], received[1].1["command_id"]);
+    assert_eq!(received[0].1, received[1].1);
+}
+
+#[test]
+fn a_daemon_that_is_down_says_not_to_proceed() {
+    let port = TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_alondra"))
+        .arg("mcp-node")
+        .env("ALONDRA_HOME", std::env::temp_dir().join(format!("alondra-domain-mcp-down-{}-{port}", std::process::id())))
+        .env("ALONDRA_PORT", port.to_string())
+        .env("ALONDRA_DOMAIN_CAPABILITY", BEARER)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    writeln!(child.stdin.as_mut().unwrap(), "{}",
+        json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"ask","arguments":needy_ask("card-1")}})).unwrap();
+    let output = child.wait_with_output().unwrap();
+    let reply: Value = serde_json::from_slice(output.stdout.trim_ascii()).unwrap();
+    assert_eq!(reply["result"]["isError"], true);
+    let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+    assert!(text.contains("don't proceed: could not reach Alondra; retry"), "{text}");
+    assert!(!text.contains("Recorded"), "{text}");
 }

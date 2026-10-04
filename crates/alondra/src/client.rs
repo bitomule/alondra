@@ -261,9 +261,17 @@ impl Client {
         body
     }
 
+    /// Producers only ever dial the daemon on this Mac; tests dial their fake one.
+    fn domain_url(&self, path: &str) -> String {
+        if cfg!(test) {
+            return format!("{}{path}", self.base);
+        }
+        format!("http://127.0.0.1:{}{path}", config().port)
+    }
+
     /// Domain producers use their daemon-issued bearer, never a locally paired User key.
     pub fn domain_get(&self, path: &str, bearer: &str) -> Result<Value> {
-        let url = format!("http://127.0.0.1:{}{path}", config().port);
+        let url = self.domain_url(path);
         let resp = self.agent.get(url).header("authorization", format!("Bearer {bearer}")).call()?;
         answer(resp)
     }
@@ -273,7 +281,7 @@ impl Client {
     }
 
     pub fn domain_call(&self, method: &str, path: &str, bearer: &str, body: Option<&Value>) -> Result<Value> {
-        let url = format!("http://127.0.0.1:{}{path}", config().port);
+        let url = self.domain_url(path);
         let bytes = body.map(serde_json::to_vec).transpose()?.unwrap_or_default();
         let request = ureq::http::Request::builder()
             .method(method)
@@ -439,6 +447,18 @@ fn answer(mut resp: ureq::http::Response<ureq::Body>) -> Result<Value> {
     Ok(value)
 }
 
+/// alondrad's typed no: nothing was written. It reads as `refusal` to the user.
+#[derive(Debug)]
+pub struct Refused(pub DomainError);
+
+impl std::fmt::Display for Refused {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&refusal(&self.0))
+    }
+}
+
+impl std::error::Error for Refused {}
+
 /// alondrad answered 404 without a domain error: it does not serve that route yet.
 #[derive(Debug)]
 pub struct Missing;
@@ -461,7 +481,7 @@ fn failure(status: u16, body: &Value) -> anyhow::Error {
         return anyhow::Error::new(Missing);
     }
     if let Ok(error) = serde_json::from_value::<DomainError>(body.clone()) {
-        return anyhow!(refusal(&error));
+        return anyhow::Error::new(Refused(error));
     }
     let msg = body.get("error").and_then(Value::as_str).map(str::to_string).unwrap_or_else(|| body.to_string());
     anyhow!(trf!("alondrad answered {status}: {msg}", "alondrad respondió {status}: {msg}"))
