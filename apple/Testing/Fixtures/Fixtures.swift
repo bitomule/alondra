@@ -38,7 +38,7 @@ enum Fixtures {
                 array.forEach(walk)
             }
         }
-        for url in try urls() where !url.lastPathComponent.hasSuffix("-tui.json") { walk(try JSONSerialization.jsonObject(with: Data(contentsOf: url))) }
+        for url in try urls() where !url.lastPathComponent.hasSuffix("-tui.json") && !url.lastPathComponent.hasSuffix("-mac.json") { walk(try JSONSerialization.jsonObject(with: Data(contentsOf: url))) }
         return keys
     }
 }

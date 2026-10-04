@@ -3,6 +3,11 @@ load("@build_bazel_rules_swift//swift:swift.bzl", "swift_library")
 load("@simpool//:simpool_ios_test_runner.bzl", "simpool_ios_test_runner")
 load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
 
+exports_files(
+    ["Support/AssertAppSnapshot.swift"],
+    visibility = ["//apple/Testing/MacSnapshots:__pkg__"],
+)
+
 # One canonical simulator and OS, so a baseline is recorded and verified on the same renderer.
 # `-collect-test-diagnostics never`: a target with a `test_host` is driven through `xcodebuild`,
 # which afterwards runs `xcrun simctl diagnose --timeout=600` against the pool simulator; that

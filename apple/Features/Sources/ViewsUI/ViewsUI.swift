@@ -22,9 +22,13 @@ public enum ViewsDate {
         }
         switch format {
         case .relative:
-            return abs(date.timeIntervalSinceNow) < 7 * 24 * 60 * 60
-                ? date.formatted(.relative(presentation: .named))
-                : date.formatted(date: .abbreviated, time: .shortened)
+            let now = RelativeClock.now()
+            guard abs(date.timeIntervalSince(now)) < 7 * 24 * 60 * 60 else {
+                return date.formatted(date: .abbreviated, time: .shortened)
+            }
+            let formatter = RelativeDateTimeFormatter()
+            formatter.dateTimeStyle = .named
+            return formatter.localizedString(for: date, relativeTo: now)
         case .absolute: return date.formatted(date: .abbreviated, time: .shortened)
         case .time: return date.formatted(date: .omitted, time: .shortened)
         }

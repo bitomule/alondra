@@ -1,0 +1,27 @@
+load("@build_bazel_rules_swift//swift:swift.bzl", "swift_test")
+load("//apple:swift.bzl", "STRICT_SWIFT_CONCURRENCY_COPTS")
+
+# The Mac window's own screens, drawn the way the daemon serves them to the Mac (`client: mac`) and
+# captured through an NSHostingView, so a change to what the Mac shows is seen without launching it.
+swift_test(
+    name = "AlondraMacSnapshotTests",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    args = ["-AppleLanguages", "(en)", "-AppleLocale", "en_US"],
+    srcs = glob(["Tests/*.swift"]) + ["//apple/Testing/Snapshots:Support/AssertAppSnapshot.swift"],
+    data = glob(["Tests/__Snapshots__/**"], allow_empty = True) + ["//fixtures/views:all"],
+    env = {
+        "SNAPSHOT_ROOT": "apple/Testing/MacSnapshots/Tests/__Snapshots__",
+        "TZ": "UTC",
+    },
+    # IssueReporting resolves its reporter with dlsym; retain it under -dead_strip.
+    linkopts = ["-Wl,-export_dynamic"],
+    deps = [
+        "//apple:AlondraMacWorkspace",
+        "//apple/Contract:AlondraContract",
+        "//apple/Design:AlondraDesign",
+        "//apple/Features:AlondraFeatures",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+        "@swiftpkg_swift_snapshot_testing//:SnapshotTesting",
+        "@swiftpkg_xctest_dynamic_overlay//:IssueReportingTestSupport",
+    ],
+)

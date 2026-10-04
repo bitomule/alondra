@@ -4,7 +4,7 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: snapshots-record snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
+.PHONY: snapshots-record snapshots-verify mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -42,6 +42,25 @@ snapshots-record:
 
 snapshots-verify:
 	bazelisk test $(SNAPSHOT_TARGET) --test_output=errors
+
+MAC_SNAPSHOT_TARGET := //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
+MAC_SNAPSHOT_ROOT := apple/Testing/MacSnapshots/Tests/__Snapshots__
+
+mac-snapshots-record:
+	-bazelisk test $(MAC_SNAPSHOT_TARGET) \
+		--test_env=SNAPSHOT_TESTING_RECORD=all \
+		--test_env=SNAPSHOT_ROOT=$(MAC_SNAPSHOT_ROOT) \
+		--nocache_test_results --test_output=errors
+	@outputs=$$(find bazel-testlogs/apple/Testing/MacSnapshots/AlondraMacSnapshotTests -type d -name test.outputs | head -1); \
+	if [ -n "$$outputs" ] && [ -d "$$outputs/$(MAC_SNAPSHOT_ROOT)" ]; then \
+		mkdir -p $(MAC_SNAPSHOT_ROOT) && cp -R "$$outputs/$(MAC_SNAPSHOT_ROOT)/." $(MAC_SNAPSHOT_ROOT)/ && chmod -R u+w $(MAC_SNAPSHOT_ROOT); \
+		echo "Baselines copied to $(MAC_SNAPSHOT_ROOT)"; \
+	else \
+		echo "No recorded snapshots found"; exit 1; \
+	fi
+
+mac-snapshots-verify:
+	bazelisk test $(MAC_SNAPSHOT_TARGET) --test_output=errors
 
 cargo-test:
 	cargo test

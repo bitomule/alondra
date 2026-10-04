@@ -55,6 +55,7 @@ filegroup(
     srcs = glob([
         "iOS/ViewsShipping/*.swift",
         "macOS/ViewsShipping/*.swift",
+        "macOS/Workspace/*.swift",
     ]) + ["//apple/Features:sources", "//apple/iOS/UI:sources"],
 )
 
@@ -125,13 +126,27 @@ macos_application(
 )
 
 swift_library(
+    name = "AlondraMacWorkspace",
+    copts = STRICT_SWIFT_CONCURRENCY_COPTS,
+    srcs = glob(["macOS/Workspace/*.swift"]),
+    module_name = "AlondraMacWorkspace",
+    visibility = ["//apple:__subpackages__"],
+    deps = [
+        "//apple/Design:AlondraDesign",
+        "//apple/Contract:AlondraContract",
+        "//apple/Features:AlondraFeatures",
+        "//apple/Data/Feed:AlondraFeed",
+        "@swiftpkg_swift_composable_architecture//:ComposableArchitecture",
+    ],
+)
+
+swift_library(
     name = "AlondraMacViewsEntry",
     copts = STRICT_SWIFT_CONCURRENCY_COPTS,
-    srcs = glob(["macOS/ViewsShipping/*.swift"]) + [
-        "macOS/Sources/SidebarCountHeader.swift",
-    ],
+    srcs = glob(["macOS/ViewsShipping/*.swift"]),
     module_name = "AlondraMac",
     deps = [
+        ":AlondraMacWorkspace",
         "//apple/Design:AlondraDesign",
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Data/Account:AlondraAccount",

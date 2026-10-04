@@ -61,6 +61,40 @@ final class FixtureContractTests: XCTestCase {
         }
     }
 
+    private func macDocument(_ name: String) throws -> ViewDocument {
+        let url = try XCTUnwrap(fixtureURLs().first { $0.lastPathComponent == "\(name).json" }, name)
+        return try ContractCodec.decode(ViewDocument.self, from: Data(contentsOf: url))
+    }
+
+    func testMacFixturesAreRenderedForTheMac() throws {
+        let names = ["sidebar-mac", "card-question-mac", "card-pr-mac", "pull-request-mac", "node-mac", "tasks-mac", "fleet-mac"]
+        for name in names {
+            XCTAssertEqual(try macDocument(name).client, .mac, name)
+        }
+    }
+
+    func testMacSidebarListsWhatWaitsForYouAsCardLinks() throws {
+        let sidebar = try macDocument("sidebar-mac")
+        XCTAssertEqual(sidebar.view, "sidebar")
+        let waiting = try XCTUnwrap(sidebar.sections.first { $0.id == "waiting" })
+        let links = waiting.items.compactMap { item -> String? in
+            guard case let .row(row) = item, case let .view(key)? = row.link else { return nil }
+            return key
+        }
+        XCTAssertEqual(links.count, waiting.items.count)
+        XCTAssertTrue(links.allSatisfy { $0.hasPrefix("card:") })
+        XCTAssertNotNil(sidebar.sections.first { $0.id == "pull_requests" })
+    }
+
+    func testMacCardActionsCarryKeyboardShortcuts() throws {
+        let card = try macDocument("card-pr-mac")
+        let actions = card.sections.flatMap(\.items).flatMap { item -> [AlondraContract.Action] in
+            if case let .card(card) = item { card.actions } else { [] }
+        }
+        XCTAssertFalse(actions.isEmpty)
+        XCTAssertTrue(actions.contains { $0.key != nil }, "the Mac client is the one that gets shortcuts")
+    }
+
     private func collectViewKeys(in value: Any, into keys: inout Set<String>) {
         if let object = value as? [String: Any] {
             if object["kind"] as? String == "view", let key = object["key"] as? String {

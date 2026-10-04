@@ -1472,6 +1472,24 @@ fn home_ios_es_matches_golden() {
 }
 
 #[test]
+fn mac_views_match_goldens() {
+    let state = golden_fixture();
+    let live = golden_live();
+    for (filename, key, expected) in [
+        ("sidebar-mac.json", "sidebar", include_str!("../../../../fixtures/views/sidebar-mac.json")),
+        ("card-question-mac.json", "card:a98d034b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/card-question-mac.json")),
+        ("card-pr-mac.json", "card:github.com/example/repo#12", include_str!("../../../../fixtures/views/card-pr-mac.json")),
+        ("pull-request-mac.json", "pull_request:github.com/example/repo#12", include_str!("../../../../fixtures/views/pull-request-mac.json")),
+        ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", include_str!("../../../../fixtures/views/node-mac.json")),
+        ("tasks-mac.json", "tasks", include_str!("../../../../fixtures/views/tasks-mac.json")),
+        ("fleet-mac.json", "fleet", include_str!("../../../../fixtures/views/fleet-mac.json")),
+    ] {
+        let actual = render(&state, &live, Client::Mac, Lang::En, key, "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
 #[ignore = "explicit fixture generation after Bazel authorization"]
 fn generate_goldens() {
     let dir = std::env::var("ALONDRA_GOLDEN_OUT").expect("ALONDRA_GOLDEN_OUT required");
@@ -1495,6 +1513,13 @@ fn generate_goldens() {
         ("machine-ios.json", "machine", Client::Ios, Lang::En),
         ("schedules-ios.json", "schedules", Client::Ios, Lang::En),
         ("schedule-new-ios.json", "schedule:new", Client::Ios, Lang::En),
+        ("sidebar-mac.json", "sidebar", Client::Mac, Lang::En),
+        ("card-question-mac.json", "card:a98d034b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
+        ("card-pr-mac.json", "card:github.com/example/repo#12", Client::Mac, Lang::En),
+        ("pull-request-mac.json", "pull_request:github.com/example/repo#12", Client::Mac, Lang::En),
+        ("node-mac.json", "node:d887a34b-249e-4487-a89b-57de38c26372", Client::Mac, Lang::En),
+        ("tasks-mac.json", "tasks", Client::Mac, Lang::En),
+        ("fleet-mac.json", "fleet", Client::Mac, Lang::En),
     ];
     let mut with_pending = state.clone();
     let pending = Request::new("r-4b7e2c1d9a0f4e3b8c6d5a4f3e2b1c0d".into(), "Import lists from Notes".into());

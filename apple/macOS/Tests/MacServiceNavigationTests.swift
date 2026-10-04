@@ -5,121 +5,343 @@ import Foundation
 import ComposableArchitecture
 import Testing
 
+private let status = #"{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}}"#
+
+private func makeDocument(key: String, version: String, sections: String = "[]") throws -> ViewDocument {
+    let json = #"{"protocol":1,"view":"\#(key)","key":"\#(key)","client":"mac","version":"\#(version)","cursor":"c1.abc","data_epoch":"epoch-\#(version)","status":\#(status),"sections":\#(sections),"notices":[]}"#
+    return try JSONDecoder().decode(ViewDocument.self, from: Data(json.utf8))
+}
+
+private func cardRows(_ ids: [String]) -> String {
+    ids.map {
+        #"{"type":"row","id":"\#($0)","icon":"question","title":"Card \#($0)","depth":0,"struck":false,"link":{"kind":"view","key":"card:\#($0)"},"children":[]}"#
+    }.joined(separator: ",")
+}
+
+private func sidebar(version: String = "v1", waiting: [String], pullRequests: [String] = []) throws -> ViewDocument {
+    let sections = #"[{"id":"waiting","collapsed":false,"items":[\#(cardRows(waiting))]},{"id":"pull_requests","collapsed":false,"items":[\#(cardRows(pullRequests))]},{"id":"summary","collapsed":false,"items":[{"type":"notice","text":"Waiting","tone":"neutral"}]}]"#
+    return try makeDocument(key: "sidebar", version: version, sections: sections)
+}
+
+private func answer() throws -> AlondraContract.Action {
+    let json = #"{"id":"answer:x@1","label":"Answer","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}"#
+    return try JSONDecoder().decode(AlondraContract.Action.self, from: Data(json.utf8))
+}
+
+private func request(_ command: String) -> ActionRequest {
+    ActionRequest(commandId: command, dataEpoch: "epoch", client: .mac, lang: "en", actionId: "answer:x@1")
+}
+
+private func response(_ outcome: String) throws -> ActionResponse {
+    try JSONDecoder().decode(ActionResponse.self, from: Data(#"{"protocol":1,"outcome":"\#(outcome)"}"#.utf8))
+}
+
+@MainActor
+private func makeStore(
+    waiting: [String], pullRequests: [String] = [], selected: String? = nil,
+    load: @escaping @Sendable (ViewKey) throws -> ViewFetch = { .document(try makeDocument(key: $0.rawValue, version: "d1")) }
+) throws -> TestStoreOf<MacPresentationFeature> {
+    var state = MacPresentationFeature.State()
+    state.sidebarDocument = try sidebar(waiting: waiting, pullRequests: pullRequests)
+    if let selected {
+        state.selection = .viewKey(selected)
+        state.selectedViewKey = selected
+        state.detailDocument = try makeDocument(key: selected, version: "d0")
+    }
+    let store = TestStore(initialState: state) { MacPresentationFeature() } withDependencies: {
+        $0.viewsClient.openScreen = { _, _ in }
+        $0.viewsClient.closeScreen = { _ in }
+        $0.viewsClient.load = { key, _ in try load(key) }
+    }
+    store.exhaustivity = .off
+    return store
+}
+
 @MainActor
 struct MacServiceNavigationTests {
     @Test
-    func scheduleScreenOpensItsEditableFormWithServerDefaults() async throws {
-        let data = Data(#"{"protocol":1,"view":"schedule","key":"schedule:new","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[{"id":"form","collapsed":false,"items":[{"type":"form","id":"schedule","fields":[{"id":"repeat","label":"Repeat","kind":{"kind":"choice","items":[{"id":"daily","label":"Daily"}]},"value":"daily","required":true,"reload_on_change":false},{"id":"time","label":"Time","kind":{"kind":"time"},"value":"09:00","required":true,"reload_on_change":false}],"submit":{"id":"sched_save:view@1","label":"Save Schedule","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}}]}]}"#.utf8)
-        let document = try JSONDecoder().decode(ViewDocument.self, from: data)
-        let form = try #require(document.sections.first?.items.first.flatMap { item -> Form? in
+    func selectingAViewOpensItAndShowsItsDocument() async throws {
+        let store = try makeStore(waiting: ["a", "b"])
+        await store.send(.select(.viewKey("card:a")))
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:a"))
+        #expect(store.state.selectedViewKey == "card:a")
+        #expect(store.state.detailDocument?.key == "card:a")
+        #expect(store.state.actionFeature.dataEpoch == "epoch-d1")
+    }
+
+    @Test
+    func selectingNothingClearsTheDetail() async throws {
+        let store = try makeStore(waiting: ["a"], selected: "card:a")
+        await store.send(.select(nil))
+        #expect(store.state.selection == nil)
+        #expect(store.state.detailDocument == nil)
+    }
+
+    @Test
+    func theFirstSidebarSelectsTheFirstLink() async throws {
+        let store = try makeStore(waiting: [])
+        await store.send(.viewLoaded("sidebar", .document(try sidebar(waiting: ["a", "b"]))))
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:a"))
+        #expect(store.state.detailDocument?.key == "card:a")
+    }
+
+    @Test
+    func aFailedLoadKeepsWhatWasShownAndReportsTheError() async throws {
+        let store = try makeStore(waiting: ["a"], selected: "card:a")
+        await store.send(.viewFailed("card:a", "offline"))
+        #expect(store.state.viewError == "offline")
+        #expect(store.state.detailDocument?.key == "card:a")
+        await store.send(.viewLoaded("card:a", .unchanged(cursor: "c2")))
+        #expect(store.state.viewError == nil)
+    }
+
+    @Test
+    func staleViewsReloadOnlyTheVisibleOnes() async throws {
+        let loaded = LockIsolated<[String]>([])
+        let store = try makeStore(waiting: ["a"], selected: "card:a") { key in
+            loaded.withValue { $0.append(key.rawValue) }
+            return .unchanged(cursor: "c2")
+        }
+        await store.send(.viewsStale(["sidebar", "card:z", "card:a"]))
+        await store.skipReceivedActions()
+        #expect(Set(loaded.value) == ["sidebar", "card:a"])
+    }
+
+    @Test
+    func eachWindowKeepsItsOwnViewsSelection() {
+        let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        let second = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        first.send(.select(.viewKey("pull_request:p2")))
+        second.send(.select(.viewKey("node:worker")))
+        #expect(first.selection == .viewKey("pull_request:p2"))
+        #expect(second.selection == .viewKey("node:worker"))
+    }
+}
+
+@MainActor
+struct MacAnsweringTests {
+    @Test
+    func answeringTheOpenCardMovesToTheNextOneAtOnce() async throws {
+        let store = try makeStore(waiting: ["a", "b", "c"], selected: "card:a")
+        await store.send(.beginViewAction(try answer()))
+        #expect(store.state.actionTarget == "a")
+        #expect(store.state.actionPresented)
+
+        await store.send(.action(.sent(request("1"))))
+        await store.skipReceivedActions()
+        #expect(store.state.optimistic.hides("a"))
+        #expect(!store.state.actionPresented)
+        #expect(store.state.selection == .viewKey("card:b"))
+        #expect(store.state.detailDocument?.key == "card:b")
+    }
+
+    @Test
+    func theLastCardOfTheListFallsBackToThePreviousOne() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:b")
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.sent(request("1"))))
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:a"))
+    }
+
+    @Test
+    func whenNothingWaitsTheNextPullRequestIsOpened() async throws {
+        let store = try makeStore(waiting: ["a"], pullRequests: ["p"], selected: "card:a")
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.sent(request("1"))))
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:p"))
+    }
+
+    @Test
+    func aCardAnsweredFromTheSidebarKeepsTheOpenCardWhereItIs() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:b")
+        await store.send(.beginViewAction(try answer(), target: "a"))
+        await store.send(.action(.sent(request("1"))))
+        #expect(store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
+    }
+
+    @Test
+    func aRefusedActionBringsTheCardBack() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a")
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.settled(request("1"), applied: false)))
+        #expect(!store.state.optimistic.hides("a"))
+    }
+
+    @Test
+    func anAppliedActionStaysHiddenUntilANewerSidebarArrives() async throws {
+        let store = try makeStore(waiting: ["a", "b"], selected: "card:a")
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.sent(request("1"))))
+        await store.send(.action(.settled(request("1"), applied: true)))
+        #expect(store.state.optimistic.hides("a"))
+
+        await store.send(.viewLoaded("sidebar", .document(try sidebar(version: "v2", waiting: ["b"]))))
+        #expect(!store.state.optimistic.hides("a"))
+        #expect(store.state.selection == .viewKey("card:b"))
+    }
+
+    @Test
+    func aChangedItemAsksAgainInTheSheet() async throws {
+        let store = try makeStore(waiting: ["a"], selected: "card:a")
+        await store.send(.beginViewAction(try answer()))
+        await store.send(.action(.sent(request("1"))))
+        #expect(!store.state.actionPresented)
+        await store.send(.action(.response(try response("changed"))))
+        #expect(store.state.actionPresented)
+    }
+
+    @Test
+    func aCardRemovedElsewhereMovesToTheNextCardNotTheFirstLink() async throws {
+        let store = try makeStore(waiting: ["a", "b", "c"], selected: "card:b")
+        await store.send(.viewLoaded("sidebar", .document(try sidebar(version: "v2", waiting: ["a", "c"]))))
+        await store.skipReceivedActions()
+        #expect(store.state.selection == .viewKey("card:c"))
+        #expect(store.state.detailDocument?.key == "card:c")
+    }
+
+    @Test
+    func fleetTasksAndTheNewRequestFormStayOpenAcrossSidebarUpdates() async throws {
+        for key in ["fleet", "tasks", "new_request"] {
+            let store = try makeStore(waiting: ["a", "b"], selected: key)
+            await store.send(.viewLoaded("sidebar", .document(try sidebar(version: "v2", waiting: ["b"]))))
+            #expect(store.state.selection == .viewKey(key))
+        }
+    }
+}
+
+@MainActor
+struct MacFormTests {
+    @Test
+    func beginningAFormOpensItsSheetWithoutAnAnswerTarget() async throws {
+        let sections = #"[{"id":"form","collapsed":false,"items":[{"type":"form","id":"request","fields":[{"id":"project","label":"Project","kind":{"kind":"text","placeholder":null},"value":"alondra","required":true,"reload_on_change":true}],"submit":{"id":"request_send@1","label":"Send","style":"primary","presentation":"button","input":{"kind":"none"},"attachments":false,"enabled":true}}]}]"#
+        var state = MacPresentationFeature.State()
+        state.detailDocument = try makeDocument(key: "new_request", version: "d1", sections: sections)
+        state.actionTarget = "stale"
+        let form = try #require(state.detailDocument?.sections.first?.items.first.flatMap { item -> AlondraContract.Form? in
             if case let .form(form) = item { form } else { nil }
         })
-        let store = TestStore(initialState: ViewsScreenFeature.State(key: .newSchedule(), owner: "schedule-editor-test")) {
-            ViewsScreenFeature()
-        }
+        let store = TestStore(initialState: state) { MacPresentationFeature() }
+        store.exhaustivity = .off
 
-        await store.send(.loaded(.document(document))) {
-            $0.document = document
-            $0.action.dataEpoch = "epoch"
-            $0.form = form
-            $0.action.action = form.submit
-            $0.action.fields = ["repeat": .string("daily"), "time": .string("09:00")]
-            $0.action.requiresAttachments = false
-        }
+        await store.send(.beginViewForm(form))
+        #expect(store.state.activeForm == form)
+        #expect(store.state.actionPresented)
+        #expect(store.state.actionTarget == nil)
+        await store.skipReceivedActions()
+        #expect(store.state.actionFeature.fields["project"] == .string("alondra"))
+
+        await store.send(.actionPresented(false))
+        #expect(store.state.activeForm == nil)
+        #expect(store.state.actionFeature.action == nil)
     }
 
     @Test
-    func explicitRefreshOmitsTheKnownViewVersion() async throws {
-        let data = Data(#"{"protocol":1,"view":"tasks","key":"tasks","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[]}"#.utf8)
-        var state = ViewsScreenFeature.State(key: .tasks, owner: "refresh-test")
-        state.document = try JSONDecoder().decode(ViewDocument.self, from: data)
-        let store = TestStore(initialState: state) { ViewsScreenFeature() } withDependencies: {
-            $0.viewsClient.openScreen = { _, _ in }
-            $0.viewsClient.load = { key, known in
-                #expect(key == .tasks)
-                #expect(known == nil)
-                return .unchanged(cursor: "c2")
-            }
-        }
-        await store.send(.refresh) { $0.loading = true }
-        await store.receive(\.loaded) { $0.loading = false }
+    func changingTheProjectReloadsTheFormForIt() async throws {
+        let store = try makeStore(waiting: [], selected: "new_request")
+        await store.send(.reloadForm("project", .string("alondra")))
+        await store.skipReceivedActions()
+        #expect(store.state.selectedViewKey == ViewKey.newRequest(project: "alondra").rawValue)
+        await store.send(.reloadForm("other", .string("x")))
+        #expect(store.state.selectedViewKey == ViewKey.newRequest(project: "alondra").rawValue)
     }
 
     @Test
-    func fleetLoadFailureKeepsCachedDocumentForConnectionNotice() async throws {
-        let data = Data(#"{"protocol":1,"view":"fleet","key":"fleet","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"2 agents","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"sections":[{"id":"agents","collapsed":false,"items":[]}] }"#.utf8)
-        let document = try JSONDecoder().decode(ViewDocument.self, from: data)
-        var state = ViewsScreenFeature.State(key: .fleet, owner: "fleet-offline-test")
-        state.document = document
-        state.isPresented = true
-        let store = TestStore(initialState: state) { ViewsScreenFeature() }
-
-        await store.send(.failed("offline")) { $0.error = "offline" }
-        #expect(store.state.document == document)
-    }
-
-    private func searchDocument(empty: Bool) throws -> ViewDocument {
-        let content = empty
-            ? #""sections":[],"empty":{"text":"No results found","tone":"neutral"}"#
-            : #""sections":[{"id":"results","collapsed":false,"items":[{"type":"row","id":"node-a","icon":"node","title":"Node A","depth":0,"struck":false,"children":[]}]}]"#
-        let json = #"{"protocol":1,"view":"search","key":"search?q=node","client":"ios","version":"v1","cursor":"c1","data_epoch":"epoch","status":{"version":"s1","summary":"Ready","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}},"# + content + "}"
-        return try JSONDecoder().decode(ViewDocument.self, from: Data(json.utf8))
-    }
-
-    private func fleetSearchStore(
-        clock: TestClock<Duration>,
-        load: @escaping @Sendable (ViewKey, String?) async throws -> ViewFetch
-    ) -> TestStoreOf<ViewsScreenFeature> {
-        var state = ViewsScreenFeature.State(key: .fleet, owner: "fleet-search-test")
-        state.isPresented = true
-        return TestStore(initialState: state) { ViewsScreenFeature() } withDependencies: {
-            $0.continuousClock = clock
-            $0.viewsClient.openScreen = { _, _ in }
-            $0.viewsClient.load = load
-        }
-    }
-
-    @Test
-    func fleetSearchShowsTheMatches() async throws {
+    func theIssuePickerLoadsFiltersAndFillsTheField() async throws {
         let clock = TestClock()
-        let document = try searchDocument(empty: false)
-        let store = fleetSearchStore(clock: clock) { key, _ in
-            #expect(key.rawValue == "search?q=node")
-            return .document(document)
+        let picked = LockIsolated<[String]>([])
+        let store = try makeStore(waiting: []) { key in
+            picked.withValue { $0.append(key.rawValue) }
+            return .document(try makeDocument(key: key.rawValue, version: "p1"))
         }
-        await store.send(.searchQueryChanged("node")) { $0.searchQuery = "node"; $0.searchLoading = true }
+        store.dependencies.continuousClock = clock
+
+        await store.send(.pickerOpened("issue", "issue_picker"))
+        #expect(store.state.pickerFieldID == "issue")
+        #expect(store.state.pickerLoading)
+        await store.skipReceivedActions()
+        #expect(!store.state.pickerLoading)
+        #expect(store.state.pickerDocument != nil)
+
+        await store.send(.pickerQueryChanged("crash"))
         await clock.advance(by: .milliseconds(250))
-        await store.receive(\.searchLoaded) { $0.searchDocument = document; $0.searchLoading = false }
-        #expect(store.state.searchError == nil)
+        await store.skipReceivedActions()
+        #expect(picked.value.last == ViewKey.issuePicker(query: "crash").rawValue)
+
+        await store.send(.pickerSelected("github.com/example/repo#7"))
+        #expect(store.state.actionFeature.fields["issue"] == .string("github.com/example/repo#7"))
+        #expect(store.state.pickerFieldID == nil)
     }
 
     @Test
-    func fleetSearchReportsAnEmptyResult() async throws {
-        let clock = TestClock()
-        let document = try searchDocument(empty: true)
-        let store = fleetSearchStore(clock: clock) { _, _ in .document(document) }
-        await store.send(.searchQueryChanged("node")) { $0.searchQuery = "node"; $0.searchLoading = true }
-        await clock.advance(by: .milliseconds(250))
-        await store.receive(\.searchLoaded) { $0.searchDocument = document; $0.searchLoading = false }
-        #expect(store.state.searchDocument?.empty?.text == "No results found")
-        #expect(store.state.searchError == nil)
+    func aPickerThatIsNotTheIssuePickerIsIgnored() async throws {
+        let store = try makeStore(waiting: [])
+        await store.send(.pickerOpened("issue", "something_else"))
+        #expect(store.state.pickerFieldID == nil)
+    }
+}
+
+@MainActor
+struct MacContentTests {
+    private func content(_ digest: String) throws -> ContentRef {
+        let json = #"{"kind":"diff","title":"Changes","size":10,"digest":"\#(digest)","fetch":"content/\#(digest)","commentable":true}"#
+        return try JSONDecoder().decode(ContentRef.self, from: Data(json.utf8))
     }
 
     @Test
-    func fleetSearchShowsAnErrorWhenItFails() async throws {
+    func openingContentLoadsItsBodyIntoTheSheet() async throws {
+        var state = MacPresentationFeature.State()
+        state.diffComments = ["a": ActionComment(anchor: "a", text: "old")]
+        let store = TestStore(initialState: state) { MacPresentationFeature() } withDependencies: {
+            $0.viewsClient.fetchContent = { _ in "+added" }
+        }
+        store.exhaustivity = .off
+        let ref = try content("d1")
+
+        await store.send(.contentRequested(ref))
+        #expect(store.state.contentPresented)
+        #expect(store.state.contentLoading)
+        #expect(store.state.diffComments.isEmpty, "comments belong to the diff they were written on")
+        await store.skipReceivedActions()
+        #expect(store.state.contentBody == "+added")
+        #expect(store.state.contentIsDiff)
+        #expect(!store.state.contentLoading)
+    }
+
+    @Test
+    func reopeningTheSameDiffKeepsItsComments() async throws {
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+            $0.viewsClient.fetchContent = { _ in "+added" }
+        }
+        store.exhaustivity = .off
+        let ref = try content("d1")
+        await store.send(.contentRequested(ref))
+        await store.send(.diffCommentsChanged(["a": ActionComment(anchor: "a", text: "keep")]))
+        await store.send(.contentRequested(ref))
+        #expect(store.state.diffComments["a"]?.text == "keep")
+    }
+
+    @Test
+    func aContentFailureIsShownInTheSheet() async throws {
         struct Offline: Error {}
-        let clock = TestClock()
-        let store = fleetSearchStore(clock: clock) { _, _ in throw Offline() }
-        await store.send(.searchQueryChanged("node")) { $0.searchQuery = "node"; $0.searchLoading = true }
-        await clock.advance(by: .milliseconds(250))
-        await store.receive(\.searchFailed) {
-            $0.searchLoading = false
-            $0.searchError = String(localized: "Couldn’t load this from your Mac. Try again.")
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+            $0.viewsClient.fetchContent = { _ in throw Offline() }
         }
-        await store.send(.searchQueryChanged("nodes")) { $0.searchQuery = "nodes"; $0.searchLoading = true; $0.searchError = nil }
-        await store.send(.searchQueryChanged("")) { $0.searchQuery = ""; $0.searchLoading = false }
+        store.exhaustivity = .off
+        await store.send(.contentRequested(try content("d1")))
+        await store.skipReceivedActions()
+        #expect(store.state.contentError == String(localized: "Couldn’t load this from your Mac. Try again."))
+        #expect(!store.state.contentLoading)
     }
+}
 
+@MainActor
+struct MacSearchTests {
     @Test
     func changingSearchCancelsThePreviousViewsRequest() async throws {
         let clock = TestClock()
@@ -127,8 +349,8 @@ struct MacServiceNavigationTests {
             $0.continuousClock = clock
             $0.viewsClient.load = { key, _ in
                 #expect(key.rawValue == "search?q=new+query")
-                let data = Data(#"{"protocol":1,"view":"search","key":"search?q=new+query","client":"mac","version":"v0123456789abcdef","cursor":"c1.abc","data_epoch":"epoch","status":{"version":"s1","summary":"1 result","badge":1,"counts":[],"gauges":[],"orchestrator":{"text":"Ready","tone":"success"}},"sections":[{"id":"results","collapsed":false,"items":[{"type":"row","id":"new-node","icon":"node","title":"New node","depth":0,"struck":false,"children":[]}]}],"notices":[]}"#.utf8)
-                return .document(try JSONDecoder().decode(ViewDocument.self, from: data))
+                let rows = #"[{"id":"results","collapsed":false,"items":[{"type":"row","id":"new-node","icon":"node","title":"New node","depth":0,"struck":false,"children":[]}]}]"#
+                return .document(try makeDocument(key: key.rawValue, version: "v0123456789abcdef", sections: rows))
             }
         }
         await store.send(.queryChanged("old query")) { $0.query = "old query"; $0.searchRevision = 1 }
@@ -145,6 +367,30 @@ struct MacServiceNavigationTests {
     }
 
     @Test
+    func aQueryUnderThreeCharactersNeverReachesTheDaemon() async throws {
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
+        await store.send(.queryChanged("ab")) { $0.query = "ab"; $0.searchRevision = 1 }
+        await store.send(.searchRequested)
+    }
+
+    @Test
+    func anEmptySearchResultSaysSo() async throws {
+        let clock = TestClock()
+        let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.load = { key, _ in .document(try makeDocument(key: key.rawValue, version: "v1")) }
+        }
+        await store.send(.queryChanged("nothing")) { $0.query = "nothing"; $0.searchRevision = 1 }
+        await store.send(.searchRequested)
+        await clock.advance(by: .milliseconds(1200))
+        await store.receive(\.searchStarted) { $0.smartStatus = String(localized: "Searching the conversations…") }
+        await store.receive(\.searchFinished) {
+            $0.smartMatches = []
+            $0.smartStatus = String(localized: "No results")
+        }
+    }
+
+    @Test
     func sidebarQueryMatchesRowsAndExpandsProjectsWithoutReadingLegacyModels() async {
         let store = TestStore(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
         await store.send(.queryChanged("release checklist")) {
@@ -152,18 +398,31 @@ struct MacServiceNavigationTests {
             $0.searchRevision = 1
         }
         #expect(store.state.matches("Release checklist for Mac"))
+        #expect(!store.state.matches("Something else"))
         #expect(store.state.projectExpanded("Alondra"))
         await store.send(.queryChanged("   ")) { $0.query = "   "; $0.smartMatches = nil; $0.smartStatus = ""; $0.searchRevision = 2 }
         await store.send(.sidebarSectionExpanded("tasks", false)) { $0.tasksExpanded = false }
     }
+}
+
+struct MacWaitingQueueTests {
+    @Test
+    func theNextCardFollowsTheSidebarOrderAndSkipsWhatIsGone() throws {
+        let document = try sidebar(waiting: ["a", "b", "c"], pullRequests: ["p"])
+        let all: Set = ["card:a", "card:b", "card:c", "card:p"]
+        #expect(MacPresentationFeature.nextKey(after: "card:a", in: document, available: all) == "card:b")
+        #expect(MacPresentationFeature.nextKey(after: "card:a", in: document, available: all.subtracting(["card:b"])) == "card:c")
+        #expect(MacPresentationFeature.nextKey(after: "card:c", in: document, available: all) == "card:p")
+        #expect(MacPresentationFeature.nextKey(after: "card:p", in: document, available: all) == "card:c")
+        #expect(MacPresentationFeature.nextKey(after: "card:a", in: document, available: ["card:a"]) == nil)
+        #expect(MacPresentationFeature.nextKey(after: "node:x", in: document, available: all) == nil)
+    }
 
     @Test
-    func eachWindowKeepsItsOwnViewsSelection() {
-        let first = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
-        let second = Store(initialState: MacPresentationFeature.State()) { MacPresentationFeature() }
-        first.send(.select(.viewKey("pull_request:p2")))
-        second.send(.select(.viewKey("node:worker")))
-        #expect(first.selection == .viewKey("pull_request:p2"))
-        #expect(second.selection == .viewKey("node:worker"))
+    func aCardIdIsReadFromCardAndPullRequestKeysOnly() {
+        #expect(MacPresentationFeature.cardID(forViewKey: "card:abc") == "abc")
+        #expect(MacPresentationFeature.cardID(forViewKey: "pull_request:github.com/x/y#1") == "github.com/x/y#1")
+        #expect(MacPresentationFeature.cardID(forViewKey: "node:abc") == nil)
+        #expect(MacPresentationFeature.cardID(forViewKey: "fleet") == nil)
     }
 }

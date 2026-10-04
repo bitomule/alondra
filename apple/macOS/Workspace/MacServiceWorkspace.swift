@@ -5,20 +5,20 @@ import SwiftUI
 import AlondraContract
 import AppKit
 
-struct MacServiceWorkspace<AccountContent: View>: View {
+public struct MacServiceWorkspace<AccountContent: View>: View {
     @Bindable var store: StoreOf<MacAppFeature>
     let accountContent: AccountContent
     var isActive = true
     private var presentation: StoreOf<MacPresentationFeature> { store.scope(state: \.macPresentation, action: \.macPresentation) }
     @FocusState private var searchFocused: Bool
 
-    init(store: StoreOf<MacAppFeature>, accountContent: AccountContent, isActive: Bool = true) {
+    public init(store: StoreOf<MacAppFeature>, accountContent: AccountContent, isActive: Bool = true) {
         self.store = store
         self.accountContent = accountContent
         self.isActive = isActive
     }
 
-    var body: some View {
+    public var body: some View {
         NavigationSplitView {
             MacServiceSidebar(presentation: presentation)
                 .navigationSplitViewColumnWidth(min: 260, ideal: 320, max: 440)
@@ -35,6 +35,7 @@ struct MacServiceWorkspace<AccountContent: View>: View {
             }
             .animation(.smooth(duration: 0.22), value: presentation.selection)
             .overlay(alignment: .top) { DeliveryBanner(store: store) }
+            .overlay(alignment: .bottom) { MacNoticeToast(store: store) }
         }
         .environment(\.searchActive, searchFocused)
         .navigationTitle("Alondra")
@@ -65,15 +66,20 @@ struct MacServiceWorkspace<AccountContent: View>: View {
     }
 }
 
-private struct MacServiceSidebar: View {
+public struct MacServiceSidebar: View {
     let presentation: StoreOf<MacPresentationFeature>
-    var body: some View {
+    public init(presentation: StoreOf<MacPresentationFeature>) { self.presentation = presentation }
+    public var body: some View {
         List(selection: Binding(get: { presentation.selection }, set: { presentation.send(.select($0)) })) {
+            Section {
+                Label("Fleet", systemImage: "square.grid.2x2").tag(MacPresentationFeature.Selection.viewKey(ViewKey.fleet.rawValue))
+                Label("Tasks", systemImage: "checklist").tag(MacPresentationFeature.Selection.viewKey(ViewKey.tasks.rawValue))
+            }
             if let document = presentation.sidebarDocument {
                 if !presentation.smartStatus.isEmpty {
                     Label(presentation.smartStatus, systemImage: "text.magnifyingglass").font(.callout).foregroundStyle(.secondary)
                 }
-                ForEach(document.sections, id: \.id) { section in
+                ForEach(document.sections.filter(hasRows), id: \.id) { section in
                     Section(isExpanded: Binding(
                         get: { sidebarSectionExpanded(section) },
                         set: { presentation.send(.sidebarSectionExpanded(section.id, $0)) }
@@ -84,6 +90,9 @@ private struct MacServiceSidebar: View {
                     } header: {
                         sectionHeader(section)
                     }
+                }
+                ForEach(document.sections.flatMap(\.items).compactMap(summary), id: \.text) { notice in
+                    MacSidebarSummary(notice: notice) { presentation.send(.select(.viewKey($0))) }
                 }
             } else if let error = presentation.viewError {
                 VStack(spacing: 10) {
@@ -98,6 +107,14 @@ private struct MacServiceSidebar: View {
         .animation(.snappy, value: presentation.sidebarDocument?.version)
     }
 
+    private func hasRows(_ section: ViewSection) -> Bool {
+        section.items.contains { if case .row = $0 { true } else { false } }
+    }
+
+    private func summary(_ item: ViewItem) -> Notice? {
+        if case let .notice(notice) = item { notice } else { nil }
+    }
+
     private func sidebarSectionExpanded(_ section: ViewSection) -> Bool {
         if section.id == "tasks" { return presentation.tasksExpanded }
         if section.id.hasPrefix("project:") {
@@ -108,7 +125,7 @@ private struct MacServiceSidebar: View {
 
     private func visibleRows(_ section: ViewSection) -> [Row] {
         let rows = section.items.compactMap { item -> Row? in
-            guard case let .row(row) = item else { return nil }
+            guard case let .row(row) = item, !presentation.optimistic.hides(row.id) else { return nil }
             return row
         }
         return presentation.withState { state in
@@ -121,6 +138,15 @@ private struct MacServiceSidebar: View {
                 return state.matches(([row.title, row.subtitle ?? ""] + row.badges.map(\.text) + [childText]).joined(separator: " "))
             }
         }
+    }
+
+    private func waitingCount(_ section: ViewSection) -> Int {
+        let count = Int(section.count ?? 0)
+        guard section.id == "waiting" || section.id == "pull_requests" else { return count }
+        let hidden = section.items.filter { item in
+            if case let .row(row) = item { presentation.optimistic.hides(row.id) } else { false }
+        }.count
+        return max(count - hidden, 0)
     }
 
     @ViewBuilder private func sectionHeader(_ section: ViewSection) -> some View {
@@ -139,8 +165,23 @@ private struct MacServiceSidebar: View {
             }
         } else {
             SidebarCountHeader(title: section.title ?? section.id.capitalized,
-                               count: Int(section.count ?? 0), tint: sectionTint(section.id))
+                               count: waitingCount(section), tint: sectionTint(section.id))
         }
+    }
+}
+
+private struct MacSidebarSummary: View {
+    let notice: Notice
+    let open: (String) -> Void
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(notice.text).font(.callout).foregroundStyle(.secondary)
+            if let action = notice.action, case let .view(key)? = action.link {
+                Button(action.label) { open(key) }.buttonStyle(.link)
+            }
+        }
+        .padding(.vertical, 4)
+        .selectionDisabled()
     }
 }
 
@@ -154,10 +195,11 @@ private func sectionTint(_ id: String) -> Color {
     }
 }
 
-private struct MacServiceDetail: View {
+public struct MacServiceDetail: View {
     let presentation: StoreOf<MacPresentationFeature>
     @Environment(\.openURL) private var openURL
-    var body: some View {
+    public init(presentation: StoreOf<MacPresentationFeature>) { self.presentation = presentation }
+    public var body: some View {
         Group {
             if let document = presentation.detailDocument {
                 ScrollView {
@@ -409,7 +451,7 @@ private struct MacViewSidebarRow: View {
         .contextMenu {
             ForEach(Array(row.actions.enumerated()), id: \.offset) { _, action in
                 Button(role: action.style == .destructive ? .destructive : nil) {
-                    presentation.send(.beginViewAction(action))
+                    presentation.send(.beginViewAction(action, target: cardTarget))
                 } label: { Text(action.label) }
                     .disabled(!action.enabled)
             }
@@ -455,6 +497,10 @@ private struct MacViewSidebarRow: View {
         .padding(.vertical, 3)
         .accessibilityElement(children: .combine)
         }
+    }
+    private var cardTarget: String? {
+        guard case let .view(key)? = row.link, MacPresentationFeature.cardID(forViewKey: key) != nil else { return nil }
+        return row.id
     }
     private var selectionTag: MacPresentationFeature.Selection? {
         guard case let .view(key)? = row.link else { return nil }

@@ -1,6 +1,7 @@
 import AlondraDesign
 import AlondraAttachments
 import AlondraFeatures
+import AlondraMacWorkspace
 import AlondraAccount
 import AlondraDemo
 import AlondraNetworkReachability
