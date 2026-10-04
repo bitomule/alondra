@@ -608,6 +608,7 @@ mod producer_revision_tests {
 }
 
 mod capabilities;
+mod problems;
 mod rejections;
 
 #[cfg(test)]

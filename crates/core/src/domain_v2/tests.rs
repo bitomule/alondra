@@ -243,11 +243,18 @@ fn schedule_commands_preserve_claim_and_result_history() {
         },
     )
     .unwrap();
-    assert_eq!(failed.effects, [DomainEffect::ScheduleLaunchFailed {
-        task_id: "scheduled-task".into(),
-        title: "Updated review".into(),
-        reason: "Workspace not trusted.".into(),
-    }]);
+    assert_eq!(failed.effects, [
+        DomainEffect::ScheduleLaunchFailed {
+            task_id: "scheduled-task".into(),
+            title: "Updated review".into(),
+            reason: "Workspace not trusted.".into(),
+        },
+        DomainEffect::NotifyUser { task_id: Some("scheduled-task".into()), interaction_id: "problem-launch-run-1".into() },
+    ]);
+    let problem = &state.interactions[&"problem-launch-run-1".into()];
+    assert_eq!((problem.card.kind, problem.author.clone()), (CardKind::Problem, Author::System));
+    assert!(problem.card.need.contains("Updated review") && problem.card.why.contains("Workspace not trusted."), "{:?}", problem.card);
+    assert_eq!(problem.card.content.as_ref().map(|c| c.kind), Some(ContentKind::Diagnosis));
     let run = &state.schedule.runs[&ScheduleRunId::from("run-1")];
     assert_eq!(run.state, ScheduleRunState::Failed);
     assert_eq!(run.finished_at, Some(101));
