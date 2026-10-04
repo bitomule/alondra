@@ -517,6 +517,8 @@ pub enum Flow {
 pub struct App {
     pub home_view: Option<ViewDocument>,
     pub card_view: Option<ViewDocument>,
+    /// The numbered list a card's `m` or a menu button opened over its buttons.
+    pub card_menu: Option<view_render::Menu>,
     pub view_status: Option<ViewStatus>,
     pub view_data_epoch: Option<String>,
     pub connected: bool,
@@ -867,6 +869,7 @@ impl App {
         App {
             home_view: None,
             card_view: None,
+            card_menu: None,
             view_status: None,
             view_data_epoch: None,
             connected: false,
@@ -969,12 +972,12 @@ impl App {
             return Some(key.clone());
         }
         if let (Some(selected), Some(view)) = (self.sel.as_ref(), self.home_view.as_ref()) {
-            let row = view_render::rows(view)
+            let entry = view_render::entries(view)
                 .into_iter()
-                .find_map(|(row, _)| (row.id == selected.0).then_some(row));
-            if let Some(row) = row {
-                return match &row.link {
-                    Some(alondra_core::views::Link::View { key }) => Some(key.clone()),
+                .find(|(id, _, _)| *id == selected.0);
+            if let Some((_, _, link)) = entry {
+                return match link {
+                    Some(alondra_core::views::Link::View { key }) => Some(key),
                     _ => None,
                 };
             }
@@ -1714,6 +1717,9 @@ impl App {
             self.composer_key(k);
             return Flow::Go;
         }
+        if self.card_menu.is_some() {
+            return self.card_menu_key(k);
+        }
         if self.schedules_open {
             if let Some(flow) = self.schedule_row_key(k) {
                 return flow;
@@ -1850,6 +1856,7 @@ impl App {
 
     fn show(&mut self, screen: Screen) {
         self.screen = screen;
+        self.card_menu = None;
         self.view_navigation.clear();
         self.compose_orchestrator_on_load = false;
         self.reader_after_view = None;
@@ -2306,22 +2313,6 @@ impl App {
                             if let Some(body) = &card.body {
                                 text.push_str(&format!("\n\n{}", body.text));
                             }
-                            for quote in &card.quotes {
-                                text.push_str(&format!("\n\n> {}: {}", quote.label, quote.text));
-                            }
-                            if let Some(facts) = &card.facts {
-                                for fact in &facts.items {
-                                    text.push_str(&format!("\n\n{}: {}", fact.label, fact.value));
-                                }
-                            }
-                            if let Some(checks) = &card.checks {
-                                for check in &checks.items {
-                                    text.push_str(&format!(
-                                        "\n\n- {}: {:?}",
-                                        check.name, check.state
-                                    ));
-                                }
-                            }
                             parts.extend(card.attachments.iter().map(|attachment| Part::File {
                                 name: attachment.name.clone(),
                                 route: attachment.fetch.clone(),
@@ -2406,9 +2397,6 @@ impl App {
             }
             if let Some(body) = &card.body {
                 text.push_str(&format!("\n\n{}", body.text));
-            }
-            for quote in &card.quotes {
-                text.push_str(&format!("\n\n> {}: {}", quote.label, quote.text));
             }
             let mut parts = vec![Part::Text(text)];
             parts.extend(card.attachments.iter().map(|attachment| Part::File {

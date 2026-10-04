@@ -543,6 +543,19 @@ fn draw_views_inbox_list(
             ]));
         }
         for item in &section.items {
+            if let alondra_core::views::Item::Card(card) = item {
+                let selected = app.sel.as_ref().is_some_and(|key| key.0 == card.id);
+                let start = lines.len();
+                lines.extend(super::view_render::card_row_lines(
+                    card,
+                    inner.width.saturating_sub(1) as usize,
+                    selected,
+                ));
+                if selected {
+                    selected_range = Some((start, lines.len()));
+                }
+                continue;
+            }
             let alondra_core::views::Item::Row(row) = item else {
                 continue;
             };
@@ -644,20 +657,39 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         return;
     };
     let mut lines = super::view_render::document_lines(document, inner.width as usize);
-    let actions = visible_detail_actions(document);
-    if !actions.is_empty() {
-        lines.push(Line::default());
-        lines.extend(action_menu(&actions));
+    let mut keys = Vec::new();
+    if let Some(card) = super::view_render::typed_card(document) {
+        keys = match &app.card_menu {
+            Some(menu) => super::view_render::menu_lines(menu),
+            None => super::view_render::button_lines(card),
+        };
+    } else {
+        let actions = visible_detail_actions(document);
+        if !actions.is_empty() {
+            lines.push(Line::default());
+            lines.extend(action_menu(&actions));
+        }
     }
+    let keys_height = (keys.len() as u16).min(inner.height.saturating_sub(4));
+    let [body, keys_area] = Layout::vertical([
+        Constraint::Min(1),
+        Constraint::Length(if keys.is_empty() { 0 } else { keys_height + 1 }),
+    ])
+    .areas(inner);
     app.detail_view.total = lines.len();
-    app.detail_view.h = inner.height as usize;
+    app.detail_view.h = body.height as usize;
     f.render_widget(
         Paragraph::new(lines)
             .wrap(Wrap { trim: false })
             .scroll((app.detail_scroll as u16, 0)),
-        inner,
+        body,
     );
-    scrollbar(f, inner, app.detail_view.total, app.detail_scroll);
+    scrollbar(f, body, app.detail_view.total, app.detail_scroll);
+    if !keys.is_empty() {
+        let mut shown = vec![Line::default()];
+        shown.extend(keys);
+        f.render_widget(Paragraph::new(shown), keys_area);
+    }
 }
 
 /// What a row says first: a child's own text, a root's name.
@@ -1313,7 +1345,7 @@ pub(super) fn action_menu(actions: &[alondra_core::views::Action]) -> Vec<Line<'
     for action in actions {
         for (index, option) in action.options.iter().enumerate() {
             let key = option.key.clone().unwrap_or_else(|| (index + 1).to_string());
-            lines.push(entry(&key, merge_option_label(option)));
+            lines.push(entry(&key, option_label(option)));
         }
     }
     for action in actions {
@@ -1381,7 +1413,7 @@ pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(Stri
                 .key
                 .clone()
                 .unwrap_or_else(|| (index + 1).to_string());
-            keys.push((hint, merge_option_label(&option)));
+            keys.push((hint, option_label(&option)));
         }
     }
     if has_diff {
@@ -1390,7 +1422,7 @@ pub(super) fn view_footer_actions(view: &alondra_core::views::View) -> Vec<(Stri
     keys
 }
 
-fn merge_option_label(option: &alondra_core::views::ActionOption) -> String {
+pub(super) fn option_label(option: &alondra_core::views::ActionOption) -> String {
     let method = match option.id.as_str() {
         "merge" => Some(alondra_core::pr::MergeMethod::Merge),
         "squash" => Some(alondra_core::pr::MergeMethod::Squash),
@@ -1410,6 +1442,25 @@ pub(super) fn visible_detail_actions(document: &alondra_core::views::View) -> Ve
         .into_iter()
         .filter(|action| action.enabled)
         .collect()
+}
+
+/// The keys a card answers right now: its working buttons, the menu of the rest, the reply, and
+/// the full content.
+fn card_footer_keys(card: &alondra_core::views::Card) -> Vec<(String, String)> {
+    let mut keys = Vec::new();
+    for (index, action) in card.actions.iter().take(super::view_render::BUTTONS).enumerate() {
+        if action.enabled {
+            keys.push(((index + 1).to_string(), super::md::truncate(&action.label, 18)));
+        }
+    }
+    if !card.more.is_empty() {
+        keys.push(("m".into(), tr!("more", "más").into()));
+    }
+    if card.reply.as_ref().is_some_and(|reply| reply.enabled) {
+        keys.push(("r".into(), tr!("reply", "responder").into()));
+    }
+    keys.push(("⏎".into(), tr!("open", "abrir").into()));
+    keys
 }
 
 /// Only an uncertain handoff needs the user: a dispatching one settles by itself.
@@ -1454,11 +1505,20 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
                     k("h/l", tr!("pane", "panel")),
                 ],
             };
-            if !app.schedules_open {
+            let typed = app.card_view.as_ref().and_then(super::view_render::typed_card);
+            if let Some(menu) = &app.card_menu {
+                return vec![
+                    k(&format!("1-{}", menu.entries.len().max(1)), tr!("pick", "elige")),
+                    k("Esc", tr!("back", "volver")),
+                ];
+            }
+            if !app.schedules_open && typed.is_none() {
                 keys.push(k("o", tr!("expand", "expandir")));
             }
             let mut from_server = Vec::new();
-            if let Some(card) = app.card_view.as_ref() {
+            if let Some(card) = typed {
+                from_server.extend(card_footer_keys(card));
+            } else if let Some(card) = app.card_view.as_ref() {
                 from_server.extend(view_footer_actions(card));
             } else if let Some(selected) = app.sel.as_ref()
                 && let Some(row) = super::view_render::rows(home)

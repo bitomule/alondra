@@ -1,7 +1,6 @@
 use super::{
-    BuildError, Client, Item, Link, Notice, RenderContext, Row, Section, TimeFormat, Tone,
-    Trailing, VIEWS_PROTOCOL, View,
-    card::{card_key, from_item, plain_id, public_id},
+    BuildError, Client, Item, Notice, RenderContext, Section, Tone, VIEWS_PROTOCOL, View,
+    card::{from_item, plain_id, public_id},
     text::t,
 };
 use crate::domain_v2::{DomainProjection, InboxItem};
@@ -53,7 +52,7 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
         Client::Tui => {
             let mut items = vec![];
             for item in &roots {
-                items.push(Item::Row(row(item, context)?));
+                items.push(Item::Card(from_item(item, context, false)?));
             }
             let mut sections = vec![Section {
                 id: "waiting".into(),
@@ -115,25 +114,4 @@ pub(super) fn build(key: &str, context: &RenderContext<'_>) -> Result<View, Buil
 /// holds what is addressed to the user, the orchestrator's answers and questions included.
 pub(super) fn waiting(projection: &DomainProjection) -> Vec<&InboxItem> {
     projection.inbox.iter().filter(|item| item.pending).collect()
-}
-fn row(item: &InboxItem, context: &RenderContext<'_>) -> Result<Row, BuildError> {
-    let card = from_item(item, context, false)?;
-    Ok(Row {
-        id: card.id,
-        link: Some(Link::View {
-            key: card_key(item),
-        }),
-        icon: card.icon,
-        title: card.title,
-        subtitle: card.subtitle,
-        badges: card.eyebrow.into_iter().collect(),
-        trailing: context.live.time(&item.id).map(|at| Trailing::Time {
-            at: at.into(),
-            format: TimeFormat::Relative,
-        }),
-        depth: 0,
-        struck: false,
-        children: vec![],
-        actions: vec![],
-    })
 }

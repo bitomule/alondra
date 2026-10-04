@@ -28,9 +28,9 @@ pub(super) fn review_clone_flow(
 impl App {
     pub fn inbox_keys(&self) -> Vec<Key> {
         if let Some(view) = &self.home_view {
-            return super::view_render::rows(view)
+            return super::view_render::entries(view)
                 .into_iter()
-                .map(|(row, _)| Key(row.id.clone()))
+                .map(|(id, _, _)| Key(id))
                 .collect();
         }
         Vec::new()
@@ -38,9 +38,9 @@ impl App {
 
     pub fn inbox_count(&self) -> usize {
         if let Some(view) = &self.home_view {
-            return super::view_render::rows(view)
+            return super::view_render::entries(view)
                 .into_iter()
-                .filter(|(_, nested)| !nested)
+                .filter(|(_, nested, _)| !nested)
                 .count();
         }
         0
@@ -56,6 +56,7 @@ impl App {
             self.detail_scroll = 0;
         }
         self.sel_idx = idx;
+        self.card_menu = None;
         self.sel = Some(keys[idx].clone());
         self.settle_until = 0;
     }
@@ -175,6 +176,12 @@ impl App {
             .card_view
             .as_ref()
             .filter(|view| view.key == selected)?;
+        if self.reader.is_none()
+            && let Some(card) = super::view_render::typed_card(document)
+        {
+            let (card, epoch) = (card.clone(), document.data_epoch.clone());
+            return self.card_button_key(key, &card, epoch);
+        }
         if let Some(form) = document
             .sections
             .iter()
@@ -231,6 +238,76 @@ impl App {
             }
         }
         None
+    }
+
+    /// A card's keys never change: `1`-`3` press its buttons, `m` lists the rest, `r` replies.
+    fn card_button_key(
+        &mut self,
+        key: KeyEvent,
+        card: &alondra_core::views::Card,
+        epoch: String,
+    ) -> Option<Flow> {
+        if !(key.modifiers - crossterm::event::KeyModifiers::SHIFT).is_empty() {
+            return None;
+        }
+        let KeyCode::Char(character) = key.code else {
+            return None;
+        };
+        let selected = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
+        match character {
+            '1'..='3' => {
+                let action = card.actions.get(character as usize - '1' as usize)?.clone();
+                Some(self.press_card_action(action, None, &selected, epoch))
+            }
+            'm' if !card.more.is_empty() => {
+                self.card_menu = Some(super::view_render::more_menu(card));
+                Some(Flow::Go)
+            }
+            'r' => {
+                let reply = card.reply.clone()?;
+                Some(self.run_view_action(&reply, None, &selected, epoch))
+            }
+            _ => None,
+        }
+    }
+
+    /// An action that offers options asks which one first; the rest run at once.
+    fn press_card_action(
+        &mut self,
+        action: alondra_core::views::Action,
+        option: Option<alondra_core::views::ActionOption>,
+        selected: &Key,
+        epoch: String,
+    ) -> Flow {
+        if action.enabled && option.is_none() && action.option_id.is_none() && !action.options.is_empty() {
+            self.card_menu = Some(super::view_render::option_menu(&action));
+            return Flow::Go;
+        }
+        self.run_view_action(&action, option.as_ref(), selected, epoch)
+    }
+
+    pub(super) fn card_menu_key(&mut self, key: KeyEvent) -> Flow {
+        let Some(menu) = self.card_menu.clone() else {
+            return Flow::Go;
+        };
+        match key.code {
+            KeyCode::Esc => self.card_menu = None,
+            KeyCode::Char(character @ '1'..='9') if key.modifiers.is_empty() => {
+                let Some((action, option)) = menu.entries.get(character as usize - '1' as usize) else {
+                    return Flow::Go;
+                };
+                let (action, option) = (action.clone(), option.clone());
+                self.card_menu = None;
+                let Some(card) = self.card_view.as_ref() else {
+                    return Flow::Go;
+                };
+                let epoch = card.data_epoch.clone();
+                let selected = self.sel.clone().unwrap_or_else(|| Key(card.key.clone()));
+                return self.press_card_action(action, option, &selected, epoch);
+            }
+            _ => {}
+        }
+        Flow::Go
     }
 
     pub(super) fn schedule_row_key(&mut self, key: KeyEvent) -> Option<Flow> {
@@ -333,7 +410,16 @@ impl App {
                 return Flow::Go;
             }
         }
-        let input = option.map_or(&action.input, |option| &option.input);
+        let input = match option {
+            Some(option)
+                if matches!(option.input, alondra_core::views::Input::None)
+                    && matches!(action.input, alondra_core::views::Input::Text { required: false, .. }) =>
+            {
+                &action.input
+            }
+            Some(option) => &option.input,
+            None => &action.input,
+        };
         match input {
             alondra_core::views::Input::Text { required, .. } => {
                 self.compose(
