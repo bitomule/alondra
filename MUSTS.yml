@@ -74,5 +74,6 @@ checks:
         - //apple/Features:AlondraFeaturesTests
         - //apple/Testing:IssueReportingIntegrationTests
         - //apple/Testing/Snapshots:AlondraSnapshotTests
+        - //apple/Testing/MacSnapshots:AlondraMacSnapshotTests
         - //apple:AlondraMacServiceNavigationTests
         - //apple:AlondraMacWorkspaceOwnerTests

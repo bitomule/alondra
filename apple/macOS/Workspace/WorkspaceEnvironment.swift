@@ -11,7 +11,7 @@ private struct WorkspaceSettingsStoreKey: FocusedValueKey {
 }
 
 extension FocusedValues {
-    var workspaceSettingsStore: StoreOf<MacAppFeature>? {
+    public var workspaceSettingsStore: StoreOf<MacAppFeature>? {
         get { self[WorkspaceSettingsStoreKey.self] }
         set { self[WorkspaceSettingsStoreKey.self] = newValue }
     }

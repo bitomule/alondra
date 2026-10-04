@@ -28,6 +28,8 @@ public struct MacPresentationFeature: Sendable {
         public var viewError: String?
         public var actionFeature = ActionFeature.State(dataEpoch: "", client: .mac, lang: "en")
         public var actionPresented = false
+        public var actionTarget: String?
+        public var optimistic = Optimistic()
         public var activeForm: AlondraContract.Form?
         public var pickerFieldID: String?
         public var pickerDocument: ViewDocument?
@@ -69,7 +71,7 @@ public struct MacPresentationFeature: Sendable {
         case viewsReset
         case viewLoaded(String, ViewFetch)
         case viewFailed(String, String)
-        case beginViewAction(AlondraContract.Action)
+        case beginViewAction(AlondraContract.Action, target: String? = nil)
         case beginViewForm(AlondraContract.Form)
         case reloadForm(String, JSONValue)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
@@ -90,11 +92,12 @@ public struct MacPresentationFeature: Sendable {
     public var body: some ReducerOf<Self> {
         Reduce { state, action in
             switch action {
-            case .beginViewAction(let action):
+            case let .beginViewAction(action, target):
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
                 state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
                 state.activeForm = nil
+                state.actionTarget = target ?? state.selectedViewKey.flatMap(Self.cardID)
                 state.actionPresented = true
                 if action.comments?.kind == .diffLines {
                     let comments = state.diffComments.values.sorted { $0.anchor < $1.anchor }
@@ -106,6 +109,7 @@ public struct MacPresentationFeature: Sendable {
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
                 state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
                 state.activeForm = form
+                state.actionTarget = nil
                 state.actionPresented = true
                 let requiresAttachments = form.fields.contains { if case .attachments = $0.kind { true } else { false } }
                 return .send(.action(.presentForm(form.submit, Dictionary(uniqueKeysWithValues: form.fields.map { ($0.id, $0.value) }), requiresAttachments: requiresAttachments)))
@@ -215,7 +219,18 @@ public struct MacPresentationFeature: Sendable {
                 if !value {
                     state.actionFeature.action = nil
                     state.activeForm = nil
+                    state.actionTarget = nil
                 }
+            case .action(.sent(let request)):
+                guard let target = state.actionTarget else { return .none }
+                state.actionTarget = nil
+                state.optimistic.begin(target, request)
+                state.actionPresented = false
+                return leaveCard(target, &state)
+            case .action(.settled(let request, let applied)):
+                state.optimistic.settle(request, applied: applied, shown: state.sidebarDocument?.version)
+            case .action(.response(let reply)) where reply.outcome == .changed:
+                state.actionPresented = true
             case .action(let childAction):
                 if case .response(let reply) = childAction, reply.outcome == .applied {
                     let keys = ["sidebar", state.selectedViewKey].compactMap { $0 }
@@ -251,13 +266,13 @@ public struct MacPresentationFeature: Sendable {
                 state.viewError = nil
                 if case let .document(document) = fetch {
                     if key == "sidebar" {
+                        let previous = state.sidebarDocument
                         state.sidebarDocument = document
-                        let links = document.sections.flatMap(\.items).flatMap { item -> [String] in
-                            guard case let .row(row) = item else { return [] }
-                            return viewLinks(in: row)
-                        }
-                        if case let .viewKey(current)? = state.selection, !links.contains(current) {
-                            let next = links.first
+                        state.optimistic.reconcile(document.version)
+                        let links = Self.links(in: document)
+                        if case let .viewKey(current)? = state.selection, !links.contains(current),
+                           Self.links(in: previous).contains(current) {
+                            let next = Self.nextKey(after: current, in: previous, available: Set(links)) ?? links.first
                             state.selection = next.map(Selection.viewKey)
                             state.selectedViewKey = next
                             state.detailDocument = nil
@@ -339,6 +354,51 @@ public struct MacPresentationFeature: Sendable {
             return .none
         }
         Scope(state: \.actionFeature, action: \.action) { ActionFeature() }
+    }
+
+    private func leaveCard(_ id: String, _ state: inout State) -> Effect<Action> {
+        guard let key = state.selectedViewKey, Self.cardID(forViewKey: key) == id else { return .none }
+        let optimistic = state.optimistic
+        let available = Set(Self.waitingEntries(in: state.sidebarDocument).filter { !optimistic.hides($0.id) }.map(\.key))
+        guard let next = Self.nextKey(after: key, in: state.sidebarDocument, available: available) else { return .none }
+        state.selection = .viewKey(next)
+        state.selectedViewKey = next
+        state.detailDocument = nil
+        return loadAndOpenView(next, visibleKeys: visibleViewKeys(state))
+    }
+
+    public static func cardID(forViewKey key: String) -> String? {
+        for prefix in ["card:", "pull_request:"] where key.hasPrefix(prefix) {
+            return String(key.dropFirst(prefix.count))
+        }
+        return nil
+    }
+
+    /// What waits for the person, in the order the sidebar lists it: questions and decisions first,
+    /// then pull requests.
+    static func waitingEntries(in document: ViewDocument?) -> [(id: String, key: String)] {
+        guard let document else { return [] }
+        return ["waiting", "pull_requests"].compactMap { id in document.sections.first { $0.id == id } }
+            .flatMap(\.items)
+            .compactMap { item in
+                guard case let .row(row) = item, case let .view(key)? = row.link else { return nil }
+                return (row.id, key)
+            }
+    }
+
+    /// The card that takes the place of `key` once it is gone: the one after it, else the last before it.
+    public static func nextKey(after key: String, in document: ViewDocument?, available: Set<String>) -> String? {
+        let entries = Self.waitingEntries(in: document)
+        guard let index = entries.firstIndex(where: { $0.key == key }) else { return nil }
+        let remaining = entries.enumerated().filter { $0.offset != index && available.contains($0.element.key) }
+        return (remaining.first { $0.offset > index } ?? remaining.last)?.element.key
+    }
+
+    static func links(in document: ViewDocument?) -> [String] {
+        document?.sections.flatMap(\.items).flatMap { item -> [String] in
+            guard case let .row(row) = item else { return [] }
+            return viewLinks(in: row)
+        } ?? []
     }
 
     private func loadView(_ key: String, known: String? = nil) -> Effect<Action> {

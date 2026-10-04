@@ -26,6 +26,7 @@
     "Content is truncated.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El contenido está recortado."}}}},
     "Couldn’t load the sidebar": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar la barra lateral"}}}},
     "Couldn’t load content": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el contenido"}}}},
+    "Fleet": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Flota"}}}},
     "Filter issues": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Filtrar incidencias"}}}},
     "Issues": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Incidencias"}}}},
     "Action completed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acción completada"}}}},

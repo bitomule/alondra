@@ -1,5 +1,6 @@
 import AlondraAccount
 import AlondraFeatures
+import AlondraMacWorkspace
 import ComposableArchitecture
 import AppKit
 import SwiftUI
