@@ -23,10 +23,10 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task at a time: work only on your assigned Task; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. `ask` puts one decision in front of {user}; end your turn after it and the answer arrives here. `request_action` hands {user} something to do outside Alondra. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a question of yours that no longer needs an answer with withdraw_question."
+            "{common} A node works on one Task at a time: work only on your assigned Task; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why` (one or two sentences, at most 240): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts one decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`); end your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. `propose` suggests extra work without stopping you. `publish_information` tells {user} something they only read. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
-            "{common} Define cohesive Tasks under Requests with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a question you asked that no longer needs an answer with withdraw_question, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
+            "{common} Define cohesive Tasks under Requests with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
         ),
     }
 }
@@ -80,19 +80,8 @@ fn tools(role: Role, user: &str) -> Value {
     Value::Array(list)
 }
 
-/// The tools that put a card in front of someone: each may say what it needs and why.
-const CARD_TOOLS: [&str; 4] = ["ask", "request_action", "publish_information", "present_result"];
-
 fn domain_tool(name: &str, description: &str, fields: Value, required: &[&str]) -> Value {
-    let mut properties = serde_json::Map::new();
-    properties.extend(fields.as_object().expect("properties object").clone());
-    if CARD_TOOLS.contains(&name) {
-        properties.insert("need".into(), json!({"type":"string","maxLength":90,"description":"What you need from the reader, in the imperative and in one line. Without it, the first line of body is used"}));
-        properties.insert("why".into(), json!({"type":"string","maxLength":240,"description":"Why, and whom it holds back, in one or two sentences. Long text goes in body"}));
-    }
-    let mut required_fields = Vec::new();
-    required_fields.extend_from_slice(required);
-    json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required_fields,"additionalProperties":false}})
+    json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":fields,"required":required,"additionalProperties":false}})
 }
 
 fn interaction_fields() -> Value {
@@ -126,51 +115,134 @@ fn input_value_schema() -> Value {
     ]}})
 }
 
+fn content_schema() -> Value {
+    json!({"type":"object","description":"The long part of the card, shown only in its detail: the plan, document, diff, command, report, steps, options, diagnosis or attachments. Put anything longer than a sentence here, never in why","properties":{
+        "kind":{"enum":["plan","document","diff","command","report","steps","options","diagnosis","attachments"]},
+        "summary":{"type":"string","maxLength":60,"description":"Optional one-line label such as \"6 files · +120 −40\"; Alondra computes one when you leave it out"},
+        "body":{"type":"string"}
+    },"required":["kind","body"],"additionalProperties":false})
+}
+
+fn blocks_schema() -> Value {
+    json!({"type":"array","maxItems":16,"description":"What this card holds back until it is answered: an open PR, document or delivery of the Task","items":{"oneOf":[
+        {"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"}},"required":["kind","pr_id"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"document"},"document_id":{"type":"string"}},"required":["kind","document_id"],"additionalProperties":false},
+        {"type":"object","properties":{"kind":{"const":"delivery"},"interaction_id":{"type":"string"}},"required":["kind","interaction_id"],"additionalProperties":false}
+    ]}})
+}
+
+fn need_schema() -> Value {
+    json!({"type":"string","minLength":1,"maxLength":90,"description":"What you need from the reader, in the imperative and on one line (at most 90 characters)"})
+}
+
+fn why_schema() -> Value {
+    json!({"type":"string","maxLength":240,"description":"Why, and whom it holds back, in one or two sentences (at most 240 characters). Long text goes in content, never here"})
+}
+
+fn replaces_schema() -> Value {
+    json!({"type":"string","description":"The id of your own open card this one replaces: it is withdrawn in the same step"})
+}
+
+fn place<'a>(interaction: &Value, extra: Value, required: &[&'a str]) -> (Value, Vec<&'a str>) {
+    let mut fields = serde_json::Map::new();
+    for key in ["interaction_id", "scope", "recipient"] {
+        fields.insert(key.into(), interaction[key].clone());
+    }
+    fields.extend(extra.as_object().expect("card fields").clone());
+    let mut needed = vec!["interaction_id", "scope", "recipient"];
+    needed.extend_from_slice(required);
+    (Value::Object(fields), needed)
+}
+
+/// The tools that put a card in front of someone, one per kind of card.
+fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
+    let attachments = interaction["attachments"].clone();
+    let blocking = json!({"type":"boolean","description":"true when you cannot go on until the answer arrives"});
+    let mut tools = vec![];
+    let mut add = |name: &str, description: String, extra: Value, required: &[&str]| {
+        let (fields, needed) = place(interaction, extra, required);
+        tools.push(domain_tool(name, &description, fields, &needed));
+    };
+    add(
+        "ask",
+        format!("Put one decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Prefer a recommendation: set recommended to the option you would pick. Explain each choice in its description. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces."),
+        json!({"need":need_schema(),"why":why_schema(),"options":interaction["options"],"recommended":{"type":"string","description":"The id of the option you recommend"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        &["need", "why", "options", "blocking"],
+    );
+    add(
+        "request_action",
+        format!("Hand {user} something to do outside Alondra (a Do card). Say how you will check it was done in verify; when {user} answers Done you run that check. Put the instructions in steps or content, not in why."),
+        json!({"need":need_schema(),"why":why_schema(),"verify":{"type":"string","description":"How you will check it was done"},"steps":{"type":"array","items":{"type":"string"},"description":"The steps to follow, in order"},"options":interaction["options"],"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        &["need", "why", "verify", "blocking"],
+    );
+    add(
+        "request_input",
+        format!("Ask {user} for something only they can provide (a Provide card): a file, a piece of text or a secret. Use ask instead when the answer is one of a few choices."),
+        json!({"need":need_schema(),"why":why_schema(),"kind":{"enum":["file","text","secret"],"description":"What you need: a file, text, or a secret value"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
+        &["need", "why", "kind", "blocking"],
+    );
+    if node {
+        add(
+            "request_test",
+            format!("Ask {user} to try something out and say whether it works (a Test card): the answers are fixed, Works or Doesn't work, plus text. Say where to look in where (build, version, screen) and what to look at in what."),
+            json!({"need":need_schema(),"where":{"type":"string","description":"Where to test it: build, version, screen"},"what":{"type":"string","description":"What to look at"},"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"attachments":attachments}),
+            &["need", "where", "what"],
+        );
+    }
+    add(
+        "propose",
+        format!("Suggest something {user} did not ask for (a Propose card). It never holds you back: keep working. When {user} agrees, Alondra creates a new Request for it."),
+        json!({"need":need_schema(),"why":why_schema(),"size":{"enum":["small","medium","large"],"description":"How big the work would be"},"replaces":replaces_schema(),"content":content_schema()}),
+        &["need", "why", "size"],
+    );
+    add(
+        "publish_information",
+        format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Sending the same unread notice twice returns the first one."),
+        json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"content":content_schema(),"attachments":attachments}),
+        &["need", "body"],
+    );
+    if node {
+        let target = json!({"type":"array","items":{"oneOf":[
+            {"type":"object","properties":{"kind":{"const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"document_revision"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false},
+            {"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["kind","pr_id","head"],"additionalProperties":false}
+        ]}});
+        tools.push(domain_tool(
+            "present_result",
+            &format!("Present a result to {user}. With is_final true it is a Review card, and {user} must accept it before the Task is done; with is_final false it is a progress notice. need says what to review, content carries the report, diff or document (a final result needs content). Final results are refused while one of your cards still blocks the Task."),
+            json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"body":interaction["body"],"attachments":attachments}),
+            &["task_id", "interaction_id", "need", "targets", "is_final"],
+        ));
+    }
+    let withdraw_fields = json!({"interaction_id":{"type":"string"}});
+    tools.push(domain_tool("withdraw", "Withdraw one of your own cards that no longer needs an answer. An answered card cannot be withdrawn.", withdraw_fields.clone(), &["interaction_id"]));
+    tools.push(domain_tool("withdraw_question", "Alias of withdraw.", withdraw_fields, &["interaction_id"]));
+    tools.push(domain_tool(
+        "answer_clarification",
+        &format!("Settle a card after {user} used Ask for clarification on it. Until you do, your next card must replace it. Send replacement, the corrected card as {{\"tool\": \"ask\", \"arguments\": {{...}}}} (any card tool; replaces is set for you), or text to answer in words: then interaction_id, scope and recipient say where the notice goes, and the old card is withdrawn."),
+        json!({"id":{"type":"string","description":"The card the user asked you to clarify"},
+            "replacement":{"type":"object","properties":{"tool":{"enum":["ask","request_action","request_input","request_test","propose","present_result"]},"arguments":{"type":"object"}},"required":["tool","arguments"],"additionalProperties":false},
+            "text":{"type":"string"},
+            "interaction_id":{"type":"string","description":"With text: the id of the notice"},
+            "scope":interaction["scope"].clone(),"recipient":interaction["recipient"].clone()}),
+        &["id"],
+    ));
+    if !node {
+        tools.push(domain_tool(
+            "raise_problem",
+            &format!("Put a failure in front of {user} with its ways out (a Problem card): a launch that failed, a batch you could not handle. State what failed in need, why it matters in why and the diagnosis in content, and give the options {user} can choose from."),
+            json!({"interaction_id":interaction["interaction_id"],"scope":interaction["scope"],"need":need_schema(),"why":why_schema(),"options":interaction["options"],"content":content_schema(),"attachments":interaction["attachments"]}),
+            &["interaction_id", "scope", "need", "why", "options"],
+        ));
+    }
+    tools
+}
+
 fn node_domain_tools(user: &str) -> Vec<Value> {
     let mut interaction = interaction_fields();
     interaction["scope"] = json!({"type":"object","properties":{"kind":{"const":"task"},"task_id":{"type":"string"}},"required":["kind","task_id"],"additionalProperties":false});
-    let mut tools = vec![];
-    for (name, kind, description, fields, required) in [
-        (
-            "ask",
-            "ask_question",
-            format!(
-                "Ask {user} or the orchestrator a durable question. Explain what each choice means."
-            ),
-            json!({"interaction_id":interaction["interaction_id"],"scope":interaction["scope"],"recipient":interaction["recipient"],"body":interaction["body"],"blocking":interaction["blocking"],"options":interaction["options"],"attachments":interaction["attachments"]}),
-            vec![
-                "interaction_id",
-                "scope",
-                "recipient",
-                "body",
-                "blocking",
-                "options",
-            ],
-        ),
-        (
-            "request_action",
-            "request_action",
-            "Request a durable action choice from the recipient.".into(),
-            json!({"interaction_id":interaction["interaction_id"],"scope":interaction["scope"],"recipient":interaction["recipient"],"body":interaction["body"],"blocking":interaction["blocking"],"options":interaction["options"],"attachments":interaction["attachments"]}),
-            vec![
-                "interaction_id",
-                "scope",
-                "recipient",
-                "body",
-                "blocking",
-                "options",
-            ],
-        ),
-    ] {
-        let _ = kind;
-        tools.push(domain_tool(name, &description, fields, &required));
-    }
+    let mut tools = card_tools(user, &interaction, true);
     let attachment = json!({"type":"object","properties":{"id":{"type":"string"},"name":{"type":"string"},"content_digest":{"type":"string","pattern":"^[0-9a-f]{64}$"},"content_reference":{"type":"string"},"bytes":{"type":"integer","minimum":0}},"required":["id","name","content_digest","content_reference","bytes"],"additionalProperties":false});
-    let target = json!({"type":"array","items":{"oneOf":[
-        {"type":"object","properties":{"kind":{"const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
-        {"type":"object","properties":{"kind":{"const":"document_revision"},"document_id":{"type":"string"},"revision_id":{"type":"string"}},"required":["kind","document_id","revision_id"],"additionalProperties":false},
-        {"type":"object","properties":{"kind":{"const":"pull_request"},"pr_id":{"type":"string"},"head":{"type":"string"}},"required":["kind","pr_id","head"],"additionalProperties":false}
-    ]}});
     let simple = [
         (
             "start_task",
@@ -178,20 +250,6 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             "Start the Task the orchestrator assigned you after your previous one ended, once its dependencies allow.",
             json!({"task_id":{"type":"string"}}),
             vec!["task_id"],
-        ),
-        (
-            "publish_information",
-            "publish_information",
-            "Send a durable update to the user or orchestrator.",
-            json!({"interaction_id":interaction["interaction_id"],"scope":interaction["scope"],"recipient":interaction["recipient"],"body":interaction["body"],"attachments":{"type":"array","items":attachment}}),
-            vec!["interaction_id", "scope", "recipient", "body"],
-        ),
-        (
-            "withdraw_question",
-            "withdraw_question",
-            "Withdraw a question or action request you authored that no longer needs an answer.",
-            json!({"interaction_id":{"type":"string"}}),
-            vec!["interaction_id"],
         ),
         (
             "answer_question",
@@ -252,13 +310,6 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             vec!["interaction_id", "subject"],
         ),
         (
-            "present_result",
-            "present_result",
-            "Present a result to the user. Final results still need explicit user acceptance.",
-            json!({"task_id":{"type":"string"},"interaction_id":{"type":"string"},"body":{"type":"string"},"targets":target,"is_final":{"type":"boolean"},"attachments":{"type":"array","items":attachment}}),
-            vec!["task_id", "interaction_id", "body", "targets", "is_final"],
-        ),
-        (
             "publish_stack_readiness",
             "publish_stack_readiness",
             "Report whether your presented PR is ready for its dependent stack.",
@@ -292,10 +343,7 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
 
 fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
     let interaction = interaction_fields();
-    let options = interaction["options"].clone();
-    let recipient = interaction["recipient"].clone();
-    let scope = interaction["scope"].clone();
-    let mut tools = vec![];
+    let mut tools = card_tools(user, &interaction, false);
     let simple = [
         (
             "create_request",
@@ -347,44 +395,6 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
             vec!["task_id"],
         ),
         (
-            "publish_information",
-            "Send the user or a node a durable update.",
-            json!({"interaction_id":interaction["interaction_id"],"scope":scope,"recipient":recipient,"body":interaction["body"],"attachments":interaction["attachments"]}),
-            vec!["interaction_id", "scope", "recipient", "body"],
-        ),
-        (
-            "ask",
-            "Ask the user or a node a durable question; explain each choice.",
-            json!({"interaction_id":interaction["interaction_id"],"scope":scope,"recipient":recipient,"body":interaction["body"],"blocking":interaction["blocking"],"options":options,"attachments":interaction["attachments"]}),
-            vec![
-                "interaction_id",
-                "scope",
-                "recipient",
-                "body",
-                "blocking",
-                "options",
-            ],
-        ),
-        (
-            "request_action",
-            "Request a durable action choice from the user or a node.",
-            json!({"interaction_id":interaction["interaction_id"],"scope":scope,"recipient":recipient,"body":interaction["body"],"blocking":interaction["blocking"],"options":options,"attachments":interaction["attachments"]}),
-            vec![
-                "interaction_id",
-                "scope",
-                "recipient",
-                "body",
-                "blocking",
-                "options",
-            ],
-        ),
-        (
-            "withdraw_question",
-            "Withdraw a question or action request you authored that no longer needs an answer.",
-            json!({"interaction_id":{"type":"string"}}),
-            vec!["interaction_id"],
-        ),
-        (
             "answer_question",
             "Answer a question addressed to the orchestrator.",
             json!({"interaction_id":{"type":"string"},"option_id":{"type":"string"},"inputs":input_value_schema(),"attachments":interaction["attachments"]}),
@@ -416,7 +426,6 @@ fn orchestrator_domain_tools(user: &str) -> Vec<Value> {
                 domain_tool(name, description, fields, &required)
             }),
     );
-    let _ = user;
     tools
 }
 
@@ -439,7 +448,12 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "publish_information"
         | "ask"
         | "request_action"
+        | "request_input"
+        | "request_test"
+        | "propose"
+        | "withdraw"
         | "withdraw_question"
+        | "answer_clarification"
         | "answer_question"
         | "create_document"
         | "revise_document"
@@ -466,7 +480,12 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "publish_information"
         | "ask"
         | "request_action"
+        | "request_input"
+        | "propose"
+        | "raise_problem"
+        | "withdraw"
         | "withdraw_question"
+        | "answer_clarification"
         | "answer_question"
         | "link_task_document"
         | "cancel_task"
@@ -515,9 +534,15 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
             response.get("message").and_then(Value::as_str)
                 .unwrap_or("Merge confirmed.").to_owned()
         }
+        "answer_clarification" => answer_clarification(client, args)?,
         "ask"
         | "request_action"
+        | "request_input"
+        | "request_test"
+        | "propose"
+        | "raise_problem"
         | "publish_information"
+        | "withdraw"
         | "withdraw_question"
         | "answer_question"
         | "create_request"
@@ -536,22 +561,7 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "publish_stack_readiness"
         | "complete_task"
         | "cancel_task"
-        | "reopen_task" => {
-            let bearer = domain_bearer()?;
-            let capabilities = client.domain_get("/capabilities", &bearer)?;
-            let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
-            let envelope = domain_envelope(name, args, data_epoch, &crate::client::new_id("mcp"))?;
-            let (method, path) = resource_target(name, &envelope["command"])?;
-            let mut body = envelope["command"].clone();
-            body.as_object_mut().expect("typed command object").remove("kind");
-            for key in ["data_epoch", "command_id", "expected_revision"] {
-                body[key] = envelope[key].clone();
-            }
-            let response = client.domain_call(method, &path, &bearer, Some(&body))?;
-            response.get("notice").and_then(Value::as_str)
-                .unwrap_or("Recorded.").to_owned()
-        }
+        | "reopen_task" => submit(client, &domain_bearer()?, name, args)?,
         "launch" | "send" | "interrupt" => {
             let bearer = domain_bearer()?;
             serde_json::to_string_pretty(&client.domain_post(
@@ -633,6 +643,88 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
     })
 }
 
+/// Sends one typed command. A card carries its own id, so a retry after a timeout is the same
+/// command and the daemon answers it with the first outcome instead of making a second card.
+fn submit(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<String> {
+    let capabilities = client.domain_get("/capabilities", bearer)?;
+    let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
+        .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
+    let envelope = domain_envelope(name, args, data_epoch, &command_id(name, args))?;
+    let (method, path) = resource_target(name, &envelope["command"])?;
+    let mut body = envelope["command"].clone();
+    body.as_object_mut().expect("typed command object").remove("kind");
+    for key in ["data_epoch", "command_id", "expected_revision"] {
+        body[key] = envelope[key].clone();
+    }
+    let response = client.domain_call(method, &path, bearer, Some(&body))?;
+    Ok(response.get("notice").and_then(Value::as_str).unwrap_or("Recorded.").to_owned())
+}
+
+const CARD_COMMANDS: [&str; 10] = [
+    "ask", "request_action", "request_input", "request_test", "propose", "raise_problem",
+    "publish_information", "present_result", "withdraw", "withdraw_question",
+];
+
+fn command_id(name: &str, args: &Value) -> String {
+    let card = args.get("interaction_id").and_then(Value::as_str)
+        .filter(|id| id.len() <= 200 && !id.chars().any(char::is_control));
+    match card {
+        Some(id) if CARD_COMMANDS.contains(&name) => format!("mcp-{name}-{id}"),
+        _ => crate::client::new_id("mcp"),
+    }
+}
+
+/// What a node reads when a call fails: a daemon it could not reach is never a success, and a
+/// refusal says what is wrong, where and how to fix it, and that nothing was granted.
+fn explain(error: &anyhow::Error) -> String {
+    if let Some(crate::client::Refused(refused)) = error.downcast_ref() {
+        let guidance = match refused.code.as_str() {
+            "idempotency_conflict" => "That id already carries a different card: send a new interaction_id for a different card, or replaces to correct one that is still open.",
+            _ => "Fix what it says and send the card again with the same interaction_id. Repeating the same refused card three times raises a Problem for the user.",
+        };
+        return format!("Alondra refused it [{}]: {} Nothing was sent, and a refusal is never an answer or a permission: do not go on as if it had been granted. {guidance}", refused.code, refused.message);
+    }
+    if error.chain().any(|cause| cause.downcast_ref::<ureq::Error>().is_some()) {
+        return "don't proceed: could not reach Alondra; retry the same call with the same ids (a retry never duplicates). Nothing was sent, and do not treat this as an answer or a permission.".to_owned();
+    }
+    error.to_string()
+}
+
+fn answer_clarification(client: &Client, args: &Value) -> Result<String> {
+    let text_of = |key: &str| args.get(key).and_then(Value::as_str).filter(|s| !s.trim().is_empty());
+    let Some(card) = text_of("id") else {
+        anyhow::bail!("invalid_input: id is required: the card the user asked you to clarify");
+    };
+    match (args.get("replacement"), text_of("text")) {
+        (Some(replacement), None) => {
+            let tool = replacement.get("tool").and_then(Value::as_str).unwrap_or_default();
+            if !["ask", "request_action", "request_input", "request_test", "propose", "present_result"].contains(&tool) {
+                anyhow::bail!("invalid_input: replacement.tool must be one of ask, request_action, request_input, request_test, propose, present_result");
+            }
+            let mut arguments = replacement.get("arguments").cloned().unwrap_or(json!({}));
+            arguments["replaces"] = json!(card);
+            execute_tool(client, tool, &arguments)
+        }
+        (None, Some(text)) => {
+            let mut notice = serde_json::Map::new();
+            for key in ["interaction_id", "scope", "recipient"] {
+                let value = args.get(key).filter(|v| !v.is_null()).ok_or_else(|| {
+                    anyhow::anyhow!("invalid_input: {key} is required with text: it says where the notice goes")
+                })?;
+                notice.insert(key.into(), value.clone());
+            }
+            let first_line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or(text);
+            notice.insert("need".into(), json!(alondra_core::domain_v2::clip(first_line, alondra_core::domain_v2::CardSpec::NEED_MAX)));
+            notice.insert("body".into(), json!(text));
+            let bearer = domain_bearer()?;
+            submit(client, &bearer, "publish_information", &Value::Object(notice))?;
+            submit(client, &bearer, "withdraw", &json!({"interaction_id": card}))?;
+            Ok("Recorded: the user has your answer and the card is withdrawn.".to_owned())
+        }
+        _ => anyhow::bail!("invalid_input: send exactly one of replacement (the corrected card) or text"),
+    }
+}
+
 pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static str, String)> {
     let value = |key: &str| -> Result<&str> {
         command.get(key).and_then(Value::as_str).filter(|s| !s.is_empty())
@@ -640,10 +732,12 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
     };
     let id = |key: &str| -> Result<String> { Ok(urlencode(value(key)?)) };
     let target = match name {
-        "ask" | "ask_question" => ("POST", "/questions".to_owned()),
+        "ask" | "ask_question" | "request_input" | "request_test" | "propose" => ("POST", "/questions".to_owned()),
         "request_action" => ("POST", "/action-requests".to_owned()),
         "publish_information" => ("POST", "/messages".to_owned()),
-        "withdraw_question" => ("POST", format!("/interactions/{}/withdrawal", id("interaction_id")?)),
+        "raise_problem" => ("POST", "/problems".to_owned()),
+        "withdraw" | "withdraw_question" => ("POST", format!("/interactions/{}/withdrawal", id("interaction_id")?)),
+        "request_clarification" => ("POST", format!("/interactions/{}/clarification", id("interaction_id")?)),
         "answer_question" => ("POST", format!("/interactions/{}/answers", id("interaction_id")?)),
         "mark_read" => ("PUT", format!("/interactions/{}/read-state", id("interaction_id")?)),
         "submit_feedback" => ("POST", format!("/interactions/{}/feedback", id("presentation_id")?)),
@@ -675,10 +769,11 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
 
 fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str) -> Result<Value> {
     let kind = match name {
-        "ask" => "ask_question",
+        "ask" | "request_input" | "request_test" | "propose" => "ask_question",
         "request_action" => "request_action",
         "publish_information" => "publish_information",
-        "withdraw_question" => "withdraw",
+        "raise_problem" => "raise_problem",
+        "withdraw" | "withdraw_question" => "withdraw",
         "answer_question" => "answer_question",
         "create_request" => "create_request",
         "close_request" => "close_request",
@@ -711,12 +806,114 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
     ] {
         command.remove(key);
     }
+    attach_card(name, &mut command)?;
     command.insert("kind".into(), Value::String(kind.into()));
-    alondra_core::domain_v2::derive_wire_card(&mut command);
     let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
         "command_id":command_id,"expected_revision":0,"command":command});
-    let _: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope.clone())?;
+    serde_json::from_value::<alondra_core::domain_v2::CommandEnvelope>(envelope.clone()).map_err(|error| {
+        anyhow::anyhow!("invalid_input: {error}. Fix the arguments of {name} to match its schema and call it again")
+    })?;
     Ok(envelope)
+}
+
+/// The kind of card each card tool puts in front of its reader.
+fn card_kind(name: &str, command: &serde_json::Map<String, Value>) -> Option<&'static str> {
+    Some(match name {
+        "ask" => "decide",
+        "request_action" => "do",
+        "request_input" => "provide",
+        "request_test" => "test",
+        "propose" => "propose",
+        "publish_information" => "know",
+        "raise_problem" => "problem",
+        "present_result" if command.get("is_final").and_then(Value::as_bool) == Some(true) => "review",
+        "present_result" => "know",
+        _ => return None,
+    })
+}
+
+fn choice(id: &str, label: &str, note: bool) -> Value {
+    let inputs = if note { json!([{"id":"note","kind":"text","required":false}]) } else { json!([]) };
+    json!({"id":id,"label":label,"inputs":inputs})
+}
+
+fn take_text(command: &mut serde_json::Map<String, Value>, key: &str) -> String {
+    command.remove(key).and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+}
+
+/// The card a card tool describes, from the flat fields the node sent. Missing words stay empty
+/// so alondrad refuses them with the field and the fix, and counts the refusal.
+fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Result<()> {
+    let Some(kind) = card_kind(name, command) else { return Ok(()) };
+    let need = take_text(command, "need");
+    let mut why = take_text(command, "why");
+    let mut content = command.remove("content").filter(|v| !v.is_null());
+    let mut card = serde_json::Map::new();
+    for key in ["recommended", "blocks", "replaces", "verify"] {
+        if let Some(value) = command.remove(key).filter(|v| !v.is_null()) {
+            card.insert(key.into(), value);
+        }
+    }
+    let steps = command.remove("steps");
+    match name {
+        "request_action" => {
+            if let (None, Some(steps)) = (&content, steps.as_ref().and_then(Value::as_array)) {
+                let lines: Vec<String> = steps.iter().filter_map(Value::as_str).enumerate().map(|(i, step)| format!("{}. {step}", i + 1)).collect();
+                content = Some(json!({"kind":"steps","body":lines.join("\n")}));
+            }
+            command.entry("options").or_insert_with(|| json!([choice("done", "Done", true), choice("cannot", "I can't do it", true)]));
+        }
+        "request_input" => {
+            let input = take_text(command, "kind");
+            let (label, required) = match input.as_str() {
+                "file" => ("Send the file", false),
+                "text" => ("Send the text", true),
+                "secret" => ("Send the secret", true),
+                _ => anyhow::bail!("invalid_input: kind must be file, text or secret"),
+            };
+            command.insert("options".into(), json!([
+                {"id":"provide","label":label,"inputs":[{"id":"value","kind":"text","required":required}]},
+                choice("skip", "I can't provide it", true),
+            ]));
+        }
+        "request_test" => {
+            let (place, what) = (take_text(command, "where"), take_text(command, "what"));
+            if place.trim().is_empty() || what.trim().is_empty() {
+                anyhow::bail!("invalid_input: where and what are required: say where to test it (build, version, screen) and what to look at");
+            }
+            if why.is_empty() {
+                why = alondra_core::domain_v2::clip(&format!("{place}: {what}"), alondra_core::domain_v2::CardSpec::WHY_MAX);
+            }
+            content = content.or_else(|| Some(json!({"kind":"steps","body":format!("Where: {place}\nWhat to look at: {what}")})));
+            command.insert("options".into(), json!([choice("works", "Works", true), choice("fails", "Doesn't work", true)]));
+            command.entry("blocking").or_insert(json!(false));
+        }
+        "propose" => {
+            let size = take_text(command, "size");
+            if !["small", "medium", "large"].contains(&size.as_str()) {
+                anyhow::bail!("invalid_input: size must be small, medium or large");
+            }
+            content = content.or_else(|| Some(json!({"kind":"report","summary":format!("Size: {size}"),"body":why.clone()})));
+            command.insert("options".into(), json!([choice("do_it", "Do it", false), choice("not_now", "Not now", false)]));
+            command.insert("blocking".into(), json!(false));
+        }
+        _ => {}
+    }
+    card.insert("kind".into(), json!(kind));
+    card.insert("need".into(), json!(need));
+    card.insert("why".into(), json!(why));
+    if let Some(content) = &content {
+        card.insert("content".into(), content.clone());
+    }
+    if !command.contains_key("body") && name != "publish_information" {
+        let body = content.as_ref().and_then(|c| c["body"].as_str()).filter(|b| !b.trim().is_empty())
+            .or(Some(why.as_str()).filter(|w| !w.is_empty()))
+            .or(Some(need.as_str()).filter(|n| !n.is_empty()))
+            .unwrap_or("(no need given)");
+        command.insert("body".into(), json!(body));
+    }
+    command.insert("card".into(), Value::Object(card));
+    Ok(())
 }
 
 fn domain_bearer() -> Result<String> {
@@ -1085,7 +1282,7 @@ fn serve_server(
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 Ok(match dispatch(&client, name, &args) {
                     Ok(text) => json!({"content": [{"type": "text", "text": text}]}),
-                    Err(e) => json!({"content": [{"type": "text", "text": format!("Alondra error: {e}")}], "isError": true}),
+                    Err(e) => json!({"content": [{"type": "text", "text": format!("Alondra error: {}", explain(&e))}], "isError": true}),
                 })
             }
             _ => Err(json!({"code": -32601, "message": format!("unsupported method: {method}")})),
@@ -1491,5 +1688,257 @@ mod tests {
         let f = fleet_summary(&o, false);
         assert_eq!(f["nodes"][0]["background"][0]["suspect"], true);
         assert!(f["nodes"][1].get("background").is_none());
+    }
+}
+
+#[cfg(test)]
+mod card_tool_tests {
+    use super::*;
+    use alondra_core::domain_v2::DomainError;
+
+    fn tool(role: Role, name: &str) -> Value {
+        tools(role, "Ana").as_array().unwrap().iter().find(|t| t["name"] == name)
+            .unwrap_or_else(|| panic!("{name} is missing")).clone()
+    }
+
+    fn required(tool: &Value) -> Vec<String> {
+        tool["inputSchema"]["required"].as_array().unwrap().iter().map(|r| r.as_str().unwrap().to_owned()).collect()
+    }
+
+    fn place() -> Value {
+        json!({"interaction_id":"card-1","scope":{"kind":"task","task_id":"t-1"},"recipient":{"kind":"user"}})
+    }
+
+    fn with(extra: Value) -> Value {
+        let mut args = place();
+        args.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        args
+    }
+
+    fn built(name: &str, args: Value) -> Value {
+        domain_envelope(name, &args, "epoch", "id").unwrap_or_else(|e| panic!("{name}: {e}"))["command"].clone()
+    }
+
+    const OPTIONS: &str = r#"[{"id":"a","label":"Atlas","inputs":[]},{"id":"b","label":"Borealis","inputs":[]}]"#;
+
+    fn options() -> Value {
+        serde_json::from_str(OPTIONS).unwrap()
+    }
+
+    #[test]
+    fn each_card_tool_requires_the_words_of_its_card() {
+        let table: [(&str, &[&str]); 9] = [
+            ("ask", &["need", "why", "options", "blocking"]),
+            ("request_action", &["need", "why", "verify", "blocking"]),
+            ("request_input", &["need", "why", "kind", "blocking"]),
+            ("request_test", &["need", "where", "what"]),
+            ("propose", &["need", "why", "size"]),
+            ("present_result", &["need", "task_id", "targets", "is_final"]),
+            ("publish_information", &["need", "body"]),
+            ("withdraw", &["interaction_id"]),
+            ("answer_clarification", &["id"]),
+        ];
+        for (name, fields) in table {
+            let found = required(&tool(Role::Node, name));
+            for field in fields {
+                assert!(found.iter().any(|f| f == field), "{name} must require {field}: {found:?}");
+            }
+        }
+        for name in ["ask", "request_action", "request_input", "request_test", "propose", "present_result", "publish_information"] {
+            let properties = &tool(Role::Node, name)["inputSchema"]["properties"];
+            assert_eq!(properties["need"]["maxLength"], 90, "{name}");
+            assert_eq!(properties["need"]["minLength"], 1, "{name}");
+        }
+        let ask = tool(Role::Node, "ask");
+        let properties = &ask["inputSchema"]["properties"];
+        assert_eq!(properties["why"]["maxLength"], 240);
+        assert_eq!(properties["content"]["required"], json!(["kind", "body"]));
+        assert_eq!(properties["content"]["properties"]["summary"]["maxLength"], 60);
+        for field in ["recommended", "blocking", "blocks", "replaces", "options"] {
+            assert!(properties.get(field).is_some(), "ask lacks {field}");
+        }
+        assert!(tool(Role::Node, "request_action")["inputSchema"]["properties"].get("steps").is_some());
+        assert_eq!(tool(Role::Node, "request_input")["inputSchema"]["properties"]["kind"]["enum"], json!(["file", "text", "secret"]));
+        assert_eq!(tool(Role::Node, "propose")["inputSchema"]["properties"]["size"]["enum"], json!(["small", "medium", "large"]));
+    }
+
+    #[test]
+    fn the_catalogs_have_no_way_to_authorize_and_the_orchestrator_alone_raises_problems() {
+        for role in [Role::Node, Role::Orchestrator] {
+            for hidden in ["request_authorization", "authorize", "authorize_merge"] {
+                assert!(tools(role, "Ana").as_array().unwrap().iter().all(|t| t["name"] != hidden), "{hidden}");
+            }
+        }
+        let problem = tool(Role::Orchestrator, "raise_problem");
+        assert_eq!(required(&problem), ["interaction_id", "scope", "need", "why", "options"]);
+        assert!(tools(Role::Node, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "raise_problem"));
+        assert!(call_node(&Client::new(CALL_TIMEOUT), "raise_problem", &json!({})).is_err());
+        for name in ["ask", "request_action", "request_input", "propose", "publish_information", "withdraw", "withdraw_question", "answer_clarification"] {
+            tool(Role::Orchestrator, name);
+        }
+        assert!(tool(Role::Node, "withdraw_question")["description"].as_str().unwrap().contains("Alias of withdraw"));
+    }
+
+    #[test]
+    fn each_tool_descriptions_say_when_to_use_it_and_where_long_text_goes() {
+        for name in ["ask", "request_action", "request_input", "request_test", "propose", "publish_information", "present_result"] {
+            let description = tool(Role::Node, name)["description"].as_str().unwrap().to_owned();
+            assert!(description.contains("Ana"), "{name} names the user");
+        }
+        assert!(tool(Role::Node, "ask")["description"].as_str().unwrap().contains("Prefer a recommendation"));
+        assert!(tool(Role::Node, "ask")["description"].as_str().unwrap().contains("never in why"));
+        assert!(tool(Role::Node, "ask")["inputSchema"]["properties"]["why"]["description"].as_str().unwrap().contains("Long text goes in content"));
+        let node = instructions(Role::Node, "Ana");
+        for tool in ["request_input", "request_test", "propose", "answer_clarification", "withdraw"] {
+            assert!(node.contains(tool), "{tool}");
+        }
+        assert!(node.contains("never in `why`") && node.contains("never a permission") && node.contains("do not proceed"));
+        let orchestrator = instructions(Role::Orchestrator, "Ana");
+        assert!(orchestrator.contains("publish_information") && orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
+    }
+
+    #[test]
+    fn each_card_tool_builds_the_card_of_its_kind() {
+        let cases = [
+            ("ask", with(json!({"need":"Pick a name","why":"The release needs one","options":options(),"blocking":true})), "ask_question", "decide"),
+            ("request_action", with(json!({"need":"Rotate the key","why":"It leaked","verify":"I call the API","blocking":true})), "request_action", "do"),
+            ("request_input", with(json!({"need":"Send the API key","why":"The build needs it","kind":"secret","blocking":true})), "ask_question", "provide"),
+            ("request_test", with(json!({"need":"Try the login","where":"Build 41","what":"Sign in twice"})), "ask_question", "test"),
+            ("propose", with(json!({"need":"Update the README","why":"It names the old flag","size":"small"})), "ask_question", "propose"),
+            ("publish_information", with(json!({"need":"The build is green","body":"All 400 tests pass"})), "publish_information", "know"),
+            ("present_result", json!({"task_id":"t-1","interaction_id":"card-1","need":"Review the parser","targets":[{"kind":"text","text":"done"}],"is_final":true,"content":{"kind":"report","body":"Done"}}), "present_result", "review"),
+            ("present_result", json!({"task_id":"t-1","interaction_id":"card-1","need":"Phase 1 is in","targets":[{"kind":"text","text":"done"}],"is_final":false}), "present_result", "know"),
+        ];
+        for (name, args, command_kind, card_kind) in cases {
+            let command = built(name, args);
+            assert_eq!(command["kind"], command_kind, "{name}");
+            assert_eq!(command["card"]["kind"], card_kind, "{name}");
+            for flat in ["need", "why", "where", "what", "size", "steps", "verify"] {
+                assert!(command.get(flat).is_none(), "{name} leaks {flat} outside the card");
+            }
+            let envelope = domain_envelope(name, &with(json!({})), "epoch", "id");
+            assert!(envelope.is_err(), "{name} without its fields must not build");
+        }
+    }
+
+    #[test]
+    fn a_card_carries_what_the_node_said_and_nothing_invented() {
+        let command = built("ask", with(json!({
+            "need":"Pick a name","why":"The release needs one","options":options(),"blocking":false,
+            "recommended":"a","replaces":"old-card","blocks":[{"kind":"pull_request","pr_id":"pr-1"}],
+            "content":{"kind":"options","summary":"2 names","body":"Atlas is shorter"}
+        })));
+        let card = &command["card"];
+        assert_eq!((card["need"].as_str(), card["why"].as_str(), card["recommended"].as_str(), card["replaces"].as_str()),
+            (Some("Pick a name"), Some("The release needs one"), Some("a"), Some("old-card")));
+        assert_eq!(card["blocks"][0]["pr_id"], "pr-1");
+        assert_eq!(card["content"]["summary"], "2 names");
+        assert_eq!(command["body"], "Atlas is shorter", "the long part is the body, not a derivation of it");
+
+        let without = built("ask", with(json!({"options":options(),"blocking":false,"body":"A long text\n\nthat used to become the need"})));
+        assert_eq!((without["card"]["need"].as_str(), without["card"]["why"].as_str()), (Some(""), Some("")),
+            "a missing need is not read from the body: alondrad refuses it with the field and the fix");
+        assert!(without["card"].get("content").is_none());
+
+        let parsed: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(
+            domain_envelope("ask", &with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":false})), "epoch", "id").unwrap(),
+        ).unwrap();
+        assert!(matches!(parsed.command, alondra_core::domain_v2::Command::AskQuestion { .. }));
+    }
+
+    #[test]
+    fn the_fixed_choices_of_the_card_tools() {
+        let ids = |command: &Value| command["options"].as_array().unwrap().iter().map(|o| o["id"].as_str().unwrap().to_owned()).collect::<Vec<_>>();
+        let test = built("request_test", with(json!({"need":"Try it","where":"Build 41","what":"Sign in"})));
+        assert_eq!(ids(&test), ["works", "fails"]);
+        assert_eq!(test["blocking"], false);
+        assert_eq!(test["card"]["content"]["body"], "Where: Build 41\nWhat to look at: Sign in");
+        let propose = built("propose", with(json!({"need":"Update the README","why":"Old flag","size":"large"})));
+        assert_eq!(ids(&propose), ["do_it", "not_now"]);
+        assert_eq!(propose["blocking"], false, "a proposal never holds the node");
+        assert_eq!(propose["card"]["content"]["summary"], "Size: large");
+        let input = built("request_input", with(json!({"need":"Send the key","why":"Needed","kind":"file","blocking":true})));
+        assert_eq!(ids(&input), ["provide", "skip"]);
+        assert_eq!(input["options"][0]["inputs"][0]["required"], false);
+        let action = built("request_action", with(json!({"need":"Rotate","why":"Leaked","verify":"I call it","blocking":false,"steps":["Open the console","Rotate it"]})));
+        assert_eq!(ids(&action), ["done", "cannot"]);
+        assert_eq!(action["card"]["content"], json!({"kind":"steps","body":"1. Open the console\n2. Rotate it"}));
+        assert_eq!(action["card"]["verify"], "I call it");
+    }
+
+    #[test]
+    fn arguments_that_cannot_make_a_card_are_refused_before_anything_is_sent() {
+        for (name, args, said) in [
+            ("request_input", with(json!({"need":"n","why":"w","kind":"photo","blocking":true})), "kind must be file, text or secret"),
+            ("request_test", with(json!({"need":"n"})), "where and what are required"),
+            ("propose", with(json!({"need":"n","why":"w","size":"huge"})), "size must be small, medium or large"),
+            ("ask", with(json!({"need":"n","why":"w","options":options(),"blocking":false,"surprise":1})), "surprise"),
+            ("ask", json!({"need":"n"}), "interaction_id"),
+        ] {
+            let error = domain_envelope(name, &args, "epoch", "id").unwrap_err().to_string();
+            assert!(error.starts_with("invalid_input") && error.contains(said), "{name}: {error}");
+        }
+    }
+
+    #[test]
+    fn withdraw_is_one_command_under_both_names() {
+        for name in ["withdraw", "withdraw_question"] {
+            let envelope = domain_envelope(name, &json!({"interaction_id":"card-1"}), "epoch", "id").unwrap();
+            assert_eq!(envelope["command"]["kind"], "withdraw");
+            assert_eq!(resource_target(name, &envelope["command"]).unwrap(), ("POST", "/interactions/card-1/withdrawal".to_owned()));
+        }
+        assert_eq!(resource_target("raise_problem", &json!({})).unwrap().1, "/problems");
+        assert_eq!(resource_target("request_input", &json!({})).unwrap().1, "/questions");
+    }
+
+    #[test]
+    fn a_retried_card_keeps_its_command_id_and_another_card_does_not() {
+        let ask = |id: &str| with(json!({"interaction_id":id}));
+        assert_eq!(command_id("ask", &ask("card-1")), command_id("ask", &ask("card-1")));
+        assert_ne!(command_id("ask", &ask("card-1")), command_id("ask", &ask("card-2")));
+        assert_ne!(command_id("ask", &ask("card-1")), command_id("propose", &ask("card-1")));
+        assert_ne!(command_id("start_task", &json!({"task_id":"t"})), command_id("start_task", &json!({"task_id":"t"})),
+            "only a card has an id of its own to retry by");
+        assert_ne!(command_id("ask", &ask(&"x".repeat(300))), command_id("ask", &ask(&"x".repeat(300))));
+    }
+
+    #[test]
+    fn a_refusal_says_what_where_and_how_and_is_never_a_permission() {
+        let mut refused = DomainError::new("invalid_input", "card.why: At most 240 characters: long text goes in card.content.body, never in why");
+        refused.subject = Some("card.why".into());
+        let text = explain(&anyhow::Error::new(crate::client::Refused(refused)));
+        assert!(text.contains("invalid_input") && text.contains("card.why") && text.contains("long text goes in card.content.body"), "{text}");
+        assert!(text.contains("never an answer or a permission") && text.contains("same interaction_id"), "{text}");
+        let conflict = explain(&anyhow::Error::new(crate::client::Refused(DomainError::new("idempotency_conflict", "request ID reused"))));
+        assert!(conflict.contains("new interaction_id") && conflict.contains("replaces"), "{conflict}");
+    }
+
+    #[test]
+    fn a_daemon_that_does_not_answer_is_never_a_success() {
+        let port = {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.local_addr().unwrap().port()
+        };
+        let client = Client::at(format!("http://127.0.0.1:{port}"));
+        let args = with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":true}));
+        let error = submit(&client, &"a".repeat(64), "ask", &args).unwrap_err();
+        let text = explain(&error);
+        assert!(text.starts_with("don't proceed: could not reach Alondra; retry"), "{text}");
+        assert!(text.contains("never duplicates") && text.contains("not treat this as an answer or a permission"), "{text}");
+    }
+
+    #[test]
+    fn a_clarification_is_settled_by_a_replacement_or_by_words_never_both_or_neither() {
+        let client = Client::new(CALL_TIMEOUT);
+        for (args, said) in [
+            (json!({}), "id is required"),
+            (json!({"id":"card-1"}), "exactly one of replacement"),
+            (json!({"id":"card-1","text":"Because","replacement":{"tool":"ask","arguments":{}}}), "exactly one of replacement"),
+            (json!({"id":"card-1","replacement":{"tool":"complete_task","arguments":{}}}), "replacement.tool must be one of"),
+            (json!({"id":"card-1","text":"Because"}), "interaction_id is required with text"),
+        ] {
+            let error = answer_clarification(&client, &args).unwrap_err().to_string();
+            assert!(error.starts_with("invalid_input") && error.contains(said), "{args}: {error}");
+        }
     }
 }

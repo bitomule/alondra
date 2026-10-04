@@ -17,22 +17,42 @@ on the task assigned to you. Alondra shows the task as working from your first s
 is only needed for a task the orchestrator hands you after your previous one ended.
 
 Each call needs a new unique `interaction_id` (or `pr_id`, `document_id`, `revision_id`) that you
-choose, for example `t-12-result-1`. When a call fails, nothing was recorded and the reply says
-why; retry an uncertain call with exactly the same arguments.
+choose, for example `t-12-result-1`. A retry with the same `interaction_id` never duplicates the
+card. When a call fails, nothing was recorded and the reply says why. If it says Alondra could
+not be reached, do not proceed: retry the same call. If Alondra refused it, the reply names the
+field and how to fix it: fix it and send it again. A refusal is never an answer or a permission,
+and sending the same refused card three times raises a Problem for the user instead.
+
+## Cards
+
+Every card the user reads has a `need`, what you need from them: imperative, one line, at most 90
+characters. Cards that ask for something also have a `why`: one or two sentences, at most 240,
+about why and what it holds up. Anything longer goes in `content` (`kind`, optional `summary`,
+`body`), never in `why`: the user sees `need` and `why` on the card and `content` in its detail.
+Prefer a recommendation whenever you can make one. Pick the tool by what you need:
 
 ## The tools
 
 - `ask`: a decision for the user (`recipient` kind `user`), or a real question for the
-  orchestrator (kind `orchestrator`). One question per decision, all the context in `body`, and
-  options whose `description` says what choosing each means. Alondra types the answer into this
-  session, so end your turn after asking. A question left in your last message is never seen.
-- `request_action`: something the user does outside Alondra (test on a device, get a key, check
-  a console), with the steps in order. Their answer is typed into this session.
+  orchestrator (kind `orchestrator`). One decision per card, 2 to 8 options whose `description`
+  says what choosing each means, `recommended` set to the option you would pick, the context in
+  `content`. Alondra types the answer into this session, so end your turn after asking. A question
+  left in your last message is never seen. Only one blocking ask is open at a time: change it
+  with `replaces`, or `withdraw` it.
+- `request_input`: a file, text or secret only the user has (`kind`: file, text or secret).
+- `request_action`: something the user does outside Alondra (get a key, check a console), with
+  the `steps` in order and `verify`, how you will check it was done. Their answer is typed into
+  this session.
+- `request_test`: the user tries a build or screen: `where` (build, version, screen) and `what`
+  to look at. They answer Works or Doesn't work, with text.
+- `propose`: something worth doing that nobody asked for (`size`: small, medium or large). It
+  never holds you up: keep working.
 - In a background session, menu questions (`AskUserQuestion`), permission prompts and plans
   also reach the user in Alondra, and their answer comes back as Claude's own.
-- `publish_information`: a finding the user (or the orchestrator) should read now. It changes
-  nothing for the task.
-- `present_result` with `is_final: true`: you are done. The answer goes in `body`; `targets` names
+- `publish_information`: a finding the user (or the orchestrator) should read now: `need` is the
+  headline, `body` the update. It changes nothing for the task.
+- `present_result` with `is_final: true`: you are done. `need` says what to review, the report or
+  diff goes in `content`; `targets` names
   what you deliver: `text`, a document revision you created, or the PR you registered with its
   exact head. The user accepts it in Alondra. A file sent another way or a final message left in
   this session is not a delivery.
@@ -55,15 +75,20 @@ why; retry an uncertain call with exactly the same arguments.
   document, a comment on any block, your options and Request changes, whose comments come back as
   the answer. Never ask a separate plain question about a document, and do not paste the document
   into `body`.
-- `withdraw_question`: a question of yours that no longer needs an answer.
+- `withdraw`: a card of yours that no longer needs an answer (`withdraw_question` still works).
+- `answer_clarification`: the user asked you to clarify a card. Until you settle it your next card
+  must replace it: send `replacement` (the corrected card, as `{tool, arguments}`) or answer in
+  `text`, which also withdraws the card.
+- There is no tool to authorize anything. Permission prompts reach the user from Claude Code.
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
 
 ## What a delivery is not
 
 - Progress. While you work on your own, including waiting for a build, an upload or a review,
   there is nothing to send.
-- A question. Anything the user has to decide, approve, test or fetch is an `ask` or a
-  `request_action`, never buried in a result or an information message.
+- A question. Anything the user has to decide, approve, test or fetch is an `ask`,
+  `request_action`, `request_test` or `request_input`, never buried in a result or an
+  information message.
 
 ## Your PR
 

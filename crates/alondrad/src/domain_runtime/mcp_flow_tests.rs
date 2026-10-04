@@ -155,3 +155,83 @@ fn existing_mcp_producers_cover_pr_document_and_answer_and_only_the_users_accept
     assert_eq!(state.tasks[&"answer-task".into()].state, TaskState::Done);
     assert!(state.interactions.contains_key(&"question-1".into()));
 }
+
+fn decision(id: &str, task: &str, options: Value) -> Value {
+    json!({"kind":"ask_question", "interaction_id":id, "scope":{"kind":"task", "task_id":task},
+        "recipient":{"kind":"user"}, "body":"Which name?", "blocking":false, "options":options,
+        "card":{"kind":"decide", "need":"Pick a name", "why":"The release needs one"}})
+}
+
+fn names() -> Value {
+    json!([{"id":"a", "label":"Atlas", "inputs":[]}, {"id":"b", "label":"Borealis", "inputs":[]}])
+}
+
+fn problems(fixture: &Fixture) -> Vec<Interaction> {
+    fixture.runtime.state().unwrap().interactions.into_values()
+        .filter(|i| i.card.kind == CardKind::Problem).collect()
+}
+
+#[test]
+fn three_rejections_of_the_same_card_raise_a_problem() {
+    let mut fixture = Fixture::new();
+    fixture.task("t1", false);
+    let one_option = json!([{"id":"a", "label":"Atlas", "inputs":[]}]);
+    for _ in 0..2 {
+        assert_eq!(domain_code(fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err()), "invalid_input");
+    }
+    assert!(problems(&fixture).is_empty(), "two rejections are still the node's to fix");
+    assert_eq!(domain_code(fixture.agent(decision("stuck", "t1", one_option.clone())).unwrap_err()), "invalid_input",
+        "a rejection stays a rejection: it never becomes an answer");
+    let raised = problems(&fixture);
+    assert_eq!(raised.len(), 1);
+    let problem = &raised[0];
+    assert_eq!(problem.author, Author::System);
+    assert_eq!(problem.scope, Scope::Task { task_id: "t1".into() });
+    assert!(problem.card.need.contains("Fixture agent"), "{}", problem.card.need);
+    assert!(problem.card.why.contains("options") && problem.card.why.contains("invalid_input"), "{}", problem.card.why);
+    assert!(problem.body.contains("3 times") && problem.body.contains("stuck"), "{}", problem.body);
+    assert!(problem.card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Diagnosis));
+    assert!(!fixture.runtime.state().unwrap().interactions.contains_key(&"stuck".into()), "the refused card was never created");
+    fixture.agent(decision("stuck", "t1", one_option)).unwrap_err();
+    assert_eq!(problems(&fixture).len(), 1, "one Problem per stuck card");
+}
+
+#[test]
+fn rejections_of_different_cards_or_broken_by_a_success_do_not_add_up() {
+    let mut fixture = Fixture::new();
+    fixture.task("t1", false);
+    let one_option = json!([{"id":"a", "label":"Atlas", "inputs":[]}]);
+    for id in ["first", "second", "third"] {
+        fixture.agent(decision(id, "t1", one_option.clone())).unwrap_err();
+    }
+    assert!(problems(&fixture).is_empty(), "three different cards are three different mistakes");
+    for _ in 0..2 {
+        fixture.agent(decision("fixed", "t1", one_option.clone())).unwrap_err();
+    }
+    fixture.agent(decision("fixed", "t1", names())).unwrap();
+    for _ in 0..2 {
+        fixture.agent(decision("fixed", "t1", names())).unwrap_err();
+    }
+    assert!(problems(&fixture).is_empty(), "a card that went through starts the count again");
+}
+
+#[test]
+fn a_retried_card_is_the_first_card_and_not_a_second_one() {
+    let mut fixture = Fixture::new();
+    fixture.task("t1", false);
+    let envelope = |fixture: &Fixture| {
+        let state = fixture.runtime.state().unwrap();
+        serde_json::from_value::<CommandEnvelope>(json!({
+            "protocol_version": PROTOCOL_VERSION, "data_epoch": state.data_epoch,
+            "command_id": "mcp-ask-retry-card", "expected_revision": 0,
+            "command": decision("retry-card", "t1", names()),
+        })).unwrap()
+    };
+    let first = fixture.runtime.execute_bearer(&fixture.agent, &envelope(&fixture)).unwrap();
+    fixture.manager(json!({"kind":"create_request", "request_id":"unrelated", "body":"Something else"})).unwrap();
+    let again = fixture.runtime.execute_bearer(&fixture.agent, &envelope(&fixture)).unwrap();
+    assert_eq!(first.created_ids, again.created_ids);
+    let cards = fixture.runtime.state().unwrap().interactions.values()
+        .filter(|i| i.card.need == "Pick a name").count();
+    assert_eq!(cards, 1);
+}

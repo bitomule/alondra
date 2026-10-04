@@ -1294,7 +1294,9 @@ mod tests {
         let permission = post(permission("agent-a"));
         assert_eq!(permission.kind, CardKind::Authorize);
         assert!(permission.need.contains("Bash: Clean the build"), "{}", permission.need);
-        assert!(permission.content.unwrap().body.contains("rm -rf build"));
+        let command = permission.content.unwrap();
+        assert_eq!(command.kind, ContentKind::Command);
+        assert!(command.body.contains("rm -rf build") && !command.body.contains("Bash: Clean the build"), "{}", command.body);
         let plan = post(plan("agent-a"));
         assert_eq!((plan.kind, plan.need.as_str()), (CardKind::Review, "Ship the parser"));
         assert_eq!(plan.content.unwrap().kind, ContentKind::Plan);

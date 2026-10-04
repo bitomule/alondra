@@ -21,6 +21,7 @@ pub struct DomainRuntime {
         Mutex<std::collections::BTreeMap<alondra_core::domain_v2::AgentId, Vec<String>>>,
     /// Tasks whose Agent was already reminded, at a turn end, to report through Alondra.
     pub(crate) nudged: Mutex<std::collections::BTreeSet<alondra_core::domain_v2::TaskId>>,
+    rejections: rejections::Rejections,
 }
 impl DomainRuntime {
     pub(crate) fn transport_receipt(
@@ -55,6 +56,7 @@ impl DomainRuntime {
             live: crate::v2_client_routes::Live::persisted_in(home),
             held: Default::default(),
             nudged: Default::default(),
+            rejections: Default::default(),
         })
     }
     pub(crate) fn home(&self) -> &Path {
@@ -215,6 +217,16 @@ impl DomainRuntime {
     }
 
     pub fn execute_bearer(
+        &self,
+        bearer: &str,
+        envelope: &CommandEnvelope,
+    ) -> Result<CommandOutcome, StoreError> {
+        let result = self.execute_bearer_once(bearer, envelope);
+        self.count_rejections(bearer, envelope, &result);
+        result
+    }
+
+    fn execute_bearer_once(
         &self,
         bearer: &str,
         envelope: &CommandEnvelope,
@@ -596,6 +608,7 @@ mod producer_revision_tests {
 }
 
 mod capabilities;
+mod rejections;
 
 #[cfg(test)]
 mod mcp_flow_tests;

@@ -68,6 +68,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route("/questions", post(resource_command::<H>))
         .route("/action-requests", post(resource_command::<H>))
         .route("/messages", post(resource_command::<H>))
+        .route("/problems", post(resource_command::<H>))
         .route("/document-revisions/{id}/content", get(document_content::<H>));
     let mutations = [
         ("/requests/{id}/close", "POST"),
@@ -912,6 +913,7 @@ pub(crate) fn resource_envelope(
         ("POST", "/questions") => ("ask_question", None),
         ("POST", "/action-requests") => ("request_action", None),
         ("POST", "/messages") => ("publish_information", None),
+        ("POST", "/problems") => ("raise_problem", None),
         ("POST", p) if p.starts_with("/requests/") && p.ends_with("/close") => ("close_request", Some(("request_id", params.get("id")?))),
         ("POST", p) if p.starts_with("/requests/") && p.ends_with("/tasks") => ("create_task", Some(("request_id", request?))),
         ("PATCH", p) if p.starts_with("/tasks/") => ("retitle_task", Some(("task_id", task?))),
@@ -997,7 +999,7 @@ pub(crate) fn resource_envelope_from_path(method: &str, path: &str, body: Value)
 pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
     let segments: Vec<_> = path.strip_prefix('/').unwrap_or_default().split('/').collect();
     let registered = match (method, segments.as_slice()) {
-        ("POST", ["requests"] | ["questions"] | ["action-requests"] | ["messages"])
+        ("POST", ["requests"] | ["questions"] | ["action-requests"] | ["messages"] | ["problems"])
         | ("POST", ["requests", _, "close"] | ["requests", _, "tasks"])
         | ("POST", ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
             | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
@@ -1011,7 +1013,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
         _ => false,
     };
     registered && match segments.as_slice() {
-        ["requests"] | ["questions"] | ["action-requests"] | ["messages"] => true,
+        ["requests"] | ["questions"] | ["action-requests"] | ["messages"] | ["problems"] => true,
         ["requests", id, ..] => valid_resource_id(id),
         ["tasks", id, ..] | ["interactions", id, ..] => valid_resource_id(id),
         _ => false,
@@ -1417,7 +1419,7 @@ mod tests {
     fn resource_mutation_allowlist_tracks_the_registered_methods() {
         for (method, path) in [
             ("POST", "/requests"), ("POST", "/requests/r-1/tasks"),
-            ("POST", "/questions"), ("POST", "/action-requests"), ("POST", "/messages"),
+            ("POST", "/questions"), ("POST", "/action-requests"), ("POST", "/messages"), ("POST", "/problems"),
             ("PATCH", "/tasks/t-1"), ("PUT", "/tasks/t-1/assignee"),
             ("POST", "/tasks/t-1/results"), ("PUT", "/interactions/i-1/subject"),
             ("POST", "/schedules"),

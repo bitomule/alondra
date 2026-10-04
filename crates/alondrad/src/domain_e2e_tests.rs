@@ -205,9 +205,9 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     let scope = json!({"kind": "task", "task_id": task.id.0});
     let replies = mcp(&home, daemon.port, from_settings, vec![
         ("publish_information", tool_args(&epoch, "info-1", 0, json!({"kind": "publish_information",
-            "interaction_id": "info-1", "scope": scope, "recipient": {"kind": "user"}, "body": "Started the review"}))),
+            "interaction_id": "info-1", "scope": scope, "recipient": {"kind": "user"}, "need": "The review started", "body": "Started the review"}))),
         ("ask", tool_args(&epoch, "question-1", 0, json!({"kind": "ask_question", "interaction_id": "question-1",
-            "scope": scope, "recipient": {"kind": "user"}, "body": "Merge the fix?", "blocking": true,
+            "scope": scope, "recipient": {"kind": "user"}, "need": "Decide on merging the fix", "why": "The review is done and waits for it", "blocking": true,
             "options": [{"id": "yes", "label": "Yes", "inputs": []}, {"id": "no", "label": "No", "inputs": []}]}))),
         ("complete_task", tool_args(&epoch, "complete-early", 0, json!({"kind": "complete_task",
             "task_id": task.id.0, "presentation_id": "info-1"}))),
@@ -252,7 +252,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     assert!(next_line(&mut pushed, std::time::Duration::from_millis(500)).is_none(), "an acknowledged message is not written again");
     let replies = mcp(&home, daemon.port, from_settings, vec![
         ("publish_information", tool_args(&epoch, "info-2", 0, json!({"kind": "publish_information",
-            "interaction_id": "info-2", "scope": scope, "recipient": {"kind": "user"}, "body": "Acting on the answer"}))),
+            "interaction_id": "info-2", "scope": scope, "recipient": {"kind": "user"}, "need": "Acting on the answer", "body": "Acting on the answer"}))),
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
     assert!(daemon.domain.state().unwrap().interactions.contains_key(&"info-2".into()));
@@ -265,7 +265,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "SessionEnd"})), json!({}));
     let replies = mcp(&home, daemon.port, ("ALONDRA_DOMAIN_CAPABILITY", &capability), vec![
         ("publish_information", tool_args(&epoch, "info-3", 0, json!({"kind": "publish_information",
-            "interaction_id": "info-3", "scope": scope, "recipient": {"kind": "user"}, "body": "Too late"}))),
+            "interaction_id": "info-3", "scope": scope, "recipient": {"kind": "user"}, "need": "Too late", "body": "Too late"}))),
     ]);
     let (refused, text) = tool_text(&replies[0]);
     assert!(refused && text.contains("forbidden"), "{text}");

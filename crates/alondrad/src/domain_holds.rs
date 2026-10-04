@@ -116,8 +116,14 @@ fn cancelled_task(state: &DomainState, session_id: &str) -> Option<String> {
 fn hold_card(hold: Hold, body: &str, input: &Value, options: &[QuestionOption], title: Option<&str>) -> CardSpec {
     let first_line = |text: &str| text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned();
     match hold {
-        Hold::Permission => CardSpec::new(CardKind::Authorize, clip(title.unwrap_or(body), CardSpec::NEED_MAX))
-            .content(ContentKind::Command, body),
+        Hold::Permission => {
+            let need = clip(title.unwrap_or_else(|| body.lines().next().unwrap_or_default()), CardSpec::NEED_MAX);
+            let card = CardSpec::new(CardKind::Authorize, need);
+            match body.split_once("\n\n") {
+                Some((_, command)) => card.content(ContentKind::Command, command),
+                None => card,
+            }
+        }
         Hold::Plan => {
             let heading = body.lines().map(str::trim).find(|line| line.starts_with('#'))
                 .map(|line| line.trim_start_matches('#').trim().to_owned())
