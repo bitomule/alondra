@@ -43,6 +43,8 @@ impl Source {
         }
     }
 }
+/// The option of a Propose card that turns it into a Request.
+pub const PROPOSAL_ACCEPTED: &str = "do_it";
 fn kind_name(kind: CardKind) -> String {
     serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
@@ -516,6 +518,31 @@ impl DomainState {
             ),
             _ => Ok(()),
         }
+    }
+    /// The user said "do it" to a proposal: it becomes a Request for the orchestrator, linked
+    /// back to the Task it came from in its body.
+    fn start_proposal(&mut self, proposal: &InteractionId, created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) {
+        let Some(card) = self.interactions.get(proposal).map(|i| (i.card.clone(), i.scope.clone())) else { return };
+        let (card, scope) = card;
+        let source = match &scope {
+            Scope::Task { task_id } => {
+                let title = self.tasks.get(task_id).map(|t| t.title.clone()).unwrap_or_default();
+                format!("Proposed while working on task {task_id} (\"{title}\").")
+            }
+            Scope::Orchestrator { .. } => "Proposed by the orchestrator.".to_owned(),
+        };
+        let mut body = card.need.clone();
+        if !card.why.trim().is_empty() {
+            body = format!("{body}\n\n{}", card.why);
+        }
+        let body = format!("{body}\n\n{source}");
+        let request_id = RequestId(format!("proposal-{proposal}"));
+        if self.requests.contains_key(&request_id) {
+            return;
+        }
+        self.requests.insert(request_id.clone(), Request::new(request_id.clone(), body));
+        created.push(request_id.0.clone());
+        effects.push(DomainEffect::NotifyOrchestrator { interaction_id: None, request_id: Some(request_id) });
     }
     /// R5: one blocking Decide, Do or Provide per node at a time.
     fn one_blocking_ask(&self, author: &Author, card: &CardSpec, blocking: bool) -> Result<()> {
@@ -1429,12 +1456,33 @@ impl DomainState {
                 system(actor)?;
                 self.schedule
                     .record_failed(run_id, reason.clone(), *finished_at)?;
-                if let Some(task) = self.schedule.runs[run_id].task_id.as_ref().and_then(|id| self.tasks.get(id)) {
+                if let Some(task) = self.schedule.runs[run_id].task_id.as_ref().and_then(|id| self.tasks.get(id)).cloned() {
                     effects.push(DomainEffect::ScheduleLaunchFailed {
                         task_id: task.id.clone(),
                         title: task.title.clone(),
                         reason: reason.trim().to_owned(),
                     });
+                    let problem = InteractionId(format!("problem-launch-{}", run_id.0));
+                    let card = CardSpec::new(CardKind::Problem, clip(&format!("Scheduled task \"{}\" could not start", task.title), CardSpec::NEED_MAX))
+                        .why(clip(reason, CardSpec::WHY_MAX))
+                        .content(ContentKind::Diagnosis, reason.trim());
+                    self.insert_interaction(
+                        actor,
+                        &problem,
+                        &Scope::Task { task_id: task.id.clone() },
+                        &Recipient::User,
+                        reason.trim(),
+                        false,
+                        &[],
+                        InteractionPayload::Question {
+                            options: vec![QuestionOption { id: "seen".into(), label: "Got it".into(), description: Some("It stays not started; ask the orchestrator to start it again".into()), inputs: vec![] }],
+                            answer: None,
+                        },
+                        &card,
+                        Source::Problem,
+                    )?;
+                    created.push(problem.0.clone());
+                    effects.push(DomainEffect::NotifyUser { task_id: Some(task.id), interaction_id: problem });
                 }
             }
             Command::InterruptScheduleRunsOnRestart => {
@@ -1878,7 +1926,7 @@ impl DomainState {
                     }
                     _ => return fail("forbidden", "Only the intended recipient can answer"),
                 };
-                if let Scope::Task { task_id } = &i.scope {
+                if let (Scope::Task { task_id }, false) = (&i.scope, i.card.kind == CardKind::Propose) {
                     self.active(task_id)?;
                 }
                 let (options, answer) = match &i.payload {
@@ -1913,6 +1961,10 @@ impl DomainState {
                     _ => unreachable!(),
                 };
                 i.revision = self.revision + 1;
+                if i.card.kind == CardKind::Propose && option_id == PROPOSAL_ACCEPTED {
+                    self.start_proposal(interaction_id, created, effects);
+                }
+                let i = self.interactions.get_mut(interaction_id).unwrap();
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
                 match (i.author.clone(), i.scope.clone()) {

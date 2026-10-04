@@ -431,3 +431,46 @@ fn a_card_written_before_cards_is_read_from_its_body() {
     assert!(!said.contains_key("need"));
     assert_eq!(said["card"]["need"], "Read the summary");
 }
+
+fn proposal(s: &mut DomainState) {
+    let card = CardSpec::new(CardKind::Propose, "Update the README").why("It still names the old flag");
+    ok(s, agent(), Command::AskQuestion {
+        attachments: vec![], interaction_id: "p".into(), scope: scope("t"), recipient: Recipient::User,
+        body: "Update the README".into(), blocking: false, card,
+        options: vec![option("do_it", "Do it"), option("not_now", "Not now")],
+    });
+}
+fn answer_with(option_id: &str) -> Command {
+    Command::AnswerQuestion { attachments: vec![], interaction_id: "p".into(), option_id: option_id.into(), inputs: BTreeMap::new() }
+}
+
+#[test]
+fn doing_a_proposal_creates_a_request_for_the_orchestrator() {
+    let mut s = fixture();
+    proposal(&mut s);
+    let out = ok(&mut s, user(), answer_with("do_it"));
+    let request = &s.requests[&"proposal-p".into()];
+    assert!(request.body.starts_with("Update the README\n\nIt still names the old flag"), "{}", request.body);
+    assert!(request.body.contains("task t") && request.body.contains("Task t"), "linked back to its source: {}", request.body);
+    assert!(out.effects.iter().any(|e| matches!(e, DomainEffect::NotifyOrchestrator { request_id: Some(r), .. } if r.0 == "proposal-p")));
+    assert!(out.created_ids.contains(&"proposal-p".to_owned()));
+}
+
+#[test]
+fn not_now_only_closes_the_proposal() {
+    let mut s = fixture();
+    proposal(&mut s);
+    let requests = s.requests.len();
+    ok(&mut s, user(), answer_with("not_now"));
+    assert_eq!(s.requests.len(), requests);
+    assert!(!s.open(&s.interactions[&"p".into()]));
+}
+
+#[test]
+fn a_proposal_can_be_answered_after_its_task_is_done() {
+    let mut s = fixture();
+    proposal(&mut s);
+    ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
+    ok(&mut s, user(), answer_with("do_it"));
+    assert!(s.requests.contains_key(&"proposal-p".into()));
+}

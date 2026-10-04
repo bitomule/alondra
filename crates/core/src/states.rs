@@ -625,8 +625,9 @@ pub fn nudge_text(user: &str) -> String {
     format!(
         "{NUDGE_PREFIX} {user} anything through Alondra, so they cannot tell whether you are \
          waiting on them; your terminal does not reach them. The Alondra tools declare your state: `ask` for a decision \
-         (one question per decision, with options), `request_action` for something {user} does outside Alondra, \
-         `report` with kind final when you are done, `wait_for_machine` when you are waiting for resources. If you are \
+         (one decision per card, with options), `request_input` for a file or text only {user} has, `request_action` \
+         for something {user} does outside Alondra, `present_result` with is_final true when you are done, \
+         `wait_for_machine` when you are waiting for resources. If you are \
          still working on your own (a build, an upload, a review, a long command), there is nothing to send."
     )
 }

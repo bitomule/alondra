@@ -7,7 +7,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, Invocation, Ownership};
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{DomainError, DomainState};
+use alondra_core::domain_v2::{CardSpec, DomainError, DomainState, InteractionPayload, QuestionOption, Scope};
 use alondra_core::now_millis;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -82,6 +82,12 @@ fn save(home: &Path, runtime: &Runtime) -> Result<()> {
     std::fs::rename(&next, home.join(FILE))?;
     Ok(())
 }
+
+/// A failed batch's Problem is `problem-orchestrator-<run id>`; its options are the decisions.
+const PROBLEM_PREFIX: &str = "problem-orchestrator-";
+const PROBLEM_RETRY: &str = "retry";
+const PROBLEM_CONTINUE: &str = "continue";
+const PROBLEM_STOP: &str = "stop";
 
 pub(crate) struct Executor {
     pub domain: Arc<DomainRuntime>,
@@ -174,6 +180,9 @@ impl Executor {
         if runtime.active_run.as_ref().is_none_or(|run| run.id != run_id) {
             bail!("no running execution {run_id}");
         }
+        if runtime.last_error.is_some() {
+            return self.acknowledge(run_id);
+        }
         runtime.cancel_requested = true;
         save(&self.home, &runtime)
     }
@@ -201,6 +210,7 @@ impl Executor {
 
     /// One batch: claim, bind a bearer to this execution, run Claude, finish.
     pub(crate) async fn tick(&self, ownership: &Ownership) -> Result<()> {
+        self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
         let now = now_millis();
         if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
@@ -297,7 +307,9 @@ impl Executor {
             runtime.last_error = Some("Orchestrator execution was cancelled; check its effects before retrying".into());
             runtime.failure = Some(Failure::Cancelled);
             runtime.consecutive_failures = runtime.consecutive_failures.saturating_add(1);
-            return save(&self.home, &runtime);
+            save(&self.home, &runtime)?;
+            self.raise_batch_problem(&run.id, runtime.last_error.as_deref().unwrap_or_default());
+            return Ok(());
         }
         if resume && process::missing_session(&output, &session) {
             self.finish(&run, State::Retryable, Some("orchestrator_session_missing"))?;
@@ -340,8 +352,66 @@ impl Executor {
         } else {
             self.finish(run, State::Uncertain, Some("orchestrator_execution_ambiguous"))?;
             runtime.failure = Some(if denied { Failure::Denied } else { Failure::Interrupted });
+            save(&self.home, &runtime)?;
+            self.raise_batch_problem(&run.id, runtime.last_error.as_deref().unwrap_or_default());
+            return Ok(());
         }
         save(&self.home, &runtime)
+    }
+
+    /// A batch whose effects are unknown is the user's call: a Problem card with the ways out,
+    /// which `apply_problem_answers` carries out.
+    fn raise_batch_problem(&self, run_id: &str, error: &str) {
+        let option = |id: &str, label: &str, description: &str| QuestionOption {
+            id: id.into(), label: label.into(), description: Some(description.into()), inputs: vec![],
+        };
+        let raised = self.domain.raise_problem(
+            &format!("{PROBLEM_PREFIX}{run_id}"),
+            Scope::Orchestrator { request_id: None },
+            "Decide what to do with the orchestrator's failed batch".into(),
+            alondra_core::domain_v2::clip(error, CardSpec::WHY_MAX),
+            format!("The orchestrator's batch failed and some of its effects may have happened. Last error: {error}"),
+            vec![
+                option(PROBLEM_RETRY, "Retry the batch", "Run the same batch again; check its effects first"),
+                option(PROBLEM_CONTINUE, "Continue without it", "Do not replay it; the orchestrator is told it was interrupted"),
+                option(PROBLEM_STOP, "Stop it", "Drop the batch and leave the orchestrator idle"),
+            ],
+        );
+        if let Err(error) = raised {
+            log!("v2 orchestrator: could not raise the failed batch's Problem: {error:?}");
+        }
+    }
+
+    /// The user's answer to a failed batch's Problem is the decision on that execution; a
+    /// Problem whose execution was settled some other way stops waiting.
+    pub(crate) fn apply_problem_answers(&self) -> Result<()> {
+        let state = self.domain.state()?;
+        let active = load(&self.home)?.active_run.map(|run| run.id);
+        for (id, interaction) in &state.interactions {
+            let Some(run_id) = id.0.strip_prefix(PROBLEM_PREFIX) else { continue };
+            let InteractionPayload::Question { answer, .. } = &interaction.payload else { continue };
+            if interaction.withdrawn {
+                continue;
+            }
+            match answer {
+                Some(answer) => {
+                    let applied = match answer.option_id.as_str() {
+                        PROBLEM_RETRY => self.retry(run_id),
+                        PROBLEM_CONTINUE => self.acknowledge(run_id),
+                        PROBLEM_STOP => self.cancel(run_id),
+                        other => Err(anyhow::anyhow!("unknown option {other}")),
+                    };
+                    if let Err(error) = applied {
+                        log!("v2 orchestrator: answer {} to {id} no longer applies: {error:#}", answer.option_id);
+                    }
+                }
+                None if active.as_deref() != Some(run_id) => {
+                    let _ = self.domain.withdraw_problem(id);
+                }
+                None => {}
+            }
+        }
+        Ok(())
     }
 }
 
@@ -706,6 +776,56 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert_eq!(store.message_outbox_state_for_test(2).unwrap(), "discarded");
         assert!(!store.delivery_evidence().unwrap().iter().any(|item| item.message_id == 2),
             "discarding an unclaimed message does not invent a delivery attempt");
+    }
+
+    fn answer_problem(domain: &DomainRuntime, run_id: &str, option: &str) {
+        let state = domain.state().unwrap();
+        domain.execute(&alondra_core::domain_v2::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain_v2::CommandEnvelope {
+            protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION,
+            data_epoch: state.data_epoch,
+            command_id: format!("answer-{option}").into(),
+            expected_revision: state.revision,
+            command: alondra_core::domain_v2::Command::AnswerQuestion {
+                attachments: vec![], interaction_id: format!("{PROBLEM_PREFIX}{run_id}").into(), option_id: option.into(),
+                inputs: Default::default(),
+            },
+        }, None, || Ok(())).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_failed_batch_is_a_problem_card_and_its_answer_is_the_decision() {
+        for (option, replays) in [("retry", true), ("continue", false), ("stop", false)] {
+            let f = fixture("exit 1");
+            let domain = &f.executor.domain;
+            ask_orchestrator(domain, 1);
+            f.executor.tick(&f.ownership).await.unwrap();
+            let run = load(&f.executor.home).unwrap().active_run.expect("the failed batch stays claimed");
+            let id = format!("{PROBLEM_PREFIX}{}", run.id);
+            let problem = domain.state().unwrap().interactions[&id.clone().into()].clone();
+            assert_eq!(problem.card.kind, alondra_core::domain_v2::CardKind::Problem);
+            assert_eq!(problem.author, alondra_core::domain_v2::Author::System);
+            let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem is asked like a question") };
+            assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["retry", "continue", "stop"]);
+            assert!(problem.card.why.contains("Claude exited") || !problem.card.why.is_empty(), "{:?}", problem.card);
+            answer_problem(domain, &run.id, option);
+            f.executor.apply_problem_answers().unwrap();
+            let runtime = load(&f.executor.home).unwrap();
+            assert!(runtime.active_run.is_none() && runtime.last_error.is_none(), "{option}: {runtime:?}");
+            assert_eq!(!outbox(domain).is_empty(), replays, "{option}: only retry offers the batch again");
+            assert_eq!(runtime.pending_resolutions.len(), usize::from(!replays), "{option}: the others are resolved without replay");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_batch_settled_elsewhere_withdraws_its_problem() {
+        let f = fixture("exit 1");
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        f.executor.tick(&f.ownership).await.unwrap();
+        let run = load(&f.executor.home).unwrap().active_run.unwrap();
+        f.executor.acknowledge(&run.id).unwrap();
+        f.executor.apply_problem_answers().unwrap();
+        assert!(domain.state().unwrap().interactions[&format!("{PROBLEM_PREFIX}{}", run.id).into()].withdrawn);
     }
 
     #[tokio::test]

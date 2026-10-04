@@ -71,33 +71,6 @@ impl DomainRuntime {
         );
         let need = clip(&format!("{name} is stuck: Alondra refused its card"), CardSpec::NEED_MAX);
         let why = clip(&format!("{} ({})", last.message, last.code), CardSpec::WHY_MAX);
-        let envelope = CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION,
-            data_epoch: state.data_epoch,
-            command_id: format!("stuck-{owner}-{card}").into(),
-            expected_revision: state.revision,
-            command: Command::RaiseProblem {
-                attachments: vec![],
-                interaction_id: format!("problem-{owner}-{card}").into(),
-                scope,
-                body: detail.clone(),
-                options: vec![],
-                card: CardSpec::new(CardKind::Problem, need).why(why).content(ContentKind::Diagnosis, detail),
-            },
-        };
-        let _ = self.execute_filling(envelope);
-    }
-
-    fn execute_filling(&self, mut envelope: CommandEnvelope) -> Result<CommandOutcome, StoreError> {
-        for _ in 0..5 {
-            match self.execute(&Actor::System, &envelope, None, || Ok(())) {
-                Err(StoreError::Domain(error)) if error.code == "stale_revision" => {
-                    let Ok(state) = self.state() else { break };
-                    envelope.expected_revision = state.revision;
-                }
-                result => return result,
-            }
-        }
-        Err(DomainError::new("stale_revision", "Alondra remained busy").into())
+        let _ = self.raise_problem(&format!("problem-{owner}-{card}"), scope, need, why, detail, vec![]);
     }
 }
