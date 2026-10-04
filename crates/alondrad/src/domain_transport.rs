@@ -127,8 +127,9 @@ async fn node_hold(mut stream: UnixStream, domain: &DomainRuntime, card: Value) 
         Err(error) => return refuse(stream, format!("invalid hold: {error}")).await,
     };
     let reply = match crate::domain_holds::post(domain, &card, domain.live.mods.is_node(&card.session_id))? {
-        None => json!({"held": false}),
-        Some(id) => {
+        crate::domain_holds::Posted::NotHeld => json!({"held": false}),
+        crate::domain_holds::Posted::Denied(reason) => json!({"held": true, "allowed": false, "reason": reason}),
+        crate::domain_holds::Posted::Held(id) => {
             let answer = tokio::select! {
                 answer = crate::domain_holds::wait(domain, &id) => answer?,
                 _ = stream.read_u8() => {
@@ -559,7 +560,7 @@ mod tests {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
             scope: Scope::Task { task_id: format!("task-{agent}").into() }, recipient: Recipient::User,
             body: "Choose".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
         command(domain, Actor::User { user_id: "u".into() }, &format!("answer-{agent}"), Command::AnswerQuestion {
             attachments: vec![], interaction_id: format!("question-{agent}").into(),
@@ -605,7 +606,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "question", Command::AskQuestion {
             attachments: vec![], interaction_id: "question-1".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::Orchestrator, body: "Which API should I use?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "new_api".into(), label: "New API".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
@@ -637,7 +638,7 @@ mod tests {
             attachments: vec![], interaction_id: "another-question".into(),
             scope: Scope::Task { task_id: "task-agent-a".into() }, recipient: Recipient::User,
             body: "Second choice?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
@@ -648,7 +649,7 @@ mod tests {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
             scope: Scope::Orchestrator { request_id: Some("request-agent-a".into()) },
             recipient: Recipient::User, body: "Ship this?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "orchestrator-answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "orchestrator-question".into(),
@@ -679,7 +680,7 @@ mod tests {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which approach?".into(), blocking: true,
             options: vec![QuestionOption { id: "new".into(), label: "New API".into(), description: None,
-                inputs: vec![InputSpec { id: "details".into(), kind: InputKind::Text, required: true }] }],
+                inputs: vec![InputSpec { id: "details".into(), kind: InputKind::Text, required: true }] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
             attachments: vec![], interaction_id: "question".into(), option_id: "new".into(),
@@ -695,7 +696,7 @@ mod tests {
     fn free_text_question(domain: &DomainRuntime, id: &str, actor: Actor, scope: Scope, recipient: Recipient, body: &str) {
         command(domain, actor, &format!("ask-{id}"), Command::AskQuestion {
             attachments: vec![], interaction_id: id.into(), scope, recipient,
-            body: body.into(), blocking: true, options: vec![],
+            body: body.into(), blocking: false, options: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
     }
 
@@ -860,7 +861,7 @@ mod tests {
         command(&domain, Actor::Agent { agent_id: "session-a".into() }, "present", Command::PresentResult {
             attachments: vec![], task_id: "task-session-a".into(), interaction_id: "delivery".into(),
             body: "Ready".into(), targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }],
-            is_final: true,
+            is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         });
         command(&domain, Actor::User { user_id: "u".into() }, "authorize", Command::AuthorizeMerge {
             authorization_id: "auth".into(), presentation_id: "delivery".into(), pr_id: "pr".into(),
@@ -1020,7 +1021,7 @@ mod tests {
         assert_eq!(reply, json!({}));
         command(&domain, agent_actor(), "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "delivery".into(),
-            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true,
+            body: "Done".into(), targets: vec![DeliveryTarget::Text { text: "The answer".into() }], is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         });
         let (reply, _) = hook(&domain, json!({"session_id": "agent-a", "hook_event_name": "Stop"}), Some(6)).await;
         assert_eq!(reply, json!({}), "a presented result already tells the user");
@@ -1263,6 +1264,45 @@ mod tests {
             assert!(agent_outbox(&domain, "agent-a").is_empty());
             assert!(crate::domain_messages::take_held(&domain, &"agent-a".into()).is_empty(), "the denial carries the words");
         }
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_task_never_asks_for_permission() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        command(&domain, Actor::User { user_id: "u".into() }, "cancel", Command::CancelTask { task_id: "task-agent-a".into() });
+        let before = domain.state().unwrap().interactions.len();
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send(&mut client, &json!({"node_hold": permission("agent-a")})).await;
+        let (result, reply) = tokio::join!(handle(server, &domain), reply(&mut client));
+        result.unwrap();
+        assert_eq!((reply["held"].as_bool(), reply["allowed"].as_bool()), (Some(true), Some(false)), "{reply}");
+        assert!(reply["reason"].as_str().unwrap().contains("was cancelled"), "{reply}");
+        assert_eq!(domain.state().unwrap().interactions.len(), before, "no card is put to the user");
+    }
+
+    #[test]
+    fn a_held_prompt_carries_the_card_it_stands_for() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let post = |frame: Value| match crate::domain_holds::post(&domain, &serde_json::from_value(frame).unwrap(), true).unwrap() {
+            crate::domain_holds::Posted::Held(id) => domain.state().unwrap().interactions[&id].card.clone(),
+            _ => panic!("not held"),
+        };
+        let permission = post(permission("agent-a"));
+        assert_eq!(permission.kind, CardKind::Authorize);
+        assert!(permission.need.contains("Bash: Clean the build"), "{}", permission.need);
+        assert!(permission.content.unwrap().body.contains("rm -rf build"));
+        let plan = post(plan("agent-a"));
+        assert_eq!((plan.kind, plan.need.as_str()), (CardKind::Review, "Ship the parser"));
+        assert_eq!(plan.content.unwrap().kind, ContentKind::Plan);
+        let mut question = ask("agent-a");
+        question["input"]["questions"][0]["options"][1]["label"] = json!("SQLite (Recommended)");
+        let question = post(question);
+        assert_eq!((question.kind, question.need.as_str(), question.recommended.as_deref()), (CardKind::Decide, "Which database?", Some("o1")));
+        assert_eq!(question.content.unwrap().kind, ContentKind::Options, "two questions are one form");
     }
 
     #[tokio::test]

@@ -411,7 +411,7 @@ fn present(s: &mut DomainState, id: &str, targets: Vec<DeliveryTarget>) {
             interaction_id: id.into(),
             body: "Result ready".into(),
             targets,
-            is_final: true,
+            is_final: true, card: crate::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -434,7 +434,7 @@ fn information_read_is_not_a_reply_or_acceptance() {
                 task_id: "t".into(),
             },
             recipient: Recipient::User,
-            body: "Useful result".into(),
+            body: "Useful result".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
         },
     )
     .unwrap();
@@ -557,7 +557,7 @@ fn an_option_carries_an_optional_description() {
             label: "Keep it".into(),
             description: description.map(String::from),
             inputs: vec![],
-        }],
+        }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
     };
     let mut s = fixture();
     reject_unchanged(&mut s, agent(), ask("blank", Some("  ")), "invalid_input");
@@ -575,6 +575,7 @@ fn an_option_carries_an_optional_description() {
 #[test]
 fn typed_option_ids_and_open_question_guard() {
     let mut s = fixture();
+    present(&mut s, "d", text());
     exec(
         &mut s,
         agent(),
@@ -596,11 +597,10 @@ fn typed_option_ids_and_open_question_guard() {
                     kind: InputKind::Text,
                     required: true,
                 }],
-            }],
+            }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
-    present(&mut s, "d", text());
     exec(
         &mut s,
         user(),
@@ -910,11 +910,11 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     let mut s = fixture();
     let option = QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] };
     exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "q".into(), scope: Scope::Task { task_id: "t".into() },
-        recipient: Recipient::User, body: "Ship?".into(), blocking: true, options: vec![option.clone()] }).unwrap();
+        recipient: Recipient::User, body: "Ship?".into(), blocking: true, options: vec![option.clone()], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question") }).unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
-    reject_unchanged(&mut s, user(), Command::WithdrawQuestion { interaction_id: "q".into() }, "forbidden");
-    reject_unchanged(&mut s, orchestrator(), Command::WithdrawQuestion { interaction_id: "q".into() }, "forbidden");
-    exec(&mut s, agent(), Command::WithdrawQuestion { interaction_id: "q".into() }).unwrap();
+    reject_unchanged(&mut s, user(), Command::Withdraw { interaction_id: "q".into() }, "forbidden");
+    reject_unchanged(&mut s, orchestrator(), Command::Withdraw { interaction_id: "q".into() }, "forbidden");
+    exec(&mut s, agent(), Command::Withdraw { interaction_id: "q".into() }).unwrap();
     assert!(s.interactions[&"q".into()].withdrawn);
     assert_ne!(s.tasks[&"t".into()].state, TaskState::NeedsYou, "a withdrawn question no longer blocks");
     let action = s.projection().inbox.iter().flat_map(|r| std::iter::once(r).chain(&r.children))
@@ -924,14 +924,14 @@ fn only_its_author_withdraws_an_open_question_which_then_neither_blocks_nor_take
     reject_unchanged(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(), option_id: "yes".into(),
         inputs: BTreeMap::new() }, "withdrawn");
     exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(), scope: Scope::Task { task_id: "t".into() },
-        recipient: Recipient::User, body: "Again?".into(), blocking: false, options: vec![option] }).unwrap();
+        recipient: Recipient::User, body: "Again?".into(), blocking: false, options: vec![option], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question") }).unwrap();
     exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q2".into(), option_id: "yes".into(),
         inputs: BTreeMap::new() }).unwrap();
-    reject_unchanged(&mut s, agent(), Command::WithdrawQuestion { interaction_id: "q2".into() }, "invalid_action_for_kind");
+    reject_unchanged(&mut s, agent(), Command::Withdraw { interaction_id: "q2".into() }, "question_already_answered");
     exec(&mut s, orchestrator(), Command::AskQuestion { attachments: vec![], interaction_id: "oq".into(),
         scope: Scope::Orchestrator { request_id: Some("r".into()) }, recipient: Recipient::User, body: "Scope?".into(), blocking: false,
-        options: vec![QuestionOption { id: "a".into(), label: "A".into(), description: None, inputs: vec![] }] }).unwrap();
-    exec(&mut s, orchestrator(), Command::WithdrawQuestion { interaction_id: "oq".into() }).unwrap();
+        options: vec![QuestionOption { id: "a".into(), label: "A".into(), description: None, inputs: vec![] }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question") }).unwrap();
+    exec(&mut s, orchestrator(), Command::Withdraw { interaction_id: "oq".into() }).unwrap();
     assert!(s.interactions[&"oq".into()].withdrawn);
 }
 #[test]
@@ -1284,7 +1284,7 @@ fn question_explicitly_linked_to_pr_keeps_identity_and_answer() {
                 label: "Okay".into(),
                 description: None,
                 inputs: vec![],
-            }],
+            }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -1366,7 +1366,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
                 task_id: "t".into(),
             },
             recipient: Recipient::User,
-            body: "Information with Unicode: revisión ✓".into(),
+            body: "Information with Unicode: revisión ✓".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
         },
     )
     .unwrap();
@@ -1392,7 +1392,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
                     kind: InputKind::Text,
                     required: true,
                 }],
-            }],
+            }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -1421,6 +1421,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
     let completed = s.projection();
     let mut s = fixture();
     register(&mut s);
+    present(&mut s, "d", pr_targets());
     exec(
         &mut s,
         agent(),
@@ -1438,7 +1439,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
                 label: "Proceed".into(),
                 description: Some("Merge once the checks pass".into()),
                 inputs: vec![],
-            }],
+            }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -1451,7 +1452,6 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
         },
     )
     .unwrap();
-    present(&mut s, "d", pr_targets());
     let pr_question = s.projection();
     let fixtures = BTreeMap::from([
         ("information", information),
@@ -1495,7 +1495,7 @@ fn recipient_scope_and_generation_preserve_logical_coordination() {
                 label: "Proceed".into(),
                 description: None,
                 inputs: vec![],
-            }],
+            }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -1550,7 +1550,7 @@ fn recipient_scope_and_generation_preserve_logical_coordination() {
                 label: "Okay".into(),
                 description: None,
                 inputs: vec![],
-            }],
+            }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -1672,7 +1672,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
             interaction_id: "partial".into(),
             body: "Supplementary partial".into(),
             targets: text(),
-            is_final: false,
+            is_final: false, card: crate::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -1686,7 +1686,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
                 task_id: "t".into(),
             },
             recipient: Recipient::User,
-            body: "Unread news".into(),
+            body: "Unread news".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
         },
     )
     .unwrap();
@@ -1725,7 +1725,7 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
             recipient: Recipient::User,
             body: "Review attachment".into(),
             blocking: true,
-            options: vec![],
+            options: vec![], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -1758,7 +1758,7 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
                     task_id: "t".into()
                 },
                 recipient: Recipient::User,
-                body: String::new()
+                body: String::new(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
             }
         )
         .unwrap_err()
@@ -1783,7 +1783,7 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
                 label: "Yes".into(),
                 description: None,
                 inputs: vec![],
-            }],
+            }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -1884,7 +1884,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
                 pr_id: "pr-down".into(),
                 head: "head-down".into(),
             }],
-            is_final: true,
+            is_final: true, card: crate::domain_v2::CardSpec::delivery("Review the result", &[], true),
         },
     )
     .unwrap();
@@ -2060,7 +2060,7 @@ fn information_read_is_shared_across_authorized_devices() {
                 task_id: "t".into(),
             },
             recipient: Recipient::User,
-            body: "Read once".into(),
+            body: "Read once".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
         },
     )
     .unwrap();
@@ -2362,7 +2362,7 @@ fn answer_reaches_the_current_assignee_after_reassignment() {
             recipient: Recipient::User,
             body: "Which colour?".into(),
             blocking: true,
-            options: vec![],
+            options: vec![], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -2421,7 +2421,7 @@ fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
             interaction_id: "info".into(),
             scope: Scope::Task { task_id: "t".into() },
             recipient: Recipient::User,
-            body: "Progress".into(),
+            body: "Progress".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
         },
     )
     .unwrap();
@@ -2456,7 +2456,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
         interaction_id: id.into(),
         scope: Scope::Task { task_id: "t".into() },
         recipient: Recipient::User,
-        body: "Progress".into(),
+        body: "Progress".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
     };
     let answer = |text: &str| Command::AnswerQuestion {
         attachments: vec![],
@@ -2474,7 +2474,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
             recipient: Recipient::User,
             body: "Which colour?".into(),
             blocking: false,
-            options: vec![],
+            options: vec![], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question"),
         },
     )
     .unwrap();
@@ -2599,11 +2599,13 @@ fn variant_index(c: &Command) -> usize {
         Command::ReopenTask { .. } => 39,
         Command::ArchiveTask { .. } => 40,
         Command::RetitleTask { .. } => 41,
-        Command::WithdrawQuestion { .. } => 42,
+        Command::Withdraw { .. } => 42,
         Command::HoldHook { .. } => 43,
+        Command::RequestClarification { .. } => 44,
+        Command::RaiseProblem { .. } => 45,
     }
 }
-const COMMAND_KINDS: usize = 44;
+const COMMAND_KINDS: usize = 46;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2648,15 +2650,15 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::SetDependencies { task_id: ids.task.into(), dependencies: BTreeSet::new(), stack: None }, false),
         (Command::StartTask { task_id: ids.task.into() }, false),
         (Command::PublishInformation { attachments: vec![], interaction_id: "fresh-info".into(),
-            scope: scope.clone(), recipient: Recipient::User, body: "Info".into() }, false),
+            scope: scope.clone(), recipient: Recipient::User, body: "Info".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update") }, false),
         (Command::AskQuestion { attachments: vec![], interaction_id: "fresh-question".into(),
             scope: scope.clone(), recipient: Recipient::User, body: "Q?".into(), blocking: true,
-            options: vec![option.clone()] }, false),
+            options: vec![option.clone()], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question") }, false),
         (Command::RequestAction { attachments: vec![], interaction_id: "fresh-action".into(),
             scope, recipient: Recipient::User, body: "Do".into(), blocking: true,
-            options: vec![option] }, false),
+            options: vec![option], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Do, "Do the action") }, false),
         (Command::MarkRead { interaction_id: ids.interaction.into() }, false),
-        (Command::WithdrawQuestion { interaction_id: ids.interaction.into() }, false),
+        (Command::Withdraw { interaction_id: ids.interaction.into() }, false),
         (Command::AnswerQuestion { attachments: vec![], interaction_id: ids.interaction.into(),
             option_id: "yes".into(), inputs: BTreeMap::new() }, false),
         (Command::CreateDocument { task_id: ids.task.into(), document_id: "fresh-doc".into(),
@@ -2676,7 +2678,7 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
             subject: InteractionSubject::PullRequest { pr_id: ids.pr.into() } }, false),
         (Command::PresentResult { attachments: vec![], task_id: ids.task.into(),
             interaction_id: "fresh-delivery".into(), body: "Done".into(), targets: text(),
-            is_final: true }, false),
+            is_final: true, card: crate::domain_v2::CardSpec::delivery("Review the result", &[], true) }, false),
         (Command::SubmitFeedback { attachments: vec![], presentation_id: ids.interaction.into(),
             targets: text(), body: "Change".into(), instruction: Instruction::Changes }, false),
         (Command::AcceptDelivery { presentation_id: ids.interaction.into(), targets: text() }, false),
@@ -2698,7 +2700,12 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::ArchiveTask { task_id: ids.task.into(), archived: false }, false),
         (Command::HoldHook { interaction_id: "fresh-hold".into(), task_id: ids.task.into(),
             agent_id: ids.agent.into(), hold: Hold::Permission, body: "Bash: ls".into(),
-            options: Hold::Permission.options() }, false),
+            options: Hold::Permission.options(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Authorize, "Allow the call") }, false),
+        (Command::RequestClarification { interaction_id: ids.interaction.into(),
+            reason: ClarificationReason::Unclear, text: None }, false),
+        (Command::RaiseProblem { attachments: vec![], interaction_id: "fresh-problem".into(),
+            scope: Scope::Task { task_id: ids.task.into() }, body: "Stuck".into(), options: vec![],
+            card: CardSpec::derived(CardKind::Problem, "Unblock the node") }, true),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -2763,10 +2770,10 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     exec(&mut s, b.clone(), Command::PresentResult { attachments: vec![], task_id: "t2".into(),
         interaction_id: "pres2".into(), body: "Done".into(),
         targets: vec![DeliveryTarget::PullRequest { pr_id: "pr2".into(), head: "head1".into() }],
-        is_final: true }).unwrap();
+        is_final: true, card: crate::domain_v2::CardSpec::delivery("Review the result", &[], true) }).unwrap();
     exec(&mut s, b.clone(), Command::AskQuestion { attachments: vec![], interaction_id: "q2".into(),
         scope: Scope::Task { task_id: "t2".into() }, recipient: Recipient::User, body: "Q?".into(),
-        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }] }).unwrap();
+        blocking: false, options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question") }).unwrap();
     exec(&mut s, user(), Command::AuthorizeMerge { authorization_id: "auth2".into(),
         presentation_id: "pres2".into(), pr_id: "pr2".into(), expected_head: "head1".into(),
         method: MergeMethod::Squash }).unwrap();
@@ -2796,7 +2803,7 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
             let mut next = s.clone();
             let error = exec(&mut next, actor.clone(), command.clone())
                 .expect_err(&format!("{actor:?} must not act on another Agent's Task with {command:?}"));
-            assert!(matches!(error.code.as_str(), "not_assigned" | "forbidden"), "{command:?}: {}", error.code);
+            assert!(matches!(error.code.as_str(), "not_assigned" | "no_task" | "forbidden"), "{command:?}: {}", error.code);
             assert_eq!(next, s);
         }
     }
@@ -2894,7 +2901,7 @@ fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
     }, "conflict");
     exec(&mut state, agent(), Command::PublishInformation {
         attachments: vec![], interaction_id: "i".into(),
-        scope: Scope::Task { task_id: "scheduled-task".into() }, recipient: Recipient::User, body: "Started".into(),
+        scope: Scope::Task { task_id: "scheduled-task".into() }, recipient: Recipient::User, body: "Started".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
     }).unwrap();
     state.validate().unwrap();
 }
@@ -2903,7 +2910,7 @@ fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
 fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox() {
     let mut s = fixture();
     let held = |id: &str, hold: Hold| Command::HoldHook { interaction_id: id.into(), task_id: "t".into(),
-        agent_id: "a".into(), hold, body: "Bash: rm -rf build".into(), options: hold.options() };
+        agent_id: "a".into(), hold, body: "Bash: rm -rf build".into(), options: hold.options(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Authorize, "Allow the call") };
     reject_unchanged(&mut s, agent(), held("h", Hold::Permission), "forbidden");
     let outcome = exec(&mut s, Actor::System, held("h", Hold::Permission)).unwrap();
     assert_eq!(outcome.effects, [DomainEffect::NotifyUser { task_id: Some("t".into()), interaction_id: "h".into() }]);
@@ -2920,12 +2927,12 @@ fn a_held_hook_question_reaches_the_user_and_its_answer_never_enters_the_outbox(
     let answered = exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "h".into(),
         option_id: Hold::DENY.into(), inputs }).unwrap();
     assert!(answered.effects.is_empty(), "the hook hands the answer: {:?}", answered.effects);
-    exec(&mut s, Actor::System, Command::WithdrawQuestion { interaction_id: "p".into() }).unwrap();
+    exec(&mut s, Actor::System, Command::Withdraw { interaction_id: "p".into() }).unwrap();
     assert!(s.interactions[&"p".into()].withdrawn);
     exec(&mut s, agent(), Command::AskQuestion { attachments: vec![], interaction_id: "q".into(),
         scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "Which?".into(),
-        blocking: true, options: Hold::Permission.options() }).unwrap();
-    reject_unchanged(&mut s, Actor::System, Command::WithdrawQuestion { interaction_id: "q".into() }, "forbidden");
+        blocking: true, options: Hold::Permission.options(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Provide, "Answer the question") }).unwrap();
+    reject_unchanged(&mut s, Actor::System, Command::Withdraw { interaction_id: "q".into() }, "forbidden");
     let ordinary = exec(&mut s, user(), Command::AnswerQuestion { attachments: vec![], interaction_id: "q".into(),
         option_id: Hold::ALLOW.into(), inputs: BTreeMap::new() }).unwrap();
     assert!(matches!(ordinary.effects[..], [DomainEffect::NotifyAgent { .. }]));
@@ -2954,7 +2961,7 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
         assert!(!waiting(&s, "d"), "{instruction:?}");
         assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(instruction)));
         exec(&mut s, agent(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
-            scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into() }).unwrap();
+            scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update") }).unwrap();
         assert!(!waiting(&s, "d"), "{instruction:?}: another word from the Agent never brings the delivery back");
         assert_eq!(s.task_handed_back(&"t".into()), Some(instruction));
         present(&mut s, "d2", pr_targets());

@@ -27,7 +27,7 @@ fn agent_a() -> Actor {
 fn ask(domain: &DomainRuntime, id: &str, recipient: Recipient, scope: Scope, actor: Actor) {
     run(domain, actor, Command::AskQuestion { attachments: vec![], interaction_id: id.into(), scope, recipient,
         body: format!("Question {id}\nwith detail"), blocking: false,
-        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }] });
+        options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question") });
 }
 
 /// Agent A runs Task t1 in App; t2 builds on t1 and nobody has it yet.
@@ -55,10 +55,10 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
     let task_scope = Scope::Task { task_id: "t1".into() };
     ask(&f.1, "q-open", Recipient::User, task_scope.clone(), agent_a());
     ask(&f.1, "q-gone", Recipient::User, task_scope.clone(), agent_a());
-    run(&f.1, agent_a(), Command::WithdrawQuestion { interaction_id: "q-gone".into() });
+    run(&f.1, agent_a(), Command::Withdraw { interaction_id: "q-gone".into() });
     ask(&f.1, "q-orch", Recipient::Orchestrator, task_scope.clone(), agent_a());
     run(&f.1, agent_a(), Command::PublishInformation { attachments: vec![], interaction_id: "info".into(), scope: task_scope,
-        recipient: Recipient::User, body: "Found the colour table".into() });
+        recipient: Recipient::User, body: "Found the colour table".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update") });
     let fleet = fleet(&f.1, json!({"cpus": 10}), json!(null)).unwrap();
     let nodes = fleet["nodes"].as_array().unwrap();
     assert_eq!(nodes.len(), 1, "only sessions the domain knows as Agents: {nodes:?}");

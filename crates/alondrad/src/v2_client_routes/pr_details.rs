@@ -152,7 +152,7 @@ mod tests {
     fn present(domain: &crate::domain_runtime::DomainRuntime, id: &str, head: &str) {
         run(domain, Actor::Agent { agent_id: "agent".into() }, id, Command::PresentResult { attachments: vec![],
             task_id: "task".into(), interaction_id: id.into(), body: "Ready".into(), is_final: true,
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }] });
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }], card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true) });
     }
 
     fn conflicts_told(domain: &crate::domain_runtime::DomainRuntime) -> Vec<(String, String)> {

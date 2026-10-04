@@ -178,7 +178,7 @@ fn seed_work(fixture: &Fixture) {
     fixture.command(Actor::Orchestrator { generation: 0 }, "answer-2", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-2".into(),
         scope: Scope::Orchestrator { request_id: Some("request-2".into()) }, recipient: Recipient::User,
-        body: "Nothing to change: it already works".into(),
+        body: "Nothing to change: it already works".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
     });
     fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
     fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false });
@@ -277,7 +277,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
 
     fixture.agent("agent-a", "ask", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(),
-        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(),
+        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
     });
     let informed = fixture.runtime_json().await;
     assert_eq!(informed["tasks"]["task-1"]["state_since"], before["tasks"]["task-1"]["state_since"], "information does not move the task's state");
@@ -789,7 +789,7 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     fixture.agent("agent-a", "ask", Command::AskQuestion {
         attachments: vec![], interaction_id: "q-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Which colour?\nThe blue or the green one.".into(), blocking: true,
-        options: vec![alondra_core::domain_v2::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None, inputs: vec![] }],
+        options: vec![alondra_core::domain_v2::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
     });
     fixture.user("answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "q-1".into(), option_id: "blue".into(), inputs: Default::default() });
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
@@ -859,7 +859,7 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
     seed_work(&fixture);
     fixture.agent("agent-a", "info-1", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(), scope: Scope::Task { task_id: "task-1".into() },
-        recipient: Recipient::User, body: "FYI".into(),
+        recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
     });
     let (attempt, message) = {
         let mut store = fixture.domain.store.lock().unwrap();

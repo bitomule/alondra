@@ -82,7 +82,8 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         ("/tasks/{id}/reopening", "POST"),
         ("/tasks/{id}/archival", "POST"),
         ("/interactions/{id}/answers", "POST"),
-        ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/subject", "PUT"),
+        ("/interactions/{id}/withdrawal", "POST"), ("/interactions/{id}/clarification", "POST"),
+        ("/interactions/{id}/subject", "PUT"),
         ("/interactions/{id}/feedback", "POST"), ("/interactions/{id}/acceptance", "POST"),
         ("/interactions/{id}/merge-authorizations", "POST"), ("/interactions/{id}/read-state", "PUT"),
     ];
@@ -940,7 +941,8 @@ pub(crate) fn resource_envelope(
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/reopening") => ("reopen_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/tasks/") && p.ends_with("/archival") => ("archive_task", Some(("task_id", task?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/answers") => ("answer_question", Some(("interaction_id", interaction?))),
-        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw_question", Some(("interaction_id", interaction?))),
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/withdrawal") => ("withdraw", Some(("interaction_id", interaction?))),
+        ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/clarification") => ("request_clarification", Some(("interaction_id", interaction?))),
         ("PUT", p) if p.starts_with("/interactions/") && p.ends_with("/subject") => ("link_interaction_subject", Some(("interaction_id", interaction?))),
         ("PUT", p) if p.starts_with("/interactions/") && p.ends_with("/read-state") => ("mark_read", Some(("interaction_id", interaction?))),
         ("POST", p) if p.starts_with("/interactions/") && p.ends_with("/feedback") => ("submit_feedback", Some(("presentation_id", interaction?))),
@@ -1000,7 +1002,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
         | ("POST", ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
             | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
             | ["tasks", _, "completion"] | ["tasks", _, "cancellation"] | ["tasks", _, "reopening"] | ["tasks", _, "archival"]
-            | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"]
+            | ["interactions", _, "answers"] | ["interactions", _, "withdrawal"] | ["interactions", _, "clarification"]
             | ["interactions", _, "feedback"] | ["interactions", _, "acceptance"] | ["interactions", _, "merge-authorizations"]) => true,
         ("PUT", ["tasks", _, "assignee"] | ["tasks", _, "dependencies"]
             | ["tasks", _, "documents", _] | ["tasks", _, "documents", _, "review"]
@@ -1535,7 +1537,7 @@ mod tests {
                     },
                     recipient: Recipient::User,
                     body: "Information".into(),
-                    attachments: vec![],
+                    attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
                 },
             ),
         ] {

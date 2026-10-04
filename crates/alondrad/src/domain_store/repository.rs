@@ -376,6 +376,7 @@ fn interaction_row(i: &Interaction) -> Result<Map<String, Value>> {
         ],
     );
     row.insert("ordering".into(), json!(i.order));
+    row.insert("clarification".into(), json!(i.clarification));
     let (scope, task, request) = match &i.scope {
         Scope::Task { task_id } => ("task", json!(task_id), Value::Null),
         Scope::Orchestrator { request_id } => ("orchestrator", Value::Null, json!(request_id)),
@@ -766,7 +767,7 @@ pub(super) fn load(c: &Connection) -> Result<DomainState> {
         c,
         "interactions",
         &["blocking", "is_final", "acceptance_valid", "withdrawn"],
-        &["options", "answer"],
+        &["options", "answer", "card", "clarification"],
     )? {
         let kind = take(&mut row, "scope_kind");
         let task = take(&mut row, "task_id");

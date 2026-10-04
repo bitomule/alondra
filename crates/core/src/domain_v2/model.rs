@@ -336,6 +336,192 @@ pub enum InteractionPayload {
         feedback: Vec<Feedback>,
     },
 }
+/// What the card asks of the user: the kind comes from what the user contributes, not from the
+/// object behind it (a PR or a plan is what the card carries).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CardKind {
+    Decide,
+    Review,
+    Authorize,
+    Know,
+    Provide,
+    Test,
+    Do,
+    Problem,
+    Propose,
+}
+impl CardKind {
+    /// A notice or a proposal never stops a node.
+    pub fn never_blocks(self) -> bool {
+        matches!(self, Self::Know | Self::Propose)
+    }
+    /// The asks a node opens one at a time.
+    pub fn one_at_a_time(self) -> bool {
+        matches!(self, Self::Decide | Self::Do | Self::Provide)
+    }
+    pub fn needs_why(self) -> bool {
+        matches!(self, Self::Decide | Self::Do | Self::Provide | Self::Propose | Self::Problem)
+    }
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContentKind {
+    Plan,
+    Document,
+    Diff,
+    Command,
+    Report,
+    Steps,
+    Options,
+    Diagnosis,
+    Attachments,
+}
+/// The long part of a card, shown only in its detail. Without `summary` Alondra computes one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CardContent {
+    pub kind: ContentKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default)]
+    pub body: String,
+}
+/// What a card holds back until it is answered.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CardTarget {
+    PullRequest { pr_id: PrId },
+    Document { document_id: DocumentId },
+    Delivery { interaction_id: InteractionId },
+}
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CardSpec {
+    pub kind: CardKind,
+    /// What the user must do, in the imperative: at most 90 characters.
+    pub need: String,
+    /// Why, and whom it holds back: at most 240 characters.
+    #[serde(default)]
+    pub why: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content: Option<CardContent>,
+    /// The option id the author recommends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blocks: Vec<CardTarget>,
+    /// The open card of the same author this one replaces; it is withdrawn in the same step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replaces: Option<InteractionId>,
+    /// How the node will check the user did it (Do only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub verify: Option<String>,
+}
+impl CardSpec {
+    pub const NEED_MAX: usize = 90;
+    pub const WHY_MAX: usize = 240;
+    pub const SUMMARY_MAX: usize = 60;
+
+    pub fn new(kind: CardKind, need: impl Into<String>) -> Self {
+        CardSpec {
+            kind,
+            need: need.into(),
+            why: String::new(),
+            content: None,
+            recommended: None,
+            blocks: vec![],
+            replaces: None,
+            verify: None,
+        }
+    }
+    pub fn why(mut self, why: impl Into<String>) -> Self {
+        self.why = why.into();
+        self
+    }
+    pub fn content(mut self, kind: ContentKind, body: impl Into<String>) -> Self {
+        self.content = Some(CardContent { kind, summary: None, body: body.into() });
+        self
+    }
+    /// A card read from a body written before cards existed: its first line is what is needed,
+    /// the next paragraph why, and a longer body goes to the content.
+    pub fn derived(kind: CardKind, body: &str) -> Self {
+        let mut lines = body.lines().map(str::trim).filter(|line| !line.is_empty());
+        let first = lines.next().unwrap_or_default().trim_start_matches('#').trim();
+        let need = if first.is_empty() { fallback_need(kind).to_owned() } else { clip(first, Self::NEED_MAX) };
+        let rest: Vec<&str> = lines.collect();
+        let why = match rest.first() {
+            Some(paragraph) => clip(paragraph, Self::WHY_MAX),
+            None if kind.needs_why() => need.clone(),
+            None => String::new(),
+        };
+        let mut card = CardSpec::new(kind, need).why(why);
+        if rest.len() > 1 || first.chars().count() > Self::NEED_MAX || rest.first().is_some_and(|p| p.chars().count() > Self::WHY_MAX) {
+            card = card.content(ContentKind::Report, body.trim());
+        }
+        if kind == CardKind::Do {
+            card.verify = Some("The node checks it once you answer.".into());
+        }
+        card
+    }
+    /// A question with two or more choices is a decision; one the user answers in words or with
+    /// a file is something only they can provide.
+    pub fn question(body: &str, options: &[QuestionOption]) -> Self {
+        Self::derived(if options.len() >= 2 { CardKind::Decide } else { CardKind::Provide }, body)
+    }
+    /// A delivery: a final one is reviewed, a progress one only read.
+    pub fn delivery(body: &str, targets: &[DeliveryTarget], is_final: bool) -> Self {
+        let mut card = Self::derived(if is_final { CardKind::Review } else { CardKind::Know }, body);
+        let kind = if targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { .. })) {
+            ContentKind::Diff
+        } else if targets.iter().any(|t| matches!(t, DeliveryTarget::DocumentRevision { .. })) {
+            ContentKind::Document
+        } else {
+            ContentKind::Report
+        };
+        card.content = Some(CardContent { kind, summary: None, body: body.trim().to_owned() });
+        card
+    }
+}
+fn fallback_need(kind: CardKind) -> &'static str {
+    match kind {
+        CardKind::Decide => "Choose an option",
+        CardKind::Review => "Review the result",
+        CardKind::Authorize => "Allow this action",
+        CardKind::Know => "Read this update",
+        CardKind::Provide => "Provide what the node asks for",
+        CardKind::Test => "Test the result",
+        CardKind::Do => "Do what the node asks",
+        CardKind::Problem => "Fix the problem",
+        CardKind::Propose => "Consider this proposal",
+    }
+}
+/// At most `max` characters, cut at a character boundary and marked with an ellipsis.
+pub fn clip(text: &str, max: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= max {
+        return text.to_owned();
+    }
+    let mut cut: String = text.chars().take(max.saturating_sub(1)).collect();
+    cut.truncate(cut.trim_end().len());
+    cut.push('…');
+    cut
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClarificationReason {
+    Unclear,
+    Contradicts,
+    MissingContext,
+}
+/// The user asked the author to say it again: its next card replaces this one.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Clarification {
+    pub reason: ClarificationReason,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    pub user_id: String,
+    pub at_revision: Revision,
+}
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Interaction {
     #[serde(default)]
@@ -350,9 +536,12 @@ pub struct Interaction {
     pub payload: InteractionPayload,
     pub revision: Revision,
     pub order: Revision,
-    /// A question its author withdrew: it no longer waits for an answer.
+    /// A card its author withdrew or replaced: it no longer waits for anything.
     #[serde(default)]
     pub withdrawn: bool,
+    pub card: CardSpec,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub clarification: Option<Clarification>,
 }
 /// What a held question stands for: a tool permission prompt, a plan to approve, Claude's
 /// AskUserQuestion, or an MCP server asking for input.

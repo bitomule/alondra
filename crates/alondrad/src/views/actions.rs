@@ -1255,7 +1255,7 @@ mod tests {
             apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, &format!("present-{task_id}"), Command::PresentResult {
                 attachments: vec![], task_id: task_id.into(), interaction_id: delivery_id.clone().into(),
                 body: "Complete".into(), targets: vec![DeliveryTarget::Text { text: "Complete".into() }],
-                is_final: true,
+                is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
             });
             apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("accept-{task_id}"), Command::AcceptDelivery {
                 presentation_id: delivery_id.clone().into(),
@@ -1401,7 +1401,7 @@ mod tests {
                 options: vec![QuestionOption {
                     id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![],
                 }], answer: None,
-            }, revision: 1, order: 1, withdrawn: false,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -1437,7 +1437,7 @@ mod tests {
             payload: InteractionPayload::Question {
                 options: vec![QuestionOption { id: "approve".into(), label: "Approve".into(), description: None, inputs: vec![] }],
                 answer: None,
-            }, revision: 1, order: 1, withdrawn: false,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -1467,7 +1467,7 @@ mod tests {
             author: Author::System, recipient: Recipient::User, body: "# Plan\n\n1. Split the lexer".into(),
             blocking: true, subject: None,
             payload: InteractionPayload::Question { options: Hold::Plan.options(), answer: None },
-            revision: 1, order: 1, withdrawn: false,
+            revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         });
         state.holds.insert("hold-1".into(), Hold::Plan);
         let request = ActionRequest {
@@ -1512,7 +1512,7 @@ mod tests {
             payload: InteractionPayload::Delivery {
                 targets: vec![DeliveryTarget::PullRequest { pr_id: id.into(), head: "abcdef123456".into() }],
                 is_final: false, acceptance: None, feedback: vec![],
-            }, revision: 1, order: 1, withdrawn: false,
+            }, revision: 1, order: 1, withdrawn: false, card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"), clarification: None,
         });
         let request = ActionRequest {
             protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
@@ -1586,7 +1586,7 @@ mod tests {
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Ship it?".into(), blocking: true,
-            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "yes".into(), label: "Yes".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
         let state = domain.state().unwrap();
         let revision = state.interactions[&"question".into()].revision;
@@ -1622,7 +1622,7 @@ mod tests {
         apply_seed_command(domain, agent, "present", Command::PresentResult {
             attachments: vec![], task_id: "task".into(), interaction_id: "result".into(), body: "Ready".into(),
             targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "0123456789abcdef".into() }],
-            is_final: true,
+            is_final: true, card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true),
         });
     }
 
@@ -1679,7 +1679,7 @@ mod tests {
         apply_seed_command(&domain, Actor::Agent { agent_id: "agent-a".into() }, "ask", Command::AskQuestion {
             attachments: vec![], interaction_id: "question".into(), scope: Scope::Task { task_id: "task".into() },
             recipient: Recipient::User, body: "Which API?".into(), blocking: true,
-            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }],
+            options: vec![QuestionOption { id: "new".into(), label: "New".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
         });
         let revision = domain.state().unwrap().interactions[&"question".into()].revision;
         let action = ActionId::new(Verb::Ctx, "question", revision, None).unwrap().to_string();

@@ -129,7 +129,8 @@ impl Fixture {
         }
     }
 
-    fn envelope(&mut self, command: Value) -> Value {
+    fn envelope(&mut self, mut command: Value) -> Value {
+        if let Some(command) = command.as_object_mut() { alondra_core::domain_v2::derive_wire_card(command); }
         self.next_id += 1;
         let state = self.domain.state().unwrap();
         json!({"protocol_version":PROTOCOL_VERSION,"data_epoch":state.data_epoch,

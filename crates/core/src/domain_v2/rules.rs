@@ -4,6 +4,120 @@ type Result<T> = std::result::Result<T, DomainError>;
 fn fail<T>(code: &str, msg: &str) -> Result<T> {
     Err(DomainError::new(code, msg))
 }
+/// A rejection a node can act on: what is wrong, in which field, and how to fix it.
+fn refuse<T>(code: &str, field: &str, fix: &str) -> Result<T> {
+    let mut error = DomainError::new(code, format!("{field}: {fix}"));
+    error.subject = Some(field.into());
+    Err(error)
+}
+/// The command a card arrives with, which bounds the kinds it may be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Source {
+    Information,
+    Question,
+    Action,
+    Delivery,
+    Hold,
+    Problem,
+}
+impl Source {
+    fn kinds(self) -> &'static [CardKind] {
+        use CardKind::*;
+        match self {
+            Source::Information => &[Know],
+            Source::Question => &[Decide, Provide, Test, Propose],
+            Source::Action => &[Do, Test, Provide],
+            Source::Delivery => &[Review, Know],
+            Source::Hold => &[Authorize, Review, Decide, Provide],
+            Source::Problem => &[Problem],
+        }
+    }
+    fn command(self) -> &'static str {
+        match self {
+            Source::Information => "publish_information",
+            Source::Question => "ask",
+            Source::Action => "request_action",
+            Source::Delivery => "present_result",
+            Source::Hold => "a held hook",
+            Source::Problem => "raise_problem",
+        }
+    }
+}
+fn kind_name(kind: CardKind) -> String {
+    serde_json::to_value(kind).ok().and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
+}
+/// R18–R21: the card's own shape, before any state is looked at.
+fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, blocking: bool) -> Result<()> {
+    let kind = kind_name(card.kind);
+    if card.kind == CardKind::Problem && source != Source::Problem {
+        return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask or publish_information instead");
+    }
+    if !source.kinds().contains(&card.kind) {
+        let allowed: Vec<String> = source.kinds().iter().map(|k| kind_name(*k)).collect();
+        return refuse("invalid_input", "card.kind", &format!("{} does not send a {kind} card: use one of {}", source.command(), allowed.join(", ")));
+    }
+    let need = card.need.trim();
+    if need.is_empty() || need.contains('\n') {
+        return refuse("invalid_input", "card.need", "Say in one line, in the imperative, what you need from the user");
+    }
+    if need.chars().count() > CardSpec::NEED_MAX {
+        return refuse("invalid_input", "card.need", &format!("At most {} characters: keep what you need short and move the rest to card.why or card.content", CardSpec::NEED_MAX));
+    }
+    if card.why.chars().count() > CardSpec::WHY_MAX {
+        return refuse("invalid_input", "card.why", &format!("At most {} characters: long text goes in card.content.body, never in why", CardSpec::WHY_MAX));
+    }
+    if card.kind.needs_why() && source != Source::Hold && card.why.trim().is_empty() {
+        return refuse("invalid_input", "card.why", &format!("A {kind} card says why: add one or two sentences, and whom it holds back"));
+    }
+    if card.kind == CardKind::Review && card.content.is_none() {
+        return refuse("invalid_input", "card.content", "A review card carries what to review: add card.content with its kind and body");
+    }
+    if let Some(summary) = card.content.as_ref().and_then(|c| c.summary.as_ref())
+        && summary.chars().count() > CardSpec::SUMMARY_MAX
+    {
+        return refuse("invalid_input", "card.content.summary", &format!("At most {} characters, like \"6 files · +120 −40\"; leave it out and Alondra computes one", CardSpec::SUMMARY_MAX));
+    }
+    match (&card.verify, card.kind) {
+        (None, CardKind::Do) => return refuse("invalid_input", "card.verify", "A do card says how you will check the user did it"),
+        (Some(_), k) if k != CardKind::Do => return refuse("invalid_input", "card.verify", "Only a do card carries verify: remove it"),
+        (Some(v), _) if v.trim().is_empty() => return refuse("invalid_input", "card.verify", "Say how you will check the user did it"),
+        _ => {}
+    }
+    if let Some(recommended) = &card.recommended
+        && !options.iter().any(|o| &o.id == recommended)
+    {
+        return refuse("invalid_input", "card.recommended", "Recommend the id of one of the card's options, or leave it out");
+    }
+    if card.kind == CardKind::Decide && source != Source::Hold {
+        decide_options(options)?;
+    }
+    if blocking && card.kind.never_blocks() {
+        return refuse("invalid_input", "blocking", &format!("A {kind} card never blocks: send it with blocking false"));
+    }
+    if card.blocks.len() > 16 {
+        return refuse("invalid_input", "card.blocks", "At most 16 targets");
+    }
+    Ok(())
+}
+/// R19: a decision offers 2–8 short distinct options, at most one of them recommended.
+fn decide_options(options: &[QuestionOption]) -> Result<()> {
+    if !(2..=8).contains(&options.len()) {
+        return refuse("invalid_input", "options", "A decision offers 2 to 8 options: merge or drop some, or ask for text with a provide card");
+    }
+    let mut labels = BTreeSet::new();
+    for option in options {
+        if option.label.chars().count() > 40 {
+            return refuse("invalid_input", "options.label", &format!("\"{}\" is longer than 40 characters: shorten it and explain it in its description", option.label));
+        }
+        if !labels.insert(option.label.trim().to_lowercase()) {
+            return refuse("invalid_input", "options.label", &format!("\"{}\" appears twice: every option says something different", option.label));
+        }
+    }
+    if options.iter().filter(|o| o.label.trim_end().ends_with("(Recommended)")).count() > 1 {
+        return refuse("invalid_input", "card.recommended", "Recommend at most one option, with card.recommended");
+    }
+    Ok(())
+}
 fn nonempty(s: &str) -> Result<()> {
     if s.trim().is_empty() || s.len() > 1_048_576 {
         fail("invalid_input", "Empty or oversized value")
@@ -111,30 +225,6 @@ impl DomainState {
             self.manager(actor)?;
         }
         Ok(())
-    }
-    fn author(&self, actor: &Actor, scope: &Scope) -> Result<Author> {
-        self.fence(actor)?;
-        self.validate_scope(scope)?;
-        match (actor, scope) {
-            (Actor::Agent { agent_id }, Scope::Task { task_id }) => {
-                self.assigned(actor, task_id)?;
-                Ok(Author::Agent {
-                    agent_id: agent_id.clone(),
-                })
-            }
-            (Actor::Orchestrator { generation }, _) => {
-                if let Scope::Task { task_id } = scope {
-                    self.active(task_id)?;
-                }
-                Ok(Author::Orchestrator {
-                    generation: *generation,
-                })
-            }
-            _ => fail(
-                "forbidden",
-                "Only assigned Agent or current orchestrator may communicate",
-            ),
-        }
     }
     fn validate_scope(&self, scope: &Scope) -> Result<()> {
         match scope {
@@ -244,6 +334,9 @@ impl DomainState {
         }
         Ok(())
     }
+    /// Puts a card in front of its recipient after every card rule holds. `Some(existing)` is a
+    /// notice already waiting unread with the same words (R8): nothing new is created.
+    #[allow(clippy::too_many_arguments)]
     fn insert_interaction(
         &mut self,
         actor: &Actor,
@@ -254,14 +347,48 @@ impl DomainState {
         blocking: bool,
         attachments: &[AttachmentRef],
         payload: InteractionPayload,
-    ) -> Result<()> {
+        card: &CardSpec,
+        source: Source,
+    ) -> Result<Option<InteractionId>> {
         id(&i.0)?;
         content(body, attachments)?;
         if self.interactions.contains_key(i) {
             return fail("invalid_input", "Interaction ID already exists");
         };
-        let author = self.author(actor, scope)?;
+        let options = match &payload {
+            InteractionPayload::Question { options, .. } | InteractionPayload::ActionRequest { options, .. } => options.as_slice(),
+            _ => &[],
+        };
+        validate_card(card, options, source, blocking)?;
+        let author = match source {
+            Source::Hold => Author::Agent { agent_id: match actor {
+                Actor::Agent { agent_id } => agent_id.clone(),
+                _ => return fail("forbidden", "Only an Agent's hook can be held"),
+            } },
+            _ => self.card_author(actor, scope, source)?,
+        };
         self.recipient(to)?;
+        if let Some(existing) = self.repeated_notice(&author, scope, to, body, card, source) {
+            return Ok(Some(existing));
+        }
+        let task = match scope {
+            Scope::Task { task_id } => Some(task_id.clone()),
+            Scope::Orchestrator { .. } => None,
+        };
+        if source != Source::Hold {
+            self.clarification_answered(&author, task.as_ref(), card)?;
+            self.one_blocking_ask(&author, card, blocking)?;
+        }
+        self.card_blocks(task.as_ref(), card)?;
+        if let Some(old) = &card.replaces {
+            self.replaceable(&author, old)?;
+            self.retire(old);
+        }
+        if card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Plan) {
+            for old in self.open_plans(&author) {
+                self.retire(&old);
+            }
+        }
         self.interactions.insert(
             i.clone(),
             Interaction {
@@ -277,9 +404,322 @@ impl DomainState {
                 revision: self.revision + 1,
                 order: self.revision + 1,
                 withdrawn: false,
+                card: card.clone(),
+                clarification: None,
             },
         );
+        self.blocks_acyclic(i)?;
+        Ok(None)
+    }
+    /// R1, R2, R4: who may put a card in front of someone, and on which Task.
+    fn card_author(&self, actor: &Actor, scope: &Scope, source: Source) -> Result<Author> {
+        self.fence(actor)?;
+        self.validate_scope(scope)?;
+        let notice = source == Source::Information;
+        match actor {
+            Actor::Agent { agent_id } => {
+                let holds = |t: &Task| t.agent_id.as_ref() == Some(agent_id);
+                let working = self.tasks.values().any(|t| holds(t) && !t.state.terminal());
+                let owned = match scope {
+                    Scope::Task { task_id } => Some(self.task(task_id)?).filter(|t| holds(t)),
+                    Scope::Orchestrator { .. } => None,
+                };
+                match owned {
+                    Some(t) if t.state.terminal() && !notice => refuse(
+                        "task_not_active",
+                        "scope.task_id",
+                        &format!("Task {} is {}: it accepts only a closing notice. Send publish_information, or ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.state == TaskState::Cancelled { "cancelled" } else { "done" }),
+                    ),
+                    Some(_) => Ok(Author::Agent { agent_id: agent_id.clone() }),
+                    None if !working && notice && matches!(scope, Scope::Orchestrator { .. }) => {
+                        Ok(Author::Agent { agent_id: agent_id.clone() })
+                    }
+                    None if !working => refuse(
+                        "no_task",
+                        "scope",
+                        "This node has no Task: it can only inform with publish_information. Ask the orchestrator to assign you a Task first",
+                    ),
+                    None => refuse(
+                        "not_assigned",
+                        "scope.task_id",
+                        "Only the node assigned to a Task sends cards for it: use your own Task's id",
+                    ),
+                }
+            }
+            Actor::Orchestrator { generation } => {
+                if let Scope::Task { task_id } = scope
+                    && !notice
+                {
+                    self.active(task_id)?;
+                }
+                Ok(Author::Orchestrator { generation: *generation })
+            }
+            Actor::System if source == Source::Problem => Ok(Author::System),
+            _ => fail("forbidden", "Only assigned Agent or current orchestrator may communicate"),
+        }
+    }
+    /// A card stays open until it is answered, read, accepted, replaced or withdrawn.
+    pub fn open(&self, i: &Interaction) -> bool {
+        if i.withdrawn {
+            return false;
+        }
+        match &i.payload {
+            InteractionPayload::Information { read_by } => read_by.is_empty(),
+            InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => answer.is_none(),
+            InteractionPayload::Delivery { acceptance, is_final, .. } => {
+                !acceptance.as_ref().is_some_and(|a| a.valid)
+                    && (!is_final
+                        || matches!(&i.scope, Scope::Task { task_id }
+                            if self.tasks.get(task_id).is_some_and(|t| t.final_presentation.as_ref() == Some(&i.id))))
+            }
+        }
+    }
+    fn retire(&mut self, id: &InteractionId) {
+        if let Some(i) = self.interactions.get_mut(id) {
+            i.withdrawn = true;
+            i.revision = self.revision + 1;
+        }
+    }
+    /// R8: the same notice, still unread, from the same author to the same place.
+    fn repeated_notice(&self, author: &Author, scope: &Scope, to: &Recipient, body: &str, card: &CardSpec, source: Source) -> Option<InteractionId> {
+        if source != Source::Information {
+            return None;
+        }
+        self.interactions.values()
+            .filter(|i| &i.author == author && &i.scope == scope && &i.recipient == to && self.open(i))
+            .filter(|i| matches!(i.payload, InteractionPayload::Information { .. }))
+            .max_by_key(|i| i.order)
+            .filter(|i| i.body == body && i.card.need == card.need)
+            .map(|i| i.id.clone())
+    }
+    /// R7: after the user asked for a clarification, the author's next card replaces that card.
+    /// Plain text (a notice) is still allowed.
+    fn clarification_answered(&self, author: &Author, task: Option<&TaskId>, card: &CardSpec) -> Result<()> {
+        if card.kind == CardKind::Know {
+            return Ok(());
+        }
+        let pending = self.interactions.values().find(|i| {
+            &i.author == author
+                && i.clarification.is_some()
+                && self.open(i)
+                && match (&i.scope, task) {
+                    (Scope::Task { task_id }, Some(t)) => task_id == t,
+                    (Scope::Orchestrator { .. }, None) => true,
+                    _ => false,
+                }
+        });
+        match pending {
+            Some(x) if card.replaces.as_ref() != Some(&x.id) => refuse(
+                "clarification_pending",
+                "card.replaces",
+                &format!("The user asked you to clarify card {}: send its corrected version with card.replaces = \"{}\", answer in text with publish_information, or withdraw it", x.id, x.id),
+            ),
+            _ => Ok(()),
+        }
+    }
+    /// R5: one blocking Decide, Do or Provide per node at a time.
+    fn one_blocking_ask(&self, author: &Author, card: &CardSpec, blocking: bool) -> Result<()> {
+        if !blocking || !card.kind.one_at_a_time() || !matches!(author, Author::Agent { .. }) {
+            return Ok(());
+        }
+        let open = self.interactions.values().find(|i| {
+            &i.author == author && i.blocking && i.card.kind.one_at_a_time() && self.open(i)
+                && card.replaces.as_ref() != Some(&i.id)
+        });
+        match open {
+            Some(x) => refuse(
+                "ask_already_open",
+                "blocking",
+                &format!("Card {} already waits on the user: replace it with card.replaces = \"{}\" (one form holds up to 4 questions), withdraw it, or send this one with blocking false", x.id, x.id),
+            ),
+            None => Ok(()),
+        }
+    }
+    /// R6: only an open card of the same author is replaced.
+    fn replaceable(&self, author: &Author, old: &InteractionId) -> Result<()> {
+        let Some(x) = self.interactions.get(old) else {
+            return refuse("not_found", "card.replaces", &format!("Card {old} does not exist: replace one of your open cards"));
+        };
+        if &x.author != author {
+            return refuse("forbidden", "card.replaces", &format!("Card {old} is not yours: replace only your own cards"));
+        }
+        if self.holds.contains_key(old) {
+            return refuse("forbidden", "card.replaces", &format!("Card {old} is held by a Claude Code hook: it ends with its hook"));
+        }
+        if matches!(&x.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. }) {
+            return refuse("already_answered", "card.replaces", &format!("Card {old} is already answered: send a new card without card.replaces"));
+        }
+        if !self.open(x) {
+            return refuse("already_withdrawn", "card.replaces", &format!("Card {old} is no longer open: send a new card without card.replaces"));
+        }
         Ok(())
+    }
+    /// R14: the author's open plans, which a new plan replaces.
+    fn open_plans(&self, author: &Author) -> Vec<InteractionId> {
+        self.interactions.values()
+            .filter(|i| &i.author == author && self.open(i))
+            .filter(|i| i.card.content.as_ref().is_some_and(|c| c.kind == ContentKind::Plan))
+            .map(|i| i.id.clone())
+            .collect()
+    }
+    /// R15: a card holds back only an open PR, document or delivery of its Task or of a Task it
+    /// depends on.
+    fn card_blocks(&self, task: Option<&TaskId>, card: &CardSpec) -> Result<()> {
+        if card.blocks.is_empty() {
+            return Ok(());
+        }
+        let Some(task) = task.and_then(|t| self.tasks.get(t)) else {
+            return refuse("unknown_target", "card.blocks", "Only a card of a Task can block something: remove card.blocks");
+        };
+        let related: BTreeSet<&TaskId> = std::iter::once(&task.id)
+            .chain(&task.dependencies)
+            .chain(task.stack.iter().map(|s| &s.upstream_task))
+            .collect();
+        for target in &card.blocks {
+            let ok = match target {
+                CardTarget::PullRequest { pr_id } => self.pull_requests.get(pr_id)
+                    .is_some_and(|p| p.state == PrState::Open && related.contains(&p.task_id)),
+                CardTarget::Document { document_id } => related.iter()
+                    .any(|t| self.tasks.get(*t).is_some_and(|t| t.documents.contains_key(document_id))),
+                CardTarget::Delivery { interaction_id } => self.interactions.get(interaction_id).is_some_and(|i| {
+                    matches!(i.payload, InteractionPayload::Delivery { .. })
+                        && matches!(&i.scope, Scope::Task { task_id } if related.contains(task_id))
+                        && self.open(i)
+                }),
+            };
+            if !ok {
+                return refuse(
+                    "unknown_target",
+                    "card.blocks",
+                    &format!("{} is not an open PR, document or delivery of this Task or of one it depends on: point card.blocks at one, or remove it", serde_json::to_string(target).unwrap_or_default()),
+                );
+            }
+        }
+        Ok(())
+    }
+    /// What an open card holds back, as the deliveries it stands in front of.
+    fn blocked_deliveries(&self, i: &Interaction) -> Vec<InteractionId> {
+        if !self.open(i) {
+            return vec![];
+        }
+        let mut out = vec![];
+        for target in &i.card.blocks {
+            for d in self.interactions.values().filter(|d| self.open(d)) {
+                let InteractionPayload::Delivery { targets, .. } = &d.payload else { continue };
+                let hit = match target {
+                    CardTarget::Delivery { interaction_id } => interaction_id == &d.id,
+                    CardTarget::PullRequest { pr_id } => targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id: p, .. } if p == pr_id)),
+                    CardTarget::Document { document_id } => targets.iter().any(|t| matches!(t, DeliveryTarget::DocumentRevision { document_id: d, .. } if d == document_id)),
+                };
+                if hit && d.id != i.id {
+                    out.push(d.id.clone());
+                }
+            }
+        }
+        out
+    }
+    /// R17: what blocks a card never ends up blocked by it.
+    fn blocks_acyclic(&self, start: &InteractionId) -> Result<()> {
+        let mut stack = vec![start.clone()];
+        let mut seen = BTreeSet::new();
+        while let Some(id) = stack.pop() {
+            let Some(i) = self.interactions.get(&id) else { continue };
+            for next in self.blocked_deliveries(i) {
+                if &next == start {
+                    return refuse("dependency_cycle", "card.blocks", "These cards would block each other: remove the card.blocks entry that points back");
+                }
+                if seen.insert(next.clone()) {
+                    stack.push(next);
+                }
+            }
+        }
+        Ok(())
+    }
+    /// R12: a delivery shows the current head of its own Task's registered PR.
+    fn current_pr_targets(&self, task: &TaskId, targets: &[DeliveryTarget]) -> Result<()> {
+        let owned = self.task(task)?.pr_id.clone();
+        for target in targets {
+            let DeliveryTarget::PullRequest { pr_id, head } = target else { continue };
+            let Some(pr) = self.pull_requests.get(pr_id) else {
+                return refuse("pr_mismatch", "targets.pr_id", &format!("PR {pr_id} is not registered: call register_pr first"));
+            };
+            if &pr.task_id != task || owned.as_ref() != Some(pr_id) {
+                return refuse("pr_mismatch", "targets.pr_id", &format!("PR {pr_id} belongs to another Task: present only your own Task's PR"));
+            }
+            if &pr.head != head {
+                return refuse("pr_mismatch", "targets.head", &format!("PR {pr_id} is at {}: present its current head", pr.head));
+            }
+        }
+        Ok(())
+    }
+    /// R22: a Request closed with an answer tells the user, unless something already did.
+    fn tell_the_answer(&mut self, actor: &Actor, request: &RequestId, answer: &str, title: Option<&str>,
+        created: &mut Vec<String>, effects: &mut Vec<DomainEffect>) -> Result<()> {
+        let tasks: BTreeSet<&TaskId> = self.tasks.values().filter(|t| &t.request_id == request).map(|t| &t.id).collect();
+        let told = self.interactions.values().any(|i| {
+            i.recipient == Recipient::User
+                && matches!(i.payload, InteractionPayload::Information { .. })
+                && match &i.scope {
+                    Scope::Orchestrator { request_id } => request_id.as_ref() == Some(request),
+                    Scope::Task { task_id } => tasks.contains(task_id),
+                }
+        });
+        if told {
+            return Ok(());
+        }
+        let mut id = InteractionId(format!("{request}-answer"));
+        while self.interactions.contains_key(&id) {
+            id.0.push('-');
+        }
+        let author = match actor {
+            Actor::Orchestrator { generation } => Author::Orchestrator { generation: *generation },
+            _ => Author::System,
+        };
+        let need = title.map(|t| clip(t, CardSpec::NEED_MAX)).unwrap_or_else(|| CardSpec::derived(CardKind::Know, answer).need);
+        let mut card = CardSpec::new(CardKind::Know, need);
+        if answer.trim().chars().count() > CardSpec::WHY_MAX {
+            card = card.content(ContentKind::Report, answer.trim());
+        } else {
+            card = card.why(answer.trim());
+        }
+        let scope = Scope::Orchestrator { request_id: Some(request.clone()) };
+        self.interactions.insert(id.clone(), Interaction {
+            attachments: vec![],
+            id: id.clone(),
+            scope,
+            author,
+            recipient: Recipient::User,
+            body: answer.into(),
+            blocking: false,
+            subject: None,
+            payload: InteractionPayload::Information { read_by: BTreeSet::new() },
+            revision: self.revision + 1,
+            order: self.revision + 1,
+            withdrawn: false,
+            card,
+            clarification: None,
+        });
+        created.push(id.0.clone());
+        effects.push(DomainEffect::NotifyUser { task_id: None, interaction_id: id });
+        Ok(())
+    }
+    /// R16: the open cards that hold back this delivery, oldest first.
+    pub fn blocked_by(&self, delivery: &InteractionId) -> Vec<InteractionId> {
+        let mut by: Vec<&Interaction> = self.interactions.values()
+            .filter(|i| self.blocked_deliveries(i).contains(delivery))
+            .collect();
+        by.sort_by_key(|i| i.order);
+        by.into_iter().map(|i| i.id.clone()).collect()
+    }
+    fn unblocked(&self, delivery: &InteractionId) -> Result<()> {
+        match self.blocked_by(delivery).first() {
+            Some(x) => refuse(
+                "blocked",
+                "presentation_id",
+                &format!("Card {x} blocks this delivery: answer or withdraw it first"),
+            ),
+            None => Ok(()),
+        }
     }
     /// §5: a decision on a delivery is judged against the presentation's
     /// revision, so every decision or invalidation on it must move that revision.
@@ -684,12 +1124,14 @@ impl DomainState {
             | Command::HoldHook { task_id, .. } => task(task_id),
             Command::PublishInformation { scope, .. }
             | Command::AskQuestion { scope, .. }
-            | Command::RequestAction { scope, .. } => match scope {
+            | Command::RequestAction { scope, .. }
+            | Command::RaiseProblem { scope, .. } => match scope {
                 Scope::Task { task_id } => task(task_id),
                 Scope::Orchestrator { .. } => None,
             },
             Command::MarkRead { interaction_id }
-            | Command::WithdrawQuestion { interaction_id }
+            | Command::Withdraw { interaction_id }
+            | Command::RequestClarification { interaction_id, .. }
             | Command::AnswerQuestion { interaction_id, .. }
             | Command::LinkInteractionSubject { interaction_id, .. }
             | Command::SubmitFeedback {
@@ -774,7 +1216,6 @@ impl DomainState {
             next.revision += 1;
         } else {
             effects.clear();
-            created.clear();
         }
         next.validate()?;
         let superseded_acceptances = self
@@ -1041,6 +1482,9 @@ impl DomainState {
                 if title.is_some() {
                     request.title = title.clone();
                 }
+                if let Some(answer) = answer {
+                    self.tell_the_answer(actor, request_id, answer, title.as_deref(), created, effects)?;
+                }
             }
             Command::RegisterAgent { agent_id, name } => {
                 system(actor)?;
@@ -1181,8 +1625,9 @@ impl DomainState {
                 scope,
                 recipient,
                 body,
+                card,
             } => {
-                self.insert_interaction(
+                if let Some(existing) = self.insert_interaction(
                     actor,
                     interaction_id,
                     scope,
@@ -1193,7 +1638,12 @@ impl DomainState {
                     InteractionPayload::Information {
                         read_by: BTreeSet::new(),
                     },
-                )?;
+                    card,
+                    Source::Information,
+                )? {
+                    created.push(existing.0);
+                    return Ok(());
+                }
                 created.push(interaction_id.0.clone());
                 if matches!(recipient, Recipient::User) {
                     effects.push(DomainEffect::NotifyUser {
@@ -1213,6 +1663,7 @@ impl DomainState {
                 body,
                 blocking,
                 options,
+                card,
             }
             | Command::RequestAction {
                 attachments,
@@ -1222,6 +1673,7 @@ impl DomainState {
                 body,
                 blocking,
                 options,
+                card,
             } => {
                 validate_options(options)?;
                 let payload = if matches!(c, Command::AskQuestion { .. }) {
@@ -1235,6 +1687,7 @@ impl DomainState {
                         answer: None,
                     }
                 };
+                let source = if matches!(c, Command::AskQuestion { .. }) { Source::Question } else { Source::Action };
                 self.insert_interaction(
                     actor,
                     interaction_id,
@@ -1244,6 +1697,8 @@ impl DomainState {
                     *blocking,
                     attachments,
                     payload,
+                    card,
+                    source,
                 )?;
                 created.push(interaction_id.0.clone());
                 if matches!(recipient, Recipient::User) {
@@ -1269,12 +1724,14 @@ impl DomainState {
                 hold,
                 body,
                 options,
+                card,
             } => {
                 if !matches!(actor, Actor::System) {
                     return fail("forbidden", "Only Alondra holds a hook");
                 }
                 validate_options(options)?;
                 let scope = Scope::Task { task_id: task_id.clone() };
+                self.assigned(&Actor::Agent { agent_id: agent_id.clone() }, task_id)?;
                 self.insert_interaction(
                     &Actor::Agent { agent_id: agent_id.clone() },
                     interaction_id,
@@ -1287,6 +1744,8 @@ impl DomainState {
                         options: options.clone(),
                         answer: None,
                     },
+                    card,
+                    Source::Hold,
                 )?;
                 self.holds.insert(interaction_id.clone(), *hold);
                 created.push(interaction_id.0.clone());
@@ -1295,27 +1754,93 @@ impl DomainState {
                     interaction_id: interaction_id.clone(),
                 });
             }
-            Command::WithdrawQuestion { interaction_id } => {
+            Command::Withdraw { interaction_id } => {
                 let i = self.interaction(interaction_id)?;
                 match (&i.author, actor) {
                     (Author::Agent { agent_id }, Actor::Agent { agent_id: a }) if agent_id == a => {}
                     (Author::Orchestrator { .. }, Actor::Orchestrator { .. }) => {}
                     (_, Actor::System) if self.holds.contains_key(interaction_id) => {}
-                    _ => return fail("forbidden", "Only the question's author can withdraw it"),
+                    (Author::System, Actor::System) => {}
+                    _ => return refuse("forbidden", "interaction_id", "Only a card's author withdraws it: withdraw only your own cards"),
                 }
-                match &i.payload {
-                    InteractionPayload::Question { answer: None, .. }
-                    | InteractionPayload::ActionRequest { answer: None, .. } => {}
-                    InteractionPayload::Question { .. } | InteractionPayload::ActionRequest { .. } => {
-                        return fail("invalid_action_for_kind", "Question already answered");
-                    }
-                    _ => return fail("invalid_action_for_kind", "Only a question can be withdrawn"),
+                if matches!(&i.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. }) {
+                    return refuse("question_already_answered", "interaction_id", "The user already answered this card: it is final, act on the answer");
+                }
+                if matches!(&i.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
+                    return refuse("invalid_action_for_kind", "interaction_id", "The user already accepted this delivery: it cannot be withdrawn");
                 }
                 if !i.withdrawn {
-                    let i = self.interactions.get_mut(interaction_id).unwrap();
-                    i.withdrawn = true;
-                    i.revision = self.revision + 1;
+                    let presented = match (&i.scope, &i.payload) {
+                        (Scope::Task { task_id }, InteractionPayload::Delivery { .. })
+                            if self.tasks.get(task_id).is_some_and(|t| t.final_presentation.as_ref() == Some(interaction_id)) => Some(task_id.clone()),
+                        _ => None,
+                    };
+                    self.retire(interaction_id);
+                    if let Some(task) = presented {
+                        self.invalidate(&task);
+                        self.tasks.get_mut(&task).unwrap().final_presentation = None;
+                    }
                 }
+            }
+            Command::RequestClarification { interaction_id, reason, text } => {
+                let u = user(actor)?;
+                if let Some(text) = text {
+                    nonempty(text)?;
+                }
+                let i = self.interaction(interaction_id)?;
+                if i.recipient != Recipient::User {
+                    return refuse("forbidden", "interaction_id", "Ask for a clarification only on a card addressed to you");
+                }
+                if self.holds.contains_key(interaction_id) || matches!(i.author, Author::System) {
+                    return refuse("invalid_action_for_kind", "interaction_id", "Alondra wrote this card from a Claude Code prompt: answer it or reply to the node instead");
+                }
+                if !self.open(i) {
+                    return refuse("invalid_action_for_kind", "interaction_id", "This card is no longer open: there is nothing to clarify");
+                }
+                let message = format!(
+                    "The user asks you to clarify card {interaction_id} ({}){}. Send its corrected version with card.replaces = \"{interaction_id}\", answer in text with publish_information, or withdraw it.",
+                    match reason { ClarificationReason::Unclear => "it is unclear", ClarificationReason::Contradicts => "it contradicts something", ClarificationReason::MissingContext => "it lacks context" },
+                    text.as_ref().map(|t| format!(": {}", t.trim())).unwrap_or_default(),
+                );
+                let (author, scope) = (i.author.clone(), i.scope.clone());
+                let i = self.interactions.get_mut(interaction_id).unwrap();
+                i.clarification = Some(Clarification { reason: *reason, text: text.clone(), user_id: u, at_revision: self.revision + 1 });
+                i.revision = self.revision + 1;
+                match (author, scope) {
+                    (Author::Agent { agent_id }, Scope::Task { task_id }) => effects.push(DomainEffect::NotifyAgent {
+                        agent_id, task_id: Some(task_id), interaction_id: Some(interaction_id.clone()), message,
+                    }),
+                    (Author::Orchestrator { .. }, _) => effects.push(DomainEffect::NotifyOrchestrator {
+                        interaction_id: Some(interaction_id.clone()), request_id: None,
+                    }),
+                    _ => {}
+                }
+            }
+            Command::RaiseProblem { attachments, interaction_id, scope, body, options, card } => {
+                if !matches!(actor, Actor::System | Actor::Orchestrator { .. }) {
+                    return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask or publish_information instead");
+                }
+                validate_options(options)?;
+                self.insert_interaction(
+                    actor,
+                    interaction_id,
+                    scope,
+                    &Recipient::User,
+                    body,
+                    false,
+                    attachments,
+                    InteractionPayload::Question { options: options.clone(), answer: None },
+                    card,
+                    Source::Problem,
+                )?;
+                created.push(interaction_id.0.clone());
+                effects.push(DomainEffect::NotifyUser {
+                    task_id: match scope {
+                        Scope::Task { task_id } => Some(task_id.clone()),
+                        Scope::Orchestrator { .. } => None,
+                    },
+                    interaction_id: interaction_id.clone(),
+                });
             }
             Command::MarkRead { interaction_id } => {
                 let u = user(actor)?;
@@ -1367,7 +1892,7 @@ impl DomainState {
                     }
                 };
                 if answer.is_some() {
-                    return fail("invalid_action_for_kind", "Question already answered");
+                    return refuse("question_already_answered", "interaction_id", "This card is already answered and its answer is final");
                 };
                 if i.withdrawn {
                     return fail("withdrawn", "Its author withdrew this question");
@@ -1670,9 +2195,25 @@ impl DomainState {
                 body,
                 targets,
                 is_final,
+                card,
             } => {
                 self.assigned(actor, task_id)?;
+                self.current_pr_targets(task_id, targets)?;
                 self.targets(task_id, targets)?;
+                if *is_final && self.blockers(task_id) {
+                    let open = self.interactions.values()
+                        .filter(|i| i.scope == (Scope::Task { task_id: task_id.clone() }) && i.blocking && self.open(i))
+                        .map(|i| i.id.0.clone()).collect::<Vec<_>>().join(", ");
+                    return refuse("blocking_open", "is_final", &format!("Card {open} still waits on the user: wait for its answer or withdraw it before the final delivery"));
+                }
+                let mut card = card.clone();
+                if targets.iter().any(|t| matches!(t, DeliveryTarget::PullRequest { pr_id, .. }
+                    if self.pull_requests.get(pr_id).is_some_and(|p| p.state != PrState::Open)))
+                {
+                    card.kind = CardKind::Know;
+                }
+                let previous = self.task(task_id)?.final_presentation.clone()
+                    .filter(|p| *is_final && self.interactions.get(p).is_some_and(|p| !self.accepted(p)));
                 self.insert_interaction(
                     actor,
                     interaction_id,
@@ -1689,11 +2230,17 @@ impl DomainState {
                         acceptance: None,
                         feedback: vec![],
                     },
+                    &card,
+                    Source::Delivery,
                 )?;
+                if let Some(previous) = previous {
+                    self.retire(&previous);
+                }
                 if *is_final {
                     self.invalidate(task_id);
                     self.tasks.get_mut(task_id).unwrap().final_presentation =
                         Some(interaction_id.clone());
+                    self.blocks_acyclic(interaction_id)?;
                 }
                 created.push(interaction_id.0.clone());
                 effects.push(DomainEffect::NotifyUser {
@@ -1741,6 +2288,7 @@ impl DomainState {
                 if current != targets {
                     return fail("acceptance_stale", "Delivery targets changed");
                 };
+                self.unblocked(presentation_id)?;
                 for target in targets {
                     if let DeliveryTarget::PullRequest { pr_id, head } = target {
                         let pr = &self.pull_requests[pr_id];
@@ -1772,6 +2320,7 @@ impl DomainState {
                 let u = user(actor)?;
                 id(&authorization_id.0)?;
                 let (_, t, targets) = self.presentation(presentation_id)?;
+                self.unblocked(presentation_id)?;
                 if !targets.contains(&DeliveryTarget::PullRequest {
                     pr_id: pr_id.clone(),
                     head: expected_head.clone(),
@@ -2333,6 +2882,7 @@ impl DomainState {
         for (k, i) in &self.interactions {
             id(&k.0)?;
             content(&i.body, &i.attachments)?;
+            nonempty(&i.card.need)?;
             if k != &i.id || i.revision > self.revision || i.order > self.revision {
                 return fail("invalid_input", "Invalid Interaction identity/revision");
             };
@@ -2340,7 +2890,9 @@ impl DomainState {
             self.recipient(&i.recipient)?;
             match &i.author {
                 Author::Agent { agent_id } => {
-                    if !self.agents.contains_key(agent_id) || !matches!(i.scope, Scope::Task { .. })
+                    if !self.agents.contains_key(agent_id)
+                        || !(matches!(i.scope, Scope::Task { .. })
+                            || matches!(i.payload, InteractionPayload::Information { .. }))
                     {
                         return fail("invalid_input", "Agent authored Interaction without Task");
                     }
