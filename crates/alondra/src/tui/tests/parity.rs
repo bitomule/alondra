@@ -37,6 +37,13 @@ fn flash(app: &App) -> &str {
     app.flash.as_ref().map_or("", |flash| flash.text.as_str())
 }
 
+fn untyped(view: &mut serde_json::Value) {
+    view["sections"][0]["items"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("kind");
+}
+
 fn question_id() -> String {
     view_fixture("card-question.json")["sections"][0]["items"][0]["id"]
         .as_str()
@@ -104,17 +111,16 @@ fn merge_needs_two_presses() {
         "input": {"kind": "none"},
         "attachments": false,
         "enabled": true,
-        "confirm": {"title": "Merge", "message": "Merge this pull request?", "button": "Merge"},
-        "key": "m"
+        "confirm": {"title": "Merge", "message": "Merge this pull request?", "button": "Merge"}
     }]);
     app.on_msg(Msg::ViewCard {
         key,
         result: Ok(serde_json::from_value(card).unwrap()),
     });
 
-    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('1'));
     assert!(posted(&app).is_empty(), "the first press only arms confirmation");
-    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('1'));
     let sent = posted(&app);
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].0, "/actions");
@@ -259,9 +265,9 @@ fn views_home_fixture_renders_server_rows_and_selected_card() {
         key: format!("card:{}", question_id()),
         result: Ok(serde_json::from_value(view_fixture("card-question.json")).unwrap()),
     });
-    let detail = screen(&mut app, 120, 26);
+    let detail = screen(&mut app, 120, 44);
     assert!(
-        detail.contains("The new empty state is ready") && detail.contains("Why each option"),
+        detail.contains("The new empty state is ready") && detail.contains("Concise: a short title"),
         "{detail}"
     );
 }
@@ -412,6 +418,7 @@ fn global_message_key_opens_the_orchestrator_views_composer() {
     );
     let mut view = view_fixture("card-question.json");
     view["key"] = serde_json::json!("node:orchestrator");
+    untyped(&mut view);
     view["sections"][0]["items"][0]["actions"] = serde_json::json!([{
         "id": "msg:view@1", "label": "Message", "style": "primary",
         "presentation": "button", "input": {"kind": "text", "placeholder": "Write", "required": true, "multiline": true},
@@ -544,16 +551,18 @@ fn d_on_a_selected_delivery_opens_the_views_diff_without_a_clone() {
     let route = "/pull-requests/github.com%2Fbitomule%2Falondra%23154/diff";
     let mut delivery = view_fixture("card-question.json");
     delivery["key"] = serde_json::json!("card:delivery-1");
-    delivery["sections"][0]["items"][0]["actions"] = serde_json::json!([{
+    delivery["sections"][0]["items"][0]["actions"] = serde_json::json!([]);
+    delivery["sections"][0]["items"][0]["more"] = serde_json::json!([{
         "id":"", "label":"Review local clone", "style":"plain", "presentation":"button",
-        "input":{"kind":"none"}, "attachments":false, "enabled":true, "key":"d",
+        "input":{"kind":"none"}, "attachments":false, "enabled":true,
         "link":{"kind":"local", "local":{"kind":"review_clone",
             "repo":"owner/alondra-no-clone-fixture-999", "branch":"head-154", "pr":154,
             "pr_id":pr_id}}
     }]);
     app.view_navigation.push("card:delivery-1".into());
     app.card_view = Some(serde_json::from_value(delivery).unwrap());
-    press(&mut app, KeyCode::Char('d'));
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('1'));
     assert_eq!(app.view_navigation.last(), Some(&key));
     assert_eq!(app.reader_after_view.as_deref(), Some(key.as_str()));
 
@@ -638,7 +647,7 @@ fn reader_comments_are_sent_as_anchored_comments() {
 }
 
 #[test]
-fn number_keys_answer_with_the_option_id() {
+fn number_keys_press_the_buttons_and_answer_with_their_option_id() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);
     let mut app = App::new(tx);
@@ -647,11 +656,8 @@ fn number_keys_answer_with_the_option_id() {
     ))
     .unwrap())));
     app.reconcile();
-    let mut card = view_fixture("card-question.json");
-    card["sections"][0]["items"][0]["actions"][0]["options"] = serde_json::json!([
-        {"id": "first", "label": "First", "style": "secondary", "input": {"kind": "none"}, "key": "1"},
-        {"id": "keep-existing", "label": "Keep existing", "style": "primary", "input": {"kind": "none"}, "key": "2"}
-    ]);
+    let card = view_fixture("card-question.json");
+    let buttons = card["sections"][0]["items"][0]["actions"].clone();
     app.on_msg(Msg::ViewCard {
         key: format!("card:{}", question_id()),
         result: Ok(serde_json::from_value(card).unwrap()),
@@ -662,11 +668,8 @@ fn number_keys_answer_with_the_option_id() {
     let requests = posted(&app);
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].0, "/actions");
-    assert_eq!(requests[0].1["option_id"], "keep-existing");
-    assert_eq!(
-        requests[0].1["action_id"],
-        format!("ans:{}@1", question_id())
-    );
+    assert_eq!(requests[0].1["option_id"], buttons[1]["option_id"]);
+    assert_eq!(requests[0].1["action_id"], buttons[1]["id"]);
     assert_eq!(requests[0].1["data_epoch"], "test-epoch");
     assert_eq!(requests[0].1["input"], serde_json::json!({}));
 }
@@ -680,6 +683,7 @@ fn task_detail_view_is_loaded_and_its_action_posts_with_the_document_epoch() {
     app.task_sel = Some(tasks::TaskKey::Task(TaskId("t-1".into())));
     let mut card = view_fixture("card-question.json");
     card["key"] = serde_json::json!("task:t-1");
+    untyped(&mut card);
     card["sections"][0]["items"][0]["actions"][0]["key"] = serde_json::json!("z");
     card["sections"][0]["items"][0]["actions"][0]["input"] = serde_json::json!({"kind": "none"});
     app.on_msg(Msg::ViewCard {
@@ -961,7 +965,7 @@ fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
     let lines = text_of(&crate::tui::view_render::document_lines(&card, 80));
     let header = &lines[0];
     assert!(
-        header.starts_with("? Decide · Alondra · iOS · Demo Garden · ") && header.ends_with(" ago"),
+        header.starts_with("? DECIDE · Alondra · iOS · Demo Garden · ") && header.ends_with(" ago"),
         "{header}"
     );
     assert_eq!(lines[1], "Choose the welcome copy");
@@ -970,7 +974,7 @@ fn card_detail_says_the_title_once_under_a_kind_agent_and_age_header() {
         1,
         "{lines:#?}"
     );
-    assert!(lines.iter().any(|line| line == "Mission: Polish the Alondra beta"), "{lines:#?}");
+    assert!(lines.iter().any(|line| line.starts_with("Task: Restore the native review")), "{lines:#?}");
 }
 
 #[test]

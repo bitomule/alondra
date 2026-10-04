@@ -278,3 +278,324 @@ fn fleet_footer_names_the_selected_nodes_real_keys() {
 fn press(app: &mut App, code: KeyCode) {
     app.on_key(KeyEvent::new(code, KeyModifiers::NONE));
 }
+
+fn fixture_view(name: &str) -> views::View {
+    serde_json::from_value(super::parity::view_fixture(name)).unwrap()
+}
+
+/// The inbox on the daemon's own golden list, with `card` open in the detail pane.
+fn card_screen(card: views::View, lang: crate::i18n::Lang) -> App {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(64);
+    let mut app = App::new(tx);
+    app.on_msg(Msg::ViewHome(Ok(fixture_view("home-tui.json"))));
+    app.reconcile();
+    crate::i18n::set_for_this_thread(lang);
+    app.view_navigation.push(card.key.clone());
+    app.card_view = Some(card);
+    app
+}
+
+fn english(card: views::View) -> App {
+    card_screen(card, crate::i18n::Lang::En)
+}
+
+fn edited(name: &str, change: impl FnOnce(&mut serde_json::Value)) -> views::View {
+    let mut value = super::parity::view_fixture(name);
+    change(&mut value["sections"][0]["items"][0]);
+    serde_json::from_value(value).unwrap()
+}
+
+fn held_card(hold: alondra_core::domain_v2::Hold, spec: alondra_core::domain_v2::CardSpec) -> views::View {
+    use alondra_core::domain_v2::*;
+    let mut state = DomainState::new("e");
+    let mut run = |actor: Actor, command: Command| {
+        let envelope = CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch.clone(),
+            command_id: format!("c{}", state.revision).into(),
+            expected_revision: state.revision,
+            command,
+        };
+        state.execute(&actor, &envelope).unwrap();
+    };
+    let user = || Actor::User { user_id: "u".into() };
+    run(user(), Command::CreateRequest { request_id: "r".into(), body: "Ship the release".into(), auto_merge: false });
+    run(Actor::System, Command::RegisterAgent { agent_id: "agent-a".into(), name: "release".into() });
+    run(user(), Command::CreateTask {
+        task_id: "t".into(), request_id: "r".into(), title: "Release".into(),
+        agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None,
+    });
+    run(Actor::System, Command::HoldHook {
+        interaction_id: "hold-1".into(), task_id: "t".into(), agent_id: "agent-a".into(),
+        options: hold.options(), hold, body: spec.need.clone(), card: spec,
+    });
+    build(&state, &LiveSnapshot::default(), "card:hold-1")
+}
+
+fn lines_with<'a>(screen: &'a str, needle: &str) -> Vec<&'a str> {
+    screen.lines().filter(|line| line.contains(needle)).collect()
+}
+
+fn typed(app: &mut App, text: &str) {
+    for character in text.chars() {
+        press(app, KeyCode::Char(character));
+    }
+}
+
+#[test]
+fn inbox_lists_one_row_per_card_with_its_kind_glyph_and_meta_on_the_right() {
+    let mut app = english(fixture_view("card-question.json"));
+    app.view_navigation.clear();
+    app.card_view = None;
+    app.sel = Some(Key("a98d034b-249e-4487-a89b-57de38c26372".into()));
+    let screen = rendered(&mut app, 120, 24);
+    dump("inbox: one row per card", &screen);
+    assert!(screen.contains("WAITING FOR YOU 5"), "{screen}");
+    let welcome = lines_with(&screen, "Choose the welcome copy");
+    assert!(welcome[0].contains("▌? Choose the welcome copy") && welcome[0].contains("Alondra"), "{welcome:?}");
+    assert!(screen.contains("◎ Review the beta candidate"), "{screen}");
+    assert!(screen.contains("· The simulator pass is clean"), "{screen}");
+    let review = screen.lines().position(|line| line.contains("◎ Review the beta candidate")).unwrap();
+    let hint = screen.lines().nth(review + 1).unwrap();
+    assert!(hint.contains("blocked by Ship the compact schedule"), "the blocked card names what holds it: {hint}");
+    assert!(!screen.contains("Merge") && !screen.contains("Reply"), "the list has no buttons: {screen}");
+}
+
+#[test]
+fn list_glyphs_are_coloured_by_card_type() {
+    use alondra_core::domain_v2::CardKind::*;
+    let kinds = [Decide, Review, Authorize, Know, Provide, Test, Do, Problem, Propose];
+    let colors: Vec<_> = kinds.into_iter().map(view_render::kind_color).collect();
+    assert_eq!(colors[1], colors[5], "Review and Test share the green of the board");
+    let distinct: BTreeSet<_> = colors.iter().map(|color| format!("{color:?}")).collect();
+    assert_eq!(distinct.len(), 8, "{colors:?}");
+    let glyphs: BTreeSet<_> = kinds.into_iter().map(view_render::kind_glyph).collect();
+    assert_eq!(glyphs.len(), 9);
+}
+
+#[test]
+fn decide_detail_shows_header_content_context_then_numbered_buttons() {
+    let mut app = english(fixture_view("card-question.json"));
+    let screen = rendered(&mut app, 120, 40);
+    dump("detail: Decide", &screen);
+    let at = |needle: &str| screen.find(needle).unwrap_or_else(|| panic!("{needle}: {screen}"));
+    assert!(at("? DECIDE · Alondra") < at("Choose the welcome copy"));
+    assert!(at("Choose the welcome copy") < at("The new empty state is ready"));
+    assert!(at("The new empty state is ready") < at("Content"));
+    assert!(at("Content") < at("Context"));
+    assert!(at("Context") < at(" 1  ★ Ship the concise copy"));
+    assert!(at(" 1  ★ Ship the concise copy") < at(" 2  Keep the warmer copy"));
+    assert!(at(" 2  Keep the warmer copy") < at(" m  More… (2)"));
+    assert!(at(" m  More… (2)") < at(" r  Reply"));
+    let footer = draw::footer_keys(&app);
+    assert_eq!(
+        footer
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .filter(|key| matches!(*key, "1" | "2" | "3" | "m" | "r" | "⏎"))
+            .collect::<Vec<_>>(),
+        ["1", "2", "m", "r", "⏎"],
+        "{footer:?}"
+    );
+}
+
+#[test]
+fn authorize_detail_has_a_risk_button_and_the_command_to_run() {
+    use alondra_core::domain_v2::{CardKind, CardSpec, ContentKind, Hold};
+    let spec = CardSpec::new(CardKind::Authorize, "Allow publishing Brew 0.2.36")
+        .why("Restarts the daemon for a few seconds.")
+        .content(ContentKind::Command, "alondra update");
+    let mut app = card_screen(held_card(Hold::Permission, spec), crate::i18n::Lang::Es);
+    let screen = rendered(&mut app, 120, 34);
+    dump("detail: Authorize", &screen);
+    assert!(screen.contains("◆ AUTORIZAR"), "{screen}");
+    assert!(screen.contains("Allow publishing Brew 0.2.36") && screen.contains("Restarts the daemon"), "{screen}");
+    assert!(screen.contains("alondra update"), "the command is shown whole: {screen}");
+    assert!(screen.contains(" 1  Permitir") && screen.contains(" 2  Denegar") && screen.contains(" r  Responder"), "{screen}");
+}
+
+#[test]
+fn review_pr_detail_shows_what_blocks_it_and_greys_the_disabled_merge() {
+    let mut app = english(fixture_view("card-pr.json"));
+    let screen = rendered(&mut app, 120, 46);
+    dump("detail: Review PR, blocked", &screen);
+    assert!(screen.contains("◎ REVIEW · PR #12"), "{screen}");
+    assert!(screen.contains("▤ Diff · 4 files · +120 −30") && !screen.contains("0 B"), "{screen}");
+    assert!(screen.contains("blocked by Ship the compact schedule editor"), "{screen}");
+    assert!(screen.contains(" 1  Merge"), "{screen}");
+    assert!(screen.contains("    Answer “Ship the compact schedule editor with this beta?” first"), "the reason sits under the button: {screen}");
+    let footer = draw::footer_keys(&app);
+    assert!(!footer.iter().any(|(key, _)| key == "1"), "a blocked button is not a working key: {footer:?}");
+    assert!(footer.iter().any(|(key, _)| key == "2"), "{footer:?}");
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.posted.borrow().is_empty(), "a blocked merge sends nothing");
+    assert!(app.flash.as_ref().is_some_and(|flash| flash.text.contains("Answer")), "it says why instead");
+}
+
+#[test]
+fn problem_detail_leads_with_its_kind_and_offers_what_to_do() {
+    let mut app = english(edited("card-question.json", |card| {
+        card["kind"] = "problem".into();
+        card["eyebrow"] = serde_json::json!({"text": "Problem", "tone": "critical"});
+        card["need"] = "The orchestrator run failed".into();
+        card["title"] = "The orchestrator run failed".into();
+        card["why"] = "Claude denied a required tool permission.".into();
+        card["subtitle"] = "Claude denied a required tool permission.".into();
+        card["actions"] = serde_json::json!([
+            {"id": "retry:view@1", "label": "Retry", "style": "primary", "role": "advance", "presentation": "button",
+             "input": {"kind": "none"}, "attachments": false, "enabled": true},
+            {"id": "stop:view@1", "label": "Stop", "style": "secondary", "role": "neutral", "presentation": "button",
+             "input": {"kind": "none"}, "attachments": false, "enabled": true}
+        ]);
+    }));
+    let screen = rendered(&mut app, 120, 34);
+    dump("detail: Problem", &screen);
+    assert!(screen.contains("! PROBLEM") && screen.contains("The orchestrator run failed"), "{screen}");
+    assert!(screen.contains(" 1  Retry") && screen.contains(" 2  Stop"), "{screen}");
+}
+
+#[test]
+fn know_detail_only_offers_seen_and_the_reply() {
+    let mut app = english(fixture_view("card-information.json"));
+    let screen = rendered(&mut app, 120, 34);
+    dump("detail: Know", &screen);
+    assert!(screen.contains("· FYI") || screen.contains("· KNOW"), "{screen}");
+    assert!(screen.contains("The simulator pass is clean"), "{screen}");
+    assert!(screen.contains(" 1  Seen") && screen.contains(" r  Reply") && !screen.contains(" m  "), "{screen}");
+    let footer = draw::footer_keys(&app);
+    assert!(
+        footer.iter().any(|(key, _)| key == "r") && !footer.iter().any(|(key, _)| key == "2" || key == "m"),
+        "{footer:?}"
+    );
+}
+
+#[test]
+fn m_opens_the_more_menu_with_its_own_numbering_and_escape_closes_it() {
+    let mut app = english(fixture_view("card-pr.json"));
+    press(&mut app, KeyCode::Char('m'));
+    let screen = rendered(&mut app, 120, 46);
+    dump("detail: More menu", &screen);
+    assert!(screen.contains("MORE"), "{screen}");
+    assert!(screen.contains(" 1  Accept without merging") && screen.contains("Answer “Ship the compact"), "{screen}");
+    assert!(screen.contains(" 2  Open on GitHub"), "{screen}");
+    assert!(!screen.contains(" m  More…"), "the menu replaces the buttons: {screen}");
+    let footer = draw::footer_keys(&app);
+    assert_eq!(footer.iter().map(|(key, _)| key.as_str()).collect::<Vec<_>>(), ["1-2", "Esc"]);
+    press(&mut app, KeyCode::Esc);
+    assert!(app.card_menu.is_none());
+    assert!(rendered(&mut app, 120, 46).contains(" m  More… (2)"));
+}
+
+#[test]
+fn r_replies_to_the_node_with_a_text_box() {
+    let mut app = english(fixture_view("card-question.json"));
+    press(&mut app, KeyCode::Char('r'));
+    let reply_id = super::parity::view_fixture("card-question.json")["sections"][0]["items"][0]["reply"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(matches!(
+        app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { action_id, required: true, .. }) if *action_id == reply_id
+    ));
+    let screen = rendered(&mut app, 120, 34);
+    dump("reply composer", &screen);
+    typed(&mut app, "Use the warm one");
+    press(&mut app, KeyCode::Enter);
+    assert_eq!(app.posted.borrow()[0].1["action_id"], reply_id.as_str());
+    assert_eq!(app.posted.borrow()[0].1["input"]["text"], "Use the warm one");
+}
+
+#[test]
+fn clarify_is_a_reason_picker_then_an_optional_text() {
+    let mut app = english(fixture_view("card-question.json"));
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('2'));
+    let screen = rendered(&mut app, 120, 40);
+    dump("detail: clarification reasons", &screen);
+    assert!(screen.contains("REQUEST CLARIFICATION"), "{screen}");
+    assert!(
+        screen.contains(" 1  It is unclear")
+            && screen.contains(" 2  It contradicts something")
+            && screen.contains(" 3  It lacks context"),
+        "{screen}"
+    );
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.card_menu.is_none() && app.posted.borrow().is_empty(), "the text comes before it is sent");
+    assert!(matches!(
+        app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { option_id: Some(reason), required: false, .. }) if reason == "contradicts"
+    ));
+    typed(&mut app, "The two copies disagree");
+    press(&mut app, KeyCode::Enter);
+    let sent = app.posted.borrow().clone();
+    assert!(sent[0].1["action_id"].as_str().unwrap().starts_with("clarify:"), "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "contradicts");
+    assert_eq!(sent[0].1["input"]["text"], "The two copies disagree");
+}
+
+#[test]
+fn clarify_without_text_is_sent_with_just_the_reason() {
+    let mut app = english(fixture_view("card-question.json"));
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Char('1'));
+    press(&mut app, KeyCode::Enter);
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].1["option_id"], "unclear");
+    assert_eq!(sent[0].1["input"], serde_json::json!({}));
+}
+
+#[test]
+fn a_button_with_options_asks_which_before_it_sends() {
+    let mut app = english(fixture_view("card-pr.json"));
+    app.card_view = Some(edited("card-pr.json", |card| {
+        for action in card["actions"].as_array_mut().unwrap() {
+            action["enabled"] = true.into();
+            action.as_object_mut().unwrap().remove("disabled_reason");
+        }
+        card["actions"][0].as_object_mut().unwrap().remove("confirm");
+    }));
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.posted.borrow().is_empty());
+    let screen = rendered(&mut app, 120, 46);
+    dump("detail: merge methods", &screen);
+    assert!(
+        screen.contains("MERGE") && screen.contains(" 1  Squash merge") && screen.contains(" 2  Merge commit"),
+        "{screen}"
+    );
+    press(&mut app, KeyCode::Char('2'));
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent[0].1["option_id"], "merge", "{sent:?}");
+}
+
+#[test]
+fn keys_beyond_the_buttons_do_nothing_and_a_menu_swallows_the_rest() {
+    let mut app = english(fixture_view("card-information.json"));
+    for key in ['2', '3', 'm', '9'] {
+        press(&mut app, KeyCode::Char(key));
+    }
+    assert!(app.posted.borrow().is_empty() && app.composer.is_none() && app.card_menu.is_none());
+    let mut app = english(fixture_view("card-question.json"));
+    press(&mut app, KeyCode::Char('3'));
+    assert!(app.posted.borrow().is_empty(), "a Decide with two buttons has no third");
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Char('j'));
+    assert!(app.card_menu.is_some(), "a menu keeps keys that are not its own");
+    press(&mut app, KeyCode::Char('0'));
+    assert!(app.card_menu.is_some() && app.posted.borrow().is_empty());
+}
+
+#[test]
+fn cards_read_in_spanish() {
+    let mut app = card_screen(fixture_view("card-question.json"), crate::i18n::Lang::Es);
+    let screen = rendered(&mut app, 120, 40);
+    dump("detalle: Decidir", &screen);
+    assert!(screen.contains(" m  Más… (2)"), "{screen}");
+    let footer = draw::footer_keys(&app);
+    assert!(footer.iter().any(|(key, label)| key == "r" && label == "responder"), "{footer:?}");
+    assert!(footer.iter().any(|(key, label)| key == "⏎" && label == "abrir"), "{footer:?}");
+    press(&mut app, KeyCode::Char('m'));
+    assert!(rendered(&mut app, 120, 40).contains("MÁS"));
+}

@@ -1,6 +1,7 @@
 //! Text rendering for daemon-built views. The component switch lives here so new view
 //! components have one deliberate TUI representation.
 
+use alondra_core::domain_v2::CardKind;
 use alondra_core::views::{Action, Card, Icon, Item, Label, Row, Section, View};
 use ratatui::{
     style::{Color, Modifier, Style, Stylize},
@@ -25,6 +26,28 @@ pub fn sections(view: &View) -> impl Iterator<Item = &Section> {
                     |item| matches!(item, Item::Row(row) if opens_schedules(view, &row.id)),
                 ))
     })
+}
+
+/// What a list screen lets the user move over, in order: its rows and its cards, each with the
+/// view it opens and whether it hangs under the one above.
+pub fn entries(view: &View) -> Vec<(String, bool, Option<alondra_core::views::Link>)> {
+    let mut result = Vec::new();
+    for section in &view.sections {
+        for item in &section.items {
+            match item {
+                Item::Row(row) if opens_schedules(view, &row.id) => {}
+                Item::Row(row) => {
+                    result.push((row.id.clone(), false, row.link.clone()));
+                    result.extend(row.children.iter().map(|child| (child.id.clone(), true, child.link.clone())));
+                }
+                Item::Card(card) if section.id != "detail" => {
+                    result.push((card.id.clone(), false, card.link.clone()));
+                }
+                _ => {}
+            }
+        }
+    }
+    result
 }
 
 pub fn rows(view: &View) -> Vec<(&Row, bool)> {
@@ -142,106 +165,247 @@ pub fn row_lines(row: &Row, width: usize, selected: bool, nested: bool) -> Vec<L
     lines
 }
 
+/// The cards a list view shows, in the order the daemon sorted them.
+pub fn list_cards(view: &View) -> Vec<&Card> {
+    sections(view)
+        .flat_map(|section| &section.items)
+        .filter_map(|item| match item {
+            Item::Card(card) => Some(card),
+            _ => None,
+        })
+        .collect()
+}
+
+pub fn kind_glyph(kind: CardKind) -> &'static str {
+    match kind {
+        CardKind::Decide => "?",
+        CardKind::Review => "◎",
+        CardKind::Authorize => "◆",
+        CardKind::Know => "·",
+        CardKind::Provide => "✎",
+        CardKind::Test => "▶",
+        CardKind::Do => "▲",
+        CardKind::Problem => "!",
+        CardKind::Propose => "✦",
+    }
+}
+
+/// The terminal's nearest colour to each type's colour on the design board.
+pub fn kind_color(kind: CardKind) -> Color {
+    match kind {
+        CardKind::Decide => ACCENT,
+        CardKind::Review | CardKind::Test => Color::Green,
+        CardKind::Authorize => Color::LightRed,
+        CardKind::Know => DIM,
+        CardKind::Provide => Color::Magenta,
+        CardKind::Do => Color::LightBlue,
+        CardKind::Problem => Color::Yellow,
+        CardKind::Propose => Color::Gray,
+    }
+}
+
+fn card_glyph(card: &Card) -> (&'static str, Color) {
+    match card.kind {
+        Some(kind) => (kind_glyph(kind), kind_color(kind)),
+        None => (icon(card.icon), icon_color(card.icon)),
+    }
+}
+
+fn card_age(card: &Card) -> Option<String> {
+    card.timestamps
+        .first()
+        .map(|stamp| format_time(&stamp.at, alondra_core::views::TimeFormat::Relative))
+}
+
+/// One list item per card: its type's glyph, what it needs, and on the right who sent it and how
+/// long ago. A card another one holds back says by what, dim, on the line below.
+pub fn card_row_lines(card: &Card, width: usize, selected: bool) -> Vec<Line<'static>> {
+    let bar = Span::styled(if selected { "▌" } else { " " }, Style::new().fg(ACCENT));
+    let (glyph, color) = card_glyph(card);
+    let lead = vec![
+        bar.clone(),
+        Span::styled(format!("{glyph} "), Style::new().fg(color).add_modifier(Modifier::BOLD)),
+    ];
+    let lead_width: usize = lead.iter().map(Span::width).sum();
+    let budget = width.saturating_sub(lead_width);
+    let right = [card.meta.clone(), card_age(card)]
+        .into_iter()
+        .flatten()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(" · ");
+    let right = super::md::truncate(&right, super::md::str_width(&right).min(budget / 3));
+    let gap = if right.is_empty() { 0 } else { 2 };
+    let need = card.need.as_deref().unwrap_or(&card.title);
+    let need = super::md::truncate(need, budget.saturating_sub(super::md::str_width(&right) + gap));
+    let padding = budget.saturating_sub(super::md::str_width(&need) + super::md::str_width(&right));
+    let mut need_style = Style::default();
+    if selected {
+        need_style = need_style.add_modifier(Modifier::BOLD);
+    }
+    let mut first = lead;
+    first.push(Span::styled(need, need_style));
+    first.push(Span::raw(" ".repeat(padding)));
+    first.push(Span::styled(right, Style::new().fg(DIM)));
+    let mut lines = vec![fit(first, width)];
+    for chip in &card.blocked_by {
+        lines.push(fit(
+            vec![bar.clone(), Span::raw("  "), Span::styled(chip.label.clone(), Style::new().fg(DIM))],
+            width,
+        ));
+    }
+    lines
+}
+
 /// The agent a card came from, the way its header names it.
 pub fn card_agent(card: &Card) -> Option<&alondra_core::views::ContextLine> {
     card.context.iter().find(|line| line.icon == Icon::Node)
 }
 
-/// `? Question · Alondra · iOS · Demo Garden · 3d ago`: what it is, who it came from, how old.
+/// `◆ AUTHORIZE · Alondra · iOS · Demo Garden · 3d ago`: what it is, who it came from, how old.
 fn card_header(card: &Card) -> Line<'static> {
-    let style = Style::new().fg(icon_color(card.icon)).add_modifier(Modifier::BOLD);
+    let (glyph, color) = card_glyph(card);
+    let name = card.eyebrow.as_ref().map(|eyebrow| eyebrow.text.to_uppercase()).unwrap_or_default();
     let mut spans = vec![Span::styled(
-        match &card.eyebrow {
-            Some(eyebrow) => format!("{} {}", icon(card.icon), eyebrow.text),
-            None => icon(card.icon).to_owned(),
-        },
-        style,
+        format!("{glyph} {name}").trim_end().to_owned(),
+        Style::new().fg(color).add_modifier(Modifier::BOLD),
     )];
-    let mut rest = Vec::new();
-    if let Some(agent) = card_agent(card) {
-        rest.push(agent.text.clone());
-        rest.extend(agent.chip.as_ref().map(|chip| chip.text.clone()));
-    }
-    if let Some(stamp) = card.timestamps.first() {
-        rest.push(format_time(&stamp.at, alondra_core::views::TimeFormat::Relative));
-    }
-    for part in rest {
+    for part in [card.meta.clone(), card_age(card)].into_iter().flatten() {
         spans.push(Span::styled(format!(" · {part}"), Style::new().fg(DIM)));
     }
     Line::from(spans)
 }
 
-pub fn card_lines(card: &Card, width: usize, depth: usize) -> Vec<Line<'static>> {
-    let mut out = Vec::new();
-    let indent = "  ".repeat(depth);
-    let mut header = card_header(card);
-    header.spans.insert(0, Span::raw(indent.clone()));
-    out.push(header);
-    out.push(Line::from(Span::styled(
-        format!("{indent}{}", card.title),
-        Style::new().add_modifier(Modifier::BOLD),
-    )));
-    if let Some(subtitle) = &card.subtitle {
-        out.push(Line::from(format!("{indent}{subtitle}").fg(DIM)));
+/// The top of the detail: type, what is needed, why, and what holds it back. The content, the
+/// context and the history follow as the daemon's own sections.
+pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
+    let mut out = vec![card_header(card)];
+    let need = card.need.as_deref().unwrap_or(&card.title);
+    out.push(Line::from(Span::styled(need.to_owned(), Style::new().add_modifier(Modifier::BOLD))));
+    if let Some(why) = card.why.as_ref().or(card.subtitle.as_ref()) {
+        out.push(Line::from(Span::styled(why.clone(), Style::new().fg(Color::Gray))));
     }
-    if let Some(row) = &card.content_row {
-        out.push(Line::from(format!("{indent}{} · {}", row.label, row.summary).fg(DIM)));
-    }
-    for chip in card.blocks.iter().chain(&card.blocked_by) {
-        out.push(Line::from(format!("{indent}{}", chip.label).fg(ACCENT)));
-    }
-    for context in card
-        .context
-        .iter()
-        .filter(|line| line.icon != Icon::Node && line.text != card.title)
-    {
-        out.push(Line::from(format!("{indent}{}", context.text).fg(DIM)));
+    for chip in card.blocked_by.iter().chain(&card.blocks) {
+        out.push(Line::from(chip.label.clone().fg(ACCENT)));
     }
     for badge in &card.badges {
-        out.push(Line::from(Span::styled(
-            format!("{indent}{}", badge.text),
-            label_style(badge),
-        )));
+        out.push(Line::from(Span::styled(badge.text.clone(), label_style(badge))));
     }
     if let Some(body) = &card.body {
-        let rendered = super::md::render(&super::md::parse(&body.text), width);
-        out.extend(rendered.lines);
+        out.extend(super::md::render(&super::md::parse(&body.text), width).lines);
     }
-    for quote in &card.quotes {
-        out.push(Line::from(Span::styled(
-            format!("{indent}{}:", quote.label),
-            Style::new().fg(DIM).add_modifier(Modifier::ITALIC),
-        )));
-        out.extend(
-            quote
-                .text
-                .lines()
-                .map(|line| Line::from(format!("{indent}  {line}"))),
-        );
-    }
-    if let Some(facts) = &card.facts {
-        for fact in &facts.items {
-            out.push(Line::from(format!(
-                "{indent}{}: {}",
-                fact.label, fact.value
-            )));
-        }
-    }
-    if let Some(checks) = &card.checks {
-        for check in &checks.items {
-            out.push(Line::from(format!(
-                "{indent}{} {}",
-                check_state(check.state),
-                check.name
-            )));
-        }
-    }
-    for child in &card.children {
-        out.push(Line::default());
-        out.extend(card_lines(child, width, depth + 1));
-    }
-    let _ = width;
     out
+}
+
+pub const BUTTONS: usize = 3;
+
+/// What the keys of a card do: its buttons numbered from 1, the menu of the rest, the reply.
+pub fn button_lines(card: &Card) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (index, action) in card.actions.iter().take(BUTTONS).enumerate() {
+        lines.extend(button_line(&(index + 1).to_string(), action));
+    }
+    if !card.more.is_empty() {
+        lines.push(Line::from(vec![
+            keycap_span("m", Color::Gray),
+            Span::raw(format!(" {} ({})", tr!("More…", "Más…"), card.more.len())),
+        ]));
+    }
+    if let Some(reply) = &card.reply {
+        lines.extend(button_line("r", reply));
+    }
+    lines
+}
+
+fn keycap_span(key: &str, background: Color) -> Span<'static> {
+    Span::styled(format!(" {key} "), Style::new().fg(Color::Black).bg(background).add_modifier(Modifier::BOLD))
+}
+
+fn role_color(action: &Action) -> Color {
+    match action.role {
+        Some(alondra_core::views::Role::Advance) => Color::Green,
+        Some(alondra_core::views::Role::Risk) => Color::LightRed,
+        Some(alondra_core::views::Role::Neutral) | None => Color::Gray,
+    }
+}
+
+fn button_line(key: &str, action: &Action) -> Vec<Line<'static>> {
+    if !action.enabled {
+        let mut lines = vec![Line::from(vec![
+            keycap_span(key, DIM),
+            Span::styled(format!(" {}", action.label), Style::new().fg(DIM)),
+        ])];
+        if let Some(reason) = &action.disabled_reason {
+            lines.push(Line::from(Span::styled(format!("    {reason}"), Style::new().fg(DIM))));
+        }
+        return lines;
+    }
+    vec![Line::from(vec![keycap_span(key, role_color(action)), Span::raw(format!(" {}", action.label))])]
+}
+
+/// A numbered list the user picks from: the rest of a card's actions, or the options of one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Menu {
+    pub title: String,
+    pub entries: Vec<(Action, Option<alondra_core::views::ActionOption>)>,
+}
+
+pub fn more_menu(card: &Card) -> Menu {
+    Menu {
+        title: tr!("More", "Más").into(),
+        entries: card.more.iter().take(9).map(|action| (action.clone(), None)).collect(),
+    }
+}
+
+pub fn option_menu(action: &Action) -> Menu {
+    Menu {
+        title: action.label.clone(),
+        entries: action
+            .options
+            .iter()
+            .take(9)
+            .map(|option| (action.clone(), Some(option.clone())))
+            .collect(),
+    }
+}
+
+pub fn menu_lines(menu: &Menu) -> Vec<Line<'static>> {
+    let mut lines = vec![Line::from(Span::styled(
+        menu.title.to_uppercase(),
+        Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+    ))];
+    for (index, (action, option)) in menu.entries.iter().enumerate() {
+        let key = (index + 1).to_string();
+        match option {
+            Some(option) => {
+                let mut entry = action.clone();
+                entry.label = super::draw::option_label(option);
+                lines.extend(button_line(&key, &entry));
+                if let Some(description) = &option.description {
+                    lines.push(Line::from(Span::styled(format!("    {description}"), Style::new().fg(DIM))));
+                }
+            }
+            None => lines.extend(button_line(&key, action)),
+        }
+    }
+    lines.push(Line::from(vec![
+        Span::styled(" Esc ", Style::new().fg(DIM)),
+        Span::styled(tr!("back", "volver"), Style::new().fg(DIM)),
+    ]));
+    lines
+}
+
+/// A diff says what it changes ("4 files · +120 −30"), the size of a body only when it has one.
+fn content_ref_label(view: &View, content: &alondra_core::views::ContentRef) -> String {
+    let summary = detail_card(view)
+        .and_then(|card| card.content_row.as_ref())
+        .filter(|row| row.kind == "diff" && content.kind == alondra_core::views::ContentKind::Diff)
+        .map(|row| row.summary.clone());
+    match summary {
+        Some(summary) => format!("{} · {summary}", content.title),
+        None if content.size == 0 => content.title.clone(),
+        None => format!("{} · {} B", content.title, content.size),
+    }
 }
 
 pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
@@ -279,7 +443,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
         }
         for item in &section.items {
             match item {
-                Item::Card(card) => lines.extend(card_lines(card, width, 0)),
+                Item::Card(card) => lines.extend(card_lines(card, width)),
                 Item::Row(row) => {
                     lines.extend(row_lines(row, width, false, row.depth > 0));
                     for child in &row.children {
@@ -291,7 +455,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                 }
                 Item::ContentRef(content) => lines.push(Line::from(vec![
                     Span::styled("▤ ", Style::new().fg(Color::Cyan)),
-                    Span::raw(format!("{} · {} B", content.title, content.size)),
+                    Span::raw(content_ref_label(view, content)),
                 ])),
                 Item::Facts(facts) => {
                     for fact in &facts.items {
@@ -565,6 +729,11 @@ pub fn detail_card(view: &View) -> Option<&Card> {
             Item::Card(card) => Some(card),
             _ => None,
         })
+}
+
+/// The card a detail view is about, when it follows the card contract: its keys are 1-3, m and r.
+pub fn typed_card(view: &View) -> Option<&Card> {
+    detail_card(view).filter(|card| card.kind.is_some())
 }
 
 pub fn action_hint(action: &Action) -> &str {

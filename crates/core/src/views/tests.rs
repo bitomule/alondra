@@ -1802,7 +1802,7 @@ fn an_orchestrator_problem_is_a_card_like_any_other_and_comes_first() {
     assert!(card.reply.as_ref().is_some_and(|reply| reply.id.starts_with("msg:view@")), "it replies to the orchestrator");
 
     let tui = render(&state, &live, Client::Tui, Lang::En, "home", "");
-    let Item::Row(first) = &tui.sections[0].items[0] else { panic!("problem row") };
+    let Item::Card(first) = &tui.sections[0].items[0] else { panic!("problem card") };
     assert_eq!(first.id, "problem-orchestrator-run-1");
     let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
     let waiting = sidebar.sections.iter().find(|section| section.id == "waiting").unwrap();
@@ -2204,7 +2204,7 @@ fn focus_puts_the_card_first_with_its_detail() {
     let view = render(&state, &LiveSnapshot::default(), Client::Tui, Lang::En,
         "home?focus=i-3", "2026-09-30T10:00:00Z");
     let waiting: Vec<&str> = view.sections.iter().flat_map(|section| &section.items).filter_map(|item| {
-        if let Item::Row(row) = item { Some(row.id.as_str()) } else { None }
+        if let Item::Card(card) = item { Some(card.id.as_str()) } else { None }
     }).collect();
     assert_eq!(waiting.first(), Some(&"i-3"));
     let detail = view.sections.iter().find(|section| section.id == "detail").unwrap();
@@ -3134,7 +3134,7 @@ fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
     assert_eq!(inbox_badge(&state), 1);
     let tui = render(&state, &live, Client::Tui, Lang::En, "home", "");
     let waiting = tui.sections.iter().find(|section| section.id == "waiting").unwrap();
-    assert!(matches!(waiting.items.as_slice(), [Item::Row(row)] if row.id == "a7efd99d-answer-1"));
+    assert!(matches!(waiting.items.as_slice(), [Item::Card(card)] if card.id == "a7efd99d-answer-1"));
     let sidebar = render(&state, &live, Client::Mac, Lang::En, "sidebar", "");
     assert!(serde_json::to_string(&sidebar).unwrap().contains("a7efd99d-answer-1"));
     let card = render(&state, &live, Client::Ios, Lang::Es, "card:a7efd99d-answer-1", "");
