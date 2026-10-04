@@ -680,6 +680,25 @@ fn register(s: &mut DomainState) {
     )
     .unwrap();
 }
+#[test]
+fn register_pr_rejects_a_host_without_a_domain() {
+    let mut s = fixture();
+    reject_unchanged(
+        &mut s,
+        agent(),
+        Command::RegisterPr {
+            task_id: "t".into(),
+            pr_id: "pr".into(),
+            host: "github".into(),
+            repository: "owner/repo".into(),
+            number: 1,
+            head: "head1".into(),
+            base: "main".into(),
+            allowed_methods: vec![MergeMethod::Squash],
+        },
+        "invalid_input",
+    );
+}
 fn pr_targets() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::PullRequest {
         pr_id: "pr".into(),

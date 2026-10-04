@@ -2180,6 +2180,12 @@ impl DomainState {
                 self.assigned(actor, task_id)?;
                 id(&pr_id.0)?;
                 canonical_pr(host, repository, *number)?;
+                if !host.contains('.') {
+                    return fail(
+                        "invalid_input",
+                        "PR host must be a full domain such as github.com, not a bare name like github",
+                    );
+                }
                 head(sha)?;
                 nonempty(base)?;
                 if allowed_methods.is_empty() {

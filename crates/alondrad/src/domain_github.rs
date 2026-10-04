@@ -56,6 +56,7 @@ impl GhCli {
 impl PrObserver for GhCli {
     fn observe<'a>(&'a self, host: &'a str, repository: &'a str, number: u64) -> Observed<'a> {
         Box::pin(async move {
+            let host = if host == "github" { "github.com" } else { host };
             let url = format!("https://{host}/{repository}/pull/{number}");
             let run = tokio::process::Command::new(&self.program)
                 .args(["pr", "view", &url, "--json", "state,headRefOid,baseRefName"])
@@ -589,5 +590,17 @@ mod tests {
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName"), "{calls}");
         assert!(!calls.contains("merge"), "the daemon never merges a v2 PR");
+    }
+
+    #[tokio::test]
+    async fn a_bare_github_host_is_read_as_github_com() {
+        let (fixture, _) = open("bare-host");
+        let program = fixture.0.join("gh");
+        let log = fixture.0.join("calls");
+        std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\nprintf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\"}}'\n", log.display())).unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        GhCli::at(program).observe("github", "owner/repo", 7).await.unwrap();
+        let calls = std::fs::read_to_string(&log).unwrap();
+        assert!(calls.contains("pr view https://github.com/owner/repo/pull/7"), "{calls}");
     }
 }
