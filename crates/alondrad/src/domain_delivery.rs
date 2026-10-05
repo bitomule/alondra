@@ -645,9 +645,7 @@ mod tests {
         );
         command(
             &hub,
-            Actor::Agent {
-                agent_id: "agent-a".into(),
-            },
+            Actor::System,
             "info",
             Command::PublishInformation {
                 attachments: vec![],
@@ -759,9 +757,7 @@ mod tests {
         );
         command(
             &hub,
-            Actor::Agent {
-                agent_id: "agent-a".into(),
-            },
+            Actor::System,
             "info-2",
             Command::PublishInformation {
                 attachments: vec![],

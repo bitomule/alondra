@@ -120,7 +120,9 @@ fn a_closed_task_accepts_only_a_closing_notice() {
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
     assert_eq!(refused(&mut s, agent(), ask("q", "t", false, decide("Pick a name"))),
         ("task_not_active".into(), Some("scope.task_id".into())));
-    ok(&mut s, agent(), inform("closing", scope("t"), "I stopped: the task was cancelled"));
+    assert_eq!(refused(&mut s, agent(), inform("closing", scope("t"), "I stopped: the task was cancelled")),
+        ("forbidden".into(), Some("card.kind".into())));
+    ok(&mut s, orchestrator(), inform("closing", scope("t"), "The task was cancelled"));
     assert_eq!(s.interactions[&"closing".into()].card.kind, CardKind::Know);
 }
 
@@ -130,7 +132,13 @@ fn a_node_without_a_task_only_informs() {
     register_agent(&mut s, "b");
     assert_eq!(refused(&mut s, agent_b(), ask("q", "t", false, decide("Pick a name"))),
         ("no_task".into(), Some("scope".into())));
-    ok(&mut s, agent_b(), inform("hello", Scope::Orchestrator { request_id: None }, "I am free"));
+    assert_eq!(refused(&mut s, agent_b(), inform("hello", Scope::Orchestrator { request_id: None }, "I am free")),
+        ("forbidden".into(), Some("card.kind".into())));
+    let mut to_orchestrator = inform("hello", Scope::Orchestrator { request_id: None }, "I am free");
+    if let Command::PublishInformation { recipient, .. } = &mut to_orchestrator {
+        *recipient = Recipient::Orchestrator;
+    }
+    ok(&mut s, agent_b(), to_orchestrator);
     assert_eq!(s.interactions[&"hello".into()].author, Author::Agent { agent_id: "b".into() });
 }
 
@@ -173,7 +181,6 @@ fn after_clarify_the_node_must_replace_the_card() {
     assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { message, .. }] if message.contains("Which product?") && message.contains("card.replaces")));
     assert_eq!(refused(&mut s, agent(), ask("q2", "t", false, decide("Pick a colour"))),
         ("clarification_pending".into(), Some("card.replaces".into())));
-    ok(&mut s, agent(), inform("said", scope("t"), "The product is the Mac app"));
     let mut replacing = decide("Pick a name for the Mac app");
     replacing.replaces = Some("q1".into());
     ok(&mut s, agent(), ask("q3", "t", true, replacing));
@@ -183,13 +190,13 @@ fn after_clarify_the_node_must_replace_the_card() {
 #[test]
 fn a_repeated_notice_is_not_shown_twice() {
     let mut s = fixture();
-    ok(&mut s, agent(), inform("i1", scope("t"), "Tests pass"));
-    let out = ok(&mut s, agent(), inform("i2", scope("t"), "Tests pass"));
+    ok(&mut s, orchestrator(), inform("i1", scope("t"), "Tests pass"));
+    let out = ok(&mut s, orchestrator(), inform("i2", scope("t"), "Tests pass"));
     assert!(!out.changed);
     assert_eq!(out.created_ids, vec!["i1".to_owned()], "the existing notice is returned");
     assert!(!s.interactions.contains_key(&"i2".into()));
     ok(&mut s, user(), Command::MarkRead { interaction_id: "i1".into() });
-    ok(&mut s, agent(), inform("i3", scope("t"), "Tests pass"));
+    ok(&mut s, orchestrator(), inform("i3", scope("t"), "Tests pass"));
     assert!(s.interactions.contains_key(&"i3".into()), "once read, the same words are news again");
 }
 
@@ -501,7 +508,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
         attachments: vec![], interaction_id: "do".into(), scope: scope("t"), recipient: Recipient::User,
         body: "Log in".into(), blocking: false, options: two(), card: with_verify(CardKind::Do, "Log in"),
     });
-    ok(&mut s, agent(), inform("know", scope("t"), "Heads up"));
+    ok(&mut s, orchestrator(), inform("know", scope("t"), "Heads up"));
     ok(&mut s, agent(), present("review", text(), true, review()));
     proposal(&mut s);
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
@@ -546,7 +553,7 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
     let mut blocking = decide("Pick a name");
     blocking.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
     ok(&mut s, agent(), ask("q", "t", true, blocking));
-    ok(&mut s, agent(), inform("n", scope("t"), "Heads up"));
+    ok(&mut s, orchestrator(), inform("n", scope("t"), "Heads up"));
     let projection = s.projection();
     assert_eq!(inbox_ids(&s), ["q", "d", "n"], "a question, the delivery of the PR, a notice: three cards");
     assert_eq!(projection.counts.roots, 3);
@@ -562,12 +569,12 @@ fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_ol
     let mut s = fixture();
     register_agent(&mut s, "b");
     task(&mut s, "t2", "b");
-    ok(&mut s, agent(), inform("know-old", scope("t"), "The first notice"));
+    ok(&mut s, orchestrator(), inform("know-old", scope("t"), "The first notice"));
     ok(&mut s, agent(), ask("propose", "t", false,
         CardSpec::new(CardKind::Propose, "Let me also update the README").why("It names the old flag")));
     ok(&mut s, agent(), ask("provide", "t", false,
         CardSpec::new(CardKind::Provide, "Send a screenshot of the bug").why("I cannot reproduce it")));
-    ok(&mut s, agent(), inform("know-new", scope("t"), "The second notice"));
+    ok(&mut s, orchestrator(), inform("know-new", scope("t"), "The second notice"));
     ok(&mut s, agent(), present("review", text(), true, review()));
     ok(&mut s, Actor::System, Command::HoldHook {
         interaction_id: "permission".into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Permission,
@@ -646,8 +653,8 @@ fn notice(id: &str, need: &str, replaces: Option<&str>) -> Command {
 #[test]
 fn a_correction_replaces_the_earlier_notice() {
     let mut s = fixture();
-    ok(&mut s, agent(), notice("n1", "Build is green", None));
-    ok(&mut s, agent(), notice("n2", "Correction: build is red", Some("n1")));
+    ok(&mut s, orchestrator(), notice("n1", "Build is green", None));
+    ok(&mut s, orchestrator(), notice("n2", "Correction: build is red", Some("n1")));
     assert!(s.interactions[&"n1".into()].withdrawn);
     assert!(s.open(&s.interactions[&"n2".into()]));
 }

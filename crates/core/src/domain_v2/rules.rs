@@ -53,7 +53,7 @@ fn kind_name(kind: CardKind) -> String {
 fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, blocking: bool) -> Result<()> {
     let kind = kind_name(card.kind);
     if card.kind == CardKind::Problem && source != Source::Problem {
-        return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask or publish_information instead");
+        return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask instead");
     }
     if !source.kinds().contains(&card.kind) {
         let allowed: Vec<String> = source.kinds().iter().map(|k| kind_name(*k)).collect();
@@ -431,7 +431,7 @@ impl DomainState {
                     Some(t) if t.state.terminal() && !notice => refuse(
                         "task_not_active",
                         "scope.task_id",
-                        &format!("Task {} is {}: it accepts only a closing notice. Send publish_information, or ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.state == TaskState::Cancelled { "cancelled" } else { "done" }),
+                        &format!("Task {} is {}: it accepts only a closing notice. Ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.state == TaskState::Cancelled { "cancelled" } else { "done" }),
                     ),
                     Some(_) => Ok(Author::Agent { agent_id: agent_id.clone() }),
                     None if !working && notice && matches!(scope, Scope::Orchestrator { .. }) => {
@@ -440,7 +440,7 @@ impl DomainState {
                     None if !working => refuse(
                         "no_task",
                         "scope",
-                        "This node has no Task: it can only inform with publish_information. Ask the orchestrator to assign you a Task first",
+                        "This node has no Task: it sends no cards. Ask the orchestrator to assign you a Task first",
                     ),
                     None => refuse(
                         "not_assigned",
@@ -515,7 +515,7 @@ impl DomainState {
             Some(x) if card.replaces.as_ref() != Some(&x.id) => refuse(
                 "clarification_pending",
                 "card.replaces",
-                &format!("The user asked you to clarify card {}: send its corrected version with card.replaces = \"{}\", answer in text with publish_information, or withdraw it", x.id, x.id),
+                &format!("The user asked you to clarify card {}: send its corrected version with card.replaces = \"{}\", or withdraw it", x.id, x.id),
             ),
             _ => Ok(()),
         }
@@ -1687,6 +1687,9 @@ impl DomainState {
                 body,
                 card,
             } => {
+                if matches!(actor, Actor::Agent { .. }) && matches!(recipient, Recipient::User) {
+                    return refuse("forbidden", "card.kind", NODES_DO_NOT_NOTIFY);
+                }
                 if let Some(existing) = self.insert_interaction(
                     actor,
                     interaction_id,
@@ -1858,7 +1861,7 @@ impl DomainState {
                     return refuse("invalid_action_for_kind", "interaction_id", "This card is no longer open: there is nothing to clarify");
                 }
                 let message = format!(
-                    "The user asks you to clarify card {interaction_id} ({}){}. Send its corrected version with card.replaces = \"{interaction_id}\", answer in text with publish_information, or withdraw it.",
+                    "The user asks you to clarify card {interaction_id} ({}){}. Send its corrected version with card.replaces = \"{interaction_id}\", or withdraw it.",
                     match reason { ClarificationReason::Unclear => "it is unclear", ClarificationReason::Contradicts => "it contradicts something", ClarificationReason::MissingContext => "it lacks context" },
                     text.as_ref().map(|t| format!(": {}", t.trim())).unwrap_or_default(),
                 );
@@ -1878,7 +1881,7 @@ impl DomainState {
             }
             Command::RaiseProblem { attachments, interaction_id, scope, body, options, card } => {
                 if !matches!(actor, Actor::System | Actor::Orchestrator { .. }) {
-                    return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask or publish_information instead");
+                    return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask instead");
                 }
                 validate_options(options)?;
                 self.insert_interaction(

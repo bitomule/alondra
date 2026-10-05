@@ -168,9 +168,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     );
     execute(
         &hub,
-        Actor::Agent {
-            agent_id: "agent-parity".into(),
-        },
+        Actor::System,
         "info",
         Command::PublishInformation {
             interaction_id: "info-parity".into(),

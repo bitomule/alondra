@@ -51,12 +51,12 @@ Prefer a recommendation whenever you can make one. Pick the tool by what you nee
   this session.
 - `request_test`: the user tries a build or screen: `where` (build, version, screen) and `what`
   to look at. They answer Works or Doesn't work, with text.
-- `propose`: something worth doing that nobody asked for (`size`: small, medium or large). It
-  never holds you up: keep working.
 - In a background session, menu questions (`AskUserQuestion`), permission prompts and plans
   also reach the user in Alondra, and their answer comes back as Claude's own.
-- `publish_information`: a finding the user (or the orchestrator) should read now: `need` is the
-  headline, `body` the update. It changes nothing for the task.
+- Nodes send no notices: there is no tool for status, findings or "I am waiting". To decide use
+  `ask`, to need an action `request_action`, for input
+  `request_input`, to have the user try something `request_test`; report results in
+  `present_result`.
 - `present_result` with `is_final: true`: you are done. `need` says what to review, the report or
   diff goes in `content`; `targets` names
   what you deliver: `text`, a document revision you created, or the PR you registered with its
@@ -83,8 +83,8 @@ Prefer a recommendation whenever you can make one. Pick the tool by what you nee
   into `body`.
 - `withdraw`: a card of yours that no longer needs an answer (`withdraw_question` still works).
 - `answer_clarification`: the user asked you to clarify a card. Until you settle it your next card
-  must replace it: send `replacement` (the corrected card, as `{tool, arguments}`) or answer in
-  `text`, which also withdraws the card.
+  must replace it: send `replacement` (the corrected card, as `{tool, arguments}`) with the
+  explanation in its `why` or `content`, or `withdraw` it.
 - There is no tool to authorize anything. Permission prompts reach the user from Claude Code.
 - `wait_for_machine`: you are stopped by RAM, a build queue or a usage limit.
 
@@ -108,7 +108,7 @@ Prefer a recommendation whenever you can make one. Pick the tool by what you nee
   `gh pr merge <number> --match-head-commit <head> --squash`. Never merge without that claim.
 - When the user requests changes or asks about the PR, or Alondra asks you to resolve its
   conflicts, its card leaves the user's queue and the task shows what Alondra asked of you. Do
-  it (answer a question with `publish_information`), then present the result again with
+  it (put the answer to a question in the report), then present the result again with
   `present_result`, for a PR with its new head: that is the only thing that brings the card
   back. If you cannot do what was asked, `ask`.
 - With auto-merge chosen for the work, register and present the PR the same way and merge it as

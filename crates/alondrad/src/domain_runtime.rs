@@ -567,7 +567,7 @@ mod producer_revision_tests {
                 scope: Scope::Task {
                     task_id: "task-a".into(),
                 },
-                recipient: Recipient::User,
+                recipient: Recipient::Orchestrator,
                 body: "Progress".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
             },
         );

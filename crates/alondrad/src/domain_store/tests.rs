@@ -152,7 +152,7 @@ fn sql_restart_roundtrip_receipts_and_read_has_no_communication() {
     seeded(&mut store);
     execute(
         &mut store,
-        &agent(),
+        &Actor::System,
         "info",
         Command::PublishInformation {
             interaction_id: "info-1".into(),
@@ -288,10 +288,10 @@ fn replay_returns_the_first_outcome() {
     );
     e.expected_revision = 0;
     let revision = store.load().unwrap().revision;
-    let first = store.execute_filling_revision(&agent(), &e).unwrap();
+    let first = store.execute_filling_revision(&Actor::System, &e).unwrap();
     assert!(!first.replayed && first.outcome.changed);
     assert_eq!(first.outcome.revision, revision + 1);
-    let replay = store.execute_filling_revision(&agent(), &e).unwrap();
+    let replay = store.execute_filling_revision(&Actor::System, &e).unwrap();
     assert!(replay.replayed);
     assert_eq!(replay.outcome, first.outcome);
     assert_eq!(store.load().unwrap().revision, revision + 1);
@@ -621,7 +621,7 @@ fn restart_preserves_existing_outbox_and_user_notifications_claim_normally() {
     assert_eq!(count(&upgraded, "domain_message_user_targets"), existing_targets);
     execute(
         &mut upgraded,
-        &agent(),
+        &Actor::System,
         "after-upgrade-info",
         Command::PublishInformation {
             interaction_id: "info-after-upgrade".into(),
@@ -950,7 +950,7 @@ fn second_user_read_is_noop_with_independent_receipt_and_zero_delivery() {
     seeded(&mut store);
     execute(
         &mut store,
-        &agent(),
+        &Actor::System,
         "info",
         Command::PublishInformation {
             interaction_id: "info-1".into(),

@@ -13,11 +13,11 @@ impl Drop for Fixture {
     }
 }
 
-fn publish(runtime: &DomainRuntime, agent: &str, task: &str, id: &str, body: String) {
+fn publish(runtime: &DomainRuntime, task: &str, id: &str, body: String) {
     let state = runtime.state().unwrap();
     runtime
         .execute(
-            &Actor::Agent { agent_id: agent.into() },
+            &Actor::System,
             &CommandEnvelope {
                 protocol_version: PROTOCOL_VERSION,
                 data_epoch: state.data_epoch,
@@ -83,7 +83,7 @@ fn live_shaped() -> Fixture {
     while runtime.state().unwrap().interactions.len() < 1_000 {
         for _ in 0..40 {
             let body = format!("Report {index}\n\n{}", "Findings and evidence line.\n".repeat(60));
-            publish(&runtime, &format!("node-{}", index % AGENTS), &format!("t-{}", index % AGENTS), &format!("fill-info-{index}"), body);
+            publish(&runtime, &format!("t-{}", index % AGENTS), &format!("fill-info-{index}"), body);
             index += 1;
         }
     }
@@ -199,7 +199,7 @@ fn oversized_text_is_cut_with_a_signal_and_readable_in_chunks() {
     let runtime = &fixture.runtime;
     let body: String = (0..6000).map(|i| format!("línea {i} con evidencia larga\n")).collect();
     assert!(body.len() > MAX_PAGE_BYTES);
-    publish(runtime, "node-1", "t-1", "huge-info", body.clone());
+    publish(runtime, "t-1", "huge-info", body.clone());
     let (_, truncated) = walk(runtime, "/tasks/t-1/interactions");
     assert_eq!(truncated, vec!["huge-info".to_owned()]);
     let (_, inbox_truncated) = walk(runtime, "/inbox");
@@ -239,7 +239,7 @@ fn section_tokens_change_only_for_the_sections_a_command_touches() {
     let fixture = live_shaped();
     let runtime = &fixture.runtime;
     let before = runtime.reads.snapshot(runtime).unwrap().section_tokens();
-    publish(runtime, "node-2", "t-2", "one-more-info", "One more".into());
+    publish(runtime, "t-2", "one-more-info", "One more".into());
     let after = runtime.reads.snapshot(runtime).unwrap().section_tokens();
     let changed: Vec<&str> = SECTIONS.iter().copied().filter(|s| before[*s] != after[*s]).collect();
     assert_eq!(changed, ["inbox", "interactions"]);
@@ -364,7 +364,7 @@ fn a_command_on_a_live_sized_store_writes_a_handful_of_rows_and_reloads_no_table
         let (writes_before, scans_before) = counts();
         let rows_before = rows_written();
         if index % 2 == 0 {
-            publish(runtime, "node-0", "t-0", &format!("cost-info-{index}"), format!("Progress {index}"));
+            publish(runtime, "t-0", &format!("cost-info-{index}"), format!("Progress {index}"));
         } else {
             run(runtime, &Actor::User { user_id: "device:phone".into() }, &format!("cost-request-{index}"),
                 Command::CreateRequest { request_id: format!("cost-request-{index}").into(), body: format!("Request {index}"), auto_merge: false });

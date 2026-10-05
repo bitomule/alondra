@@ -309,7 +309,7 @@ impl Instruction {
     pub fn message(self, body: &str) -> String {
         match self {
             Self::Changes => format!("The user requested changes on your result: {body}\n\nWhen they are done, present the result again with present_result, for a PR with its new head."),
-            Self::Question => format!("The user asks about your result: {body}\n\nAnswer with publish_information, then present the result again with present_result, for a PR with its new head."),
+            Self::Question => format!("The user asks about your result: {body}\n\nPut the answer in the report, then present the result again with present_result, for a PR with its new head."),
             Self::Reply => format!("The user replied to your result: {body}\n\nWhen you have acted on it, present the result again with present_result, for a PR with its new head."),
             Self::Conflicts => body.to_owned(),
         }
@@ -687,3 +687,6 @@ impl DomainState {
         !request.closed && !self.tasks.values().any(|task| task.request_id == request.id)
     }
 }
+
+/// What a node is told when it tries to send the user a Know card.
+pub const NODES_DO_NOT_NOTIFY: &str = "Nodes don't send notices. To ask/decide use ask; to need an action use request_action; for input use request_input; to have the user try something use request_test; report results in present_result.";

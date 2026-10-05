@@ -23,10 +23,10 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why` (one or two sentences, at most 240): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts one decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`); end your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. `propose` suggests extra work without stopping you. `publish_information` tells {user} something they only read and that changes something for them (a final summary, a finding, a result); no status chatter, no notes that you are waiting for something, no questions (use ask), and a correction replaces the earlier notice with `replaces` instead of becoming a new card. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
+            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts one decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`); end your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
-            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt), then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action, request_input and propose, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
+            "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt), then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
         ),
     }
 }
@@ -189,18 +189,14 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
             &["need", "where", "what"],
         );
     }
-    add(
-        "propose",
-        format!("Suggest something {user} did not ask for (a Propose card). It never holds you back: keep working. When {user} agrees, Alondra creates a new Request for it. Put the detail in content as steps (a list) or report (prose), never as a plan: a plan is only what Claude Code holds in plan mode."),
-        json!({"need":need_schema(),"why":why_schema(),"size":{"enum":["small","medium","large"],"description":"How big the work would be"},"replaces":replaces_schema(),"content":content_schema()}),
-        &["need", "why", "size"],
-    );
-    add(
+    if !node {
+        add(
         "publish_information",
         format!("Tell {user} (or the orchestrator) something they only need to read (a Know card): need is the headline, body the update. It never holds anyone back. Only for what changes something for {user}: final summaries, findings, results; never status chatter, never a question or a request: anything that needs {user} to answer or do something is an ask, request_input or request_action, never a note that you are waiting. To correct an earlier notice of yours that is still open, send the correction with replaces set to its id: it takes the old card's place instead of adding a card. Sending the same unread notice twice returns the first one."),
         json!({"need":need_schema(),"why":why_schema(),"body":interaction["body"],"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
         &["need", "body"],
-    );
+        );
+    }
     if node {
         let target = json!({"type":"array","items":{"oneOf":[
             {"type":"object","properties":{"kind":{"const":"text"},"text":{"type":"string"}},"required":["kind","text"],"additionalProperties":false},
@@ -217,16 +213,18 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     let withdraw_fields = json!({"interaction_id":{"type":"string"}});
     tools.push(domain_tool("withdraw", "Withdraw one of your own cards that no longer needs an answer. An answered card cannot be withdrawn.", withdraw_fields.clone(), &["interaction_id"]));
     tools.push(domain_tool("withdraw_question", "Alias of withdraw.", withdraw_fields, &["interaction_id"]));
-    tools.push(domain_tool(
-        "answer_clarification",
-        &format!("Settle a card after {user} used Ask for clarification on it. Until you do, your next card must replace it. Send replacement, the corrected card as {{\"tool\": \"ask\", \"arguments\": {{...}}}} (any card tool; replaces is set for you), or text to answer in words: then interaction_id, scope and recipient say where the notice goes, and the old card is withdrawn."),
-        json!({"id":{"type":"string","description":"The card the user asked you to clarify"},
-            "replacement":{"type":"object","properties":{"tool":{"enum":["ask","request_action","request_input","request_test","propose","present_result"]},"arguments":{"type":"object"}},"required":["tool","arguments"],"additionalProperties":false},
-            "text":{"type":"string"},
-            "interaction_id":{"type":"string","description":"With text: the id of the notice"},
-            "scope":interaction["scope"].clone(),"recipient":interaction["recipient"].clone()}),
-        &["id"],
-    ));
+    let mut clarification_fields = json!({"id":{"type":"string","description":"The card the user asked you to clarify"},
+        "replacement":{"type":"object","properties":{"tool":{"enum":["ask","request_action","request_input","request_test","present_result"]},"arguments":{"type":"object"}},"required":["tool","arguments"],"additionalProperties":false}});
+    let clarification_help = if node {
+        format!("Settle a card after {user} used Ask for clarification on it. Until you do, your next card must replace it. Send replacement, the corrected card as {{\"tool\": \"ask\", \"arguments\": {{...}}}} (any card tool; replaces is set for you), and put the explanation {user} asked for in its why or content. Or withdraw the card.")
+    } else {
+        clarification_fields["text"] = json!({"type":"string"});
+        clarification_fields["interaction_id"] = json!({"type":"string","description":"With text: the id of the notice"});
+        clarification_fields["scope"] = interaction["scope"].clone();
+        clarification_fields["recipient"] = interaction["recipient"].clone();
+        format!("Settle a card after {user} used Ask for clarification on it. Until you do, your next card must replace it. Send replacement, the corrected card as {{\"tool\": \"ask\", \"arguments\": {{...}}}} (any card tool; replaces is set for you), or text to answer in words: then interaction_id, scope and recipient say where the notice goes, and the old card is withdrawn.")
+    };
+    tools.push(domain_tool("answer_clarification", &clarification_help, clarification_fields, &["id"]));
     if !node {
         tools.push(domain_tool(
             "raise_problem",
@@ -450,13 +448,15 @@ fn call_timeout(tool: &str) -> Duration {
 
 fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
+        "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY),
+        "answer_clarification" if args.get("text").is_some() => {
+            anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY)
+        }
         "start_task"
-        | "publish_information"
         | "ask"
         | "request_action"
         | "request_input"
         | "request_test"
-        | "propose"
         | "withdraw"
         | "withdraw_question"
         | "answer_clarification"
@@ -476,6 +476,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
 
 fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
+        "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY),
         "create_request"
         | "close_request"
         | "title_request"
@@ -488,7 +489,6 @@ fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String
         | "ask"
         | "request_action"
         | "request_input"
-        | "propose"
         | "raise_problem"
         | "withdraw"
         | "withdraw_question"
@@ -546,7 +546,6 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "request_action"
         | "request_input"
         | "request_test"
-        | "propose"
         | "raise_problem"
         | "publish_information"
         | "withdraw"
@@ -668,8 +667,8 @@ fn submit(client: &Client, bearer: &str, name: &str, args: &Value) -> Result<Str
     Ok(response.get("notice").and_then(Value::as_str).unwrap_or("Recorded.").to_owned())
 }
 
-const CARD_COMMANDS: [&str; 10] = [
-    "ask", "request_action", "request_input", "request_test", "propose", "raise_problem",
+const CARD_COMMANDS: [&str; 9] = [
+    "ask", "request_action", "request_input", "request_test", "raise_problem",
     "publish_information", "present_result", "withdraw", "withdraw_question",
 ];
 
@@ -706,8 +705,8 @@ fn answer_clarification(client: &Client, args: &Value) -> Result<String> {
     match (args.get("replacement"), text_of("text")) {
         (Some(replacement), None) => {
             let tool = replacement.get("tool").and_then(Value::as_str).unwrap_or_default();
-            if !["ask", "request_action", "request_input", "request_test", "propose", "present_result"].contains(&tool) {
-                anyhow::bail!("invalid_input: replacement.tool must be one of ask, request_action, request_input, request_test, propose, present_result");
+            if !["ask", "request_action", "request_input", "request_test", "present_result"].contains(&tool) {
+                anyhow::bail!("invalid_input: replacement.tool must be one of ask, request_action, request_input, request_test, present_result");
             }
             let mut arguments = replacement.get("arguments").cloned().unwrap_or(json!({}));
             arguments["replaces"] = json!(card);
@@ -740,7 +739,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
     };
     let id = |key: &str| -> Result<String> { Ok(urlencode(value(key)?)) };
     let target = match name {
-        "ask" | "ask_question" | "request_input" | "request_test" | "propose" => ("POST", "/questions".to_owned()),
+        "ask" | "ask_question" | "request_input" | "request_test" => ("POST", "/questions".to_owned()),
         "request_action" => ("POST", "/action-requests".to_owned()),
         "publish_information" => ("POST", "/messages".to_owned()),
         "raise_problem" => ("POST", "/problems".to_owned()),
@@ -778,7 +777,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
 
 fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str) -> Result<Value> {
     let kind = match name {
-        "ask" | "request_input" | "request_test" | "propose" => "ask_question",
+        "ask" | "request_input" | "request_test" => "ask_question",
         "request_action" => "request_action",
         "publish_information" => "publish_information",
         "raise_problem" => "raise_problem",
@@ -839,7 +838,6 @@ fn card_kind(name: &str, command: &serde_json::Map<String, Value>) -> Option<&'s
         "request_action" => "do",
         "request_input" => "provide",
         "request_test" => "test",
-        "propose" => "propose",
         "publish_information" => "know",
         "raise_problem" => "problem",
         "present_result" if command.get("is_final").and_then(Value::as_bool) == Some(true) => "review",
@@ -916,15 +914,6 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
             content = content.or_else(|| Some(json!({"kind":"steps","body":format!("Where: {place}\nWhat to look at: {what}")})));
             command.insert("options".into(), json!([choice("works", "Works", true), choice("fails", "Doesn't work", true)]));
             command.entry("blocking").or_insert(json!(false));
-        }
-        "propose" => {
-            let size = take_text(command, "size");
-            if !["small", "medium", "large"].contains(&size.as_str()) {
-                anyhow::bail!("invalid_input: size must be small, medium or large");
-            }
-            content = content.or_else(|| Some(json!({"kind":"report","summary":format!("Size: {size}"),"body":why.clone()})));
-            command.insert("options".into(), json!([choice("do_it", "Do it", false), choice("not_now", "Not now", false)]));
-            command.insert("blocking".into(), json!(false));
         }
         _ => {}
     }
@@ -1773,14 +1762,12 @@ mod card_tool_tests {
 
     #[test]
     fn each_card_tool_requires_the_words_of_its_card() {
-        let table: [(&str, &[&str]); 9] = [
+        let table: [(&str, &[&str]); 7] = [
             ("ask", &["need", "why", "options", "blocking"]),
             ("request_action", &["need", "why", "verify", "blocking"]),
             ("request_input", &["need", "why", "kind", "blocking"]),
             ("request_test", &["need", "where", "what"]),
-            ("propose", &["need", "why", "size"]),
             ("present_result", &["need", "task_id", "targets", "is_final"]),
-            ("publish_information", &["need", "body"]),
             ("withdraw", &["interaction_id"]),
             ("answer_clarification", &["id"]),
         ];
@@ -1790,7 +1777,7 @@ mod card_tool_tests {
                 assert!(found.iter().any(|f| f == field), "{name} must require {field}: {found:?}");
             }
         }
-        for name in ["ask", "request_action", "request_input", "request_test", "propose", "present_result", "publish_information"] {
+        for name in ["ask", "request_action", "request_input", "request_test", "present_result"] {
             let properties = &tool(Role::Node, name)["inputSchema"]["properties"];
             assert_eq!(properties["need"]["maxLength"], 90, "{name}");
             assert_eq!(properties["need"]["minLength"], 1, "{name}");
@@ -1805,7 +1792,6 @@ mod card_tool_tests {
         }
         assert!(tool(Role::Node, "request_action")["inputSchema"]["properties"].get("steps").is_some());
         assert_eq!(tool(Role::Node, "request_input")["inputSchema"]["properties"]["kind"]["enum"], json!(["file", "text", "secret"]));
-        assert_eq!(tool(Role::Node, "propose")["inputSchema"]["properties"]["size"]["enum"], json!(["small", "medium", "large"]));
     }
 
     #[test]
@@ -1819,7 +1805,7 @@ mod card_tool_tests {
         assert_eq!(required(&problem), ["interaction_id", "scope", "need", "why", "options"]);
         assert!(tools(Role::Node, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "raise_problem"));
         assert!(call_node(&Client::new(CALL_TIMEOUT), "raise_problem", &json!({})).is_err());
-        for name in ["ask", "request_action", "request_input", "propose", "publish_information", "withdraw", "withdraw_question", "answer_clarification"] {
+        for name in ["ask", "request_action", "request_input", "publish_information", "withdraw", "withdraw_question", "answer_clarification"] {
             tool(Role::Orchestrator, name);
         }
         assert!(tool(Role::Node, "withdraw_question")["description"].as_str().unwrap().contains("Alias of withdraw"));
@@ -1827,7 +1813,7 @@ mod card_tool_tests {
 
     #[test]
     fn each_tool_descriptions_say_when_to_use_it_and_where_long_text_goes() {
-        for name in ["ask", "request_action", "request_input", "request_test", "propose", "publish_information", "present_result"] {
+        for name in ["ask", "request_action", "request_input", "request_test", "present_result"] {
             let description = tool(Role::Node, name)["description"].as_str().unwrap().to_owned();
             assert!(description.contains("Ana"), "{name} names the user");
         }
@@ -1835,12 +1821,34 @@ mod card_tool_tests {
         assert!(tool(Role::Node, "ask")["description"].as_str().unwrap().contains("never in why"));
         assert!(tool(Role::Node, "ask")["inputSchema"]["properties"]["why"]["description"].as_str().unwrap().contains("Long text goes in content"));
         let node = instructions(Role::Node, "Ana");
-        for tool in ["request_input", "request_test", "propose", "answer_clarification", "withdraw"] {
+        for tool in ["request_input", "request_test", "answer_clarification", "withdraw"] {
             assert!(node.contains(tool), "{tool}");
         }
         assert!(node.contains("never in `why`") && node.contains("never a permission") && node.contains("do not proceed"));
         let orchestrator = instructions(Role::Orchestrator, "Ana");
         assert!(orchestrator.contains("publish_information") && orchestrator.contains("before close_request") && orchestrator.contains("raise_problem"));
+    }
+
+    #[test]
+    fn a_node_has_no_notice_tool_and_is_told_what_to_use_instead() {
+        assert!(tools(Role::Node, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "publish_information"));
+        tool(Role::Orchestrator, "publish_information");
+        let client = Client::new(CALL_TIMEOUT);
+        let refused = call_node(&client, "publish_information", &with(json!({"need":"Done","body":"All green"}))).unwrap_err().to_string();
+        assert!(refused.starts_with("forbidden: Nodes don't send notices."), "{refused}");
+        assert!(refused.contains("use ask") && refused.contains("present_result"), "{refused}");
+        for role in [Role::Node, Role::Orchestrator] {
+            assert!(tools(role, "Ana").as_array().unwrap().iter().all(|t| t["name"] != "propose"));
+        }
+        for refused in [call_node(&client, "propose", &json!({})), call_orchestrator(&client, "propose", &json!({}))] {
+            let refused = refused.unwrap_err().to_string();
+            assert!(refused.starts_with("forbidden: Nodes don't send notices.") && refused.contains("use ask"), "{refused}");
+        }
+        let text = call_node(&client, "answer_clarification", &json!({"id":"card-1","text":"Because"})).unwrap_err().to_string();
+        assert!(text.starts_with("forbidden: Nodes don't send notices."), "{text}");
+        let node = tool(Role::Node, "answer_clarification");
+        assert!(node["inputSchema"]["properties"].get("text").is_none());
+        assert!(tool(Role::Orchestrator, "answer_clarification")["inputSchema"]["properties"].get("text").is_some());
     }
 
     #[test]
@@ -1850,7 +1858,6 @@ mod card_tool_tests {
             ("request_action", with(json!({"need":"Rotate the key","why":"It leaked","verify":"I call the API","blocking":true})), "request_action", "do"),
             ("request_input", with(json!({"need":"Send the API key","why":"The build needs it","kind":"secret","blocking":true})), "ask_question", "provide"),
             ("request_test", with(json!({"need":"Try the login","where":"Build 41","what":"Sign in twice"})), "ask_question", "test"),
-            ("propose", with(json!({"need":"Update the README","why":"It names the old flag","size":"small"})), "ask_question", "propose"),
             ("publish_information", with(json!({"need":"The build is green","body":"All 400 tests pass"})), "publish_information", "know"),
             ("present_result", json!({"task_id":"t-1","interaction_id":"card-1","need":"Review the parser","targets":[{"kind":"text","text":"done"}],"is_final":true,"content":{"kind":"report","body":"Done"}}), "present_result", "review"),
             ("present_result", json!({"task_id":"t-1","interaction_id":"card-1","need":"Phase 1 is in","targets":[{"kind":"text","text":"done"}],"is_final":false}), "present_result", "know"),
@@ -1899,10 +1906,6 @@ mod card_tool_tests {
         assert_eq!(ids(&test), ["works", "fails"]);
         assert_eq!(test["blocking"], false);
         assert_eq!(test["card"]["content"]["body"], "Where: Build 41\nWhat to look at: Sign in");
-        let propose = built("propose", with(json!({"need":"Update the README","why":"Old flag","size":"large"})));
-        assert_eq!(ids(&propose), ["do_it", "not_now"]);
-        assert_eq!(propose["blocking"], false, "a proposal never holds the node");
-        assert_eq!(propose["card"]["content"]["summary"], "Size: large");
         let input = built("request_input", with(json!({"need":"Send the key","why":"Needed","kind":"file","blocking":true})));
         assert_eq!(ids(&input), ["provide", "skip"]);
         assert_eq!(input["options"][0]["inputs"][0]["required"], false);
@@ -1914,13 +1917,13 @@ mod card_tool_tests {
 
     #[test]
     fn content_a_node_calls_a_plan_is_a_list_of_steps_or_a_report() {
-        let kind_of = |body: &str| built("propose", with(json!({"need":"Fix the badge","why":"Stuck","size":"small","content":{"kind":"plan","body":body}})))["card"]["content"]["kind"].clone();
+        let kind_of = |body: &str| built("ask", with(json!({"need":"Fix the badge","why":"Stuck","options":options(),"blocking":false,"content":{"kind":"plan","body":body}})))["card"]["content"]["kind"].clone();
         assert_eq!(kind_of("- Relay: add a push type\n- Daemon: send it\n- App: lower the badge"), "steps");
         assert_eq!(kind_of("1. Relay\n2. Daemon"), "steps");
         assert_eq!(kind_of("Today the push raises the number, nothing lowers it."), "report");
         let asked = built("ask", with(json!({"need":"Pick","why":"Why","options":options(),"blocking":false,"content":{"kind":"plan","body":"Prose only"}})));
         assert_eq!(asked["card"]["content"]["kind"], "report");
-        let kept = built("propose", with(json!({"need":"Fix","why":"Stuck","size":"small","content":{"kind":"diagnosis","body":"- a"}})));
+        let kept = built("ask", with(json!({"need":"Fix","why":"Stuck","options":options(),"blocking":false,"content":{"kind":"diagnosis","body":"- a"}})));
         assert_eq!(kept["card"]["content"]["kind"], "diagnosis");
         assert!(!content_schema()["properties"]["kind"]["enum"].as_array().unwrap().contains(&json!("plan")));
     }
@@ -1930,7 +1933,6 @@ mod card_tool_tests {
         for (name, args, said) in [
             ("request_input", with(json!({"need":"n","why":"w","kind":"photo","blocking":true})), "kind must be file, text or secret"),
             ("request_test", with(json!({"need":"n"})), "where and what are required"),
-            ("propose", with(json!({"need":"n","why":"w","size":"huge"})), "size must be small, medium or large"),
             ("ask", with(json!({"need":"n","why":"w","options":options(),"blocking":false,"surprise":1})), "surprise"),
             ("ask", json!({"need":"n"}), "interaction_id"),
         ] {
@@ -1955,7 +1957,7 @@ mod card_tool_tests {
         let ask = |id: &str| with(json!({"interaction_id":id}));
         assert_eq!(command_id("ask", &ask("card-1")), command_id("ask", &ask("card-1")));
         assert_ne!(command_id("ask", &ask("card-1")), command_id("ask", &ask("card-2")));
-        assert_ne!(command_id("ask", &ask("card-1")), command_id("propose", &ask("card-1")));
+        assert_ne!(command_id("ask", &ask("card-1")), command_id("request_input", &ask("card-1")));
         assert_ne!(command_id("start_task", &json!({"task_id":"t"})), command_id("start_task", &json!({"task_id":"t"})),
             "only a card has an id of its own to retry by");
         assert_ne!(command_id("ask", &ask(&"x".repeat(300))), command_id("ask", &ask(&"x".repeat(300))));
