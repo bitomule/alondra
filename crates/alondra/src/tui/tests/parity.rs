@@ -1141,6 +1141,35 @@ fn header_has_the_alondra_badge_the_bars_and_how_many_are_working() {
 }
 
 #[test]
+fn a_banner_tops_the_screen_while_claude_usage_is_out_and_goes_with_it() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut app = App::new(tx);
+    app.loaded = true;
+    let mut status = status_with(production_gauges());
+    status.usage_exhausted = Some(alondra_core::views::UsageExhausted {
+        scope: "this_mac".into(),
+        until: "2099-10-05T14:30:00.000+02:00".into(),
+        macs_exhausted: 1,
+        macs_total: 1,
+    });
+    app.view_status = Some(status);
+    let shown = screen(&mut app, 120, 6);
+    let first_row: String = shown.chars().take(120).collect();
+    let rest: String = shown.chars().skip(120).collect();
+    assert!(
+        first_row.contains("Out of Claude usage on this Mac until 14:30 · everything is paused"),
+        "{shown}"
+    );
+    assert!(rest.contains(" Alondra "), "the header sits under the banner: {shown}");
+
+    app.view_status = Some(status_with(production_gauges()));
+    let shown = screen(&mut app, 120, 6);
+    assert!(!shown.contains("Claude usage"), "{shown}");
+    assert!(shown.chars().take(120).collect::<String>().contains(" Alondra "), "{shown}");
+}
+
+#[test]
 fn header_gauges_come_in_the_servers_language() {
     crate::i18n::set_for_this_thread(crate::i18n::Lang::Es);
     let (tx, _rx) = std::sync::mpsc::sync_channel(8);

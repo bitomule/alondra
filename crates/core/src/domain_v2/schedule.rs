@@ -6,6 +6,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
+/// The Problem a scheduled run that could not start puts in front of the user, and its retry option.
+pub const LAUNCH_PROBLEM_PREFIX: &str = "problem-launch-";
+pub const LAUNCH_RETRY_OPTION: &str = "retry";
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ScheduleFrequency {
@@ -548,13 +552,16 @@ impl ScheduleState {
             .ok_or_else(|| DomainError::new("not_found", "Schedule run not found"))?;
         let launch = run.launch.as_mut()
             .ok_or_else(|| DomainError::new("conflict", "Run has no v2 launch intent"))?;
-        if run.state != ScheduleRunState::Sent || launch.state != ScheduleLaunchState::Dispatching {
+        if run.state != ScheduleRunState::Sent
+            || !matches!(launch.state, ScheduleLaunchState::Dispatching | ScheduleLaunchState::Uncertain)
+        {
             return Err(DomainError::new("conflict", "Schedule launch was not dispatching"));
         }
         if launch.claimed_at.is_some_and(|claim| finished_at < claim) {
             return Err(invalid("launch finish precedes its claim"));
         }
         launch.state = ScheduleLaunchState::Handed;
+        launch.error = None;
         launch.finished_at = Some(finished_at);
         launch.session_id = session_id;
         launch.agent_id = agent_id;
@@ -586,8 +593,8 @@ impl ScheduleState {
             ));
         }
         if run.launch.as_ref().is_some_and(|launch| !matches!(launch.state,
-            ScheduleLaunchState::Pending | ScheduleLaunchState::Dispatching)) {
-            return Err(DomainError::new("conflict", "Schedule launch outcome is already final or uncertain"));
+            ScheduleLaunchState::Pending | ScheduleLaunchState::Dispatching | ScheduleLaunchState::Uncertain)) {
+            return Err(DomainError::new("conflict", "Schedule launch outcome is already final"));
         }
         if run.launch.as_ref().and_then(|launch| launch.claimed_at)
             .is_some_and(|claim| finished_at < claim) {
@@ -807,7 +814,6 @@ mod tests {
         assert_eq!(run.state, ScheduleRunState::Sent);
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Uncertain);
         assert!(state.claim_launch(&"first".into(), 104).is_err());
-        assert!(state.record_failed(&"first".into(), "guess".into(), 104).is_err());
         state.validate().unwrap();
 
         state.claim(&"s".into(), "second".into(), ScheduleRunOrigin::Manual, 105, None).unwrap();
@@ -818,6 +824,23 @@ mod tests {
         state.claim_launch(&"second".into(), 107).unwrap();
         state.record_launch_handed(&"second".into(), Some("session-1".into()), None, 108).unwrap();
         assert!(state.record_failed(&"second".into(), "late".into(), 109).is_err());
+        state.validate().unwrap();
+    }
+
+    #[test]
+    fn an_uncertain_launch_can_later_be_handed_or_failed_once_the_session_is_known() {
+        let mut state = state(false, None);
+        for (id, request, task) in [("found", "r1", "t1"), ("lost", "r2", "t2")] {
+            state.claim(&"s".into(), id.into(), ScheduleRunOrigin::Manual, 100, None).unwrap();
+            state.record_sent(&id.into(), request.into(), task.into(), intent(), 101).unwrap();
+            state.claim_launch(&id.into(), 102).unwrap();
+        }
+        state.interrupt_on_restart();
+        state.record_launch_handed(&"found".into(), Some("session-1".into()), None, 105).unwrap();
+        let launch = state.runs[&ScheduleRunId::from("found")].launch.as_ref().unwrap();
+        assert_eq!((launch.state, launch.error.as_deref()), (ScheduleLaunchState::Handed, None));
+        state.record_failed(&"lost".into(), "never started".into(), 106).unwrap();
+        assert_eq!(state.runs[&ScheduleRunId::from("lost")].state, ScheduleRunState::Failed);
         state.validate().unwrap();
     }
 

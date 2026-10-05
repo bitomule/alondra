@@ -87,6 +87,11 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }
     }
 
+    func test_card_questionOfSeveralAskedTogether() throws {
+        let store = try presentation(detail: "card-group-mac")
+        assertWindow(size: CGSize(width: 900, height: 620)) { MacServiceDetail(presentation: store) }
+    }
+
     func test_card_pullRequestWithItsShortcuts() throws {
         let store = try presentation(detail: "card-pr-mac")
         assertWindow(size: CGSize(width: 900, height: 700)) { MacServiceDetail(presentation: store) }

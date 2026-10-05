@@ -309,6 +309,7 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             }
             other => panic!("unsupported base Interaction: {other}"),
         };
+        let author = if matches!(command, Command::PublishInformation { .. }) { Actor::System } else { author };
         setup_command(store, &format!("setup-interaction-{id}"), author, command);
     }
     assert!(field(base, "documents").as_array().unwrap().is_empty());

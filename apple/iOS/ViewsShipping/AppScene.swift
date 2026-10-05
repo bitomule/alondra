@@ -139,10 +139,21 @@ private struct ApprovedServiceScene: View {
                 returningFromBackground = false
                 notifications.push.reregisterOnReturn()
             }
-            if phase == .active { showIconBadge(context.store?.triage.iconBadge) }
+            if phase == .active {
+                showIconBadge(context.store?.triage.iconBadge)
+                reconcileNotifications()
+            }
             context.consumeNotification(notifications, services: services, active: phase == .active)
         }
         .onChange(of: context.store?.triage.iconBadge, initial: true) { _, badge in showIconBadge(badge) }
+        .onChange(of: context.store?.triage.orderedIDs) { _, _ in reconcileNotifications() }
+    }
+
+    /// Only a loaded queue is the truth: before it loads it is empty and would clear everything.
+    private func reconcileNotifications() {
+        guard phase == .active, let triage = context.store?.triage, triage.iconBadge != nil else { return }
+        let waiting = triage.orderedIDs
+        Task { await notifications.reconcile(waiting: waiting, for: services) }
     }
 
     private func retry() { Task { await services.retryViewsConnection() } }

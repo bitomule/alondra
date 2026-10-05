@@ -39,6 +39,18 @@ final class NotificationPayloadTests: XCTestCase {
         XCTAssertNil(NotificationPayload.Item(userInfo: try self.payload(#"{"alondra":{"protocol":1,"kind":"question","card":"q-1","data_epoch":"e"}}"#)))
     }
 
+    func testAPushWithoutACardShowsItsTextAndRoutesNowhere() throws {
+        let push = try payload(#"{"aps":{"alert":{"title":"Alondra","body":"Sin cuota hasta 15:45"},"sound":"default","interruption-level":"passive","mutable-content":1},"alondra":{"protocol":1,"data_epoch":"epoch","push_binding":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","actions":[]}}"#)
+        let alert = NotificationAlert(aps: try XCTUnwrap(push["aps"] as? [String: Any]))
+
+        XCTAssertEqual(alert.title, "Alondra")
+        XCTAssertEqual(alert.body, "Sin cuota hasta 15:45")
+        XCTAssertEqual(alert.level, .passive)
+        XCTAssertNotNil(NotificationPayload.Binding(userInfo: push))
+        XCTAssertNil(NotificationPayload.Item(userInfo: push))
+        XCTAssertNil(NotificationPayload.BoundItem(userInfo: push))
+    }
+
     func testBindingRejectsMissingMalformedAndStaleContext() throws {
         let valid = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         let item: [String: Any] = ["protocol": 1, "kind": "question", "card": "q-1", "data_epoch": "e", "actions": []]
@@ -143,7 +155,7 @@ final class NotificationPayloadTests: XCTestCase {
         XCTAssertEqual(try alert("action_request").level, .timeSensitive)
         XCTAssertEqual(try alert("question").level, .active)
         XCTAssertEqual(try alert("information").level, .passive)
-        XCTAssertEqual(try alert("question").thread, "orchestrator")
+        XCTAssertEqual(try alert("question").thread, "task-a")
         XCTAssertNil(NotificationAlert(aps: ["interruption-level": "critical", "thread-id": ""]).level)
         XCTAssertNil(NotificationAlert(aps: ["thread-id": ""]).thread)
     }

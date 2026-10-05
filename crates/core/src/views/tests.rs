@@ -2464,28 +2464,25 @@ fn header_facts(view: &View) -> &[Fact] {
     &facts.items
 }
 
-fn content_facts(view: &View) -> &[Fact] {
-    let section = view.sections.iter().find(|section| section.id == "content").expect("content section");
-    section.items.iter().find_map(|item| if let Item::Facts(facts) = item { Some(facts.items.as_slice()) } else { None })
-        .expect("PR facts")
+fn section_of<'a>(view: &'a View, id: &str) -> Option<&'a super::Section> {
+    view.sections.iter().find(|section| section.id == id)
 }
 
 fn content_checks(view: &View) -> Option<&Checks> {
-    let section = view.sections.iter().find(|section| section.id == "content")?;
-    section.items.iter().find_map(|item| if let Item::Checks(checks) = item { Some(checks) } else { None })
+    section_of(view, "checks")?.items.iter().find_map(|item| if let Item::Checks(checks) = item { Some(checks) } else { None })
 }
 
 #[test]
-fn a_pull_request_detail_reads_node_report_then_description_then_diff() {
+fn a_pull_request_detail_puts_the_diff_before_the_folded_description_and_drops_the_table() {
     let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
-    let content = view.sections.iter().find(|section| section.id == "content").expect("content section");
-    let position = |wanted: &dyn Fn(&Item) -> bool| content.items.iter().position(wanted).expect("item present");
-    let description = position(&|item| matches!(item, Item::Markdown(body) if body.text.starts_with("Replaces the long schedule form")));
-    let diff = position(&|item| matches!(item, Item::ContentRef(reference) if reference.kind == super::ContentKind::Diff));
-    let facts = position(&|item| matches!(item, Item::Facts(_)));
-    assert!(description < diff && diff < facts, "description, then the diff, then the details");
-    let sections = view.sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>();
-    assert!(sections.iter().position(|id| *id == "content") < sections.iter().position(|id| *id == "context"));
+    let ids = view.sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>();
+    assert_eq!(ids, ["card", "checks", "diff", "description", "context"]);
+    let diff = section_of(&view, "diff").unwrap();
+    assert!(matches!(&diff.items[..], [Item::ContentRef(reference)] if reference.kind == super::ContentKind::Diff));
+    let description = section_of(&view, "description").unwrap();
+    assert!(matches!(&description.items[..], [Item::Markdown(body)] if body.text.starts_with("Replaces the long schedule form")));
+    assert!(view.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::Facts(facts)
+        if facts.items.iter().any(|fact| fact.label == "Repository" || fact.label == "Base" || fact.label == "Head"))));
 }
 
 #[test]
@@ -2497,28 +2494,29 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     assert_eq!(card.kind, Some(crate::domain_v2::CardKind::Review));
     assert_eq!(card.eyebrow.as_ref().unwrap().text, "Review · PR #12");
     assert_eq!(card.icon, Icon::PullRequest);
-    assert_eq!(card.title, "Review the beta candidate");
+    assert_eq!(card.need.as_deref(), Some("Review the beta candidate"));
+    assert_eq!(card.title, "Add the compact schedule editor", "the detail is titled with the PR's own title");
+    assert_eq!(
+        card.meta.as_deref(),
+        Some("example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · Checks passed")
+    );
     assert!(card.body.is_none(), "the card holds none of it");
     let row = card.content_row.as_ref().expect("content row");
     assert_eq!((row.kind.as_str(), row.label.as_str(), row.summary.as_str()), ("diff", "Changes", "4 files · +120 −30"));
-    let facts = content_facts(&view);
-    let value = |label: &str| facts.iter().find(|fact| fact.label == label).map(|fact| fact.value.as_str());
-    assert_eq!(value("Repository"), Some("example/repo #12"));
-    assert_eq!(value("Head"), Some("feature/compact-schedule-editor"));
-    assert_eq!(value("Changes"), Some("4 files · +120 −30"));
     assert_eq!(
         content_checks(&view).unwrap().items.iter().map(|check| (check.name.as_str(), check.state)).collect::<Vec<_>>(),
         [("Build", CheckState::Pass), ("Unit tests", CheckState::Pass), ("Lint", CheckState::Pending)]
     );
-    assert!(view.sections.iter().flat_map(|section| &section.items).any(|item| matches!(item,
-        Item::Markdown(body) if body.text.starts_with("Replaces the long schedule form"))), "the PR's own description");
     let spanish = render(&state, &golden_live(), Client::Ios, Lang::Es, card_key, "");
     assert_eq!(card_of(&spanish).content_row.as_ref().unwrap().summary, "4 archivos · +120 −30");
-    assert!(content_facts(&spanish).iter().any(|fact| fact.label == "Cambios" && fact.value == "4 archivos · +120 −30"));
+    assert_eq!(
+        card_of(&spanish).meta.as_deref(),
+        Some("example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · Comprobaciones superadas")
+    );
     let mut single = golden_live();
     single.pull_requests[0].changed_files = 1;
     let view = render(&state, &single, Client::Ios, Lang::En, card_key, "");
-    assert!(content_facts(&view).iter().any(|fact| fact.label == "Changes" && fact.value == "1 file · +120 −30"));
+    assert!(card_of(&view).meta.as_deref().unwrap().contains("1 file · +120 −30"));
 }
 
 #[test]
@@ -2533,10 +2531,63 @@ fn a_pull_request_without_github_details_keeps_the_aggregate_check_and_names_the
     let view = render(&state, &live, Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
     let card = card_of(&view);
     assert_eq!(card.content_row.as_ref().unwrap().summary, "example/repo #12");
+    assert_eq!(card.meta.as_deref(), Some("example/repo · → main · Checks failing"));
+    assert_eq!(card.title, "Review the beta candidate", "without GitHub's title the node's own is kept");
     let checks = content_checks(&view).unwrap();
     assert_eq!(checks.items.len(), 1);
     assert_eq!(checks.items[0].state, CheckState::Fail);
-    assert!(content_facts(&view).iter().all(|fact| fact.label != "Changes" && fact.label != "Head"));
+}
+
+#[test]
+fn a_pull_request_description_repeats_neither_the_report_nor_the_link_to_the_pr() {
+    let mut state = golden_fixture();
+    let report = "PR: https://github.com/example/repo/pull/12 (rebased)\n\nReplaces the long schedule form with a compact editor.";
+    for interaction in state.interactions.values_mut() {
+        if interaction.card.need == "Review the beta candidate" {
+            interaction.card.content = Some(crate::domain_v2::CardContent {
+                kind: crate::domain_v2::ContentKind::Report,
+                summary: None,
+                body: report.into(),
+            });
+        }
+    }
+    let view = render(&state, &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    let description = section_of(&view, "description").unwrap();
+    let [Item::Markdown(body)] = &description.items[..] else { panic!("one folded text: {:?}", description.items) };
+    assert!(!body.text.contains("/pull/12"), "{}", body.text);
+    assert!(body.text.starts_with("Replaces the long schedule form"), "{}", body.text);
+    assert_eq!(body.text.matches("Replaces the long schedule form").count(), 1, "{}", body.text);
+}
+
+#[test]
+fn internal_task_ids_in_a_card_read_as_the_task_title() {
+    let mut state = golden_fixture();
+    let (id, title) = {
+        let task = state.tasks.values().next().unwrap();
+        (task.id.0.clone(), task.title.clone())
+    };
+    for interaction in state.interactions.values_mut() {
+        if interaction.card.need == "Review the beta candidate" {
+            interaction.card.why = format!("Closes {id} and unblocks t-unknown-task.");
+        }
+    }
+    let view = render(&state, &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    assert_eq!(card_of(&view).why.as_deref(), Some(format!("Closes {title} and unblocks t-unknown-task.").as_str()));
+}
+
+#[test]
+fn a_task_and_node_with_the_same_name_appear_once_in_the_context() {
+    let mut state = golden_fixture();
+    let title = state.tasks.values().next().unwrap().title.clone();
+    assert!(!state.agents.is_empty());
+    for agent in state.agents.values_mut() {
+        agent.name = title.clone();
+    }
+    let view = render(&state, &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    let Some(Item::Facts(context)) = section_of(&view, "context").and_then(|section| section.items.first()) else {
+        panic!("context line")
+    };
+    assert_eq!(context.items[0].value.matches(&title).count(), 1, "{}", context.items[0].value);
 }
 
 #[test]
@@ -3040,7 +3091,7 @@ fn a_push_shows_what_the_card_needs_over_why() {
 }
 
 #[test]
-fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_node() {
+fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_task_then_request() {
     use crate::domain_v2::{CardKind::*, Hold};
     let level = |kind, blocking: bool| {
         let mut state = held_fixture(Hold::Permission, spec(kind, "Do it", "Because."));
@@ -3056,8 +3107,13 @@ fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_node() {
         assert_eq!(level(kind, blocking), expected, "{kind:?} blocking={blocking}");
     }
     let state = held_fixture(Hold::Permission, spec(Authorize, "Do it", "Because."));
-    assert_eq!(push_content(&state, "i-1", Lang::En).unwrap().thread.as_deref(), Some("a-1"), "one thread per node");
-    assert_eq!(push_content(&state, "i-4", Lang::En).unwrap().thread.as_deref(), Some("orchestrator"));
+    let thread = |state: &DomainState, id: &str| push_content(state, id, Lang::En).unwrap().thread;
+    assert_eq!(thread(&state, "i-1").as_deref(), Some("t-1"), "one thread per Task, whoever wrote the card");
+    assert_eq!(thread(&state, "i-2").as_deref(), Some("t-1"), "a system card of the Task joins the agent's");
+    assert_eq!(thread(&state, "i-4").as_deref(), Some("orchestrator"), "no Task and no Request");
+    let mut requested = state.clone();
+    requested.interactions.get_mut(&"i-4".into()).unwrap().scope = Scope::Orchestrator { request_id: Some("r-9".into()) };
+    assert_eq!(thread(&requested, "i-4").as_deref(), Some("r-9"), "an orchestrator card groups under its Request");
 }
 
 /// The actions the terminal offers for a document: its cards' own (each child card is a row of
@@ -3248,5 +3304,109 @@ fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
     let pushed = push_content(&with_cards(&state), "a7efd99d-answer-1", Lang::Es).unwrap();
     let alert = pushed.alert.unwrap();
     assert_eq!(alert.title, "Sí. Para el cifrado una imagen son bytes como cualquier otro.");
-    assert_eq!((pushed.interruption_level, pushed.thread.as_deref()), ("passive", Some("orchestrator")));
+    assert_eq!((pushed.interruption_level, pushed.thread.as_deref()), ("passive", Some("a7efd99d")),
+        "the answer groups with the rest of its Request");
+}
+
+/// Three questions asked together, the ones listed in `answered` (0-based) already answered.
+fn group_state(answered: &[usize]) -> DomainState {
+    use crate::domain_v2::{CardKind, QuestionGroup};
+    let mut state = fixture();
+    let base = state.interactions.remove(&"i-1".into()).unwrap();
+    for (at, need) in ["Which name?", "Ship it today?", "Which channel?"].into_iter().enumerate() {
+        let mut one = base.clone();
+        one.id = format!("g-q{}", at + 1).into();
+        one.order = at as u64 + 1;
+        one.body = need.into();
+        let mut card = spec(CardKind::Decide, need, "The release needs it");
+        card.group = Some(QuestionGroup { id: "g".into(), index: at as u8 + 1, total: 3 });
+        one.card = card;
+        let options = vec![
+            QuestionOption { id: "o0".into(), label: "First".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "o1".into(), label: "Second".into(), description: None, inputs: vec![] },
+        ];
+        let answer = answered.contains(&at).then(|| crate::domain_v2::Answer {
+            attachments: vec![], option_id: "o1".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1,
+        });
+        one.payload = InteractionPayload::Question { options, answer };
+        state.interactions.insert(one.id.clone(), one);
+    }
+    state
+}
+
+#[test]
+fn a_question_asked_together_says_where_it_stands_in_the_group_on_every_client() {
+    let state = group_state(&[]);
+    let live = LiveSnapshot::default();
+    let card_of_client = |client, lang, id: &str| render(&state, &live, client, lang, &format!("card:{id}"), "").sections[0].items.iter()
+        .find_map(|item| match item { Item::Card(card) => Some(card.clone()), _ => None }).unwrap();
+    let phone = card_of_client(Client::Ios, Lang::En, "g-q2");
+    assert_eq!(phone.eyebrow.as_ref().unwrap().text, "Decide · 2 of 3");
+    assert!(phone.meta.as_deref().unwrap().ends_with("· 2 of 3"), "the phone shows the kind as a badge, so the position is in the line under: {:?}", phone.meta);
+    assert!(phone.actions.iter().all(|a| a.id.starts_with("ans:g-q2@")), "an ordinary card answered with the ordinary answer");
+    let spanish = card_of_client(Client::Ios, Lang::Es, "g-q3");
+    assert_eq!(spanish.eyebrow.as_ref().unwrap().text, "Decidir · 3 de 3");
+    let mac = card_of_client(Client::Mac, Lang::En, "g-q1");
+    assert_eq!(mac.eyebrow.as_ref().unwrap().text, "Decide · 1 of 3");
+    assert!(!mac.meta.unwrap_or_default().contains("1 of 3"), "the Mac's header already says it");
+}
+
+#[test]
+fn change_answers_lists_what_was_answered_while_the_group_is_incomplete() {
+    let live = LiveSnapshot::default();
+    let more = |state: &DomainState, id: &str| render(state, &live, Client::Ios, Lang::En, &format!("card:{id}"), "").sections[0].items.iter()
+        .find_map(|item| match item { Item::Card(card) => Some(card.more.clone()), _ => None }).unwrap();
+    let change = |more: &[Action]| more.iter().find(|a| a.id.starts_with("retake:")).cloned();
+    assert!(change(&more(&group_state(&[]), "g-q1")).is_none(), "nothing answered, nothing to change");
+    let state = group_state(&[0, 2]);
+    let action = change(&more(&state, "g-q2")).expect("Change answers on the one still open");
+    assert_eq!((action.label.as_str(), action.presentation), ("Change answers", Presentation::Options));
+    assert_eq!(action.options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
+        [("g-q1", "Which name? → Second"), ("g-q3", "Which channel? → Second")]);
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "card:g-q2", "").sections[0].items.iter()
+        .find_map(|item| match item { Item::Card(card) => card.more.iter().find(|a| a.id.starts_with("retake:")).map(|a| a.label.clone()), _ => None });
+    assert_eq!(spanish.as_deref(), Some("Cambiar respuestas"));
+}
+
+#[test]
+fn each_question_of_a_group_is_its_own_notification_with_its_own_buttons_and_its_place() {
+    let state = group_state(&[]);
+    let content = push_content(&state, "g-q2", Lang::Es).unwrap();
+    let alert = content.alert.unwrap();
+    assert_eq!(alert.title, "Ship it today?");
+    assert!(alert.body.unwrap().starts_with("2 de 3 · "), "the subtitle says which question it is");
+    assert_eq!(content.actions.iter().filter_map(|a| a.option.as_deref()).collect::<Vec<_>>(), ["o0", "o1"]);
+    assert!(content.actions.iter().filter(|a| a.option.is_some()).all(|a| a.id.starts_with("ans:g-q2@")));
+    assert_eq!(push_content(&state, "g-q1", Lang::En).unwrap().thread, content.thread, "one thread for the node");
+}
+
+const GROUP_CASES: [(&str, Client, Lang); 3] = [
+    ("card-group.json", Client::Ios, Lang::En),
+    ("card-group-es.json", Client::Ios, Lang::Es),
+    ("card-group-mac.json", Client::Mac, Lang::En),
+];
+
+/// The second of three questions asked together, the first already answered.
+#[test]
+fn a_question_asked_together_matches_goldens() {
+    let state = group_state(&[0]);
+    for ((filename, client, lang), expected) in GROUP_CASES.into_iter().zip([
+        include_str!("../../../../fixtures/views/cards/card-group.json"),
+        include_str!("../../../../fixtures/views/cards/card-group-es.json"),
+        include_str!("../../../../fixtures/views/cards/card-group-mac.json"),
+    ]) {
+        let actual = render(&state, &LiveSnapshot::default(), client, lang, "card:g-q2", "2026-09-30T10:00:00Z");
+        assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+#[ignore = "explicit fixture generation after Bazel authorization"]
+fn generate_group_goldens() {
+    let dir = std::env::var("ALONDRA_GOLDEN_OUT").expect("ALONDRA_GOLDEN_OUT required");
+    let state = group_state(&[0]);
+    for (filename, client, lang) in GROUP_CASES {
+        let view = render(&state, &LiveSnapshot::default(), client, lang, "card:g-q2", "2026-09-30T10:00:00Z");
+        std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
+    }
 }

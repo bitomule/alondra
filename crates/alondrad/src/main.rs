@@ -33,6 +33,7 @@ mod hook_socket;
 mod http;
 mod hub;
 mod issues;
+mod job_state;
 mod keeper;
 mod machine;
 mod managed_orchestrator;
@@ -47,9 +48,11 @@ mod orchestrate;
 mod orchestrator_process;
 mod plugins;
 mod preflight;
+mod process_watch;
 mod prs;
 mod push;
 mod push_gate;
+mod push_retract;
 mod relaunch;
 #[cfg(target_os = "macos")]
 mod schedule_clock;
@@ -435,6 +438,9 @@ async fn run_domain(config: &Config) -> Result<()> {
         service.clone(),
         client.clone(),
     ));
+    if let Some(service) = &service {
+        tokio::spawn(push_retract::run(domain.clone(), service.clone()));
+    }
     let scheduler = tokio::spawn(domain_schedule_runner::run(
         domain.clone(),
         config.home.clone(),

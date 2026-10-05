@@ -166,11 +166,19 @@ struct TriageCard: View {
     }
 
     private var buttons: some View {
-        VStack(spacing: 8) {
-            ForEach(Array(store.buttons.enumerated()), id: \.offset) { _, action in
-                actionButton(action)
+        GlassEffectContainer(spacing: 8) {
+            VStack(spacing: 8) {
+                ForEach(Array(store.buttons.dropLast().enumerated()), id: \.offset) { _, action in
+                    actionButton(action)
+                }
+                HStack(alignment: .top, spacing: 8) {
+                    if let last = store.buttons.last { actionButton(last) }
+                    if !store.menu.isEmpty { moreMenu }
+                }
             }
-            if !store.menu.isEmpty { moreMenu }
+            .controlSize(.large)
+            .buttonBorderShape(.capsule)
+            .font(.headline)
         }
     }
 
@@ -182,13 +190,14 @@ struct TriageCard: View {
                         Button(option.label) { store.send(.menuOptionPicked(action, optionID: option.id)) }
                     }
                 } label: {
-                    Text(action.label)
+                    GlassBarLabel(action.label)
                 }
-                .buttonStyle(RoleButtonStyle(role: action.cardRole))
+                .menuStyle(.button)
+                .glassRole(action.cardRole)
                 .disabled(!action.enabled)
             } else {
-                Button { perform(action) } label: { Text(action.label).multilineTextAlignment(.center) }
-                    .buttonStyle(RoleButtonStyle(role: action.cardRole))
+                Button { perform(action) } label: { GlassBarLabel(action.label).multilineTextAlignment(.center) }
+                    .glassRole(action.cardRole)
                     .disabled(!action.enabled)
             }
             if !action.enabled, let reason = action.disabledReason {
@@ -204,10 +213,10 @@ struct TriageCard: View {
                 Button(action.label) { perform(action) }.disabled(!action.enabled)
             }
         } label: {
-            Text("More… (\(store.menu.count))")
-                .font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 36)
+            Image(systemName: "ellipsis.circle")
         }
+        .menuStyle(.button).buttonStyle(.glass)
+        .accessibilityLabel("More actions")
     }
 
     private func perform(_ action: AlondraContract.Action) {

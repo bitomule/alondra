@@ -25,7 +25,7 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "alondra"
-version = "0.2.40"
+version = "0.2.42"
 dependencies = [
  "alondra-core",
  "alondra-e2e",
@@ -54,7 +54,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-core"
-version = "0.2.40"
+version = "0.2.42"
 dependencies = [
  "libc",
  "serde",
@@ -65,7 +65,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-e2e"
-version = "0.2.40"
+version = "0.2.42"
 dependencies = [
  "base64 0.23.1",
  "hkdf 0.12.4",
@@ -78,7 +78,7 @@ dependencies = [
 
 [[package]]
 name = "alondra-relay"
-version = "0.2.40"
+version = "0.2.42"
 dependencies = [
  "alondra-e2e",
  "anyhow",
@@ -103,7 +103,7 @@ dependencies = [
 
 [[package]]
 name = "alondrad"
-version = "0.2.40"
+version = "0.2.42"
 dependencies = [
  "alondra-core",
  "alondra-e2e",

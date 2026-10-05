@@ -275,7 +275,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
     assert!(created > 0 && started >= created, "the task began after its request");
     assert_eq!(before["requests"]["request-2"]["created_at"].as_i64().map(|at| at >= created), Some(true));
 
-    fixture.agent("agent-a", "ask", Command::PublishInformation {
+    fixture.command(Actor::System, "ask", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(),
         scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
     });
@@ -857,7 +857,7 @@ async fn the_presence_ping_is_recorded_for_the_client_that_sent_it() {
 async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
-    fixture.agent("agent-a", "info-1", Command::PublishInformation {
+    fixture.command(Actor::System, "info-1", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
     });

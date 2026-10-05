@@ -309,7 +309,7 @@ impl Instruction {
     pub fn message(self, body: &str) -> String {
         match self {
             Self::Changes => format!("The user requested changes on your result: {body}\n\nWhen they are done, present the result again with present_result, for a PR with its new head."),
-            Self::Question => format!("The user asks about your result: {body}\n\nAnswer with publish_information, then present the result again with present_result, for a PR with its new head."),
+            Self::Question => format!("The user asks about your result: {body}\n\nPut the answer in the report, then present the result again with present_result, for a PR with its new head."),
             Self::Reply => format!("The user replied to your result: {body}\n\nWhen you have acted on it, present the result again with present_result, for a PR with its new head."),
             Self::Conflicts => body.to_owned(),
         }
@@ -416,6 +416,53 @@ pub struct CardSpec {
     /// How the node will check the user did it (Do only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
+    /// The card is one question of several asked together: each is its own card, and the node
+    /// gets every answer at once when the last one is answered.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<QuestionGroup>,
+}
+/// Where a card stands among the questions asked together.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct QuestionGroup {
+    /// The same on every question of the group.
+    pub id: String,
+    /// From 1.
+    pub index: u8,
+    pub total: u8,
+}
+/// One question of several asked together; it becomes a Decide card of its own.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GroupQuestion {
+    /// The question, clear on its own: at most 90 characters.
+    pub need: String,
+    /// What the user needs to know to answer it: at most 240 characters.
+    #[serde(default)]
+    pub why: String,
+    pub options: Vec<QuestionOption>,
+    /// The id of the option the author recommends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<String>,
+}
+impl QuestionGroup {
+    pub const MAX: usize = 4;
+    /// The id of the card for question `index` (from 1) of the group `id`.
+    pub fn card_id(id: &InteractionId, index: usize) -> InteractionId {
+        InteractionId(format!("{id}-q{index}"))
+    }
+}
+/// A label an author marked with "(Recommended)", as Claude Code's own questions do: the label
+/// without the suffix, when it had one. A recommendation belongs in `recommended`, not the label.
+pub fn without_recommended_suffix(label: &str) -> Option<String> {
+    const SUFFIX: &str = "(recommended)";
+    let trimmed = label.trim_end();
+    let cut = trimmed.len().checked_sub(SUFFIX.len())?;
+    if !trimmed.is_char_boundary(cut) || !trimmed[cut..].eq_ignore_ascii_case(SUFFIX) {
+        return None;
+    }
+    let bare = trimmed[..cut].trim_end();
+    (!bare.is_empty()).then(|| bare.to_owned())
 }
 impl CardSpec {
     pub const NEED_MAX: usize = 90;
@@ -432,6 +479,7 @@ impl CardSpec {
             blocks: vec![],
             replaces: None,
             verify: None,
+            group: None,
         }
     }
     pub fn why(mut self, why: impl Into<String>) -> Self {
@@ -687,3 +735,6 @@ impl DomainState {
         !request.closed && !self.tasks.values().any(|task| task.request_id == request.id)
     }
 }
+
+/// What a node is told when it tries to send the user a Know card.
+pub const NODES_DO_NOT_NOTIFY: &str = "Nodes don't send notices. To ask/decide use ask; to need an action use request_action; for input use request_input; to have the user try something use request_test; report results in present_result.";

@@ -1,6 +1,13 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Link another Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vincular otro Mac"}}}},
+    "Off · Open Settings": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desactivados · Abrir Ajustes"}}}},
+    "You can reply, allow or approve from the Lock Screen.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes responder, permitir o aprobar desde la pantalla bloqueada."}}}},
+    "Server": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Servidor"}}}},
+    "This attachment can’t be previewed as text.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Este adjunto no se puede previsualizar como texto."}}}},
+    "No results": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin resultados"}}}},
+    "Search results": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Resultados de la búsqueda"}}}},
     "More…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más…"}}}},
     "Show the details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ver los detalles"}}}},
     "Reply to the node…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Responder al nodo…"}}}},

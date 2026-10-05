@@ -12,7 +12,6 @@ public struct CardDetailView: View {
     @Bindable var store: StoreOf<CardDetailFeature>
     @Environment(\.openURL) private var openURL
     @FocusState private var replyFocused: Bool
-    @State private var moreShown = false
     @State private var methodChoice: AlondraContract.Action?
 
     public init(store: StoreOf<CardDetailFeature>) { self.store = store }
@@ -132,8 +131,8 @@ public struct CardDetailView: View {
 
     private func header(_ subject: CardDetailFeature.Subject) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if subject.card != nil { KindBadge(kind: kind) }
-            Text(subject.title).font(.display(.largeTitle, weight: .bold))
+            if let card = subject.card { KindBadge(kind: kind, title: card.eyebrow?.text) }
+            Text(subject.title).font(.display(.title2, weight: .bold))
                 .foregroundStyle(Palette.ink).fixedSize(horizontal: false, vertical: true)
             if let why = subject.card?.why {
                 Text(why).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -157,7 +156,11 @@ public struct CardDetailView: View {
                 Text(title).font(.footnote.weight(.bold)).textCase(.uppercase).kerning(0.6).foregroundStyle(.secondary)
             }
             ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
-                itemView(item)
+                if section.id == "description", case .markdown(let markdown) = item {
+                    PRDescription(markdown: markdown)
+                } else {
+                    itemView(item)
+                }
             }
         }
     }
@@ -305,10 +308,17 @@ public struct CardDetailView: View {
     private func actionBar(_ subject: CardDetailFeature.Subject) -> some View {
         GlassActionBar {
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
-            ForEach(Array(subject.buttons.enumerated()), id: \.offset) { _, action in
-                barButton(action)
+            if !subject.buttons.isEmpty || !subject.menu.isEmpty {
+                GlassBarRow {
+                    if let main = subject.buttons.first { barButton(main) }
+                } secondary: {
+                    ForEach(Array(subject.buttons.dropFirst().enumerated()), id: \.offset) { _, action in
+                        barButton(action)
+                    }
+                } accessory: { stacked in
+                    if !subject.menu.isEmpty { moreMenu(subject.menu, stacked: stacked) }
+                }
             }
-            if !subject.menu.isEmpty { moreMenu(subject.menu) }
             if let reply = subject.replyAction {
                 AttachmentStrip(store: store.scope(state: \.attachments, action: \.attachments))
                 composer(reply)
@@ -327,7 +337,7 @@ public struct CardDetailView: View {
             Button {
                 if action.presentation == .menu, !action.options.isEmpty { methodChoice = action } else { perform(action) }
             } label: {
-                GlassBarLabel(title(of: action)).lineLimit(2).multilineTextAlignment(.center)
+                GlassBarLabel(title(of: action)).multilineTextAlignment(.center)
             }
             .glassRole(action.cardRole)
             .disabled(disabled)
@@ -337,18 +347,20 @@ public struct CardDetailView: View {
         }
     }
 
-    private func moreMenu(_ actions: [AlondraContract.Action]) -> some View {
-        Button { moreShown = true } label: {
-            Text("More… (\(actions.count))")
-                .font(.subheadline.weight(.medium)).foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, minHeight: 32)
-        }
-        .buttonStyle(.plain)
-        .confirmationDialog("More…", isPresented: $moreShown, titleVisibility: .hidden) {
+    private func moreMenu(_ actions: [AlondraContract.Action], stacked: Bool) -> some View {
+        Menu {
             ForEach(Array(actions.enumerated()), id: \.offset) { _, action in
                 Button(action.label) { perform(action) }.disabled(!store.state.isSendable(action))
             }
+        } label: {
+            if stacked {
+                Label("More", systemImage: "ellipsis.circle").frame(maxWidth: .infinity)
+            } else {
+                Image(systemName: "ellipsis.circle")
+            }
         }
+        .menuStyle(.button).buttonStyle(.glass)
+        .accessibilityLabel("More actions")
     }
 
     private func composer(_ action: AlondraContract.Action) -> some View {
@@ -376,7 +388,7 @@ public struct CardDetailView: View {
             .padding(4)
             .accessibilityLabel("Send")
         }
-        .glassEffect(.regular, in: .rect(cornerRadius: 24, style: .continuous))
+        .glassEffect(.regular.interactive(), in: .rect(cornerRadius: 25, style: .continuous))
     }
 
     private func perform(_ action: AlondraContract.Action) {

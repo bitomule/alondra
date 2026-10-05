@@ -81,7 +81,7 @@ async fn handle(mut stream: UnixStream, domain: &DomainRuntime) -> Result<()> {
                     return crate::domain_holds::withdraw(domain, &held.id);
                 }
             };
-            answered(&held, answer?)
+            answered(&held, answer?.and_then(|answers| answers.into_iter().next()))
         }
     };
     let bytes = serde_json::to_vec(&body)?;
@@ -172,7 +172,16 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
     if domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
         register_probe(domain, &session)?;
     }
+    let launch_key = hello.launch_key.clone();
     let number = domain.live.mods.connect(hello, alondra_core::now_millis());
+    if let Some(key) = launch_key
+        && let Err(error) = crate::domain_sessions::reissue(domain, &key, &AgentId(session.clone()))
+    {
+        log!("could not issue {session} a new capability: {error:#}");
+    }
+    if let Some(pid) = stream.peer_cred().ok().and_then(|credentials| credentials.pid()) {
+        domain.live.mods.set_peer(&session, pid as u32);
+    }
     let mut lines = domain.live.pushes.attach(&session, number);
     let mut changed = domain.subscribe();
     let held = async {
@@ -249,7 +258,7 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
     let state = domain.state()?;
     Ok(pending.into_iter().map(|message| {
         sent.insert(message.id);
-        crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &render(&state, &message), false)
+        crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &render(&state, &message), from_user(&state, &message))
     }).collect())
 }
 
@@ -305,6 +314,17 @@ fn text(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
+/// The bearer of a session that ended is revoked. Its settings file goes with it unless the Agent
+/// still has work: then `claude respawn` finds the file it passes again.
+pub(crate) fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
+    domain.revoke_agent(&agent.0)?;
+    if crate::node_revival::has_open_task(domain, &agent.0) {
+        crate::domain_sessions::suspend_for(domain.home(), agent)
+    } else {
+        crate::domain_sessions::remove_for(domain.home(), agent)
+    }
+}
+
 fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     let Some(session_id) = text(payload, "session_id") else {
         return Ok(Reply::Plain(json!({})));
@@ -331,8 +351,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         let event_id = format!("{event}-{session_id}-{}", crate::auth::random_hex(8));
         lifecycle::observe_instance(domain, &agent_id, connected, &lifecycle::prepare_event(domain, &event_id)?)?;
         if !connected {
-            domain.revoke_agent(&session_id)?;
-            crate::domain_sessions::remove_for(domain.home(), &agent_id)?;
+            session_ended(domain, &agent_id)?;
         }
     }
     if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {
@@ -445,6 +464,46 @@ pub(crate) fn nudge_text(user: &str, task: &TaskId) -> String {
     )
 }
 
+/// The user's answer to a card reaches the session as the user's own words, which Claude Code
+/// shows as they are: anything else it wraps in a plugin notice of about 40 tokens.
+pub(crate) fn from_user(state: &DomainState, message: &OutboxMessage) -> bool {
+    message.interaction_id.as_ref()
+        .and_then(|id| state.interactions.get(&InteractionId(id.clone())))
+        .is_some_and(|interaction| matches!(interaction.recipient, Recipient::User) && matches!(&interaction.payload,
+            InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. }))
+}
+
+const QUESTION_LABEL_LIMIT: usize = 80;
+
+/// The asker already holds the whole question; its first words are enough to tell it apart.
+fn question_label(question: &str) -> String {
+    let line = question.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    match line.char_indices().nth(QUESTION_LABEL_LIMIT) {
+        Some((end, _)) => format!("{}…", line[..end].trim_end()),
+        None if line.len() < question.trim().len() => format!("{line}…"),
+        None => line.to_owned(),
+    }
+}
+
+/// What the user answered to each of the questions asked together, in the order asked: the node
+/// is given them all at once, when the last is in.
+fn grouped_answers(state: &DomainState, interaction: &alondra_core::domain_v2::Interaction) -> String {
+    let lines: Vec<String> = state.group_members(interaction).into_iter().enumerate().map(|(index, member)| {
+        let said = match &member.payload {
+            InteractionPayload::Question { options, answer: Some(answer) } => options.iter()
+                .find(|option| option.id == answer.option_id).map(|option| option.label.clone())
+                .or_else(|| answer.inputs.values().find_map(|value| match value {
+                    InputValue::Text(text) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+                    _ => None,
+                }))
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        format!("{}. {} → {said}", index + 1, member.card.need)
+    }).collect();
+    format!("The user answered your {} questions:\n{}", lines.len(), lines.join("\n"))
+}
+
 /// Producer-facing delivery contains only the message written for the Agent.
 /// Delivery identity, interaction data and authorization remain in Alondra.
 pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
@@ -476,6 +535,9 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
         }
         return text;
     };
+    if interaction.card.group.is_some() {
+        return grouped_answers(state, interaction);
+    }
     let option = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.as_str());
     let values: Vec<String> = answer.inputs.values().map(|value| match value {
         InputValue::Text(value) => value.clone(),
@@ -494,7 +556,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     if matches!(interaction.recipient, Recipient::Orchestrator) && matches!(interaction.author, Author::Agent { .. }) {
         text = format!("The orchestrator answered: {text}");
     }
-    let question = interaction.body.trim();
+    let question = question_label(&interaction.body);
     if matches!(interaction.author, Author::Orchestrator { .. }) {
         let request_title = match &interaction.scope {
             Scope::Orchestrator { request_id: Some(request_id) } => state.requests.get(request_id)
@@ -715,12 +777,55 @@ mod tests {
         });
     }
 
+    fn outbox_message(domain: &DomainRuntime, id: &str, recipient_kind: &str) -> OutboxMessage {
+        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
+            .unwrap()
+    }
+
+    /// Request 9a5996ed (5 Oct): every answer reached the node inside Claude Code's plugin notice,
+    /// about 180 characters around a «Hecho.».
+    #[test]
+    fn the_users_answer_goes_as_the_users_words_and_the_orchestrators_does_not() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+        free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
+        free_text_question(&domain, "o", agent_actor(), task_scope(), Recipient::Orchestrator, "Which repo?");
+        free_text_answer(&domain, Actor::Orchestrator { generation: 0 }, "o", "alondra");
+        let state = domain.state().unwrap();
+        assert!(from_user(&state, &outbox_message(&domain, "q", "agent")));
+        assert!(!from_user(&state, &outbox_message(&domain, "o", "agent")));
+    }
+
+    /// The «About …» echo of a 600-character question cost 150 tokens on a 15-token answer.
+    #[test]
+    fn an_answer_names_its_question_by_its_first_words_not_the_whole_text() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let question = format!("Tu mensaje sobre el nodo de Parcel llegó cortado. ¿Qué te muestra la app para la tarea?\n\n{}",
+            "Lo que ya sé: la ejecución programada falló antes de lanzar Claude. ".repeat(8));
+        free_text_question(&domain, "q", Actor::Orchestrator { generation: 0 },
+            Scope::Orchestrator { request_id: Some("request".into()) }, Recipient::User, &question);
+        free_text_answer(&domain, user_actor(), "q", "Sí, la veo pendiente");
+        let rendered = rendered_for(&domain, "q", "orchestrator");
+        assert_eq!(rendered,
+            "About \"Tu mensaje sobre el nodo de Parcel llegó cortado. ¿Qué te muestra la app para la…\" (request \"Work\"): Sí, la veo pendiente");
+        assert!(rendered.len() < question.len() / 4, "{} of {}", rendered.len(), question.len());
+    }
+
+    #[test]
+    fn a_short_question_is_named_whole_and_a_multiline_one_by_its_first_line() {
+        assert_eq!(question_label("  Ship this?  "), "Ship this?");
+        assert_eq!(question_label("Ship this?\n\nIt has two commits."), "Ship this?…");
+        assert_eq!(question_label(&"á".repeat(81)), format!("{}…", "á".repeat(80)));
+    }
+
     fn rendered_for(domain: &DomainRuntime, id: &str, recipient_kind: &str) -> String {
         let state = domain.state().unwrap();
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
-            .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
-            .unwrap();
-        render(&state, &message)
+        render(&state, &outbox_message(domain, id, recipient_kind))
     }
 
     fn node_with_task(domain: &DomainRuntime) {
@@ -1092,7 +1197,7 @@ mod tests {
         answered_question(&domain, "session-a");
         let line = node.line().await.unwrap();
         let id = agent_outbox(&domain, "session-a")[0].0;
-        assert_eq!(line, json!({"id": format!("o-{id}"), "text": "Yes.", "as_user": false}));
+        assert_eq!(line, json!({"id": format!("o-{id}"), "text": "Yes.", "as_user": true}));
         assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "written is not handed");
 
         acknowledge(&domain, "other-session", json!([format!("o-{id}")])).await.unwrap();
@@ -1177,6 +1282,12 @@ mod tests {
             task_id: format!("task-{agent}").into(), request_id: format!("request-{agent}").into(),
             title: "Task".into(), agent_id: Some(agent.into()), review_prs: false, dependencies: BTreeSet::new(), stack: None,
         });
+    }
+
+    fn single_question(agent: &str) -> Value {
+        let mut card = ask(agent);
+        card["input"]["questions"].as_array_mut().unwrap().truncate(1);
+        card
     }
 
     fn ask(agent: &str) -> Value {
@@ -1354,11 +1465,27 @@ mod tests {
         let plan = post(plan("agent-a"));
         assert_eq!((plan.kind, plan.need.as_str()), (CardKind::Review, "Ship the parser"));
         assert_eq!(plan.content.unwrap().kind, ContentKind::Plan);
-        let mut question = ask("agent-a");
+        let mut question = single_question("agent-a");
         question["input"]["questions"][0]["options"][1]["label"] = json!("SQLite (Recommended)");
         let question = post(question);
         assert_eq!((question.kind, question.need.as_str(), question.recommended.as_deref()), (CardKind::Decide, "Which database?", Some("o1")));
-        assert_eq!(question.content.unwrap().kind, ContentKind::Options, "two questions are one form");
+        assert!(question.group.is_none(), "one question is an ordinary card");
+    }
+
+    #[test]
+    fn a_single_question_marks_its_recommendation_instead_of_labelling_it() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let mut single = single_question("agent-a");
+        single["input"]["questions"][0]["options"][0]["label"] = json!("Postgres (Recommended)");
+        let crate::domain_holds::Posted::Held(id) = crate::domain_holds::post(&domain, &serde_json::from_value(single).unwrap(), true).unwrap()
+        else { panic!("not held") };
+        let state = domain.state().unwrap();
+        let interaction = &state.interactions[&id];
+        assert_eq!(interaction.card.recommended.as_deref(), Some("o0"));
+        let InteractionPayload::Question { options, .. } = &interaction.payload else { panic!("question") };
+        assert_eq!(options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>(), ["Postgres", "SQLite"]);
     }
 
     #[tokio::test]
@@ -1379,20 +1506,132 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ask_user_question_waits_and_answers_every_question_with_the_choice_or_the_users_words() {
-        for (option, note, said) in [("o1", None, "SQLite"), ("", Some("MySQL"), "MySQL")] {
+    async fn ask_user_question_with_one_question_waits_and_answers_it_with_the_choice_as_claude_wrote_it_or_the_users_words() {
+        for (option, note, said) in [("o1", None, "SQLite (Recommended)"), ("", Some("MySQL"), "MySQL")] {
             let fixture = Fixture::new();
             let domain = fixture.open();
             working_agent(&domain, "agent-a");
-            let (reply, id) = held_card(&domain, ask("agent-a"), option, note).await;
-            assert_eq!(reply, json!({"held": true, "answers": {"Which database?": said, "Also migrate the old rows?": said}}));
+            let mut single = single_question("agent-a");
+            single["input"]["questions"][0]["options"][1]["label"] = json!("SQLite (Recommended)");
+            let (reply, id) = held_card(&domain, single, option, note).await;
+            assert_eq!(reply, json!({"held": true, "answers": {"Which database?": said}}));
             let state = domain.state().unwrap();
             assert_eq!(state.holds[&id], Hold::Question);
             let InteractionPayload::Question { options, .. } = &state.interactions[&id].payload else { panic!("question") };
             assert_eq!(options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(), [("o0", "Postgres"), ("o1", "SQLite")]);
-            assert_eq!(state.interactions[&id].body, "Which database?\n\n- Also migrate the old rows?");
+            assert_eq!(state.interactions[&id].card.recommended.as_deref(), Some("o1"));
             assert!(agent_outbox(&domain, "agent-a").is_empty());
         }
+    }
+
+    fn three_questions(agent: &str) -> Value {
+        json!({"session_id": agent, "id": "toolu-three", "kind": "question",
+            "input": {"questions": [
+                {"question": "How do the devices reach the Mac?", "header": "Network", "options": [
+                    {"label": "LAN and Tailscale (Recommended)", "description": "Works at home and away"},
+                    {"label": "LAN only", "description": "Only at home"}]},
+                {"question": "Which port should it listen on?", "options": [{"label": "7777"}, {"label": "8080 (Recommended)"}]},
+                {"question": "Keep the old pairings?", "options": [{"label": "Keep them"}, {"label": "Pair again"}]}]}})
+    }
+
+    const GROUP: [&str; 3] = ["hold-question-toolu-three-q1", "hold-question-toolu-three-q2", "hold-question-toolu-three-q3"];
+
+    async fn post_group(domain: &DomainRuntime) -> (UnixStream, std::pin::Pin<Box<impl std::future::Future<Output = Result<()>> + '_>>) {
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send(&mut client, &json!({"node_hold": three_questions("agent-a")})).await;
+        let handler = Box::pin(handle(server, domain));
+        (client, handler)
+    }
+
+    async fn still_waiting<F: std::future::Future + Unpin>(handler: &mut F) -> bool {
+        tokio::time::timeout(Duration::from_millis(300), handler).await.is_err()
+    }
+
+    #[tokio::test]
+    async fn three_questions_are_three_cards_and_claude_gets_every_answer_only_when_the_last_is_in() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let (mut client, mut handler) = post_group(&domain).await;
+        tokio::select! { _ = open_hold(&domain) => {}, result = &mut handler => panic!("answered without waiting: {result:?}") }
+        let state = domain.state().unwrap();
+        let cards: Vec<_> = GROUP.iter().map(|id| &state.interactions[&(*id).into()].card).collect();
+        assert_eq!(cards.iter().map(|card| (card.kind, card.need.as_str())).collect::<Vec<_>>(), [
+            (CardKind::Decide, "How do the devices reach the Mac?"), (CardKind::Decide, "Which port should it listen on?"),
+            (CardKind::Decide, "Keep the old pairings?")]);
+        assert_eq!(cards.iter().map(|card| card.group.as_ref().map(|g| (g.index, g.total))).collect::<Vec<_>>(), [Some((1, 3)), Some((2, 3)), Some((3, 3))]);
+        assert_eq!((cards[0].recommended.as_deref(), cards[1].recommended.as_deref(), cards[2].recommended.as_deref()), (Some("o0"), Some("o1"), None));
+        assert!(state.holds.keys().filter(|id| GROUP.contains(&id.0.as_str())).count() == 3);
+
+        answer(&domain, &GROUP[0].into(), "o0", None);
+        answer(&domain, &GROUP[1].into(), "o0", None);
+        assert!(still_waiting(&mut handler).await, "two answers of three send nothing to Claude");
+        answer(&domain, &GROUP[2].into(), "o1", None);
+        let (result, reply) = tokio::join!(handler, reply(&mut client));
+        result.unwrap();
+        assert_eq!(reply, json!({"held": true, "answers": {
+            "How do the devices reach the Mac?": "LAN and Tailscale (Recommended)",
+            "Which port should it listen on?": "7777",
+            "Keep the old pairings?": "Pair again",
+        }}), "each question gets its own answer");
+        assert!(agent_outbox(&domain, "agent-a").is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_answer_taken_back_is_asked_again_and_the_new_one_is_what_claude_gets() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let (mut client, mut handler) = post_group(&domain).await;
+        tokio::select! { _ = open_hold(&domain) => {}, result = &mut handler => panic!("answered without waiting: {result:?}") }
+        answer(&domain, &GROUP[0].into(), "o0", None);
+        answer(&domain, &GROUP[1].into(), "o0", None);
+        command(&domain, Actor::User { user_id: "u".into() }, "retake", Command::ReopenAnswer { interaction_id: GROUP[0].into() });
+        let state = domain.state().unwrap();
+        assert!(matches!(&state.interactions[&GROUP[0].into()].payload, InteractionPayload::Question { answer: None, .. }));
+        answer(&domain, &GROUP[2].into(), "o0", None);
+        assert!(still_waiting(&mut handler).await, "a reopened question is still owed");
+        command(&domain, Actor::User { user_id: "u".into() }, "answer-again", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: GROUP[0].into(), option_id: "o1".into(), inputs: Default::default(),
+        });
+        let (result, reply) = tokio::join!(handler, reply(&mut client));
+        result.unwrap();
+        assert_eq!(reply["answers"]["How do the devices reach the Mac?"], "LAN only");
+    }
+
+    #[tokio::test]
+    async fn a_hook_that_goes_away_withdraws_every_question_of_the_group_and_its_answers() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let (mut client, server) = UnixStream::pair().unwrap();
+        send(&mut client, &json!({"node_hold": three_questions("agent-a")})).await;
+        let driver = async {
+            open_hold(&domain).await;
+            answer(&domain, &GROUP[0].into(), "o0", None);
+            report(&domain, json!({"session_id": "agent-a", "event": "tool.end", "tool_use_id": "toolu-three"})).await;
+            reply(&mut client).await
+        };
+        let (result, body) = tokio::join!(handle(server, &domain), driver);
+        result.unwrap();
+        assert_eq!(body, json!({"held": false}));
+        let state = domain.state().unwrap();
+        assert!(GROUP.iter().all(|id| state.interactions[&(*id).into()].withdrawn), "all three go together, answered or not");
+    }
+
+    #[tokio::test]
+    async fn a_group_posted_again_is_the_group_already_there() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        working_agent(&domain, "agent-a");
+        let post = || match crate::domain_holds::post(&domain, &serde_json::from_value(three_questions("agent-a")).unwrap(), true).unwrap() {
+            crate::domain_holds::Posted::Held(id) => id,
+            _ => panic!("not held"),
+        };
+        let first = post();
+        assert_eq!(first.0, GROUP[0]);
+        assert_eq!(post(), first);
+        assert_eq!(domain.state().unwrap().interactions.values().filter(|i| i.card.group.is_some()).count(), 3);
     }
 
     async fn answered_without_a_card(domain: &DomainRuntime, card: Value) -> Value {
@@ -1529,8 +1768,8 @@ mod tests {
         let fixture = Fixture::new();
         let domain = fixture.open();
         working_agent(&domain, "agent-a");
-        let (first, _) = held_card(&domain, ask("agent-a"), "o0", None).await;
-        let again = answered_without_a_card(&domain, ask("agent-a")).await;
+        let (first, _) = held_card(&domain, single_question("agent-a"), "o0", None).await;
+        let again = answered_without_a_card(&domain, single_question("agent-a")).await;
         assert_eq!(again, first);
     }
 

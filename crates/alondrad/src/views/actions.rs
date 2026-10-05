@@ -812,6 +812,14 @@ fn map_domain_action(
             Some((Command::SubmitFeedback { presentation_id: presentation.id.clone(), targets: targets.clone(),
                 body, attachments, instruction }, stamp))
         }
+        Verb::Retake => {
+            let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
+            let reopened = state.interactions.get(&InteractionId(request.option_id.clone().filter(|id| !id.is_empty())?))?;
+            if state.group_members(interaction).iter().all(|member| member.id != reopened.id) {
+                return None;
+            }
+            Some((Command::ReopenAnswer { interaction_id: reopened.id.clone() }, stamp("Question reopened", "Pregunta reabierta")))
+        }
         Verb::Clarify => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             let reason = match request.option_id.as_deref().filter(|id| !id.is_empty()) {

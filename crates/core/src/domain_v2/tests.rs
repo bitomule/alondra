@@ -433,7 +433,7 @@ fn information_read_is_not_a_reply_or_acceptance() {
     let mut s = fixture();
     exec(
         &mut s,
-        agent(),
+        orchestrator(),
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "info".into(),
@@ -702,6 +702,28 @@ fn a_host_that_is_not_a_real_host_is_refused_with_the_fix() {
     }
     assert!(s.pull_requests.is_empty());
     exec(&mut s, agent(), register_with("github.example.com", "head1")).unwrap();
+}
+#[test]
+fn a_pr_id_the_views_cannot_address_is_refused_with_the_fix() {
+    let mut s = fixture();
+    for pr_id in ["bitomule/alondra#688", "owner/repo#1", "pr 1", "pr:1"] {
+        let mut command = register_with("github.com", "head1");
+        if let Command::RegisterPr { pr_id: id, .. } = &mut command {
+            *id = pr_id.into();
+        }
+        let error = exec(&mut s, agent(), command).unwrap_err();
+        assert_eq!(error.code, "invalid_input", "{pr_id}");
+        assert!(error.message.contains("github.com/owner/repo#N"), "{}", error.message);
+    }
+    assert!(s.pull_requests.is_empty());
+    for pr_id in ["pr-1", "github.com/owner/repo#1"] {
+        let mut s = fixture();
+        let mut command = register_with("github.com", "head1");
+        if let Command::RegisterPr { pr_id: id, .. } = &mut command {
+            *id = pr_id.into();
+        }
+        exec(&mut s, agent(), command).unwrap();
+    }
 }
 #[test]
 fn the_owning_task_corrects_its_registration_of_the_same_pr() {
@@ -1417,7 +1439,7 @@ fn projection_wire_roundtrip_and_optional_fixture_export() {
     let mut s = fixture();
     exec(
         &mut s,
-        agent(),
+        orchestrator(),
         Command::PublishInformation {
             attachments: vec![AttachmentRef {
                 id: "fixture-file".into(),
@@ -1743,7 +1765,7 @@ fn partial_delivery_and_unread_information_do_not_replace_final_or_block() {
     .unwrap();
     exec(
         &mut s,
-        agent(),
+        orchestrator(),
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "info".into(),
@@ -1815,7 +1837,7 @@ fn free_text_response_with_or_without_options_and_attachment_bounds() {
     assert_eq!(
         exec(
             &mut s,
-            agent(),
+            orchestrator(),
             Command::PublishInformation {
                 attachments: vec![too_big],
                 interaction_id: "bad".into(),
@@ -2117,7 +2139,7 @@ fn information_read_is_shared_across_authorized_devices() {
     let mut s = fixture();
     exec(
         &mut s,
-        agent(),
+        orchestrator(),
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "i".into(),
@@ -2480,7 +2502,7 @@ fn unread_count_ignores_archived_tasks_like_the_inbox_does() {
     let mut s = fixture();
     exec(
         &mut s,
-        agent(),
+        orchestrator(),
         Command::PublishInformation {
             attachments: vec![],
             interaction_id: "info".into(),
@@ -2544,7 +2566,7 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     )
     .unwrap();
     let seen = s.revision;
-    exec(&mut s, agent(), info("i1")).unwrap();
+    exec(&mut s, orchestrator(), info("i1")).unwrap();
     assert!(s.revision > seen);
     // A snapshot older than unrelated information still decides this question once.
     run(&mut s, user(), "a1", seen, answer("Blue")).unwrap();
@@ -2553,12 +2575,12 @@ fn revision_checks_are_per_subject_and_invalidation_dates_decisions() {
     assert_eq!(lost.current_revision, Some(s.revision));
     let future = s.revision + 1;
     assert_eq!(
-        run(&mut s, agent(), "future", future, info("i2")).unwrap_err().code,
+        run(&mut s, orchestrator(), "future", future, info("i2")).unwrap_err().code,
         "stale_revision"
     );
     // Information neither blocks nor dates a Task decision.
     let seen = s.revision;
-    exec(&mut s, agent(), info("i3")).unwrap();
+    exec(&mut s, orchestrator(), info("i3")).unwrap();
     run(&mut s, agent(), "start", seen, Command::StartTask { task_id: "t".into() }).unwrap();
     // Invalidating a delivery dates every decision taken on it.
     register(&mut s);
@@ -2669,9 +2691,12 @@ fn variant_index(c: &Command) -> usize {
         Command::RequestClarification { .. } => 44,
         Command::RaiseProblem { .. } => 45,
         Command::TitleRequest { .. } => 46,
+        Command::AskQuestions { .. } => 47,
+        Command::HoldQuestions { .. } => 48,
+        Command::ReopenAnswer { .. } => 49,
     }
 }
-const COMMAND_KINDS: usize = 47;
+const COMMAND_KINDS: usize = 50;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2773,6 +2798,11 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RaiseProblem { attachments: vec![], interaction_id: "fresh-problem".into(),
             scope: Scope::Task { task_id: ids.task.into() }, body: "Stuck".into(), options: vec![],
             card: CardSpec::derived(CardKind::Problem, "Unblock the node") }, true),
+        (Command::AskQuestions { interaction_id: "fresh-group".into(), scope: Scope::Task { task_id: ids.task.into() },
+            recipient: Recipient::User, blocking: false, why: "Why".into(), questions: vec![] }, true),
+        (Command::HoldQuestions { interaction_id: "fresh-hold-group".into(), task_id: ids.task.into(),
+            agent_id: "a".into(), questions: vec![] }, true),
+        (Command::ReopenAnswer { interaction_id: ids.interaction.into() }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {
@@ -2966,7 +2996,7 @@ fn a_handed_schedule_launch_assigns_its_task_to_the_registered_session_once() {
     reject_unchanged(&mut state, Actor::System, Command::RecordScheduleLaunchHanded {
         run_id: "run-1".into(), session_id: Some("ab1234".into()), agent_id: Some("a".into()), finished_at: 104,
     }, "conflict");
-    exec(&mut state, agent(), Command::PublishInformation {
+    exec(&mut state, orchestrator(), Command::PublishInformation {
         attachments: vec![], interaction_id: "i".into(),
         scope: Scope::Task { task_id: "scheduled-task".into() }, recipient: Recipient::User, body: "Started".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
     }).unwrap();
@@ -3027,7 +3057,7 @@ fn a_delivery_sent_back_with_an_instruction_waits_on_its_agent_until_it_presents
             if message == &instruction.message("Back to you")));
         assert!(!waiting(&s, "d"), "{instruction:?}");
         assert_eq!((s.tasks[&"t".into()].state, s.task_handed_back(&"t".into())), (TaskState::Running, Some(instruction)));
-        exec(&mut s, agent(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
+        exec(&mut s, orchestrator(), Command::PublishInformation { attachments: vec![], interaction_id: "note".into(),
             scope: Scope::Task { task_id: "t".into() }, recipient: Recipient::User, body: "It uses the new API".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update") }).unwrap();
         assert!(!waiting(&s, "d"), "{instruction:?}: another word from the Agent never brings the delivery back");
         assert_eq!(s.task_handed_back(&"t".into()), Some(instruction));
@@ -3092,4 +3122,18 @@ fn always_applies_the_narrowest_kept_allow_rule_claude_suggested() {
         {"type": "addRules", "rules": [], "behavior": "allow", "destination": "localSettings"}])), None);
     assert_eq!(Hold::always_suggestion(&json!([])), None);
     assert_eq!(Hold::always_suggestion(&serde_json::Value::Null), None);
+}
+#[test]
+fn a_node_cannot_send_the_user_a_notice_but_alondra_and_the_orchestrator_can() {
+    let mut s = fixture();
+    let notice = |id: &str, recipient: Recipient| Command::PublishInformation {
+        attachments: vec![], interaction_id: id.into(), scope: Scope::Task { task_id: "t".into() }, recipient,
+        body: "Update".into(), card: crate::domain_v2::CardSpec::derived(crate::domain_v2::CardKind::Know, "Read the update"),
+    };
+    let error = exec(&mut s, agent(), notice("n", Recipient::User)).unwrap_err();
+    assert_eq!(error.code, "forbidden");
+    assert!(error.to_string().contains("send notices"), "{error}");
+    reject_unchanged(&mut s, agent(), notice("n", Recipient::User), "forbidden");
+    exec(&mut s, Actor::System, notice("system", Recipient::User)).unwrap();
+    exec(&mut s, orchestrator(), notice("orchestrator", Recipient::User)).unwrap();
 }

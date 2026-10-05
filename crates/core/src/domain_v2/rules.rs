@@ -53,7 +53,7 @@ fn kind_name(kind: CardKind) -> String {
 fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, blocking: bool) -> Result<()> {
     let kind = kind_name(card.kind);
     if card.kind == CardKind::Problem && source != Source::Problem {
-        return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask or publish_information instead");
+        return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask instead");
     }
     if !source.kinds().contains(&card.kind) {
         let allowed: Vec<String> = source.kinds().iter().map(|k| kind_name(*k)).collect();
@@ -101,6 +101,23 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
         return refuse("invalid_input", "card.blocks", "At most 16 targets");
     }
     Ok(())
+}
+/// The cards of several questions asked together: 2 to 4 that each stand on their own.
+fn group_cards(group: &InteractionId, why: &str, questions: &[GroupQuestion]) -> Result<Vec<(InteractionId, CardSpec, Vec<QuestionOption>)>> {
+    id(&group.0)?;
+    if !(2..=QuestionGroup::MAX).contains(&questions.len()) {
+        return refuse("invalid_input", "questions", &format!("Ask 2 to {} questions together, or one question with options", QuestionGroup::MAX));
+    }
+    questions.iter().enumerate().map(|(at, question)| {
+        if question.need.trim().is_empty() || question.need.contains('\n') {
+            return refuse("invalid_input", "card.need", "Every question is one clear line that stands on its own");
+        }
+        let own_why = if question.why.trim().is_empty() { why } else { question.why.as_str() };
+        let mut card = CardSpec::new(CardKind::Decide, question.need.trim()).why(own_why.trim());
+        card.recommended = question.recommended.clone();
+        card.group = Some(QuestionGroup { id: group.0.clone(), index: (at + 1) as u8, total: questions.len() as u8 });
+        Ok((QuestionGroup::card_id(group, at + 1), card, question.options.clone()))
+    }).collect()
 }
 /// R19: a decision offers 2–8 short distinct options, at most one of them recommended.
 fn decide_options(options: &[QuestionOption]) -> Result<()> {
@@ -431,7 +448,7 @@ impl DomainState {
                     Some(t) if t.state.terminal() && !notice => refuse(
                         "task_not_active",
                         "scope.task_id",
-                        &format!("Task {} is {}: it accepts only a closing notice. Send publish_information, or ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.state == TaskState::Cancelled { "cancelled" } else { "done" }),
+                        &format!("Task {} is {}: it accepts only a closing notice. Ask the orchestrator for a new Task", t.id, if t.archived { "archived" } else if t.state == TaskState::Cancelled { "cancelled" } else { "done" }),
                     ),
                     Some(_) => Ok(Author::Agent { agent_id: agent_id.clone() }),
                     None if !working && notice && matches!(scope, Scope::Orchestrator { .. }) => {
@@ -440,7 +457,7 @@ impl DomainState {
                     None if !working => refuse(
                         "no_task",
                         "scope",
-                        "This node has no Task: it can only inform with publish_information. Ask the orchestrator to assign you a Task first",
+                        "This node has no Task: it sends no cards. Ask the orchestrator to assign you a Task first",
                     ),
                     None => refuse(
                         "not_assigned",
@@ -483,6 +500,23 @@ impl DomainState {
             i.revision = self.revision + 1;
         }
     }
+    /// The questions asked together with `i`, in the order they were asked; just `i` for a question
+    /// asked alone.
+    pub fn group_members<'a>(&'a self, i: &'a Interaction) -> Vec<&'a Interaction> {
+        let Some(group) = &i.card.group else { return vec![i] };
+        let mut members: Vec<&Interaction> = self.interactions.values()
+            .filter(|other| other.author == i.author && other.card.group.as_ref().is_some_and(|g| g.id == group.id))
+            .collect();
+        members.sort_by_key(|other| other.card.group.as_ref().map_or(0, |g| g.index));
+        members
+    }
+    fn answered_question(i: &Interaction) -> bool {
+        matches!(&i.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. })
+    }
+    /// Every question of the group has its answer: the author is given them all together.
+    pub fn group_complete(&self, i: &Interaction) -> bool {
+        self.group_members(i).iter().all(|member| !member.withdrawn && Self::answered_question(member))
+    }
     /// R8: the same notice, still unread, from the same author to the same place.
     fn repeated_notice(&self, author: &Author, scope: &Scope, to: &Recipient, body: &str, card: &CardSpec, source: Source) -> Option<InteractionId> {
         if source != Source::Information {
@@ -515,7 +549,7 @@ impl DomainState {
             Some(x) if card.replaces.as_ref() != Some(&x.id) => refuse(
                 "clarification_pending",
                 "card.replaces",
-                &format!("The user asked you to clarify card {}: send its corrected version with card.replaces = \"{}\", answer in text with publish_information, or withdraw it", x.id, x.id),
+                &format!("The user asked you to clarify card {}: send its corrected version with card.replaces = \"{}\", or withdraw it", x.id, x.id),
             ),
             _ => Ok(()),
         }
@@ -553,6 +587,7 @@ impl DomainState {
         let open = self.interactions.values().find(|i| {
             &i.author == author && i.blocking && i.card.kind.one_at_a_time() && self.open(i)
                 && card.replaces.as_ref() != Some(&i.id)
+                && !(card.group.is_some() && card.group.as_ref().map(|g| &g.id) == i.card.group.as_ref().map(|g| &g.id))
         });
         match open {
             Some(x) => refuse(
@@ -1149,9 +1184,11 @@ impl DomainState {
             | Command::CancelTask { task_id }
             | Command::ReopenTask { task_id }
             | Command::ArchiveTask { task_id, .. }
-            | Command::HoldHook { task_id, .. } => task(task_id),
+            | Command::HoldHook { task_id, .. }
+            | Command::HoldQuestions { task_id, .. } => task(task_id),
             Command::PublishInformation { scope, .. }
             | Command::AskQuestion { scope, .. }
+            | Command::AskQuestions { scope, .. }
             | Command::RequestAction { scope, .. }
             | Command::RaiseProblem { scope, .. } => match scope {
                 Scope::Task { task_id } => task(task_id),
@@ -1161,6 +1198,7 @@ impl DomainState {
             | Command::Withdraw { interaction_id }
             | Command::RequestClarification { interaction_id, .. }
             | Command::AnswerQuestion { interaction_id, .. }
+            | Command::ReopenAnswer { interaction_id }
             | Command::LinkInteractionSubject { interaction_id, .. }
             | Command::SubmitFeedback {
                 presentation_id: interaction_id,
@@ -1457,13 +1495,15 @@ impl DomainState {
                 system(actor)?;
                 self.schedule
                     .record_failed(run_id, reason.clone(), *finished_at)?;
-                if let Some(task) = self.schedule.runs[run_id].task_id.as_ref().and_then(|id| self.tasks.get(id)).cloned() {
+                let open_task = self.schedule.runs[run_id].task_id.as_ref().and_then(|id| self.tasks.get(id))
+                    .filter(|task| !task.state.terminal() && !task.archived).cloned();
+                if let Some(task) = open_task {
                     effects.push(DomainEffect::ScheduleLaunchFailed {
                         task_id: task.id.clone(),
                         title: task.title.clone(),
                         reason: reason.trim().to_owned(),
                     });
-                    let problem = InteractionId(format!("problem-launch-{}", run_id.0));
+                    let problem = InteractionId(format!("{LAUNCH_PROBLEM_PREFIX}{}", run_id.0));
                     let card = CardSpec::new(CardKind::Problem, clip(&format!("Scheduled task \"{}\" could not start", task.title), CardSpec::NEED_MAX))
                         .why(clip(reason, CardSpec::WHY_MAX))
                         .content(ContentKind::Diagnosis, reason.trim());
@@ -1476,7 +1516,10 @@ impl DomainState {
                         false,
                         &[],
                         InteractionPayload::Question {
-                            options: vec![QuestionOption { id: "seen".into(), label: "Got it".into(), description: Some("It stays not started; ask the orchestrator to start it again".into()), inputs: vec![] }],
+                            options: vec![
+                                QuestionOption { id: LAUNCH_RETRY_OPTION.into(), label: "Try again".into(), description: Some("Launch this schedule once more".into()), inputs: vec![] },
+                                QuestionOption { id: "seen".into(), label: "Skip it".into(), description: Some("It stays not started; ask the orchestrator to start it again".into()), inputs: vec![] },
+                            ],
                             answer: None,
                         },
                         &card,
@@ -1687,6 +1730,9 @@ impl DomainState {
                 body,
                 card,
             } => {
+                if matches!(actor, Actor::Agent { .. }) && matches!(recipient, Recipient::User) {
+                    return refuse("forbidden", "card.kind", NODES_DO_NOT_NOTIFY);
+                }
                 if let Some(existing) = self.insert_interaction(
                     actor,
                     interaction_id,
@@ -1777,6 +1823,68 @@ impl DomainState {
                     });
                 }
             }
+            Command::AskQuestions { interaction_id, scope, recipient, blocking, why, questions } => {
+                for (card_id, card, options) in group_cards(interaction_id, why, questions)? {
+                    validate_options(&options)?;
+                    self.insert_interaction(
+                        actor, &card_id, scope, recipient, &card.need, *blocking, &[],
+                        InteractionPayload::Question { options, answer: None }, &card, Source::Question,
+                    )?;
+                    created.push(card_id.0.clone());
+                    if matches!(recipient, Recipient::User) {
+                        effects.push(DomainEffect::NotifyUser {
+                            task_id: match scope {
+                                Scope::Task { task_id } => Some(task_id.clone()),
+                                Scope::Orchestrator { .. } => None,
+                            },
+                            interaction_id: card_id.clone(),
+                        });
+                    }
+                    if matches!(recipient, Recipient::Orchestrator) {
+                        effects.push(DomainEffect::NotifyOrchestrator { interaction_id: Some(card_id.clone()), request_id: None });
+                    }
+                }
+            }
+            Command::HoldQuestions { interaction_id, task_id, agent_id, questions } => {
+                if !matches!(actor, Actor::System) {
+                    return fail("forbidden", "Only Alondra holds a hook");
+                }
+                let scope = Scope::Task { task_id: task_id.clone() };
+                self.assigned(&Actor::Agent { agent_id: agent_id.clone() }, task_id)?;
+                for (card_id, card, options) in group_cards(interaction_id, "", questions)? {
+                    validate_options(&options)?;
+                    self.insert_interaction(
+                        &Actor::Agent { agent_id: agent_id.clone() }, &card_id, &scope, &Recipient::User, &card.need, true, &[],
+                        InteractionPayload::Question { options, answer: None }, &card, Source::Hold,
+                    )?;
+                    self.holds.insert(card_id.clone(), Hold::Question);
+                    created.push(card_id.0.clone());
+                    effects.push(DomainEffect::NotifyUser { task_id: Some(task_id.clone()), interaction_id: card_id.clone() });
+                }
+            }
+            Command::ReopenAnswer { interaction_id } => {
+                user(actor)?;
+                let i = self.interaction(interaction_id)?.clone();
+                if i.card.group.is_none() {
+                    return refuse("invalid_action_for_kind", "interaction_id", "Only a question asked together with others can be reopened");
+                }
+                if !Self::answered_question(&i) || i.withdrawn {
+                    return refuse("invalid_action_for_kind", "interaction_id", "This question has no answer to take back");
+                }
+                if self.group_complete(&i) {
+                    return refuse("question_already_answered", "interaction_id", "Every question is answered and its author has the answers: they are final");
+                }
+                if let Scope::Task { task_id } = &i.scope {
+                    self.active(task_id)?;
+                }
+                let revision = self.revision + 1;
+                let i = self.interactions.get_mut(interaction_id).unwrap();
+                match &mut i.payload {
+                    InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => *answer = None,
+                    _ => unreachable!(),
+                }
+                i.revision = revision;
+            }
             Command::HoldHook {
                 interaction_id,
                 task_id,
@@ -1823,7 +1931,11 @@ impl DomainState {
                     (Author::System, Actor::System) => {}
                     _ => return refuse("forbidden", "interaction_id", "Only a card's author withdraws it: withdraw only your own cards"),
                 }
-                if matches!(&i.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. }) {
+                if i.card.group.is_some() {
+                    if self.group_complete(i) {
+                        return refuse("question_already_answered", "interaction_id", "The user answered every question: they are final, act on the answers");
+                    }
+                } else if Self::answered_question(i) {
                     return refuse("question_already_answered", "interaction_id", "The user already answered this card: it is final, act on the answer");
                 }
                 if matches!(&i.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
@@ -1835,7 +1947,17 @@ impl DomainState {
                             if self.tasks.get(task_id).is_some_and(|t| t.final_presentation.as_ref() == Some(interaction_id)) => Some(task_id.clone()),
                         _ => None,
                     };
+                    let current = self.interactions[interaction_id].clone();
+                    let siblings: Vec<InteractionId> = self.group_members(&current).iter().map(|member| member.id.clone()).collect();
                     self.retire(interaction_id);
+                    for sibling in &siblings {
+                        self.retire(sibling);
+                        if let Some(InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. }) =
+                            self.interactions.get_mut(sibling).map(|member| &mut member.payload)
+                        {
+                            *answer = None;
+                        }
+                    }
                     if let Some(task) = presented {
                         self.invalidate(&task);
                         self.tasks.get_mut(&task).unwrap().final_presentation = None;
@@ -1858,7 +1980,7 @@ impl DomainState {
                     return refuse("invalid_action_for_kind", "interaction_id", "This card is no longer open: there is nothing to clarify");
                 }
                 let message = format!(
-                    "The user asks you to clarify card {interaction_id} ({}){}. Send its corrected version with card.replaces = \"{interaction_id}\", answer in text with publish_information, or withdraw it.",
+                    "The user asks you to clarify card {interaction_id} ({}){}. Send its corrected version with card.replaces = \"{interaction_id}\", or withdraw it.",
                     match reason { ClarificationReason::Unclear => "it is unclear", ClarificationReason::Contradicts => "it contradicts something", ClarificationReason::MissingContext => "it lacks context" },
                     text.as_ref().map(|t| format!(": {}", t.trim())).unwrap_or_default(),
                 );
@@ -1878,7 +2000,7 @@ impl DomainState {
             }
             Command::RaiseProblem { attachments, interaction_id, scope, body, options, card } => {
                 if !matches!(actor, Actor::System | Actor::Orchestrator { .. }) {
-                    return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask or publish_information instead");
+                    return refuse("forbidden", "card.kind", "Only Alondra and the orchestrator raise a problem: describe it with ask instead");
                 }
                 validate_options(options)?;
                 self.insert_interaction(
@@ -1976,11 +2098,12 @@ impl DomainState {
                 if i.card.kind == CardKind::Propose && option_id == PROPOSAL_ACCEPTED {
                     self.start_proposal(interaction_id, created, effects);
                 }
-                let i = self.interactions.get_mut(interaction_id).unwrap();
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
+                let complete = self.group_complete(&self.interactions[interaction_id]);
+                let i = self.interactions.get_mut(interaction_id).unwrap();
                 match (i.author.clone(), i.scope.clone()) {
-                    _ if self.holds.contains_key(interaction_id) => {}
+                    _ if self.holds.contains_key(interaction_id) || !complete => {}
                     (Author::Agent { .. }, Scope::Task { task_id }) => {
                         self.notify(&task_id, Some(interaction_id.clone()), "Question answered", effects)?;
                     }
@@ -2179,6 +2302,16 @@ impl DomainState {
             } => {
                 self.assigned(actor, task_id)?;
                 id(&pr_id.0)?;
+                if !crate::views::id::valid(&pr_id.0) {
+                    return refuse(
+                        "invalid_input",
+                        "pr_id",
+                        &format!(
+                            "pr_id \"{}\" cannot be addressed by the apps: use a short id such as \"pr-{number}\" (letters, digits, - and _) or github.com/owner/repo#N in lowercase",
+                            pr_id.0
+                        ),
+                    );
+                }
                 canonical_pr(host, repository, *number)?;
                 if !host.contains('.') {
                     return refuse(
@@ -2659,7 +2792,12 @@ impl DomainState {
                 self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
             }
             Command::CancelTask { task_id } => {
-                self.manager(actor)?;
+                let unstarted = self.tasks.get(task_id).is_some_and(|task| {
+                    task.state == TaskState::NotStarted && !task.started && task.agent_id.is_none()
+                });
+                if !(matches!(actor, Actor::System) && unstarted) {
+                    self.manager(actor)?;
+                }
                 self.active(task_id)?;
                 self.invalidate(task_id);
                 self.tasks.get_mut(task_id).unwrap().state = TaskState::Cancelled;

@@ -29,9 +29,11 @@ pub enum Verb {
     SchedDelete,
     SchedSave,
     NewRequest,
+    /// Take back an answer to one of the questions asked together with this one.
+    Retake,
 }
 impl Verb {
-    pub const ALL: [Self; 27] = [
+    pub const ALL: [Self; 28] = [
         Self::Ans,
         Self::Read,
         Self::Accept,
@@ -59,6 +61,7 @@ impl Verb {
         Self::SchedDelete,
         Self::SchedSave,
         Self::NewRequest,
+        Self::Retake,
     ];
     pub fn as_str(self) -> &'static str {
         match self {
@@ -89,6 +92,7 @@ impl Verb {
             Self::SchedDelete => "sched_delete",
             Self::SchedSave => "sched_save",
             Self::NewRequest => "new_request",
+            Self::Retake => "retake",
         }
     }
     fn parse(value: &str) -> Option<Self> {

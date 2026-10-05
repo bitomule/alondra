@@ -375,12 +375,24 @@ async fn dispatch_pending(
         fail_run(domain, run_id, crate::node_reports::MODS_NOT_LOADED.into())?;
         return Ok(());
     };
-    let agent_id = AgentId(session.clone());
+    hand_over(domain, run_id, &intent.name, &session, &settings)
+}
+
+/// The launched session is known: it becomes the run's Agent, its bearer is written into the
+/// settings file it reads, and the run is handed.
+fn hand_over(
+    domain: &DomainRuntime,
+    run_id: &ScheduleRunId,
+    name: &str,
+    session: &str,
+    settings: &Path,
+) -> Result<()> {
+    let agent_id = AgentId(session.to_owned());
     match execute_system(
         domain,
         Command::RegisterAgent {
             agent_id: agent_id.clone(),
-            name: intent.name.clone(),
+            name: name.to_owned(),
         },
     ) {
         Ok(_) => (),
@@ -388,18 +400,18 @@ async fn dispatch_pending(
         Err(error) => return Err(error.into()),
     }
     let bound = domain
-        .bind_agent(&session)
+        .bind_agent(session)
         .map_err(anyhow::Error::from)
         .and_then(|capability| {
             crate::domain_sessions::bind(
-                &settings,
+                settings,
                 &agent_id,
                 capability.expose_for_child_environment(),
             )
         });
     if let Err(error) = bound {
-        domain.revoke_agent(&session)?;
-        crate::domain_sessions::remove(&settings);
+        domain.revoke_agent(session)?;
+        crate::domain_sessions::remove(settings);
         fail_run(
             domain,
             run_id,
@@ -411,7 +423,7 @@ async fn dispatch_pending(
         domain,
         Command::RecordScheduleLaunchHanded {
             run_id: run_id.clone(),
-            session_id: Some(session.clone()),
+            session_id: Some(session.to_owned()),
             agent_id: Some(agent_id),
             finished_at: alondra_core::now_millis(),
         },
@@ -419,8 +431,8 @@ async fn dispatch_pending(
     match handed {
         Ok(_) => (),
         Err(error) if ordinary_conflict(&error) => {
-            domain.revoke_agent(&session)?;
-            crate::domain_sessions::remove(&settings);
+            domain.revoke_agent(session)?;
+            crate::domain_sessions::remove(settings);
             fail_run(
                 domain,
                 run_id,
@@ -433,6 +445,129 @@ async fn dispatch_pending(
         Err(error) => return Err(error.into()),
     }
     Ok(())
+}
+
+fn settings_path(home: &Path, key: &str) -> Result<PathBuf> {
+    let path = home.join("runtime/sessions").join(format!("{key}.json"));
+    if !path.exists() {
+        return crate::domain_sessions::prepare(home, key);
+    }
+    Ok(path)
+}
+
+/// A launch Alondra died in the middle of: Claude may be running with no bearer. Its mod
+/// reports the launch key again when Alondra is back, so the session is looked for; found, it
+/// gets its Agent and bearer, and when it never shows up the run fails and says so.
+async fn recover_uncertain(
+    domain: &DomainRuntime,
+    home: &Path,
+    run_id: &ScheduleRunId,
+    launcher: &impl crate::orchestrate::Launcher,
+) -> Result<()> {
+    let state = domain.state()?;
+    let Some((run, launch)) = state
+        .schedule
+        .runs
+        .get(run_id)
+        .filter(|run| run.state == ScheduleRunState::Sent)
+        .and_then(|run| Some((run, run.launch.as_ref()?)))
+        .filter(|(_, launch)| launch.state == ScheduleLaunchState::Uncertain)
+    else {
+        return Ok(());
+    };
+    let name = launch.intent.name.clone();
+    let settings = settings_path(home, &run_id.0)?;
+    match domain.live.mods.wait_launched(&run_id.0, launcher.mods_deadline()).await {
+        Some(session) => hand_over(domain, run_id, &name, &session, &settings),
+        None => {
+            launcher.stop(&name).await;
+            crate::domain_sessions::remove(&settings);
+            let title = run.definition_snapshot.as_ref().map_or(name.as_str(), |snapshot| snapshot.title.as_str());
+            fail_run(
+                domain,
+                run_id,
+                format!("The scheduled run \"{title}\" did not start properly: Alondra stopped while launching it and the session never reported back. Try it again."),
+            )
+        }
+    }
+}
+
+/// The user's answer to a scheduled run that did not start. "Try again" launches its schedule
+/// once more (the retry's run id derives from the failed one, so answering twice launches once);
+/// either way the failed run's Task never started and is cancelled, so it does not wait forever.
+fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
+    use alondra_core::domain_v2::{InteractionPayload, LAUNCH_PROBLEM_PREFIX, LAUNCH_RETRY_OPTION};
+    let state = domain.state()?;
+    for (id, interaction) in &state.interactions {
+        let Some(failed) = id.0.strip_prefix(LAUNCH_PROBLEM_PREFIX) else { continue };
+        let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
+        if interaction.withdrawn {
+            continue;
+        }
+        let Some(run) = state.schedule.runs.get(&ScheduleRunId::from(failed)) else { continue };
+        let retried = if answer.option_id == LAUNCH_RETRY_OPTION {
+            retry_launch(domain, home, &state, failed, run)
+        } else {
+            true
+        };
+        let Some(task) = run.task_id.as_ref().filter(|_| retried) else { continue };
+        match execute_system(domain, Command::CancelTask { task_id: task.clone() }) {
+            Ok(_) => (),
+            Err(StoreError::Domain(error)) if error.code == "task_not_active" || ordinary_conflict_code(&error.code) => (),
+            Err(error) => log!("could not cancel the unstarted Task of scheduled run {failed}: {error}"),
+        }
+    }
+    Ok(())
+}
+
+fn ordinary_conflict_code(code: &str) -> bool {
+    matches!(code, "conflict" | "not_found" | "stale_revision")
+}
+
+/// Whether the schedule is launching again: the retry run exists or was just claimed.
+fn retry_launch(
+    domain: &DomainRuntime,
+    home: &Path,
+    state: &DomainState,
+    failed: &str,
+    run: &alondra_core::domain_v2::ScheduleRun,
+) -> bool {
+    let retry: ScheduleRunId = format!("retry-{failed}").into();
+    if state.schedule.runs.contains_key(&retry) {
+        return true;
+    }
+    let Some(schedule) = state
+        .schedule
+        .schedules
+        .get(&run.schedule_id)
+        .filter(|schedule| schedule.deleted_at.is_none())
+    else {
+        return false;
+    };
+    let now = alondra_core::now_millis();
+    let claimed = execute_system(
+        domain,
+        Command::ClaimScheduleRun {
+            schedule_id: schedule.id.clone(),
+            run_id: retry.clone(),
+            origin: ScheduleRunOrigin::Manual,
+            now,
+            next_after_now: next_after(schedule, now),
+            expected_schedule_revision: None,
+        },
+    );
+    match claimed {
+        Ok(_) => {
+            if let Err(error) = finish_claim(domain, home, &retry) {
+                log!("retry {retry} of scheduled run {failed} could not be prepared: {error:#}");
+            }
+            true
+        }
+        Err(error) => {
+            log!("retry of scheduled run {failed} refused: {error}");
+            false
+        }
+    }
 }
 
 pub(crate) async fn run_cycle(
@@ -452,6 +587,24 @@ pub(crate) async fn run_cycle(
     for run_id in claimed {
         finish_claim(domain, home, &run_id)?;
     }
+    let uncertain: Vec<_> = domain
+        .state()?
+        .schedule
+        .runs
+        .values()
+        .filter(|run| {
+            run.launch
+                .as_ref()
+                .is_some_and(|launch| launch.state == ScheduleLaunchState::Uncertain)
+        })
+        .map(|run| run.id.clone())
+        .collect();
+    for run_id in uncertain {
+        if let Err(error) = recover_uncertain(domain, home, &run_id, launcher).await {
+            log!("could not recover scheduled run {run_id}: {error:#}");
+        }
+    }
+    answer_failed_launches(domain, home)?;
     let paused = domain.live.usage_pause.is_active();
     if due_enabled && !paused {
         let now = alondra_core::now_millis();
@@ -637,11 +790,12 @@ pub(crate) async fn run(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::{Schedule, ScheduleFrequency};
+    use alondra_core::domain_v2::{InteractionId, InteractionPayload, Schedule, ScheduleFrequency};
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
     const SESSION: &str = "ab1234cd-0000-4000-8000-000000000000";
+    const FOUND_SESSION: &str = "cd5678ef-0000-4000-8000-000000000000";
 
     struct FakeLauncher(Mutex<Vec<(String, Vec<String>)>>);
     impl crate::orchestrate::Launcher for FakeLauncher {
@@ -1149,10 +1303,117 @@ mod tests {
             run.launch.as_ref().unwrap().state,
             ScheduleLaunchState::Uncertain
         );
+        crate::domain_sessions::prepare(&fixture.home, "uncertain").unwrap();
+        restarted.live.mods.loaded_for(FOUND_SESSION, Some("uncertain"));
         run_cycle(&restarted, &fixture.home, false, &launcher)
             .await
             .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1);
+        assert_eq!(*launcher.calls.lock().unwrap(), 1, "recovery never launches Claude again");
+        let state = restarted.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("uncertain")];
+        let launch = run.launch.as_ref().unwrap();
+        assert_eq!(launch.state, ScheduleLaunchState::Handed);
+        assert_eq!(launch.session_id.as_deref(), Some(FOUND_SESSION));
+        let task = &state.tasks[run.task_id.as_ref().unwrap()];
+        assert_eq!(task.agent_id.as_ref().map(|id| id.0.as_str()), Some(FOUND_SESSION));
+        let bound = std::fs::read(fixture.home.join("runtime/sessions/uncertain.json")).unwrap();
+        let bound: serde_json::Value = serde_json::from_slice(&bound).unwrap();
+        assert_eq!(bound["env"]["ALONDRA_DOMAIN_AGENT"], FOUND_SESSION);
+        assert_eq!(bound["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().unwrap().len(), 64);
+    }
+
+    #[tokio::test]
+    async fn an_uncertain_launch_whose_task_was_closed_fails_quietly_and_never_stops_the_runner() {
+        let fixture = Fixture::new();
+        fixture.claim("closed");
+        finish_claim(&fixture.domain, &fixture.home, &"closed".into()).unwrap();
+        execute_system(
+            &fixture.domain,
+            Command::ClaimScheduleLaunch { run_id: "closed".into(), now: alondra_core::now_millis() },
+        )
+        .unwrap();
+        let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed")].task_id.clone().unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
+        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let launcher = WithoutMods(Mutex::new(vec![]));
+        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+
+        let state = restarted.state().unwrap();
+        assert_eq!(state.schedule.runs[&ScheduleRunId::from("closed")].state, ScheduleRunState::Failed);
+        assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-closed")), "no Problem on a closed Task");
+    }
+
+    #[tokio::test]
+    async fn an_uncertain_launch_that_never_reports_is_stopped_failed_and_retried_once_on_request() {
+        let fixture = Fixture::new();
+        fixture.claim("lost");
+        finish_claim(&fixture.domain, &fixture.home, &"lost".into()).unwrap();
+        execute_system(
+            &fixture.domain,
+            Command::ClaimScheduleLaunch { run_id: "lost".into(), now: alondra_core::now_millis() },
+        )
+        .unwrap();
+        crate::domain_sessions::prepare(&fixture.home, "lost").unwrap();
+        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let launcher = WithoutMods(Mutex::new(vec![]));
+        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+
+        let state = restarted.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("lost")];
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
+        assert!(run.error.as_deref().unwrap().contains("did not start properly"));
+        assert_eq!(launcher.0.lock().unwrap().len(), 1, "the unseen session is stopped");
+        assert!(settings_files(&fixture.home).is_empty());
+        let problem = &state.interactions[&InteractionId::from("problem-launch-lost")];
+        let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem asks") };
+        assert_eq!(
+            options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(),
+            ["retry", "seen"]
+        );
+
+        let answer = |option: &str, id: &str| {
+            let state = restarted.state().unwrap();
+            restarted
+                .execute(
+                    &Actor::User { user_id: "u".into() },
+                    &CommandEnvelope {
+                        protocol_version: PROTOCOL_VERSION,
+                        data_epoch: state.data_epoch,
+                        command_id: id.to_owned().into(),
+                        expected_revision: state.revision,
+                        command: Command::AnswerQuestion {
+                            attachments: vec![],
+                            interaction_id: "problem-launch-lost".into(),
+                            option_id: option.into(),
+                            inputs: BTreeMap::new(),
+                        },
+                    },
+                    None,
+                    || Ok(()),
+                )
+                .unwrap();
+        };
+        answer("retry", "answer-retry");
+        let relaunch = CountingLauncher { calls: Mutex::new(0), fail: false };
+        restarted.live.mods.loaded_for(SESSION, Some("retry-lost"));
+        run_cycle(&restarted, &fixture.home, false, &relaunch).await.unwrap();
+        run_cycle(&restarted, &fixture.home, false, &relaunch).await.unwrap();
+        assert_eq!(*relaunch.calls.lock().unwrap(), 1, "the retry launches the schedule once");
+        let state = restarted.state().unwrap();
+        let retried = &state.schedule.runs[&ScheduleRunId::from("retry-lost")];
+        assert_eq!(retried.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
+        let original = state.schedule.runs[&ScheduleRunId::from("lost")].task_id.as_ref().unwrap();
+        assert_eq!(
+            state.tasks[original].state,
+            alondra_core::domain_v2::TaskState::Cancelled,
+            "the failed run's never-started Task does not wait forever"
+        );
+        assert_ne!(retried.task_id.as_ref(), Some(original));
+        assert_ne!(
+            state.tasks[retried.task_id.as_ref().unwrap()].state,
+            alondra_core::domain_v2::TaskState::Cancelled
+        );
     }
 
     #[tokio::test]
@@ -1312,10 +1573,19 @@ mod tests {
                 .state,
             ScheduleLaunchState::Uncertain
         );
-        run_cycle(&restarted, &fixture.home, false, &launcher)
+        rusqlite::Connection::open(fixture.home.join("domain.db"))
+            .unwrap()
+            .execute_batch("DROP TRIGGER reject_failed_marker;")
+            .unwrap();
+        let recovery = WithoutMods(Mutex::new(vec![]));
+        run_cycle(&restarted, &fixture.home, false, &recovery)
             .await
             .unwrap();
-        assert_eq!(*launcher.calls.lock().unwrap(), 1);
+        assert_eq!(*launcher.calls.lock().unwrap(), 1, "recovery never launches Claude again");
+        assert_eq!(
+            restarted.state().unwrap().schedule.runs[&ScheduleRunId::from("rollback")].state,
+            ScheduleRunState::Failed
+        );
     }
 
     struct LoadingLauncher<'a>(&'a DomainRuntime, Mutex<usize>);

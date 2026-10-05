@@ -72,12 +72,13 @@ final class CardDetailFeatureTests: XCTestCase {
     @MainActor
     func testAPullRequestsDiffOpensItsOwnScreenFromTheContent() async throws {
         let store = store(try Fixtures.card(Fixtures.pullRequestID))
-        let reference = try XCTUnwrap(store.state.subject?.sections.first { $0.id == "content" }?.items.compactMap {
+        let reference = try XCTUnwrap(store.state.subject?.sections.first { $0.id == "diff" }?.items.compactMap {
             if case .contentRef(let reference) = $0 { reference } else { nil }
         }.first)
 
         XCTAssertEqual(CardDetailFeature.Subject.diffKey(of: reference), .pullRequest("github.com/example/repo#12"))
-        XCTAssertEqual(store.state.subject?.sections.map(\.id), ["content", "context"])
+        XCTAssertEqual(store.state.subject?.sections.map(\.id), ["checks", "diff", "description", "context"])
+        XCTAssertEqual(store.state.subject?.title, "Add the compact schedule editor")
     }
 
     @MainActor

@@ -34,6 +34,9 @@ public struct MacServiceWorkspace<AccountContent: View>: View {
                     .transition(.asymmetric(insertion: .opacity.combined(with: .offset(y: 6)), removal: .opacity))
             }
             .animation(.smooth(duration: 0.22), value: presentation.selection)
+            .safeAreaInset(edge: .top, spacing: 0) {
+                UsageExhaustedWindowBanner(usage: presentation.sidebarDocument?.status.usageExhausted)
+            }
             .overlay(alignment: .top) { DeliveryBanner(store: store) }
             .overlay(alignment: .bottom) { MacNoticeToast(store: store) }
         }
@@ -280,13 +283,12 @@ public struct MacServiceDetail: View {
     }
 
     private func showContent(of document: ViewDocument, scrollTo proxy: ScrollViewProxy) {
-        let content = document.sections.first { $0.id == "content" }
-        let diff = content?.items.lazy.compactMap { item -> ContentRef? in
+        let diff = document.sections.lazy.flatMap(\.items).compactMap { item -> ContentRef? in
             if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
         }.first
         if let diff {
             presentation.send(.contentRequested(diff))
-        } else if content != nil {
+        } else if document.sections.contains(where: { $0.id == "content" }) {
             withAnimation(.smooth) { proxy.scrollTo("content", anchor: .top) }
         }
     }

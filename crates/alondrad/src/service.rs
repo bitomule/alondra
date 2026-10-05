@@ -1476,6 +1476,23 @@ impl Service {
         with_sound: bool,
         payload_for_device: impl Fn(&str) -> Value,
     ) -> Result<(usize, usize)> {
+        self.broadcast_to_devices(PushDelivery::Alert, with_sound, payload_for_device).await
+    }
+
+    /// A silent wake of the app on every enrolled phone; it shows nothing by itself.
+    pub async fn broadcast_background_push(
+        &self,
+        payload_for_device: impl Fn(&str) -> Value,
+    ) -> Result<(usize, usize)> {
+        self.broadcast_to_devices(PushDelivery::Background, false, payload_for_device).await
+    }
+
+    async fn broadcast_to_devices(
+        &self,
+        delivery: PushDelivery,
+        with_sound: bool,
+        payload_for_device: impl Fn(&str) -> Value,
+    ) -> Result<(usize, usize)> {
         let mut epoch = None;
         let mut attempted = 0;
         let mut accepted = 0;
@@ -1491,7 +1508,7 @@ impl Service {
             attempted += 1;
             let payload = payload_for_device(id);
             if let Err(error) = self
-                .send_device_push(id, device, &binding, &payload, with_sound, &mut epoch)
+                .send_device_push(id, device, &binding, &payload, with_sound, delivery, &mut epoch)
                 .await
             {
                 log!("service push for {id} failed: {error:#}");
@@ -1517,7 +1534,7 @@ impl Service {
             "title":"Prueba cifrada de Alondra",
             "body":"Diagnóstico enviado desde tu Mac. Si lees este texto, tu dispositivo ha descifrado la notificación."
         }}, "alondra": {}});
-        self.send_device_push(id, &device, &binding, &payload, true, &mut None)
+        self.send_device_push(id, &device, &binding, &payload, true, PushDelivery::Alert, &mut None)
             .await
     }
 
@@ -1568,14 +1585,15 @@ impl Service {
         binding: &str,
         payload: &Value,
         with_sound: bool,
+        delivery: PushDelivery,
         epoch: &mut Option<[u8; 16]>,
     ) -> Result<()> {
         self.require_device_approval(id, device)?;
-        let (payload, with_sound) =
-            self.journal
-                .quiet_hours(id)?
-                .apply(payload, with_sound, local_minutes());
-        let body = self.encode_push_or_minimal(id, device, binding, &payload, with_sound)?;
+        let (payload, with_sound) = match delivery {
+            PushDelivery::Alert => self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes()),
+            PushDelivery::Background => (payload.clone(), false),
+        };
+        let mut body = self.encode_push_or_minimal(id, device, binding, &payload, with_sound, delivery)?;
         let current_epoch = match *epoch {
             Some(epoch) => epoch,
             None => {
@@ -1588,15 +1606,27 @@ impl Service {
         if self.journal.push_binding(id)?.as_deref() != Some(binding) {
             bail!("device push binding changed while preparing delivery");
         }
-        let response = self
-            .signed(Method::POST, "/v1/mac/push", body, &current_epoch)
-            .await?;
-        let status = response.status();
-        if status != reqwest::StatusCode::ACCEPTED {
+        loop {
+            let response = self
+                .signed(Method::POST, "/v1/mac/push", body.clone(), &current_epoch)
+                .await?;
+            let status = response.status();
+            if status == reqwest::StatusCode::ACCEPTED {
+                return Ok(());
+            }
             let code = relay_error_code(&response.bytes().await.unwrap_or_default());
+            if status == reqwest::StatusCode::BAD_REQUEST && code == "invalid_push" {
+                match without_relay_extensions(&body)? {
+                    Some(older) if delivery == PushDelivery::Alert => {
+                        body = older;
+                        continue;
+                    }
+                    Some(_) => bail!("the relay predates background pushes: deploy the current relay so answered cards leave the phone"),
+                    None => {}
+                }
+            }
             bail!("relay did not accept encrypted push (HTTP {status}, error {code})");
         }
-        Ok(())
     }
 
     /// Content that does not fit Apple's encrypted budget is never dropped: the
@@ -1609,10 +1639,11 @@ impl Service {
         binding: &str,
         payload: &Value,
         with_sound: bool,
+        delivery: PushDelivery,
     ) -> Result<Vec<u8>> {
-        match self.encode_push(id, device, binding, payload, with_sound) {
+        match self.encode_push(id, device, binding, payload, with_sound, delivery) {
             Err(error) if error.to_string().contains("APNs budget") => {
-                self.encode_push(id, device, binding, &minimal_push(payload), with_sound)
+                self.encode_push(id, device, binding, &minimal_push(payload), with_sound, delivery)
             }
             result => result,
         }
@@ -1625,9 +1656,41 @@ impl Service {
         binding: &str,
         payload: &Value,
         with_sound: bool,
+        delivery: PushDelivery,
     ) -> Result<Vec<u8>> {
-        seal_push(&self.mac_id, &self.signing, id, &device.agreement, binding, payload, with_sound)
+        seal_push(&self.mac_id, &self.signing, id, &device.agreement, binding, payload, with_sound, delivery)
     }
+}
+
+/// How the relay asks APNs to hand a push over: an alert the notification service extension
+/// opens, or a silent background wake of the app.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PushDelivery {
+    Alert,
+    Background,
+}
+
+/// The `apns-collapse-id` of a card's alert: pushing the same card again replaces its
+/// notification instead of adding one. A digest, because APNs and the relay read it in the
+/// clear and card ids can carry task names; the binding keeps one phone's ids unlinkable to
+/// another's.
+pub(crate) fn collapse_id(binding: &str, card: &str) -> String {
+    let digest = Sha256::new()
+        .chain_update(b"alondra-collapse-v1\0")
+        .chain_update(binding.as_bytes())
+        .chain_update([0])
+        .chain_update(card.as_bytes())
+        .finalize();
+    URL_SAFE_NO_PAD.encode(&digest[..16])
+}
+
+/// A relay older than collapse ids and background pushes rejects unknown fields: the same
+/// request without them, or None when there was nothing to drop.
+fn without_relay_extensions(body: &[u8]) -> Result<Option<Vec<u8>>> {
+    let mut value: Value = serde_json::from_slice(body)?;
+    let Some(fields) = value.as_object_mut() else { return Ok(None) };
+    let dropped = fields.remove("collapse_id").is_some() | fields.remove("push_type").is_some();
+    Ok(if dropped { Some(serde_json::to_vec(&value)?) } else { None })
 }
 
 /// The `/v1/mac/push` body: the relay forwards `envelope` to APNs and the phone's
@@ -1640,6 +1703,7 @@ pub(crate) fn seal_push(
     binding: &str,
     payload: &Value,
     with_sound: bool,
+    delivery: PushDelivery,
 ) -> Result<Vec<u8>> {
     let plaintext = serde_json::to_vec(&json!({
         "push_binding": binding,
@@ -1668,7 +1732,16 @@ pub(crate) fn seal_push(
         agreement,
     )
     .map_err(|error| anyhow!("seal push: {error}"))?;
-    let body = serde_json::to_vec(&json!({"device_id":device_id,"envelope":envelope}))?;
+    let mut body = json!({"device_id":device_id,"envelope":envelope});
+    match delivery {
+        PushDelivery::Alert => {
+            if let Some(card) = payload.pointer("/alondra/card").and_then(Value::as_str) {
+                body["collapse_id"] = json!(collapse_id(binding, card));
+            }
+        }
+        PushDelivery::Background => body["push_type"] = json!("background"),
+    }
+    let body = serde_json::to_vec(&body)?;
     if body.len() > MAX_PUSH_BODY {
         bail!("envelope exceeds APNs budget");
     }
@@ -3844,7 +3917,7 @@ agreement_key = "{}"
         let secret = "private question title for iPhone only";
         let payload = json!({"aps":{"alert":{"title":secret},"category":"ALONDRA_QUESTION"},"alondra":{"kind":"question","id":7}});
         let body = service
-            .encode_push("phone-1", &device, &binding, &payload, true)
+            .encode_push("phone-1", &device, &binding, &payload, true, PushDelivery::Alert)
             .unwrap();
         assert!(body.len() <= MAX_PUSH_BODY);
         let wire = String::from_utf8(body.clone()).unwrap();
@@ -3878,7 +3951,7 @@ agreement_key = "{}"
                 .unwrap()
                 .apply(&payload, true, 23 * 60);
         let quiet_wire = service
-            .encode_push("phone-1", &device, &binding, &quiet_payload, sound)
+            .encode_push("phone-1", &device, &binding, &quiet_payload, sound, PushDelivery::Alert)
             .unwrap();
         let wire_text = String::from_utf8(quiet_wire.clone()).unwrap();
         assert!(!wire_text.contains("passive") && !wire_text.contains("quiet_start"));
@@ -3903,11 +3976,11 @@ agreement_key = "{}"
             "sound":"default","category":"ALONDRA_QUESTION"},"alondra":{"kind":"question","id":7}});
         assert!(
             service
-                .encode_push("phone-1", &device, &binding, &huge, true)
+                .encode_push("phone-1", &device, &binding, &huge, true, PushDelivery::Alert)
                 .is_err()
         );
         let minimal = service
-            .encode_push_or_minimal("phone-1", &device, &binding, &huge, true)
+            .encode_push_or_minimal("phone-1", &device, &binding, &huge, true, PushDelivery::Alert)
             .expect("oversized content becomes a generic alert instead of being dropped");
         assert!(minimal.len() <= MAX_PUSH_BODY);
         let envelope: EnvelopeV1 = serde_json::from_value(
@@ -3942,7 +4015,7 @@ agreement_key = "{}"
         let unshrinkable = json!({"aps":{"alert":{"body":"x"}},"alondra":{"kind":"question","id":"y".repeat(MAX_PUSH_PLAINTEXT)}});
         assert!(
             service
-                .encode_push_or_minimal("phone-1", &device, &binding, &unshrinkable, true)
+                .encode_push_or_minimal("phone-1", &device, &binding, &unshrinkable, true, PushDelivery::Alert)
                 .is_err(),
             "a reference that itself exceeds the budget cannot be pushed"
         );
@@ -4411,6 +4484,86 @@ agreement_key = "{}"
             .await
             .unwrap();
         assert_eq!(report, (1, 0));
+        server.abort();
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
+    #[test]
+    fn a_cards_collapse_id_is_an_opaque_stable_header_per_phone() {
+        let (first, second) = (URL_SAFE_NO_PAD.encode([1u8; 32]), URL_SAFE_NO_PAD.encode([2u8; 32]));
+        let id = collapse_id(&first, "t-push-group-retract-result-1");
+        assert_eq!(id, collapse_id(&first, "t-push-group-retract-result-1"), "the same card replaces its notification");
+        assert_ne!(id, collapse_id(&first, "t-push-group-retract-result-2"));
+        assert_ne!(id, collapse_id(&second, "t-push-group-retract-result-1"), "unlinkable across phones");
+        assert!(id.len() <= 64 && id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_')));
+        assert!(!id.contains("push"), "APNs never reads the card id");
+    }
+
+    /// The relay on the Pi is deployed by hand and an older one refuses unknown fields: alerts
+    /// still arrive without a collapse id, a background push fails without reaching the phone.
+    #[tokio::test]
+    async fn pushes_carry_collapse_id_or_background_type_and_alerts_survive_an_older_relay() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let (mut service, phone_agreement) = push_fixture();
+        activate_push(&service);
+        let binding = URL_SAFE_NO_PAD.encode([5u8; 32]);
+        service.journal.set_push_preferences("phone-1", &binding, None).unwrap();
+        let requests = Arc::new(std::sync::Mutex::new(Vec::<Value>::new()));
+        let seen = requests.clone();
+        let older = Arc::new(AtomicBool::new(false));
+        let is_older = older.clone();
+        let router = Router::new()
+            .route(
+                "/v1/bootstrap",
+                get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([1u8;16])})) }),
+            )
+            .route(
+                "/v1/mac/push",
+                post(move |axum::Json(body): axum::Json<Value>| {
+                    let seen = seen.clone();
+                    let is_older = is_older.clone();
+                    async move {
+                        let extended = body.get("collapse_id").is_some() || body.get("push_type").is_some();
+                        seen.lock().unwrap().push(body);
+                        if is_older.load(Ordering::SeqCst) && extended {
+                            (StatusCode::BAD_REQUEST, axum::Json(json!({"error":"invalid_push"}))).into_response()
+                        } else {
+                            StatusCode::ACCEPTED.into_response()
+                        }
+                    }
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let card = json!({"aps":{"alert":{"title":"Approve"}},"alondra":{"card":"t-1-result-1"}});
+        let retract = json!({"aps":{"badge":0},"alondra":{"kind":"retract","open":[]}});
+
+        assert_eq!(service.broadcast_push_report(&card, true).await.unwrap(), (1, 1));
+        assert_eq!(service.broadcast_background_push(|_| retract.clone()).await.unwrap(), (1, 1));
+        {
+            let sent = requests.lock().unwrap();
+            assert_eq!(sent[0]["collapse_id"], collapse_id(&binding, "t-1-result-1"));
+            assert!(sent[0].get("push_type").is_none());
+            assert_eq!(sent[1]["push_type"], "background");
+            assert!(sent[1].get("collapse_id").is_none());
+            let envelope: EnvelopeV1 = serde_json::from_value(sent[1]["envelope"].clone()).unwrap();
+            let plaintext: Value = serde_json::from_slice(&envelope
+                .open(service.signing.verifying_key(), &phone_agreement, "mac-1", "phone-1", "mac-1", now_ms())
+                .unwrap()).unwrap();
+            assert_eq!(plaintext["payload"], retract, "quiet hours never touch a background push");
+        }
+
+        older.store(true, Ordering::SeqCst);
+        requests.lock().unwrap().clear();
+        assert_eq!(service.broadcast_push_report(&card, true).await.unwrap(), (1, 1), "the alert still arrives");
+        assert_eq!(service.broadcast_background_push(|_| retract.clone()).await.unwrap(), (1, 0));
+        {
+            let sent = requests.lock().unwrap();
+            assert_eq!(sent.len(), 3, "one retry for the alert, none for the background push");
+            assert!(sent[1].get("collapse_id").is_none());
+            assert_eq!(sent[0]["envelope"], sent[1]["envelope"], "the retry resends the same sealed push");
+        }
         server.abort();
         std::fs::remove_dir_all(&service.home).unwrap();
     }

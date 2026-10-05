@@ -120,7 +120,9 @@ fn a_closed_task_accepts_only_a_closing_notice() {
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
     assert_eq!(refused(&mut s, agent(), ask("q", "t", false, decide("Pick a name"))),
         ("task_not_active".into(), Some("scope.task_id".into())));
-    ok(&mut s, agent(), inform("closing", scope("t"), "I stopped: the task was cancelled"));
+    assert_eq!(refused(&mut s, agent(), inform("closing", scope("t"), "I stopped: the task was cancelled")),
+        ("forbidden".into(), Some("card.kind".into())));
+    ok(&mut s, orchestrator(), inform("closing", scope("t"), "The task was cancelled"));
     assert_eq!(s.interactions[&"closing".into()].card.kind, CardKind::Know);
 }
 
@@ -130,7 +132,13 @@ fn a_node_without_a_task_only_informs() {
     register_agent(&mut s, "b");
     assert_eq!(refused(&mut s, agent_b(), ask("q", "t", false, decide("Pick a name"))),
         ("no_task".into(), Some("scope".into())));
-    ok(&mut s, agent_b(), inform("hello", Scope::Orchestrator { request_id: None }, "I am free"));
+    assert_eq!(refused(&mut s, agent_b(), inform("hello", Scope::Orchestrator { request_id: None }, "I am free")),
+        ("forbidden".into(), Some("card.kind".into())));
+    let mut to_orchestrator = inform("hello", Scope::Orchestrator { request_id: None }, "I am free");
+    if let Command::PublishInformation { recipient, .. } = &mut to_orchestrator {
+        *recipient = Recipient::Orchestrator;
+    }
+    ok(&mut s, agent_b(), to_orchestrator);
     assert_eq!(s.interactions[&"hello".into()].author, Author::Agent { agent_id: "b".into() });
 }
 
@@ -173,7 +181,6 @@ fn after_clarify_the_node_must_replace_the_card() {
     assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { message, .. }] if message.contains("Which product?") && message.contains("card.replaces")));
     assert_eq!(refused(&mut s, agent(), ask("q2", "t", false, decide("Pick a colour"))),
         ("clarification_pending".into(), Some("card.replaces".into())));
-    ok(&mut s, agent(), inform("said", scope("t"), "The product is the Mac app"));
     let mut replacing = decide("Pick a name for the Mac app");
     replacing.replaces = Some("q1".into());
     ok(&mut s, agent(), ask("q3", "t", true, replacing));
@@ -183,13 +190,13 @@ fn after_clarify_the_node_must_replace_the_card() {
 #[test]
 fn a_repeated_notice_is_not_shown_twice() {
     let mut s = fixture();
-    ok(&mut s, agent(), inform("i1", scope("t"), "Tests pass"));
-    let out = ok(&mut s, agent(), inform("i2", scope("t"), "Tests pass"));
+    ok(&mut s, orchestrator(), inform("i1", scope("t"), "Tests pass"));
+    let out = ok(&mut s, orchestrator(), inform("i2", scope("t"), "Tests pass"));
     assert!(!out.changed);
     assert_eq!(out.created_ids, vec!["i1".to_owned()], "the existing notice is returned");
     assert!(!s.interactions.contains_key(&"i2".into()));
     ok(&mut s, user(), Command::MarkRead { interaction_id: "i1".into() });
-    ok(&mut s, agent(), inform("i3", scope("t"), "Tests pass"));
+    ok(&mut s, orchestrator(), inform("i3", scope("t"), "Tests pass"));
     assert!(s.interactions.contains_key(&"i3".into()), "once read, the same words are news again");
 }
 
@@ -501,7 +508,7 @@ fn no_pending_card_is_left_with_nothing_the_user_can_do_once_its_task_ends() {
         attachments: vec![], interaction_id: "do".into(), scope: scope("t"), recipient: Recipient::User,
         body: "Log in".into(), blocking: false, options: two(), card: with_verify(CardKind::Do, "Log in"),
     });
-    ok(&mut s, agent(), inform("know", scope("t"), "Heads up"));
+    ok(&mut s, orchestrator(), inform("know", scope("t"), "Heads up"));
     ok(&mut s, agent(), present("review", text(), true, review()));
     proposal(&mut s);
     ok(&mut s, user(), Command::CancelTask { task_id: "t".into() });
@@ -546,7 +553,7 @@ fn the_inbox_has_one_item_per_interaction_and_never_groups_by_pr_or_document() {
     let mut blocking = decide("Pick a name");
     blocking.blocks = vec![CardTarget::PullRequest { pr_id: "pr".into() }];
     ok(&mut s, agent(), ask("q", "t", true, blocking));
-    ok(&mut s, agent(), inform("n", scope("t"), "Heads up"));
+    ok(&mut s, orchestrator(), inform("n", scope("t"), "Heads up"));
     let projection = s.projection();
     assert_eq!(inbox_ids(&s), ["q", "d", "n"], "a question, the delivery of the PR, a notice: three cards");
     assert_eq!(projection.counts.roots, 3);
@@ -562,12 +569,12 @@ fn the_inbox_runs_problem_then_blocking_asks_then_review_provide_propose_know_ol
     let mut s = fixture();
     register_agent(&mut s, "b");
     task(&mut s, "t2", "b");
-    ok(&mut s, agent(), inform("know-old", scope("t"), "The first notice"));
+    ok(&mut s, orchestrator(), inform("know-old", scope("t"), "The first notice"));
     ok(&mut s, agent(), ask("propose", "t", false,
         CardSpec::new(CardKind::Propose, "Let me also update the README").why("It names the old flag")));
     ok(&mut s, agent(), ask("provide", "t", false,
         CardSpec::new(CardKind::Provide, "Send a screenshot of the bug").why("I cannot reproduce it")));
-    ok(&mut s, agent(), inform("know-new", scope("t"), "The second notice"));
+    ok(&mut s, orchestrator(), inform("know-new", scope("t"), "The second notice"));
     ok(&mut s, agent(), present("review", text(), true, review()));
     ok(&mut s, Actor::System, Command::HoldHook {
         interaction_id: "permission".into(), task_id: "t".into(), agent_id: "a".into(), hold: Hold::Permission,
@@ -646,8 +653,141 @@ fn notice(id: &str, need: &str, replaces: Option<&str>) -> Command {
 #[test]
 fn a_correction_replaces_the_earlier_notice() {
     let mut s = fixture();
-    ok(&mut s, agent(), notice("n1", "Build is green", None));
-    ok(&mut s, agent(), notice("n2", "Correction: build is red", Some("n1")));
+    ok(&mut s, orchestrator(), notice("n1", "Build is green", None));
+    ok(&mut s, orchestrator(), notice("n2", "Correction: build is red", Some("n1")));
     assert!(s.interactions[&"n1".into()].withdrawn);
     assert!(s.open(&s.interactions[&"n2".into()]));
+}
+
+fn waiting_ids(s: &DomainState) -> Vec<String> {
+    s.projection().inbox.iter().filter(|item| item.pending).map(|item| item.id.trim_start_matches("interaction:").to_owned()).collect()
+}
+fn gq(need: &str, labels: &[&str]) -> GroupQuestion {
+    GroupQuestion {
+        need: need.into(), why: "The release needs it".into(), recommended: None,
+        options: labels.iter().enumerate().map(|(n, label)| option(&format!("o{n}"), label)).collect(),
+    }
+}
+fn asks(questions: Vec<GroupQuestion>) -> Command {
+    Command::AskQuestions {
+        interaction_id: "g".into(), scope: scope("t"), recipient: Recipient::User, blocking: true,
+        why: "Three things for the release".into(), questions,
+    }
+}
+fn three() -> Vec<GroupQuestion> {
+    vec![gq("Which name?", &["Atlas", "Borealis"]), gq("Ship it today?", &["Yes", "No"]), gq("Which channel?", &["Beta", "Stable"])]
+}
+fn answer_card(card: &str, option: &str) -> Command {
+    Command::AnswerQuestion { attachments: vec![], interaction_id: card.into(), option_id: option.into(), inputs: BTreeMap::new() }
+}
+fn told_the_node(outcome: &CommandOutcome) -> usize {
+    outcome.effects.iter().filter(|effect| matches!(effect, DomainEffect::NotifyAgent { .. })).count()
+}
+
+#[test]
+fn several_questions_are_one_card_each_in_order_and_linked_as_a_group() {
+    let mut s = fixture();
+    let outcome = ok(&mut s, agent(), asks(three()));
+    assert_eq!(outcome.created_ids, ["g-q1", "g-q2", "g-q3"]);
+    for (at, need) in ["Which name?", "Ship it today?", "Which channel?"].into_iter().enumerate() {
+        let card = &s.interactions[&format!("g-q{}", at + 1).as_str().into()].card;
+        assert_eq!((card.kind, card.need.as_str()), (CardKind::Decide, need));
+        assert_eq!(card.group, Some(QuestionGroup { id: "g".into(), index: at as u8 + 1, total: 3 }));
+    }
+    assert_eq!(waiting_ids(&s), ["g-q1", "g-q2", "g-q3"], "adjacent and in question order");
+}
+
+#[test]
+fn a_group_is_two_to_four_questions_that_each_stand_on_their_own() {
+    let mut s = fixture();
+    assert_eq!(refused(&mut s, agent(), asks(vec![gq("Which name?", &["Atlas", "Borealis"])])).1, Some("questions".into()));
+    let five = (0..5).map(|n| gq(&format!("Question {n}?"), &["Yes", "No"])).collect();
+    assert_eq!(refused(&mut s, agent(), asks(five)).1, Some("questions".into()));
+    assert_eq!(refused(&mut s, agent(), asks(vec![gq("Which name?", &["Atlas", "Borealis"]), gq("", &["Yes", "No"])])).1, Some("card.need".into()));
+    assert_eq!(refused(&mut s, agent(), asks(vec![gq("Which name?", &["Atlas", "Borealis"]), gq("Ship it?", &["Yes"])])).1, Some("options".into()));
+    let mut wrong = gq("Ship it?", &["Yes", "No"]);
+    wrong.recommended = Some("o9".into());
+    assert_eq!(refused(&mut s, agent(), asks(vec![gq("Which name?", &["Atlas", "Borealis"]), wrong])).1, Some("card.recommended".into()));
+}
+
+#[test]
+fn a_group_is_one_blocking_ask_of_its_node() {
+    let mut s = fixture();
+    ok(&mut s, agent(), asks(three()));
+    let mut another = asks(three());
+    if let Command::AskQuestions { interaction_id, .. } = &mut another {
+        *interaction_id = "h".into();
+    }
+    assert_eq!(refused(&mut s, agent(), another).0, "ask_already_open");
+}
+
+#[test]
+fn the_node_is_told_only_when_the_last_question_is_answered() {
+    let mut s = fixture();
+    ok(&mut s, agent(), asks(three()));
+    let first = ok(&mut s, user(), answer_card("g-q1", "o1"));
+    assert_eq!(told_the_node(&first), 0, "one answer of three is not yet the answer");
+    let second = ok(&mut s, user(), answer_card("g-q3", "o0"));
+    assert_eq!(told_the_node(&second), 0, "nor is two, whichever they are");
+    let last = ok(&mut s, user(), answer_card("g-q2", "o0"));
+    assert_eq!(told_the_node(&last), 1, "the last one tells it, once");
+}
+
+#[test]
+fn an_answer_can_be_taken_back_until_the_node_has_them_all() {
+    let mut s = fixture();
+    ok(&mut s, agent(), asks(three()));
+    ok(&mut s, user(), answer_card("g-q1", "o1"));
+    ok(&mut s, user(), answer_card("g-q2", "o0"));
+    assert_eq!(waiting_ids(&s), ["g-q3"], "answered questions leave the stack");
+    ok(&mut s, user(), Command::ReopenAnswer { interaction_id: "g-q1".into() });
+    assert_eq!(waiting_ids(&s), ["g-q1", "g-q3"], "the reopened card is back in its place");
+    let again = ok(&mut s, user(), answer_card("g-q1", "o0"));
+    assert_eq!(told_the_node(&again), 0);
+    let last = ok(&mut s, user(), answer_card("g-q3", "o1"));
+    assert_eq!(told_the_node(&last), 1);
+    let refusal = refused(&mut s, user(), Command::ReopenAnswer { interaction_id: "g-q1".into() });
+    assert_eq!(refusal.0, "question_already_answered", "the node has them: they are final");
+    assert_eq!(refused(&mut s, agent(), Command::ReopenAnswer { interaction_id: "g-q1".into() }).0, "forbidden", "only the user takes an answer back");
+}
+
+#[test]
+fn only_an_answered_question_of_a_group_can_be_reopened() {
+    let mut s = fixture();
+    ok(&mut s, agent(), asks(three()));
+    assert_eq!(refused(&mut s, user(), Command::ReopenAnswer { interaction_id: "g-q1".into() }).0, "invalid_action_for_kind");
+    ok(&mut s, agent(), ask("alone", "t", false, decide("Pick a name")));
+    ok(&mut s, user(), answer("alone"));
+    assert_eq!(refused(&mut s, user(), Command::ReopenAnswer { interaction_id: "alone".into() }).0, "invalid_action_for_kind");
+}
+
+#[test]
+fn withdrawing_one_question_withdraws_the_group_and_discards_the_answers() {
+    let mut s = fixture();
+    ok(&mut s, agent(), asks(three()));
+    ok(&mut s, user(), answer_card("g-q1", "o1"));
+    ok(&mut s, agent(), Command::Withdraw { interaction_id: "g-q2".into() });
+    assert!(["g-q1", "g-q2", "g-q3"].iter().all(|id| s.interactions[&(*id).into()].withdrawn), "all three go together, answered or not");
+    assert!(waiting_ids(&s).is_empty());
+    let told = exec(&mut s, user(), answer_card("g-q3", "o0"));
+    assert!(told.is_err(), "a withdrawn question cannot be answered");
+}
+
+#[test]
+fn a_finished_group_cannot_be_withdrawn() {
+    let mut s = fixture();
+    ok(&mut s, agent(), asks(three()));
+    for id in ["g-q1", "g-q2", "g-q3"] {
+        ok(&mut s, user(), answer_card(id, "o0"));
+    }
+    assert_eq!(refused(&mut s, agent(), Command::Withdraw { interaction_id: "g-q1".into() }).0, "question_already_answered");
+}
+
+#[test]
+fn a_recommended_mark_in_a_label_is_taken_off_it() {
+    assert_eq!(without_recommended_suffix("LAN and Tailscale (Recommended)").as_deref(), Some("LAN and Tailscale"));
+    assert_eq!(without_recommended_suffix("Atlas (recommended)  ").as_deref(), Some("Atlas"));
+    assert_eq!(without_recommended_suffix("Atlas"), None);
+    assert_eq!(without_recommended_suffix("(Recommended)"), None, "a label cannot be only the mark");
+    assert_eq!(without_recommended_suffix("é(Recommended"), None);
 }

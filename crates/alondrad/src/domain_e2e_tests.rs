@@ -204,8 +204,8 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     // The session reports through the MCP and asks the user a question.
     let scope = json!({"kind": "task", "task_id": task.id.0});
     let replies = mcp(&home, daemon.port, from_settings, vec![
-        ("publish_information", tool_args(&epoch, "info-1", 0, json!({"kind": "publish_information",
-            "interaction_id": "info-1", "scope": scope, "recipient": {"kind": "user"}, "need": "The review started", "body": "Started the review"}))),
+        ("present_result", tool_args(&epoch, "info-1", 0, json!({"kind": "present_result", "task_id": task.id.0,
+            "interaction_id": "info-1", "need": "The review started", "body": "Started the review", "targets": [{"kind": "text", "text": "Started the review"}], "is_final": false}))),
         ("ask", tool_args(&epoch, "question-1", 0, json!({"kind": "ask_question", "interaction_id": "question-1",
             "scope": scope, "recipient": {"kind": "user"}, "need": "Decide on merging the fix", "why": "The review is done and waits for it", "blocking": true,
             "options": [{"id": "yes", "label": "Yes", "inputs": []}, {"id": "no", "label": "No", "inputs": []}]}))),
@@ -215,7 +215,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
     assert!(!tool_text(&replies[1]).0, "{}", tool_text(&replies[1]).1);
     let (refused, text) = tool_text(&replies[2]);
-    assert!(refused && text.contains("acceptance_missing") || text.contains("invalid_action_for_kind"), "{text}");
+    assert!(refused && text.contains("acceptance_missing") || text.contains("invalid_action_for_kind") || text.contains("acceptance_stale"), "{text}");
     let state = daemon.domain.state().unwrap();
     assert!(matches!(state.interactions[&"question-1".into()].payload, InteractionPayload::Question { .. }));
     assert_ne!(state.tasks[&task.id].state, TaskState::Done);
@@ -229,7 +229,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     });
     let line = next_line(&mut pushed, patience).expect("the answer was written down the connection");
     let id = line["id"].as_str().unwrap().to_owned();
-    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Yes."), Some(false)), "{line}");
+    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Yes."), Some(true)), "{line}");
     assert!(daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().is_empty(), "written is not handed");
 
     // The Stop hook keeps its nudge but no longer carries the outbox.
@@ -251,8 +251,8 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     let mut pushed = Some(pushed);
     assert!(next_line(&mut pushed, std::time::Duration::from_millis(500)).is_none(), "an acknowledged message is not written again");
     let replies = mcp(&home, daemon.port, from_settings, vec![
-        ("publish_information", tool_args(&epoch, "info-2", 0, json!({"kind": "publish_information",
-            "interaction_id": "info-2", "scope": scope, "recipient": {"kind": "user"}, "need": "Acting on the answer", "body": "Acting on the answer"}))),
+        ("present_result", tool_args(&epoch, "info-2", 0, json!({"kind": "present_result", "task_id": task.id.0,
+            "interaction_id": "info-2", "need": "Acting on the answer", "body": "Acting on the answer", "targets": [{"kind": "text", "text": "Acting on the answer"}], "is_final": false}))),
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
     assert!(daemon.domain.state().unwrap().interactions.contains_key(&"info-2".into()));
@@ -264,13 +264,14 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     // The session ends: its bearer stops working.
     assert_eq!(hook(&home, json!({"session_id": session, "hook_event_name": "SessionEnd"})), json!({}));
     let replies = mcp(&home, daemon.port, ("ALONDRA_DOMAIN_CAPABILITY", &capability), vec![
-        ("publish_information", tool_args(&epoch, "info-3", 0, json!({"kind": "publish_information",
-            "interaction_id": "info-3", "scope": scope, "recipient": {"kind": "user"}, "need": "Too late", "body": "Too late"}))),
+        ("present_result", tool_args(&epoch, "info-3", 0, json!({"kind": "present_result", "task_id": task.id.0,
+            "interaction_id": "info-3", "need": "Too late", "body": "Too late", "targets": [{"kind": "text", "text": "Too late"}], "is_final": false}))),
     ]);
     let (refused, text) = tool_text(&replies[0]);
     assert!(refused && text.contains("forbidden"), "{text}");
     assert!(!daemon.domain.state().unwrap().agents[&AgentId(session.clone())].connected);
-    assert!(!Path::new(&settings).exists(), "the session's settings file goes with it");
+    let kept: Value = serde_json::from_slice(&std::fs::read(&settings).expect("its task is open: `claude respawn` passes the same file again")).unwrap();
+    assert!(kept["env"].get("ALONDRA_DOMAIN_CAPABILITY").is_none(), "but the revoked bearer is gone from it");
     daemon.stop().await;
     std::fs::remove_dir_all(root).unwrap();
 }

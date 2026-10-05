@@ -14,7 +14,11 @@ use std::path::Path;
 pub(crate) const SCHEMA_VERSION: i64 = 4;
 pub(crate) const ORCHESTRATOR_MESSAGE_TTL_MS: i64 = 24 * 60 * 60 * 1_000;
 const APPLICATION_ID: i64 = 0x414c4432;
-const SCHEMA: &str = include_str!("domain_store/schema.sql");
+const SCHEDULE_LAUNCH_TRANSITION: &str = include_str!("domain_store/schedule_launch_transition.sql");
+const SCHEMA: &str = concat!(
+    include_str!("domain_store/schema.sql"),
+    include_str!("domain_store/schedule_launch_transition.sql")
+);
 #[cfg(test)]
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
@@ -175,6 +179,10 @@ impl DomainStore {
                 application == APPLICATION_ID,
                 "not an Alondra domain database"
             );
+        }
+        if version != 0 {
+            tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
+            tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         // A process can die after terminal write and before recording its outcome.

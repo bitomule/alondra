@@ -1,0 +1,238 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:g-q2",
+  "client": "ios",
+  "version": "ved6b63523b4f8383",
+  "cursor": "cursor-1",
+  "title": "Ship it today?",
+  "status": {
+    "version": "vef50aac4dfc2c9f5",
+    "summary": "3 preguntas · 2 por leer · 0 nodos trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "g-q2",
+          "kind": "decide",
+          "need": "Ship it today?",
+          "why": "The release needs it",
+          "meta": "Node One · 2 de 3",
+          "reply": {
+            "id": "reply:g-q2@1",
+            "label": "Responder",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Responder a Node One…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Enviado"
+          },
+          "more": [
+            {
+              "id": "ans:g-q2@1",
+              "label": "Escribir mi respuesta",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "button",
+              "input": {
+                "kind": "text",
+                "placeholder": "Responde con tus palabras…",
+                "required": true,
+                "multiline": true
+              },
+              "attachments": true,
+              "enabled": true,
+              "stamp": "Respondida"
+            },
+            {
+              "id": "clarify:g-q2@1",
+              "label": "Pedir aclaración",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "unclear",
+                  "label": "No se entiende",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "contradicts",
+                  "label": "Se contradice",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                },
+                {
+                  "id": "missing_context",
+                  "label": "Le falta contexto",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "text",
+                "placeholder": "¿Qué debe aclarar?",
+                "required": false,
+                "multiline": true
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Aclaración solicitada"
+            },
+            {
+              "id": "retake:g-q2@1",
+              "label": "Cambiar respuestas",
+              "style": "secondary",
+              "role": "neutral",
+              "presentation": "options",
+              "options": [
+                {
+                  "id": "g-q1",
+                  "label": "Which name? → Second",
+                  "style": "secondary",
+                  "input": {
+                    "kind": "none"
+                  }
+                }
+              ],
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Pregunta reabierta"
+            }
+          ],
+          "link": {
+            "kind": "view",
+            "key": "card:g-q2"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decidir · 2 de 3",
+            "tone": "accent"
+          },
+          "title": "Ship it today?",
+          "subtitle": "The release needs it",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Node One",
+              "link": {
+                "kind": "view",
+                "key": "node:a-1"
+              }
+            }
+          ],
+          "state": {
+            "text": "Bloquea a Node One",
+            "tone": "warning"
+          },
+          "detail": "included",
+          "actions": [
+            {
+              "id": "ans:g-q2@1",
+              "label": "First",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "o0",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Respondida"
+            },
+            {
+              "id": "ans:g-q2@1",
+              "label": "Second",
+              "style": "secondary",
+              "role": "neutral",
+              "option_id": "o1",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "enabled": true,
+              "stamp": "Respondida"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Contexto",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Tarea",
+              "value": "Build a feature · Node One",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

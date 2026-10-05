@@ -1,6 +1,12 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "until %@": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "hasta %@"}}}},
+    "for %lld more min": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "durante %lld min más"}}}},
+    "Out of Claude usage %@ · everything is paused": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin cuota de Claude %@ · todo está en pausa"}}}},
+    "Out of Claude usage on this Mac %@ · everything is paused": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Sin cuota de Claude en este Mac %@ · todo está en pausa"}}}},
+    "%lld of %lld Macs out of Claude usage %@ · everything is paused": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "%1$lld de %2$lld Macs sin cuota de Claude %3$@ · todo está en pausa"}}}},
+    "All your Macs are out of Claude usage %@ · everything is paused": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Todos tus Macs sin cuota de Claude %@ · todo está en pausa"}}}},
     "Accept the result before this can continue.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Acepta el resultado antes de que esto pueda seguir."}}}},
     "Accepted, pending the agent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Aceptada, pendiente del agente"}}}},
     "accepted, pending the agent": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "aceptada, pendiente del agente"}}}},

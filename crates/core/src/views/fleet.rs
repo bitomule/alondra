@@ -88,6 +88,8 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         (t!(lang, "Merging", "Fusionando"), Tone::Info)
     } else if key == Some("stalled") {
         (t!(lang, "Stalled", "Parado"), Tone::Critical)
+    } else if key == Some("failed") {
+        (t!(lang, "Failed", "Falló"), Tone::Critical)
     } else if live.is_some_and(|node| node.working) {
         (t!(lang, "Working", "Trabajando"), Tone::Info)
     } else if key == Some("waiting_machine") {

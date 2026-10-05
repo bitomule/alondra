@@ -645,9 +645,7 @@ mod tests {
         );
         command(
             &hub,
-            Actor::Agent {
-                agent_id: "agent-a".into(),
-            },
+            Actor::System,
             "info",
             Command::PublishInformation {
                 attachments: vec![],
@@ -759,9 +757,7 @@ mod tests {
         );
         command(
             &hub,
-            Actor::Agent {
-                agent_id: "agent-a".into(),
-            },
+            Actor::System,
             "info-2",
             Command::PublishInformation {
                 attachments: vec![],
@@ -838,7 +834,7 @@ mod tests {
         assert_eq!(english["alondra"]["actions"][2]["label"], "Reply");
         assert_eq!(spanish["alondra"]["actions"][2]["label"], "Responder");
         assert_eq!(english["aps"]["interruption-level"], "active");
-        assert_eq!(english["aps"]["thread-id"], "orchestrator", "a card without a node groups under the orchestrator");
+        assert_eq!(english["aps"]["thread-id"], "task-a", "a Task's cards group under the Task");
         let permission = user_push_payload(&state, Some(push_fixture_id("permission")), Lang::En);
         assert_eq!(permission["aps"]["interruption-level"], "time-sensitive");
         let notice = user_push_payload(&state, Some(push_fixture_id("information")), Lang::En);
@@ -863,7 +859,7 @@ mod tests {
         let payload = user_push_payload(&state, Some(push_fixture_id("question")), Lang::Es);
         let body: Value = serde_json::from_slice(
             &crate::service::seal_push(mac_id, &mac_signing, device_id, &phone_agreement.public_key(),
-                &binding, &payload, false).unwrap(),
+                &binding, &payload, false, crate::service::PushDelivery::Alert).unwrap(),
         ).unwrap();
         let encode = |bytes: &[u8]| base64::Engine::encode(&base64::engine::general_purpose::URL_SAFE_NO_PAD, bytes);
         let point = mac_signing.verifying_key().to_sec1_point(false);
@@ -1142,7 +1138,7 @@ mod tests {
         assert_eq!(payload["aps"]["alert"]["title"], "Cifrar imágenes con R2 es posible");
         assert_eq!(payload["aps"]["alert"]["body"], "Una imagen son bytes como cualquier otro.");
         assert_eq!(payload["aps"]["interruption-level"], "passive");
-        assert_eq!(payload["aps"]["thread-id"], "orchestrator");
+        assert_eq!(payload["aps"]["thread-id"], "a7efd99d", "the answer groups with its Request");
         assert_eq!(payload["aps"]["badge"], 1, "the answer waits in the inbox the badge counts");
         let push = Push::open(&home).unwrap();
         deliver_one_v2(&domain, &home, &push, None, &client, user[0].clone(), Duration::ZERO).await.unwrap();

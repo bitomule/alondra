@@ -4,7 +4,7 @@ import AlondraFeatures
 import SwiftUI
 
 /// How a button reads on a card: green filled to advance, red filled when advancing is risky,
-/// outlined when it is neither. The role comes from the daemon.
+/// plain glass when it is neither. The role comes from the daemon.
 extension ActionRole {
     var fill: Color? {
         switch self {
@@ -12,30 +12,6 @@ extension ActionRole {
         case .risk: Palette.risk
         case .neutral: nil
         }
-    }
-}
-
-struct RoleButtonStyle: ButtonStyle {
-    let role: ActionRole
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        let fill = role.fill
-        configuration.label
-            .font(.headline)
-            .foregroundStyle(fill == nil ? Palette.ink : Palette.onAccent)
-            .frame(maxWidth: .infinity, minHeight: 50)
-            .padding(.horizontal, 12)
-            .background {
-                if let fill {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous).fill(fill)
-                } else {
-                    RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(Palette.slate.opacity(0.55), lineWidth: 1.5)
-                }
-            }
-            .opacity(isEnabled ? 1 : 0.4)
-            .scaleEffect(configuration.isPressed ? 0.97 : 1)
-            .animation(.spring(duration: 0.25, bounce: 0.4), value: configuration.isPressed)
     }
 }
 

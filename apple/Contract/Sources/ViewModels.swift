@@ -102,6 +102,27 @@ public struct ViewStatus: Codable, Equatable, Sendable {
     public let gauges: [Gauge]
     public let orchestrator: Label
     public let update: Notice?
+    public let usageExhausted: UsageExhausted?
+    enum CodingKeys: String, CodingKey {
+        case version, summary, badge, counts, gauges, orchestrator, update
+        case usageExhausted = "usage_exhausted"
+    }
+}
+/// Claude usage has run out. `scope` is "this_mac" while only the Mac that served the view is known,
+/// "all_macs" once every Mac is counted.
+public struct UsageExhausted: Codable, Equatable, Sendable {
+    public let scope: String
+    public let until: String
+    public let macsExhausted: UInt32
+    public let macsTotal: UInt32
+    public init(scope: String, until: String, macsExhausted: UInt32, macsTotal: UInt32) {
+        self.scope = scope; self.until = until; self.macsExhausted = macsExhausted; self.macsTotal = macsTotal
+    }
+    enum CodingKeys: String, CodingKey {
+        case scope, until
+        case macsExhausted = "macs_exhausted"
+        case macsTotal = "macs_total"
+    }
 }
 public struct ViewCount: Codable, Equatable, Sendable { public let id: String; public let label: String; public let value: UInt32 }
 public struct Gauge: Codable, Equatable, Sendable { public let id: String; public let label: String; public let value: Double; public let text: String; public let detail: String?; public let level: Level }

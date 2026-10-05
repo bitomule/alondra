@@ -169,16 +169,6 @@ CREATE TRIGGER schedule_run_result_transition BEFORE UPDATE ON schedule_runs
       AND NEW.request_id IS OLD.request_id AND NEW.task_id IS OLD.task_id)
  )
  BEGIN SELECT RAISE(ABORT,'schedule run result transition is invalid'); END;
-CREATE TRIGGER schedule_launch_transition BEFORE UPDATE ON schedule_runs
- WHEN OLD.launch IS NOT NEW.launch AND NOT (
-   (OLD.launch IS NULL AND NEW.launch IS NOT NULL AND OLD.state='launching'
-     AND NEW.state='sent' AND json_extract(NEW.launch,'$.state')='pending')
-   OR (json_extract(OLD.launch,'$.state')='pending'
-     AND json_extract(NEW.launch,'$.state') IN ('dispatching','failed'))
-   OR (json_extract(OLD.launch,'$.state')='dispatching'
-     AND json_extract(NEW.launch,'$.state') IN ('handed','failed','uncertain'))
- )
- BEGIN SELECT RAISE(ABORT,'schedule launch transition is invalid'); END;
 CREATE TRIGGER retain_schedule_run BEFORE DELETE ON schedule_runs
  BEGIN SELECT RAISE(ABORT,'schedule run is retained'); END;
 

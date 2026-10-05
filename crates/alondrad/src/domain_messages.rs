@@ -91,6 +91,9 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         None => None,
     };
     let text = wording(&body, task, name, home)?;
+    if domain.live.mods.session(&agent.0).is_some_and(|reported| reported.silent(alondra_core::now_millis())) {
+        return Err(refused("session_stalled", format!("{name} stopped processing in the middle of a turn, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
+    }
     let acked = domain.live.pushes.message(&agent.0, &text, as_user)
         .map_err(|_| refused("session_unreachable", "the node is not connected to Alondra: its session is stopped or its Claude Code mod is not running. Nothing was sent"))?;
     let delivered = match tokio::time::timeout(ACK_WAIT, acked).await {
@@ -265,6 +268,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_session_that_stopped_processing_is_refused_instead_of_reported_handed() {
+        let (fixture, domain) = world();
+        let node = Node::connect(&domain, "agent-a");
+        let long_ago = alondra_core::now_millis() - alondra_core::states::TURN_QUIET_MS - 60_000;
+        let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
+        domain.live.mods.connect(hello, long_ago);
+        domain.live.mods.sample_cpu("agent-a", 500, long_ago);
+        domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
+        let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap_err();
+        assert_eq!(refused.code, "session_stalled");
+        assert!(node.texts().is_empty(), "nothing was written down its connection");
+    }
+
+    #[tokio::test]
     async fn a_reply_is_worded_for_its_interaction() {
         let (fixture, domain) = world();
         let node = Node::connect(&domain, "agent-a");
@@ -298,7 +315,7 @@ mod tests {
     async fn a_reply_that_reads_the_information_marks_it_read_after_sending() {
         let (fixture, domain) = world();
         let state = domain.state().unwrap();
-        domain.execute(&Actor::Agent { agent_id: "agent-a".into() }, &CommandEnvelope {
+        domain.execute(&Actor::System, &CommandEnvelope {
             protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "i".into(),
             expected_revision: state.revision, command: Command::PublishInformation { attachments: vec![], interaction_id: "info-1".into(),
                 scope: alondra_core::domain_v2::Scope::Task { task_id: "t".into() }, recipient: alondra_core::domain_v2::Recipient::User, body: "Done".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update") },
