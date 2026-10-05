@@ -492,50 +492,82 @@ async fn recover_uncertain(
     }
 }
 
-/// The user's "Try again" on a scheduled run that did not start launches its schedule once more.
-/// The retry's own run id is derived from the failed one, so answering twice launches once.
-fn retry_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
+/// The user's answer to a scheduled run that did not start. "Try again" launches its schedule
+/// once more (the retry's run id derives from the failed one, so answering twice launches once);
+/// either way the failed run's Task never started and is cancelled, so it does not wait forever.
+fn answer_failed_launches(domain: &DomainRuntime, home: &Path) -> Result<()> {
     use alondra_core::domain_v2::{InteractionPayload, LAUNCH_PROBLEM_PREFIX, LAUNCH_RETRY_OPTION};
     let state = domain.state()?;
     for (id, interaction) in &state.interactions {
         let Some(failed) = id.0.strip_prefix(LAUNCH_PROBLEM_PREFIX) else { continue };
         let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
-        if answer.option_id != LAUNCH_RETRY_OPTION || interaction.withdrawn {
+        if interaction.withdrawn {
             continue;
         }
-        let retry: ScheduleRunId = format!("retry-{failed}").into();
-        let Some(schedule) = state
-            .schedule
-            .runs
-            .get(&ScheduleRunId::from(failed))
-            .filter(|_| !state.schedule.runs.contains_key(&retry))
-            .and_then(|run| state.schedule.schedules.get(&run.schedule_id))
-            .filter(|schedule| schedule.deleted_at.is_none())
-        else {
-            continue;
+        let Some(run) = state.schedule.runs.get(&ScheduleRunId::from(failed)) else { continue };
+        let retried = if answer.option_id == LAUNCH_RETRY_OPTION {
+            retry_launch(domain, home, &state, failed, run)
+        } else {
+            true
         };
-        let now = alondra_core::now_millis();
-        let claimed = execute_system(
-            domain,
-            Command::ClaimScheduleRun {
-                schedule_id: schedule.id.clone(),
-                run_id: retry.clone(),
-                origin: ScheduleRunOrigin::Manual,
-                now,
-                next_after_now: next_after(schedule, now),
-                expected_schedule_revision: None,
-            },
-        );
-        match claimed {
-            Ok(_) => {
-                if let Err(error) = finish_claim(domain, home, &retry) {
-                    log!("retry {retry} of scheduled run {failed} could not be prepared: {error:#}");
-                }
-            }
-            Err(error) => log!("retry of scheduled run {failed} refused: {error}"),
+        let Some(task) = run.task_id.as_ref().filter(|_| retried) else { continue };
+        match execute_system(domain, Command::CancelTask { task_id: task.clone() }) {
+            Ok(_) => (),
+            Err(StoreError::Domain(error)) if error.code == "task_not_active" || ordinary_conflict_code(&error.code) => (),
+            Err(error) => log!("could not cancel the unstarted Task of scheduled run {failed}: {error}"),
         }
     }
     Ok(())
+}
+
+fn ordinary_conflict_code(code: &str) -> bool {
+    matches!(code, "conflict" | "not_found" | "stale_revision")
+}
+
+/// Whether the schedule is launching again: the retry run exists or was just claimed.
+fn retry_launch(
+    domain: &DomainRuntime,
+    home: &Path,
+    state: &DomainState,
+    failed: &str,
+    run: &alondra_core::domain_v2::ScheduleRun,
+) -> bool {
+    let retry: ScheduleRunId = format!("retry-{failed}").into();
+    if state.schedule.runs.contains_key(&retry) {
+        return true;
+    }
+    let Some(schedule) = state
+        .schedule
+        .schedules
+        .get(&run.schedule_id)
+        .filter(|schedule| schedule.deleted_at.is_none())
+    else {
+        return false;
+    };
+    let now = alondra_core::now_millis();
+    let claimed = execute_system(
+        domain,
+        Command::ClaimScheduleRun {
+            schedule_id: schedule.id.clone(),
+            run_id: retry.clone(),
+            origin: ScheduleRunOrigin::Manual,
+            now,
+            next_after_now: next_after(schedule, now),
+            expected_schedule_revision: None,
+        },
+    );
+    match claimed {
+        Ok(_) => {
+            if let Err(error) = finish_claim(domain, home, &retry) {
+                log!("retry {retry} of scheduled run {failed} could not be prepared: {error:#}");
+            }
+            true
+        }
+        Err(error) => {
+            log!("retry of scheduled run {failed} refused: {error}");
+            false
+        }
+    }
 }
 
 pub(crate) async fn run_cycle(
@@ -570,7 +602,7 @@ pub(crate) async fn run_cycle(
     for run_id in uncertain {
         recover_uncertain(domain, home, &run_id, launcher).await?;
     }
-    retry_failed_launches(domain, home)?;
+    answer_failed_launches(domain, home)?;
     let paused = domain.live.usage_pause.is_active();
     if due_enabled && !paused {
         let now = alondra_core::now_millis();
@@ -1348,6 +1380,17 @@ mod tests {
         let state = restarted.state().unwrap();
         let retried = &state.schedule.runs[&ScheduleRunId::from("retry-lost")];
         assert_eq!(retried.launch.as_ref().unwrap().state, ScheduleLaunchState::Handed);
+        let original = state.schedule.runs[&ScheduleRunId::from("lost")].task_id.as_ref().unwrap();
+        assert_eq!(
+            state.tasks[original].state,
+            alondra_core::domain_v2::TaskState::Cancelled,
+            "the failed run's never-started Task does not wait forever"
+        );
+        assert_ne!(retried.task_id.as_ref(), Some(original));
+        assert_ne!(
+            state.tasks[retried.task_id.as_ref().unwrap()].state,
+            alondra_core::domain_v2::TaskState::Cancelled
+        );
     }
 
     #[tokio::test]

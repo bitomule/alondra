@@ -2716,7 +2716,12 @@ impl DomainState {
                 self.tasks.get_mut(task_id).unwrap().state = TaskState::Done;
             }
             Command::CancelTask { task_id } => {
-                self.manager(actor)?;
+                let unstarted = self.tasks.get(task_id).is_some_and(|task| {
+                    task.state == TaskState::NotStarted && !task.started && task.agent_id.is_none()
+                });
+                if !(matches!(actor, Actor::System) && unstarted) {
+                    self.manager(actor)?;
+                }
                 self.active(task_id)?;
                 self.invalidate(task_id);
                 self.tasks.get_mut(task_id).unwrap().state = TaskState::Cancelled;
