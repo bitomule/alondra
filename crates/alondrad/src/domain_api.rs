@@ -66,6 +66,7 @@ pub fn routes<H: DomainHost>() -> Router<Arc<H>> {
         .route("/requests", post(request_resource::<H>))
         .route("/tasks/{id}", patch(resource_command::<H>))
         .route("/questions", post(resource_command::<H>))
+        .route("/question-groups", post(resource_command::<H>))
         .route("/action-requests", post(resource_command::<H>))
         .route("/messages", post(resource_command::<H>))
         .route("/problems", post(resource_command::<H>))
@@ -911,6 +912,7 @@ pub(crate) fn resource_envelope(
     let (kind, path_field): (&str, Option<(&str, &str)>) = match (method, path) {
         ("POST", "/requests") => ("create_request", None),
         ("POST", "/questions") => ("ask_question", None),
+        ("POST", "/question-groups") => ("ask_questions", None),
         ("POST", "/action-requests") => ("request_action", None),
         ("POST", "/messages") => ("publish_information", None),
         ("POST", "/problems") => ("raise_problem", None),
@@ -1000,7 +1002,7 @@ pub(crate) fn resource_envelope_from_path(method: &str, path: &str, body: Value)
 pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
     let segments: Vec<_> = path.strip_prefix('/').unwrap_or_default().split('/').collect();
     let registered = match (method, segments.as_slice()) {
-        ("POST", ["requests"] | ["questions"] | ["action-requests"] | ["messages"] | ["problems"])
+        ("POST", ["requests"] | ["questions"] | ["question-groups"] | ["action-requests"] | ["messages"] | ["problems"])
         | ("POST", ["requests", _, "close"] | ["requests", _, "title"] | ["requests", _, "tasks"])
         | ("POST", ["tasks", _, "start"] | ["tasks", _, "documents"] | ["tasks", _, "document-links"]
             | ["tasks", _, "pull-requests"] | ["tasks", _, "results"] | ["tasks", _, "stack-readiness"]
@@ -1014,7 +1016,7 @@ pub(crate) fn is_resource_mutation_path(method: &str, path: &str) -> bool {
         _ => false,
     };
     registered && match segments.as_slice() {
-        ["requests"] | ["questions"] | ["action-requests"] | ["messages"] | ["problems"] => true,
+        ["requests"] | ["questions"] | ["question-groups"] | ["action-requests"] | ["messages"] | ["problems"] => true,
         ["requests", id, ..] => valid_resource_id(id),
         ["tasks", id, ..] | ["interactions", id, ..] => valid_resource_id(id),
         _ => false,

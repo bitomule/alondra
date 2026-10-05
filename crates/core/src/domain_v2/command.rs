@@ -162,6 +162,28 @@ pub enum Command {
         options: Vec<QuestionOption>,
         card: CardSpec,
     },
+    /// Several questions asked together: one Decide card per question, linked as a group and in
+    /// order. Each is answered on its own; the author gets every answer at once, when the last is in.
+    AskQuestions {
+        interaction_id: InteractionId,
+        scope: Scope,
+        recipient: Recipient,
+        blocking: bool,
+        /// Why the questions are asked, for a question that gives no why of its own.
+        why: String,
+        questions: Vec<GroupQuestion>,
+    },
+    /// The same for a Claude Code AskUserQuestion with several questions, held for its answers.
+    HoldQuestions {
+        interaction_id: InteractionId,
+        task_id: TaskId,
+        agent_id: AgentId,
+        questions: Vec<GroupQuestion>,
+    },
+    /// The user takes back an answer to a question of a group the author has not been given yet.
+    ReopenAnswer {
+        interaction_id: InteractionId,
+    },
     /// Alondra or the orchestrator puts a failure in front of the user with its ways out.
     RaiseProblem {
         #[serde(default)]

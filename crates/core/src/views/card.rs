@@ -4,7 +4,7 @@
 use super::{
     Action, ActionOption, Attachment, AttachmentKind, BlockChip, BuildError, Card, Check, CheckState,
     Checks, Client, CommentSpec, ContentRef, ContentRow, ContextLine, Detail, Fact, Facts, Icon, Input, Item,
-    Label, Lang, Link, LocalLink, Markdown, Presentation, RenderContext, Role, Row, Stamp, Step, Style,
+    Label, Lang, Link, LocalLink, Markdown, Presentation, RenderContext, Role, Row, Stamp, Style,
     TimeFormat, Tone, VIEWS_PROTOCOL, View,
     action_id::{ActionId, Verb},
     summary,
@@ -13,7 +13,7 @@ use super::{
 use crate::domain_v2::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DomainProjection, DomainState, Hold, InboxItem, InboxSubject, Interaction, InteractionId,
-    InteractionPayload, InteractionSubject, PrId, PullRequest, QuestionOption, Recipient, Scope, clip,
+    InteractionPayload, InteractionSubject, PrId, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
 };
 
 const VISIBLE_ACTIONS: usize = 3;
@@ -283,7 +283,14 @@ fn meta_line(item: &InboxItem, interaction: Option<&Interaction>, context: &Rend
     let project = item.agent_id.as_ref().and_then(|agent_id| {
         context.live.nodes.iter().find(|node| node.agent_id == agent_id.0).and_then(|node| node.project.clone())
     });
-    Some(std::iter::once(who).chain(project).collect::<Vec<_>>().join(" · "))
+    let position = interaction.and_then(|i| i.card.group.as_ref()).filter(|_| context.client == Client::Ios)
+        .map(|group| group_position(group, lang));
+    Some(std::iter::once(who).chain(project).chain(position).collect::<Vec<_>>().join(" · "))
+}
+
+/// "1 of 3": where a question stands among those asked together.
+pub(super) fn group_position(group: &QuestionGroup, lang: Lang) -> String {
+    tf!(lang, "{index} of {total}", "{index} de {total}", index = group.index, total = group.total)
 }
 
 fn state_label(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Option<Label> {
@@ -339,10 +346,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     };
     let eyebrow_text = match pr {
         Some(pr) if spec.kind == CardKind::Review => format!("{} · PR #{}", kind_label(spec.kind, lang), pr.number),
-        _ if !spec.questions.is_empty() => format!(
-            "{} · {}", kind_label(spec.kind, lang),
-            tf!(lang, "{count} questions", "{count} preguntas", count = spec.questions.len()),
-        ),
+        _ if spec.group.is_some() => format!("{} · {}", kind_label(spec.kind, lang), group_position(spec.group.as_ref().unwrap(), lang)),
         _ => kind_label(spec.kind, lang).to_owned(),
     };
     let timestamps = context
@@ -377,7 +381,6 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         body: None,
         attachments: vec![],
         actions: vec![],
-        steps: vec![],
     };
     if !included {
         return Ok(card);
@@ -413,9 +416,6 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     card.reply = reply_action(item, interaction, context);
     card.actions = visible;
     card.more = more;
-    if let Some(interaction) = interaction.filter(|_| !spec.questions.is_empty()) {
-        card.steps = steps(item, interaction, context);
-    }
     Ok(card)
 }
 
@@ -472,7 +472,6 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
         None if reviewed_revision(interaction).is_some() => {
             (DomainContent::Document, document_summary(interaction, domain, lang), attachments)
         }
-        None if !spec.questions.is_empty() => return None,
         None if attachments > 0 => (DomainContent::Attachments, summary::attachments(lang, attachments), 0),
         None => return None,
     };
@@ -685,9 +684,6 @@ fn answer_actions(
     if hold == Some(Hold::Plan) {
         return (plan_actions(interaction, available, context), vec![]);
     }
-    if !interaction.card.questions.is_empty() {
-        return (vec![], vec![]);
-    }
     let mut buttons: Vec<Action> = vec![];
     let mut more: Vec<Action> = vec![];
     if options.is_empty() {
@@ -753,56 +749,6 @@ fn answer_actions(
         buttons.extend(request_changes(Verb::Changes, &interaction.id.0, revision, None, true, available, context));
     }
     (buttons, more)
-}
-
-/// The questions of a card that asks several, each with the buttons of its own options. The
-/// client shows them one at a time and sends all the choices with the last, so every button of
-/// every step carries the same action id.
-fn steps(item: &InboxItem, interaction: &Interaction, context: &RenderContext<'_>) -> Vec<Step> {
-    let lang = context.lang;
-    let available = item.available_actions.iter().find(|action| action.kind == "answer_question");
-    let Some(id) = action_id(Verb::Ans, &interaction.id.0, interaction.revision, None) else { return vec![] };
-    let keyed = context.client != Client::Ios;
-    interaction.card.questions.iter().map(|question| {
-        let mut ordered: Vec<&QuestionOption> = question.options.iter().collect();
-        if let Some(at) = ordered.iter().position(|option| question.recommended.as_deref() == Some(option.id.as_str())) {
-            let first = ordered.remove(at);
-            ordered.insert(0, first);
-        }
-        let mut actions: Vec<Action> = ordered.into_iter().map(|option| {
-            let recommended = question.recommended.as_deref() == Some(option.id.as_str());
-            let label = if recommended { format!("★ {}", option.label) } else { option.label.clone() };
-            let mut action = button(id.to_string(), &label, if recommended { Role::Advance } else { Role::Neutral });
-            action.option_id = Some(option.id.clone());
-            action.description = option.description.clone();
-            action.stamp = Some(t!(lang, "Answered", "Respondida").into());
-            with_availability(action, available, lang)
-        }).collect();
-        let mut write = button(id.to_string(), t!(lang, "Write my own answer", "Escribir mi respuesta"), Role::Neutral);
-        write.input = text_input(t!(lang, "Answer in your own words…", "Responde con tus palabras…"), true);
-        write.stamp = Some(t!(lang, "Answered", "Respondida").into());
-        let mut write = with_availability(write, available, lang);
-        if keyed {
-            for (index, action) in actions.iter_mut().enumerate().take(9) {
-                action.key = Some((index + 1).to_string());
-            }
-            write.key = (actions.len() < 9).then(|| (actions.len() + 1).to_string());
-        }
-        let described = question.options.iter().any(|option| option.description.is_some());
-        Step {
-            content_row: described.then(|| ContentRow {
-                kind: summary::kind_name(DomainContent::Options).into(),
-                icon: Icon::Notice,
-                label: summary::label(lang, DomainContent::Options).into(),
-                summary: summary::options(lang, question.options.len()),
-                more_count: 0,
-            }),
-            need: question.need.clone(),
-            why: Some(question.why.trim().to_owned()).filter(|why| !why.is_empty()),
-            actions,
-            write: Some(write),
-        }
-    }).collect()
 }
 
 fn request_changes(
@@ -971,6 +917,43 @@ fn merge_confirm(pr: &PullRequest, context: &RenderContext<'_>) -> super::Confir
 
 /// Always behind "More": open the PR, ask the author to say it again, and the terminal's local
 /// shortcuts.
+/// "Change answers": while the rest of the questions asked together are still open, an answer
+/// already given can be taken back from any card still waiting; its card comes back to the stack.
+fn change_answers(interaction: &Interaction, context: &RenderContext<'_>) -> Option<Action> {
+    let lang = context.lang;
+    let domain = context.domain;
+    interaction.card.group.as_ref()?;
+    if !domain.open(interaction) || domain.group_complete(interaction) {
+        return None;
+    }
+    let answered: Vec<ActionOption> = domain.group_members(interaction).into_iter().filter_map(|member| {
+        let InteractionPayload::Question { options, answer: Some(answer), .. } = &member.payload else { return None };
+        let said = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.clone())
+            .or_else(|| answer.inputs.values().find_map(|value| match value {
+                crate::domain_v2::InputValue::Text(text) if !text.trim().is_empty() => Some(clip(text, 40)),
+                _ => None,
+            }))?;
+        Some(ActionOption {
+            id: member.id.0.clone(),
+            label: format!("{} → {}", clip(&member.card.need, 50), said),
+            description: None,
+            style: Style::Secondary,
+            input: Input::None,
+            key: None,
+        })
+    }).collect();
+    if answered.is_empty() {
+        return None;
+    }
+    let id = action_id(Verb::Retake, &interaction.id.0, interaction.revision, None)?;
+    let mut action = button(id.to_string(), t!(lang, "Change answers", "Cambiar respuestas"), Role::Neutral);
+    action.presentation = Presentation::Options;
+    action.options = answered;
+    action.stamp = Some(t!(lang, "Question reopened", "Pregunta reabierta").into());
+    action.key = (context.client != Client::Ios).then(|| "x".into());
+    Some(action)
+}
+
 fn extra_actions(item: &InboxItem, interaction: Option<&Interaction>, context: &RenderContext<'_>) -> Vec<Action> {
     let lang = context.lang;
     let mut out = vec![];
@@ -1007,6 +990,7 @@ fn extra_actions(item: &InboxItem, interaction: Option<&Interaction>, context: &
             out.push(with_availability(ask, Some(available), lang));
         }
     }
+    out.extend(change_answers(interaction, context));
     if context.client == Client::Tui && context.transport == super::Transport::Loopback {
         if let Some(session) = item.agent_id.as_ref().and_then(|agent| {
             context.live.nodes.iter().find(|node| node.agent_id == agent.0).and_then(|node| node.short_id.clone())

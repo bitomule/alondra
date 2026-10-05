@@ -23,7 +23,7 @@ fn instructions(role: Role, user: &str) -> String {
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options), which {user} answers one at a time and you get back together. Every question must stand on its own and be clear without your internal context, since {user} sees one at a time; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
+            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
             "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt), then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
@@ -116,7 +116,7 @@ fn input_value_schema() -> Value {
 }
 
 fn questions_schema(options: &Value) -> Value {
-    json!({"type":"array","minItems":1,"maxItems":4,"description":"Instead of options: 2 to 4 questions asked together, each with its own options. A question is a full sentence that makes sense on its own.","items":{"type":"object","properties":{
+    json!({"type":"array","minItems":1,"maxItems":4,"description":"Instead of options: 2 to 4 questions asked together, each with its own options. Each becomes its own card for the user; you get every answer at once when the last is in. A question is a full sentence that makes sense on its own.","items":{"type":"object","properties":{
         "question":{"type":"string","maxLength":90,"description":"The question, one line, clear without any internal context"},
         "options":options,
         "recommended":{"type":"string","description":"The id of the option of this question you recommend"},
@@ -174,10 +174,10 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
     };
     add(
         "ask",
-        format!("Put a decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Prefer a recommendation: set recommended to the option you would pick; never write \"(Recommended)\" in a label. Explain each choice in its description. To ask several related things at once send `questions` (2 to 4, each {{question, options, recommended, why}}) instead of options: {user} answers them one after the other and all the answers come back together, each to its own question. Every question must stand on its own and be clear without any context from your work; why only says what {user} needs to know to answer it, never another question or option. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces."),
+        format!("Put a decision in front of {user} (or the orchestrator): a Decide card with 2 to 8 options. Prefer a recommendation: set recommended to the option you would pick; never write \"(Recommended)\" in a label. Explain each choice in its description. To ask several related things at once send `questions` (2 to 4, each {{question, options, recommended, why}}) instead of options: each becomes its own card, {user} answers them one by one, and all the answers reach you together once the last is answered. Every question must stand on its own and be clear without any context from your work; why only says what {user} needs to know to answer it, never another question or option. To collect text or a file use request_input, to hand over a task use request_action. Long context goes in content, never in why. A node holds one blocking ask at a time: replace it with replaces."),
         json!({"need":need_schema(),"why":why_schema(),"options":interaction["options"],"recommended":{"type":"string","description":"The id of the option you recommend"},
             "questions":questions_schema(&interaction["options"]),"blocking":blocking,"blocks":blocks_schema(),"replaces":replaces_schema(),"content":content_schema(),"attachments":attachments}),
-        &["need", "why", "blocking"],
+        &["why", "blocking"],
     );
     add(
         "request_action",
@@ -749,6 +749,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
     };
     let id = |key: &str| -> Result<String> { Ok(urlencode(value(key)?)) };
     let target = match name {
+        "ask" if asks_together(command) => ("POST", "/question-groups".to_owned()),
         "ask" | "ask_question" | "request_input" | "request_test" => ("POST", "/questions".to_owned()),
         "request_action" => ("POST", "/action-requests".to_owned()),
         "publish_information" => ("POST", "/messages".to_owned()),
@@ -787,6 +788,7 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
 
 fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str) -> Result<Value> {
     let kind = match name {
+        "ask" if asks_together(args) => "ask_questions",
         "ask" | "request_input" | "request_test" => "ask_question",
         "request_action" => "request_action",
         "publish_information" => "publish_information",
@@ -878,6 +880,11 @@ fn take_text(command: &mut serde_json::Map<String, Value>, key: &str) -> String 
     command.remove(key).and_then(|v| v.as_str().map(str::to_owned)).unwrap_or_default()
 }
 
+/// An `ask` that puts several questions in front of the user at once.
+fn asks_together(command: &Value) -> bool {
+    command.get("questions").and_then(Value::as_array).is_some_and(|questions| questions.len() > 1)
+}
+
 /// An option labelled "(Recommended)" is the recommended one: the label loses the mark, and the
 /// option's id goes to `recommended` unless the author already named one.
 fn recommend_marked(options: Option<&mut Value>, recommended: &mut Option<Value>) {
@@ -893,18 +900,18 @@ fn recommend_marked(options: Option<&mut Value>, recommended: &mut Option<Value>
     }
 }
 
-/// The questions of an `ask` that puts several to the user at once (`questions`, up to 4, each
-/// with its own options): two or more become the card's questions, answered one after the other
-/// and returned together; one is the card's single decision. The marks "(Recommended)" of the
-/// labels become `recommended` either way.
-fn fold_questions(command: &mut serde_json::Map<String, Value>) -> Result<Option<Value>> {
+/// The marks "(Recommended)" of an `ask`'s labels become `recommended`. An `ask` with
+/// `questions` puts them in front of the user together, one card each, answered one by one and
+/// delivered together: two or more reshape the command into the group (true); one is the card's
+/// single decision.
+fn fold_questions(command: &mut serde_json::Map<String, Value>) -> Result<bool> {
     let mut recommended = command.remove("recommended").filter(|v| !v.is_null());
     recommend_marked(command.get_mut("options"), &mut recommended);
     let Some(questions) = command.remove("questions").filter(|v| !v.is_null()) else {
         if let Some(recommended) = recommended {
             command.insert("recommended".into(), recommended);
         }
-        return Ok(None);
+        return Ok(false);
     };
     let Value::Array(questions) = questions else { anyhow::bail!("invalid_input: questions is a list of {{question, options, recommended, why}}") };
     let mut folded = vec![];
@@ -913,49 +920,54 @@ fn fold_questions(command: &mut serde_json::Map<String, Value>) -> Result<Option
         let text = take_text(&mut question, "question");
         let mut chosen = question.remove("recommended").filter(|v| !v.is_null());
         recommend_marked(question.get_mut("options"), &mut chosen);
-        let mut card = serde_json::Map::new();
-        card.insert("need".into(), json!(text));
-        card.insert("why".into(), json!(take_text(&mut question, "why")));
-        card.insert("options".into(), question.remove("options").unwrap_or_else(|| json!([])));
+        let mut one = serde_json::Map::new();
+        one.insert("need".into(), json!(text));
+        one.insert("why".into(), json!(take_text(&mut question, "why")));
+        one.insert("options".into(), question.remove("options").unwrap_or_else(|| json!([])));
         if let Some(chosen) = chosen {
-            card.insert("recommended".into(), chosen);
+            one.insert("recommended".into(), chosen);
         }
         if let Some(extra) = question.keys().next() {
             anyhow::bail!("invalid_input: a question has no field {extra}: use question, options, recommended and why");
         }
-        folded.push(Value::Object(card));
+        folded.push(Value::Object(one));
     }
-    if command.get("need").and_then(Value::as_str).is_none_or(|need| need.trim().is_empty()) {
-        if let Some(first) = folded.first().and_then(|q| q["need"].as_str()) {
-            command.insert("need".into(), json!(first));
-        }
-    }
+    let has_options = command.get("options").and_then(Value::as_array).is_some_and(|options| !options.is_empty());
     if folded.len() == 1 {
-        let Some(Value::Object(only)) = folded.pop() else { unreachable!() };
-        if command.contains_key("options") {
+        if has_options {
             anyhow::bail!("invalid_input: send options or questions, not both");
+        }
+        let Some(Value::Object(only)) = folded.pop() else { unreachable!() };
+        if command.get("need").and_then(Value::as_str).is_none_or(|need| need.trim().is_empty()) {
+            command.insert("need".into(), only["need"].clone());
         }
         command.insert("options".into(), only["options"].clone());
         if let Some(chosen) = only.get("recommended") {
             command.insert("recommended".into(), chosen.clone());
         }
-        return Ok(None);
+        return Ok(false);
     }
-    if command.get("options").and_then(Value::as_array).is_some_and(|options| !options.is_empty()) {
-        anyhow::bail!("invalid_input: send options or questions, not both: with questions each one has its own options");
+    if has_options || recommended.is_some() {
+        anyhow::bail!("invalid_input: with questions each one has its own options and recommended: leave the ask's own out");
     }
-    command.insert("options".into(), json!([]));
-    if let Some(recommended) = recommended {
-        command.insert("recommended".into(), recommended);
+    for key in ["content", "blocks", "replaces", "verify", "attachments", "body", "options", "need"] {
+        if command.get(key).is_some_and(|value| !value.is_null()) && key != "need" && key != "options" {
+            anyhow::bail!("invalid_input: {key} does not go with questions: each question is a card of its own with its options and why");
+        }
+        command.remove(key);
     }
-    Ok(Some(Value::Array(folded)))
+    command.entry("why").or_insert_with(|| json!(""));
+    command.insert("questions".into(), Value::Array(folded));
+    Ok(true)
 }
 
 /// The card a card tool describes, from the flat fields the node sent. Missing words stay empty
 /// so alondrad refuses them with the field and the fix, and counts the refusal.
 fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Result<()> {
     let Some(kind) = card_kind(name, command) else { return Ok(()) };
-    let questions = if name == "ask" { fold_questions(command)? } else { None };
+    if name == "ask" && fold_questions(command)? {
+        return Ok(());
+    }
     let need = take_text(command, "need");
     let mut why = take_text(command, "why");
     let mut content = command.remove("content").filter(|v| !v.is_null()).map(unplan_content);
@@ -1002,9 +1014,6 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
         _ => {}
     }
     card.insert("kind".into(), json!(kind));
-    if let Some(questions) = questions {
-        card.insert("questions".into(), questions);
-    }
     card.insert("need".into(), json!(need));
     card.insert("why".into(), json!(why));
     if let Some(content) = &content {
@@ -1850,7 +1859,7 @@ mod card_tool_tests {
     #[test]
     fn each_card_tool_requires_the_words_of_its_card() {
         let table: [(&str, &[&str]); 7] = [
-            ("ask", &["need", "why", "blocking"]),
+            ("ask", &["why", "blocking"]),
             ("request_action", &["need", "why", "verify", "blocking"]),
             ("request_input", &["need", "why", "kind", "blocking"]),
             ("request_test", &["need", "where", "what"]),
@@ -1987,38 +1996,36 @@ mod card_tool_tests {
     }
 
     #[test]
-    fn an_ask_with_several_questions_is_one_card_with_each_question_and_its_own_options() {
-        let command = built("ask", with(json!({
+    fn an_ask_with_several_questions_is_one_group_of_questions_each_with_its_own_options() {
+        let args = with(json!({
             "why":"The release needs all three","blocking":true,
             "questions":[
                 {"question":"Which name?","options":options(),"recommended":"a","why":"It goes on the tag"},
                 {"question":"Ship it today?","options":[{"id":"y","label":"Yes (Recommended)","inputs":[]},{"id":"n","label":"No","inputs":[]}]},
             ]
-        })));
-        assert_eq!(command["options"], json!([]), "the card's own options stay empty");
-        let card = &command["card"];
-        assert_eq!(card["need"], "Which name?", "the first question is the card's need when the node gave none");
-        assert!(card.get("recommended").is_none());
-        let questions = card["questions"].as_array().unwrap();
-        assert_eq!(questions.len(), 2);
+        }));
+        let envelope = domain_envelope("ask", &args, "epoch", "id").unwrap();
+        assert_eq!(envelope["command"]["kind"], "ask_questions");
+        assert_eq!(resource_target("ask", &args).unwrap(), ("POST", "/question-groups".to_owned()));
+        let command = &envelope["command"];
+        assert!(command.get("card").is_none() && command.get("options").is_none(), "no card of its own");
+        let questions = command["questions"].as_array().unwrap();
         assert_eq!((questions[0]["need"].as_str(), questions[0]["why"].as_str(), questions[0]["recommended"].as_str()),
             (Some("Which name?"), Some("It goes on the tag"), Some("a")));
         assert_eq!(questions[1]["options"][0]["label"], "Yes", "the mark is taken off the label");
         assert_eq!(questions[1]["recommended"], "y", "and becomes the recommendation");
-        let parsed: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(
-            domain_envelope("ask", &with(json!({"need":"Three things","why":"Why","blocking":true,
-                "questions":[{"question":"A?","options":options()},{"question":"B?","options":options()}]})), "epoch", "id").unwrap(),
-        ).unwrap();
-        let alondra_core::domain_v2::Command::AskQuestion { card, options, .. } = parsed.command else { panic!("ask") };
-        assert_eq!((card.need.as_str(), card.questions.len(), options.len()), ("Three things", 2, 0));
+        let parsed: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope).unwrap();
+        let alondra_core::domain_v2::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
+        assert_eq!((questions.len(), blocking), (2, true));
     }
 
     #[test]
     fn one_question_in_questions_is_the_single_decision_and_a_label_never_carries_the_recommendation() {
-        let folded = built("ask", with(json!({"need":"Pick","why":"Why","blocking":true,
-            "questions":[{"question":"Which name?","options":options(),"recommended":"b"}]})));
+        let args = with(json!({"need":"Pick","why":"Why","blocking":true,
+            "questions":[{"question":"Which name?","options":options(),"recommended":"b"}]}));
+        let folded = built("ask", args.clone());
         assert_eq!((folded["card"]["recommended"].as_str(), folded["options"].as_array().map(Vec::len)), (Some("b"), Some(2)));
-        assert!(folded["card"].get("questions").is_none());
+        assert_eq!(domain_envelope("ask", &args, "epoch", "id").unwrap()["command"]["kind"], "ask_question");
         let marked = built("ask", with(json!({"need":"Pick","why":"Why","blocking":true,
             "options":[{"id":"a","label":"Atlas (Recommended)","inputs":[]},{"id":"b","label":"Borealis","inputs":[]}]})));
         assert_eq!(marked["options"][0]["label"], "Atlas");
@@ -2026,10 +2033,12 @@ mod card_tool_tests {
         let chosen = built("ask", with(json!({"need":"Pick","why":"Why","blocking":true,"recommended":"b",
             "options":[{"id":"a","label":"Atlas (Recommended)","inputs":[]},{"id":"b","label":"Borealis","inputs":[]}]})));
         assert_eq!(chosen["card"]["recommended"], "b", "the node's own choice wins");
+        let two = || json!([{"question":"A?","options":options()},{"question":"B?","options":options()}]);
         for bad in [
-            json!({"need":"n","why":"w","blocking":true,"options":options(),"questions":[{"question":"A?","options":options()},{"question":"B?","options":options()}]}),
-            json!({"need":"n","why":"w","blocking":true,"questions":"A?"}),
-            json!({"need":"n","why":"w","blocking":true,"questions":[{"question":"A?","options":options(),"hint":"x"},{"question":"B?","options":options()}]}),
+            json!({"why":"w","blocking":true,"options":options(),"questions":two()}),
+            json!({"why":"w","blocking":true,"questions":"A?"}),
+            json!({"why":"w","blocking":true,"questions":[{"question":"A?","options":options(),"hint":"x"},{"question":"B?","options":options()}]}),
+            json!({"why":"w","blocking":true,"replaces":"old","questions":two()}),
         ] {
             assert!(domain_envelope("ask", &with(bad.clone()), "epoch", "id").is_err(), "{bad}");
         }

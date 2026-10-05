@@ -307,6 +307,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::ArchiveTask { task_id, .. } => Some(task_id.clone()),
         Command::PublishInformation { scope, .. }
         | Command::AskQuestion { scope, .. }
+        | Command::AskQuestions { scope, .. }
         | Command::RequestAction { scope, .. }
         | Command::RaiseProblem { scope, .. } => match scope {
             Scope::Task { task_id } => Some(task_id.clone()),
@@ -316,6 +317,7 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::Withdraw { interaction_id }
         | Command::RequestClarification { interaction_id, .. }
         | Command::AnswerQuestion { interaction_id, .. }
+        | Command::ReopenAnswer { interaction_id }
         | Command::LinkInteractionSubject { interaction_id, .. } => {
             interaction_task(state, interaction_id)
         }
@@ -355,7 +357,8 @@ fn command_task(state: &DomainState, command: &Command) -> Option<TaskId> {
         | Command::RegisterAgent { .. }
         | Command::ObserveAgent { .. }
         | Command::AdvanceOrchestratorGeneration { .. }
-        | Command::HoldHook { .. } => None,
+        | Command::HoldHook { .. }
+        | Command::HoldQuestions { .. } => None,
     }
 }
 fn interaction_task(state: &DomainState, id: &InteractionId) -> Option<TaskId> {

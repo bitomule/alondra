@@ -91,9 +91,7 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
     {
         return refuse("invalid_input", "card.recommended", "Recommend the id of one of the card's options, or leave it out");
     }
-    if !card.questions.is_empty() {
-        validate_questions(card, options, source)?;
-    } else if card.kind == CardKind::Decide && source != Source::Hold {
+    if card.kind == CardKind::Decide && source != Source::Hold {
         decide_options(options)?;
     }
     if blocking && card.kind.never_blocks() {
@@ -104,40 +102,22 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
     }
     Ok(())
 }
-/// A card that asks several questions: 2 to 4 that each stand on their own, with their own
-/// options and recommendation, and nothing left in the card's own options.
-fn validate_questions(card: &CardSpec, options: &[QuestionOption], source: Source) -> Result<()> {
-    if card.kind != CardKind::Decide {
-        return refuse("invalid_input", "card.questions", "Only a decide card asks several questions");
+/// The cards of several questions asked together: 2 to 4 that each stand on their own.
+fn group_cards(group: &InteractionId, why: &str, questions: &[GroupQuestion]) -> Result<Vec<(InteractionId, CardSpec, Vec<QuestionOption>)>> {
+    id(&group.0)?;
+    if !(2..=QuestionGroup::MAX).contains(&questions.len()) {
+        return refuse("invalid_input", "questions", &format!("Ask 2 to {} questions together, or one question with options", QuestionGroup::MAX));
     }
-    if !options.is_empty() || card.recommended.is_some() {
-        return refuse("invalid_input", "card.questions", "A card that asks several questions has its options and recommendation inside each question: leave the card's own out");
-    }
-    if !(2..=CardQuestion::MAX).contains(&card.questions.len()) {
-        return refuse("invalid_input", "card.questions", &format!("Ask 2 to {} questions in one card, or use one question with options", CardQuestion::MAX));
-    }
-    for question in &card.questions {
-        let need = question.need.trim();
-        if need.is_empty() || need.contains('\n') {
-            return refuse("invalid_input", "card.questions.need", "Every question is one clear line that stands on its own");
+    questions.iter().enumerate().map(|(at, question)| {
+        if question.need.trim().is_empty() || question.need.contains('\n') {
+            return refuse("invalid_input", "card.need", "Every question is one clear line that stands on its own");
         }
-        if need.chars().count() > CardSpec::NEED_MAX {
-            return refuse("invalid_input", "card.questions.need", &format!("At most {} characters: keep the question short and put what the user needs to know in its why", CardSpec::NEED_MAX));
-        }
-        if question.why.chars().count() > CardSpec::WHY_MAX {
-            return refuse("invalid_input", "card.questions.why", &format!("At most {} characters", CardSpec::WHY_MAX));
-        }
-        validate_options(&question.options)?;
-        if source != Source::Hold {
-            decide_options(&question.options)?;
-        }
-        if let Some(recommended) = &question.recommended
-            && !question.options.iter().any(|option| &option.id == recommended)
-        {
-            return refuse("invalid_input", "card.questions.recommended", "Recommend the id of one of the question's options, or leave it out");
-        }
-    }
-    Ok(())
+        let own_why = if question.why.trim().is_empty() { why } else { question.why.as_str() };
+        let mut card = CardSpec::new(CardKind::Decide, question.need.trim()).why(own_why.trim());
+        card.recommended = question.recommended.clone();
+        card.group = Some(QuestionGroup { id: group.0.clone(), index: (at + 1) as u8, total: questions.len() as u8 });
+        Ok((QuestionGroup::card_id(group, at + 1), card, question.options.clone()))
+    }).collect()
 }
 /// R19: a decision offers 2–8 short distinct options, at most one of them recommended.
 fn decide_options(options: &[QuestionOption]) -> Result<()> {
@@ -520,6 +500,23 @@ impl DomainState {
             i.revision = self.revision + 1;
         }
     }
+    /// The questions asked together with `i`, in the order they were asked; just `i` for a question
+    /// asked alone.
+    pub fn group_members<'a>(&'a self, i: &'a Interaction) -> Vec<&'a Interaction> {
+        let Some(group) = &i.card.group else { return vec![i] };
+        let mut members: Vec<&Interaction> = self.interactions.values()
+            .filter(|other| other.author == i.author && other.card.group.as_ref().is_some_and(|g| g.id == group.id))
+            .collect();
+        members.sort_by_key(|other| other.card.group.as_ref().map_or(0, |g| g.index));
+        members
+    }
+    fn answered_question(i: &Interaction) -> bool {
+        matches!(&i.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. })
+    }
+    /// Every question of the group has its answer: the author is given them all together.
+    pub fn group_complete(&self, i: &Interaction) -> bool {
+        self.group_members(i).iter().all(|member| !member.withdrawn && Self::answered_question(member))
+    }
     /// R8: the same notice, still unread, from the same author to the same place.
     fn repeated_notice(&self, author: &Author, scope: &Scope, to: &Recipient, body: &str, card: &CardSpec, source: Source) -> Option<InteractionId> {
         if source != Source::Information {
@@ -590,6 +587,7 @@ impl DomainState {
         let open = self.interactions.values().find(|i| {
             &i.author == author && i.blocking && i.card.kind.one_at_a_time() && self.open(i)
                 && card.replaces.as_ref() != Some(&i.id)
+                && !(card.group.is_some() && card.group.as_ref().map(|g| &g.id) == i.card.group.as_ref().map(|g| &g.id))
         });
         match open {
             Some(x) => refuse(
@@ -1186,9 +1184,11 @@ impl DomainState {
             | Command::CancelTask { task_id }
             | Command::ReopenTask { task_id }
             | Command::ArchiveTask { task_id, .. }
-            | Command::HoldHook { task_id, .. } => task(task_id),
+            | Command::HoldHook { task_id, .. }
+            | Command::HoldQuestions { task_id, .. } => task(task_id),
             Command::PublishInformation { scope, .. }
             | Command::AskQuestion { scope, .. }
+            | Command::AskQuestions { scope, .. }
             | Command::RequestAction { scope, .. }
             | Command::RaiseProblem { scope, .. } => match scope {
                 Scope::Task { task_id } => task(task_id),
@@ -1198,6 +1198,7 @@ impl DomainState {
             | Command::Withdraw { interaction_id }
             | Command::RequestClarification { interaction_id, .. }
             | Command::AnswerQuestion { interaction_id, .. }
+            | Command::ReopenAnswer { interaction_id }
             | Command::LinkInteractionSubject { interaction_id, .. }
             | Command::SubmitFeedback {
                 presentation_id: interaction_id,
@@ -1820,6 +1821,68 @@ impl DomainState {
                     });
                 }
             }
+            Command::AskQuestions { interaction_id, scope, recipient, blocking, why, questions } => {
+                for (card_id, card, options) in group_cards(interaction_id, why, questions)? {
+                    validate_options(&options)?;
+                    self.insert_interaction(
+                        actor, &card_id, scope, recipient, &card.need, *blocking, &[],
+                        InteractionPayload::Question { options, answer: None }, &card, Source::Question,
+                    )?;
+                    created.push(card_id.0.clone());
+                    if matches!(recipient, Recipient::User) {
+                        effects.push(DomainEffect::NotifyUser {
+                            task_id: match scope {
+                                Scope::Task { task_id } => Some(task_id.clone()),
+                                Scope::Orchestrator { .. } => None,
+                            },
+                            interaction_id: card_id.clone(),
+                        });
+                    }
+                    if matches!(recipient, Recipient::Orchestrator) {
+                        effects.push(DomainEffect::NotifyOrchestrator { interaction_id: Some(card_id.clone()), request_id: None });
+                    }
+                }
+            }
+            Command::HoldQuestions { interaction_id, task_id, agent_id, questions } => {
+                if !matches!(actor, Actor::System) {
+                    return fail("forbidden", "Only Alondra holds a hook");
+                }
+                let scope = Scope::Task { task_id: task_id.clone() };
+                self.assigned(&Actor::Agent { agent_id: agent_id.clone() }, task_id)?;
+                for (card_id, card, options) in group_cards(interaction_id, "", questions)? {
+                    validate_options(&options)?;
+                    self.insert_interaction(
+                        &Actor::Agent { agent_id: agent_id.clone() }, &card_id, &scope, &Recipient::User, &card.need, true, &[],
+                        InteractionPayload::Question { options, answer: None }, &card, Source::Hold,
+                    )?;
+                    self.holds.insert(card_id.clone(), Hold::Question);
+                    created.push(card_id.0.clone());
+                    effects.push(DomainEffect::NotifyUser { task_id: Some(task_id.clone()), interaction_id: card_id.clone() });
+                }
+            }
+            Command::ReopenAnswer { interaction_id } => {
+                user(actor)?;
+                let i = self.interaction(interaction_id)?.clone();
+                if i.card.group.is_none() {
+                    return refuse("invalid_action_for_kind", "interaction_id", "Only a question asked together with others can be reopened");
+                }
+                if !Self::answered_question(&i) || i.withdrawn {
+                    return refuse("invalid_action_for_kind", "interaction_id", "This question has no answer to take back");
+                }
+                if self.group_complete(&i) {
+                    return refuse("question_already_answered", "interaction_id", "Every question is answered and its author has the answers: they are final");
+                }
+                if let Scope::Task { task_id } = &i.scope {
+                    self.active(task_id)?;
+                }
+                let revision = self.revision + 1;
+                let i = self.interactions.get_mut(interaction_id).unwrap();
+                match &mut i.payload {
+                    InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. } => *answer = None,
+                    _ => unreachable!(),
+                }
+                i.revision = revision;
+            }
             Command::HoldHook {
                 interaction_id,
                 task_id,
@@ -1866,7 +1929,11 @@ impl DomainState {
                     (Author::System, Actor::System) => {}
                     _ => return refuse("forbidden", "interaction_id", "Only a card's author withdraws it: withdraw only your own cards"),
                 }
-                if matches!(&i.payload, InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. }) {
+                if i.card.group.is_some() {
+                    if self.group_complete(i) {
+                        return refuse("question_already_answered", "interaction_id", "The user answered every question: they are final, act on the answers");
+                    }
+                } else if Self::answered_question(i) {
                     return refuse("question_already_answered", "interaction_id", "The user already answered this card: it is final, act on the answer");
                 }
                 if matches!(&i.payload, InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid) {
@@ -1878,7 +1945,17 @@ impl DomainState {
                             if self.tasks.get(task_id).is_some_and(|t| t.final_presentation.as_ref() == Some(interaction_id)) => Some(task_id.clone()),
                         _ => None,
                     };
+                    let current = self.interactions[interaction_id].clone();
+                    let siblings: Vec<InteractionId> = self.group_members(&current).iter().map(|member| member.id.clone()).collect();
                     self.retire(interaction_id);
+                    for sibling in &siblings {
+                        self.retire(sibling);
+                        if let Some(InteractionPayload::Question { answer, .. } | InteractionPayload::ActionRequest { answer, .. }) =
+                            self.interactions.get_mut(sibling).map(|member| &mut member.payload)
+                        {
+                            *answer = None;
+                        }
+                    }
                     if let Some(task) = presented {
                         self.invalidate(&task);
                         self.tasks.get_mut(&task).unwrap().final_presentation = None;
@@ -2000,11 +2077,7 @@ impl DomainState {
                 if i.withdrawn {
                     return fail("withdrawn", "Its author withdrew this question");
                 }
-                if i.card.questions.is_empty() {
-                    validate_answer(options, option_id, inputs)?;
-                } else {
-                    validate_question_answers(&i.card.questions, option_id, inputs)?;
-                }
+                validate_answer(options, option_id, inputs)?;
                 validate_attachments(attachments)?;
                 let a = Answer {
                     attachments: attachments.clone(),
@@ -2023,11 +2096,12 @@ impl DomainState {
                 if i.card.kind == CardKind::Propose && option_id == PROPOSAL_ACCEPTED {
                     self.start_proposal(interaction_id, created, effects);
                 }
-                let i = self.interactions.get_mut(interaction_id).unwrap();
                 // D05: the answer reaches whoever holds the Task now, not the
                 // session that asked and may since have been replaced.
+                let complete = self.group_complete(&self.interactions[interaction_id]);
+                let i = self.interactions.get_mut(interaction_id).unwrap();
                 match (i.author.clone(), i.scope.clone()) {
-                    _ if self.holds.contains_key(interaction_id) => {}
+                    _ if self.holds.contains_key(interaction_id) || !complete => {}
                     (Author::Agent { .. }, Scope::Task { task_id }) => {
                         self.notify(&task_id, Some(interaction_id.clone()), "Question answered", effects)?;
                     }
@@ -3069,11 +3143,7 @@ impl DomainState {
                     validate_options(options)?;
                     if let Some(a) = answer {
                         validate_attachments(&a.attachments)?;
-                        if i.card.questions.is_empty() {
-                            validate_answer(options, &a.option_id, &a.inputs)?;
-                        } else {
-                            validate_question_answers(&i.card.questions, &a.option_id, &a.inputs)?;
-                        }
+                        validate_answer(options, &a.option_id, &a.inputs)?;
                         id(&a.responder)?;
                         if a.at_revision > self.revision {
                             return fail("invalid_input", "Answer revision from future");
@@ -3207,38 +3277,6 @@ fn validate_options(options: &[QuestionOption]) -> Result<()> {
             if !fields.insert(&input.id) {
                 return fail("invalid_input", "Duplicate input ID");
             }
-        }
-    }
-    Ok(())
-}
-/// An answer to a card that asks several questions gives every one of them an option or words.
-fn validate_question_answers(
-    questions: &[CardQuestion],
-    option: &str,
-    inputs: &BTreeMap<String, InputValue>,
-) -> Result<()> {
-    if !option.is_empty() {
-        return refuse("invalid_input", "option_id", "This card asks several questions: answer each one");
-    }
-    let allowed: BTreeSet<String> = (0..questions.len())
-        .flat_map(|index| [Answer::question_key(index), Answer::question_text_key(index)])
-        .collect();
-    if inputs.keys().any(|key| !allowed.contains(key)) {
-        return fail("invalid_input", "Unknown answer field");
-    }
-    let text = |key: String| match inputs.get(&key) {
-        Some(InputValue::Text(text)) if text.len() <= 1_048_576 => Ok(text.trim()),
-        None => Ok(""),
-        Some(_) => fail::<&str>("invalid_input", "Answer field type or value invalid"),
-    };
-    for (index, question) in questions.iter().enumerate() {
-        let chosen = text(Answer::question_key(index))?;
-        let words = text(Answer::question_text_key(index))?;
-        if !chosen.is_empty() && !question.options.iter().any(|option| option.id == chosen) {
-            return fail("invalid_input", "Unknown option ID");
-        }
-        if chosen.is_empty() && words.is_empty() {
-            return refuse("invalid_input", "inputs", &format!("Answer question {} too", index + 1));
         }
     }
     Ok(())

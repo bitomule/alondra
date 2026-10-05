@@ -74,14 +74,6 @@ extension Fixtures {
         }
     }
 
-    /// Claude Code asked three questions at once: one card shows them one at a time, each with its
-    /// own options, and every button carries the same action id.
-    static let questionsID = "7c9a034b-249e-4487-a89b-57de38c26372"
-
-    static func questionsCard(_ name: String = "card-questions") throws -> ViewDocument {
-        try document(name)
-    }
-
     /// A decision with five options: three buttons show and two wait under "More…".
     static func crowdedDecision(id: String = "decide-5") throws -> ViewDocument {
         try retargeted(

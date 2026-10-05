@@ -15,63 +15,6 @@ extension ActionRole {
     }
 }
 
-/// Where the user is in a card that asks several questions: a dot per question with the answered
-/// ones and the one shown filled, the count in words, and a way back to the question before.
-struct QuestionProgress: View {
-    let index: Int
-    let total: Int
-    let tint: Color
-    let back: (() -> Void)?
-
-    var body: some View {
-        HStack(spacing: 10) {
-            if let back {
-                Button(action: back) {
-                    Image(systemName: "chevron.left").font(.footnote.weight(.bold))
-                        .frame(width: 28, height: 28).background(Palette.hairline, in: .circle)
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Previous question")
-            }
-            HStack(spacing: 6) {
-                ForEach(0..<total, id: \.self) { dot in
-                    Capsule().fill(dot <= index ? tint : Palette.hairline).frame(width: dot == index ? 22 : 8, height: 8)
-                }
-            }
-            .accessibilityHidden(true)
-            Spacer(minLength: 4)
-            Text("Question \(index + 1) of \(total)").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-        }
-        .animation(.snappy, value: index)
-        .accessibilityElement(children: .contain)
-    }
-}
-
-/// What choosing each option of the question shown means, for the options whose author said so.
-struct OptionDescriptions: View {
-    let step: CardStep
-    let tint: Color
-
-    var body: some View {
-        let described = step.actions.filter { $0.description != nil }
-        if !described.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                ForEach(Array(described.enumerated()), id: \.offset) { _, action in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(action.label).font(.subheadline.weight(.semibold)).foregroundStyle(Palette.ink)
-                        Text(action.description ?? "").font(.subheadline).foregroundStyle(.secondary)
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            }
-            .padding(14)
-            .background(tint.opacity(0.08), in: .rect(cornerRadius: 16, style: .continuous))
-            .accessibilityElement(children: .contain)
-        }
-    }
-}
-
 extension View {
     /// A bar button as Liquid Glass: tinted and prominent to advance or to risk, plain glass otherwise.
     @ViewBuilder func glassRole(_ role: ActionRole) -> some View {
