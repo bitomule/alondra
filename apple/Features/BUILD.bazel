@@ -41,6 +41,6 @@ swift_test(
 
 filegroup(
     name = "sources",
-    srcs = glob(["Sources/ViewsUI/**/*.swift"]),
+    srcs = glob(["Sources/**/*.swift"]),
     visibility = ["//apple:__pkg__"],
 )

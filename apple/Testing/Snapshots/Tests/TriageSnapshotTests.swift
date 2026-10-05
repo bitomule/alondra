@@ -39,7 +39,7 @@ final class TriageSnapshotTests: XCTestCase {
 
     func test_cannotReachTheMac() {
         var state = TriageFeature.State()
-        state.screen.phase = .failed("Couldn’t load this from your Mac. Try again.")
+        state.screen.phase = .failed(TriageFeature.loadFailure)
         assertVariants { Harness(store: ScreenStores.triage(state: state)) }
     }
 
@@ -225,12 +225,12 @@ final class TriageSnapshotTests: XCTestCase {
     }
 
     func test_stackWhoseFrontCardFailedToLoad() throws {
-        let store = try stackWithAFrontCard(in: .failed("Couldn’t load this from your Mac. Try again."))
+        let store = try stackWithAFrontCard(in: .failed(TriageFeature.loadFailure))
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
     func test_stackWhoseFrontCardFailedToLoad_es() throws {
-        let store = try stackWithAFrontCard(in: .failed("Couldn’t load this from your Mac. Try again."))
+        let store = try stackWithAFrontCard(in: .failed(TriageFeature.loadFailure))
         assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 

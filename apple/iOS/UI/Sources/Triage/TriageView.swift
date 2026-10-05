@@ -264,7 +264,7 @@ private struct CardPlaceholder: View {
         case .failed(let message):
             unavailable {
                 ContentUnavailableView {
-                    Label("Could not connect to the fleet", systemImage: "exclamationmark.triangle")
+                    Label("Couldn’t load this card", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(message)
                 } actions: {
