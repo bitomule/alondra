@@ -205,6 +205,14 @@ async fn deliver_user_runtime(
         crate::push_gate::Gate::Wait(reason) => return Err((State::Retryable, reason)),
         crate::push_gate::Gate::Drop(reason) => return Err((State::Discarded, reason)),
     }
+    if let Some(id) = message.interaction_id.as_deref() {
+        let copies = crate::push_gate::earlier_copies(&state, &InteractionId::from(id));
+        let told = !copies.is_empty() && domain.store.lock().expect("domain store poisoned").user_push_handed(&copies)
+            .map_err(|_| (State::Retryable, "domain_read_failed"))?;
+        if told {
+            return Err((State::Discarded, "already_notified"));
+        }
+    }
     let state = domain
         .state()
         .map_err(|_| (State::Retryable, "domain_read_failed"))?;
@@ -1175,6 +1183,68 @@ mod tests {
             .iter().any(|item| item.message_id == user.id && item.state == "discarded"),
             "a card that is gone is never announced");
         assert!(!domain.store.lock().unwrap().pending_messages().unwrap().iter().any(|message| message.id == user.id));
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    /// The node's plan call is cut (a restart of its session), the card is withdrawn and the node
+    /// puts the same plan again under a new call: the user is not told twice, across a daemon
+    /// restart too. A plan that changed, or one asked again after it was answered, is told.
+    #[tokio::test]
+    async fn a_card_put_again_unchanged_after_its_call_was_cut_is_not_pushed_twice() {
+        let home = std::env::temp_dir().join(format!("alondra-repeated-push-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        let open = || Arc::new(DomainRuntime::open(&home).unwrap());
+        let domain = open();
+        v2_command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "agent-a".into(), name: "A".into() });
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "request", Command::CreateRequest {
+            request_id: "request".into(), body: "Work".into(), auto_merge: false });
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "task", Command::CreateTask {
+            task_id: "task-a".into(), request_id: "request".into(), title: "Task".into(), agent_id: Some("agent-a".into()),
+            review_prs: false, dependencies: Default::default(), stack: None });
+        let plan = |domain: &DomainRuntime, call: &str, text: &str| {
+            let card = serde_json::from_value(json!({"session_id": "agent-a", "id": call, "kind": "plan", "input": {"plan": text}})).unwrap();
+            match crate::domain_holds::post(domain, &card, true).unwrap() {
+                crate::domain_holds::Posted::Held(id) => id,
+                _ => panic!("the plan is held"),
+            }
+        };
+        let push = |domain: Arc<DomainRuntime>, card: InteractionId| {
+            let home = home.clone();
+            async move {
+                let client = crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+                let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+                    .find(|message| message.interaction_id.as_deref() == Some(card.0.as_str()) && message.recipient_kind == "user")
+                    .unwrap();
+                deliver_one_v2(&domain, &home, &Push::open(&home).unwrap(), None, &client, message.clone(), Duration::ZERO).await.unwrap();
+                let evidence = domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();
+                let item = evidence.iter().find(|item| item.message_id == message.id).unwrap();
+                (item.state.clone(), item.reason.clone())
+            }
+        };
+        let handed = ("handed".to_owned(), None);
+
+        let first = plan(&domain, "call-1", "Ship the parser");
+        assert_eq!(push(domain.clone(), first).await, handed);
+        crate::domain_holds::release_call(&domain, "agent-a", "call-1").unwrap();
+        let again = plan(&domain, "call-2", "Ship the parser");
+        drop(domain);
+
+        let domain = open();
+        assert_eq!(push(domain.clone(), again.clone()).await, ("discarded".to_owned(), Some("already_notified".to_owned())),
+            "the same plan again, after a daemon restart: not a new notice");
+        assert!(domain.state().unwrap().projection().inbox.iter().any(|item| item.pending
+            && matches!(&item.subject, InboxSubject::Interaction { interaction_id } if *interaction_id == again)),
+            "the card still waits in the inbox");
+
+        crate::domain_holds::release_call(&domain, "agent-a", "call-2").unwrap();
+        let changed = plan(&domain, "call-3", "Ship the parser and its tests");
+        assert_eq!(push(domain.clone(), changed.clone()).await, handed, "a plan that changed is a new notice");
+
+        v2_command(&domain, Actor::User { user_id: "u".into() }, "answer", Command::AnswerQuestion {
+            attachments: vec![], interaction_id: changed, option_id: Hold::REQUEST_CHANGES.into(), inputs: Default::default() });
+        let asked_again = plan(&domain, "call-4", "Ship the parser and its tests");
+        assert_eq!(push(domain.clone(), asked_again).await, handed, "asked again after an answer: told again");
+        drop(domain);
         std::fs::remove_dir_all(home).unwrap();
     }
 

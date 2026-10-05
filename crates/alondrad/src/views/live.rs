@@ -89,7 +89,10 @@ pub(crate) async fn gather(
             } else {
                 launched_project(state, agent, &launches).unwrap_or_else(|| node.project())
             };
-            let activity = reported.activity(now);
+            let activity = match reported.activity(now) {
+                Activity::Stalled if crate::domain_holds::waits_on_user(state, &session_id) => Activity::Working,
+                activity => activity,
+            };
             let reconnecting = client.domain.live.is_reconnecting(&session_id);
             let state_key = match activity {
                 Activity::Stalled => "stalled",

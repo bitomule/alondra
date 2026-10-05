@@ -104,12 +104,15 @@ fn look_at_job(domain: &DomainRuntime, session: &str) {
 }
 
 /// The sessions whose agent works on an open task and whose mod is connected, yet shows no
-/// activity inside a turn: the session stopped processing and nothing will resume it.
+/// activity inside a turn: the session stopped processing and nothing will resume it. A session
+/// with a held card open waits for the user: restarting it would cut the call and withdraw the
+/// card, and the node would put the same card to the user again.
 pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis) -> Vec<String> {
     let Ok(state) = domain.state() else { return vec![] };
     state.agents.keys()
         .map(|agent| agent.0.clone())
         .filter(|session| open_task(&state, session) && !domain.live.is_closed(session))
+        .filter(|session| !crate::domain_holds::waits_on_user(&state, session))
         .filter(|session| domain.live.mods.session(session).is_some_and(|reported| reported.silent(now)))
         .collect()
 }
@@ -377,6 +380,19 @@ mod tests {
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "the restarted session is not stalled");
         assert!(!domain.live.is_reconnecting(SESSION));
         assert!(domain.state().unwrap().interactions.is_empty());
+    }
+
+    /// After a daemon restart Alondra no longer knows the node is inside its plan call, yet the
+    /// plan's card is still open in the domain: the node waits for the user and is left alone.
+    #[tokio::test]
+    async fn a_silent_session_whose_held_card_is_open_waits_for_the_user_and_is_never_restarted() {
+        let (_home, domain) = world(true);
+        let _link = silent_turn(&domain);
+        let card = serde_json::from_value(json!({"session_id": SESSION, "id": "call-1", "kind": "plan", "input": {"plan": "Ship it"}})).unwrap();
+        assert!(matches!(crate::domain_holds::post(&domain, &card, true).unwrap(), crate::domain_holds::Posted::Held(_)));
+        assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "waiting for the user, not stalled");
+        crate::domain_holds::release_call(&domain, SESSION, "call-1").unwrap();
+        assert_eq!(stalled_sessions(&domain, alondra_core::now_millis()), [SESSION], "the card is gone: the usual rule again");
     }
 
     #[test]
