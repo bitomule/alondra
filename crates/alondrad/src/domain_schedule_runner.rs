@@ -130,12 +130,8 @@ async fn invoke_claimed(
     disallowed_tools: &[String],
     home: &Path,
     key: &str,
-    usage: Option<alondra_core::usage::Usage>,
     launcher: &impl crate::orchestrate::Launcher,
 ) -> Result<(String, PathBuf), crate::orchestrate::Refusal> {
-    if let Some(reason) = crate::http::launch_blocked(usage.as_ref(), false) {
-        return Err((StatusCode::CONFLICT, reason));
-    }
     if !Path::new(&launch.cwd).is_dir() {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -347,6 +343,9 @@ async fn dispatch_pending(
             return Ok(());
         }
     };
+    if domain.live.usage_pause.is_active() {
+        return Ok(());
+    }
     let intent = launch.intent.clone();
     let task = run.task_id.clone().context("sent run has no Task")?;
     match execute_system(
@@ -361,7 +360,7 @@ async fn dispatch_pending(
         Err(error) => return Err(error.into()),
     }
     let (output, settings) =
-        match invoke_claimed(&intent, &task, &policy, home, &run_id.0, domain.live.mods.usage(alondra_core::now_millis()), launcher).await {
+        match invoke_claimed(&intent, &task, &policy, home, &run_id.0, launcher).await {
             Ok(launched) => launched,
             Err((_, reason)) => {
                 fail_run(domain, run_id, reason)?;
@@ -453,7 +452,8 @@ pub(crate) async fn run_cycle(
     for run_id in claimed {
         finish_claim(domain, home, &run_id)?;
     }
-    if due_enabled {
+    let paused = domain.live.usage_pause.is_active();
+    if due_enabled && !paused {
         let now = alondra_core::now_millis();
         let state = domain.state()?;
         let due: Vec<_> = state
@@ -499,6 +499,9 @@ pub(crate) async fn run_cycle(
         })
         .map(|run| run.id.clone())
         .collect();
+    if paused {
+        return Ok(());
+    }
     for run_id in pending {
         dispatch_pending(domain, home, &run_id, launcher).await?;
     }
@@ -578,18 +581,21 @@ enum WakeReason {
 async fn wait_for_next_run(
     deadline: Option<i64>,
     schedules: &mut tokio::sync::watch::Receiver<alondra_core::domain_v2::Revision>,
+    usage: &mut tokio::sync::watch::Receiver<Option<crate::usage_pause::Exhausted>>,
     clock_changes: &mut tokio::sync::watch::Receiver<crate::schedule_clock::ClockChange>,
 ) -> WakeReason {
     if let Some(deadline) = deadline {
         let (_timer, mut timer_fired) = crate::schedule_clock::WallTimer::at(deadline);
         tokio::select! {
             result = schedules.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
+            result = usage.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = clock_changes.changed() => if result.is_ok() { WakeReason::Clock(*clock_changes.borrow_and_update()) } else { WakeReason::Closed },
             result = timer_fired.changed() => if result.is_ok() { WakeReason::Deadline } else { WakeReason::Closed },
         }
     } else {
         tokio::select! {
             result = schedules.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
+            result = usage.changed() => if result.is_ok() { WakeReason::Schedule } else { WakeReason::Closed },
             result = clock_changes.changed() => if result.is_ok() { WakeReason::Clock(*clock_changes.borrow_and_update()) } else { WakeReason::Closed },
         }
     }
@@ -602,12 +608,15 @@ pub(crate) async fn run(
 ) -> Result<()> {
     let launcher = crate::orchestrate::ClaudeCli;
     let mut schedule_changes = domain.subscribe_schedules();
+    let mut usage_changes = domain.live.usage_pause.subscribe();
     let mut system_clock = crate::schedule_clock::ClockChanges::new();
     loop {
         run_cycle(&domain, &home, due_enabled, &launcher).await?;
+        let deadline = if domain.live.usage_pause.is_active() { None } else { nearest_run(&domain.state()?, due_enabled) };
         match wait_for_next_run(
-            nearest_run(&domain.state()?, due_enabled),
+            deadline,
             &mut schedule_changes,
+            &mut usage_changes,
             system_clock.receiver(),
         )
         .await
@@ -820,7 +829,6 @@ mod tests {
             &definition.disallowed_tools,
             &home,
             "run-1",
-            None,
             &fake,
         )
         .await
@@ -1308,5 +1316,60 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(*launcher.calls.lock().unwrap(), 1);
+    }
+
+    struct LoadingLauncher<'a>(&'a DomainRuntime, Mutex<usize>);
+    impl crate::orchestrate::Launcher for LoadingLauncher<'_> {
+        async fn run(
+            &self,
+            _: &str,
+            args: &[String],
+        ) -> std::result::Result<String, crate::orchestrate::Refusal> {
+            *self.1.lock().unwrap() += 1;
+            self.0.live.mods.loaded_by(SESSION, args);
+            Ok("backgrounded · ab1234 · scheduled/run".into())
+        }
+        async fn stop(&self, _: &str) {}
+        fn plugin(&self) -> Option<PathBuf> {
+            Some("/synthetic/plugin".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_due_schedule_and_a_pending_launch_wait_out_the_usage_limit_and_each_launch_once_after_it() {
+        let fixture = Fixture::new();
+        fixture.claim("manual-1");
+        let now = alondra_core::now_millis();
+        fixture.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
+        let launcher = LoadingLauncher(&fixture.domain, Mutex::new(0));
+        let launches = || *launcher.1.lock().unwrap();
+        let runs = || fixture.domain.state().unwrap().schedule.runs.len();
+        run_cycle(&fixture.domain, &fixture.home, false, &launcher).await.unwrap();
+        let mut due = fixture.domain.state().unwrap().schedule.schedules[&ScheduleId::from("schedule-1")].clone();
+        due.enabled = true;
+        due.next_run = Some(now + 200);
+        due.revision += 1;
+        execute_system(&fixture.domain, Command::UpdateSchedule { schedule: due }).unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
+        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
+        assert_eq!(launches(), 0, "paused: Claude is not called");
+        assert_eq!(runs(), 1, "the due schedule starts no run: it is deferred, not failed");
+        let state = fixture.domain.state().unwrap();
+        let manual = &state.schedule.runs[&ScheduleRunId::from("manual-1")];
+        assert_eq!(manual.launch.as_ref().unwrap().state, ScheduleLaunchState::Pending, "the claimed launch waits too");
+        assert!(state.schedule.runs.values().all(|run| run.state != ScheduleRunState::Failed), "nothing is recorded as failed");
+        assert_eq!(state.schedule.schedules[&ScheduleId::from("schedule-1")].next_run, Some(now + 200), "still due");
+
+        fixture.domain.live.usage_pause.resume(alondra_core::now_millis());
+        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
+        assert_eq!(launches(), 2, "back: the deferred launch and the due schedule go, one each");
+        assert_eq!(runs(), 2);
+        run_cycle(&fixture.domain, &fixture.home, true, &launcher).await.unwrap();
+        assert_eq!(launches(), 2, "and never again");
+        assert_eq!(runs(), 2);
+        let state = fixture.domain.state().unwrap();
+        assert!(state.schedule.runs.values().all(|run| run.launch.as_ref().is_some_and(|launch| launch.state == ScheduleLaunchState::Handed)));
     }
 }

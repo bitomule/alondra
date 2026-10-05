@@ -213,7 +213,7 @@ impl Executor {
         self.apply_problem_answers()?;
         let mut runtime = load(&self.home)?;
         let now = now_millis();
-        if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) {
+        if runtime.active_run.is_some() || runtime.retry_at.is_some_and(|at| at > now) || self.domain.live.usage_pause.is_active() {
             return Ok(());
         }
         {
@@ -319,6 +319,17 @@ impl Executor {
             runtime.failure = Some(Failure::SessionMissing);
             return save(&self.home, &runtime);
         }
+        if !succeeded && let Some(until) = self.usage_limit(&output) {
+            self.domain.live.usage_pause.exhaust(until, now_millis());
+            if !output.stream.worked {
+                self.finish(&run, State::Retryable, Some("orchestrator_usage_exhausted"))?;
+                runtime.active_run = None;
+                runtime.last_error = None;
+                runtime.failure = None;
+                runtime.retry_at = None;
+                return save(&self.home, &runtime);
+            }
+        }
         if succeeded {
             self.finish(&run, State::Handed, None)?;
             runtime.active_run = None;
@@ -336,6 +347,15 @@ impl Executor {
             "Claude exited without a successful terminal result".into()
         });
         self.failed(runtime, &run, error, denied)
+    }
+
+    /// Whether the run failed because usage ran out, with the reset Claude reported if it did.
+    fn usage_limit(&self, output: &process::Output) -> Option<Option<i64>> {
+        let said = |text: &str| crate::usage_pause::says_usage_limit(text).then(|| crate::usage_pause::reset_in(text, now_millis()));
+        if output.stream.limited {
+            return Some(output.stream.limit_reset.or_else(|| self.domain.live.mods.reset_after_limit(now_millis())));
+        }
+        output.stream.error.as_deref().and_then(said).or_else(|| said(&output.diagnostic))
     }
 
     fn failed(&self, mut runtime: Runtime, run: &Run, error: String, denied: bool) -> Result<()> {
@@ -514,6 +534,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
         return Err(error.context("v2 orchestrator recovery failed"));
     }
     let mut changed = executor.domain.subscribe();
+    let mut usage = executor.domain.live.usage_pause.subscribe();
     loop {
         if let Err(error) = executor.tick(&ownership).await {
             log!("v2 orchestrator: {error:#}");
@@ -521,6 +542,7 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, home: PathBuf, claude_home: 
         }
         tokio::select! {
             _ = changed.changed() => {},
+            _ = usage.changed() => {},
             _ = tokio::time::sleep(Duration::from_secs(10)) => {},
         }
     }
@@ -966,5 +988,64 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         assert_eq!(outbox(domain)[0].1, "retryable");
         assert!(load(&f.executor.home).unwrap().active_run.is_none());
         assert!(f.executor.cancel("nothing").is_err(), "cancel needs a running execution");
+    }
+
+    fn starts(f: &Fixture) -> usize {
+        std::fs::read_to_string(f.executor.home.join("runtime/orchestrator/starts")).map(|starts| starts.lines().count()).unwrap_or(0)
+    }
+
+    #[tokio::test]
+    async fn no_batch_starts_while_usage_is_exhausted_and_it_runs_once_when_usage_is_back() {
+        let f = fixture(SUCCESS);
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        domain.live.usage_pause.exhaust(Some(now_millis() + 3_600_000), now_millis());
+        f.executor.tick(&f.ownership).await.unwrap();
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(starts(&f), 0, "paused: Claude is not started");
+        assert_eq!(outbox(domain).len(), 1, "and the batch waits, untouched");
+        assert!(load(&f.executor.home).unwrap().active_run.is_none());
+
+        domain.live.usage_pause.resume(now_millis());
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(starts(&f), 1, "resumed: the pending batch runs");
+        assert!(outbox(domain).is_empty());
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(starts(&f), 1, "and only once");
+    }
+
+    fn limited_once(reset_seconds: i64) -> String {
+        format!(r#"if [ -f limited ]; then
+{STUB_SUCCESS}
+else
+touch limited
+printf '%s\n' '{{"type":"rate_limit_event","session_id":"'"$session"'","rate_limit_info":{{"status":"rejected","resetsAt":{reset_seconds},"rateLimitType":"five_hour"}}}}'
+printf '%s\n' '{{"type":"result","session_id":"'"$session"'","subtype":"success","is_error":true,"result":"You have hit your session limit"}}'
+exit 1
+fi"#)
+    }
+
+    #[tokio::test]
+    async fn a_run_that_hits_the_limit_before_working_pauses_everything_and_is_retried_after_the_reset() {
+        let reset = now_millis() / 1000 + 3_600;
+        let f = fixture(&limited_once(reset));
+        let domain = &f.executor.domain;
+        ask_orchestrator(domain, 1);
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(starts(&f), 1);
+        assert_eq!(domain.live.usage_pause.current().map(|e| e.until), Some(reset * 1000), "until is the reset Claude reported");
+        let runtime = load(&f.executor.home).unwrap();
+        assert!(runtime.active_run.is_none() && runtime.last_error.is_none() && runtime.failure.is_none() && runtime.consecutive_failures == 0 && runtime.retry_at.is_none(), "{runtime:?}");
+        assert_eq!(outbox(domain).iter().map(|(_, state)| state.as_str()).collect::<Vec<_>>(), ["retryable"]);
+        assert!(!domain.state().unwrap().interactions.keys().any(|id| id.0.starts_with(PROBLEM_PREFIX)), "a limit is not a Problem for the user to decide");
+
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(starts(&f), 1, "nothing runs until the reset");
+
+        domain.live.usage_pause.resume(now_millis());
+        f.executor.tick(&f.ownership).await.unwrap();
+        assert_eq!(starts(&f), 2, "the same batch is retried");
+        assert!(outbox(domain).is_empty());
+        assert!(attempts(domain).iter().any(|(_, state, _)| state == "handed"));
     }
 }

@@ -430,6 +430,25 @@ impl Reports {
         .is_ok()
     }
 
+    /// When a plan window the node mods measured as used up comes back.
+    pub(crate) fn exhausted_until(&self, now: Millis) -> Option<Millis> {
+        let limits = self.limits.lock().expect("plan limits poisoned");
+        limits.windows.iter().filter(|window| window.percent_used >= 100.0)
+            .filter_map(|window| window.resets_at.filter(|reset| *reset > now)).max()
+    }
+
+    /// When a limit Claude reported without a time ends: the window that ran out, else the
+    /// 5-hour window, else the soonest reset the plan has.
+    pub(crate) fn reset_after_limit(&self, now: Millis) -> Option<Millis> {
+        self.exhausted_until(now).or_else(|| {
+            let limits = self.limits.lock().expect("plan limits poisoned");
+            let future = |window: &&RateLimit| window.resets_at.is_some_and(|reset| reset > now);
+            limits.windows.iter().filter(future).find(|window| window.kind == alondra_core::usage::FIVE_HOUR)
+                .or_else(|| limits.windows.iter().filter(future).min_by_key(|window| window.resets_at))
+                .and_then(|window| window.resets_at)
+        })
+    }
+
     pub(crate) fn usage(&self, now: Millis) -> Option<Usage> {
         let limits = self.limits.lock().expect("plan limits poisoned");
         let start = limits.day_start.as_ref().filter(|(day, _, _)| *day == local_day(now)).map(|(_, _, start)| *start);
@@ -437,7 +456,7 @@ impl Reports {
     }
 }
 
-fn local_day(millis: Millis) -> String {
+pub(crate) fn local_day(millis: Millis) -> String {
     let t = millis.div_euclid(1000) as libc::time_t;
     let mut tm: libc::tm = unsafe { std::mem::zeroed() };
     unsafe { libc::localtime_r(&t, &mut tm) };

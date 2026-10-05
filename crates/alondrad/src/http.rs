@@ -1851,18 +1851,6 @@ fn action_reply(answer: &Answer, user: &str) -> String {
     }
 }
 
-/// Over today's slice of the week, new nodes wait unless the user said to launch anyway.
-pub(crate) fn launch_blocked(usage: Option<&alondra_core::usage::Usage>, over_pace_ok: bool) -> Option<String> {
-    let u = usage.filter(|u| u.over_pace && !over_pace_ok)?;
-    Some(format!(
-        "Today has already used {:.0}% of the week against a {:.0}% slice ({:.0}% of the week used, ~{:.0}% per day left), so the launch was refused. over_pace_ok launches anyway once the user says so.",
-        u.today_spent.unwrap_or(0.0),
-        u.today_share.unwrap_or(0.0),
-        u.week_percent,
-        u.per_day_left
-    ))
-}
-
 /// `asker` is `None` for a client acting as the user, `Some(None)` for a node Alondra cannot place.
 fn withdraw_refusal(id: u64, question: Option<&Question>, asker: Option<Option<&str>>) -> Option<(StatusCode, String)> {
     let Some(q) = question else { return Some((StatusCode::NOT_FOUND, format!("question #{id} does not exist"))) };
@@ -2635,8 +2623,6 @@ pub(crate) struct LaunchBody {
     prompt: String,
     model: Option<String>,
     permission_mode: Option<String>,
-    #[serde(default, deserialize_with = "lenient_bool")]
-    over_pace_ok: bool,
     #[serde(default)]
     request_id: Option<String>,
     #[serde(default)]
@@ -2703,7 +2689,6 @@ pub(crate) async fn launch_with(hub: &Hub, b: LaunchBody, launcher: &impl crate:
         prompt,
         model: b.model.clone(),
         permission_mode: b.permission_mode.clone(),
-        over_pace_ok: b.over_pace_ok,
         request_id,
         options,
         task,
@@ -2939,22 +2924,6 @@ mod tests {
         for (a, expected) in cases {
             assert_eq!(action_reply(&a, "Ana"), expected, "{a:?}");
         }
-    }
-
-    #[test]
-    fn launching_over_todays_slice_needs_the_users_word() {
-        let over = alondra_core::usage::Usage { today_spent: Some(41.0), today_share: Some(18.0), week_percent: 53.0, per_day_left: 9.0, over_pace: true, ..Default::default() };
-        let within = alondra_core::usage::Usage { over_pace: false, ..over.clone() };
-        let cases = [
-            ("over pace", Some(&over), false, true),
-            ("over pace, the user said go", Some(&over), true, false),
-            ("within today's slice", Some(&within), false, false),
-            ("no usage known on this Mac", None, false, false),
-        ];
-        for (what, usage, ok, blocked) in cases {
-            assert_eq!(launch_blocked(usage, ok).is_some(), blocked, "{what}");
-        }
-        assert!(launch_blocked(Some(&over), false).unwrap().contains("41% of the week against a 18% slice"));
     }
 
     #[test]
@@ -4636,23 +4605,6 @@ mod tests {
         let flagged = Report { looks_like_question: true, ..serde_json::from_str::<Report>(old).unwrap() };
         let back: Report = serde_json::from_str(&serde_json::to_string(&flagged).unwrap()).unwrap();
         assert!(back.looks_like_question);
-    }
-
-    #[test]
-    fn over_pace_ok_is_taken_as_a_bool_or_as_the_string_an_mcp_client_sends() {
-        let body = |extra: &str| serde_json::from_str::<LaunchBody>(&format!(r#"{{"name":"n","cwd":"/tmp","prompt":"p"{extra}}}"#)).map(|b| b.over_pace_ok);
-        let cases = [
-            ("absent", "", Some(false)),
-            ("bool true", r#","over_pace_ok":true"#, Some(true)),
-            ("bool false", r#","over_pace_ok":false"#, Some(false)),
-            ("string true", r#","over_pace_ok":"true""#, Some(true)),
-            ("string False", r#","over_pace_ok":"False""#, Some(false)),
-            ("null", r#","over_pace_ok":null"#, Some(false)),
-            ("anything else", r#","over_pace_ok":"yes please""#, None),
-        ];
-        for (what, extra, expected) in cases {
-            assert_eq!(body(extra).ok(), expected, "{what}");
-        }
     }
 
     #[test]

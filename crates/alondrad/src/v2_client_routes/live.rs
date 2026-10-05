@@ -19,6 +19,7 @@ pub(crate) struct Live {
     /// probe node can be sent to.
     pub(crate) sandbox: std::sync::atomic::AtomicBool,
     pub(crate) losses: crate::node_revival::Losses,
+    pub(crate) usage_pause: crate::usage_pause::UsagePause,
     watching: Mutex<std::collections::HashSet<String>>,
     reconnecting: Mutex<std::collections::HashSet<String>>,
     closed: Mutex<std::collections::BTreeSet<String>>,
@@ -31,6 +32,7 @@ impl Live {
         let closed = std::fs::read(&file).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_default();
         Self {
             mods: crate::node_reports::Reports::persisted_in(home),
+            usage_pause: crate::usage_pause::UsagePause::persisted_in(home),
             closed: Mutex::new(closed),
             closed_file: Some(file),
             ..Self::default()
@@ -86,7 +88,21 @@ impl Live {
         if !view.nodes.contains_key(&session_id) {
             view.apply(self.next(), now, &Event::Joined { session_id });
         }
+        let limit = (event.event == "StopFailure" && event.error_type.as_deref() == Some("rate_limit")).then(|| crate::http::str_field(payload, "error_details"));
         view.apply(self.next(), now, &Event::Hook(event));
+        drop(view);
+        if let Some(details) = limit {
+            let until = details.as_deref().and_then(|text| crate::usage_pause::reset_in(text, now)).or_else(|| self.mods.reset_after_limit(now));
+            self.usage_pause.exhaust(until, now);
+        }
+    }
+
+    /// A node's measurement that shows a plan window used up is the limit too.
+    pub(crate) fn note_measures(&self) {
+        let now = now_millis();
+        if let Some(until) = self.mods.exhausted_until(now) {
+            self.usage_pause.exhaust(Some(until), now);
+        }
     }
 
     fn next(&self) -> u64 {
