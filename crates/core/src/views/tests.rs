@@ -3308,147 +3308,105 @@ fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
         "the answer groups with the rest of its Request");
 }
 
-fn three_questions() -> crate::domain_v2::CardSpec {
-    use crate::domain_v2::{CardKind, CardQuestion};
-    let option = |id: &str, label: &str, description: Option<&str>| QuestionOption {
-        id: id.into(), label: label.into(), description: description.map(Into::into), inputs: vec![],
-    };
-    let mut card = spec(CardKind::Decide, "How do the devices reach the Mac?", "");
-    card.questions = vec![
-        CardQuestion {
-            need: "How do the devices reach the Mac?".into(), why: String::new(), recommended: Some("o1".into()),
-            options: vec![option("o0", "LAN only", Some("Only at home")), option("o1", "LAN and Tailscale", Some("Works away too"))],
-        },
-        CardQuestion {
-            need: "Which port?".into(), why: "The old one is taken".into(), recommended: None,
-            options: vec![option("o0", "7777", None), option("o1", "8080", None)],
-        },
-        CardQuestion { need: "Anything else?".into(), why: String::new(), recommended: None, options: vec![] },
-    ];
-    card
-}
-
-#[test]
-fn a_card_that_asks_several_questions_has_one_step_per_question_and_no_buttons_of_its_own() {
-    use crate::domain_v2::Hold;
-    let mut state = held_fixture(Hold::Question, three_questions());
-    state.interactions.get_mut(&"i-1".into()).unwrap().payload = InteractionPayload::Question { options: vec![], answer: None };
-    let render_as = |client, lang| render(&state, &LiveSnapshot::default(), client, lang, "card:i-1", "");
-    let view = render_as(Client::Ios, Lang::En);
-    let card = card_of(&view);
-    assert_eq!(card.eyebrow.as_ref().unwrap().text, "Decide · 3 questions");
-    let spanish = render_as(Client::Ios, Lang::Es);
-    assert_eq!(card_of(&spanish).eyebrow.as_ref().unwrap().text, "Decidir · 3 preguntas");
-    assert!(card.actions.is_empty() && card.more.is_empty(), "the steps hold every button");
-    assert_eq!(card.steps.len(), 3);
-    let first = &card.steps[0];
-    assert_eq!((first.need.as_str(), first.why.as_deref()), ("How do the devices reach the Mac?", None));
-    assert_eq!(first.actions.iter().map(|a| (a.option_id.as_deref().unwrap(), a.label.as_str(), a.role.unwrap(), a.description.as_deref())).collect::<Vec<_>>(), [
-        ("o1", "★ LAN and Tailscale", Role::Advance, Some("Works away too")),
-        ("o0", "LAN only", Role::Neutral, Some("Only at home")),
-    ], "the recommended option comes first, starred, and keeps its own explanation");
-    let ids: std::collections::BTreeSet<&str> =
-        card.steps.iter().flat_map(|step| step.actions.iter().chain(&step.write)).map(|a| a.id.as_str()).collect();
-    assert_eq!(ids.len(), 1, "one action id answers the whole card: {ids:?}");
-    assert!(ids.iter().next().unwrap().starts_with("ans:i-1@"));
-    assert_eq!(card.steps[1].why.as_deref(), Some("The old one is taken"));
-    assert!(card.steps[2].actions.is_empty(), "a question without options is answered in words");
-    for step in &card.steps {
-        let write = step.write.as_ref().expect("every question can be answered in words");
-        assert!(write.option_id.is_none() && matches!(&write.input, Input::Text { required: true, .. }), "{write:?}");
+/// Three questions asked together, the ones listed in `answered` (0-based) already answered.
+fn group_state(answered: &[usize]) -> DomainState {
+    use crate::domain_v2::{CardKind, QuestionGroup};
+    let mut state = fixture();
+    let base = state.interactions.remove(&"i-1".into()).unwrap();
+    for (at, need) in ["Which name?", "Ship it today?", "Which channel?"].into_iter().enumerate() {
+        let mut one = base.clone();
+        one.id = format!("g-q{}", at + 1).into();
+        one.order = at as u64 + 1;
+        one.body = need.into();
+        let mut card = spec(CardKind::Decide, need, "The release needs it");
+        card.group = Some(QuestionGroup { id: "g".into(), index: at as u8 + 1, total: 3 });
+        one.card = card;
+        let options = vec![
+            QuestionOption { id: "o0".into(), label: "First".into(), description: None, inputs: vec![] },
+            QuestionOption { id: "o1".into(), label: "Second".into(), description: None, inputs: vec![] },
+        ];
+        let answer = answered.contains(&at).then(|| crate::domain_v2::Answer {
+            attachments: vec![], option_id: "o1".into(), inputs: BTreeMap::new(), responder: "u".into(), at_revision: 1,
+        });
+        one.payload = InteractionPayload::Question { options, answer };
+        state.interactions.insert(one.id.clone(), one);
     }
-    assert!(card.content_row.is_none(), "the card's own row would count every question's options");
-    let row = |step: usize| card.steps[step].content_row.as_ref().map(|row| (row.kind.as_str(), row.summary.as_str()));
-    assert_eq!(row(0), Some(("options", "2 options")), "only this question's options");
-    assert_eq!(row(1), None, "nothing to explain");
-    assert_eq!(card.steps[2].content_row, None);
-    assert!(card.steps[0].actions.iter().all(|a| a.key.is_none()), "the phone has no keys");
-    let tui = render_as(Client::Tui, Lang::En);
-    let keyed: Vec<Option<&str>> = card_of(&tui).steps[0].actions.iter().map(|a| a.key.as_deref()).collect();
-    assert_eq!(keyed, [Some("1"), Some("2")]);
-    assert_eq!(card_of(&tui).steps[0].write.as_ref().unwrap().key.as_deref(), Some("3"));
-}
-
-#[test]
-fn a_card_that_asks_several_questions_is_not_sent_to_the_lock_screen_as_buttons() {
-    use crate::domain_v2::Hold;
-    let mut state = held_fixture(Hold::Question, three_questions());
-    state.interactions.get_mut(&"i-1".into()).unwrap().payload = InteractionPayload::Question { options: vec![], answer: None };
-    let content = push_content(&state, "i-1", Lang::En).unwrap();
-    assert!(content.actions.iter().all(|action| action.option.is_none()), "a notification cannot step through three questions: {:?}", content.actions);
-    assert_eq!(content.alert.unwrap().title, "How do the devices reach the Mac?");
-}
-
-fn golden_questions() -> crate::domain_v2::CardSpec {
-    use crate::domain_v2::{CardKind, CardQuestion};
-    let option = |id: &str, label: &str, description: Option<&str>| QuestionOption {
-        id: id.into(), label: label.into(), description: description.map(Into::into), inputs: vec![],
-    };
-    let mut card = spec(CardKind::Decide, "How do the devices reach the Mac?", "");
-    card.questions = vec![
-        CardQuestion {
-            need: "How do the devices reach the Mac?".into(), why: String::new(), recommended: Some("o1".into()),
-            options: vec![
-                option("o0", "LAN only", Some("Only while the phone is at home.")),
-                option("o1", "LAN and Tailscale", Some("Works at home and away from it.")),
-            ],
-        },
-        CardQuestion {
-            need: "Which port should it listen on?".into(), why: "The old one is taken by another service.".into(),
-            recommended: Some("o1".into()), options: vec![option("o0", "7777", Some("The port it listens on today.")), option("o1", "8080", Some("A common alternative."))],
-        },
-        CardQuestion {
-            need: "Should the old pairings keep working?".into(), why: String::new(), recommended: Some("o0".into()),
-            options: vec![
-                option("o0", "Keep them", Some("Phones already paired stay paired.")),
-                option("o1", "Pair again", Some("Every phone scans the code once more.")),
-                option("o2", "Ask on each phone", Some("Each phone decides when it next opens.")),
-            ],
-        },
-    ];
-    card
-}
-
-/// A node asked three questions at once: the card that stands for them.
-fn questions_fixture() -> DomainState {
-    use crate::domain_v2::Hold;
-    let mut state = held_fixture(Hold::Question, golden_questions());
-    let id: crate::domain_v2::InteractionId = "7c9a034b-249e-4487-a89b-57de38c26372".into();
-    let mut interaction = state.interactions.remove(&"i-1".into()).unwrap();
-    interaction.id = id.clone();
-    interaction.payload = InteractionPayload::Question { options: vec![], answer: None };
-    state.interactions.insert(id.clone(), interaction);
-    state.holds.remove(&"i-1".into());
-    state.holds.insert(id, Hold::Question);
     state
 }
 
-const QUESTIONS_CASES: [(&str, Client, Lang); 3] = [
-    ("card-questions.json", Client::Ios, Lang::En),
-    ("card-questions-es.json", Client::Ios, Lang::Es),
-    ("card-questions-mac.json", Client::Mac, Lang::En),
-];
+#[test]
+fn a_question_asked_together_says_where_it_stands_in_the_group_on_every_client() {
+    let state = group_state(&[]);
+    let live = LiveSnapshot::default();
+    let card_of_client = |client, lang, id: &str| render(&state, &live, client, lang, &format!("card:{id}"), "").sections[0].items.iter()
+        .find_map(|item| match item { Item::Card(card) => Some(card.clone()), _ => None }).unwrap();
+    let phone = card_of_client(Client::Ios, Lang::En, "g-q2");
+    assert_eq!(phone.eyebrow.as_ref().unwrap().text, "Decide · 2 of 3");
+    assert!(phone.meta.as_deref().unwrap().ends_with("· 2 of 3"), "the phone shows the kind as a badge, so the position is in the line under: {:?}", phone.meta);
+    assert!(phone.actions.iter().all(|a| a.id.starts_with("ans:g-q2@")), "an ordinary card answered with the ordinary answer");
+    let spanish = card_of_client(Client::Ios, Lang::Es, "g-q3");
+    assert_eq!(spanish.eyebrow.as_ref().unwrap().text, "Decidir · 3 de 3");
+    let mac = card_of_client(Client::Mac, Lang::En, "g-q1");
+    assert_eq!(mac.eyebrow.as_ref().unwrap().text, "Decide · 1 of 3");
+    assert!(!mac.meta.unwrap_or_default().contains("1 of 3"), "the Mac's header already says it");
+}
 
 #[test]
-fn a_card_that_asks_several_questions_matches_goldens() {
-    let state = questions_fixture();
-    for ((filename, client, lang), expected) in QUESTIONS_CASES.into_iter().zip([
-        include_str!("../../../../fixtures/views/cards/card-questions.json"),
-        include_str!("../../../../fixtures/views/cards/card-questions-es.json"),
-        include_str!("../../../../fixtures/views/cards/card-questions-mac.json"),
+fn change_answers_lists_what_was_answered_while_the_group_is_incomplete() {
+    let live = LiveSnapshot::default();
+    let more = |state: &DomainState, id: &str| render(state, &live, Client::Ios, Lang::En, &format!("card:{id}"), "").sections[0].items.iter()
+        .find_map(|item| match item { Item::Card(card) => Some(card.more.clone()), _ => None }).unwrap();
+    let change = |more: &[Action]| more.iter().find(|a| a.id.starts_with("retake:")).cloned();
+    assert!(change(&more(&group_state(&[]), "g-q1")).is_none(), "nothing answered, nothing to change");
+    let state = group_state(&[0, 2]);
+    let action = change(&more(&state, "g-q2")).expect("Change answers on the one still open");
+    assert_eq!((action.label.as_str(), action.presentation), ("Change answers", Presentation::Options));
+    assert_eq!(action.options.iter().map(|o| (o.id.as_str(), o.label.as_str())).collect::<Vec<_>>(),
+        [("g-q1", "Which name? → Second"), ("g-q3", "Which channel? → Second")]);
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "card:g-q2", "").sections[0].items.iter()
+        .find_map(|item| match item { Item::Card(card) => card.more.iter().find(|a| a.id.starts_with("retake:")).map(|a| a.label.clone()), _ => None });
+    assert_eq!(spanish.as_deref(), Some("Cambiar respuestas"));
+}
+
+#[test]
+fn each_question_of_a_group_is_its_own_notification_with_its_own_buttons_and_its_place() {
+    let state = group_state(&[]);
+    let content = push_content(&state, "g-q2", Lang::Es).unwrap();
+    let alert = content.alert.unwrap();
+    assert_eq!(alert.title, "Ship it today?");
+    assert!(alert.body.unwrap().starts_with("2 de 3 · "), "the subtitle says which question it is");
+    assert_eq!(content.actions.iter().filter_map(|a| a.option.as_deref()).collect::<Vec<_>>(), ["o0", "o1"]);
+    assert!(content.actions.iter().filter(|a| a.option.is_some()).all(|a| a.id.starts_with("ans:g-q2@")));
+    assert_eq!(push_content(&state, "g-q1", Lang::En).unwrap().thread, content.thread, "one thread for the node");
+}
+
+const GROUP_CASES: [(&str, Client, Lang); 3] = [
+    ("card-group.json", Client::Ios, Lang::En),
+    ("card-group-es.json", Client::Ios, Lang::Es),
+    ("card-group-mac.json", Client::Mac, Lang::En),
+];
+
+/// The second of three questions asked together, the first already answered.
+#[test]
+fn a_question_asked_together_matches_goldens() {
+    let state = group_state(&[0]);
+    for ((filename, client, lang), expected) in GROUP_CASES.into_iter().zip([
+        include_str!("../../../../fixtures/views/cards/card-group.json"),
+        include_str!("../../../../fixtures/views/cards/card-group-es.json"),
+        include_str!("../../../../fixtures/views/cards/card-group-mac.json"),
     ]) {
-        let actual = render(&state, &LiveSnapshot::default(), client, lang, "card:7c9a034b-249e-4487-a89b-57de38c26372", "2026-09-30T10:00:00Z");
+        let actual = render(&state, &LiveSnapshot::default(), client, lang, "card:g-q2", "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
     }
 }
 
 #[test]
 #[ignore = "explicit fixture generation after Bazel authorization"]
-fn generate_question_goldens() {
+fn generate_group_goldens() {
     let dir = std::env::var("ALONDRA_GOLDEN_OUT").expect("ALONDRA_GOLDEN_OUT required");
-    let state = questions_fixture();
-    for (filename, client, lang) in QUESTIONS_CASES {
-        let view = render(&state, &LiveSnapshot::default(), client, lang, "card:7c9a034b-249e-4487-a89b-57de38c26372", "2026-09-30T10:00:00Z");
+    let state = group_state(&[0]);
+    for (filename, client, lang) in GROUP_CASES {
+        let view = render(&state, &LiveSnapshot::default(), client, lang, "card:g-q2", "2026-09-30T10:00:00Z");
         std::fs::write(format!("{dir}/{filename}"), format!("{}\n", serde_json::to_string_pretty(&view).unwrap())).unwrap();
     }
 }

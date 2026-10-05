@@ -168,7 +168,14 @@ pub fn push_content(
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
     }) else { return Ok(PushContent { alert: None, actions: vec![], interruption_level, thread }) };
-    let alert = push_alert(card);
+    let mut alert = push_alert(card);
+    if let (Some(alert), Some(group)) = (alert.as_mut(), interaction.and_then(|i| i.card.group.as_ref())) {
+        let position = card::group_position(group, lang);
+        alert.body = Some(match alert.body.take() {
+            Some(body) => format!("{position} · {body}"),
+            None => position,
+        });
+    }
     let mut pushed = Vec::new();
     for action in &card.actions {
         if action.id.is_empty() || action.link.is_some() || !action.enabled || action.confirm.is_some() ||

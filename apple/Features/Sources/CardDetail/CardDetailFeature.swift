@@ -31,7 +31,6 @@ public struct CardDetailFeature: Sendable {
         public var composition: TriageCardFeature.Composition?
         public var preview: AttachmentPreview?
         public var awaitingAttachments = false
-        public var questions = QuestionSteps()
 
         public init(key: ViewKey) {
             screen = ScreenFeature.State(key: key)
@@ -39,21 +38,6 @@ public struct CardDetailFeature: Sendable {
         }
 
         public var subject: Subject? { Subject(document: screen.document, key: screen.key) }
-
-        /// The question of a card that asks several that is shown now.
-        public var step: CardStep? { subject?.card.flatMap { questions.shown(in: $0) } }
-        public var stepIndex: Int? { step == nil ? nil : subject?.card.map { questions.index(in: $0) } }
-
-        /// The pinned buttons; with several questions, those of the one shown.
-        public var buttons: [WireAction] {
-            guard let card = subject?.card, !card.steps.isEmpty else { return subject?.buttons ?? [] }
-            return questions.buttons(in: card, limit: TriageCardFeature.State.stepButtonLimit)
-        }
-
-        public var menu: [WireAction] {
-            guard let card = subject?.card, !card.steps.isEmpty else { return subject?.menu ?? [] }
-            return questions.menu(in: card, limit: TriageCardFeature.State.stepButtonLimit)
-        }
         public var contentPending: Bool { contentDigest != nil && content == nil && !contentFailed }
         public var markdown: String { content ?? "" }
         public var blocks: [MarkdownBlock] { MarkdownParser.blocks(from: markdown) }
@@ -149,7 +133,6 @@ public struct CardDetailFeature: Sendable {
         case menuOptionPicked(WireAction, optionID: String)
         case reasonChanged(String)
         case noteChanged(String)
-        case previousQuestion
         case compositionConfirmed
         case compositionCancelled
         case attachmentTapped(Attachment)
@@ -243,13 +226,6 @@ public struct CardDetailFeature: Sendable {
             case .actionTapped(let action):
                 if case .view(let key) = action.link { return .send(.opened(ViewKey(rawValue: key))) }
                 guard action.link == nil, state.isSendable(action) else { return .none }
-                if state.step != nil {
-                    if TriageCardFeature.asksForWords(action) {
-                        state.composition = TriageCardFeature.Composition(action: action)
-                        return .none
-                    }
-                    return answer(action, text: nil, state: &state)
-                }
                 if action.comments == nil, action.id?.hasPrefix("reply:") != true, TriageCardFeature.asksForWords(action) {
                     state.composition = TriageCardFeature.Composition(action: action)
                     return .none
@@ -273,13 +249,9 @@ public struct CardDetailFeature: Sendable {
             case .compositionCancelled:
                 state.composition = nil
                 return .none
-            case .previousQuestion:
-                state.questions.back()
-                return .none
             case .compositionConfirmed:
                 guard let composition = state.composition, composition.canSend else { return .none }
                 state.composition = nil
-                if state.step != nil { return answer(composition.action, text: composition.note, state: &state) }
                 return .concatenate(
                     .send(.actions(.present(composition.action))),
                     composition.reason.map { .send(.actions(.chooseOption($0))) } ?? .none,
@@ -331,14 +303,6 @@ public struct CardDetailFeature: Sendable {
                 return .none
             }
         }
-    }
-
-    /// The answer to the question shown; the last one sends all of them together.
-    private func answer(_ action: WireAction, text: String?, state: inout State) -> Effect<Action> {
-        guard let card = state.subject?.card, let fields = state.questions.choose(action, text: text, in: card) else { return .none }
-        return .concatenate(
-            .send(.actions(.presentForm(action, fields, requiresAttachments: false))), .send(.submit)
-        )
     }
 
     /// The text a card carries itself, such as a plan Claude Code holds, when it can be commented on.

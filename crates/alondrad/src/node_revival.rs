@@ -240,7 +240,7 @@ async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str) -> boo
             return false;
         }
     };
-    matches!(crate::domain_holds::wait(domain, &card).await, Ok(Some(answer)) if answer.option_id == RETRY)
+    matches!(crate::domain_holds::wait(domain, &card).await, Ok(Some(answers)) if answers[0].option_id == RETRY)
 }
 
 #[cfg(test)]

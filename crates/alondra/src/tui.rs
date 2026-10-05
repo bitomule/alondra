@@ -358,11 +358,6 @@ pub enum Target {
         required: bool,
         allow_attachments: bool,
     },
-    /// The user's own words as the answer to the question of a card that asks several.
-    StepAnswer {
-        card_id: String,
-        label: String,
-    },
     /// A message to an agent or the orchestrator; the text is filled in when it is sent.
     Message {
         key: Option<Key>,
@@ -410,7 +405,7 @@ impl Target {
                 Some(format!("message:{:?}:{agent}:{interaction}:{pr}", m.kind))
             }
             Target::Form { view } => Some(format!("form:{view}")),
-            Target::StepAnswer { .. } | Target::Comment { .. } | Target::General { .. } => None,
+            Target::Comment { .. } | Target::General { .. } => None,
         }
     }
 }
@@ -525,9 +520,6 @@ pub struct App {
     pub card_view: Option<ViewDocument>,
     /// The numbered list a card's `m` or a menu button opened over its buttons.
     pub card_menu: Option<view_render::Menu>,
-    /// What the user chose so far for each card that asks several questions: an option id or
-    /// their own words per question answered, in order.
-    pub step_answers: std::collections::HashMap<String, Vec<(Option<String>, Option<String>)>>,
     pub view_status: Option<ViewStatus>,
     pub view_data_epoch: Option<String>,
     pub connected: bool,
@@ -879,7 +871,6 @@ impl App {
             home_view: None,
             card_view: None,
             card_menu: None,
-            step_answers: Default::default(),
             view_status: None,
             view_data_epoch: None,
             connected: false,
@@ -2145,7 +2136,6 @@ impl App {
         let text = c.input.text().trim().to_string();
         let needs_text = match &c.target {
             Target::ViewAction { required, .. } => *required,
-            Target::StepAnswer { .. } => true,
             Target::Message { message, .. } if message.kind == ops::MessageKind::MoreContext => {
                 false
             }
@@ -2167,9 +2157,6 @@ impl App {
         }
         if matches!(c.target, Target::Form { .. }) {
             return self.submit_form(c, text);
-        }
-        if let Target::StepAnswer { card_id, .. } = &c.target {
-            return self.answer_step(card_id, None, Some(text));
         }
         let attachments = dropped::stored(&c.chips);
         if !matches!(c.target, Target::Comment { .. } | Target::General { .. }) {
@@ -2218,7 +2205,7 @@ impl App {
                 };
                 self.message(key, message, ok);
             }
-            Target::Form { .. } | Target::StepAnswer { .. } => {}
+            Target::Form { .. } => {}
             Target::Comment { block, quote } => {
                 let Some(key) = self.reader.as_ref().map(|r| r.key.clone()) else {
                     return;

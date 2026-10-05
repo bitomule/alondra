@@ -668,14 +668,11 @@ fn draw_views_card(f: &mut Frame, app: &mut App, area: Rect) {
         }
         return;
     };
-    let step = super::view_render::typed_card(document).map_or(0, |card| app.step_of(card));
-    let staged = super::view_render::staged_view(document, step);
-    let mut lines = super::view_render::document_lines(staged.as_ref().unwrap_or(document), inner.width as usize);
+    let mut lines = super::view_render::document_lines(document, inner.width as usize);
     let mut keys = Vec::new();
     if let Some(card) = super::view_render::typed_card(document) {
         keys = match &app.card_menu {
             Some(menu) => super::view_render::menu_lines(menu),
-            None if !card.steps.is_empty() => super::view_render::step_button_lines(card, step),
             None => super::view_render::button_lines(card),
         };
     } else {
@@ -1206,7 +1203,7 @@ fn chip_line(chips: &[super::dropped::Chip]) -> Line<'static> {
 fn draw_composer(f: &mut Frame, app: &App, area: Rect, preview_h: u16) -> Option<Rect> {
     let c = app.composer.as_ref()?;
     let mut title = match &c.target {
-        Target::ViewAction { label, .. } | Target::StepAnswer { label, .. } => md::one_line(label),
+        Target::ViewAction { label, .. } => md::one_line(label),
         Target::Message {
             name,
             title,
@@ -1463,11 +1460,6 @@ pub(super) fn visible_detail_actions(document: &alondra_core::views::View) -> Ve
 /// the full content.
 fn card_footer_keys(card: &alondra_core::views::Card) -> Vec<(String, String)> {
     let mut keys = Vec::new();
-    if let Some(step) = card.steps.first() {
-        keys.push((format!("1-{}", step.actions.len() + 1), tr!("answer", "responde").into()));
-        keys.push(("⏎".into(), tr!("open", "abrir").into()));
-        return keys;
-    }
     for (index, action) in card.actions.iter().take(super::view_render::BUTTONS).enumerate() {
         if action.enabled {
             keys.push(((index + 1).to_string(), super::md::truncate(&action.label, 18)));

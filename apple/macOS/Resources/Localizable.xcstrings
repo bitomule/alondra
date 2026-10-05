@@ -1,10 +1,6 @@
 {
   "sourceLanguage": "en",
   "strings": {
-    "Question %lld of %lld": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pregunta %1$lld de %2$lld"}}}},
-    "Previous question": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pregunta anterior"}}}},
-    "Send the answer": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviar la respuesta"}}}},
-    "Answer in your own words…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Responde con tus palabras…"}}}},
     "Link another Mac": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Vincular otro Mac"}}}},
     "Off · Open Settings": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desactivados · Abrir Ajustes"}}}},
     "You can reply, allow or approve from the Lock Screen.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Puedes responder, permitir o aprobar desde la pantalla bloqueada."}}}},

@@ -2691,9 +2691,12 @@ fn variant_index(c: &Command) -> usize {
         Command::RequestClarification { .. } => 44,
         Command::RaiseProblem { .. } => 45,
         Command::TitleRequest { .. } => 46,
+        Command::AskQuestions { .. } => 47,
+        Command::HoldQuestions { .. } => 48,
+        Command::ReopenAnswer { .. } => 49,
     }
 }
-const COMMAND_KINDS: usize = 47;
+const COMMAND_KINDS: usize = 50;
 /// Every command kind naming the given ids. The flag marks commands that only
 /// create a fresh entity and therefore may succeed with an unknown id.
 fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
@@ -2795,6 +2798,11 @@ fn commands_naming(ids: &Ids) -> Vec<(Command, bool)> {
         (Command::RaiseProblem { attachments: vec![], interaction_id: "fresh-problem".into(),
             scope: Scope::Task { task_id: ids.task.into() }, body: "Stuck".into(), options: vec![],
             card: CardSpec::derived(CardKind::Problem, "Unblock the node") }, true),
+        (Command::AskQuestions { interaction_id: "fresh-group".into(), scope: Scope::Task { task_id: ids.task.into() },
+            recipient: Recipient::User, blocking: false, why: "Why".into(), questions: vec![] }, true),
+        (Command::HoldQuestions { interaction_id: "fresh-hold-group".into(), task_id: ids.task.into(),
+            agent_id: "a".into(), questions: vec![] }, true),
+        (Command::ReopenAnswer { interaction_id: ids.interaction.into() }, false),
     ];
     let mut covered = vec![false; COMMAND_KINDS];
     for (command, _) in &list {

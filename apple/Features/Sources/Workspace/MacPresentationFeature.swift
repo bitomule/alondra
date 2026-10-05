@@ -73,7 +73,6 @@ public struct MacPresentationFeature: Sendable {
         case viewFailed(String, String)
         case beginViewAction(AlondraContract.Action, target: String? = nil)
         case sendReply(AlondraContract.Action, text: String)
-        case sendAnswers(AlondraContract.Action, fields: [String: JSONValue])
         case beginViewForm(AlondraContract.Form)
         case reloadForm(String, JSONValue)
         case pickerOpened(String, String), pickerQueryChanged(String), pickerLoaded(ViewFetch), pickerFailed(String)
@@ -117,14 +116,6 @@ public struct MacPresentationFeature: Sendable {
                 state.actionTarget = nil
                 state.actionPresented = false
                 return .concatenate(.send(.action(.present(action))), .send(.action(.textChanged(text))), .send(.action(.submit)))
-            case let .sendAnswers(action, fields):
-                guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
-                let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
-                state.actionFeature = ActionFeature.State(dataEpoch: document.dataEpoch, client: .mac, lang: lang)
-                state.activeForm = nil
-                state.actionTarget = state.selectedViewKey.flatMap(Self.cardID)
-                state.actionPresented = false
-                return .concatenate(.send(.action(.presentForm(action, fields, requiresAttachments: false))), .send(.action(.submit)))
             case .beginViewForm(let form):
                 guard let document = state.detailDocument ?? state.sidebarDocument else { return .none }
                 let lang = Locale.preferredLanguages.first?.lowercased().hasPrefix("es") == true ? "es" : "en"
