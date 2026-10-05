@@ -157,10 +157,13 @@ struct TriageCard: View {
     private var buttons: some View {
         GlassEffectContainer(spacing: 8) {
             VStack(spacing: 8) {
-                ForEach(Array(store.buttons.enumerated()), id: \.offset) { _, action in
+                ForEach(Array(store.buttons.dropLast().enumerated()), id: \.offset) { _, action in
                     actionButton(action)
                 }
-                if !store.menu.isEmpty { moreMenu }
+                HStack(alignment: .top, spacing: 8) {
+                    if let last = store.buttons.last { actionButton(last) }
+                    if !store.menu.isEmpty { moreMenu }
+                }
             }
             .controlSize(.large)
             .buttonBorderShape(.capsule)
@@ -199,7 +202,7 @@ struct TriageCard: View {
                 Button(action.label) { perform(action) }.disabled(!action.enabled)
             }
         } label: {
-            Label("More", systemImage: "ellipsis.circle").frame(maxWidth: .infinity)
+            Image(systemName: "ellipsis.circle")
         }
         .menuStyle(.button).buttonStyle(.glass)
         .accessibilityLabel("More actions")
