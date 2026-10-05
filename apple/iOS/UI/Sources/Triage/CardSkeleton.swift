@@ -8,16 +8,18 @@ struct CardSkeleton: View {
     @State private var sweeping = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            header
-            summary
-            contentRow
-            Spacer(minLength: 0)
-            buttons
-            reply
-        }
-        .padding(20)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        Color.clear
+            .overlay(alignment: .topLeading) {
+                VStack(alignment: .leading, spacing: 14) {
+                    header
+                    summary
+                    contentRow
+                    Spacer(minLength: 0)
+                    buttons
+                    reply
+                }
+                .padding(20)
+            }
         .redacted(reason: .placeholder)
         .background { Palette.card }
         .overlay { sheen }
