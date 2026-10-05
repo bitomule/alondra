@@ -33,6 +33,7 @@ mod hook_socket;
 mod http;
 mod hub;
 mod issues;
+mod job_state;
 mod keeper;
 mod machine;
 mod managed_orchestrator;

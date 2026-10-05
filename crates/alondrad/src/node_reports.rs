@@ -141,6 +141,10 @@ pub(crate) struct Reported {
     pub cpu_cs: Option<u64>,
     /// When the session process last used more than idle CPU between two looks, or was first seen.
     pub cpu_busy_at: Option<Millis>,
+    /// What Claude Code's own job state says, when its file could be read.
+    pub job: Option<crate::job_state::Job>,
+    /// Where that file was found, so the folder is not searched for every look.
+    pub job_dir: Option<PathBuf>,
     pub tool: Option<ToolInFlight>,
     pub answer: Option<Answer>,
     pub context: Option<ContextReading>,
@@ -167,11 +171,18 @@ pub(crate) enum Activity {
     Working,
     /// One tool call has run far longer than such a call can.
     Stalled,
+    /// Claude Code's job state says the session failed; its detail says why.
+    Failed,
     Idle,
 }
 
 impl Reported {
     pub(crate) fn activity(&self, now: Millis) -> Activity {
+        match self.job.as_ref().map(|job| job.phase) {
+            Some(crate::job_state::Phase::Failed) => return Activity::Failed,
+            Some(crate::job_state::Phase::Working) => return if self.silent(now) { Activity::Stalled } else { Activity::Working },
+            _ => {}
+        }
         let call_overran = self.tool.as_ref().is_some_and(|tool| now - tool.since > alondra_core::states::call_limit(&tool.name));
         if (call_overran && self.shell_alive != Some(true)) || self.silent(now) {
             Activity::Stalled
@@ -195,6 +206,11 @@ impl Reported {
     /// no CPU used by the session process, no shell call alive, no subagent. Either it is inside a turn that stopped processing, or
     /// it waits on a call or a background shell that is gone and nothing resumed it.
     pub(crate) fn silent(&self, now: Millis) -> bool {
+        match &self.job {
+            Some(job) if job.phase == crate::job_state::Phase::Failed => return false,
+            Some(job) if job.phase == crate::job_state::Phase::Working => return self.job_stalled(job, now),
+            _ => {}
+        }
         if self.connection.is_none() || self.shell_running() || self.agent_running(now) {
             return false;
         }
@@ -204,6 +220,13 @@ impl Reported {
         let waits_on_dead_shell = self.shell_alive == Some(false)
             && (self.tool.as_ref().is_some_and(|tool| tool.name == "Bash") || self.background.iter().any(|(_, item)| item.kind == BackgroundKind::Shell));
         quiet && (stuck_turn || waits_on_dead_shell)
+    }
+
+    /// Claude Code says it works yet nothing is in flight, its state has not moved and its process
+    /// has used no CPU for `JOB_STALL_MS`: a long reply being generated shows in the CPU.
+    fn job_stalled(&self, job: &crate::job_state::Job, now: Millis) -> bool {
+        let still_for = |at: Option<Millis>| at.is_some_and(|at| now - at > alondra_core::states::JOB_STALL_MS);
+        self.connection.is_some() && job.tasks == 0 && still_for(Some(job.updated_at)) && still_for(self.cpu_busy_at)
     }
 
     /// What the node has running in the background, each flagged when it has run long while the
@@ -406,6 +429,13 @@ impl Reports {
                 session.cpu_busy_at = Some(now);
             }
             session.cpu_cs = Some(cpu_cs);
+        }
+    }
+
+    pub(crate) fn set_job(&self, session_id: &str, job: Option<crate::job_state::Job>, dir: Option<PathBuf>) {
+        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+            session.job = job;
+            session.job_dir = dir;
         }
     }
 
@@ -824,5 +854,84 @@ mod tests {
         assert!(!reports.session("s").unwrap().silent(2 * quiet + 1));
         reports.sample_cpu("s", 10_001, 4 * quiet);
         assert!(reports.session("s").unwrap().silent(4 * quiet));
+    }
+
+    fn job(phase: crate::job_state::Phase, tasks: u64, updated_at: Millis) -> crate::job_state::Job {
+        crate::job_state::Job { phase, detail: "exit 1 before init".into(), tasks, updated_at, settings: None }
+    }
+
+    #[test]
+    fn a_failed_job_is_a_failed_node_that_is_never_restarted_for_being_quiet() {
+        use crate::job_state::Phase;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.set_job("s", Some(job(Phase::Failed, 0, 0)), None);
+        reports.sample_cpu("s", 0, 0);
+        let session = reports.session("s").unwrap();
+        assert_eq!(session.activity(HOUR), Activity::Failed);
+        assert!(!session.silent(HOUR));
+    }
+
+    #[test]
+    fn a_working_job_is_working_with_tasks_in_flight_or_a_state_that_moves_and_stalled_when_both_stop_and_the_cpu_is_flat() {
+        use crate::job_state::Phase;
+        let window = alondra_core::states::JOB_STALL_MS;
+        let look = 30_000;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 0, 0);
+        let activity = |at| reports.session("s").unwrap().activity(at);
+        reports.set_job("s", Some(job(Phase::Working, 1, 0)), None);
+        assert_eq!(activity(HOUR), Activity::Working, "a build in flight, however long it is silent");
+        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
+        assert_eq!(activity(window), Activity::Working, "the state moved less than the window ago");
+        assert_eq!(activity(window + 1), Activity::Stalled, "nothing in flight, the state still, the CPU flat since the first look");
+        reports.sample_cpu("s", 10_000, window + 2 * look);
+        assert_eq!(activity(window + 2 * look + 1), Activity::Working, "the CPU moved: a long reply being generated");
+        assert!(!reports.session("s").unwrap().silent(window + 2 * look + 1));
+    }
+
+    #[test]
+    fn a_reply_generated_for_five_minutes_stays_working_and_three_flat_minutes_stall() {
+        use crate::job_state::Phase;
+        let window = alondra_core::states::JOB_STALL_MS;
+        let step = alondra_core::states::IDLE_CPU_CS_PER_LOOK;
+        let look = 30_000;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
+        let (mut at, mut cpu) = (0, 0);
+        while at <= 5 * 60_000 {
+            cpu += step;
+            reports.sample_cpu("s", cpu, at);
+            assert_eq!(reports.session("s").unwrap().activity(at), Activity::Working, "generating at {at}");
+            at += look;
+        }
+        let flat_since = at - look;
+        while at <= flat_since + window {
+            cpu += step - 1;
+            reports.sample_cpu("s", cpu, at);
+            assert_eq!(reports.session("s").unwrap().activity(at), Activity::Working, "flat for less than the window at {at}");
+            at += look;
+        }
+        cpu += step - 1;
+        reports.sample_cpu("s", cpu, at);
+        assert_eq!(reports.session("s").unwrap().activity(at), Activity::Stalled, "flat for the whole window");
+        assert!(reports.session("s").unwrap().silent(at));
+    }
+
+    #[test]
+    fn a_working_job_without_a_look_at_the_process_is_not_stalled_and_an_idle_one_leaves_the_decision_to_the_mod() {
+        use crate::job_state::Phase;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
+        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Working, "no CPU look: idleness is not proven");
+        reports.set_job("s", Some(job(Phase::Blocked, 0, 0)), None);
+        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Idle, "the mod reports no turn");
+        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
+        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Working, "the mod's events decide, as without a job state");
+        reports.set_job("s", None, None);
+        assert_eq!(reports.session("s").unwrap().activity(HOUR), Activity::Working);
     }
 }

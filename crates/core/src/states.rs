@@ -23,9 +23,14 @@ pub const CALL_LIMIT_MS: Millis = 45 * MINUTE;
 /// for this long after its mod last reported anything; past it the session has stopped
 /// processing, and it is stalled.
 pub const TURN_QUIET_MS: Millis = 10 * MINUTE;
-/// The session process using less CPU than this over a 30 s look counts as idle: a model that is
+/// A background session whose job state says it works, with nothing in flight, counts as stalled
+/// once its state has not changed and its process has used no CPU for this long.
+pub const JOB_STALL_MS: Millis = 3 * MINUTE;
+/// The session process using less CPU than this over a 30 s look counts as idle. Measured on
+/// bg-spare session processes on 2026-10-05: apparently idle sessions used at most 0.65 s per 30 s
+/// (typically 0.36 to 0.51 s), working ones 0.9, 2.0 and 6.4 s. A model that is
 /// generating or thinking keeps it busy, a stopped session does not.
-pub const IDLE_CPU_CS_PER_LOOK: u64 = 50;
+pub const IDLE_CPU_CS_PER_LOOK: u64 = 120;
 /// Subagents legitimately run longer than any other call.
 pub const SUBAGENT_CALL_LIMIT_MS: Millis = 120 * MINUTE;
 

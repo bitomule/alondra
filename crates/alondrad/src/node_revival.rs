@@ -85,12 +85,22 @@ fn look_at_shells(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
     let table = crate::process_watch::snapshot();
     for agent in state.agents.keys() {
+        look_at_job(domain, &agent.0);
         let Some(pid) = domain.live.mods.session(&agent.0).and_then(|reported| reported.peer_pid) else { continue };
         domain.live.mods.set_shell_alive(&agent.0, crate::process_watch::shell_running(&table, pid));
         if let Some(cpu) = crate::process_watch::session_cpu(&table, pid) {
             domain.live.mods.sample_cpu(&agent.0, cpu, alondra_core::now_millis());
         }
     }
+}
+
+/// Reads what Claude Code's own job state says about the session.
+fn look_at_job(domain: &DomainRuntime, session: &str) {
+    let Some(reported) = domain.live.mods.session(session) else { return };
+    let dir = reported.job_dir.clone().or_else(|| crate::job_state::locate(&crate::watcher::claude_home(), session));
+    let job = dir.as_deref().and_then(|dir| crate::job_state::read_in(dir, session));
+    let dir = dir.filter(|_| job.is_some());
+    domain.live.mods.set_job(session, job, dir);
 }
 
 /// The sessions whose agent works on an open task and whose mod is connected, yet shows no
@@ -102,6 +112,10 @@ pub(crate) fn stalled_sessions(domain: &DomainRuntime, now: alondra_core::Millis
         .filter(|session| open_task(&state, session) && !domain.live.is_closed(session))
         .filter(|session| domain.live.mods.session(session).is_some_and(|reported| reported.silent(now)))
         .collect()
+}
+
+pub(crate) fn has_open_task(domain: &DomainRuntime, session: &str) -> bool {
+    domain.state().is_ok_and(|state| open_task(&state, session))
 }
 
 fn open_task(state: &alondra_core::domain_v2::DomainState, session: &str) -> bool {
@@ -363,6 +377,36 @@ mod tests {
         assert!(stalled_sessions(&domain, alondra_core::now_millis()).is_empty(), "the restarted session is not stalled");
         assert!(!domain.live.is_reconnecting(SESSION));
         assert!(domain.state().unwrap().interactions.is_empty());
+    }
+
+    #[test]
+    fn a_session_that_ends_with_open_work_keeps_its_settings_file_for_respawn_and_gets_a_new_bearer_when_it_connects() {
+        let agent = AgentId(SESSION.into());
+        let (home, domain) = world(true);
+        let path = crate::domain_sessions::prepare(&home.0, "launch-1").unwrap();
+        let bearer = domain.bind_agent(SESSION).unwrap();
+        crate::domain_sessions::bind(&path, &agent, bearer.expose_for_child_environment()).unwrap();
+        let capability = |path: &std::path::Path| {
+            let settings: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            settings["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().map(str::to_owned)
+        };
+        assert!(!crate::domain_sessions::reissue(&domain, "launch-1", &agent).unwrap(), "a live session keeps its bearer");
+
+        crate::domain_transport::session_ended(&domain, &agent).unwrap();
+        assert!(path.exists(), "`claude respawn` passes this path again and must find it");
+        assert_eq!(capability(&path), None, "but the revoked bearer is gone from it");
+
+        assert!(crate::domain_sessions::reissue(&domain, "launch-1", &agent).unwrap());
+        let reissued = capability(&path).expect("the restarted session has a bearer");
+        assert_ne!(reissued, bearer.expose_for_child_environment());
+        assert!(!crate::domain_sessions::reissue(&domain, "launch-1", &agent).unwrap(), "once");
+
+        let (home, finished) = world(false);
+        let path = crate::domain_sessions::prepare(&home.0, "launch-2").unwrap();
+        let bearer = finished.bind_agent(SESSION).unwrap();
+        crate::domain_sessions::bind(&path, &agent, bearer.expose_for_child_environment()).unwrap();
+        crate::domain_transport::session_ended(&finished, &agent).unwrap();
+        assert!(!path.exists(), "no open work: nothing will respawn it");
     }
 
     #[tokio::test]

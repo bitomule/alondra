@@ -44,6 +44,8 @@ fn node_label(key: &str, lang: Lang) -> String {
     match (key, lang) {
         ("stalled", Lang::En) => "stalled",
         ("stalled", Lang::Es) => "parado",
+        ("failed", Lang::En) => "failed",
+        ("failed", Lang::Es) => "falló",
         ("busy", Lang::En) => "working",
         ("busy", Lang::Es) => "trabajando",
         ("waiting_machine", Lang::En) => "waiting for the machine",
@@ -91,6 +93,7 @@ pub(crate) async fn gather(
             let reconnecting = client.domain.live.is_reconnecting(&session_id);
             let state_key = match activity {
                 Activity::Stalled => "stalled",
+                Activity::Failed => "failed",
                 Activity::Working => "busy",
                 Activity::Idle if node.status == alondra_core::NodeStatus::WaitingMachine => "waiting_machine",
                 Activity::Idle => "free",
@@ -101,7 +104,8 @@ pub(crate) async fn gather(
                 None => tool.name.clone(),
             });
             let answer = reported.answer.as_ref().filter(|answer| !answer.text.trim().is_empty());
-            let summary = tool.clone()
+            let failure = reported.job.as_ref().filter(|_| activity == Activity::Failed).map(|job| job.detail.clone()).filter(|detail| !detail.is_empty());
+            let summary = failure.or_else(|| tool.clone())
                 .or_else(|| node.daemon_needs.clone())
                 .or_else(|| node.daemon_detail.clone())
                 .or_else(|| answer.map(|answer| answer.text.clone()))
