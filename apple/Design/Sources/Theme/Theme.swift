@@ -169,11 +169,15 @@ public struct Glyph: View {
 
 public struct KindBadge: View {
     public let kind: Kind
+    public let title: String?
 
-    public init(kind: Kind) { self.kind = kind }
+    public init(kind: Kind, title: String? = nil) {
+        self.kind = kind
+        self.title = title
+    }
 
     public var body: some View {
-        Label(kind.label, systemImage: kind.symbol)
+        label
             .font(.caption.weight(.semibold))
             .lineLimit(1)
             .fixedSize()
@@ -183,6 +187,14 @@ public struct KindBadge: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .background(kind.tint.opacity(0.14), in: .capsule)
+    }
+
+    @ViewBuilder private var label: some View {
+        if let title {
+            Label { Text(verbatim: title) } icon: { Image(systemName: kind.symbol) }
+        } else {
+            Label(kind.label, systemImage: kind.symbol)
+        }
     }
 }
 

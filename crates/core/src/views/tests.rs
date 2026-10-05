@@ -2464,28 +2464,25 @@ fn header_facts(view: &View) -> &[Fact] {
     &facts.items
 }
 
-fn content_facts(view: &View) -> &[Fact] {
-    let section = view.sections.iter().find(|section| section.id == "content").expect("content section");
-    section.items.iter().find_map(|item| if let Item::Facts(facts) = item { Some(facts.items.as_slice()) } else { None })
-        .expect("PR facts")
+fn section_of<'a>(view: &'a View, id: &str) -> Option<&'a super::Section> {
+    view.sections.iter().find(|section| section.id == id)
 }
 
 fn content_checks(view: &View) -> Option<&Checks> {
-    let section = view.sections.iter().find(|section| section.id == "content")?;
-    section.items.iter().find_map(|item| if let Item::Checks(checks) = item { Some(checks) } else { None })
+    section_of(view, "checks")?.items.iter().find_map(|item| if let Item::Checks(checks) = item { Some(checks) } else { None })
 }
 
 #[test]
-fn a_pull_request_detail_reads_node_report_then_description_then_diff() {
+fn a_pull_request_detail_puts_the_diff_before_the_folded_description_and_drops_the_table() {
     let view = render(&golden_fixture(), &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
-    let content = view.sections.iter().find(|section| section.id == "content").expect("content section");
-    let position = |wanted: &dyn Fn(&Item) -> bool| content.items.iter().position(wanted).expect("item present");
-    let description = position(&|item| matches!(item, Item::Markdown(body) if body.text.starts_with("Replaces the long schedule form")));
-    let diff = position(&|item| matches!(item, Item::ContentRef(reference) if reference.kind == super::ContentKind::Diff));
-    let facts = position(&|item| matches!(item, Item::Facts(_)));
-    assert!(description < diff && diff < facts, "description, then the diff, then the details");
-    let sections = view.sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>();
-    assert!(sections.iter().position(|id| *id == "content") < sections.iter().position(|id| *id == "context"));
+    let ids = view.sections.iter().map(|section| section.id.as_str()).collect::<Vec<_>>();
+    assert_eq!(ids, ["card", "checks", "diff", "description", "context"]);
+    let diff = section_of(&view, "diff").unwrap();
+    assert!(matches!(&diff.items[..], [Item::ContentRef(reference)] if reference.kind == super::ContentKind::Diff));
+    let description = section_of(&view, "description").unwrap();
+    assert!(matches!(&description.items[..], [Item::Markdown(body)] if body.text.starts_with("Replaces the long schedule form")));
+    assert!(view.sections.iter().flat_map(|section| &section.items).all(|item| !matches!(item, Item::Facts(facts)
+        if facts.items.iter().any(|fact| fact.label == "Repository" || fact.label == "Base" || fact.label == "Head"))));
 }
 
 #[test]
@@ -2497,28 +2494,29 @@ fn a_pull_request_delivery_carries_checks_branch_and_change_size_in_its_detail()
     assert_eq!(card.kind, Some(crate::domain_v2::CardKind::Review));
     assert_eq!(card.eyebrow.as_ref().unwrap().text, "Review · PR #12");
     assert_eq!(card.icon, Icon::PullRequest);
-    assert_eq!(card.title, "Review the beta candidate");
+    assert_eq!(card.need.as_deref(), Some("Review the beta candidate"));
+    assert_eq!(card.title, "Add the compact schedule editor", "the detail is titled with the PR's own title");
+    assert_eq!(
+        card.meta.as_deref(),
+        Some("example/repo · feature/compact-schedule-editor → main · 4 files · +120 −30 · Checks passed")
+    );
     assert!(card.body.is_none(), "the card holds none of it");
     let row = card.content_row.as_ref().expect("content row");
     assert_eq!((row.kind.as_str(), row.label.as_str(), row.summary.as_str()), ("diff", "Changes", "4 files · +120 −30"));
-    let facts = content_facts(&view);
-    let value = |label: &str| facts.iter().find(|fact| fact.label == label).map(|fact| fact.value.as_str());
-    assert_eq!(value("Repository"), Some("example/repo #12"));
-    assert_eq!(value("Head"), Some("feature/compact-schedule-editor"));
-    assert_eq!(value("Changes"), Some("4 files · +120 −30"));
     assert_eq!(
         content_checks(&view).unwrap().items.iter().map(|check| (check.name.as_str(), check.state)).collect::<Vec<_>>(),
         [("Build", CheckState::Pass), ("Unit tests", CheckState::Pass), ("Lint", CheckState::Pending)]
     );
-    assert!(view.sections.iter().flat_map(|section| &section.items).any(|item| matches!(item,
-        Item::Markdown(body) if body.text.starts_with("Replaces the long schedule form"))), "the PR's own description");
     let spanish = render(&state, &golden_live(), Client::Ios, Lang::Es, card_key, "");
     assert_eq!(card_of(&spanish).content_row.as_ref().unwrap().summary, "4 archivos · +120 −30");
-    assert!(content_facts(&spanish).iter().any(|fact| fact.label == "Cambios" && fact.value == "4 archivos · +120 −30"));
+    assert_eq!(
+        card_of(&spanish).meta.as_deref(),
+        Some("example/repo · feature/compact-schedule-editor → main · 4 archivos · +120 −30 · Comprobaciones superadas")
+    );
     let mut single = golden_live();
     single.pull_requests[0].changed_files = 1;
     let view = render(&state, &single, Client::Ios, Lang::En, card_key, "");
-    assert!(content_facts(&view).iter().any(|fact| fact.label == "Changes" && fact.value == "1 file · +120 −30"));
+    assert!(card_of(&view).meta.as_deref().unwrap().contains("1 file · +120 −30"));
 }
 
 #[test]
@@ -2533,10 +2531,63 @@ fn a_pull_request_without_github_details_keeps_the_aggregate_check_and_names_the
     let view = render(&state, &live, Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
     let card = card_of(&view);
     assert_eq!(card.content_row.as_ref().unwrap().summary, "example/repo #12");
+    assert_eq!(card.meta.as_deref(), Some("example/repo · → main · Checks failing"));
+    assert_eq!(card.title, "Review the beta candidate", "without GitHub's title the node's own is kept");
     let checks = content_checks(&view).unwrap();
     assert_eq!(checks.items.len(), 1);
     assert_eq!(checks.items[0].state, CheckState::Fail);
-    assert!(content_facts(&view).iter().all(|fact| fact.label != "Changes" && fact.label != "Head"));
+}
+
+#[test]
+fn a_pull_request_description_repeats_neither_the_report_nor_the_link_to_the_pr() {
+    let mut state = golden_fixture();
+    let report = "PR: https://github.com/example/repo/pull/12 (rebased)\n\nReplaces the long schedule form with a compact editor.";
+    for interaction in state.interactions.values_mut() {
+        if interaction.card.need == "Review the beta candidate" {
+            interaction.card.content = Some(crate::domain_v2::CardContent {
+                kind: crate::domain_v2::ContentKind::Report,
+                summary: None,
+                body: report.into(),
+            });
+        }
+    }
+    let view = render(&state, &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    let description = section_of(&view, "description").unwrap();
+    let [Item::Markdown(body)] = &description.items[..] else { panic!("one folded text: {:?}", description.items) };
+    assert!(!body.text.contains("/pull/12"), "{}", body.text);
+    assert!(body.text.starts_with("Replaces the long schedule form"), "{}", body.text);
+    assert_eq!(body.text.matches("Replaces the long schedule form").count(), 1, "{}", body.text);
+}
+
+#[test]
+fn internal_task_ids_in_a_card_read_as_the_task_title() {
+    let mut state = golden_fixture();
+    let (id, title) = {
+        let task = state.tasks.values().next().unwrap();
+        (task.id.0.clone(), task.title.clone())
+    };
+    for interaction in state.interactions.values_mut() {
+        if interaction.card.need == "Review the beta candidate" {
+            interaction.card.why = format!("Closes {id} and unblocks t-unknown-task.");
+        }
+    }
+    let view = render(&state, &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    assert_eq!(card_of(&view).why.as_deref(), Some(format!("Closes {title} and unblocks t-unknown-task.").as_str()));
+}
+
+#[test]
+fn a_task_and_node_with_the_same_name_appear_once_in_the_context() {
+    let mut state = golden_fixture();
+    let title = state.tasks.values().next().unwrap().title.clone();
+    assert!(!state.agents.is_empty());
+    for agent in state.agents.values_mut() {
+        agent.name = title.clone();
+    }
+    let view = render(&state, &golden_live(), Client::Ios, Lang::En, "card:github.com/example/repo#12", "");
+    let Some(Item::Facts(context)) = section_of(&view, "context").and_then(|section| section.items.first()) else {
+        panic!("context line")
+    };
+    assert_eq!(context.items[0].value.matches(&title).count(), 1, "{}", context.items[0].value);
 }
 
 #[test]

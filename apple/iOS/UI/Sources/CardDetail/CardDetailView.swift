@@ -131,14 +131,14 @@ public struct CardDetailView: View {
 
     private func header(_ subject: CardDetailFeature.Subject) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            if subject.card != nil { KindBadge(kind: kind) }
+            if let card = subject.card { KindBadge(kind: kind, title: card.eyebrow?.text) }
             if let index = store.stepIndex, let card = subject.card {
                 QuestionProgress(
                     index: index, total: card.steps.count, tint: kind.tint,
                     back: store.questions.canGoBack ? { store.send(.previousQuestion) } : nil
                 )
             }
-            Text(store.step?.need ?? subject.title).font(.display(.largeTitle, weight: .bold))
+            Text(store.step?.need ?? subject.title).font(.display(.title2, weight: .bold))
                 .foregroundStyle(Palette.ink).fixedSize(horizontal: false, vertical: true)
             if let why = store.step.map({ $0.why ?? subject.card?.why }) ?? subject.card?.why {
                 Text(why).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
@@ -163,7 +163,11 @@ public struct CardDetailView: View {
                 Text(title).font(.footnote.weight(.bold)).textCase(.uppercase).kerning(0.6).foregroundStyle(.secondary)
             }
             ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
-                itemView(item)
+                if section.id == "description", case .markdown(let markdown) = item {
+                    PRDescription(markdown: markdown)
+                } else {
+                    itemView(item)
+                }
             }
         }
     }

@@ -194,7 +194,7 @@ private struct PRStatusView: View {
     }
 }
 
-private struct PRDescription: View {
+struct PRDescription: View {
     static let foldedLength = 600
 
     let markdown: Markdown

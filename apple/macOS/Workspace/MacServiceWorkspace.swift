@@ -284,13 +284,12 @@ public struct MacServiceDetail: View {
     }
 
     private func showContent(of document: ViewDocument, scrollTo proxy: ScrollViewProxy) {
-        let content = document.sections.first { $0.id == "content" }
-        let diff = content?.items.lazy.compactMap { item -> ContentRef? in
+        let diff = document.sections.lazy.flatMap(\.items).compactMap { item -> ContentRef? in
             if case let .contentRef(reference) = item, reference.kind == .diff { reference } else { nil }
         }.first
         if let diff {
             presentation.send(.contentRequested(diff))
-        } else if content != nil {
+        } else if document.sections.contains(where: { $0.id == "content" }) {
             withAnimation(.smooth) { proxy.scrollTo("content", anchor: .top) }
         }
     }

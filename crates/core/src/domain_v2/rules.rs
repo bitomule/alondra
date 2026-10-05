@@ -2223,6 +2223,16 @@ impl DomainState {
             } => {
                 self.assigned(actor, task_id)?;
                 id(&pr_id.0)?;
+                if !crate::views::id::valid(&pr_id.0) {
+                    return refuse(
+                        "invalid_input",
+                        "pr_id",
+                        &format!(
+                            "pr_id \"{}\" cannot be addressed by the apps: use a short id such as \"pr-{number}\" (letters, digits, - and _) or github.com/owner/repo#N in lowercase",
+                            pr_id.0
+                        ),
+                    );
+                }
                 canonical_pr(host, repository, *number)?;
                 if !host.contains('.') {
                     return refuse(

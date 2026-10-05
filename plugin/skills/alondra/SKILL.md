@@ -33,7 +33,8 @@ and sending the same refused card three times raises a Problem for the user inst
 
 Every card the user reads has a `need`, what you need from them: imperative, one line, at most 90
 characters. Cards that ask for something also have a `why`: one or two sentences, at most 240,
-about why and what it holds up. Anything longer goes in `content` (`kind`, optional `summary`,
+about why and what it holds up. Name tasks and PRs by their title or number, never by an internal
+id such as `t-foo`: the user reads `why` on the card. Anything longer goes in `content` (`kind`, optional `summary`,
 `body`), never in `why`: the user sees `need` and `why` on the card and `content` in its detail.
 Prefer a recommendation whenever you can make one. Pick the tool by what you need:
 
@@ -105,7 +106,8 @@ Prefer a recommendation whenever you can make one. Pick the tool by what you nee
 
 ## Your PR
 
-- Right after opening a PR, call `register_pr` with the task, its host, `owner/repo`, number,
+- Right after opening a PR, call `register_pr` with the task, a short `pr_id` such as `pr-123`
+  (letters, digits, `-` and `_` only, never `owner/repo#123`), its host, `owner/repo`, number,
   head and base, and the merge methods allowed. One task has one PR for its whole life; other
   work needs another task.
 - Present it with `present_result`, the PR and its head in `targets`. The user decides the merge
