@@ -175,7 +175,7 @@ async fn invoke_claimed(
     match launcher.run(&launch.cwd, &args).await {
         Ok(output) => Ok((output, settings)),
         Err(refusal) => {
-            crate::domain_sessions::remove(&settings);
+            crate::domain_sessions::release(&settings);
             Err(refusal)
         }
     }
@@ -371,7 +371,7 @@ async fn dispatch_pending(
         if let Some(short) = alondra_core::sessions::launched_short(&output) {
             launcher.stop(&short).await;
         }
-        crate::domain_sessions::remove(&settings);
+        crate::domain_sessions::release(&settings);
         fail_run(domain, run_id, crate::node_reports::MODS_NOT_LOADED.into())?;
         return Ok(());
     };
@@ -399,7 +399,7 @@ fn hand_over(
     settings: &Path,
 ) -> Result<()> {
     if task_is_closed(domain, run_id)? {
-        crate::domain_sessions::remove(settings);
+        crate::domain_sessions::release(settings);
         return fail_run(domain, run_id, "its Task was closed".into());
     }
     let agent_id = AgentId(session.to_owned());
@@ -426,7 +426,7 @@ fn hand_over(
         });
     if let Err(error) = bound {
         domain.revoke_agent(session)?;
-        crate::domain_sessions::remove(settings);
+        crate::domain_sessions::release(settings);
         fail_run(
             domain,
             run_id,
@@ -447,7 +447,7 @@ fn hand_over(
         Ok(_) => (),
         Err(error) if ordinary_conflict(&error) => {
             domain.revoke_agent(session)?;
-            crate::domain_sessions::remove(settings);
+            crate::domain_sessions::release(settings);
             fail_run(
                 domain,
                 run_id,
@@ -496,7 +496,7 @@ async fn recover_uncertain(
         Some(session) => hand_over(domain, run_id, &name, &session, &settings),
         None => {
             launcher.stop(&name).await;
-            crate::domain_sessions::remove(&settings);
+            crate::domain_sessions::release(&settings);
             let title = run.definition_snapshot.as_ref().map_or(name.as_str(), |snapshot| snapshot.title.as_str());
             fail_run(
                 domain,
@@ -1213,6 +1213,7 @@ mod tests {
                         serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap())
                             .unwrap()
                     })
+                    .filter(|settings: &serde_json::Value| settings["env"].as_object().is_some_and(|env| !env.is_empty()))
                     .collect()
             })
             .unwrap_or_default()
@@ -1408,7 +1409,11 @@ mod tests {
         assert_eq!(run.launch.as_ref().unwrap().state, ScheduleLaunchState::Failed);
         assert!(run.error.as_deref().unwrap().contains("did not start properly"));
         assert_eq!(launcher.0.lock().unwrap().len(), 1, "the unseen session is stopped");
-        assert!(settings_files(&fixture.home).is_empty());
+        assert!(settings_files(&fixture.home).is_empty(), "nothing stays bound to Alondra");
+        assert!(
+            fixture.home.join("runtime/sessions/lost.json").exists(),
+            "Claude Code resumes the session with the same --settings path, so the file stays"
+        );
         let problem = &state.interactions[&InteractionId::from("problem-launch-lost")];
         let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem asks") };
         assert_eq!(
