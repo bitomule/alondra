@@ -199,7 +199,8 @@ async fn execute_action(
         return Ok(rejected_field(lang, "text", "This option needs text"));
     }
     if action.verb == Verb::Ans && request.option_id.as_deref().is_none_or(str::is_empty)
-        && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty()) {
+        && request.input.text.as_deref().is_none_or(|text| text.trim().is_empty())
+        && !request.input.fields.contains_key("answers") {
         return Ok(rejected_field(lang, "option_id", "Choose an option"));
     }
     if is_external(action.verb) && !handed_back_in_domain(&state, &action) {
@@ -743,6 +744,29 @@ fn archive_command_id(parent: &str, task: &TaskId) -> CommandId {
     CommandId(format!("{parent}/{suffix}"))
 }
 
+/// The choices a client sends together for a card that asks several questions: `fields.answers`
+/// holds one `{option_id, text}` per question, in the order they were asked.
+fn answers_to_questions(
+    interaction: &alondra_core::domain_v2::Interaction,
+    request: &ActionRequest,
+    attachments: &[alondra_core::domain_v2::AttachmentRef],
+    lang: Lang,
+) -> Option<(Command, String)> {
+    let sent = request.input.fields.get("answers")?.as_array()?;
+    if sent.len() != interaction.card.questions.len() {
+        return None;
+    }
+    let choices: Vec<(Option<String>, Option<String>)> = sent.iter().map(|choice| (
+        choice.get("option_id").and_then(Value::as_str).map(str::to_owned),
+        choice.get("text").and_then(Value::as_str).map(str::to_owned),
+    )).collect();
+    let stamp = if lang == Lang::Es { "Respondida" } else { "Answered" };
+    Some((Command::AnswerQuestion {
+        interaction_id: interaction.id.clone(), option_id: String::new(),
+        inputs: alondra_core::domain_v2::Answer::question_inputs(&choices), attachments: attachments.to_vec(),
+    }, stamp.to_owned()))
+}
+
 fn map_domain_action(
     state: &alondra_core::domain_v2::DomainState,
     action: &ActionId,
@@ -755,6 +779,9 @@ fn map_domain_action(
         Verb::Ans => {
             let interaction = state.interactions.get(&InteractionId(action.subject.clone()))?;
             let (InteractionPayload::Question { options, answer: None } | InteractionPayload::ActionRequest { options, answer: None }) = &interaction.payload else { return None; };
+            if !interaction.card.questions.is_empty() {
+                return answers_to_questions(interaction, request, attachments, lang);
+            }
             let option_id = request.option_id.clone().unwrap_or_default();
             let mut inputs = std::collections::BTreeMap::new();
             let option = options.iter().find(|option| option.id == option_id);
@@ -1436,6 +1463,45 @@ mod tests {
             map_domain_action(&state, &action, &blank, &[], Lang::En) else { panic!("option answer") };
         assert_eq!(option_id, "yes");
         assert!(inputs.is_empty());
+    }
+
+    #[test]
+    fn the_answers_a_client_sends_together_become_one_answer_with_a_choice_per_question() {
+        use alondra_core::domain_v2::{Author, CardKind, CardQuestion, CardSpec, InputValue, Interaction, InteractionPayload, QuestionOption, Recipient, Scope};
+        let question = |need: &str| CardQuestion {
+            need: need.into(), why: String::new(), recommended: None,
+            options: vec![QuestionOption { id: "o0".into(), label: "Yes".into(), description: None, inputs: vec![] },
+                QuestionOption { id: "o1".into(), label: "No".into(), description: None, inputs: vec![] }],
+        };
+        let mut card = CardSpec::new(CardKind::Decide, "First?");
+        card.questions = vec![question("First?"), question("Second?"), question("Third?")];
+        let mut state = alondra_core::domain_v2::DomainState::new("epoch");
+        state.interactions.insert("q-1".into(), Interaction {
+            attachments: vec![], id: "q-1".into(), scope: Scope::Task { task_id: "t-1".into() },
+            author: Author::System, recipient: Recipient::User, body: "Three questions".into(),
+            blocking: true, subject: None, payload: InteractionPayload::Question { options: vec![], answer: None },
+            revision: 1, order: 1, withdrawn: false, card, clarification: None,
+        });
+        let request = |answers: serde_json::Value| ActionRequest {
+            protocol: VIEWS_PROTOCOL, command_id: "5f0c2d9e-8d0b-4c71-9b0e-2b6f5d8f1a10".into(),
+            data_epoch: "epoch".into(), client: "ios".into(), lang: "en".into(), action_id: String::new(), option_id: None,
+            input: ActionInput { fields: serde_json::from_value(serde_json::json!({"answers": answers})).unwrap(), ..Default::default() },
+        };
+        let action = ActionId::new(Verb::Ans, "q-1", 1, None).unwrap();
+        let sent = request(serde_json::json!([{"option_id": "o1"}, {"option_id": null, "text": "  Later  "}, {"option_id": "o0", "text": null}]));
+        let Some((Command::AnswerQuestion { option_id, inputs, .. }, stamp)) =
+            map_domain_action(&state, &action, &sent, &[], Lang::En) else { panic!("answers") };
+        assert!(option_id.is_empty());
+        assert_eq!(stamp, "Answered");
+        assert_eq!(inputs, std::collections::BTreeMap::from([
+            ("q0".to_owned(), InputValue::Text("o1".into())),
+            ("q1.text".to_owned(), InputValue::Text("Later".into())),
+            ("q2".to_owned(), InputValue::Text("o0".into())),
+        ]));
+        assert!(map_domain_action(&state, &action, &request(serde_json::json!([{"option_id": "o1"}])), &[], Lang::En).is_none(),
+            "an answer for each question or none");
+        let one_option = ActionRequest { option_id: Some("o0".into()), ..request(serde_json::json!(null)) };
+        assert!(map_domain_action(&state, &action, &one_option, &[], Lang::En).is_none(), "one option is not an answer to three questions");
     }
 
     #[test]

@@ -190,6 +190,12 @@ public struct ContentRow: Codable, Equatable, Sendable {
 /// "blocks PR #649" on the card that holds another back, "blocked by ..." on the one held back.
 public struct BlockChip: Codable, Equatable, Sendable { public let id: String; public let label: String; public let link: Link? }
 
+/// One question of a card that asks several: its own words and its own buttons.
+public struct CardStep: Codable, Equatable, Sendable {
+    public let need: String; public let why: String?; public let actions: [Action]
+    /// The way to answer in words.
+    public let write: Action?
+}
 public struct Card: Codable, Equatable, Sendable {
     public let id: String; public let link: Link?; public let icon: Icon; public let eyebrow: Label?; public let title: String; public let subtitle: String?
     public let badges: [Label]; public let context: [ContextLine]; public let timestamps: [Stamp]; public let state: Label?; public let detail: Detail
@@ -197,9 +203,11 @@ public struct Card: Codable, Equatable, Sendable {
     /// The card anatomy: what is needed, why, who and where, one line of content, what it holds back, and the reply.
     public let kind: CardKind?; public let need: String?; public let why: String?; public let meta: String?; public let contentRow: ContentRow?
     public let blocks: [BlockChip]; public let blockedBy: [BlockChip]; public let reply: Action?; public let more: [Action]
+    /// A card that asks several questions shows one at a time and sends every answer together with the last.
+    public let steps: [CardStep]
     enum CodingKeys: String, CodingKey {
         case id, link, icon, eyebrow, title, subtitle, badges, context, timestamps, state, detail, body, attachments, actions
-        case kind, need, why, meta, blocks, reply, more; case contentRow = "content_row"; case blockedBy = "blocked_by"
+        case kind, need, why, meta, blocks, reply, more, steps; case contentRow = "content_row"; case blockedBy = "blocked_by"
     }
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -215,6 +223,7 @@ public struct Card: Codable, Equatable, Sendable {
         contentRow = try c.decodeIfPresent(ContentRow.self, forKey: .contentRow)
         blocks = try c.decodeIfPresent([BlockChip].self, forKey: .blocks) ?? []; blockedBy = try c.decodeIfPresent([BlockChip].self, forKey: .blockedBy) ?? []
         reply = try c.decodeIfPresent(Action.self, forKey: .reply); more = try c.decodeIfPresent([Action].self, forKey: .more) ?? []
+        steps = try c.decodeIfPresent([CardStep].self, forKey: .steps) ?? []
     }
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
@@ -229,6 +238,7 @@ public struct Card: Codable, Equatable, Sendable {
         try c.encodeIfPresent(meta, forKey: .meta); try c.encodeIfPresent(contentRow, forKey: .contentRow)
         if !blocks.isEmpty { try c.encode(blocks, forKey: .blocks) }; if !blockedBy.isEmpty { try c.encode(blockedBy, forKey: .blockedBy) }
         try c.encodeIfPresent(reply, forKey: .reply); if !more.isEmpty { try c.encode(more, forKey: .more) }
+        if !steps.isEmpty { try c.encode(steps, forKey: .steps) }
     }
 }
 public struct Row: Codable, Equatable, Sendable {

@@ -65,6 +65,28 @@ final class CardDetailSnapshotTests: XCTestCase {
 
     // MARK: Each kind of card in full
 
+    func test_questionsFirst() throws {
+        assertDetail(ScreenStores.cardDetail(try Fixtures.questionsCard()))
+    }
+
+    func test_questionsSecond() throws {
+        let document = try Fixtures.questionsCard()
+        let store = ScreenStores.cardDetail(document) { state in
+            guard let card = state.subject?.card, let button = state.buttons.first else { return }
+            _ = state.questions.choose(button, in: card)
+        }
+        assertDetail(store)
+    }
+
+    func test_questionsSecond_es() throws {
+        let document = try Fixtures.questionsCard("card-questions-es")
+        let store = ScreenStores.cardDetail(document) { state in
+            guard let card = state.subject?.card, let button = state.buttons.first else { return }
+            _ = state.questions.choose(button, in: card)
+        }
+        assertDetail(store, language: .spanish)
+    }
+
     func test_decide() throws {
         let store = ScreenStores.cardDetail(try Fixtures.card(Fixtures.questionID))
         assertDetail(store)

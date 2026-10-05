@@ -55,6 +55,12 @@ struct TriageCard: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if let index = store.stepIndex {
+                QuestionProgress(
+                    index: index, total: card.steps.count, tint: tint,
+                    back: store.questions.canGoBack ? { store.send(.previousQuestion) } : nil
+                )
+            }
             summary
             if let row = card.contentRow {
                 CardContentRow(row: row, tint: tint) { openDetail() }
@@ -140,9 +146,9 @@ struct TriageCard: View {
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(card.need ?? card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
+            Text(store.step?.need ?? card.need ?? card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            if let why = card.why {
+            if let why = store.step.map({ $0.why ?? card.why }) ?? card.why {
                 Text(why).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let meta = card.meta {

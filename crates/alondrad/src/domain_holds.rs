@@ -10,8 +10,9 @@
 use crate::domain_runtime::DomainRuntime;
 use crate::http::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
 use alondra_core::domain_v2::{
-    clip, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope, ContentKind, DomainState, Hold,
-    InputValue, InteractionId, InteractionPayload, QuestionOption, TaskState, PROTOCOL_VERSION,
+    clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardQuestion, CardSpec, Command,
+    CommandEnvelope, ContentKind, DomainState, Hold, InputValue, InteractionId, InteractionPayload, QuestionOption,
+    TaskState, PROTOCOL_VERSION,
 };
 use anyhow::Result;
 use serde::Deserialize;
@@ -114,9 +115,47 @@ fn cancelled_task(state: &DomainState, session_id: &str) -> Option<String> {
         .map(|task| format!("Task {} was cancelled: Alondra denies this call without asking. Stop working on it.", task.id))
 }
 
+/// A label marked "(Recommended)" is the recommendation: the label loses the mark and its option
+/// is the one recommended.
+fn recommending(options: Vec<QuestionOption>) -> (Vec<QuestionOption>, Option<String>) {
+    let mut recommended = None;
+    let options = options.into_iter().map(|mut option| {
+        if let Some(bare) = without_recommended_suffix(&option.label) {
+            option.label = bare;
+            recommended.get_or_insert_with(|| option.id.clone());
+        }
+        option
+    }).collect();
+    (options, recommended)
+}
+
+/// Claude's questions as the card asks them. Option ids are `o` and the option's place in the
+/// question Claude asked, which is how an answer finds its label again.
+fn questions_of(input: &Value) -> Vec<CardQuestion> {
+    input.get("questions").and_then(Value::as_array).into_iter().flatten().map(|question| {
+        let asked = str_field(question, "question").map(|text| text.trim().to_owned()).filter(|text| !text.is_empty())
+            .unwrap_or_else(|| "?".into());
+        let need = clip(asked.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or("?"), CardSpec::NEED_MAX);
+        let options = question.get("options").and_then(Value::as_array).into_iter().flatten().enumerate()
+            .filter_map(|(index, option)| Some(QuestionOption {
+                id: format!("o{index}"),
+                label: str_field(option, "label").filter(|label| !label.trim().is_empty())?,
+                description: str_field(option, "description").filter(|text| !text.trim().is_empty()),
+                inputs: vec![],
+            }))
+            .collect();
+        let (options, recommended) = recommending(options);
+        CardQuestion {
+            why: if asked == need { String::new() } else { clip(&asked, CardSpec::WHY_MAX) },
+            need, options, recommended,
+        }
+    }).collect()
+}
+
 /// The card a held prompt stands for: a permission is authorized, a plan reviewed, Claude's
-/// question decided (a "(Recommended)" label is the recommendation, several questions a form).
-fn hold_card(hold: Hold, body: &str, input: &Value, options: &[QuestionOption], title: Option<&str>) -> CardSpec {
+/// question decided; several questions are one card that asks them one after the other.
+fn hold_card(hold: Hold, body: &str, questions: &[CardQuestion], options: &[QuestionOption], recommended: Option<String>,
+    title: Option<&str>) -> CardSpec {
     let first_line = |text: &str| text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default().to_owned();
     match hold {
         Hold::Permission => {
@@ -135,13 +174,14 @@ fn hold_card(hold: Hold, body: &str, input: &Value, options: &[QuestionOption], 
             CardSpec::new(CardKind::Review, clip(&heading, CardSpec::NEED_MAX)).content(ContentKind::Plan, body)
         }
         Hold::Question => {
+            if questions.len() > 1 {
+                let mut card = CardSpec::new(CardKind::Decide, questions[0].need.clone());
+                card.questions = questions.to_vec();
+                return card;
+            }
             let kind = if options.len() >= 2 { CardKind::Decide } else { CardKind::Provide };
             let mut card = CardSpec::new(kind, clip(&first_line(body), CardSpec::NEED_MAX));
-            card.recommended = options.iter().find(|o| o.label.trim_end().ends_with("(Recommended)")).map(|o| o.id.clone());
-            let questions = input.get("questions").and_then(Value::as_array).map_or(0, Vec::len);
-            if questions > 1 {
-                card = card.content(ContentKind::Options, body);
-            }
+            card.recommended = recommended;
             card
         }
         Hold::Elicitation => CardSpec::new(CardKind::Provide, clip(&first_line(body), CardSpec::NEED_MAX)),
@@ -163,6 +203,8 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
     };
     let mut options = hold.options_offering(Hold::always_suggestion(suggestions).is_some());
     let mut title = None;
+    let mut questions = vec![];
+    let mut recommended = None;
     let body = match hold {
         Hold::Permission => {
             let summary = tool_summary(tool.as_deref(), Some(&input));
@@ -172,19 +214,20 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
         }
         Hold::Plan => str_field(&input, "plan").filter(|plan| !plan.trim().is_empty()).unwrap_or_else(|| "Plan".into()),
         Hold::Question => {
-            let questions = input.get("questions").and_then(Value::as_array).cloned().unwrap_or_default();
-            let first = questions.first().cloned().unwrap_or(Value::Null);
-            options = first.get("options").and_then(Value::as_array).into_iter().flatten().enumerate()
-                .filter_map(|(index, option)| Some(QuestionOption {
-                    id: format!("o{index}"),
-                    label: str_field(option, "label").filter(|label| !label.trim().is_empty())?,
-                    description: str_field(option, "description").filter(|text| !text.trim().is_empty()),
-                    inputs: vec![],
-                }))
-                .collect();
-            let extra: Vec<String> = questions.iter().skip(1).filter_map(|question| str_field(question, "question")).collect();
-            titled(str_field(&first, "question").unwrap_or_else(|| "?".into()),
-                (!extra.is_empty()).then(|| format!("- {}", extra.join("\n- "))))
+            questions = questions_of(&input);
+            match questions.as_slice() {
+                [] => "?".into(),
+                [only] => {
+                    options = only.options.clone();
+                    recommended = only.recommended.clone();
+                    input.pointer("/questions/0/question").and_then(Value::as_str).unwrap_or("?").to_owned()
+                }
+                several => {
+                    options = vec![];
+                    several.iter().enumerate().map(|(index, question)| format!("{}. {}", index + 1, question.need))
+                        .collect::<Vec<_>>().join("\n")
+                }
+            }
         }
         Hold::Elicitation => {
             let (title, detail, card_options) = elicitation_card(elicitation.unwrap_or(&Value::Null));
@@ -192,7 +235,7 @@ fn open(domain: &DomainRuntime, session_id: &str, id: InteractionId, hold: Hold,
             titled(title, detail)
         }
     };
-    let card = hold_card(hold, &body, &input, &options, title.as_deref());
+    let card = hold_card(hold, &body, &questions, &options, recommended, title.as_deref());
     execute(domain, &state, Command::HoldHook {
         interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold, body, options, card,
     })?;
@@ -208,7 +251,8 @@ pub(crate) fn ask(domain: &DomainRuntime, session_id: &str, body: String, option
         return Ok(None);
     };
     let id = InteractionId(format!("hold-{}", crate::auth::random_hex(16)));
-    let card = hold_card(Hold::Question, &body, &Value::Null, &options, None);
+    let (options, recommended) = recommending(options);
+    let card = hold_card(Hold::Question, &body, &[], &options, recommended, None);
     execute(domain, &state, Command::HoldHook {
         interaction_id: id.clone(), task_id: task.id.clone(), agent_id, hold: Hold::Question, body, options, card,
     })?;
@@ -301,12 +345,31 @@ fn note(answer: &Answer) -> Option<String> {
     })
 }
 
-/// The answer as AskUserQuestion takes it: the chosen option's label, or the user's own words.
-fn question_answer(input: &Value, answer: &Answer) -> String {
-    let chosen = answer.option_id.strip_prefix('o').and_then(|index| index.parse::<usize>().ok())
-        .and_then(|index| input.pointer(&format!("/questions/0/options/{index}/label")))
+/// What AskUserQuestion takes as the answer to question `question`: the label of the option chosen
+/// as Claude wrote it, or the user's own words.
+fn question_answer(input: &Value, question: usize, option_id: &str, words: Option<String>) -> String {
+    let chosen = option_id.strip_prefix('o').and_then(|index| index.parse::<usize>().ok())
+        .and_then(|index| input.pointer(&format!("/questions/{question}/options/{index}/label")))
         .and_then(Value::as_str);
-    chosen.map(str::to_owned).or_else(|| note(answer)).unwrap_or_default()
+    chosen.map(str::to_owned).or(words).unwrap_or_default()
+}
+
+/// The answers of a held AskUserQuestion by question text: with one question the option the
+/// card's button chose, with several each question's own choice.
+fn question_answers(input: &Value, answer: &Answer) -> serde_json::Map<String, Value> {
+    let asked = input.get("questions").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let text = |key: String| match answer.inputs.get(&key) {
+        Some(InputValue::Text(text)) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+        _ => None,
+    };
+    asked.iter().enumerate().filter_map(|(index, question)| {
+        let reply = if asked.len() == 1 {
+            question_answer(input, index, &answer.option_id, note(answer))
+        } else {
+            question_answer(input, index, &text(Answer::question_key(index)).unwrap_or_default(), text(Answer::question_text_key(index)))
+        };
+        Some((str_field(question, "question")?, Value::String(reply)))
+    }).collect()
 }
 
 /// What the mod needs from the user's answer to its card. The words the user wrote when turning a
@@ -319,12 +382,7 @@ pub(crate) fn mod_reply(hold: Hold, input: &Value, suggestions: &Value, answer: 
     };
     match hold {
         Hold::Question => {
-            let text = question_answer(input, answer);
-            let answers: serde_json::Map<String, Value> = input.get("questions").and_then(Value::as_array).into_iter().flatten()
-                .filter_map(|question| str_field(question, "question"))
-                .map(|question| (question, Value::String(text.clone())))
-                .collect();
-            json!({"held": true, "answers": answers})
+            json!({"held": true, "answers": question_answers(input, answer)})
         }
         Hold::Plan if approved => json!({"held": true, "approved": true}),
         Hold::Plan => json!({"held": true, "approved": false,

@@ -234,7 +234,8 @@ public struct MacServiceDetail: View {
                                                onForm: { presentation.send(.beginViewForm($0)) },
                                                onContent: { presentation.send(.contentRequested($0)) },
                                                onAttachment: { presentation.send(.attachmentRequested($0)) },
-                                               onContentRow: { showContent(of: document, scrollTo: proxy) })
+                                               onContentRow: { showContent(of: document, scrollTo: proxy) },
+                                               onAnswers: { presentation.send(.sendAnswers($0, fields: $1)) })
                                     .id(section.id)
                             }
                         }.frame(maxWidth: 900, alignment: .leading).padding(24)

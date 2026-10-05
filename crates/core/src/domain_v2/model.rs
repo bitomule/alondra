@@ -416,6 +416,89 @@ pub struct CardSpec {
     /// How the node will check the user did it (Do only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify: Option<String>,
+    /// A decision of several questions the user answers one after the other, each with its own
+    /// options. The card's `need` is the first one's and its payload has no options of its own.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub questions: Vec<CardQuestion>,
+}
+/// One question of a card that asks several.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CardQuestion {
+    /// The question, clear on its own: at most 90 characters.
+    pub need: String,
+    /// What the user needs to know to answer it: at most 240 characters.
+    #[serde(default)]
+    pub why: String,
+    /// Without options the question is answered in words.
+    #[serde(default)]
+    pub options: Vec<QuestionOption>,
+    /// The id of the option the author recommends.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub recommended: Option<String>,
+}
+impl CardQuestion {
+    pub const MAX: usize = 4;
+}
+/// What the user chose for one question of a card that asks several.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct QuestionChoice<'a> {
+    pub question: &'a CardQuestion,
+    pub option: Option<&'a QuestionOption>,
+    /// The user's own words: the whole answer without an option, a note with one.
+    pub text: Option<String>,
+}
+impl QuestionChoice<'_> {
+    /// What the question's answer reads as: the option's label, or the user's words.
+    pub fn answer(&self) -> String {
+        self.option.map(|option| option.label.clone()).or_else(|| self.text.clone()).unwrap_or_default()
+    }
+}
+impl Answer {
+    pub fn question_key(index: usize) -> String {
+        format!("q{index}")
+    }
+    pub fn question_text_key(index: usize) -> String {
+        format!("q{index}.text")
+    }
+    /// The inputs of an answer to a card that asks several questions: for question `i`, `q{i}`
+    /// holds the chosen option's id and `q{i}.text` the user's words.
+    pub fn question_inputs(choices: &[(Option<String>, Option<String>)]) -> BTreeMap<String, InputValue> {
+        let mut inputs = BTreeMap::new();
+        for (index, (option, text)) in choices.iter().enumerate() {
+            if let Some(option) = option.as_ref().filter(|option| !option.is_empty()) {
+                inputs.insert(Self::question_key(index), InputValue::Text(option.clone()));
+            }
+            if let Some(text) = text.as_ref().map(|text| text.trim()).filter(|text| !text.is_empty()) {
+                inputs.insert(Self::question_text_key(index), InputValue::Text(text.to_owned()));
+            }
+        }
+        inputs
+    }
+    /// The answer to each question of a card that asks several, in the order they were asked.
+    pub fn choices<'a>(&self, questions: &'a [CardQuestion]) -> Vec<QuestionChoice<'a>> {
+        let text = |key: String| match self.inputs.get(&key) {
+            Some(InputValue::Text(text)) if !text.trim().is_empty() => Some(text.trim().to_owned()),
+            _ => None,
+        };
+        questions.iter().enumerate().map(|(index, question)| {
+            let option = text(Self::question_key(index))
+                .and_then(|id| question.options.iter().find(|option| option.id == id));
+            QuestionChoice { question, option, text: text(Self::question_text_key(index)) }
+        }).collect()
+    }
+}
+/// A label an author marked with "(Recommended)", as Claude Code's own questions do: the label
+/// without the suffix, when it had one. A recommendation belongs in `recommended`, not the label.
+pub fn without_recommended_suffix(label: &str) -> Option<String> {
+    const SUFFIX: &str = "(recommended)";
+    let trimmed = label.trim_end();
+    let cut = trimmed.len().checked_sub(SUFFIX.len())?;
+    if !trimmed.is_char_boundary(cut) || !trimmed[cut..].eq_ignore_ascii_case(SUFFIX) {
+        return None;
+    }
+    let bare = trimmed[..cut].trim_end();
+    (!bare.is_empty()).then(|| bare.to_owned())
 }
 impl CardSpec {
     pub const NEED_MAX: usize = 90;
@@ -432,6 +515,7 @@ impl CardSpec {
             blocks: vec![],
             replaces: None,
             verify: None,
+            questions: vec![],
         }
     }
     pub fn why(mut self, why: impl Into<String>) -> Self {

@@ -299,6 +299,63 @@ pub fn card_lines(card: &Card, width: usize) -> Vec<Line<'static>> {
 
 pub const BUTTONS: usize = 3;
 
+/// One dot per question of a card that asks several, the answered ones and the shown one filled.
+pub fn step_dots(total: usize, step: usize) -> String {
+    (0..total).map(|index| if index <= step { "●" } else { "○" }).collect::<Vec<_>>().join(" ")
+}
+
+/// The card as it reads while question `step` is the one shown: that question as its need and
+/// why, and the progress as its first badge.
+pub fn staged_card(card: &Card, step: usize) -> Card {
+    let Some(shown) = card.steps.get(step.min(card.steps.len().saturating_sub(1))) else { return card.clone() };
+    let step = step.min(card.steps.len() - 1);
+    let mut staged = card.clone();
+    staged.need = Some(shown.need.clone());
+    staged.title = shown.need.clone();
+    staged.why = shown.why.clone();
+    staged.subtitle = shown.why.clone();
+    let (n, total) = (step + 1, card.steps.len());
+    staged.badges.insert(0, Label {
+        text: format!("{}  {}", step_dots(total, step), trf!("Question {n} of {total}", "Pregunta {n} de {total}")),
+        tone: alondra_core::views::Tone::Accent,
+    });
+    staged
+}
+
+/// The view with its card staged on question `step`, when the card asks several.
+pub fn staged_view(view: &View, step: usize) -> Option<View> {
+    typed_card(view).filter(|card| !card.steps.is_empty())?;
+    let mut staged = view.clone();
+    for item in staged.sections.iter_mut().flat_map(|section| &mut section.items) {
+        if let Item::Card(card) = item {
+            if !card.steps.is_empty() {
+                *card = staged_card(card, step);
+            }
+        }
+    }
+    Some(staged)
+}
+
+/// The keys of the question shown: its options numbered from 1, then writing the answer, then
+/// going back to the question before with `b`.
+pub fn step_button_lines(card: &Card, step: usize) -> Vec<Line<'static>> {
+    let Some(shown) = card.steps.get(step) else { return vec![] };
+    let mut lines = Vec::new();
+    for (index, action) in shown.actions.iter().enumerate() {
+        lines.extend(button_line(&(index + 1).to_string(), action));
+        if let Some(description) = &action.description {
+            lines.push(Line::from(Span::styled(format!("    {description}"), Style::new().fg(DIM))));
+        }
+    }
+    if let Some(write) = &shown.write {
+        lines.extend(button_line(&(shown.actions.len() + 1).to_string(), write));
+    }
+    if step > 0 {
+        lines.push(Line::from(vec![keycap_span("b", Color::Gray), Span::raw(format!(" {}", tr!("Back", "Atrás")))]));
+    }
+    lines
+}
+
 /// What the keys of a card do: its buttons numbered from 1, the menu of the rest, the reply.
 pub fn button_lines(card: &Card) -> Vec<Line<'static>> {
     let mut lines = Vec::new();

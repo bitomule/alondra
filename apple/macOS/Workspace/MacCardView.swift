@@ -72,6 +72,12 @@ public struct MacCardButtons: Equatable {
     public init(_ card: Card, excluding hidden: Set<String> = []) {
         self.init(actions: card.actions, more: card.more, excluding: hidden)
     }
+
+    /// The options of the question a card shows, all of them in the column: a question has few.
+    public init(visible: [AlondraContract.Action]) {
+        self.visible = visible
+        more = []
+    }
 }
 
 /// One card as the Mac shows it: the kind, what is needed, why, one line of content, what it holds
@@ -83,26 +89,42 @@ struct MacCardView: View {
     var onReply: (AlondraContract.Action, String) -> Void
     var onLink: (AlondraContract.Link) -> Void
     var onContent: () -> Void
+    /// Every answer of a card that asks several questions, sent together with the last.
+    var onAnswers: (AlondraContract.Action, [String: JSONValue]) -> Void = { _, _ in }
 
     @State private var reply = ""
     @State private var moreOpen = false
+    @State private var questions = QuestionSteps()
+    @State private var writing: AlondraContract.Action?
+    @State private var words = ""
     @FocusState private var replyFocused: Bool
+    @FocusState private var wordsFocused: Bool
 
-    private var buttons: MacCardButtons { MacCardButtons(card, excluding: excludedActionIDs) }
+    private var step: CardStep? { questions.shown(in: card) }
+    private var buttons: MacCardButtons {
+        guard let step else { return MacCardButtons(card, excluding: excludedActionIDs) }
+        return MacCardButtons(visible: step.actions)
+    }
     private var kindColor: Color { MacCardPalette.kind(card.kind) }
     private var kindLabel: String { card.eyebrow?.text ?? card.title }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if step != nil { progress }
             VStack(alignment: .leading, spacing: 6) {
-                Text(card.need ?? card.title).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
-                if let why = card.why { Text(why).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true) }
+                Text(step?.need ?? card.need ?? card.title).font(.title3.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                if let why = step.map({ $0.why ?? card.why }) ?? card.why {
+                    Text(why).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
                 if let meta = card.meta { Text(meta).font(.caption).foregroundStyle(.tertiary) }
             }
             if let row = card.contentRow { contentRow(row) }
             if !card.blocks.isEmpty || !card.blockedBy.isEmpty { chips }
-            MacActionColumn(buttons: buttons, moreOpen: $moreOpen, onAction: onAction)
+            if let writing { writeField(writing) } else {
+                MacActionColumn(buttons: buttons, moreOpen: $moreOpen, onAction: choose)
+                if let write = step?.write { writeButton(write) }
+            }
             if let action = card.reply { replyField(action) }
         }
         .padding(18)
@@ -111,11 +133,93 @@ struct MacCardView: View {
         .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).strokeBorder(MacCardPalette.hairline))
         .background {
             if card.detail == .included {
-                MacShortcuts(buttons: buttons, moreOpen: $moreOpen, onAction: onAction, reply: card.reply != nil ? { replyFocused = true } : nil)
-                    .disabled(replyFocused)
+                MacShortcuts(buttons: buttons, moreOpen: $moreOpen, onAction: choose, reply: card.reply != nil ? { replyFocused = true } : nil)
+                    .disabled(replyFocused || writing != nil)
             }
         }
         .accessibilityElement(children: .contain)
+    }
+
+    /// What a button does: with several questions it answers the one shown, otherwise it is the action.
+    private func choose(_ action: AlondraContract.Action) {
+        guard step != nil else { return onAction(action) }
+        guard let fields = questions.choose(action, in: card) else { return }
+        onAnswers(action, fields)
+    }
+
+    private var progress: some View {
+        HStack(spacing: 8) {
+            if questions.canGoBack {
+                Button { questions.back() } label: { Image(systemName: "chevron.left").font(.caption.weight(.bold)) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Previous question")
+                    .accessibilityLabel("Previous question")
+            }
+            HStack(spacing: 5) {
+                ForEach(0..<card.steps.count, id: \.self) { dot in
+                    Capsule().fill(dot <= questions.index(in: card) ? kindColor : MacCardPalette.hairline)
+                        .frame(width: dot == questions.index(in: card) ? 18 : 7, height: 7)
+                }
+            }
+            .accessibilityHidden(true)
+            Spacer(minLength: 4)
+            Text("Question \(questions.index(in: card) + 1) of \(card.steps.count)").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+        }
+        .animation(.snappy, value: questions.index(in: card))
+    }
+
+    private func writeButton(_ action: AlondraContract.Action) -> some View {
+        Button { writing = action; words = ""; wordsFocused = true } label: {
+            HStack(spacing: 6) {
+                Text(action.label).font(.subheadline.weight(.medium))
+                Spacer(minLength: 0)
+                if let key = action.key { MacKeyHint(key: key) }
+            }
+            .padding(.horizontal, 12).frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .disabled(!action.enabled)
+        .background {
+            if let key = action.key, key.count == 1, let character = key.first, action.enabled {
+                Button(action.label) { writing = action; words = ""; wordsFocused = true }
+                    .keyboardShortcut(KeyEquivalent(character), modifiers: []).opacity(0).accessibilityHidden(true)
+            }
+        }
+    }
+
+    private func writeField(_ action: AlondraContract.Action) -> some View {
+        let placeholder: String = {
+            if case let .text(placeholder, _, _) = action.input, let placeholder { return placeholder }
+            return String(localized: "Answer in your own words…")
+        }()
+        let text = words.trimmingCharacters(in: .whitespacesAndNewlines)
+        return HStack(alignment: .bottom, spacing: 8) {
+            TextField(placeholder, text: $words, axis: .vertical)
+                .textFieldStyle(.plain).lineLimit(1...5)
+                .focused($wordsFocused)
+                .onSubmit { answerInWords(action) }
+                .onKeyPress(.escape) { writing = nil; return .handled }
+            Button { answerInWords(action) } label: {
+                Image(systemName: "arrow.up.circle.fill").font(.title3)
+                    .foregroundStyle(text.isEmpty ? Color.secondary.opacity(0.5) : kindColor)
+            }
+            .buttonStyle(.plain)
+            .disabled(text.isEmpty)
+            .help("Send the answer")
+            .accessibilityLabel("Send the answer")
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(MacCardPalette.inset, in: .rect(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(kindColor.opacity(0.7)))
+    }
+
+    private func answerInWords(_ action: AlondraContract.Action) {
+        let fields = questions.choose(action, text: words, in: card)
+        writing = nil
+        words = ""
+        if let fields { onAnswers(action, fields) }
     }
 
     private var header: some View {
@@ -401,6 +505,7 @@ struct MacSectionView: View {
     var onContent: (ContentRef) -> Void
     var onAttachment: (Attachment) -> Void
     var onContentRow: () -> Void
+    var onAnswers: (AlondraContract.Action, [String: JSONValue]) -> Void = { _, _ in }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -410,7 +515,8 @@ struct MacSectionView: View {
             if !section.collapsed {
                 ForEach(Array(section.items.enumerated()), id: \.offset) { _, item in
                     if case let .card(card) = item, card.need != nil {
-                        MacCardView(card: card, onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow)
+                        MacCardView(card: card, onAction: onAction, onReply: onReply, onLink: onLink, onContent: onContentRow,
+                                    onAnswers: onAnswers)
                     } else if case let .actions(bar) = item {
                         MacActionBar(bar: bar, onAction: onAction)
                     } else {
