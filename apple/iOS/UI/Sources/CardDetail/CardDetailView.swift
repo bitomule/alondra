@@ -132,11 +132,18 @@ public struct CardDetailView: View {
     private func header(_ subject: CardDetailFeature.Subject) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if subject.card != nil { KindBadge(kind: kind) }
-            Text(subject.title).font(.display(.largeTitle, weight: .bold))
+            if let index = store.stepIndex, let card = subject.card {
+                QuestionProgress(
+                    index: index, total: card.steps.count, tint: kind.tint,
+                    back: store.questions.canGoBack ? { store.send(.previousQuestion) } : nil
+                )
+            }
+            Text(store.step?.need ?? subject.title).font(.display(.largeTitle, weight: .bold))
                 .foregroundStyle(Palette.ink).fixedSize(horizontal: false, vertical: true)
-            if let why = subject.card?.why {
+            if let why = store.step.map({ $0.why ?? subject.card?.why }) ?? subject.card?.why {
                 Text(why).font(.body).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
+            if let step = store.step { OptionDescriptions(step: step, tint: kind.tint) }
             HStack(spacing: 6) {
                 if let meta = subject.card?.meta { Text(meta).font(.footnote.weight(.medium)) }
                 if let at = subject.card?.timestamps.first?.at, let since = relativeSince(at) { Text("· \(since)") }
@@ -304,15 +311,15 @@ public struct CardDetailView: View {
     private func actionBar(_ subject: CardDetailFeature.Subject) -> some View {
         GlassActionBar {
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
-            if !subject.buttons.isEmpty || !subject.menu.isEmpty {
+            if !store.buttons.isEmpty || !store.menu.isEmpty {
                 GlassBarRow {
-                    if let main = subject.buttons.first { barButton(main) }
+                    if let main = store.buttons.first { barButton(main) }
                 } secondary: {
-                    ForEach(Array(subject.buttons.dropFirst().enumerated()), id: \.offset) { _, action in
+                    ForEach(Array(store.buttons.dropFirst().enumerated()), id: \.offset) { _, action in
                         barButton(action)
                     }
                 } accessory: { stacked in
-                    if !subject.menu.isEmpty { moreMenu(subject.menu, stacked: stacked) }
+                    if !store.menu.isEmpty { moreMenu(store.menu, stacked: stacked) }
                 }
             }
             if let reply = subject.replyAction {

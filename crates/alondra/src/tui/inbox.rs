@@ -254,6 +254,9 @@ impl App {
             return None;
         };
         let selected = self.sel.clone().unwrap_or_else(|| Key(card.id.clone()));
+        if !card.steps.is_empty() {
+            return self.step_key(key, card, epoch);
+        }
         match character {
             '1'..='3' => {
                 let action = card.actions.get(character as usize - '1' as usize)?.clone();
@@ -269,6 +272,65 @@ impl App {
             }
             _ => None,
         }
+    }
+
+    /// The question of a card that asks several that is shown now.
+    pub(super) fn step_of(&self, card: &alondra_core::views::Card) -> usize {
+        self.step_answers.get(&card.id).map_or(0, Vec::len).min(card.steps.len().saturating_sub(1))
+    }
+
+    /// Keys of a card that asks several questions: a number answers the one shown, the next number
+    /// after the options writes the answer, `b` goes back to the question before.
+    fn step_key(&mut self, key: KeyEvent, card: &alondra_core::views::Card, epoch: String) -> Option<Flow> {
+        let step = self.step_of(card);
+        let shown = card.steps.get(step)?;
+        match key.code {
+            KeyCode::Char('b') | KeyCode::Backspace => {
+                self.step_answers.get_mut(&card.id)?.pop();
+                Some(Flow::Go)
+            }
+            KeyCode::Char(character @ '1'..='9') => {
+                let at = character as usize - '1' as usize;
+                if let Some(action) = shown.actions.get(at) {
+                    if !action.enabled {
+                        self.fail(action.disabled_reason.clone().unwrap_or_default());
+                        return Some(Flow::Go);
+                    }
+                    self.stage_answer(card, Some(action.option_id.clone()?), None, epoch);
+                } else if at == shown.actions.len() && let Some(write) = shown.write.as_ref().filter(|write| write.enabled) {
+                    self.compose(super::Target::StepAnswer { card_id: card.id.clone(), label: write.label.clone() }, "");
+                } else {
+                    return None;
+                }
+                Some(Flow::Go)
+            }
+            _ => None,
+        }
+    }
+
+    fn stage_answer(&mut self, card: &alondra_core::views::Card, option: Option<String>, text: Option<String>, epoch: String) {
+        let answers = self.step_answers.entry(card.id.clone()).or_default();
+        answers.push((option, text));
+        if answers.len() < card.steps.len() {
+            return;
+        }
+        let answers = self.step_answers.remove(&card.id).unwrap_or_default();
+        let Some(action) = card.steps.iter().flat_map(|step| &step.actions).next() else { return };
+        let sent: Vec<serde_json::Value> = answers.into_iter().map(|(option, text)| {
+            serde_json::json!({"option_id": option, "text": text})
+        }).collect();
+        let request = crate::client::Client::action_body(
+            &epoch, &action.id, None, serde_json::json!({"fields": {"answers": sent}}),
+        );
+        self.submit_view_request(request);
+    }
+
+    /// The words the user wrote for the question shown: the answer to it.
+    pub(super) fn answer_step(&mut self, card_id: &str, option: Option<String>, text: Option<String>) {
+        let Some(document) = self.card_view.as_ref() else { return };
+        let epoch = document.data_epoch.clone();
+        let Some(card) = super::view_render::typed_card(document).filter(|card| card.id == card_id).cloned() else { return };
+        self.stage_answer(&card, option, text, epoch);
     }
 
     /// An action that offers options asks which one first; the rest run at once.

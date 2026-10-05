@@ -18,6 +18,7 @@ public struct TriageCardFeature: Sendable {
         public var replyDraft = ""
         public var composition: Composition?
         public var awaitingAttachments = false
+        public var questions = QuestionSteps()
 
         public init(id: String, dataEpoch: String = "") {
             self.id = id
@@ -34,11 +35,28 @@ public struct TriageCardFeature: Sendable {
         /// A card shows at most three buttons.
         public static let visibleLimit = 3
 
-        /// The buttons under the card, in the order the daemon sends them.
-        public var buttons: [WireAction] { card.map { Array($0.actions.prefix(Self.visibleLimit)) } ?? [] }
+        /// A question of a card that asks several shows up to four, so a Claude Code question loses none.
+        public static let stepButtonLimit = 4
+
+        /// The question of a card that asks several that is shown now.
+        public var step: CardStep? { card.flatMap { questions.shown(in: $0) } }
+
+        public var stepIndex: Int? { step == nil ? nil : card.map { questions.index(in: $0) } }
+
+        /// The buttons under the card, in the order the daemon sends them; with several questions,
+        /// those of the one shown.
+        public var buttons: [WireAction] {
+            guard let card else { return [] }
+            if !card.steps.isEmpty { return questions.buttons(in: card, limit: Self.stepButtonLimit) }
+            return Array(card.actions.prefix(Self.visibleLimit))
+        }
 
         /// What "More…" holds: the actions past the third, then the daemon's own extras.
-        public var menu: [WireAction] { card.map { Array($0.actions.dropFirst(Self.visibleLimit)) + $0.more } ?? [] }
+        public var menu: [WireAction] {
+            guard let card else { return [] }
+            if !card.steps.isEmpty { return questions.menu(in: card, limit: Self.stepButtonLimit) }
+            return Array(card.actions.dropFirst(Self.visibleLimit)) + card.more
+        }
 
         /// The field that writes to the node; every card has it.
         public var replyAction: WireAction? { card?.reply }
@@ -83,6 +101,7 @@ public struct TriageCardFeature: Sendable {
         case reasonChanged(String)
         case noteChanged(String)
         case opened(ViewKey)
+        case previousQuestion
         case compositionConfirmed
         case compositionCancelled
         case submit
@@ -132,9 +151,13 @@ public struct TriageCardFeature: Sendable {
             case .compositionCancelled:
                 state.composition = nil
                 return .none
+            case .previousQuestion:
+                state.questions.back()
+                return .none
             case .compositionConfirmed:
                 guard let composition = state.composition, composition.canSend else { return .none }
                 state.composition = nil
+                if state.step != nil { return answer(composition.action, text: composition.note, state: &state) }
                 return .concatenate(
                     .send(.actions(.present(composition.action))),
                     composition.reason.map { .send(.actions(.chooseOption($0))) } ?? .none,
@@ -165,17 +188,38 @@ public struct TriageCardFeature: Sendable {
                 }
                 return state.attachments.allReady ? .send(.submit) : .none
             case .actions(.response(let response)):
-                guard response.outcome == .applied else { return .none }
+                guard response.outcome == .applied else {
+                    state.questions = QuestionSteps()
+                    return .none
+                }
                 state.replyDraft = ""
                 return .send(.attachments(.reset))
+            case .actions(.failed):
+                state.questions = QuestionSteps()
+                return .none
             case .actions:
                 return .none
             }
         }
     }
 
+    /// The answer to the question shown; the last one sends all of them together.
+    private func answer(_ action: WireAction, text: String?, state: inout State) -> Effect<Action> {
+        guard let card = state.card, let fields = state.questions.choose(action, text: text, in: card) else { return .none }
+        return .concatenate(
+            .send(.actions(.presentForm(action, fields, requiresAttachments: false))), .send(.submit)
+        )
+    }
+
     private func tapped(_ action: WireAction, state: inout State) -> Effect<Action> {
         guard action.enabled else { return .none }
+        if state.step != nil {
+            if Self.asksForWords(action) {
+                state.composition = Composition(action: action)
+                return .none
+            }
+            return answer(action, text: nil, state: &state)
+        }
         if action.comments != nil {
             if case .view(let key) = action.link { return .send(.opened(ViewKey(rawValue: key))) }
             return .send(.opened(.card(state.id)))

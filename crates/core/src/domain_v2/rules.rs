@@ -91,7 +91,9 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
     {
         return refuse("invalid_input", "card.recommended", "Recommend the id of one of the card's options, or leave it out");
     }
-    if card.kind == CardKind::Decide && source != Source::Hold {
+    if !card.questions.is_empty() {
+        validate_questions(card, options, source)?;
+    } else if card.kind == CardKind::Decide && source != Source::Hold {
         decide_options(options)?;
     }
     if blocking && card.kind.never_blocks() {
@@ -99,6 +101,41 @@ fn validate_card(card: &CardSpec, options: &[QuestionOption], source: Source, bl
     }
     if card.blocks.len() > 16 {
         return refuse("invalid_input", "card.blocks", "At most 16 targets");
+    }
+    Ok(())
+}
+/// A card that asks several questions: 2 to 4 that each stand on their own, with their own
+/// options and recommendation, and nothing left in the card's own options.
+fn validate_questions(card: &CardSpec, options: &[QuestionOption], source: Source) -> Result<()> {
+    if card.kind != CardKind::Decide {
+        return refuse("invalid_input", "card.questions", "Only a decide card asks several questions");
+    }
+    if !options.is_empty() || card.recommended.is_some() {
+        return refuse("invalid_input", "card.questions", "A card that asks several questions has its options and recommendation inside each question: leave the card's own out");
+    }
+    if !(2..=CardQuestion::MAX).contains(&card.questions.len()) {
+        return refuse("invalid_input", "card.questions", &format!("Ask 2 to {} questions in one card, or use one question with options", CardQuestion::MAX));
+    }
+    for question in &card.questions {
+        let need = question.need.trim();
+        if need.is_empty() || need.contains('\n') {
+            return refuse("invalid_input", "card.questions.need", "Every question is one clear line that stands on its own");
+        }
+        if need.chars().count() > CardSpec::NEED_MAX {
+            return refuse("invalid_input", "card.questions.need", &format!("At most {} characters: keep the question short and put what the user needs to know in its why", CardSpec::NEED_MAX));
+        }
+        if question.why.chars().count() > CardSpec::WHY_MAX {
+            return refuse("invalid_input", "card.questions.why", &format!("At most {} characters", CardSpec::WHY_MAX));
+        }
+        validate_options(&question.options)?;
+        if source != Source::Hold {
+            decide_options(&question.options)?;
+        }
+        if let Some(recommended) = &question.recommended
+            && !question.options.iter().any(|option| &option.id == recommended)
+        {
+            return refuse("invalid_input", "card.questions.recommended", "Recommend the id of one of the question's options, or leave it out");
+        }
     }
     Ok(())
 }
@@ -1960,7 +1997,11 @@ impl DomainState {
                 if i.withdrawn {
                     return fail("withdrawn", "Its author withdrew this question");
                 }
-                validate_answer(options, option_id, inputs)?;
+                if i.card.questions.is_empty() {
+                    validate_answer(options, option_id, inputs)?;
+                } else {
+                    validate_question_answers(&i.card.questions, option_id, inputs)?;
+                }
                 validate_attachments(attachments)?;
                 let a = Answer {
                     attachments: attachments.clone(),
@@ -3010,7 +3051,11 @@ impl DomainState {
                     validate_options(options)?;
                     if let Some(a) = answer {
                         validate_attachments(&a.attachments)?;
-                        validate_answer(options, &a.option_id, &a.inputs)?;
+                        if i.card.questions.is_empty() {
+                            validate_answer(options, &a.option_id, &a.inputs)?;
+                        } else {
+                            validate_question_answers(&i.card.questions, &a.option_id, &a.inputs)?;
+                        }
                         id(&a.responder)?;
                         if a.at_revision > self.revision {
                             return fail("invalid_input", "Answer revision from future");
@@ -3144,6 +3189,38 @@ fn validate_options(options: &[QuestionOption]) -> Result<()> {
             if !fields.insert(&input.id) {
                 return fail("invalid_input", "Duplicate input ID");
             }
+        }
+    }
+    Ok(())
+}
+/// An answer to a card that asks several questions gives every one of them an option or words.
+fn validate_question_answers(
+    questions: &[CardQuestion],
+    option: &str,
+    inputs: &BTreeMap<String, InputValue>,
+) -> Result<()> {
+    if !option.is_empty() {
+        return refuse("invalid_input", "option_id", "This card asks several questions: answer each one");
+    }
+    let allowed: BTreeSet<String> = (0..questions.len())
+        .flat_map(|index| [Answer::question_key(index), Answer::question_text_key(index)])
+        .collect();
+    if inputs.keys().any(|key| !allowed.contains(key)) {
+        return fail("invalid_input", "Unknown answer field");
+    }
+    let text = |key: String| match inputs.get(&key) {
+        Some(InputValue::Text(text)) if text.len() <= 1_048_576 => Ok(text.trim()),
+        None => Ok(""),
+        Some(_) => fail::<&str>("invalid_input", "Answer field type or value invalid"),
+    };
+    for (index, question) in questions.iter().enumerate() {
+        let chosen = text(Answer::question_key(index))?;
+        let words = text(Answer::question_text_key(index))?;
+        if !chosen.is_empty() && !question.options.iter().any(|option| option.id == chosen) {
+            return fail("invalid_input", "Unknown option ID");
+        }
+        if chosen.is_empty() && words.is_empty() {
+            return refuse("invalid_input", "inputs", &format!("Answer question {} too", index + 1));
         }
     }
     Ok(())

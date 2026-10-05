@@ -1,6 +1,10 @@
 {
   "sourceLanguage": "en",
   "strings": {
+    "Question %lld of %lld": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pregunta %1$lld de %2$lld"}}}},
+    "Previous question": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pregunta anterior"}}}},
+    "Send the answer": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Enviar la respuesta"}}}},
+    "Answer in your own words…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Responde con tus palabras…"}}}},
     "More…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más…"}}}},
     "Show the details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Ver los detalles"}}}},
     "Reply to the node…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Responder al nodo…"}}}},

@@ -1,0 +1,323 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "card",
+  "key": "card:7c9a034b-249e-4487-a89b-57de38c26372",
+  "client": "mac",
+  "version": "v458c6a09f5639373",
+  "cursor": "cursor-1",
+  "title": "How do the devices reach the Mac?",
+  "status": {
+    "version": "v8375ef80fd6da2ea",
+    "summary": "2 questions · 2 to read · 0 nodes working",
+    "badge": 4,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 4
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 1
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 0
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 0
+      }
+    ],
+    "gauges": [],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "card",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "card",
+          "id": "7c9a034b-249e-4487-a89b-57de38c26372",
+          "kind": "decide",
+          "need": "How do the devices reach the Mac?",
+          "meta": "Node One",
+          "reply": {
+            "id": "reply:7c9a034b-249e-4487-a89b-57de38c26372@1",
+            "label": "Reply",
+            "style": "secondary",
+            "role": "neutral",
+            "presentation": "button",
+            "input": {
+              "kind": "text",
+              "placeholder": "Reply to Node One…",
+              "required": true,
+              "multiline": true
+            },
+            "attachments": true,
+            "enabled": true,
+            "stamp": "Sent",
+            "key": "r"
+          },
+          "link": {
+            "kind": "view",
+            "key": "card:7c9a034b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "question",
+          "eyebrow": {
+            "text": "Decide · 3 questions",
+            "tone": "accent"
+          },
+          "title": "How do the devices reach the Mac?",
+          "context": [
+            {
+              "icon": "node",
+              "text": "Node One",
+              "link": {
+                "kind": "view",
+                "key": "node:a-1"
+              }
+            }
+          ],
+          "state": {
+            "text": "Blocks Node One",
+            "tone": "warning"
+          },
+          "detail": "included",
+          "steps": [
+            {
+              "need": "How do the devices reach the Mac?",
+              "actions": [
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "★ LAN and Tailscale",
+                  "style": "primary",
+                  "role": "advance",
+                  "option_id": "o1",
+                  "description": "Works at home and away from it.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Answered",
+                  "key": "1"
+                },
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "LAN only",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "o0",
+                  "description": "Only while the phone is at home.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Answered",
+                  "key": "2"
+                }
+              ],
+              "write": {
+                "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                "label": "Write my own answer",
+                "style": "secondary",
+                "role": "neutral",
+                "presentation": "button",
+                "input": {
+                  "kind": "text",
+                  "placeholder": "Answer in your own words…",
+                  "required": true,
+                  "multiline": true
+                },
+                "attachments": false,
+                "enabled": true,
+                "stamp": "Answered",
+                "key": "3"
+              },
+              "content_row": {
+                "kind": "options",
+                "icon": "notice",
+                "label": "Why each option",
+                "summary": "2 options"
+              }
+            },
+            {
+              "need": "Which port should it listen on?",
+              "why": "The old one is taken by another service.",
+              "actions": [
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "★ 8080",
+                  "style": "primary",
+                  "role": "advance",
+                  "option_id": "o1",
+                  "description": "A common alternative.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Answered",
+                  "key": "1"
+                },
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "7777",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "o0",
+                  "description": "The port it listens on today.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Answered",
+                  "key": "2"
+                }
+              ],
+              "write": {
+                "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                "label": "Write my own answer",
+                "style": "secondary",
+                "role": "neutral",
+                "presentation": "button",
+                "input": {
+                  "kind": "text",
+                  "placeholder": "Answer in your own words…",
+                  "required": true,
+                  "multiline": true
+                },
+                "attachments": false,
+                "enabled": true,
+                "stamp": "Answered",
+                "key": "3"
+              },
+              "content_row": {
+                "kind": "options",
+                "icon": "notice",
+                "label": "Why each option",
+                "summary": "2 options"
+              }
+            },
+            {
+              "need": "Should the old pairings keep working?",
+              "actions": [
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "★ Keep them",
+                  "style": "primary",
+                  "role": "advance",
+                  "option_id": "o0",
+                  "description": "Phones already paired stay paired.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Answered",
+                  "key": "1"
+                },
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "Pair again",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "o1",
+                  "description": "Every phone scans the code once more.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Answered",
+                  "key": "2"
+                },
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "Ask on each phone",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "o2",
+                  "description": "Each phone decides when it next opens.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Answered",
+                  "key": "3"
+                }
+              ],
+              "write": {
+                "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                "label": "Write my own answer",
+                "style": "secondary",
+                "role": "neutral",
+                "presentation": "button",
+                "input": {
+                  "kind": "text",
+                  "placeholder": "Answer in your own words…",
+                  "required": true,
+                  "multiline": true
+                },
+                "attachments": false,
+                "enabled": true,
+                "stamp": "Answered",
+                "key": "4"
+              },
+              "content_row": {
+                "kind": "options",
+                "icon": "notice",
+                "label": "Why each option",
+                "summary": "3 options"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "context",
+      "title": "Context",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "facts",
+          "items": [
+            {
+              "label": "Task",
+              "value": "Build a feature · Node One",
+              "link": {
+                "kind": "view",
+                "key": "task:t-1"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

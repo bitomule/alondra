@@ -658,3 +658,75 @@ fn a_correction_replaces_the_earlier_notice() {
     assert!(s.interactions[&"n1".into()].withdrawn);
     assert!(s.open(&s.interactions[&"n2".into()]));
 }
+
+fn question(need: &str, labels: &[&str]) -> CardQuestion {
+    CardQuestion {
+        need: need.into(), why: "The release needs it".into(), recommended: None,
+        options: labels.iter().enumerate().map(|(n, label)| option(&format!("o{n}"), label)).collect(),
+    }
+}
+fn asks(questions: Vec<CardQuestion>) -> Command {
+    let mut card = decide("Answer the release questions");
+    card.questions = questions;
+    Command::AskQuestion {
+        attachments: vec![], interaction_id: "q".into(), scope: scope("t"), recipient: Recipient::User,
+        body: "Release questions".into(), blocking: true, options: vec![], card,
+    }
+}
+fn answered_with(inputs: &[(&str, &str)]) -> Command {
+    Command::AnswerQuestion {
+        attachments: vec![], interaction_id: "q".into(), option_id: String::new(),
+        inputs: inputs.iter().map(|(key, value)| ((*key).to_owned(), InputValue::Text((*value).into()))).collect(),
+    }
+}
+
+#[test]
+fn several_questions_are_two_to_four_that_each_stand_on_their_own() {
+    let mut s = fixture();
+    let first = || question("Which name?", &["Atlas", "Borealis"]);
+    assert_eq!(refused(&mut s, agent(), asks(vec![first()])).1, Some("card.questions".into()));
+    let five = (0..5).map(|n| question(&format!("Question {n}?"), &["Yes", "No"])).collect();
+    assert_eq!(refused(&mut s, agent(), asks(five)).1, Some("card.questions".into()));
+    assert_eq!(refused(&mut s, agent(), asks(vec![first(), question("", &["Yes", "No"])])).1, Some("card.questions.need".into()));
+    assert_eq!(refused(&mut s, agent(), asks(vec![first(), question("Ship it?", &["Yes"])])).1, Some("options".into()));
+    let mut wrong = question("Ship it?", &["Yes", "No"]);
+    wrong.recommended = Some("o9".into());
+    assert_eq!(refused(&mut s, agent(), asks(vec![first(), wrong])).1, Some("card.questions.recommended".into()));
+    let Command::AskQuestion { attachments, interaction_id, scope, recipient, body, blocking, mut card, .. } =
+        asks(vec![first(), question("Ship it?", &["Yes", "No"])]) else { unreachable!() };
+    card.recommended = Some("a".into());
+    let command = Command::AskQuestion { attachments, interaction_id, scope, recipient, body, blocking, options: two(), card };
+    assert_eq!(refused(&mut s, agent(), command).1, Some("card.questions".into()), "the card's own options stay empty");
+    ok(&mut s, agent(), asks(vec![first(), question("Ship it?", &["Yes", "No"])]));
+}
+
+#[test]
+fn every_question_of_a_card_gets_its_own_answer() {
+    let mut s = fixture();
+    let mut ship = question("Ship it?", &["Yes", "No"]);
+    ship.recommended = Some("o0".into());
+    ok(&mut s, agent(), asks(vec![question("Which name?", &["Atlas", "Borealis"]), ship, question("Anything else?", &["Nothing", "Docs"])]));
+    let mut refuse = |command: Command| refused(&mut s, user(), command).0;
+    assert_eq!(refuse(answer("q")), "invalid_input", "one option cannot answer three questions");
+    assert_eq!(refuse(answered_with(&[("q0", "o1"), ("q1", "o0")])), "invalid_input", "the third needs an answer too");
+    assert_eq!(refuse(answered_with(&[("q0", "o1"), ("q1", "o5"), ("q2.text", "No")])), "invalid_input", "an option of the second");
+    assert_eq!(refuse(answered_with(&[("q0", "o1"), ("q1", "o0"), ("q2.text", "No"), ("q3", "o0")])), "invalid_input");
+    ok(&mut s, user(), answered_with(&[("q0", "o1"), ("q1.text", "Not yet"), ("q2.text", "Mind the docs")]));
+    let InteractionPayload::Question { answer: Some(answer), .. } = &s.interactions[&"q".into()].payload else { panic!("answered") };
+    let card = &s.interactions[&"q".into()].card;
+    let said: Vec<(String, String)> = answer.choices(&card.questions).iter().map(|c| (c.question.need.clone(), c.answer())).collect();
+    assert_eq!(said, [
+        ("Which name?".to_owned(), "Borealis".to_owned()),
+        ("Ship it?".to_owned(), "Not yet".to_owned()),
+        ("Anything else?".to_owned(), "Mind the docs".to_owned()),
+    ]);
+}
+
+#[test]
+fn a_recommended_mark_in_a_label_is_taken_off_it() {
+    assert_eq!(without_recommended_suffix("LAN and Tailscale (Recommended)").as_deref(), Some("LAN and Tailscale"));
+    assert_eq!(without_recommended_suffix("Atlas (recommended)  ").as_deref(), Some("Atlas"));
+    assert_eq!(without_recommended_suffix("Atlas"), None);
+    assert_eq!(without_recommended_suffix("(Recommended)"), None, "a label cannot be only the mark");
+    assert_eq!(without_recommended_suffix("é(Recommended"), None);
+}

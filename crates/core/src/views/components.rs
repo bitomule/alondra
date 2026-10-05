@@ -256,6 +256,29 @@ pub struct Card {
     pub attachments: Vec<Attachment>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub actions: Vec<Action>,
+    /// A card that asks several questions: the client shows one at a time, in this order, and sends
+    /// every choice together with the last one as `fields.answers` of any of their buttons (a list of
+    /// `{option_id, text}`, one per step, in order). `actions` and `more` are empty then.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<Step>,
+}
+/// One question of a card that asks several: its own words and its own buttons.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Step {
+    /// The question, as the card's need while it is the one shown.
+    pub need: String,
+    /// What the user needs to know to answer it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub why: Option<String>,
+    /// One button per option, the recommended one first and marked with a star.
+    pub actions: Vec<Action>,
+    /// The way to answer in words.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub write: Option<Action>,
+    /// "Why each option" for this question alone, when its options are explained; it counts only
+    /// this question's options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_row: Option<ContentRow>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentRow {

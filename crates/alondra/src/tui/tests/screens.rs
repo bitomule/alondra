@@ -599,3 +599,59 @@ fn cards_read_in_spanish() {
     press(&mut app, KeyCode::Char('m'));
     assert!(rendered(&mut app, 120, 40).contains("MÁS"));
 }
+
+#[test]
+fn a_card_that_asks_several_questions_shows_one_at_a_time_and_sends_every_answer_together() {
+    use alondra_core::domain_v2::{CardKind, CardQuestion, CardSpec, Hold, QuestionOption};
+    let option = |id: &str, label: &str, description: Option<&str>| QuestionOption {
+        id: id.into(), label: label.into(), description: description.map(Into::into), inputs: vec![],
+    };
+    let mut spec = CardSpec::new(CardKind::Decide, "How do the devices reach the Mac?");
+    spec.questions = vec![
+        CardQuestion {
+            need: "How do the devices reach the Mac?".into(), why: String::new(), recommended: Some("o1".into()),
+            options: vec![option("o0", "LAN only", Some("Only at home")), option("o1", "LAN and Tailscale", Some("Works away too"))],
+        },
+        CardQuestion {
+            need: "Which port?".into(), why: "The old one is taken".into(), recommended: None,
+            options: vec![option("o0", "7777", None), option("o1", "8080", None)],
+        },
+        CardQuestion { need: "Anything else to keep in mind?".into(), why: String::new(), recommended: None, options: vec![option("o0", "No", None)] },
+    ];
+    let mut app = english(held_card(Hold::Question, spec));
+    let first = rendered(&mut app, 120, 40);
+    dump("detail: three questions, the first", &first);
+    assert!(first.contains("DECIDIR · 3 PREGUNTAS"), "{first}");
+    assert!(first.contains("● ○ ○  Question 1 of 3"), "{first}");
+    assert!(first.contains(" 1  ★ LAN and Tailscale") && first.contains("Works away too"), "the recommended option leads: {first}");
+    assert!(first.contains(" 3  Escribir mi respuesta"), "{first}");
+    assert!(!first.contains("Which port?"), "only the question shown is on the card: {first}");
+    assert!(!first.contains("Back"), "there is nothing before the first question: {first}");
+    assert_eq!(draw::footer_keys(&app).iter().find(|(key, _)| key.starts_with("1-")).map(|(key, _)| key.as_str()), Some("1-3"));
+
+    press(&mut app, KeyCode::Char('1'));
+    assert!(app.posted.borrow().clone().is_empty(), "nothing is sent until the last question is answered");
+    let second = rendered(&mut app, 120, 40);
+    dump("detail: three questions, the second", &second);
+    assert!(second.contains("● ● ○  Question 2 of 3") && second.contains("Which port?") && second.contains("The old one is taken"), "{second}");
+    assert!(!second.contains("LAN and Tailscale"), "{second}");
+    assert!(second.contains("Back"), "{second}");
+
+    press(&mut app, KeyCode::Char('b'));
+    assert!(rendered(&mut app, 120, 40).contains("Question 1 of 3"), "b returns to the question before");
+    press(&mut app, KeyCode::Char('2'));
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.posted.borrow().clone().is_empty());
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.posted.borrow().clone().is_empty(), "the third key is the way to write: it opens the composer");
+    assert!(app.composer.is_some());
+    typed(&mut app, "Mind the docs");
+    press(&mut app, KeyCode::Enter);
+    let sent = app.posted.borrow().clone();
+    assert_eq!(sent.len(), 1, "{sent:?}");
+    assert_eq!(sent[0].0, "/actions");
+    assert!(sent[0].1["option_id"].is_null() && sent[0].1["action_id"].as_str().unwrap().starts_with("ans:hold-1@"), "{}", sent[0].1);
+    assert_eq!(sent[0].1["input"]["fields"]["answers"], serde_json::json!([
+        {"option_id": "o0", "text": null}, {"option_id": "o1", "text": null}, {"option_id": null, "text": "Mind the docs"},
+    ]));
+}

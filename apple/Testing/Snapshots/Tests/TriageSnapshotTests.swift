@@ -84,6 +84,44 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
+    // MARK: A card that asks several questions
+
+    private func questions(
+        answered: Int = 0, language: String = "card-questions"
+    ) throws -> StoreOf<TriageFeature> {
+        try single(try Fixtures.questionsCard(language)) { state in
+            for _ in 0..<answered {
+                guard let card = state.cards[0].card, let button = state.cards[0].buttons.first else { return }
+                _ = state.cards[0].questions.choose(button, in: card)
+            }
+        }
+    }
+
+    func test_questionsFirst() throws {
+        let store = try questions()
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_questionsSecond() throws {
+        let store = try questions(answered: 1)
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_questionsThird() throws {
+        let store = try questions(answered: 2)
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_questionsFirst_es() throws {
+        let store = try questions(language: "card-questions-es")
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_questionsSecond_es() throws {
+        let store = try questions(answered: 1, language: "card-questions-es")
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
     func test_decideAnswered() throws {
         let store = try single(try Fixtures.card(Fixtures.questionID)) { state in
             state.cards[0].actions.action = state.cards[0].buttons.first

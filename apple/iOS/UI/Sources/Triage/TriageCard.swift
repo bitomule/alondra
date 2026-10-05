@@ -16,6 +16,7 @@ struct TriageCard: View {
     let onSkip: (() -> Void)?
     @Environment(\.openURL) private var openURL
     @FocusState private var replyFocused: Bool
+    @State private var optionsShown = false
 
     private var kind: Kind { Kind(card) }
     private var tint: Color { kind.tint }
@@ -55,8 +56,22 @@ struct TriageCard: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if let index = store.stepIndex {
+                QuestionProgress(
+                    index: index, total: card.steps.count, tint: tint,
+                    back: store.questions.canGoBack ? { store.send(.previousQuestion) } : nil
+                )
+            }
             summary
-            if let row = card.contentRow {
+            if let step = store.step {
+                if let row = step.contentRow {
+                    CardContentRow(row: row, tint: tint) { optionsShown = true }
+                        .sheet(isPresented: $optionsShown) {
+                            ScrollView { OptionDescriptions(step: step, tint: tint).padding(20) }
+                                .presentationDetents([.medium, .large])
+                        }
+                }
+            } else if let row = card.contentRow {
                 CardContentRow(row: row, tint: tint) { openDetail() }
             }
             BlockChips(blocks: card.blocks, blockedBy: card.blockedBy, open: handleLink)
@@ -140,9 +155,9 @@ struct TriageCard: View {
 
     private var summary: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text(card.need ?? card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
+            Text(store.step?.need ?? card.need ?? card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
                 .fixedSize(horizontal: false, vertical: true)
-            if let why = card.why {
+            if let why = store.step.map({ $0.why ?? card.why }) ?? card.why {
                 Text(why).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let meta = card.meta {
