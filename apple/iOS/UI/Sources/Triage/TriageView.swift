@@ -14,8 +14,8 @@ public struct TriageView: View {
     @GestureState private var dragging = false
     @State private var keyboardVisible = false
     @State private var screenWidth: CGFloat = 0
+    @State private var cardHeights: [String: CGFloat] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.dynamicTypeSize) private var typeSize
 
     public init(store: StoreOf<TriageFeature>, zoom: Namespace.ID) {
         self.store = store
@@ -124,25 +124,28 @@ public struct TriageView: View {
         .accessibilityLabel("\(store.index + 1) of \(store.orderedIDs.count) pending")
     }
 
-    /// The cards never scroll inside and all share one height, the room the stack has, so the ones
-    /// behind line up with the front one. At accessibility text sizes the whole stack scrolls and
-    /// cards keep their own height, so a card taller than the screen can still be read to its last
-    /// button.
-    @ViewBuilder private var queue: some View {
-        if typeSize.isAccessibilitySize {
-            ScrollView { stack(height: nil).padding(.horizontal, 14).padding(.bottom, 8) }
-                .scrollIndicators(.hidden)
-                .scrollDismissesKeyboard(.interactively)
-        } else {
-            GeometryReader { proxy in
-                stack(height: proxy.size.height - 8).padding(.horizontal, 14).padding(.bottom, 8)
+    /// Every card gets the same height, so the ones behind line up with the front one: the room the
+    /// stack has, or the tallest card's own height when one needs more, at large text sizes or with
+    /// a long reply. Then the stack scrolls, so every card can be read to its last button. The stack
+    /// ends with the bottom margin the app's other screens leave above the tab bar.
+    private var queue: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                stack(height: proxy.size.height - Self.bottomMargin)
+                    .padding(.horizontal, 14).padding(.bottom, Self.bottomMargin)
             }
+            .scrollBounceBehavior(.basedOnSize)
+            .scrollIndicators(.hidden)
+            .scrollDismissesKeyboard(.interactively)
         }
     }
 
-    private func stack(height: CGFloat?) -> some View {
+    private static let bottomMargin: CGFloat = 24
+
+    private func stack(height: CGFloat) -> some View {
         let ids = store.visibleIDs
-        let cardHeight = height.map { max(0, $0 - CGFloat(max(0, ids.count - 1)) * 11) }
+        let tallest = ids.compactMap { cardHeights[$0] }.max() ?? 0
+        let cardHeight = max(height - CGFloat(max(0, ids.count - 1)) * 11, tallest)
         let browsable = store.orderedIDs.count > 1
         return ZStack(alignment: .top) {
             ForEach(ids.reversed(), id: \.self) { id in
@@ -153,7 +156,8 @@ public struct TriageView: View {
                         if let card = cardStore.card {
                             TriageCard(
                                 store: cardStore, card: card, isFront: depth == 0, zoom: zoom,
-                                onSkip: browsable ? { store.send(.leaveForLater) } : nil
+                                onSkip: browsable ? { store.send(.leaveForLater) } : nil,
+                                contentHeight: { cardHeights[id] = $0 }
                             )
                         } else {
                             CardPlaceholder(store: cardStore)

@@ -7,15 +7,18 @@ import SwiftUI
 
 /// One card of Waiting for You: the 34 pt shell, what the card needs of you, its one line of
 /// content, the buttons under it, the reply field, and the stamp that covers it the moment an
-/// answer is sent. Nothing inside scrolls; everything longer lives in the detail.
+/// answer is sent. Nothing inside scrolls: the card reports the height its content needs, and the
+/// stack makes every card at least that tall.
 struct TriageCard: View {
     @Bindable var store: StoreOf<TriageCardFeature>
     let card: Card
     let isFront: Bool
     let zoom: Namespace.ID
     let onSkip: (() -> Void)?
+    let contentHeight: (CGFloat) -> Void
     @Environment(\.openURL) private var openURL
     @FocusState private var replyFocused: Bool
+    @State private var height: CGFloat = 0
 
     private var kind: Kind { Kind(card) }
     private var tint: Color { kind.tint }
@@ -23,25 +26,33 @@ struct TriageCard: View {
 
     var body: some View { compositionSheet(changedAlert(confirmationAlert(shell))) }
 
+    /// The content sits in a scroll view that never scrolls so it is measured at its own height
+    /// rather than the card's, then stretched to the card so the buttons stay at the bottom.
     private var shell: some View {
-        content
-            .padding(.horizontal, 20).padding(.vertical, 20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            .blur(radius: stamp == nil ? 0 : 10)
-            .opacity(stamp == nil ? 1 : 0.4)
-            .background { surface }
-            .clipShape(.rect(cornerRadius: 34, style: .continuous))
-            .matchedTransitionSource(id: card.id, in: zoom)
-            .overlay { RoundedRectangle(cornerRadius: 34, style: .continuous).strokeBorder(Palette.hairline) }
-            .overlay { stampOverlay }
-            .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
-            .scaleEffect(stamp == nil ? 1 : 1.02)
-            .animation(.spring(duration: 0.35, bounce: 0.4), value: stamp)
-            .sensoryFeedback(.success, trigger: stamp) { _, new in new != nil }
-            .accessibilityAction(named: "Open") { openDetail() }
-            .accessibilityActions {
-                if let onSkip { Button("Leave for Later", action: onSkip) }
-            }
+        ScrollView {
+            content
+                .padding(.horizontal, 20).padding(.vertical, 20)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight($0) }
+                .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
+        }
+        .scrollDisabled(true)
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .blur(radius: stamp == nil ? 0 : 10)
+        .opacity(stamp == nil ? 1 : 0.4)
+        .background { surface }
+        .clipShape(.rect(cornerRadius: 34, style: .continuous))
+        .matchedTransitionSource(id: card.id, in: zoom)
+        .overlay { RoundedRectangle(cornerRadius: 34, style: .continuous).strokeBorder(Palette.hairline) }
+        .overlay { stampOverlay }
+        .shadow(color: .black.opacity(isFront ? 0.22 : 0.08), radius: isFront ? 24 : 8, y: isFront ? 14 : 4)
+        .scaleEffect(stamp == nil ? 1 : 1.02)
+        .animation(.spring(duration: 0.35, bounce: 0.4), value: stamp)
+        .sensoryFeedback(.success, trigger: stamp) { _, new in new != nil }
+        .accessibilityAction(named: "Open") { openDetail() }
+        .accessibilityActions {
+            if let onSkip { Button("Leave for Later", action: onSkip) }
+        }
     }
 
     private var surface: some View {
