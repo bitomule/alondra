@@ -6,6 +6,10 @@
 //! for an app the user force-quit, and keeps only the latest one held for the app. So each push
 //! carries the whole queue, not a delta: whichever one arrives leaves the phone right. The app
 //! also reconciles its notifications with the queue every time it opens.
+//!
+//! The icon badge cannot wait for that: a badge only push sets it even for a force-quit app and
+//! is not throttled, so it follows every drop once the burst settles. The system applies it
+//! without the notification service extension, so the count travels in the clear.
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
 use alondra_core::domain_v2::DomainState;
@@ -33,7 +37,7 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
         }
     };
     loop {
-        let wait = pending.due().map_or(Duration::from_secs(3600), |at| at.saturating_duration_since(Instant::now()));
+        let wait = pending.next().map_or(Duration::from_secs(3600), |at| at.saturating_duration_since(Instant::now()));
         tokio::select! {
             result = changed.changed() => if result.is_err() { return },
             _ = tokio::time::sleep(wait) => {},
@@ -41,6 +45,17 @@ pub async fn run(domain: Arc<DomainRuntime>, service: Arc<Service>) {
         let Ok(state) = domain.state() else { continue };
         let now = Instant::now();
         pending.observe(waiting(&state), now);
+        if pending.badge_due().is_some_and(|at| at <= now) {
+            pending.take_badge();
+            let badge = views::inbox_badge(&state);
+            match service.broadcast_badge_push(badge).await {
+                Ok((attempted, accepted)) if attempted != accepted => {
+                    log!("{} of {attempted} phones did not get the icon badge {badge}", attempted - accepted);
+                }
+                Ok(_) => {}
+                Err(error) => log!("could not send the icon badge {badge} to the phones: {error:#}"),
+            }
+        }
         if pending.due().is_none_or(|at| at > now) {
             continue;
         }
@@ -60,17 +75,19 @@ fn waiting(state: &DomainState) -> BTreeSet<String> {
     views::waiting_cards(state).into_iter().collect()
 }
 
-/// Which cards left the queue since the phones were last told, and when to tell them.
+/// Which cards left the queue since the phones were last told, and when to tell them: the
+/// badge once the burst settles, the retraction also no faster than Apple's background budget.
 struct Pending {
     waiting: BTreeSet<String>,
     left: BTreeSet<String>,
     since: Option<Instant>,
     sent: Option<Instant>,
+    badge_since: Option<Instant>,
 }
 
 impl Pending {
     fn new(waiting: BTreeSet<String>) -> Self {
-        Pending { waiting, left: BTreeSet::new(), since: None, sent: None }
+        Pending { waiting, left: BTreeSet::new(), since: None, sent: None, badge_since: None }
     }
 
     fn observe(&mut self, waiting: BTreeSet<String>, now: Instant) {
@@ -79,8 +96,21 @@ impl Pending {
         if !gone.is_empty() {
             self.left.extend(gone);
             self.since.get_or_insert(now);
+            self.badge_since.get_or_insert(now);
         }
         self.waiting = waiting;
+    }
+
+    fn badge_due(&self) -> Option<Instant> {
+        Some(self.badge_since? + SETTLE)
+    }
+
+    fn take_badge(&mut self) {
+        self.badge_since = None;
+    }
+
+    fn next(&self) -> Option<Instant> {
+        [self.badge_due(), self.due()].into_iter().flatten().min()
     }
 
     fn due(&self) -> Option<Instant> {
@@ -141,6 +171,29 @@ mod tests {
         assert_eq!(pending.due(), Some(start + SETTLE + MIN_INTERVAL), "Apple throttles background pushes");
         pending.observe(cards(&[]), start + SETTLE + Duration::from_secs(60));
         assert_eq!(pending.take(start + SETTLE + MIN_INTERVAL), cards(&["c", "d"]), "changes in the interval all go in the next push");
+    }
+
+    #[test]
+    fn the_badge_follows_every_drop_once_settled_while_the_retraction_waits_for_its_interval() {
+        let start = Instant::now();
+        let mut pending = Pending::new(cards(&["a", "b", "c"]));
+        pending.observe(cards(&["a", "b", "c", "d"]), start);
+        assert_eq!(pending.badge_due(), None, "a new card's alert carries the badge");
+
+        pending.observe(cards(&["b", "c", "d"]), start);
+        pending.observe(cards(&["c", "d"]), start + Duration::from_secs(4));
+        assert_eq!(pending.badge_due(), Some(start + SETTLE), "one badge for the burst");
+        pending.take_badge();
+        pending.take(start + SETTLE);
+
+        let later = start + SETTLE + Duration::from_secs(1);
+        pending.observe(cards(&["d"]), later);
+        assert_eq!(pending.badge_due(), Some(later + SETTLE), "not held back by the background budget");
+        assert_eq!(pending.due(), Some(start + SETTLE + MIN_INTERVAL));
+        assert_eq!(pending.next(), Some(later + SETTLE));
+        pending.take_badge();
+        assert_eq!(pending.badge_due(), None);
+        assert_eq!(pending.next(), Some(start + SETTLE + MIN_INTERVAL), "the retraction still goes later");
     }
 
     #[test]

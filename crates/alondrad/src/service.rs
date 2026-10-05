@@ -1487,6 +1487,13 @@ impl Service {
         self.broadcast_to_devices(PushDelivery::Background, false, payload_for_device).await
     }
 
+    /// Sets the icon badge on every enrolled phone, even where the app was force-quit; it shows
+    /// nothing. The relay and APNs read the count in the clear.
+    pub async fn broadcast_badge_push(&self, badge: u32) -> Result<(usize, usize)> {
+        let payload = json!({"aps": {"badge": badge}, "alondra": {"kind": "badge"}});
+        self.broadcast_to_devices(PushDelivery::Badge, false, |_| payload.clone()).await
+    }
+
     async fn broadcast_to_devices(
         &self,
         delivery: PushDelivery,
@@ -1591,7 +1598,7 @@ impl Service {
         self.require_device_approval(id, device)?;
         let (payload, with_sound) = match delivery {
             PushDelivery::Alert => self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes()),
-            PushDelivery::Background => (payload.clone(), false),
+            PushDelivery::Background | PushDelivery::Badge => (payload.clone(), false),
         };
         let mut body = self.encode_push_or_minimal(id, device, binding, &payload, with_sound, delivery)?;
         let current_epoch = match *epoch {
@@ -1621,7 +1628,8 @@ impl Service {
                         body = older;
                         continue;
                     }
-                    Some(_) => bail!("the relay predates background pushes: deploy the current relay so answered cards leave the phone"),
+                    Some(_) if delivery == PushDelivery::Background => bail!("the relay predates background pushes: deploy the current relay so answered cards leave the phone"),
+                    Some(_) => bail!("the relay predates badge pushes: deploy the current relay so the icon badge drops while the app is closed"),
                     None => {}
                 }
             }
@@ -1663,11 +1671,12 @@ impl Service {
 }
 
 /// How the relay asks APNs to hand a push over: an alert the notification service extension
-/// opens, or a silent background wake of the app.
+/// opens, a silent background wake of the app, or only a new icon badge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum PushDelivery {
     Alert,
     Background,
+    Badge,
 }
 
 /// The `apns-collapse-id` of a card's alert: pushing the same card again replaces its
@@ -1689,7 +1698,9 @@ pub(crate) fn collapse_id(binding: &str, card: &str) -> String {
 fn without_relay_extensions(body: &[u8]) -> Result<Option<Vec<u8>>> {
     let mut value: Value = serde_json::from_slice(body)?;
     let Some(fields) = value.as_object_mut() else { return Ok(None) };
-    let dropped = fields.remove("collapse_id").is_some() | fields.remove("push_type").is_some();
+    let dropped = fields.remove("collapse_id").is_some()
+        | fields.remove("push_type").is_some()
+        | fields.remove("badge").is_some();
     Ok(if dropped { Some(serde_json::to_vec(&value)?) } else { None })
 }
 
@@ -1740,6 +1751,11 @@ pub(crate) fn seal_push(
             }
         }
         PushDelivery::Background => body["push_type"] = json!("background"),
+        PushDelivery::Badge => {
+            let badge = payload.pointer("/aps/badge").and_then(Value::as_u64).context("a badge push needs aps.badge")?;
+            body["push_type"] = json!("badge");
+            body["badge"] = json!(badge);
+        }
     }
     let body = serde_json::to_vec(&body)?;
     if body.len() > MAX_PUSH_BODY {
@@ -4541,8 +4557,12 @@ agreement_key = "{}"
 
         assert_eq!(service.broadcast_push_report(&card, true).await.unwrap(), (1, 1));
         assert_eq!(service.broadcast_background_push(|_| retract.clone()).await.unwrap(), (1, 1));
+        assert_eq!(service.broadcast_badge_push(2).await.unwrap(), (1, 1));
         {
             let sent = requests.lock().unwrap();
+            assert_eq!(sent[2]["push_type"], "badge");
+            assert_eq!(sent[2]["badge"], 2, "the count the relay hands APNs in the clear");
+            assert!(sent[2].get("collapse_id").is_none());
             assert_eq!(sent[0]["collapse_id"], collapse_id(&binding, "t-1-result-1"));
             assert!(sent[0].get("push_type").is_none());
             assert_eq!(sent[1]["push_type"], "background");
@@ -4558,9 +4578,10 @@ agreement_key = "{}"
         requests.lock().unwrap().clear();
         assert_eq!(service.broadcast_push_report(&card, true).await.unwrap(), (1, 1), "the alert still arrives");
         assert_eq!(service.broadcast_background_push(|_| retract.clone()).await.unwrap(), (1, 0));
+        assert_eq!(service.broadcast_badge_push(2).await.unwrap(), (1, 0));
         {
             let sent = requests.lock().unwrap();
-            assert_eq!(sent.len(), 3, "one retry for the alert, none for the background push");
+            assert_eq!(sent.len(), 4, "one retry for the alert, none for the background or badge push: as an alert it would show a banner");
             assert!(sent[1].get("collapse_id").is_none());
             assert_eq!(sent[0]["envelope"], sent[1]["envelope"], "the retry resends the same sealed push");
         }
