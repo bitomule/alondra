@@ -15,11 +15,16 @@ final class TriageSnapshotTests: XCTestCase {
     private struct Harness: View {
         let store: StoreOf<TriageFeature>
         var height: CGFloat = 852
-        var growsWithText = true
+        var tabBarHeight: CGFloat = 0
         @Namespace private var zoom
 
         var body: some View {
-            ScreenFrame(height: height, growsWithText: growsWithText) { TriageView(store: store, zoom: zoom) }
+            ScreenFrame(height: height, growsWithText: false) {
+                TriageView(store: store, zoom: zoom)
+                    .safeAreaInset(edge: .bottom, spacing: 0) {
+                        if tabBarHeight > 0 { Color.red.frame(height: tabBarHeight) }
+                    }
+            }
         }
     }
 
@@ -210,29 +215,51 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 
-    func test_stackOnASmallScreenAtTheLargestTextGivesEveryCardTheTallestHeight() throws {
+    private static let longNeed = "Decide whether the release goes out on the beta channel this evening or waits for the "
+        + "full regression pass that the QA team asked for last week, because both cannot happen together"
+    private static let longWhy = "The regression pass touches the same migration the beta ships, so shipping first means "
+        + "every tester runs the old schema while the new one is being verified, and rolling back afterwards "
+        + "would need a manual export for each of them, which nobody has time for before the weekend."
+
+    private func stackWithALongCard() throws -> StoreOf<TriageFeature> {
+        let long = try Fixtures.card("card-question") { item in
+            item["need"] = Self.longNeed
+            item["title"] = Self.longNeed
+            item["why"] = Self.longWhy
+        }
         let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
-        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
-        assertScreen([.light]) {
+        let cards = [long, try Fixtures.card(Fixtures.informationID), try Fixtures.card(Fixtures.deliveryID)]
+        return try ScreenStores.triage(queue: queue, cards: cards)
+    }
+
+    func test_stackWithAVeryLongCardKeepsItsHeightAndItsButtons() throws {
+        let store = try stackWithALongCard()
+        assertScreen([.light, .ax3], inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackWithAVeryLongCardKeepsItsHeightAndItsButtons_es() throws {
+        let store = try stackWithALongCard()
+        assertScreen([.light, .ax3], language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackOnASmallScreenAtTheLargestTextStaysOneHeightWithItsButtons() throws {
+        let store = try stackWithALongCard()
+        assertScreen([.light], inWindow: true) {
             Harness(store: store, height: 667).environment(\.dynamicTypeSize, .xxxLarge)
         }
     }
 
-    func test_stackOnASmallScreenAtTheLargestAccessibilityTextScrollsWholeCards() throws {
-        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
-        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
-        assertScreen([.light]) {
-            Harness(store: store, height: 667, growsWithText: false).environment(\.dynamicTypeSize, .accessibility5)
+    func test_stackOnASmallScreenAtTheLargestAccessibilityTextDoesNotScroll() throws {
+        let store = try stackWithALongCard()
+        assertScreen([.light], inWindow: true) {
+            Harness(store: store, height: 667).environment(\.dynamicTypeSize, .accessibility5)
         }
     }
 
-    func test_stackScrolledToTheEndShowsTheLastButtonAboveTheBottomMargin() throws {
-        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
-        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
-        assertScreen([.light]) {
-            Harness(store: store, height: 667, growsWithText: false)
-                .environment(\.dynamicTypeSize, .accessibility5)
-                .defaultScrollAnchor(.bottom)
+    func test_stackLeavesTheBottomMarginAboveTheTabBar() throws {
+        let store = try stackWithALongCard()
+        assertScreen([.light], inWindow: true) {
+            Harness(store: store, height: 667, tabBarHeight: 83)
         }
     }
 

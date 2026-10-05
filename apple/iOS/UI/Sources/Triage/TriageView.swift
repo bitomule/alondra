@@ -14,8 +14,8 @@ public struct TriageView: View {
     @GestureState private var dragging = false
     @State private var keyboardVisible = false
     @State private var screenWidth: CGFloat = 0
-    @State private var cardHeights: [String: CGFloat] = [:]
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     public init(store: StoreOf<TriageFeature>, zoom: Namespace.ID) {
         self.store = store
@@ -88,6 +88,8 @@ public struct TriageView: View {
         VStack(alignment: .leading, spacing: 6) {
             Text(store.queueTitle ?? String(localized: "Waiting for You"))
                 .font(.display(.largeTitle, weight: .bold)).foregroundStyle(Palette.ink)
+                .lineLimit(typeSize.isAccessibilitySize ? 1 : nil)
+                .minimumScaleFactor(0.5)
             if store.isOffline {
                 Label("saved data · connection lost", systemImage: "wifi.slash")
                     .font(.subheadline.weight(.medium)).foregroundStyle(Palette.rose).lineLimit(1)
@@ -124,19 +126,14 @@ public struct TriageView: View {
         .accessibilityLabel("\(store.index + 1) of \(store.orderedIDs.count) pending")
     }
 
-    /// Every card gets the same height, so the ones behind line up with the front one: the room the
-    /// stack has, or the tallest card's own height when one needs more, at large text sizes or with
-    /// a long reply. Then the stack scrolls, so every card can be read to its last button. The stack
-    /// ends with the bottom margin the app's other screens leave above the tab bar.
+    /// Every card is the room the stack has, from under the header down to the bottom margin above
+    /// the tab bar, so the ones behind line up with the front one. The card never grows with its
+    /// content and nothing here scrolls: the content adapts to the card, and what does not fit is in
+    /// the detail.
     private var queue: some View {
         GeometryReader { proxy in
-            ScrollView {
-                stack(height: proxy.size.height - Self.bottomMargin)
-                    .padding(.horizontal, 14).padding(.bottom, Self.bottomMargin)
-            }
-            .scrollBounceBehavior(.basedOnSize)
-            .scrollIndicators(.hidden)
-            .scrollDismissesKeyboard(.interactively)
+            stack(height: proxy.size.height - Self.bottomMargin)
+                .padding(.horizontal, 14).padding(.bottom, Self.bottomMargin)
         }
     }
 
@@ -144,8 +141,7 @@ public struct TriageView: View {
 
     private func stack(height: CGFloat) -> some View {
         let ids = store.visibleIDs
-        let tallest = ids.compactMap { cardHeights[$0] }.max() ?? 0
-        let cardHeight = max(height - CGFloat(max(0, ids.count - 1)) * 11, tallest)
+        let cardHeight = max(0, height - CGFloat(max(0, ids.count - 1)) * 11)
         let browsable = store.orderedIDs.count > 1
         return ZStack(alignment: .top) {
             ForEach(ids.reversed(), id: \.self) { id in
@@ -156,8 +152,7 @@ public struct TriageView: View {
                         if let card = cardStore.card {
                             TriageCard(
                                 store: cardStore, card: card, isFront: depth == 0, zoom: zoom,
-                                onSkip: browsable ? { store.send(.leaveForLater) } : nil,
-                                contentHeight: { cardHeights[id] = $0 }
+                                onSkip: browsable ? { store.send(.leaveForLater) } : nil
                             )
                         } else {
                             CardPlaceholder(store: cardStore)

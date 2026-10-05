@@ -7,18 +7,18 @@ import SwiftUI
 
 /// One card of Waiting for You: the 34 pt shell, what the card needs of you, its one line of
 /// content, the buttons under it, the reply field, and the stamp that covers it the moment an
-/// answer is sent. Nothing inside scrolls: the card reports the height its content needs, and the
-/// stack makes every card at least that tall.
+/// answer is sent. The card is always as tall as the stack makes it and nothing inside scrolls: the
+/// content adapts to the card. The buttons and the reply field keep their place at the bottom; the
+/// title, why and meta give way first, and whatever does not fit lives in the detail.
 struct TriageCard: View {
     @Bindable var store: StoreOf<TriageCardFeature>
     let card: Card
     let isFront: Bool
     let zoom: Namespace.ID
     let onSkip: (() -> Void)?
-    let contentHeight: (CGFloat) -> Void
     @Environment(\.openURL) private var openURL
     @FocusState private var replyFocused: Bool
-    @State private var height: CGFloat = 0
+    @Environment(\.dynamicTypeSize) private var typeSize
 
     private var kind: Kind { Kind(card) }
     private var tint: Color { kind.tint }
@@ -26,18 +26,11 @@ struct TriageCard: View {
 
     var body: some View { compositionSheet(changedAlert(confirmationAlert(shell))) }
 
-    /// The content sits in a scroll view that never scrolls so it is measured at its own height
-    /// rather than the card's, then stretched to the card so the buttons stay at the bottom.
     private var shell: some View {
-        ScrollView {
-            content
-                .padding(.horizontal, 20).padding(.vertical, 20)
-                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight($0) }
-                .frame(maxWidth: .infinity, minHeight: height, alignment: .topLeading)
-        }
-        .scrollDisabled(true)
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height = $0 }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        Color.clear
+            .overlay(alignment: .topLeading) {
+                content.padding(.horizontal, 20).padding(.vertical, 20)
+            }
         .blur(radius: stamp == nil ? 0 : 10)
         .opacity(stamp == nil ? 1 : 0.4)
         .background { surface }
@@ -63,18 +56,45 @@ struct TriageCard: View {
         }
     }
 
+    private struct Fit {
+        var why = true
+        var meta = true
+        var chips = true
+        var row = true
+        var state = true
+        var reply = true
+
+        static let compact = Fit(why: false, meta: false, chips: false, row: false, state: false, reply: false)
+    }
+
     private var content: some View {
+        ViewThatFits(in: .vertical) {
+            layout(Fit())
+            layout(Fit(meta: false))
+            layout(Fit(why: false, meta: false))
+            layout(Fit(why: false, meta: false, chips: false))
+            layout(Fit(why: false, meta: false, chips: false, row: false))
+            layout(Fit(why: false, meta: false, chips: false, row: false, state: false))
+            layout(Fit.compact)
+            layout(Fit.compact).dynamicTypeSize(...DynamicTypeSize.accessibility2)
+            layout(Fit.compact).dynamicTypeSize(...DynamicTypeSize.xxxLarge)
+        }
+    }
+
+    private func layout(_ fit: Fit) -> some View {
         VStack(alignment: .leading, spacing: 14) {
-            header
-            summary
-            if let row = card.contentRow {
+            header(showsState: fit.state)
+            summary(why: fit.why, meta: fit.meta)
+            if fit.row, let row = card.contentRow {
                 CardContentRow(row: row, tint: tint) { openDetail() }
             }
-            BlockChips(blocks: card.blocks, blockedBy: card.blockedBy, open: handleLink)
+            if fit.chips {
+                BlockChips(blocks: card.blocks, blockedBy: card.blockedBy, open: handleLink)
+            }
             Spacer(minLength: 0)
             if let error = store.actions.error { Text(error).font(.caption).foregroundStyle(Palette.rose) }
             buttons
-            if let reply = store.replyAction {
+            if fit.reply, let reply = store.replyAction {
                 AttachmentStrip(store: store.scope(state: \.attachments, action: \.attachments))
                 composer(reply)
             }
@@ -109,20 +129,20 @@ struct TriageCard: View {
         }
     }
 
-    private var header: some View {
+    private func header(showsState: Bool) -> some View {
         ViewThatFits(in: .horizontal) {
-            HStack(spacing: 8) { badges; Spacer(minLength: 4); trailing }
+            HStack(spacing: 8) { badges(showsState: showsState); Spacer(minLength: 4); trailing }
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) { KindBadge(kind: kind); Spacer(minLength: 4); trailing }
-                if let state = card.state { stateText(state) }
+                if showsState, let state = card.state { stateText(state) }
             }
         }
     }
 
-    private var badges: some View {
+    private func badges(showsState: Bool) -> some View {
         HStack(spacing: 8) {
             KindBadge(kind: kind)
-            if let state = card.state { stateText(state) }
+            if showsState, let state = card.state { stateText(state) }
         }
     }
 
@@ -149,15 +169,16 @@ struct TriageCard: View {
         }
     }
 
-    private var summary: some View {
-        VStack(alignment: .leading, spacing: 8) {
+    private func summary(why: Bool, meta: Bool) -> some View {
+        let large = typeSize.isAccessibilitySize
+        return VStack(alignment: .leading, spacing: 8) {
             Text(card.need ?? card.title).font(.display(.title2, weight: .bold)).foregroundStyle(Palette.ink)
-                .fixedSize(horizontal: false, vertical: true)
-            if let why = card.why {
-                Text(why).font(.subheadline).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                .lineLimit(large ? 2 : 3)
+            if why, let why = card.why {
+                Text(why).font(.subheadline).foregroundStyle(.secondary).lineLimit(large ? 2 : 4)
             }
-            if let meta = card.meta {
-                Text(meta).font(.footnote.weight(.medium)).foregroundStyle(.secondary).lineLimit(2)
+            if meta, let meta = card.meta {
+                Text(meta).font(.footnote.weight(.medium)).foregroundStyle(.secondary).lineLimit(large ? 1 : 2)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
