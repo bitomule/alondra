@@ -60,21 +60,37 @@ pub fn validate_registration(reg: &PushRegistration) -> Result<()> {
 }
 
 /// How APNs hands the push to the phone: an alert the notification service extension
-/// decrypts and shows, or a silent wake of the app that shows nothing.
+/// decrypts and shows, a silent wake of the app that shows nothing, or a new icon badge.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PushType {
     #[default]
     Alert,
     Background,
+    Badge,
 }
 
-/// What the Mac asks of APNs besides the envelope. The collapse id is an opaque digest:
-/// APNs and the relay read it in the clear.
+/// What the Mac asks of APNs besides the envelope. The collapse id is an opaque digest and the
+/// badge a count: APNs and the relay read both in the clear.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Delivery {
     pub push_type: PushType,
     pub collapse_id: Option<String>,
+    pub badge: Option<u32>,
+}
+
+/// Far above any real queue; keeps a forged count from reaching the icon.
+pub const MAX_BADGE: u32 = 99_999;
+
+impl Delivery {
+    /// A badge push carries its count and nothing else; the other types carry none.
+    pub fn is_valid(&self) -> bool {
+        let collapse_ok = self.collapse_id.as_deref().is_none_or(valid_collapse_id);
+        match self.push_type {
+            PushType::Badge => self.collapse_id.is_none() && self.badge.is_some_and(|badge| badge <= MAX_BADGE),
+            PushType::Alert | PushType::Background => collapse_ok && self.badge.is_none(),
+        }
+    }
 }
 
 /// Apple caps `apns-collapse-id` at 64 bytes; only base64url keeps it a safe header value.
@@ -100,18 +116,37 @@ pub fn background_payload(envelope: &EnvelopeV1, binding: &str) -> Value {
     })
 }
 
+/// The system sets the icon badge from `aps` itself, even for an app the user force-quit, and
+/// shows nothing. The notification service extension never runs for it, so the count travels
+/// in the clear and the envelope, already checked, stays with the relay.
+pub fn badge_payload(badge: u32) -> Value {
+    json!({"aps": {"badge": badge}})
+}
+
 pub fn payload_for(delivery: &Delivery, envelope: &EnvelopeV1, binding: &str) -> Value {
     match delivery.push_type {
         PushType::Alert => payload(envelope, binding),
         PushType::Background => background_payload(envelope, binding),
+        PushType::Badge => badge_payload(delivery.badge.unwrap_or_default()),
     }
 }
 
-/// Apple: a background push must use priority 5; 10 is an error.
+/// Apple: a background push must use priority 5; 10 is an error. A badge only push is an alert
+/// that does not need the user right away.
 fn headers_for(delivery: &Delivery) -> [(&'static str, &'static str); 2] {
     match delivery.push_type {
         PushType::Alert => [("apns-push-type", "alert"), ("apns-priority", "10")],
         PushType::Background => [("apns-push-type", "background"), ("apns-priority", "5")],
+        PushType::Badge => [("apns-push-type", "alert"), ("apns-priority", "5")],
+    }
+}
+
+/// APNs keeps only one push per app while the phone is offline. A badge push is delivered once
+/// or never, so it can never take the place of an alert still waiting there.
+fn expiration_for(delivery: &Delivery, envelope: &EnvelopeV1) -> String {
+    match delivery.push_type {
+        PushType::Badge => "0".into(),
+        PushType::Alert | PushType::Background => (envelope.expires_at_ms / 1000).to_string(),
     }
 }
 
@@ -245,10 +280,7 @@ impl Apns {
             .post(url)
             .header("authorization", format!("bearer {}", self.bearer()?))
             .header("apns-topic", &self.topic)
-            .header(
-                "apns-expiration",
-                (envelope.expires_at_ms / 1000).to_string(),
-            )
+            .header("apns-expiration", expiration_for(delivery, envelope))
             .header("content-type", "application/json");
         for (name, value) in headers_for(delivery) {
             request = request.header(name, value);
@@ -369,13 +401,43 @@ mod tests {
             serde_json::from_str(include_str!("../../../fixtures/push/retract.json")).unwrap();
         let alondra = &fixture["apns"]["alondra"];
         let envelope: EnvelopeV1 = serde_json::from_value(alondra["envelope"].clone()).unwrap();
-        let delivery = Delivery { push_type: PushType::Background, collapse_id: None };
+        let delivery = Delivery { push_type: PushType::Background, ..Delivery::default() };
         assert_eq!(
             payload_for(&delivery, &envelope, alondra["push_binding"].as_str().unwrap()),
             fixture["apns"],
             "the app opens exactly this shape when it wakes in the background"
         );
         assert_eq!(headers_for(&delivery), [("apns-push-type", "background"), ("apns-priority", "5")]);
+    }
+
+    #[test]
+    fn a_badge_push_shows_only_the_count_and_is_never_stored_in_place_of_an_alert() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/push/retract.json")).unwrap();
+        let envelope: EnvelopeV1 =
+            serde_json::from_value(fixture["apns"]["alondra"]["envelope"].clone()).unwrap();
+        let delivery = Delivery { push_type: PushType::Badge, badge: Some(3), ..Delivery::default() };
+        assert_eq!(payload_for(&delivery, &envelope, "binding"), json!({"aps": {"badge": 3}}));
+        assert_eq!(headers_for(&delivery), [("apns-push-type", "alert"), ("apns-priority", "5")]);
+        assert_eq!(expiration_for(&delivery, &envelope), "0");
+        let alert = Delivery::default();
+        assert_eq!(expiration_for(&alert, &envelope), (envelope.expires_at_ms / 1000).to_string());
+    }
+
+    #[test]
+    fn only_a_badge_push_carries_a_count_and_it_carries_nothing_else() {
+        let badge = |push_type, badge, collapse_id: Option<&str>| Delivery {
+            push_type, badge, collapse_id: collapse_id.map(str::to_owned),
+        };
+        assert!(badge(PushType::Badge, Some(0), None).is_valid());
+        assert!(badge(PushType::Badge, Some(MAX_BADGE), None).is_valid());
+        assert!(!badge(PushType::Badge, None, None).is_valid());
+        assert!(!badge(PushType::Badge, Some(MAX_BADGE + 1), None).is_valid());
+        assert!(!badge(PushType::Badge, Some(1), Some("abc")).is_valid());
+        assert!(!badge(PushType::Alert, Some(1), None).is_valid());
+        assert!(!badge(PushType::Background, Some(1), None).is_valid());
+        assert!(badge(PushType::Alert, None, Some("abc")).is_valid());
+        assert!(!badge(PushType::Alert, None, Some("card id")).is_valid());
     }
 
     #[test]

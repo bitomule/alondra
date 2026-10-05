@@ -374,6 +374,8 @@ struct PushRequest {
     collapse_id: Option<String>,
     #[serde(default)]
     push_type: push::PushType,
+    #[serde(default)]
+    badge: Option<u32>,
 }
 
 async fn send_push(
@@ -400,17 +402,14 @@ async fn send_push(
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_push"))?;
     let e = &request.envelope;
     let now = now_ms();
-    if request
-        .collapse_id
-        .as_deref()
-        .is_some_and(|id| !push::valid_collapse_id(id))
-    {
-        return Err(error(StatusCode::BAD_REQUEST, "invalid_push"));
-    }
     let delivery = push::Delivery {
         push_type: request.push_type,
         collapse_id: request.collapse_id.clone(),
+        badge: request.badge,
     };
+    if !delivery.is_valid() {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_push"));
+    }
     if e.kind != "push"
         || e.route != mac.device_id
         || e.sender != mac.device_id
@@ -2018,6 +2017,12 @@ mod http_tests {
             (92, json!({"collapse_id": "a".repeat(65)}), StatusCode::BAD_REQUEST),
             (93, json!({"collapse_id": "card\nforged"}), StatusCode::BAD_REQUEST),
             (94, json!({"push_type": "voip"}), StatusCode::BAD_REQUEST),
+            (95, json!({"push_type": "badge", "badge": 4}), StatusCode::ACCEPTED),
+            (96, json!({"push_type": "badge"}), StatusCode::BAD_REQUEST),
+            (97, json!({"badge": 4}), StatusCode::BAD_REQUEST),
+            (98, json!({"push_type": "background", "badge": 4}), StatusCode::BAD_REQUEST),
+            (99, json!({"push_type": "badge", "badge": 100_000}), StatusCode::BAD_REQUEST),
+            (100, json!({"push_type": "badge", "badge": 4, "collapse_id": collapse_id}), StatusCode::BAD_REQUEST),
         ] {
             let body = extended(extra.clone());
             let response = sign(
@@ -2038,7 +2043,7 @@ mod http_tests {
         {
             let pushed = delivered.lock().unwrap();
             let headers = delivered_headers.lock().unwrap();
-            assert_eq!(pushed.len(), 3, "invalid collapse ids and push types never reach APNs");
+            assert_eq!(pushed.len(), 4, "invalid collapse ids, push types and badges never reach APNs");
             assert_eq!(headers[1]["apns-collapse-id"], collapse_id.as_str());
             assert_eq!(headers[1]["apns-push-type"], "alert");
             assert_eq!(pushed[1]["aps"]["mutable-content"], 1);
@@ -2047,6 +2052,10 @@ mod http_tests {
             assert_eq!(pushed[2]["aps"], json!({"content-available": 1}), "nothing that would show or sound");
             assert_eq!(pushed[2]["alondra"]["push_binding"], binding);
             assert!(pushed[2]["alondra"]["envelope"]["ciphertext"].is_string());
+            assert_eq!(pushed[3], json!({"aps": {"badge": 4}}), "only the count, which the system sets itself");
+            assert_eq!(headers[3]["apns-push-type"], "alert");
+            assert_eq!(headers[3]["apns-priority"], "5");
+            assert_eq!(headers[3]["apns-expiration"], "0", "never stored in place of an alert waiting for an offline phone");
         }
         delivered.lock().unwrap().truncate(1);
         delivered_headers.lock().unwrap().truncate(1);
