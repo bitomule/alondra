@@ -51,11 +51,6 @@ public struct TriageCardFeature: Sendable {
         }
 
         public var stamp: String? { selected == nil ? nil : actions.stamp }
-
-        /// The button a swipe answers with: the first one swiping right, the last one swiping left.
-        public func swipeButton(_ direction: TriageFeature.Direction) -> WireAction? {
-            direction == .right ? buttons.first : buttons.last
-        }
     }
 
     /// A button that needs words or a reason before it can go, and the sheet that asks for them.
@@ -203,15 +198,6 @@ public struct TriageCardFeature: Sendable {
     static func asksForWords(_ action: WireAction) -> Bool {
         if action.presentation == .options { return true }
         if case .text = action.input { return true }
-        return false
-    }
-}
-
-public extension WireAction {
-    /// A button one tap answers: nothing to write, choose, confirm or open first. A swipe may send it.
-    var answersOnATap: Bool {
-        guard enabled, presentation == .button, link == nil, comments == nil, confirm == nil else { return false }
-        if case .none = input { return true }
         return false
     }
 }

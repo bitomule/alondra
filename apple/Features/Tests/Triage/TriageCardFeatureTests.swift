@@ -418,31 +418,4 @@ final class TriageCardFeatureTests: XCTestCase {
         await store.send(.opened(.node("n-1")))
         await store.receive(\.delegate.open, .node("n-1"))
     }
-
-    // MARK: The swipe
-
-    @MainActor
-    func testSwipingRightAnswersWithTheFirstButtonAndLeftWithTheLast() async throws {
-        let store = try await store("perm-1", loaded: try Fixtures.authorizeCard())
-        XCTAssertEqual(store.state.swipeButton(.right)?.label, "Yes")
-        XCTAssertEqual(store.state.swipeButton(.left)?.label, "No")
-
-        let crowded = try await self.store("decide-5", loaded: try Fixtures.crowdedDecision())
-        XCTAssertEqual(crowded.state.swipeButton(.right)?.label, "★ Stable")
-        XCTAssertEqual(crowded.state.swipeButton(.left)?.label, "Nightly", "the last of the three showing, not of More")
-
-        let report = try await self.store(Fixtures.informationID, loaded: try Fixtures.card(Fixtures.informationID))
-        XCTAssertEqual(report.state.swipeButton(.right)?.label, "Seen")
-        XCTAssertEqual(report.state.swipeButton(.left)?.label, "Seen")
-    }
-
-    @MainActor
-    func testOnlyAButtonOneTapAnswersCanBeSwiped() async throws {
-        let pullRequest = try await store(Fixtures.pullRequestID, loaded: try Fixtures.card(Fixtures.pullRequestID))
-        XCTAssertFalse(pullRequest.state.buttons[0].answersOnATap, "a disabled merge menu with a confirmation")
-        XCTAssertFalse(pullRequest.state.buttons[1].answersOnATap, "request changes opens the diff")
-
-        let authorize = try await store("perm-1", loaded: try Fixtures.authorizeCard())
-        XCTAssertTrue(authorize.state.buttons.allSatisfy(\.answersOnATap))
-    }
 }
