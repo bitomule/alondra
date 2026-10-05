@@ -253,6 +253,7 @@ final class TriageFeatureTests: XCTestCase {
         state.orderedIDs = queue
         state.cards = [TriageCardFeature.State(id: ids.question), TriageCardFeature.State(id: ids.information)]
         let store = TestStore(initialState: state) { TriageFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = { $0.rawValue == "card:\(self.ids.question)" ? stream : observe($0) }
         }
         store.exhaustivity = .off

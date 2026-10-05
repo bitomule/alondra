@@ -203,6 +203,37 @@ final class TriageSnapshotTests: XCTestCase {
         assertScreen(inWindow: true) { Harness(store: store) }
     }
 
+    private func stackWithAFrontCard(
+        in phase: ScreenFeature.State.Phase
+    ) throws -> StoreOf<TriageFeature> {
+        let queue = [Fixtures.questionID, "perm-1"]
+        return try ScreenStores.triage(queue: queue, cards: [try Fixtures.authorizeCard()]) { state in
+            var front = TriageCardFeature.State(id: Fixtures.questionID)
+            front.screen.phase = phase
+            state.cards.append(front)
+        }
+    }
+
+    func test_stackWhoseFrontCardIsStillLoading() throws {
+        let store = try stackWithAFrontCard(in: .loading)
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackWhoseFrontCardIsStillLoading_es() throws {
+        let store = try stackWithAFrontCard(in: .loading)
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackWhoseFrontCardFailedToLoad() throws {
+        let store = try stackWithAFrontCard(in: .failed("Couldn’t load this from your Mac. Try again."))
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackWhoseFrontCardFailedToLoad_es() throws {
+        let store = try stackWithAFrontCard(in: .failed("Couldn’t load this from your Mac. Try again."))
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
     func test_stackAfterTheLastCardWrapsToTheFirst() throws {
         let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID, Fixtures.pullRequestID]
         let shown = [Fixtures.pullRequestID, Fixtures.questionID, Fixtures.informationID]

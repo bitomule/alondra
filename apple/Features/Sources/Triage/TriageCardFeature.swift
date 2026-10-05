@@ -2,12 +2,17 @@ import AlondraAttachments
 import AlondraContract
 import ComposableArchitecture
 import Foundation
+import OSLog
 
 /// One card of Waiting for You: it observes its own view, owns the reply draft, and decides what
 /// each control on the card does. The daemon decides which buttons the card has and in which order.
 @Reducer
 public struct TriageCardFeature: Sendable {
     public init() {}
+
+    @Dependency(\.continuousClock) var clock
+    private enum CancelID { case loadDeadline }
+    private static let log = Logger(subsystem: "dev.davidcollado.alondra", category: "Triage")
 
     @ObservableState
     public struct State: Equatable, Identifiable {
@@ -102,6 +107,7 @@ public struct TriageCardFeature: Sendable {
         case noteChanged(String)
         case opened(ViewKey)
         case previousQuestion
+        case loadTimedOut
         case compositionConfirmed
         case compositionCancelled
         case submit
@@ -120,8 +126,35 @@ public struct TriageCardFeature: Sendable {
         Reduce { state, action in
             switch action {
             case .screen(.loaded(let document)):
-                guard document.key == state.screen.key.rawValue else { return .none }
+                guard document.key == state.screen.key.rawValue else {
+                    let id = state.id
+                    Self.log.error("card \(id, privacy: .public) loaded a view for \(document.key, privacy: .public)")
+                    return .none
+                }
                 state.actions.dataEpoch = document.dataEpoch
+                return .cancel(id: CancelID.loadDeadline)
+            case .screen(.task), .screen(.retry):
+                guard state.screen.document == nil else { return .none }
+                return .run { [clock] send in
+                    try await clock.sleep(for: TriageFeature.loadDeadline)
+                    await send(.loadTimedOut)
+                }
+                .cancellable(id: CancelID.loadDeadline, cancelInFlight: true)
+            case .screen(.stop):
+                return .cancel(id: CancelID.loadDeadline)
+            case .screen(.failed(let message)):
+                let id = state.id
+                Self.log.error("card \(id, privacy: .public) failed to load: \(message, privacy: .public)")
+                return .cancel(id: CancelID.loadDeadline)
+            case .screen(.missing):
+                let id = state.id
+                Self.log.error("card \(id, privacy: .public) has no view on the Mac")
+                return .cancel(id: CancelID.loadDeadline)
+            case .loadTimedOut:
+                guard state.screen.document == nil, state.screen.phase == .loading else { return .none }
+                let id = state.id
+                Self.log.error("card \(id, privacy: .public) did not load within \(TriageFeature.loadDeadline.components.seconds) s")
+                state.screen.phase = .failed(TriageFeature.loadFailure)
                 return .none
             case .screen, .delegate:
                 return .none
