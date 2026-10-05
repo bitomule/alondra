@@ -173,6 +173,9 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
         register_probe(domain, &session)?;
     }
     let number = domain.live.mods.connect(hello, alondra_core::now_millis());
+    if let Some(pid) = stream.peer_cred().ok().and_then(|credentials| credentials.pid()) {
+        domain.live.mods.set_peer(&session, pid as u32);
+    }
     let mut lines = domain.live.pushes.attach(&session, number);
     let mut changed = domain.subscribe();
     let held = async {

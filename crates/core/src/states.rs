@@ -19,6 +19,10 @@ const MINUTE: Millis = 60 * 1000;
 pub const HOOK_FRESH_MS: Millis = 5 * MINUTE;
 /// A single call counts as work for this long; past it, a background node is stuck in it.
 pub const CALL_LIMIT_MS: Millis = 45 * MINUTE;
+/// A node inside a turn with no tool in flight and no live background work counts as working
+/// for this long after its mod last reported anything; past it the session has stopped
+/// processing, and it is stalled.
+pub const TURN_QUIET_MS: Millis = 10 * MINUTE;
 /// Subagents legitimately run longer than any other call.
 pub const SUBAGENT_CALL_LIMIT_MS: Millis = 120 * MINUTE;
 

@@ -47,6 +47,7 @@ mod orchestrate;
 mod orchestrator_process;
 mod plugins;
 mod preflight;
+mod process_watch;
 mod prs;
 mod push;
 mod push_gate;
