@@ -1495,7 +1495,9 @@ impl DomainState {
                 system(actor)?;
                 self.schedule
                     .record_failed(run_id, reason.clone(), *finished_at)?;
-                if let Some(task) = self.schedule.runs[run_id].task_id.as_ref().and_then(|id| self.tasks.get(id)).cloned() {
+                let open_task = self.schedule.runs[run_id].task_id.as_ref().and_then(|id| self.tasks.get(id))
+                    .filter(|task| !task.state.terminal() && !task.archived).cloned();
+                if let Some(task) = open_task {
                     effects.push(DomainEffect::ScheduleLaunchFailed {
                         task_id: task.id.clone(),
                         title: task.title.clone(),
