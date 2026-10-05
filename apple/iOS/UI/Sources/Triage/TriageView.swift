@@ -159,8 +159,7 @@ public struct TriageView: View {
                             CardPlaceholder(store: cardStore)
                         }
                     } else {
-                        ProgressView().frame(maxWidth: .infinity, minHeight: 300)
-                            .background(Palette.card, in: .rect(cornerRadius: 34, style: .continuous))
+                        CardSkeleton()
                     }
                 }
                 .id(id)
@@ -261,23 +260,28 @@ private struct CardPlaceholder: View {
     let store: StoreOf<TriageCardFeature>
 
     var body: some View {
-        Group {
-            switch store.screen.phase {
-            case .failed(let message):
+        switch store.screen.phase {
+        case .failed(let message):
+            unavailable {
                 ContentUnavailableView {
-                    Label("Could not connect to the fleet", systemImage: "exclamationmark.triangle")
+                    Label("Couldn’t load this card", systemImage: "exclamationmark.triangle")
                 } description: {
                     Text(message)
                 } actions: {
                     Button("Try Again") { store.send(.screen(.retry)) }.buttonStyle(.glass)
                 }
-            case .missing, .loaded:
-                ContentUnavailableView("This screen is no longer available", systemImage: "tray")
-            case .loading:
-                ProgressView()
             }
+        case .missing, .loaded:
+            unavailable { ContentUnavailableView("This screen is no longer available", systemImage: "tray") }
+        case .loading:
+            CardSkeleton()
         }
-        .frame(maxWidth: .infinity, minHeight: 300)
-        .background(Palette.card, in: .rect(cornerRadius: 34, style: .continuous))
+    }
+
+    private func unavailable<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
+        content()
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Palette.card, in: .rect(cornerRadius: 34, style: .continuous))
+            .overlay { RoundedRectangle(cornerRadius: 34, style: .continuous).strokeBorder(Palette.hairline) }
     }
 }

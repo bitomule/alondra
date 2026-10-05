@@ -18,6 +18,7 @@ final class TriageCardFeatureTests: XCTestCase {
             state.actions.dataEpoch = document.dataEpoch
         }
         let store = TestStore(initialState: state) { TriageCardFeature() } withDependencies: {
+            $0.continuousClock = TestClock()
             $0.viewsClient.observe = feed.observe
             $0.viewsClient.perform = feed.perform()
         }
@@ -43,6 +44,50 @@ final class TriageCardFeatureTests: XCTestCase {
 
         XCTAssertEqual(store.state.card?.need, "Choose the welcome copy")
         XCTAssertEqual(store.state.actions.dataEpoch, "test-epoch")
+    }
+
+    @MainActor
+    func testACardWhoseViewNeverArrivesBecomesAnErrorWithRetryInsteadOfSpinningForever() async throws {
+        let clock = TestClock()
+        let store = TestStore(initialState: TriageCardFeature.State(id: Fixtures.questionID)) { TriageCardFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = { _ in AsyncThrowingStream { _ in } }
+        }
+        store.exhaustivity = .off
+
+        await store.send(.screen(.task))
+        XCTAssertEqual(store.state.screen.phase, .loading)
+        await clock.advance(by: TriageFeature.loadDeadline)
+        await store.skipReceivedActions()
+
+        XCTAssertEqual(store.state.screen.phase, .failed(TriageFeature.loadFailure))
+        XCTAssertNil(store.state.card)
+
+        await store.send(.screen(.retry))
+        XCTAssertEqual(store.state.screen.phase, .loading)
+        await clock.advance(by: TriageFeature.loadDeadline)
+        await store.skipReceivedActions()
+        XCTAssertEqual(store.state.screen.phase, .failed(TriageFeature.loadFailure))
+        await store.send(.screen(.stop))
+    }
+
+    @MainActor
+    func testACardThatLoadsInTimeIsNeverFailedByTheDeadline() async throws {
+        let clock = TestClock()
+        let feed = FeedStub([try Fixtures.card(Fixtures.questionID)])
+        let store = TestStore(initialState: TriageCardFeature.State(id: Fixtures.questionID)) { TriageCardFeature() } withDependencies: {
+            $0.continuousClock = clock
+            $0.viewsClient.observe = feed.observe
+        }
+        store.exhaustivity = .off
+
+        await store.send(.screen(.task))
+        await store.skipReceivedActions()
+        await clock.advance(by: TriageFeature.loadDeadline * 2)
+
+        XCTAssertEqual(store.state.screen.phase, .loaded)
+        XCTAssertNotNil(store.state.card)
+        await store.send(.screen(.stop))
     }
 
     // MARK: The buttons

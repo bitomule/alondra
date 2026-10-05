@@ -39,7 +39,7 @@ final class TriageSnapshotTests: XCTestCase {
 
     func test_cannotReachTheMac() {
         var state = TriageFeature.State()
-        state.screen.phase = .failed("Couldn’t load this from your Mac. Try again.")
+        state.screen.phase = .failed(TriageFeature.loadFailure)
         assertVariants { Harness(store: ScreenStores.triage(state: state)) }
     }
 
@@ -201,6 +201,37 @@ final class TriageSnapshotTests: XCTestCase {
         let queue = [Fixtures.informationID, Fixtures.questionID, Fixtures.deliveryID]
         let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
         assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    private func stackWithAFrontCard(
+        in phase: ScreenFeature.State.Phase
+    ) throws -> StoreOf<TriageFeature> {
+        let queue = [Fixtures.questionID, "perm-1"]
+        return try ScreenStores.triage(queue: queue, cards: [try Fixtures.authorizeCard()]) { state in
+            var front = TriageCardFeature.State(id: Fixtures.questionID)
+            front.screen.phase = phase
+            state.cards.append(front)
+        }
+    }
+
+    func test_stackWhoseFrontCardIsStillLoading() throws {
+        let store = try stackWithAFrontCard(in: .loading)
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackWhoseFrontCardIsStillLoading_es() throws {
+        let store = try stackWithAFrontCard(in: .loading)
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackWhoseFrontCardFailedToLoad() throws {
+        let store = try stackWithAFrontCard(in: .failed(TriageFeature.loadFailure))
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_stackWhoseFrontCardFailedToLoad_es() throws {
+        let store = try stackWithAFrontCard(in: .failed(TriageFeature.loadFailure))
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 
     func test_stackAfterTheLastCardWrapsToTheFirst() throws {

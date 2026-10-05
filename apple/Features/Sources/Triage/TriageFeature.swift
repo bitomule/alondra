@@ -104,7 +104,7 @@ public struct TriageFeature: Sendable {
 
     @Dependency(\.continuousClock) var clock
     private enum CancelID { case stamp, swipe, loadDeadline }
-    static var loadFailure: String { String(localized: "Couldn’t load this from your Mac. Try again.") }
+    public static var loadFailure: String { String(localized: "Couldn’t load this from your Mac. Try again.") }
 
     public static func commits(translation: Double, predicted: Double) -> Bool {
         abs(translation) > 90 || (abs(predicted) > 240 && abs(translation) > 30)

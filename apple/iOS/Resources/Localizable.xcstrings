@@ -3,6 +3,8 @@
   "strings": {
     "Question %lld of %lld": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pregunta %1$lld de %2$lld"}}}},
     "Previous question": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Pregunta anterior"}}}},
+    "Couldn’t load this card": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar esta tarjeta"}}}},
+    "Loading…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cargando…"}}}},
     "More…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más…"}}}},
     "Decide": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Decidir"}}}},
     "Authorize": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Autorizar"}}}},
