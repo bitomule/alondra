@@ -40,6 +40,7 @@ struct ScreenFrame<Content: View>: View {
     var body: some View {
         NavigationStack { content }
             .environment(\.referenceDate, snapshotReferenceDate)
+            .transaction { $0.disablesAnimations = true }
             .frame(height: textSize.isAccessibilitySize ? height * 2.2 : height)
     }
 }
