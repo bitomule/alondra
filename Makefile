@@ -65,13 +65,18 @@ mac-snapshots-verify:
 cargo-test:
 	cargo test
 
-install: build
+brew-guard:
+	@if [ -z "$(FORCE_DEV_INSTALL)" ] && { [ -e /opt/homebrew/opt/alondra ] || [ -e /usr/local/opt/alondra ]; }; then \
+		echo "Alondra is installed with Homebrew; dev installs would replace the user's daemon. Use make e2e-sandbox, or FORCE_DEV_INSTALL=1 if you really mean it"; exit 1; \
+	fi
+
+install: brew-guard build
 	mkdir -p $(BIN) $(PLUGIN)/bin $(HOME)/.alondra
 	install -m 755 $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $(BIN)/alondrad
 	install -m 755 $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) $(BIN)/alondra
 	@echo "Installed in $(BIN). Plugin: $(PLUGIN)"
 
-run: install
+run: brew-guard install
 	$(BIN)/alondrad
 
 tui:
@@ -83,7 +88,7 @@ status:
 doctor:
 	$(BIN)/alondra doctor
 
-setup: install
+setup: brew-guard install
 	$(BIN)/alondra setup --bin $(BIN) --repo $(CURDIR)
 
 no-holds:
@@ -95,7 +100,7 @@ no-holds:
 restart: no-holds
 	launchctl kickstart -k gui/$$(id -u)/$(LABEL)
 
-launchd: no-holds install
+launchd: brew-guard no-holds install
 	$(BIN)/alondra setup --bin $(BIN) --skip-plugin --skip-pair
 
 unlaunchd:
