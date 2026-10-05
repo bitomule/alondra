@@ -200,6 +200,27 @@ fn tasks_list_one_row_per_single_task_request_with_people_times() {
 }
 
 #[test]
+fn the_tasks_list_nests_a_task_under_the_other_requests_task_it_follows_and_never_shows_a_prompt() {
+    let mut app = app_on(Screen::Tasks, fixture_view("tasks-tui.json"));
+    let screen = rendered(&mut app, 120, 30);
+    dump("tasks (across requests)", &screen);
+    let lines: Vec<&str> = screen.lines().collect();
+    let at = |needle: &str| lines.iter().position(|line| line.contains(needle)).unwrap_or_else(|| panic!("{needle}: {screen}"));
+    let parent = at("Restore the native review experience").min(at("Polish the Alondra beta"));
+    let nested = at("Decrement the badge on retraction");
+    assert!(nested > parent && lines[nested].contains("↳"), "the dependent hangs under its parent: {screen}");
+    assert!(lines[nested + 1].contains("from: Badge accuracy"), "{screen}");
+    let waits = at("waits for Restore the native review experience");
+    assert!(lines[waits].contains("↳") && waits > at("Badge accuracy"), "{screen}");
+    assert!(lines[waits + 1].contains("Decrement the badge on retraction"), "{screen}");
+    for loose in ["Review the schedule editor", "Write the release notes"] {
+        assert!(lines[at(loose)].contains(loose), "{screen}");
+    }
+    assert!(screen.contains("New request"), "{screen}");
+    assert!(!screen.contains("Look at the schedule editor") && !screen.contains("Import lists from Notes"), "{screen}");
+}
+
+#[test]
 fn task_actions_have_unique_keys_and_hide_what_does_not_apply() {
     let (domain, live) = busy();
     let mut app = task_screen(&domain, &live, "r-3", "t-3");

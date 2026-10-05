@@ -39,6 +39,7 @@ fn world() -> Fixture {
         run(&domain, Actor::System, Command::RegisterAgent { agent_id: id.into(), name: name.into() });
     }
     run(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false });
+    run(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     let task = |id: &str, agent: Option<&str>, deps: &[&str]| Command::CreateTask { task_id: id.into(), request_id: "r".into(),
         title: format!("Title {id}"), agent_id: agent.map(Into::into), review_prs: false,
         dependencies: deps.iter().map(|d| TaskId::from(*d)).collect::<BTreeSet<_>>(), stack: None };

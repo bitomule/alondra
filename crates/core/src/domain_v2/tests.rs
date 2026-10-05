@@ -64,6 +64,7 @@ fn fixture() -> DomainState {
         },
     )
     .unwrap();
+    s.requests.get_mut(&"r".into()).unwrap().title = Some("Requested result".into());
     s
 }
 fn schedule() -> Schedule {
@@ -980,6 +981,23 @@ fn the_orchestrator_names_a_request_with_a_short_title() {
     exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "x".repeat(60) }).unwrap();
     exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "r".into(), title: "Conflicts before push".into() }).unwrap();
     assert_eq!(s.requests[&"r".into()].title.as_deref(), Some("Conflicts before push"));
+}
+fn task_in(request: &str, id: &str) -> Command {
+    Command::CreateTask { task_id: id.into(), request_id: request.into(), title: id.into(), agent_id: None,
+        review_prs: false, dependencies: Default::default(), stack: None }
+}
+#[test]
+fn a_request_needs_its_title_before_it_gets_a_second_task() {
+    let mut s = fixture();
+    exec(&mut s, user(), Command::CreateRequest { request_id: "two".into(), body: "Two things".into(), auto_merge: false }).unwrap();
+    exec(&mut s, orchestrator(), task_in("two", "first")).unwrap();
+    let error = exec(&mut s, orchestrator(), task_in("two", "second")).unwrap_err();
+    assert_eq!((error.code.as_str(), error.subject.as_deref()), ("request_title_required", Some("request.title")));
+    assert!(error.message.contains("title_request"), "{error}");
+    assert!(!s.tasks.contains_key(&"second".into()));
+    exec(&mut s, orchestrator(), Command::TitleRequest { request_id: "two".into(), title: "Two things".into() }).unwrap();
+    exec(&mut s, orchestrator(), task_in("two", "second")).unwrap();
+    assert!(s.tasks.contains_key(&"second".into()));
 }
 #[test]
 fn a_manager_retitles_a_task_and_moves_its_revision() {

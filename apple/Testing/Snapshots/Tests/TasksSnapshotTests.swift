@@ -76,9 +76,27 @@ final class TasksSnapshotTests: XCTestCase {
         }
     }
 
+    private func daemonsOwnTasks(_ document: ViewDocument, expanded: Set<String> = [], height: CGFloat) -> some View {
+        ScreenFrame(height: height) {
+            TasksView(store: tasks(document, expanded: expanded)).environment(\.referenceDate, screenReferenceDate)
+        }
+    }
+
     func test_tasks_theDaemonsOwnFixture() throws {
         let document = try SampleViews.document("tasks-ios")
-        assertScreen(lightAndDark) { ScreenFrame(height: 500) { TasksView(store: tasks(document)) } }
+        assertScreen(lightAndDark, inWindow: true) { daemonsOwnTasks(document, height: 1100) }
+    }
+
+    func test_tasks_theDaemonsOwnFixture_spanish() throws {
+        let document = try SampleViews.document("tasks-ios-es")
+        assertScreen(lightAndDark, language: .spanish, inWindow: true) { daemonsOwnTasks(document, height: 1200) }
+    }
+
+    func test_tasks_theDaemonsOwnFixture_foldsOpen() throws {
+        let document = try SampleViews.document("tasks-ios")
+        assertScreen(lightAndDark, inWindow: true) {
+            daemonsOwnTasks(document, expanded: ["finished"], height: 1300)
+        }
     }
 
     func test_taskDetail() throws {

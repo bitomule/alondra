@@ -1266,6 +1266,9 @@ mod tests {
         apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "create-request", Command::CreateRequest {
             request_id: "request".into(), body: "Work".into(), auto_merge: false,
         });
+        apply_seed_command(&domain, Actor::User { user_id: "user".into() }, "title-request", Command::TitleRequest {
+            request_id: "request".into(), title: "Work".into(),
+        });
         for task_id in ["task-a", "task-b"] {
             apply_seed_command(&domain, Actor::User { user_id: "user".into() }, &format!("create-{task_id}"), Command::CreateTask {
                 task_id: task_id.into(), request_id: "request".into(), title: task_id.into(),

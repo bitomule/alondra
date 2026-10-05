@@ -9,13 +9,18 @@ public struct TasksBoard: Equatable, Sendable {
         public let id: String
         public let title: String
         public let state: String?
+        public let icon: Icon
         public let project: String?
         public let touchedAt: Date?
         public let link: AlondraContract.Link?
         public let withdraw: WireAction?
         public let tasks: [Line]
+        /// A task of a request that has no title and several tasks: it stands on its own, with no header.
+        public let isLoose: Bool
 
-        public var isSingleTask: Bool { tasks.count == 1 }
+        /// The request's own tasks: not the short rows for tasks that wait elsewhere, nor other requests' tasks nested here.
+        public var taskCount: Int { tasks.count { !$0.isWait && $0.origin == nil } }
+        public var isSingleTask: Bool { tasks.count == 1 && !tasks[0].isWait }
     }
 
     /// One task in its request's tree, with what its node does now or said last. `rails` says, for
@@ -35,6 +40,12 @@ public struct TasksBoard: Equatable, Sendable {
         public let isLastSibling: Bool
         public let hasChildren: Bool
         public let link: AlondraContract.Link?
+        /// "from: ‹request›" when this task waits under a task of another request.
+        public let origin: String?
+        /// A short row standing for a task that waits on another request's task: the task it waits for is
+        /// the title, and `dependent` names the waiting task when its request has other tasks.
+        public let isWait: Bool
+        public let dependent: String?
     }
 
     public struct Fold: Equatable, Sendable {
@@ -132,11 +143,12 @@ public struct TasksPage: Equatable, Sendable {
 
 extension TasksBoard.Request {
     init(row: Row) {
+        let loose = row.depth > 0
         self.init(
-            id: row.id, title: row.title, state: row.subtitle,
-            project: row.badges.first?.text, touchedAt: row.trailing?.instant, link: row.link,
-            withdraw: row.actions.first { $0.command == "withdraw" },
-            tasks: TasksBoard.Line.tree(row.children, rails: [])
+            id: row.id, title: loose ? "" : row.title, state: loose && row.id.hasPrefix("waits:") ? nil : row.subtitle,
+            icon: row.icon, project: loose ? nil : row.badges.first?.text, touchedAt: loose ? nil : row.trailing?.instant,
+            link: row.link, withdraw: row.actions.first { $0.command == "withdraw" },
+            tasks: TasksBoard.Line.tree(loose ? [row] : row.children, rails: []), isLoose: loose
         )
     }
 }
@@ -146,15 +158,17 @@ extension TasksBoard.Line {
         rows.enumerated().flatMap { index, row -> [Self] in
             let last = index == rows.count - 1
             let activity = row.children.first { $0.id == "activity" }
-            let children = row.children.filter { $0.id != "activity" }
+            let origin = row.children.first { $0.id == "from" }
+            let children = row.children.filter { $0.id != "activity" && $0.id != "from" }
             var activityAt: String?
             if case .time(let at, _)? = activity?.trailing { activityAt = at }
+            let isWait = row.id.hasPrefix("waits:")
             let line = Self(
-                id: row.id, title: row.title, state: row.subtitle, tone: row.badges.first?.tone,
+                id: row.id, title: row.title, state: isWait ? nil : row.subtitle, tone: row.badges.first?.tone,
                 icon: row.icon, struck: row.struck, waiting: row.trailing?.count ?? 0,
                 activity: activity?.title, activityAt: activityAt,
                 depth: rails.count, rails: rails, isLastSibling: last, hasChildren: !children.isEmpty,
-                link: row.link
+                link: row.link, origin: origin?.title, isWait: isWait, dependent: isWait ? row.subtitle : nil
             )
             return [line] + tree(children, rails: rails + [!last])
         }

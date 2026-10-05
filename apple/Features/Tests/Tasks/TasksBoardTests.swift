@@ -80,7 +80,51 @@ final class TasksBoardTests: XCTestCase {
 
         XCTAssertNil(board.archiveCompleted)
         XCTAssertEqual(board.schedules?.count, 0, "the daemon sends no count when nothing is scheduled")
-        XCTAssertEqual(board.active.requests.count, 1)
+        XCTAssertEqual(board.active.requests.count, 5)
+    }
+
+    func testATaskThatWaitsOnAnotherRequestsTaskIsNestedThereAndLeavesAShortRowInItsOwn() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        let parent = try XCTUnwrap(board.active.requests.first { $0.title == "Polish the Alondra beta" })
+        let nested = try XCTUnwrap(parent.tasks.last)
+
+        XCTAssertEqual(parent.tasks.map(\.depth), [0, 1])
+        XCTAssertEqual(nested.id, "t-badge-decrement")
+        XCTAssertEqual(nested.origin, "from: Badge accuracy")
+        XCTAssertEqual(parent.taskCount, 1, "a task of another request is not one of its tasks")
+        XCTAssertFalse(parent.isSingleTask, "the nested task makes it a group, so its title shows")
+
+        let own = try XCTUnwrap(board.active.requests.first { $0.title == "Badge accuracy" })
+        XCTAssertEqual(own.tasks.map(\.isWait), [false, true])
+        let waits = try XCTUnwrap(own.tasks.last)
+        XCTAssertEqual(waits.title, "waits for Restore the native review experience")
+        XCTAssertEqual(waits.dependent, "Decrement the badge on retraction")
+        XCTAssertNil(waits.state)
+        XCTAssertEqual(waits.link, .view(key: "task:t-badge-decrement"))
+        XCTAssertEqual(own.taskCount, 1)
+    }
+
+    func testTheTasksOfAnUntitledRequestWithSeveralTasksStandLooseWithoutAHeader() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        let loose = board.active.requests.filter(\.isLoose)
+
+        XCTAssertEqual(loose.map(\.id), ["t-legacy-editor", "t-legacy-notes"])
+        XCTAssertEqual(loose.map { $0.tasks.map(\.title) }, [["Review the schedule editor"], ["Write the release notes"]])
+        XCTAssertEqual(loose.map(\.title), ["", ""])
+    }
+
+    func testARequestStillBeingSplitIsNamedNewAndNeverByItsPrompt() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+        let request = try XCTUnwrap(board.active.requests.first { $0.id == "r-new" })
+
+        XCTAssertEqual(request.title, "New request")
+        XCTAssertTrue(request.tasks.isEmpty)
+    }
+
+    func testARequestThatOnlyAnsweredIsFinishedAsAnswered() throws {
+        let board = TasksBoard(document: try Fixtures.document("tasks-ios"))
+
+        XCTAssertEqual(board.finished.requests.map(\.state), ["Answered"])
     }
 
     func testAnEmptyBoardSaysSo() throws {
