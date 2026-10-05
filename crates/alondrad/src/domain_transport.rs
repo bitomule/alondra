@@ -112,7 +112,11 @@ async fn node_event(mut stream: UnixStream, domain: &DomainRuntime, report: Valu
         _ => {}
     }
     let ended = matches!(envelope.report, Report::SessionEnd).then(|| envelope.session_id.clone());
+    let measured = matches!(envelope.report, Report::Measure { .. });
     domain.live.mods.apply(envelope, alondra_core::now_millis());
+    if measured {
+        domain.live.note_measures();
+    }
     if let Some(session) = ended {
         domain.live.losses.report(&session);
     }

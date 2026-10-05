@@ -113,7 +113,6 @@ pub struct Launch {
     pub prompt: String,
     pub model: Option<String>,
     pub permission_mode: Option<String>,
-    pub over_pace_ok: bool,
     pub request_id: Option<String>,
     pub options: Resolved,
     pub task: Option<String>,
@@ -123,9 +122,6 @@ pub struct Launch {
 
 /// Launches a node and records the launch; with `task`, the node takes that task.
 pub async fn launch(hub: &Hub, l: Launch, launcher: &impl Launcher) -> Result<Value, Refusal> {
-    if let Some(reason) = crate::http::launch_blocked(None, l.over_pace_ok) {
-        return Err((StatusCode::CONFLICT, reason));
-    }
     if !Path::new(&l.cwd).is_dir() {
         return Err((StatusCode::BAD_REQUEST, format!("directory {} does not exist", l.cwd)));
     }
@@ -575,7 +571,6 @@ async fn start_with(hub: &Hub, task: &Task, launcher: &impl Launcher, brief: Str
                 prompt: brief,
                 model: model.clone(),
                 permission_mode: None,
-                over_pace_ok: false,
                 request_id,
                 options: task_options(hub, task, None),
                 task: Some(task.id.clone()),

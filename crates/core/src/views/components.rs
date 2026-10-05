@@ -133,6 +133,18 @@ pub struct Status {
     pub orchestrator: Label,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub update: Option<Notice>,
+    /// Present while Claude usage has run out; absent otherwise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub usage_exhausted: Option<UsageExhausted>,
+}
+/// Claude usage has run out. `scope` says what `macs_exhausted` of `macs_total` covers:
+/// "this_mac" while the daemon only knows itself, "all_macs" once a relay aggregates every Mac.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct UsageExhausted {
+    pub scope: String,
+    pub until: String,
+    pub macs_exhausted: u32,
+    pub macs_total: u32,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Count {

@@ -96,6 +96,7 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
             if attempt > 0 {
                 tokio::time::sleep(timing.pauses[attempt - 1]).await;
             }
+            domain.live.usage_pause.until_clear().await;
             if !needed(domain, session) {
                 return;
             }
@@ -305,5 +306,23 @@ mod tests {
         watching.await.unwrap();
         assert_eq!(claude.calls(), 4);
         assert!(domain.live.mods.connected(SESSION), "the next round worked");
+    }
+
+    #[tokio::test]
+    async fn no_session_is_restarted_while_usage_is_exhausted_and_it_is_when_usage_is_back() {
+        let (_home, domain) = world(true);
+        let claude = Arc::new(Respawner::new(&domain, 1));
+        domain.live.usage_pause.exhaust(Some(alondra_core::now_millis() + 3_600_000), alondra_core::now_millis());
+        let watching = tokio::spawn({
+            let (domain, claude) = (domain.clone(), claude.clone());
+            async move { revive(&domain, SESSION, &*claude, &FAST).await }
+        });
+        tokio::time::sleep(Duration::from_millis(150)).await;
+        assert_eq!(claude.calls(), 0, "a restarted session would only hit the limit again");
+        assert!(!watching.is_finished());
+        domain.live.usage_pause.resume(alondra_core::now_millis());
+        watching.await.unwrap();
+        assert_eq!(claude.calls(), 1, "back: the session is restarted once");
+        assert!(domain.live.mods.connected(SESSION));
     }
 }

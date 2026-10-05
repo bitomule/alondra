@@ -33,6 +33,29 @@ impl DomainRuntime {
         })
     }
 
+    /// A Know card authored by Alondra, shown to the user once: `id` names it, so publishing it
+    /// again leaves the first.
+    pub(crate) fn publish_notice(&self, id: &str, body: String) -> Result<CommandOutcome, StoreError> {
+        let state = self.state().map_err(StoreError::Storage)?;
+        if state.interactions.contains_key(&InteractionId(id.to_owned())) {
+            return Err(DomainError::new("invalid_input", "Notice already published").into());
+        }
+        self.execute_as_system(CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch,
+            command_id: format!("notice-{id}").into(),
+            expected_revision: state.revision,
+            command: Command::PublishInformation {
+                attachments: vec![],
+                interaction_id: id.to_owned().into(),
+                scope: Scope::Orchestrator { request_id: None },
+                recipient: Recipient::User,
+                card: CardSpec::derived(CardKind::Know, &body),
+                body,
+            },
+        })
+    }
+
     /// A card of Alondra's that stopped mattering.
     pub(crate) fn withdraw_problem(&self, id: &InteractionId) -> Result<CommandOutcome, StoreError> {
         let state = self.state().map_err(StoreError::Storage)?;

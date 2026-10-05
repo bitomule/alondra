@@ -167,7 +167,10 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
             .or_else(|| (row.title != name).then_some(name));
     }
     row.actions.extend(close_action(&agent.id.0, context));
-    if context.client == super::Client::Tui {
+    let waiting_until = live.and_then(|node| node.waiting_until.clone());
+    if let Some(at) = waiting_until {
+        row.trailing = Some(Trailing::Time { at, format: super::TimeFormat::Time });
+    } else if context.client == super::Client::Tui {
         row.trailing = live.and_then(|node| node.state_since.clone())
             .map(|at| Trailing::Time { at, format: super::TimeFormat::Relative });
     } else {

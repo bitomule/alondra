@@ -82,8 +82,9 @@ pub(crate) struct LaunchBody {
     model: Option<String>,
     #[serde(default)]
     effort: Option<String>,
-    #[serde(default)]
-    over_pace_ok: bool,
+    /// Orchestrators written when going over pace needed the user's word still send it.
+    #[serde(default, rename = "over_pace_ok")]
+    _over_pace_ok: bool,
 }
 
 /// Launches a Claude session for a Task with the options its Request was asked for, gives it its
@@ -99,8 +100,10 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
     if task.agent_id.as_ref().and_then(|id| current.agents.get(id)).is_some_and(|a| a.connected) {
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
-    if let Some(reason) = crate::http::launch_blocked(domain.live.mods.usage(alondra_core::now_millis()).as_ref(), body.over_pace_ok) {
-        return Err(conflict(reason));
+    if let Some(exhausted) = domain.live.usage_pause.current() {
+        return Err(DomainError::new("usage_exhausted", format!(
+            "Claude usage ran out on this Mac until {}: {} stays as it is and can be launched after that",
+            crate::usage_pause::clock_text(exhausted.until, alondra_core::now_millis(), false), body.task)));
     }
     if !Path::new(&body.cwd).is_dir() {
         return Err(DomainError::new("invalid_input", format!("directory {} does not exist", body.cwd)));
@@ -171,7 +174,11 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         let _ = domain.revoke_agent(&session);
         return Err(discard(error));
     }
-    Ok(json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id}))
+    let mut launched = json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id});
+    if let Some(warning) = crate::usage_pause::warn_when_over_pace(domain, alondra_core::now_millis()) {
+        launched["warning"] = json!(warning);
+    }
+    Ok(launched)
 }
 
 #[derive(Deserialize)]

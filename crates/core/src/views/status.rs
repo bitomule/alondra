@@ -88,6 +88,12 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             Label { text: text.into(), tone }
         },
         update: context.live.update.clone(),
+        usage_exhausted: context.live.usage_exhausted.as_ref().map(|exhausted| super::UsageExhausted {
+            scope: "this_mac".into(),
+            until: exhausted.until.clone(),
+            macs_exhausted: 1,
+            macs_total: 1,
+        }),
     };
     for gauge in &mut status.gauges {
         if !gauge.value.is_finite() {

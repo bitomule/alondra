@@ -62,6 +62,7 @@ pub(crate) async fn gather(
     clock_only: bool,
 ) -> LiveSnapshot {
     let now = alondra_core::now_millis();
+    let exhausted = client.domain.live.usage_pause.current();
     let launches = client.domain.store.lock().expect("domain store poisoned")
         .request_launch_summaries().unwrap_or_default();
     let nodes = state
@@ -158,6 +159,7 @@ pub(crate) async fn gather(
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
                 reconnecting,
+                waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
             })
         })
         .collect();
@@ -403,6 +405,10 @@ pub(crate) async fn gather(
         task_history,
         task_options,
         search_matches,
+        usage_exhausted: exhausted.map(|exhausted| alondra_core::views::LiveUsageExhausted {
+            since: timestamp(exhausted.since),
+            until: timestamp(exhausted.until),
+        }),
     }
 }
 

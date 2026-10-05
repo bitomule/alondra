@@ -60,6 +60,7 @@ mod service_files;
 mod start_guard;
 mod store;
 mod updates;
+mod usage_pause;
 mod uploads;
 mod v2_client_routes;
 mod views;
@@ -423,6 +424,10 @@ async fn run_domain(config: &Config) -> Result<()> {
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .into_future();
+    tokio::spawn(usage_pause::run(
+        domain.clone(),
+        usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
+    ));
     let outbox = tokio::spawn(domain_delivery::run_v2(
         domain.clone(),
         config.home.clone(),

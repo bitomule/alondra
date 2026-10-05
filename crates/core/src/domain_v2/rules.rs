@@ -457,7 +457,7 @@ impl DomainState {
                 }
                 Ok(Author::Orchestrator { generation: *generation })
             }
-            Actor::System if source == Source::Problem => Ok(Author::System),
+            Actor::System if matches!(source, Source::Problem | Source::Information) => Ok(Author::System),
             _ => fail("forbidden", "Only assigned Agent or current orchestrator may communicate"),
         }
     }

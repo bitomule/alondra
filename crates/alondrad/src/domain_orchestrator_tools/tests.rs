@@ -296,3 +296,56 @@ fn the_requests_choices_read_as_8ccd131_told_the_orchestrator() {
     assert!(text.contains("issue me/App#3: Crash on launch"), "{text}");
     assert!(text.contains("attached shot.png: /h/files/att-1") && text.contains("paths in the mission"), "{text}");
 }
+
+fn measured(domain: &DomainRuntime, week_percent: f64) {
+    let reset = crate::log::local_iso(alondra_core::now_millis().div_euclid(1000) as libc::time_t + 5 * 86_400, 0);
+    let envelope = serde_json::from_value(json!({"session_id": "m", "event": "session.measure",
+        "rate_limits": [{"kind": "seven_day", "percent_used": week_percent, "resets_at": reset}]})).unwrap();
+    domain.live.mods.apply(envelope, alondra_core::now_millis());
+}
+
+#[tokio::test]
+async fn going_over_todays_slice_warns_and_still_launches_and_tells_the_user_once_a_day() {
+    let f = world();
+    measured(&f.domain, 12.0);
+    measured(&f.domain, 53.0);
+    assert!(f.domain.live.mods.usage(alondra_core::now_millis()).unwrap().over_pace, "41% spent against a ~18% slice");
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let answer = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap();
+    assert_eq!(answer["agent_id"], SESSION, "over pace no longer blocks");
+    let warning = answer["warning"].as_str().unwrap();
+    assert!(warning.contains("41% of the week against a 18% slice") && warning.contains("went ahead"), "{warning}");
+    assert_eq!(claude.calls.lock().unwrap().len(), 1);
+
+    let notices = || f.domain.state().unwrap().interactions.values()
+        .filter(|card| card.card.kind == alondra_core::domain_v2::CardKind::Know && card.id.0.starts_with("over-pace-")).count();
+    assert_eq!(notices(), 1, "a Know card tells the user");
+    assert!(crate::usage_pause::warn_when_over_pace(&f.domain, alondra_core::now_millis()).is_some(), "later launches still warn");
+    assert_eq!(notices(), 1, "but the user is told once that day");
+
+    let within = world();
+    measured(&within.domain, 12.0);
+    measured(&within.domain, 15.0);
+    let answer = launch(&within.domain, &within.home, &the_orchestrator(&within.domain), launch_body(&within, json!({"over_pace_ok": true})),
+        |_| None, &FakeClaude::loading(&within.domain)).await.unwrap();
+    assert!(answer.get("warning").is_none(), "within its slice: nothing to warn about; over_pace_ok is still accepted: {answer}");
+}
+
+#[tokio::test]
+async fn a_launch_is_refused_while_usage_is_exhausted_and_goes_ahead_once_it_is_back() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    let now = alondra_core::now_millis();
+    f.domain.live.usage_pause.exhaust(Some(now + 3_600_000), now);
+    let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap_err();
+    assert_eq!(refused.code, "usage_exhausted");
+    assert!(refused.message.contains("Claude usage ran out"), "{}", refused.message);
+    assert!(claude.calls.lock().unwrap().is_empty());
+    assert!(f.domain.state().unwrap().tasks[&TaskId::from("t")].agent_id.is_none(), "the task is left as it was");
+
+    f.domain.live.usage_pause.resume(alondra_core::now_millis());
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({})), |_| None, &claude).await.unwrap();
+    assert_eq!(claude.calls.lock().unwrap().len(), 1);
+}

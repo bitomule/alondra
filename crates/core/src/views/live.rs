@@ -42,6 +42,14 @@ pub struct LiveSnapshot {
     pub task_options: BTreeMap<String, LiveTaskOptions>,
     #[serde(default)]
     pub search_matches: Option<Vec<String>>,
+    #[serde(default)]
+    pub usage_exhausted: Option<LiveUsageExhausted>,
+}
+/// When Claude usage ran out on this Mac and when Claude said it comes back, as local ISO times.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveUsageExhausted {
+    pub since: String,
+    pub until: String,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveNode {
@@ -87,6 +95,9 @@ pub struct LiveNode {
     pub cost_cents: Option<u64>,
     #[serde(default)]
     pub reconnecting: bool,
+    /// A node stopped by the usage limit waits for the machine until this local ISO time.
+    #[serde(default)]
+    pub waiting_until: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePullRequest {

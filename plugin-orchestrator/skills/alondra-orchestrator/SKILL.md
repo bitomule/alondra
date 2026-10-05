@@ -79,9 +79,10 @@ user follows tasks, not nodes.
   `cancel_task` drops a task that should not go on, and `reopen_task` brings back a finished one
   with more to do. A reopened task whose node has moved on to another has no node: launch one,
   or send it to a free one.
-- `machine` shows the machine's room and the subscription's usage. A launch is refused while
-  today is over its slice of the week; `launch` with `over_pace_ok` once the user, asked with
-  `ask`, says to launch anyway. That gate decides when, never which node gets the work.
+- `machine` shows the machine's room and the subscription's usage. Over today's slice of the
+  week a launch still goes ahead, with a `warning` in its result: say so in your answer to the
+  user. When Claude usage has run out, `launch` is refused with `usage_exhausted` until the time
+  it names; the task stays as it is, and Alondra resumes your batches by itself when usage is back.
 - Claude Code starts sessions only in repositories the user trusts, and only the user grants that
   trust; Alondra never does. A `launch` refused with `workspace_untrusted`, or a scheduled task
   Alondra says could not start because Claude Code does not trust its repository, goes to the

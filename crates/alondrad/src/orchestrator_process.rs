@@ -131,6 +131,11 @@ pub struct Stream {
     pub acted: bool,
     pub missing_session: bool,
     pub denied: bool,
+    /// Claude said the plan's usage ran out, and the reset it reported in Unix milliseconds.
+    pub limited: bool,
+    pub limit_reset: Option<i64>,
+    /// The model answered at least once, so the batch may have done something.
+    pub worked: bool,
 }
 impl Stream {
     /// Session fencing applies to every session-bearing record, including terminal results.
@@ -184,8 +189,20 @@ impl Stream {
                 self.compacted = true;
                 self.post_compact_tokens = v.pointer("/compact_metadata/post_tokens").and_then(Value::as_u64);
             }
+            (Some("rate_limit_event"), _) => {
+                let info = &v["rate_limit_info"];
+                if info["status"] == "rejected" {
+                    self.limited = true;
+                    self.limit_reset = info["resetsAt"].as_i64().or_else(|| info["resets_at"].as_i64()).map(|seconds| seconds * 1000);
+                }
+            }
             (Some("assistant"), _) => {
                 self.acted = true;
+                if v["error"] == "rate_limit" {
+                    self.limited = true;
+                } else {
+                    self.worked = true;
+                }
                 if let Some(u) = v.pointer("/message/usage").filter(|u| u.is_object()) {
                     // Latest main-agent call only; aggregate result usage can include many calls.
                     if let Some(input) = u["input_tokens"].as_u64() {
@@ -209,6 +226,10 @@ impl Stream {
                     self.success = false;
                     self.denied = true;
                     self.error = Some("Claude denied a required tool permission in auto mode".into());
+                }
+                if !self.success && v.get("result").and_then(Value::as_str).is_some_and(crate::usage_pause::says_usage_limit) {
+                    self.limited = true;
+                    self.limit_reset = self.limit_reset.or_else(|| v["result"].as_str().and_then(|text| crate::usage_pause::reset_in(text, alondra_core::now_millis())));
                 }
                 if !self.success && self.error.is_none() {
                     self.error = Some(bounded(v.get("errors").or_else(|| v.get("result")).unwrap_or(&Value::Null).to_string()));
@@ -430,6 +451,27 @@ mod tests {
         assert!(s.success);
     }
     /// The result Claude 2.1.287 emits after `--restricted` refuses a Read outside the working directories.
+    #[test]
+    fn a_rejected_rate_limit_or_a_limit_result_marks_the_stream_limited_with_its_reset() {
+        let accept = |lines: &[&str]| {
+            let mut s = Stream::default();
+            for line in lines {
+                s.accept(line.as_bytes(), "a").unwrap();
+            }
+            s
+        };
+        let event = accept(&[r#"{"type":"rate_limit_event","session_id":"a","rate_limit_info":{"status":"rejected","resetsAt":1790000000}}"#]);
+        assert_eq!((event.limited, event.limit_reset, event.worked), (true, Some(1_790_000_000_000), false));
+        let warning = accept(&[r#"{"type":"rate_limit_event","session_id":"a","rate_limit_info":{"status":"allowed_warning","resetsAt":1790000000}}"#]);
+        assert!(!warning.limited, "approaching the limit is not the limit");
+        let assistant = accept(&[r#"{"type":"assistant","session_id":"a","error":"rate_limit","message":{"content":[]}}"#]);
+        assert_eq!((assistant.limited, assistant.worked), (true, false));
+        let result = accept(&[r#"{"type":"result","session_id":"a","subtype":"success","is_error":true,"result":"You've hit your session limit · resets 3:45pm"}"#]);
+        assert!(result.limited && result.limit_reset.is_some(), "{result:?}");
+        let worked = accept(&[r#"{"type":"assistant","session_id":"a","message":{"model":"opus","content":[]}}"#, r#"{"type":"result","session_id":"a","subtype":"success","is_error":true,"result":"You've hit your weekly limit · resets Mon 12:00am"}"#]);
+        assert!(worked.limited && worked.worked);
+    }
+
     const REFUSED_READ_RESULT: &[u8] = br#"{"type":"result","session_id":"a","subtype":"success","is_error":false,"terminal_reason":"completed","num_turns":4,"result":"Done.","permission_denials":[{"tool_name":"Read","tool_use_id":"toolu_01Hi3ayKKFGKNW3JAR2tb9Z2","tool_input":{"file_path":"/Users/example/.zshrc","limit":1}}]}"#;
 
     #[test]
