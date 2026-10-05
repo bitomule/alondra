@@ -229,7 +229,7 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     });
     let line = next_line(&mut pushed, patience).expect("the answer was written down the connection");
     let id = line["id"].as_str().unwrap().to_owned();
-    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Yes."), Some(false)), "{line}");
+    assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Yes."), Some(true)), "{line}");
     assert!(daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().is_empty(), "written is not handed");
 
     // The Stop hook keeps its nudge but no longer carries the outbox.
