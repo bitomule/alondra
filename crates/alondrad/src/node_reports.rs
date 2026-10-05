@@ -202,13 +202,20 @@ impl Reported {
         self.background.iter().any(|(_, item)| item.kind == BackgroundKind::Agent && now - item.started_at <= alondra_core::states::SUBAGENT_CALL_LIMIT_MS)
     }
 
+    /// A tool call, a shell or a subagent is running: a foreground build or a wait on a deploy
+    /// leaves the job state and the session's own CPU still for many minutes, so only the call
+    /// limits and the dead-shell rule may call it stalled.
+    fn busy_with_a_call(&self, now: Millis) -> bool {
+        self.tool.is_some() || self.shell_running() || self.agent_running(now)
+    }
+
     /// Connected, yet nothing the session does shows for `TURN_QUIET_MS`: no report from the mod,
     /// no CPU used by the session process, no shell call alive, no subagent. Either it is inside a turn that stopped processing, or
     /// it waits on a call or a background shell that is gone and nothing resumed it.
     pub(crate) fn silent(&self, now: Millis) -> bool {
         match &self.job {
             Some(job) if job.phase == crate::job_state::Phase::Failed => return false,
-            Some(job) if job.phase == crate::job_state::Phase::Working => return self.job_stalled(job, now),
+            Some(job) if job.phase == crate::job_state::Phase::Working && !self.busy_with_a_call(now) => return self.job_stalled(job, now),
             _ => {}
         }
         if self.connection.is_none() || self.shell_running() || self.agent_running(now) {
@@ -889,6 +896,39 @@ mod tests {
         reports.sample_cpu("s", 10_000, window + 2 * look);
         assert_eq!(activity(window + 2 * look + 1), Activity::Working, "the CPU moved: a long reply being generated");
         assert!(!reports.session("s").unwrap().silent(window + 2 * look + 1));
+    }
+
+    #[test]
+    fn a_foreground_build_or_a_deploy_wait_with_a_still_job_and_flat_cpu_is_working_while_its_shell_lives() {
+        use crate::job_state::Phase;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 0, 0);
+        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
+        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
+        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "u", "input": {"command": "until curl -sf https://x/health; do sleep 30; done"}})), 2);
+        reports.set_shell_alive("s", Some(true));
+        let session = || reports.session("s").unwrap();
+        assert_eq!(session().activity(HOUR), Activity::Working, "the shell is alive however still the job and the CPU are");
+        assert!(!session().silent(HOUR));
+        reports.set_shell_alive("s", Some(false));
+        assert_eq!(session().activity(HOUR), Activity::Stalled, "the shell it waits on is gone");
+    }
+
+    #[test]
+    fn a_long_tool_call_or_a_subagent_with_a_still_job_is_not_stalled_after_the_job_window() {
+        use crate::job_state::Phase;
+        let window = alondra_core::states::JOB_STALL_MS;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 0, 0);
+        reports.set_job("s", Some(job(Phase::Working, 0, 0)), None);
+        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
+        reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "mcp__x__deploy", "tool_use_id": "u", "input": {}})), 2);
+        assert_eq!(reports.session("s").unwrap().activity(window * 3), Activity::Working, "a tool call in flight");
+        reports.apply(report(json!({"session_id": "s", "event": "tool.end", "tool": "mcp__x__deploy", "tool_use_id": "u"})), 3);
+        reports.apply(report(json!({"session_id": "s", "event": "subagent.start", "id": "a", "description": "review"})), 4);
+        assert_eq!(reports.session("s").unwrap().activity(window * 3), Activity::Working, "a subagent in flight");
     }
 
     #[test]
