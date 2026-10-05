@@ -415,6 +415,7 @@ pub(crate) async fn gather(
         usage_exhausted: exhausted.map(|exhausted| alondra_core::views::LiveUsageExhausted {
             since: timestamp(exhausted.since),
             until: timestamp(exhausted.until),
+            paused_by_user: exhausted.by_user,
         }),
     }
 }

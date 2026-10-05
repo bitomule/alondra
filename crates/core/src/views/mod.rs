@@ -159,7 +159,10 @@ pub fn push_content(
         cursor: "push", rendered_at: "",
     })?;
     let interaction = domain.interactions.get(&crate::domain_v2::InteractionId(card_id.into()));
-    let interruption_level = interaction.map_or("active", |i| push_level(i.card.kind, i.blocking));
+    let interruption_level = interaction.map_or("active", |i| {
+        let quiet = i.author == crate::domain_v2::Author::System && !i.blocking && i.card.kind == crate::domain_v2::CardKind::Decide;
+        if quiet { "passive" } else { push_level(i.card.kind, i.blocking) }
+    });
     let thread = interaction.map(|i| match &i.scope {
         crate::domain_v2::Scope::Task { task_id } => task_id.0.clone(),
         crate::domain_v2::Scope::Orchestrator { request_id: Some(request_id) } => request_id.0.clone(),

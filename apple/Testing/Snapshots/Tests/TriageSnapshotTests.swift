@@ -245,7 +245,7 @@ final class TriageSnapshotTests: XCTestCase {
 
     // MARK: Claude usage has run out
 
-    private func exhaustedHome(in seconds: TimeInterval, macsExhausted: Int = 1, macsTotal: Int = 1) throws -> ViewDocument {
+    private func exhaustedHome(in seconds: TimeInterval, macsExhausted: Int = 1, macsTotal: Int = 1, pausedByUser: Bool = false) throws -> ViewDocument {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let until = formatter.string(from: Date(timeIntervalSince1970: 1_790_000_000).addingTimeInterval(seconds))
@@ -257,6 +257,7 @@ final class TriageSnapshotTests: XCTestCase {
             status["usage_exhausted"] = [
                 "scope": macsTotal > 1 ? "all_macs" : "this_mac", "until": until,
                 "macs_exhausted": macsExhausted, "macs_total": macsTotal,
+                "paused_by_user": pausedByUser,
             ] as [String: Any]
             object["status"] = status
         }
@@ -272,6 +273,22 @@ final class TriageSnapshotTests: XCTestCase {
     func test_usageExhausted_es() throws {
         let store = try ScreenStores.triage(
             queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)], home: try exhaustedHome(in: 2 * 3600)
+        )
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_usageExhausted_pausedByUser() throws {
+        let store = try ScreenStores.triage(
+            queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)],
+            home: try exhaustedHome(in: 5 * 3600, pausedByUser: true)
+        )
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_usageExhausted_pausedByUser_es() throws {
+        let store = try ScreenStores.triage(
+            queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)],
+            home: try exhaustedHome(in: 5 * 3600, pausedByUser: true)
         )
         assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }

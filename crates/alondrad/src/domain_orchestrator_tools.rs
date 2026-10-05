@@ -101,8 +101,9 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         return Err(conflict(format!("{} already has a connected agent; send it what to do", body.task)));
     }
     if let Some(exhausted) = domain.live.usage_pause.current() {
+        let why = if exhausted.by_user { "The user paused Claude work" } else { "Claude usage ran out on this Mac" };
         return Err(DomainError::new("usage_exhausted", format!(
-            "Claude usage ran out on this Mac until {}: {} stays as it is and can be launched after that",
+            "{why} until {}: {} stays as it is and can be launched after that",
             crate::usage_pause::clock_text(exhausted.until, alondra_core::now_millis(), false), body.task)));
     }
     if !Path::new(&body.cwd).is_dir() {
@@ -174,11 +175,8 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         let _ = domain.revoke_agent(&session);
         return Err(discard(error));
     }
-    let mut launched = json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id});
-    if let Some(warning) = crate::usage_pause::warn_when_over_pace(domain, alondra_core::now_millis()) {
-        launched["warning"] = json!(warning);
-    }
-    Ok(launched)
+    crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
+    Ok(json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id}))
 }
 
 #[derive(Deserialize)]

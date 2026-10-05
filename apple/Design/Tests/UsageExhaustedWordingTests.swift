@@ -41,6 +41,16 @@ import Testing
         #expect(UsageExhaustedWording(odd, now: now).when == .untilText("soon"))
     }
 
+    @Test func aPauseByTheUserSaysSoWhateverTheTimeLeft() throws {
+        let paused = UsageExhausted(scope: "this_mac", until: "2026-10-06T00:00:00.000+02:00", macsExhausted: 1, macsTotal: 1, pausedByUser: true)
+        let until = Date(timeIntervalSince1970: 1_791_237_600)
+        let soon = UsageExhaustedWording(paused, now: until.addingTimeInterval(-1800))
+        #expect(soon.subject == .pausedByUser)
+        #expect(soon.when == .until(until))
+        let decoded = try JSONDecoder().decode(UsageExhausted.self, from: Data(#"{"scope":"this_mac","until":"x","macs_exhausted":1,"macs_total":1,"paused_by_user":true}"#.utf8))
+        #expect(decoded.pausedByUser)
+    }
+
     @Test func theViewStatusDecodesTheFieldAndStaysAbsentWithout() throws {
         let base = #"{"version":"s1","summary":"x","badge":0,"counts":[],"gauges":[],"orchestrator":{"text":"idle","tone":"neutral"}"#
         let without = try JSONDecoder().decode(ViewStatus.self, from: Data((base + "}").utf8))

@@ -1152,6 +1152,7 @@ fn a_banner_tops_the_screen_while_claude_usage_is_out_and_goes_with_it() {
         until: "2099-10-05T14:30:00.000+02:00".into(),
         macs_exhausted: 1,
         macs_total: 1,
+        paused_by_user: false,
     });
     app.view_status = Some(status);
     let shown = screen(&mut app, 120, 6);

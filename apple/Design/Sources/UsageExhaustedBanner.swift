@@ -8,6 +8,7 @@ public struct UsageExhaustedWording: Equatable, Sendable {
         case thisMac
         case someMacs(exhausted: Int, total: Int)
         case allMacs
+        case pausedByUser
     }
 
     public enum When: Equatable, Sendable {
@@ -26,10 +27,11 @@ public struct UsageExhaustedWording: Equatable, Sendable {
             return
         }
         let minutes = Int((until.timeIntervalSince(now) / 60).rounded(.up))
-        when = (1..<60).contains(minutes) ? .minutesLeft(minutes) : .until(until)
+        when = (1..<60).contains(minutes) && !usage.pausedByUser ? .minutesLeft(minutes) : .until(until)
     }
 
     private static func subject(of usage: UsageExhausted) -> Subject {
+        if usage.pausedByUser { return .pausedByUser }
         if usage.macsTotal > 1 {
             return usage.macsExhausted >= usage.macsTotal
                 ? .allMacs : .someMacs(exhausted: Int(usage.macsExhausted), total: Int(usage.macsTotal))
@@ -84,6 +86,17 @@ public struct UsageExhaustedBanner: View {
         return date.formatted(style)
     }
 
+    private func timeText(_ when: UsageExhaustedWording.When, now: Date) -> String {
+        switch when {
+        case .until(let date):
+            var calendar = calendar
+            calendar.timeZone = timeZone
+            return date.formatted(Date.FormatStyle(date: .omitted, time: .shortened, locale: locale, calendar: calendar, timeZone: timeZone))
+        case .untilText(let text): return text
+        case .minutesLeft: return ""
+        }
+    }
+
     private func whenText(_ when: UsageExhaustedWording.When, now: Date) -> Text {
         switch when {
         case .until(let date): Text("until \(clock(date, now: now))", tableName: "AlondraDesign", bundle: #bundle)
@@ -101,6 +114,8 @@ public struct UsageExhaustedBanner: View {
             return Text("Out of Claude usage on this Mac \(when) · everything is paused", tableName: "AlondraDesign", bundle: #bundle)
         case .someMacs(let exhausted, let total):
             return Text("\(exhausted) of \(total) Macs out of Claude usage \(when) · everything is paused", tableName: "AlondraDesign", bundle: #bundle)
+        case .pausedByUser:
+            return Text("Paused by you until tomorrow \(timeText(wording.when, now: now))", tableName: "AlondraDesign", bundle: #bundle)
         case .allMacs:
             return Text("All your Macs are out of Claude usage \(when) · everything is paused", tableName: "AlondraDesign", bundle: #bundle)
         }

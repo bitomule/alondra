@@ -355,8 +355,13 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         .map(|at| vec![Stamp { role: "created".into(), at: at.into(), format: TimeFormat::Relative }])
         .unwrap_or_default();
     let (blocks, blocked_by) = chips(item, context);
-    let need = humanize_task_ids(&spec.need, domain);
-    let why = Some(humanize_task_ids(spec.why.trim(), domain)).filter(|why| !why.is_empty());
+    let (need, why) = match interaction.and_then(|i| pace_text(i, lang)) {
+        Some((need, why)) => (need, Some(why)),
+        None => (
+            humanize_task_ids(&spec.need, domain),
+            Some(humanize_task_ids(spec.why.trim(), domain)).filter(|why| !why.is_empty()),
+        ),
+    };
     let mut card = Card {
         id: public_id(item).into(),
         kind: Some(spec.kind),
@@ -636,10 +641,39 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
     (label.to_owned(), input)
 }
 
+/// What Alondra's own cards about the pace of the week's usage say, in the viewer's language.
+fn pace_text(interaction: &Interaction, lang: Lang) -> Option<(String, String)> {
+    use crate::usage::{OVER_PACE_PREFIX, PACE_RESUME_PREFIX, PaceNumbers};
+    if interaction.author != Author::System {
+        return None;
+    }
+    if interaction.id.0.starts_with(OVER_PACE_PREFIX) {
+        let numbers = PaceNumbers::from_body(&interaction.body)?;
+        return Some((
+            t!(lang, "Today is over its share of the weekly Claude usage", "Hoy vas por encima de tu parte del uso semanal").into(),
+            tf!(lang,
+                "{spent}% used today against a {share}% share · {week}% of the week used",
+                "{spent}% usado hoy frente a una parte del {share}% · {week}% de la semana usado",
+                spent = numbers.today_spent, share = numbers.today_share, week = numbers.week_percent),
+        ));
+    }
+    interaction.id.0.starts_with(PACE_RESUME_PREFIX).then(|| (
+        t!(lang, "Resume Claude work now?", "¿Reanudar el trabajo con Claude ahora?").into(),
+        t!(lang, "Paused by you until tomorrow 00:00", "Pausado por ti hasta mañana 00:00").into(),
+    ))
+}
+
 /// The words of an option the system writes itself, keyed by the id and English text it was
 /// built with, in the viewer's language. An option someone worded keeps its own label.
 fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<String>) {
     let (label, description): (&str, Option<&str>) = match (option.id.as_str(), option.label.as_str()) {
+        ("pause_until_tomorrow", "Pause until tomorrow") => (
+            t!(lang, "Pause until tomorrow", "Pausar hasta mañana"),
+            Some(t!(lang, "Nothing starts and nodes wait until midnight, then carry on", "No arranca nada y los nodos esperan hasta medianoche; luego continúan")),
+        ),
+        ("keep_going", "Keep going") => (t!(lang, "Keep going", "Seguir"), None),
+        ("resume_now", "Resume now") => (t!(lang, "Resume now", "Reanudar ahora"), None),
+        ("stay_paused", "Stay paused") => (t!(lang, "Stay paused", "Seguir en pausa"), None),
         ("done", "Done") => (t!(lang, "Done", "Hecho"), None),
         ("cannot", "I can't do it") => (t!(lang, "I can't do it", "No puedo hacerlo"), None),
         ("works", "Works") => (t!(lang, "Works", "Funciona"), None),
