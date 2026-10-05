@@ -1,0 +1,40 @@
+{
+  "apns": {
+    "alondra": {
+      "envelope": {
+        "ciphertext": "fWEZ7i9ipnq_S162qlYVsGadRGxMmpkqkZsRP1T0fHv_Le9zgyaJCbmLGNb7Pxx7h9N4CHIy364PKhhH7kcdeiQd8EtyDD-k3CWl_bsxwiF7YHgDKUiOZYmTU47JZQ3wTM0okRqcJ0yy0T4eX0LoqFTQg8O3FSF7ct_OZkNwRcq4uoOhOIC4Upo4mgtUoVJHRhE1NGT5BnFuQy_G-KpWnI1mMos33vGJm1PUWVI2iF-QwLEOl909bT8dV6_aFNq8tW7r1jDvBWIGZrlI2B-WwOPlIkNiEw",
+        "ephemeral_key": "BG-6QfnQUahHnCW17q3t9rb7CCB6UCgGSgkLwiWikfL7GWc1t2-eMb3z3L7BTHV8iAGP2zx6Gg9CzzjlaUM2E_4",
+        "expires_at_ms": 1791114195545,
+        "kind": "push",
+        "nonce": "qRlYjsZ9jz1wGwNc",
+        "recipient": "phone-fixture",
+        "request_id": "J9JpR5fQOxbywOKa3yQ5lw",
+        "route": "mac-fixture",
+        "sender": "mac-fixture",
+        "signature": "rETxGGLvlatZwuJPHedjChpEeklQMKvTKMvXOJviqk4a9tdN_Sdo5JLYbci99vaG3olFTrvRFcExHDNCoQQxlg",
+        "v": 1
+      },
+      "push_binding": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
+    },
+    "aps": {
+      "content-available": 1
+    }
+  },
+  "device_agreement_private_key": "UlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlJSUlI",
+  "device_id": "phone-fixture",
+  "mac_id": "mac-fixture",
+  "mac_signing_public_key": "mmUXPUigoMcG7uwqda4fVnk76Yiy1Afpp9Orp1dKnqUQHazqrfQrZhVDo1Pk9QXsQSgd-FNf7MWRLqOe1rUFaA",
+  "payload": {
+    "alondra": {
+      "data_epoch": "epoch-1",
+      "kind": "retract",
+      "open": [
+        "t-1-info-1"
+      ],
+      "protocol": 1
+    },
+    "aps": {
+      "badge": 1
+    }
+  }
+}

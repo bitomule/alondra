@@ -42,6 +42,10 @@
 		<string>UIInterfaceOrientationLandscapeLeft</string>
 		<string>UIInterfaceOrientationLandscapeRight</string>
 	</array>
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>remote-notification</string>
+	</array>
 	<key>AlondraPushKeychainAccessGroup</key>
 	<string>658YBSK6MG.com.bitomule.alondra.push</string>
 </dict>

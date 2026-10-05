@@ -370,6 +370,10 @@ async fn register_push(
 struct PushRequest {
     device_id: String,
     envelope: EnvelopeV1,
+    #[serde(default)]
+    collapse_id: Option<String>,
+    #[serde(default)]
+    push_type: push::PushType,
 }
 
 async fn send_push(
@@ -396,6 +400,17 @@ async fn send_push(
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_push"))?;
     let e = &request.envelope;
     let now = now_ms();
+    if request
+        .collapse_id
+        .as_deref()
+        .is_some_and(|id| !push::valid_collapse_id(id))
+    {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_push"));
+    }
+    let delivery = push::Delivery {
+        push_type: request.push_type,
+        collapse_id: request.collapse_id.clone(),
+    };
     if e.kind != "push"
         || e.route != mac.device_id
         || e.sender != mac.device_id
@@ -424,7 +439,7 @@ async fn send_push(
         .auth
         .phone_for_mac(&request.device_id, &mac)
         .map_err(|_| error(StatusCode::NOT_FOUND, "push_registration_not_found"))?;
-    let payload_bytes = serde_json::to_vec(&push::payload(e, &registration.push_binding))
+    let payload_bytes = serde_json::to_vec(&push::payload_for(&delivery, e, &registration.push_binding))
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_push"))?;
     if payload_bytes.len() > 4096 {
         return Err(error(
@@ -433,7 +448,7 @@ async fn send_push(
         ));
     }
     server.auth.require_live_route(&mac.owner_sub,&mac.device_id,Some(&request.device_id)).await.map_err(authentication_error)?;
-    if let Err(failure) = apns.send(&registration, e).await {
+    if let Err(failure) = apns.send(&registration, e, &delivery).await {
         eprintln!(
             "alondra-relay: APNs delivery to device {} failed: {failure:#}",
             request.device_id
@@ -1717,14 +1732,18 @@ mod http_tests {
         use std::sync::Mutex;
         let delivered = Arc::new(Mutex::new(Vec::<Value>::new()));
         let captured = delivered.clone();
+        let delivered_headers = Arc::new(Mutex::new(Vec::<HeaderMap>::new()));
+        let captured_headers = delivered_headers.clone();
         let apns_router = Router::new().route(
             "/3/device/{token}",
-            post(move |version: axum::http::Version, Json(body): Json<Value>| {
+            post(move |version: axum::http::Version, headers: HeaderMap, Json(body): Json<Value>| {
                 let captured = captured.clone();
+                let captured_headers = captured_headers.clone();
                 async move {
                     assert_eq!(version, axum::http::Version::HTTP_2);
                     let request_id = body["alondra"]["envelope"]["request_id"].clone();
                     captured.lock().unwrap().push(body);
+                    captured_headers.lock().unwrap().push(headers);
                     if request_id == "push-reject" {
                         (StatusCode::BAD_REQUEST, Json(json!({"reason":"BadTopic"}))).into_response()
                     } else if request_id == "push-gone" {
@@ -1981,7 +2000,56 @@ mod http_tests {
             assert_eq!(pushed[0]["alondra"]["push_binding"], binding);
             assert!(pushed[0].to_string().contains("ciphertext"));
             assert!(!pushed[0].to_string().contains("private title"));
+            let headers = &delivered_headers.lock().unwrap()[0];
+            assert_eq!(headers["apns-push-type"], "alert");
+            assert_eq!(headers["apns-priority"], "10");
+            assert!(headers.get("apns-collapse-id").is_none(), "an old Mac sends no collapse id");
         }
+
+        let extended = |extra: Value| {
+            let mut body = json!({"device_id":"phone-push","envelope":envelope});
+            body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            serde_json::to_vec(&body).unwrap()
+        };
+        let collapse_id = URL_SAFE_NO_PAD.encode([9u8; 16]);
+        for (counter, extra, status) in [
+            (90, json!({"collapse_id": collapse_id}), StatusCode::ACCEPTED),
+            (91, json!({"push_type": "background"}), StatusCode::ACCEPTED),
+            (92, json!({"collapse_id": "a".repeat(65)}), StatusCode::BAD_REQUEST),
+            (93, json!({"collapse_id": "card\nforged"}), StatusCode::BAD_REQUEST),
+            (94, json!({"push_type": "voip"}), StatusCode::BAD_REQUEST),
+        ] {
+            let body = extended(extra.clone());
+            let response = sign(
+                &epoch,
+                client.post(format!("{url}{path}")).body(body.clone()),
+                &mac_sign,
+                "mac-1",
+                "POST",
+                path,
+                &body,
+                counter,
+            )
+            .send()
+            .await
+            .unwrap();
+            assert_eq!(response.status(), status, "{extra}");
+        }
+        {
+            let pushed = delivered.lock().unwrap();
+            let headers = delivered_headers.lock().unwrap();
+            assert_eq!(pushed.len(), 3, "invalid collapse ids and push types never reach APNs");
+            assert_eq!(headers[1]["apns-collapse-id"], collapse_id.as_str());
+            assert_eq!(headers[1]["apns-push-type"], "alert");
+            assert_eq!(pushed[1]["aps"]["mutable-content"], 1);
+            assert_eq!(headers[2]["apns-push-type"], "background");
+            assert_eq!(headers[2]["apns-priority"], "5", "APNs rejects a background push at priority 10");
+            assert_eq!(pushed[2]["aps"], json!({"content-available": 1}), "nothing that would show or sound");
+            assert_eq!(pushed[2]["alondra"]["push_binding"], binding);
+            assert!(pushed[2]["alondra"]["envelope"]["ciphertext"].is_string());
+        }
+        delivered.lock().unwrap().truncate(1);
+        delivered_headers.lock().unwrap().truncate(1);
 
         let rejected_envelope = EnvelopeV1::seal_random(
             Context {

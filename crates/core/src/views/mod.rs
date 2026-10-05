@@ -47,6 +47,10 @@ pub enum BuildError {
 pub fn inbox_badge(domain: &crate::domain_v2::DomainState) -> u32 {
     home::waiting(&domain.projection()).len() as u32
 }
+/// The cards of the Waiting for You queue, by the id a push names them with (`alondra.card`).
+pub fn waiting_cards(domain: &crate::domain_v2::DomainState) -> Vec<String> {
+    home::waiting(&domain.projection()).into_iter().map(|item| card::public_id(item).to_owned()).collect()
+}
 pub fn build(key: &str, context: RenderContext<'_>) -> Result<View, BuildError> {
     let mut view = if key == "home" || key.starts_with("home?focus=") {
         home::build(key, &context)?
@@ -117,7 +121,7 @@ pub struct PushContent {
     pub actions: Vec<PushAction>,
     /// iOS `interruption-level`: `time-sensitive`, `active` or `passive`.
     pub interruption_level: &'static str,
-    /// iOS `thread-id`: the notifications of one node group together.
+    /// iOS `thread-id`: the notifications of one Task group together, then those of one Request.
     pub thread: Option<String>,
 }
 
@@ -156,9 +160,10 @@ pub fn push_content(
     })?;
     let interaction = domain.interactions.get(&crate::domain_v2::InteractionId(card_id.into()));
     let interruption_level = interaction.map_or("active", |i| push_level(i.card.kind, i.blocking));
-    let thread = interaction.map(|i| match &i.author {
-        crate::domain_v2::Author::Agent { agent_id } => agent_id.0.clone(),
-        _ => "orchestrator".to_owned(),
+    let thread = interaction.map(|i| match &i.scope {
+        crate::domain_v2::Scope::Task { task_id } => task_id.0.clone(),
+        crate::domain_v2::Scope::Orchestrator { request_id: Some(request_id) } => request_id.0.clone(),
+        crate::domain_v2::Scope::Orchestrator { request_id: None } => "orchestrator".to_owned(),
     });
     let Some(card) = view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
         if let Item::Card(card) = item { Some(card) } else { None }
