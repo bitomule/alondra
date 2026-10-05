@@ -91,4 +91,9 @@ mod tests {
             "gitlab.example.com%2Fa%2Fb%23154"
         );
     }
+
+    #[test]
+    fn a_pr_id_without_its_host_cannot_be_addressed_so_its_diff_never_loads() {
+        assert!(!valid("bitomule/alondra#688"));
+    }
 }

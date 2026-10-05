@@ -86,7 +86,7 @@ public struct CardDetailFeature: Sendable {
                 if case .card(let card) = item { card } else { nil }
             }.first
             self.card = card
-            title = card?.need ?? card?.title ?? document.title ?? ""
+            title = card?.title ?? card?.need ?? document.title ?? ""
             sections = document.sections.filter { $0.id != "card" && $0.id != "actions" }
             if let card {
                 buttons = Array(card.actions.prefix(TriageCardFeature.State.visibleLimit))

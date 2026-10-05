@@ -111,9 +111,14 @@ pub(super) fn build(id: &str, context: &RenderContext<'_>) -> Result<View, Build
     let card = from_item(item, context, true)?;
     let title = card.title.clone();
     let mut sections = vec![super::common::section("card", None, vec![Item::Card(card)])];
-    let content = content_items(item, context);
-    if !content.is_empty() {
-        sections.push(super::common::section("content", Some(t!(context.lang, "Content", "Contenido").into()), content));
+    match pr_sections(item, context) {
+        Some(pr_sections) => sections.extend(pr_sections),
+        None => {
+            let content = content_items(item, context);
+            if !content.is_empty() {
+                sections.push(super::common::section("content", Some(t!(context.lang, "Content", "Contenido").into()), content));
+            }
+        }
     }
     let around = context_items(item, context);
     if !around.is_empty() {
@@ -346,11 +351,12 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         .map(|at| vec![Stamp { role: "created".into(), at: at.into(), format: TimeFormat::Relative }])
         .unwrap_or_default();
     let (blocks, blocked_by) = chips(item, context);
-    let why = Some(spec.why.trim().to_owned()).filter(|why| !why.is_empty());
+    let need = humanize_task_ids(&spec.need, domain);
+    let why = Some(humanize_task_ids(spec.why.trim(), domain)).filter(|why| !why.is_empty());
     let mut card = Card {
         id: public_id(item).into(),
         kind: Some(spec.kind),
-        need: Some(spec.need.clone()),
+        need: Some(need.clone()),
         why: why.clone(),
         meta: meta_line(item, interaction, context),
         content_row: content_row(item, interaction, context),
@@ -361,7 +367,7 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
         link: Some(Link::View { key: card_key(item) }),
         icon: kind_icon(spec.kind, carries),
         eyebrow: Some(Label { text: eyebrow_text, tone: kind_tone(spec.kind, item.pending) }),
-        title: spec.need.clone(),
+        title: need,
         subtitle: why,
         badges: vec![],
         context: context_lines(item, context),
@@ -379,6 +385,11 @@ pub(super) fn from_item(item: &InboxItem, context: &RenderContext<'_>, included:
     card.attachments = attachment_refs(interaction);
     if let Some(pr) = pr {
         card.badges = pr_badges(pr, context);
+        let own_title = live_pr(pr, context).and_then(|detail| detail.title.as_deref()).map(str::trim).filter(|title| !title.is_empty());
+        if let Some(title) = own_title {
+            card.title = title.into();
+        }
+        card.meta = Some(pr_meta(pr, context));
     }
     let (mut visible, mut more) = actions(item, interaction, context)?;
     more.extend(extra_actions(item, interaction, context));
@@ -1070,25 +1081,6 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let Some(interaction) = interaction_of(item, domain) else { return vec![] };
     let mut out = vec![];
     let content = interaction.card.content.as_ref().filter(|content| !content.body.trim().is_empty());
-    if let Some(pr) = pr_target(interaction, domain) {
-        let (facts, checks, _) = pr_overview(pr, context);
-        let report = content.filter(|c| c.kind != DomainContent::Diff).map(|c| c.body.clone());
-        out.extend(report.map(markdown));
-        let live = context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0);
-        let description = live.and_then(|detail| detail.body.clone()).filter(|text| !text.trim().is_empty());
-        out.extend(description.map(markdown));
-        out.push(Item::ContentRef(ContentRef {
-            kind: super::ContentKind::Diff,
-            title: t!(lang, "Diff", "Diferencias").into(),
-            size: 0,
-            digest: Some(pr.head.clone()),
-            fetch: format!("/pull-requests/{}/diff", super::id::path_segment(&pr.id.0)),
-            commentable: true,
-        }));
-        out.extend(checks.map(Item::Checks));
-        out.push(Item::Facts(facts));
-        return out;
-    }
     if let Some(revision_id) = reviewed_revision(interaction)
         && let Some(revision) = domain.document_revisions.get(revision_id)
         && let Some(document) = domain.documents.get(&revision.document_id)
@@ -1118,9 +1110,111 @@ fn content_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     out
 }
 
+fn live_pr<'a>(pr: &PullRequest, context: &'a RenderContext<'_>) -> Option<&'a super::LivePullRequest> {
+    context.live.pull_requests.iter().find(|detail| detail.id == pr.id.0)
+}
+
+/// Task ids are internal: wherever a node wrote one, the reader sees the task's title.
+fn humanize_task_ids(text: &str, domain: &DomainState) -> String {
+    let is_id_char = |c: char| c.is_ascii_alphanumeric() || c == '-' || c == '_';
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find(is_id_char) {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let end = tail.find(|c: char| !is_id_char(c)).unwrap_or(tail.len());
+        let word = &tail[..end];
+        match domain.tasks.get(&word.into()) {
+            Some(task) if word.starts_with("t-") => out.push_str(&task.title),
+            _ => out.push_str(word),
+        }
+        rest = &tail[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
+/// One line for everything the PR table used to say: repository, branches, size and checks.
+fn pr_meta(pr: &PullRequest, context: &RenderContext<'_>) -> String {
+    let lang = context.lang;
+    let live = live_pr(pr, context);
+    let branches = match live.and_then(|detail| detail.head_ref.as_deref()) {
+        Some(head) => format!("{head} → {}", pr.base),
+        None => format!("→ {}", pr.base),
+    };
+    let size = live.filter(|detail| detail.changed_files > 0).map(|detail| changes_summary(detail, lang));
+    let checks = live.map(|detail| match detail.checks_passed {
+        Some(true) => t!(lang, "Checks passed", "Comprobaciones superadas"),
+        Some(false) => t!(lang, "Checks failing", "Comprobaciones fallidas"),
+        None => t!(lang, "Checking…", "Comprobando…"),
+    });
+    [Some(pr.repository.clone()), Some(branches), size, checks.map(str::to_owned)]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" · ")
+}
+
+/// The node's report without the line that only points back at this PR.
+fn without_pr_link(report: &str, pr: &PullRequest) -> String {
+    let marker = format!("/pull/{}", pr.number);
+    let kept = report
+        .lines()
+        .filter(|line| !(line.trim_start().to_ascii_lowercase().starts_with("pr:") && line.contains(&marker)))
+        .collect::<Vec<_>>()
+        .join("\n");
+    kept.trim().to_owned()
+}
+
+/// A PR card: the diff first, what failed in the checks, then the description folded away.
+fn pr_sections(item: &InboxItem, context: &RenderContext<'_>) -> Option<Vec<super::Section>> {
+    let lang = context.lang;
+    let domain = context.domain;
+    let interaction = interaction_of(item, domain)?;
+    let pr = pr_target(interaction, domain)?;
+    let (facts, checks, _) = pr_overview(pr, context);
+    let content = interaction.card.content.as_ref().filter(|content| content.kind != DomainContent::Diff);
+    let report = content.map(|content| without_pr_link(&content.body, pr)).filter(|text| !text.is_empty());
+    let description = live_pr(pr, context)
+        .and_then(|detail| detail.body.clone())
+        .map(|text| text.trim().to_owned())
+        .filter(|text| !text.is_empty())
+        .filter(|text| report.as_deref().is_none_or(|report| !report.contains(text.as_str()) && !text.contains(report)));
+    let mut sections = vec![];
+    if let Some(failing) = checks.filter(|checks| checks.items.iter().any(|check| check.state != CheckState::Pass)) {
+        sections.push(super::common::section("checks", None, vec![Item::Checks(failing)]));
+    }
+    let stack: Vec<Fact> = facts.items.into_iter().filter(|fact| fact.link.is_some()).collect();
+    if !stack.is_empty() {
+        sections.push(super::common::section("stack", None, vec![Item::Facts(Facts { items: stack })]));
+    }
+    sections.push(super::common::section(
+        "diff",
+        Some(t!(lang, "Diff", "Diferencias").into()),
+        vec![Item::ContentRef(ContentRef {
+            kind: super::ContentKind::Diff,
+            title: t!(lang, "Diff", "Diferencias").into(),
+            size: 0,
+            digest: Some(pr.head.clone()),
+            fetch: format!("/pull-requests/{}/diff", super::id::path_segment(&pr.id.0)),
+            commentable: true,
+        })],
+    ));
+    let text = [report, description].into_iter().flatten().collect::<Vec<_>>().join("\n\n");
+    if !text.is_empty() {
+        sections.push(super::common::section(
+            "description",
+            Some(t!(lang, "Description", "Descripción").into()),
+            vec![markdown(text)],
+        ));
+    }
+    Some(sections)
+}
+
 fn context_items(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
     let task = item.task_id.as_ref().and_then(|id| context.domain.tasks.get(id)).map(|task| task.title.clone());
     let node = item.agent_id.as_ref().map(|_| node_name(item, context));
+    let node = node.filter(|node| task.as_deref().is_none_or(|task| !task.trim().eq_ignore_ascii_case(node.trim())));
     let line = [task, node].into_iter().flatten().collect::<Vec<_>>().join(" · ");
     if line.is_empty() {
         return vec![];

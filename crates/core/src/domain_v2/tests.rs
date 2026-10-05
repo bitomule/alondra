@@ -704,6 +704,28 @@ fn a_host_that_is_not_a_real_host_is_refused_with_the_fix() {
     exec(&mut s, agent(), register_with("github.example.com", "head1")).unwrap();
 }
 #[test]
+fn a_pr_id_the_views_cannot_address_is_refused_with_the_fix() {
+    let mut s = fixture();
+    for pr_id in ["bitomule/alondra#688", "owner/repo#1", "pr 1", "pr:1"] {
+        let mut command = register_with("github.com", "head1");
+        if let Command::RegisterPr { pr_id: id, .. } = &mut command {
+            *id = pr_id.into();
+        }
+        let error = exec(&mut s, agent(), command).unwrap_err();
+        assert_eq!(error.code, "invalid_input", "{pr_id}");
+        assert!(error.message.contains("github.com/owner/repo#N"), "{}", error.message);
+    }
+    assert!(s.pull_requests.is_empty());
+    for pr_id in ["pr-1", "github.com/owner/repo#1"] {
+        let mut s = fixture();
+        let mut command = register_with("github.com", "head1");
+        if let Command::RegisterPr { pr_id: id, .. } = &mut command {
+            *id = pr_id.into();
+        }
+        exec(&mut s, agent(), command).unwrap();
+    }
+}
+#[test]
 fn the_owning_task_corrects_its_registration_of_the_same_pr() {
     let mut s = fixture();
     register(&mut s);
