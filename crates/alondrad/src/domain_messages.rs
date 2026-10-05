@@ -274,6 +274,7 @@ mod tests {
         let long_ago = alondra_core::now_millis() - alondra_core::states::TURN_QUIET_MS - 60_000;
         let hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
         domain.live.mods.connect(hello, long_ago);
+        domain.live.mods.sample_cpu("agent-a", 500, long_ago);
         domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-a", "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
         let refused = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(), body(json!({"text": "hi"})), true).await.unwrap_err();
         assert_eq!(refused.code, "session_stalled");

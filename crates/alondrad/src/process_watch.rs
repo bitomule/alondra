@@ -8,11 +8,13 @@ use std::process::Command;
 pub(crate) struct Process {
     pub pid: u32,
     pub ppid: u32,
+    /// Cumulative CPU time in hundredths of a second.
+    pub cpu_cs: u64,
     pub command: String,
 }
 
 pub(crate) fn snapshot() -> Vec<Process> {
-    Command::new("ps").args(["-axo", "pid=,ppid=,command="]).output().ok()
+    Command::new("ps").args(["-axo", "pid=,ppid=,time=,command="]).output().ok()
         .map(|output| parse(&String::from_utf8_lossy(&output.stdout)))
         .unwrap_or_default()
 }
@@ -21,8 +23,19 @@ pub(crate) fn parse(table: &str) -> Vec<Process> {
     table.lines().filter_map(|line| {
         let mut fields = line.split_whitespace();
         let (pid, ppid) = (fields.next()?.parse().ok()?, fields.next()?.parse().ok()?);
-        Some(Process { pid, ppid, command: fields.collect::<Vec<_>>().join(" ") })
+        let cpu_cs = cpu_centiseconds(fields.next()?)?;
+        Some(Process { pid, ppid, cpu_cs, command: fields.collect::<Vec<_>>().join(" ") })
     }).collect()
+}
+
+/// `ps` prints CPU time as `M:SS.cc`, `H:MM:SS` or `D-HH:MM:SS`.
+fn cpu_centiseconds(text: &str) -> Option<u64> {
+    let (days, clock) = text.split_once('-').map_or((0, text), |(days, clock)| (days.parse().unwrap_or(0), clock));
+    let mut seconds = 0.0_f64;
+    for part in clock.split(':') {
+        seconds = seconds * 60.0 + part.parse::<f64>().ok()?;
+    }
+    Some(((seconds + days as f64 * 86_400.0) * 100.0).round() as u64)
 }
 
 fn is_shell_call(command: &str) -> bool {
@@ -38,19 +51,25 @@ pub(crate) fn shell_running(table: &[Process], mod_pid: u32) -> Option<bool> {
     Some(table.iter().any(|process| process.ppid == session && is_shell_call(&process.command)))
 }
 
+/// The CPU time the session's own process has used in all, when the mod's process is in the table.
+pub(crate) fn session_cpu(table: &[Process], mod_pid: u32) -> Option<u64> {
+    let session = table.iter().find(|process| process.pid == mod_pid)?.ppid;
+    table.iter().find(|process| process.pid == session).map(|process| process.cpu_cs)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     const TABLE: &str = "\
-27019     1 claude bg-spare --bg-spare /tmp/x.claim.sock
-27045 27019 npm exec @upstash/context7-mcp@latest
-27046 27045 sh -c context7-mcp
-33881 27019 /opt/homebrew/opt/alondra/bin/alondra node connect
-84509     1 claude bg-spare --bg-spare /tmp/y.claim.sock
-27050 84509 /opt/homebrew/opt/alondra/bin/alondra mcp-node
-33879 84509 /opt/homebrew/opt/alondra/bin/alondra node connect
-65945 27019 /bin/zsh -c -l setopt NO_EXTENDED_GLOB && eval 'bazel test //...'
+27019     1 7:16.28 claude bg-spare --bg-spare /tmp/x.claim.sock
+27045 27019 0:00.10 npm exec @upstash/context7-mcp@latest
+27046 27045 0:00.00 sh -c context7-mcp
+33881 27019 0:01.00 /opt/homebrew/opt/alondra/bin/alondra node connect
+84509     1 1:02:03 claude bg-spare --bg-spare /tmp/y.claim.sock
+27050 84509 0:00.20 /opt/homebrew/opt/alondra/bin/alondra mcp-node
+33879 84509 0:01.00 /opt/homebrew/opt/alondra/bin/alondra node connect
+65945 27019 0:00.00 /bin/zsh -c -l setopt NO_EXTENDED_GLOB && eval 'bazel test //...'
 ";
 
     #[test]
@@ -67,7 +86,16 @@ mod tests {
 
     #[test]
     fn a_shell_two_levels_down_belongs_to_a_helper_not_to_the_session() {
-        let table = parse("100 1 claude\n101 100 alondra node connect\n102 100 npm exec x\n103 102 sh -c x\n");
+        let table = parse("100 1 0:10.00 claude\n101 100 0:01.00 alondra node connect\n102 100 0:01.00 npm exec x\n103 102 0:00.00 sh -c x\n");
         assert_eq!(shell_running(&table, 101), Some(false));
+    }
+
+    #[test]
+    fn the_session_process_cpu_time_reads_every_ps_format() {
+        let table = parse(TABLE);
+        assert_eq!(session_cpu(&table, 33881), Some(43_628), "7:16.28");
+        assert_eq!(session_cpu(&table, 33879), Some(372_300), "1:02:03");
+        assert_eq!(cpu_centiseconds("2-01:00:00"), Some(17_280_000 + 360_000));
+        assert_eq!(session_cpu(&table, 1), None);
     }
 }

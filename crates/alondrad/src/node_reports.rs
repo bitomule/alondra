@@ -137,6 +137,10 @@ pub(crate) struct Reported {
     /// Whether the session has a shell call running, as the last look at its processes saw;
     /// none while nothing is known.
     pub shell_alive: Option<bool>,
+    /// The session process's cumulative CPU time at the last look, in hundredths of a second.
+    pub cpu_cs: Option<u64>,
+    /// When the session process last used more than idle CPU between two looks, or was first seen.
+    pub cpu_busy_at: Option<Millis>,
     pub tool: Option<ToolInFlight>,
     pub answer: Option<Answer>,
     pub context: Option<ContextReading>,
@@ -188,13 +192,14 @@ impl Reported {
     }
 
     /// Connected, yet nothing the session does shows for `TURN_QUIET_MS`: no report from the mod,
-    /// no shell call alive, no subagent. Either it is inside a turn that stopped processing, or
+    /// no CPU used by the session process, no shell call alive, no subagent. Either it is inside a turn that stopped processing, or
     /// it waits on a call or a background shell that is gone and nothing resumed it.
     pub(crate) fn silent(&self, now: Millis) -> bool {
         if self.connection.is_none() || self.shell_running() || self.agent_running(now) {
             return false;
         }
-        let quiet = self.last_event_at.or(self.working_since).is_some_and(|at| now - at > alondra_core::states::TURN_QUIET_MS);
+        let quiet_for = |at: Option<Millis>| at.is_some_and(|at| now - at > alondra_core::states::TURN_QUIET_MS);
+        let quiet = quiet_for(self.last_event_at.or(self.working_since)) && quiet_for(self.cpu_busy_at);
         let stuck_turn = self.working_since.is_some() && self.tool.is_none();
         let waits_on_dead_shell = self.shell_alive == Some(false)
             && (self.tool.as_ref().is_some_and(|tool| tool.name == "Bash") || self.background.iter().any(|(_, item)| item.kind == BackgroundKind::Shell));
@@ -391,6 +396,17 @@ impl Reports {
 
     pub(crate) fn set_peer(&self, session_id: &str, pid: u32) {
         self.sessions.lock().expect("node reports poisoned").entry(session_id.to_owned()).or_default().peer_pid = Some(pid);
+    }
+
+    /// One look at the session process's cumulative CPU time.
+    pub(crate) fn sample_cpu(&self, session_id: &str, cpu_cs: u64, now: Millis) {
+        if let Some(session) = self.sessions.lock().expect("node reports poisoned").get_mut(session_id) {
+            let busy = session.cpu_cs.is_none_or(|before| cpu_cs < before || cpu_cs - before >= alondra_core::states::IDLE_CPU_CS_PER_LOOK);
+            if busy || session.cpu_busy_at.is_none() {
+                session.cpu_busy_at = Some(now);
+            }
+            session.cpu_cs = Some(cpu_cs);
+        }
     }
 
     pub(crate) fn set_shell_alive(&self, session_id: &str, alive: Option<bool>) {
@@ -670,6 +686,7 @@ mod tests {
         let quiet = alondra_core::states::TURN_QUIET_MS;
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 100, 0);
         reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
         let activity = |at| reports.session("s").unwrap().activity(at);
         assert_eq!(activity(quiet), Activity::Working, "quiet for less than the limit");
@@ -687,6 +704,7 @@ mod tests {
         let quiet = alondra_core::states::TURN_QUIET_MS;
         let reports = Reports::default();
         let first = reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 100, 0);
         reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
         assert!(reports.session("s").unwrap().silent(quiet + 2));
         reports.disconnect("s", first);
@@ -719,6 +737,7 @@ mod tests {
     fn a_foreground_build_that_stays_silent_for_an_hour_is_working_while_its_shell_lives_and_stalled_when_it_is_gone() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 100, 0);
         reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
         reports.apply(report(json!({"session_id": "s", "event": "tool.start", "tool": "Bash", "tool_use_id": "u", "input": {"command": "bazel test //..."}})), 2);
         reports.set_shell_alive("s", Some(true));
@@ -736,6 +755,7 @@ mod tests {
     fn a_live_background_shell_with_an_idle_turn_is_working_and_a_dead_one_with_no_turn_is_stalled() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 100, 0);
         reports.apply(report(json!({"session_id": "s", "event": "shell.start", "id": "b", "command": "musts run bazel-test-root"})), 1);
         let session = || reports.session("s").unwrap();
         reports.set_shell_alive("s", Some(true));
@@ -752,11 +772,57 @@ mod tests {
     fn a_running_subagent_keeps_a_quiet_turn_working() {
         let reports = Reports::default();
         reports.connect(hello("s"), 0);
+        reports.sample_cpu("s", 100, 0);
         reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
         reports.apply(report(json!({"session_id": "s", "event": "subagent.start", "id": "a", "description": "review"})), 2);
         let quiet = alondra_core::states::TURN_QUIET_MS;
         assert_eq!(reports.session("s").unwrap().activity(quiet * 3), Activity::Working);
         reports.apply(report(json!({"session_id": "s", "event": "subagent.end", "id": "a"})), 3);
         assert_eq!(reports.session("s").unwrap().activity(quiet * 3), Activity::Stalled);
+    }
+
+    #[test]
+    fn a_quiet_turn_is_working_while_the_session_uses_cpu_and_stalled_once_it_is_flat_for_the_whole_window() {
+        let quiet = alondra_core::states::TURN_QUIET_MS;
+        let step = alondra_core::states::IDLE_CPU_CS_PER_LOOK;
+        let look = 30_000;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.apply(report(json!({"session_id": "s", "event": "turn.start", "turn_id": "t"})), 1);
+        let session = || reports.session("s").unwrap();
+        assert!(!session().silent(quiet + 2), "no look at the process yet: idleness is not proven");
+        let mut cpu = 0;
+        let mut at = 0;
+        while at < quiet + 5 * look {
+            cpu += step;
+            reports.sample_cpu("s", cpu, at);
+            at += look;
+        }
+        assert_eq!(session().activity(at), Activity::Working, "the model is generating: the CPU keeps advancing");
+        assert!(!session().silent(at));
+        let busy_until = at;
+        while at < busy_until + quiet + 2 * look {
+            cpu += step - 1;
+            reports.sample_cpu("s", cpu, at);
+            at += look;
+        }
+        assert_eq!(session().activity(at), Activity::Stalled, "flat CPU across the whole window");
+        assert!(session().silent(at));
+        reports.sample_cpu("s", cpu + step, at);
+        assert!(!session().silent(at + 1), "it moved again");
+    }
+
+    #[test]
+    fn a_dead_shell_wait_is_not_revived_while_the_session_still_uses_cpu() {
+        let quiet = alondra_core::states::TURN_QUIET_MS;
+        let reports = Reports::default();
+        reports.connect(hello("s"), 0);
+        reports.apply(report(json!({"session_id": "s", "event": "shell.start", "id": "b", "command": "make"})), 1);
+        reports.set_shell_alive("s", Some(false));
+        reports.sample_cpu("s", 0, 0);
+        reports.sample_cpu("s", 10_000, 2 * quiet);
+        assert!(!reports.session("s").unwrap().silent(2 * quiet + 1));
+        reports.sample_cpu("s", 10_001, 4 * quiet);
+        assert!(reports.session("s").unwrap().silent(4 * quiet));
     }
 }

@@ -23,6 +23,9 @@ pub const CALL_LIMIT_MS: Millis = 45 * MINUTE;
 /// for this long after its mod last reported anything; past it the session has stopped
 /// processing, and it is stalled.
 pub const TURN_QUIET_MS: Millis = 10 * MINUTE;
+/// The session process using less CPU than this over a 30 s look counts as idle: a model that is
+/// generating or thinking keeps it busy, a stopped session does not.
+pub const IDLE_CPU_CS_PER_LOOK: u64 = 50;
 /// Subagents legitimately run longer than any other call.
 pub const SUBAGENT_CALL_LIMIT_MS: Millis = 120 * MINUTE;
 

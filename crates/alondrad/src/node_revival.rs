@@ -80,14 +80,16 @@ async fn watch_stalls(domain: Arc<DomainRuntime>) {
     }
 }
 
-/// Records, for every connected session, whether it has a shell call running.
+/// Records, for every connected session, whether it has a shell call running and how much CPU it uses.
 fn look_at_shells(domain: &DomainRuntime) {
     let Ok(state) = domain.state() else { return };
     let table = crate::process_watch::snapshot();
     for agent in state.agents.keys() {
-        let alive = domain.live.mods.session(&agent.0).and_then(|reported| reported.peer_pid)
-            .and_then(|pid| crate::process_watch::shell_running(&table, pid));
-        domain.live.mods.set_shell_alive(&agent.0, alive);
+        let Some(pid) = domain.live.mods.session(&agent.0).and_then(|reported| reported.peer_pid) else { continue };
+        domain.live.mods.set_shell_alive(&agent.0, crate::process_watch::shell_running(&table, pid));
+        if let Some(cpu) = crate::process_watch::session_cpu(&table, pid) {
+            domain.live.mods.sample_cpu(&agent.0, cpu, alondra_core::now_millis());
+        }
     }
 }
 
@@ -342,6 +344,8 @@ mod tests {
         let long_ago = alondra_core::now_millis() - QUIET_FOR;
         domain.live.mods.connect(hello(), long_ago);
         let link = domain.live.pushes.attach(SESSION, 90);
+        domain.live.mods.sample_cpu(SESSION, 500, long_ago);
+        domain.live.mods.sample_cpu(SESSION, 500, long_ago + 1);
         domain.live.mods.apply(serde_json::from_value(json!({"session_id": SESSION, "event": "turn.start", "turn_id": "t"})).unwrap(), long_ago);
         link
     }
