@@ -34,13 +34,14 @@ extension ViewsClient {
 /// taller for the larger text sizes that make the same content longer.
 struct ScreenFrame<Content: View>: View {
     let height: CGFloat
+    var growsWithText = true
     @ViewBuilder let content: Content
     @Environment(\.dynamicTypeSize) private var textSize
 
     var body: some View {
         NavigationStack { content }
             .environment(\.referenceDate, snapshotReferenceDate)
-            .frame(height: textSize.isAccessibilitySize ? height * 2.2 : height)
+            .frame(height: growsWithText && textSize.isAccessibilitySize ? height * 2.2 : height)
     }
 }
 

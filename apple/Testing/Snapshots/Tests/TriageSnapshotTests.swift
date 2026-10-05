@@ -14,10 +14,12 @@ final class TriageSnapshotTests: XCTestCase {
 
     private struct Harness: View {
         let store: StoreOf<TriageFeature>
+        var height: CGFloat = 852
+        var growsWithText = true
         @Namespace private var zoom
 
         var body: some View {
-            ScreenFrame(height: 852) { TriageView(store: store, zoom: zoom) }
+            ScreenFrame(height: height, growsWithText: growsWithText) { TriageView(store: store, zoom: zoom) }
         }
     }
 
@@ -163,6 +165,32 @@ final class TriageSnapshotTests: XCTestCase {
         let queue = [Fixtures.informationID, Fixtures.questionID, Fixtures.deliveryID]
         let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
         assertVariants { Harness(store: store) }
+    }
+
+    func test_stackOnASmallScreenAtTheLargestTextGivesEveryCardTheTallestHeight() throws {
+        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
+        assertScreen([.light]) {
+            Harness(store: store, height: 667).environment(\.dynamicTypeSize, .xxxLarge)
+        }
+    }
+
+    func test_stackOnASmallScreenAtTheLargestAccessibilityTextScrollsWholeCards() throws {
+        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
+        assertScreen([.light]) {
+            Harness(store: store, height: 667, growsWithText: false).environment(\.dynamicTypeSize, .accessibility5)
+        }
+    }
+
+    func test_stackScrolledToTheEndShowsTheLastButtonAboveTheBottomMargin() throws {
+        let queue = [Fixtures.questionID, Fixtures.informationID, Fixtures.deliveryID]
+        let store = try ScreenStores.triage(queue: queue, cards: try queue.map(Fixtures.card))
+        assertScreen([.light]) {
+            Harness(store: store, height: 667, growsWithText: false)
+                .environment(\.dynamicTypeSize, .accessibility5)
+                .defaultScrollAnchor(.bottom)
+        }
     }
 
     func test_stackAfterTheLastCardWrapsToTheFirst() throws {
