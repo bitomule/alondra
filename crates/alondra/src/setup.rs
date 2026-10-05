@@ -683,8 +683,21 @@ fn observe(paths: &Paths, label: &str, apns: Option<&Apns>, args: &Args, context
     }
 }
 
+const BREW_PREFIXES: [&str; 2] = ["/opt/homebrew/opt/alondra", "/usr/local/opt/alondra"];
+
+fn dev_setup_over_brew(running_from_brew: bool, brew_installed: bool, forced: bool) -> bool {
+    !running_from_brew && brew_installed && !forced
+}
+
 pub fn run(args: Args) -> Result<()> {
     let env = |k: &str| std::env::var(k).ok();
+    if !args.dry_run && dev_setup_over_brew(
+        brew_package_for_executable(&std::env::current_exe().ok().and_then(|p| p.canonicalize().ok()).unwrap_or_default()).is_some(),
+        BREW_PREFIXES.iter().any(|p| Path::new(p).exists()),
+        env("FORCE_DEV_INSTALL").is_some_and(|v| !v.is_empty()),
+    ) {
+        bail!("Alondra is installed with Homebrew; a dev build running setup would point the user's daemon at itself. Use the e2e sandbox (make e2e-sandbox), or set FORCE_DEV_INSTALL=1 if you really mean it");
+    }
     let home = config::home_dir(&env);
     let alondra_home = config::alondra_home(&env);
     let packaged = installed_package();
@@ -931,6 +944,14 @@ pub fn pairing_url(config: &Config) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn dev_setup_is_refused_only_over_an_unforced_brew_install() {
+        assert!(dev_setup_over_brew(false, true, false));
+        assert!(!dev_setup_over_brew(true, true, false));
+        assert!(!dev_setup_over_brew(false, false, false));
+        assert!(!dev_setup_over_brew(false, true, true));
+    }
+
     use super::*;
 
     // Operational gate only: reads an explicitly authorized installed plist and

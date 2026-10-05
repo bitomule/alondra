@@ -332,12 +332,11 @@ async fn a_node_mod_reports_through_the_cli_and_its_open_connection_is_its_liven
     assert_eq!(client.post(&interrupt).send().await.unwrap().status(), 200);
     assert_eq!(next_line(&mut reader, patience), Some(json!({"interrupt": true})));
 
-    let week_reset = crate::log::local_iso(alondra_core::now_millis().div_euclid(1000) as libc::time_t + 5 * 86_400, 0);
     for report in [
         json!({"event": "turn.start", "turn_id": "t1"}),
         json!({"event": "tool.start", "tool": "Bash", "tool_use_id": "u1", "input": {"command": "cargo test"}}),
         json!({"event": "session.measure", "context": {"tokens": 54944, "window": 1000000, "percent": 5},
-            "rate_limits": [{"kind": "seven_day", "percent_used": 78, "resets_at": week_reset}], "cost_usd": 1.25}),
+            "rate_limits": [{"kind": "seven_day", "percent_used": 78, "resets_at": "2099-10-05T00:00:00Z"}], "cost_usd": 1.25}),
     ] {
         let mut report = report;
         report["session_id"] = json!(SESSION);
