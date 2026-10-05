@@ -23,6 +23,7 @@ swift_test(
     data = ["//fixtures/markdown"],
     deps = [
         ":AlondraDesign",
+        "//apple/Contract:AlondraContract",
     ],
 )
 

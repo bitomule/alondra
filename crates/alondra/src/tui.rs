@@ -7,6 +7,7 @@ mod input;
 mod keys;
 mod md;
 mod tasks;
+mod usage_banner;
 mod view_feed;
 mod view_render;
 mod work;

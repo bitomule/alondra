@@ -23,12 +23,24 @@ const SEL_BG: Color = Color::Indexed(236);
 const COMMENT: Color = Color::LightMagenta;
 
 pub fn draw(f: &mut Frame, app: &mut App) {
-    let [head, body, foot] = Layout::vertical([
+    let usage = app.view_status.as_ref().and_then(|s| s.usage_exhausted.clone());
+    let [banner, head, body, foot] = Layout::vertical([
+        Constraint::Length(u16::from(usage.is_some())),
         Constraint::Length(1),
         Constraint::Min(3),
         Constraint::Length(1),
     ])
     .areas(f.area());
+    if let Some(usage) = &usage {
+        let text = super::usage_banner::banner_text(usage, now_millis());
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(" {} ", truncate(&text, (banner.width as usize).saturating_sub(2))),
+                Style::new().fg(Color::Black).bg(ACCENT).add_modifier(Modifier::BOLD),
+            ))),
+            banner,
+        );
+    }
     draw_head(f, app, head);
     let body = match app.composer.as_ref() {
         Some(c) => {

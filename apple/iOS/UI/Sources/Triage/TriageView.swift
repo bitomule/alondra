@@ -28,6 +28,11 @@ public struct TriageView: View {
                 header.padding(.horizontal, 20)
                     .transition(.move(edge: .top).combined(with: .opacity))
             }
+            if let usage = store.status?.usageExhausted {
+                UsageExhaustedBanner(usage)
+                    .padding(.horizontal, 16).padding(.bottom, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
             if let error = store.loadError {
                 ContentUnavailableView {
                     Label("Could not connect to the fleet", systemImage: "exclamationmark.triangle")

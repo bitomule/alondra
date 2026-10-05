@@ -171,6 +171,47 @@ final class TriageSnapshotTests: XCTestCase {
         let store = try ScreenStores.triage(queue: queue, cards: try shown.map(Fixtures.card)) { $0.index = 3 }
         assertVariants { Harness(store: store) }
     }
+
+    // MARK: Claude usage has run out
+
+    private func exhaustedHome(in seconds: TimeInterval, macsExhausted: Int = 1, macsTotal: Int = 1) throws -> ViewDocument {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let until = formatter.string(from: Date(timeIntervalSince1970: 1_790_000_000).addingTimeInterval(seconds))
+        return try Fixtures.document("home-ios") { object in
+            var sections = try XCTUnwrap(object["sections"] as? [[String: Any]])
+            sections[0]["card_ids"] = [Fixtures.questionID]
+            object["sections"] = sections
+            var status = try XCTUnwrap(object["status"] as? [String: Any])
+            status["usage_exhausted"] = [
+                "scope": macsTotal > 1 ? "all_macs" : "this_mac", "until": until,
+                "macs_exhausted": macsExhausted, "macs_total": macsTotal,
+            ] as [String: Any]
+            object["status"] = status
+        }
+    }
+
+    func test_usageExhausted() throws {
+        let store = try ScreenStores.triage(
+            queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)], home: try exhaustedHome(in: 2 * 3600)
+        )
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_usageExhausted_es() throws {
+        let store = try ScreenStores.triage(
+            queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)], home: try exhaustedHome(in: 2 * 3600)
+        )
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
+    }
+
+    func test_usageExhausted_someMacsWithMinutesLeft() throws {
+        let store = try ScreenStores.triage(
+            queue: [Fixtures.questionID], cards: [try Fixtures.card(Fixtures.questionID)],
+            home: try exhaustedHome(in: 25 * 60, macsExhausted: 2, macsTotal: 3)
+        )
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
 }
 
 extension ViewDocument {
