@@ -57,7 +57,7 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
     ask(&f.1, "q-gone", Recipient::User, task_scope.clone(), agent_a());
     run(&f.1, agent_a(), Command::Withdraw { interaction_id: "q-gone".into() });
     ask(&f.1, "q-orch", Recipient::Orchestrator, task_scope.clone(), agent_a());
-    run(&f.1, agent_a(), Command::PublishInformation { attachments: vec![], interaction_id: "info".into(), scope: task_scope,
+    run(&f.1, Actor::System, Command::PublishInformation { attachments: vec![], interaction_id: "info".into(), scope: task_scope,
         recipient: Recipient::User, body: "Found the colour table".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update") });
     let fleet = fleet(&f.1, json!({"cpus": 10}), json!(null)).unwrap();
     let nodes = fleet["nodes"].as_array().unwrap();
@@ -68,7 +68,7 @@ fn the_fleet_lists_live_agents_what_waits_on_someone_and_the_requests() {
     assert_eq!(fleet["open_questions"][1]["to_orchestrator"], true);
     assert_eq!(fleet["open_questions"][0]["title"], "Question q-open");
     let report = &fleet["reports"][0];
-    assert_eq!((report["id"].as_str(), report["read"].as_bool(), report["node_name"].as_str()), (Some("info"), Some(false), Some("Instance A")));
+    assert_eq!((report["id"].as_str(), report["read"].as_bool(), report["node_name"].as_str()), (Some("info"), Some(false), Some("Alondra")));
     assert_eq!(fleet["orchestrator_messages"].as_array().unwrap().len(), 2, "the new request and the question for the orchestrator are on their way");
     assert_eq!(fleet["requests"][0]["state"], "working");
     let t2 = fleet["tasks"].as_array().unwrap().iter().find(|t| t["id"] == "t2").unwrap();

@@ -738,7 +738,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         let domain = &f.executor.domain;
         ask_orchestrator(domain, 1);
         ask_orchestrator(domain, 2);
-        command(domain, Actor::Agent { agent_id: "a".into() }, "user-info", Command::PublishInformation {
+        command(domain, Actor::System, "user-info", Command::PublishInformation {
             interaction_id: "info-user".into(), scope: Scope::Task { task_id: "t".into() },
             recipient: Recipient::User, body: "User notification".into(), attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
         });

@@ -1534,9 +1534,7 @@ mod tests {
                 },
             ),
             (
-                Actor::Agent {
-                    agent_id: "agent-a".into(),
-                },
+                Actor::System,
                 "info",
                 Command::PublishInformation {
                     interaction_id: "info-a".into(),
