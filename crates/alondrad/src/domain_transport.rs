@@ -249,7 +249,7 @@ fn pending_lines(domain: &DomainRuntime, session: &str, sent: &mut BTreeSet<i64>
     let state = domain.state()?;
     Ok(pending.into_iter().map(|message| {
         sent.insert(message.id);
-        crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &render(&state, &message), false)
+        crate::node_push::message_line(&crate::node_push::outbox_id(message.id), &render(&state, &message), from_user(&state, &message))
     }).collect())
 }
 
@@ -445,6 +445,27 @@ pub(crate) fn nudge_text(user: &str, task: &TaskId) -> String {
     )
 }
 
+/// The user's answer to a card reaches the session as the user's own words, which Claude Code
+/// shows as they are: anything else it wraps in a plugin notice of about 40 tokens.
+pub(crate) fn from_user(state: &DomainState, message: &OutboxMessage) -> bool {
+    message.interaction_id.as_ref()
+        .and_then(|id| state.interactions.get(&InteractionId(id.clone())))
+        .is_some_and(|interaction| matches!(interaction.recipient, Recipient::User) && matches!(&interaction.payload,
+            InteractionPayload::Question { answer: Some(_), .. } | InteractionPayload::ActionRequest { answer: Some(_), .. }))
+}
+
+const QUESTION_LABEL_LIMIT: usize = 80;
+
+/// The asker already holds the whole question; its first words are enough to tell it apart.
+fn question_label(question: &str) -> String {
+    let line = question.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or_default();
+    match line.char_indices().nth(QUESTION_LABEL_LIMIT) {
+        Some((end, _)) => format!("{}…", line[..end].trim_end()),
+        None if line.len() < question.trim().len() => format!("{line}…"),
+        None => line.to_owned(),
+    }
+}
+
 /// Producer-facing delivery contains only the message written for the Agent.
 /// Delivery identity, interaction data and authorization remain in Alondra.
 pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
@@ -494,7 +515,7 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     if matches!(interaction.recipient, Recipient::Orchestrator) && matches!(interaction.author, Author::Agent { .. }) {
         text = format!("The orchestrator answered: {text}");
     }
-    let question = interaction.body.trim();
+    let question = question_label(&interaction.body);
     if matches!(interaction.author, Author::Orchestrator { .. }) {
         let request_title = match &interaction.scope {
             Scope::Orchestrator { request_id: Some(request_id) } => state.requests.get(request_id)
@@ -715,12 +736,55 @@ mod tests {
         });
     }
 
+    fn outbox_message(domain: &DomainRuntime, id: &str, recipient_kind: &str) -> OutboxMessage {
+        domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+            .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
+            .unwrap()
+    }
+
+    /// Request 9a5996ed (5 Oct): every answer reached the node inside Claude Code's plugin notice,
+    /// about 180 characters around a «Hecho.».
+    #[test]
+    fn the_users_answer_goes_as_the_users_words_and_the_orchestrators_does_not() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        free_text_question(&domain, "q", agent_actor(), task_scope(), Recipient::User, "Which name?");
+        free_text_answer(&domain, user_actor(), "q", "Call it Atlas");
+        free_text_question(&domain, "o", agent_actor(), task_scope(), Recipient::Orchestrator, "Which repo?");
+        free_text_answer(&domain, Actor::Orchestrator { generation: 0 }, "o", "alondra");
+        let state = domain.state().unwrap();
+        assert!(from_user(&state, &outbox_message(&domain, "q", "agent")));
+        assert!(!from_user(&state, &outbox_message(&domain, "o", "agent")));
+    }
+
+    /// The «About …» echo of a 600-character question cost 150 tokens on a 15-token answer.
+    #[test]
+    fn an_answer_names_its_question_by_its_first_words_not_the_whole_text() {
+        let fixture = Fixture::new();
+        let domain = fixture.open();
+        node_with_task(&domain);
+        let question = format!("Tu mensaje sobre el nodo de Parcel llegó cortado. ¿Qué te muestra la app para la tarea?\n\n{}",
+            "Lo que ya sé: la ejecución programada falló antes de lanzar Claude. ".repeat(8));
+        free_text_question(&domain, "q", Actor::Orchestrator { generation: 0 },
+            Scope::Orchestrator { request_id: Some("request".into()) }, Recipient::User, &question);
+        free_text_answer(&domain, user_actor(), "q", "Sí, la veo pendiente");
+        let rendered = rendered_for(&domain, "q", "orchestrator");
+        assert_eq!(rendered,
+            "About \"Tu mensaje sobre el nodo de Parcel llegó cortado. ¿Qué te muestra la app para la…\" (request \"Work\"): Sí, la veo pendiente");
+        assert!(rendered.len() < question.len() / 4, "{} of {}", rendered.len(), question.len());
+    }
+
+    #[test]
+    fn a_short_question_is_named_whole_and_a_multiline_one_by_its_first_line() {
+        assert_eq!(question_label("  Ship this?  "), "Ship this?");
+        assert_eq!(question_label("Ship this?\n\nIt has two commits."), "Ship this?…");
+        assert_eq!(question_label(&"á".repeat(81)), format!("{}…", "á".repeat(80)));
+    }
+
     fn rendered_for(domain: &DomainRuntime, id: &str, recipient_kind: &str) -> String {
         let state = domain.state().unwrap();
-        let message = domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
-            .find(|message| message.interaction_id.as_deref() == Some(id) && message.recipient_kind == recipient_kind)
-            .unwrap();
-        render(&state, &message)
+        render(&state, &outbox_message(domain, id, recipient_kind))
     }
 
     fn node_with_task(domain: &DomainRuntime) {
@@ -1092,7 +1156,7 @@ mod tests {
         answered_question(&domain, "session-a");
         let line = node.line().await.unwrap();
         let id = agent_outbox(&domain, "session-a")[0].0;
-        assert_eq!(line, json!({"id": format!("o-{id}"), "text": "Yes.", "as_user": false}));
+        assert_eq!(line, json!({"id": format!("o-{id}"), "text": "Yes.", "as_user": true}));
         assert_eq!(agent_outbox(&domain, "session-a").len(), 1, "written is not handed");
 
         acknowledge(&domain, "other-session", json!([format!("o-{id}")])).await.unwrap();
