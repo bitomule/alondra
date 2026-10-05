@@ -4,7 +4,7 @@
   "view": "card",
   "key": "card:7c9a034b-249e-4487-a89b-57de38c26372",
   "client": "ios",
-  "version": "v63e170e4c4a8aea7",
+  "version": "v879072de008b7378",
   "cursor": "cursor-1",
   "title": "How do the devices reach the Mac?",
   "status": {
@@ -55,12 +55,6 @@
           "kind": "decide",
           "need": "How do the devices reach the Mac?",
           "meta": "Node One",
-          "content_row": {
-            "kind": "options",
-            "icon": "notice",
-            "label": "Por qué cada opción",
-            "summary": "6 opciones"
-          },
           "reply": {
             "id": "reply:7c9a034b-249e-4487-a89b-57de38c26372@1",
             "label": "Responder",
@@ -152,6 +146,12 @@
                 "attachments": false,
                 "enabled": true,
                 "stamp": "Respondida"
+              },
+              "content_row": {
+                "kind": "options",
+                "icon": "notice",
+                "label": "Por qué cada opción",
+                "summary": "2 opciones"
               }
             },
             {
@@ -164,6 +164,7 @@
                   "style": "primary",
                   "role": "advance",
                   "option_id": "o1",
+                  "description": "A common alternative.",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -178,6 +179,7 @@
                   "style": "secondary",
                   "role": "neutral",
                   "option_id": "o0",
+                  "description": "The port it listens on today.",
                   "presentation": "button",
                   "input": {
                     "kind": "none"
@@ -202,6 +204,12 @@
                 "attachments": false,
                 "enabled": true,
                 "stamp": "Respondida"
+              },
+              "content_row": {
+                "kind": "options",
+                "icon": "notice",
+                "label": "Por qué cada opción",
+                "summary": "2 opciones"
               }
             },
             {
@@ -236,6 +244,21 @@
                   "attachments": false,
                   "enabled": true,
                   "stamp": "Respondida"
+                },
+                {
+                  "id": "ans:7c9a034b-249e-4487-a89b-57de38c26372@1",
+                  "label": "Ask on each phone",
+                  "style": "secondary",
+                  "role": "neutral",
+                  "option_id": "o2",
+                  "description": "Each phone decides when it next opens.",
+                  "presentation": "button",
+                  "input": {
+                    "kind": "none"
+                  },
+                  "attachments": false,
+                  "enabled": true,
+                  "stamp": "Respondida"
                 }
               ],
               "write": {
@@ -253,6 +276,12 @@
                 "attachments": false,
                 "enabled": true,
                 "stamp": "Respondida"
+              },
+              "content_row": {
+                "kind": "options",
+                "icon": "notice",
+                "label": "Por qué cada opción",
+                "summary": "3 opciones"
               }
             }
           ]

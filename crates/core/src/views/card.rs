@@ -461,10 +461,7 @@ fn content_row(item: &InboxItem, interaction: Option<&Interaction>, context: &Re
         None if reviewed_revision(interaction).is_some() => {
             (DomainContent::Document, document_summary(interaction, domain, lang), attachments)
         }
-        None if !spec.questions.is_empty() => {
-            let options = spec.questions.iter().map(|question| question.options.len()).sum();
-            (DomainContent::Options, summary::options(lang, options), attachments)
-        }
+        None if !spec.questions.is_empty() => return None,
         None if attachments > 0 => (DomainContent::Attachments, summary::attachments(lang, attachments), 0),
         None => return None,
     };
@@ -780,7 +777,15 @@ fn steps(item: &InboxItem, interaction: &Interaction, context: &RenderContext<'_
             }
             write.key = (actions.len() < 9).then(|| (actions.len() + 1).to_string());
         }
+        let described = question.options.iter().any(|option| option.description.is_some());
         Step {
+            content_row: described.then(|| ContentRow {
+                kind: summary::kind_name(DomainContent::Options).into(),
+                icon: Icon::Notice,
+                label: summary::label(lang, DomainContent::Options).into(),
+                summary: summary::options(lang, question.options.len()),
+                more_count: 0,
+            }),
             need: question.need.clone(),
             why: Some(question.why.trim().to_owned()).filter(|why| !why.is_empty()),
             actions,

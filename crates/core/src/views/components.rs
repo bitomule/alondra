@@ -275,6 +275,10 @@ pub struct Step {
     /// The way to answer in words.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub write: Option<Action>,
+    /// "Why each option" for this question alone, when its options are explained; it counts only
+    /// this question's options.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_row: Option<ContentRow>,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct ContentRow {

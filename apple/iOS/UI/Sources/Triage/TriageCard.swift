@@ -16,6 +16,7 @@ struct TriageCard: View {
     let onSkip: (() -> Void)?
     @Environment(\.openURL) private var openURL
     @FocusState private var replyFocused: Bool
+    @State private var optionsShown = false
 
     private var kind: Kind { Kind(card) }
     private var tint: Color { kind.tint }
@@ -62,7 +63,15 @@ struct TriageCard: View {
                 )
             }
             summary
-            if let row = card.contentRow {
+            if let step = store.step {
+                if let row = step.contentRow {
+                    CardContentRow(row: row, tint: tint) { optionsShown = true }
+                        .sheet(isPresented: $optionsShown) {
+                            ScrollView { OptionDescriptions(step: step, tint: tint).padding(20) }
+                                .presentationDetents([.medium, .large])
+                        }
+                }
+            } else if let row = card.contentRow {
                 CardContentRow(row: row, tint: tint) { openDetail() }
             }
             BlockChips(blocks: card.blocks, blockedBy: card.blockedBy, open: handleLink)

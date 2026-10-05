@@ -69,6 +69,10 @@ final class CardDetailSnapshotTests: XCTestCase {
         assertDetail(ScreenStores.cardDetail(try Fixtures.questionsCard()))
     }
 
+    func test_questionsFirst_es() throws {
+        assertDetail(ScreenStores.cardDetail(try Fixtures.questionsCard("card-questions-es")), language: .spanish)
+    }
+
     func test_questionsSecond() throws {
         let document = try Fixtures.questionsCard()
         let store = ScreenStores.cardDetail(document) { state in

@@ -195,6 +195,9 @@ public struct CardStep: Codable, Equatable, Sendable {
     public let need: String; public let why: String?; public let actions: [Action]
     /// The way to answer in words.
     public let write: Action?
+    /// "Why each option" for this question alone, when its options are explained.
+    public let contentRow: ContentRow?
+    enum CodingKeys: String, CodingKey { case need, why, actions, write; case contentRow = "content_row" }
 }
 public struct Card: Codable, Equatable, Sendable {
     public let id: String; public let link: Link?; public let icon: Icon; public let eyebrow: Label?; public let title: String; public let subtitle: String?

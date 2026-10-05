@@ -36,6 +36,17 @@ final class TriageCardQuestionsTests: XCTestCase {
     }
 
     @MainActor
+    func testTheWhyEachOptionRowCountsOnlyTheOptionsOfTheQuestionShown() async throws {
+        let store = try store()
+        XCTAssertNil(store.state.card?.contentRow, "the card's own row would count every question's options")
+        XCTAssertEqual(store.state.step?.contentRow?.summary, "2 options")
+        await store.send(.actionTapped(store.state.buttons[0]))
+        XCTAssertEqual(store.state.step?.contentRow?.summary, "2 options")
+        await store.send(.actionTapped(store.state.buttons[0]))
+        XCTAssertEqual(store.state.step?.contentRow?.summary, "3 options", "the third question has three")
+    }
+
+    @MainActor
     func testEachAnswerAdvancesToTheNextQuestionAndSendsNothingUntilTheLastOne() async throws {
         let feed = FeedStub()
         let store = try store(feed: feed)

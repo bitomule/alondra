@@ -3306,7 +3306,11 @@ fn a_card_that_asks_several_questions_has_one_step_per_question_and_no_buttons_o
         let write = step.write.as_ref().expect("every question can be answered in words");
         assert!(write.option_id.is_none() && matches!(&write.input, Input::Text { required: true, .. }), "{write:?}");
     }
-    assert_eq!(card.content_row.as_ref().map(|row| (row.kind.as_str(), row.summary.as_str())), Some(("options", "4 options")));
+    assert!(card.content_row.is_none(), "the card's own row would count every question's options");
+    let row = |step: usize| card.steps[step].content_row.as_ref().map(|row| (row.kind.as_str(), row.summary.as_str()));
+    assert_eq!(row(0), Some(("options", "2 options")), "only this question's options");
+    assert_eq!(row(1), None, "nothing to explain");
+    assert_eq!(card.steps[2].content_row, None);
     assert!(card.steps[0].actions.iter().all(|a| a.key.is_none()), "the phone has no keys");
     let tui = render_as(Client::Tui, Lang::En);
     let keyed: Vec<Option<&str>> = card_of(&tui).steps[0].actions.iter().map(|a| a.key.as_deref()).collect();
@@ -3340,13 +3344,14 @@ fn golden_questions() -> crate::domain_v2::CardSpec {
         },
         CardQuestion {
             need: "Which port should it listen on?".into(), why: "The old one is taken by another service.".into(),
-            recommended: Some("o1".into()), options: vec![option("o0", "7777", None), option("o1", "8080", None)],
+            recommended: Some("o1".into()), options: vec![option("o0", "7777", Some("The port it listens on today.")), option("o1", "8080", Some("A common alternative."))],
         },
         CardQuestion {
             need: "Should the old pairings keep working?".into(), why: String::new(), recommended: Some("o0".into()),
             options: vec![
                 option("o0", "Keep them", Some("Phones already paired stay paired.")),
                 option("o1", "Pair again", Some("Every phone scans the code once more.")),
+                option("o2", "Ask on each phone", Some("Each phone decides when it next opens.")),
             ],
         },
     ];

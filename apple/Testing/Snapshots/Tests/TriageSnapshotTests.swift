@@ -99,17 +99,27 @@ final class TriageSnapshotTests: XCTestCase {
 
     func test_questionsFirst() throws {
         let store = try questions()
-        assertVariants { Harness(store: store) }
+        assertScreen(inWindow: true) { Harness(store: store) }
     }
 
     func test_questionsSecond() throws {
         let store = try questions(answered: 1)
-        assertVariants { Harness(store: store) }
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_questionsThird() throws {
+        let store = try questions(answered: 2)
+        assertScreen(inWindow: true) { Harness(store: store) }
+    }
+
+    func test_questionsFirst_es() throws {
+        let store = try questions(language: "card-questions-es")
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 
     func test_questionsSecond_es() throws {
         let store = try questions(answered: 1, language: "card-questions-es")
-        assertVariants(language: .spanish) { Harness(store: store) }
+        assertScreen(language: .spanish, inWindow: true) { Harness(store: store) }
     }
 
     func test_decideAnswered() throws {
