@@ -254,16 +254,10 @@ pub(crate) fn pace_warning(usage: &alondra_core::usage::Usage) -> Option<String>
     ))
 }
 
-/// The warning for a launch now, with the Know card that tells the user, once per local day.
+/// The warning for a launch now. It goes to the orchestrator only: the user already sees the
+/// pace on the usage gauge, so no card is raised for it.
 pub(crate) fn warn_when_over_pace(domain: &crate::domain_runtime::DomainRuntime, now: Millis) -> Option<String> {
-    let warning = pace_warning(&domain.live.mods.usage(now)?)?;
-    let id = format!("over-pace-{}", crate::node_reports::local_day(now));
-    if let Err(error) = domain.publish_notice(&id, format!("Today is over its slice of the weekly Claude usage\n{warning}")) {
-        if !matches!(&error, crate::domain_store::StoreError::Domain(domain) if domain.code == "invalid_input") {
-            log!("could not tell the user about the usage pace: {error:?}");
-        }
-    }
-    Some(warning)
+    pace_warning(&domain.live.mods.usage(now)?)
 }
 
 /// How the user hears it: a push that never carries a card.
