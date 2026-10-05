@@ -1627,9 +1627,16 @@ impl DomainState {
                 if self.tasks.contains_key(task_id) {
                     return fail("invalid_input", "Task already exists");
                 };
-                if !self.requests.get(request_id).is_some_and(|r| !r.closed) {
+                let Some(request) = self.requests.get(request_id).filter(|r| !r.closed) else {
                     return fail("not_found", "Open Request required");
                 };
+                if request.title.is_none() && self.tasks.values().any(|task| task.request_id == *request_id) {
+                    return refuse(
+                        "request_title_required",
+                        "request.title",
+                        "Name the Request with title_request (a few words, in the user's language, never the prompt) before adding a second Task",
+                    );
+                }
                 if agent_id
                     .as_ref()
                     .is_some_and(|a| !self.agents.contains_key(a))

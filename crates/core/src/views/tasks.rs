@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain_v2::{DomainState, Request, Task, TaskId, TaskState};
+use crate::domain_v2::{DomainState, Request, RequestId, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn state(task: &Task, domain: &DomainState, lang: super::Lang) -> &'static str {
@@ -58,57 +58,122 @@ pub(super) fn task_row(task: &Task, context: &RenderContext<'_>) -> super::Row {
     row
 }
 
-const REQUEST_FALLBACK_CHARS: usize = 60;
-
-fn clip_at_word(text: &str, limit: usize) -> String {
-    let text = text.trim();
-    if text.chars().count() <= limit {
-        return text.into();
-    }
-    let head: String = text.chars().take(limit + 1).collect();
-    let cut = head.rfind(char::is_whitespace).filter(|at| *at > 0).unwrap_or(head.len());
-    let clipped: String = head[..cut].chars().take(limit).collect();
-    format!("{}…", clipped.trim_end())
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Bucket {
+    Active,
+    Finished,
+    Archived,
 }
 
-fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
-    let tasks: Vec<_> = context
-        .domain
-        .tasks
-        .values()
-        .filter(|task| task.request_id == request.id)
-        .collect();
-    let title = request
-        .title
-        .clone()
-        .or_else(|| (tasks.len() == 1).then(|| tasks[0].title.clone()))
-        .unwrap_or_else(|| match context.client {
-            super::Client::Ios => String::new(),
-            _ => clip_at_word(request.body.lines().next().unwrap_or(""), REQUEST_FALLBACK_CHARS),
-        });
+fn bucket(request: &Request, tasks: &[&Task]) -> Bucket {
+    if !tasks.is_empty() && tasks.iter().all(|task| task.archived) {
+        Bucket::Archived
+    } else if request.closed || (!tasks.is_empty() && tasks.iter().all(|task| task.state.terminal())) {
+        Bucket::Finished
+    } else {
+        Bucket::Active
+    }
+}
+
+/// How the Tasks list places Tasks: under the Task they follow in their own Request, or, when that Task belongs
+/// to another Request still in the active list, under it there.
+struct Forest<'a> {
+    domain: &'a DomainState,
+    by_request: BTreeMap<&'a RequestId, Vec<&'a Task>>,
+    same_parent: BTreeMap<&'a TaskId, &'a Task>,
+    nested_under: BTreeMap<&'a TaskId, &'a Task>,
+    dependents: BTreeMap<&'a TaskId, Vec<&'a Task>>,
+}
+
+impl<'a> Forest<'a> {
+    fn new(domain: &'a DomainState) -> Self {
+        let mut by_request: BTreeMap<&RequestId, Vec<&Task>> = BTreeMap::new();
+        for task in domain.tasks.values() {
+            by_request.entry(&task.request_id).or_default().push(task);
+        }
+        let active: BTreeSet<&RequestId> = domain.requests.values()
+            .filter(|request| bucket(request, by_request.get(&request.id).map_or(&[], Vec::as_slice)) == Bucket::Active)
+            .map(|request| &request.id)
+            .collect();
+        let mut same_parent = BTreeMap::new();
+        let mut nested_under = BTreeMap::new();
+        let mut dependents: BTreeMap<&TaskId, Vec<&Task>> = BTreeMap::new();
+        for tasks in by_request.values() {
+            for task in tasks {
+                let parent = task.dependencies.iter().filter(|id| **id != task.id)
+                    .filter_map(|id| tasks.iter().position(|candidate| candidate.id == *id).map(|position| (position, tasks[position])))
+                    .max_by_key(|(position, _)| *position)
+                    .map(|(_, parent)| parent);
+                if let Some(parent) = parent {
+                    same_parent.insert(&task.id, parent);
+                    continue;
+                }
+                if !active.contains(&task.request_id) { continue; }
+                let across = task.dependencies.iter().filter_map(|id| domain.tasks.get(id))
+                    .find(|dependency| dependency.request_id != task.request_id
+                        && active.contains(&dependency.request_id)
+                        && !Self::reaches(domain, dependency, &task.id));
+                if let Some(parent) = across {
+                    nested_under.insert(&task.id, parent);
+                    dependents.entry(&parent.id).or_default().push(task);
+                }
+            }
+        }
+        Self { domain, by_request, same_parent, nested_under, dependents }
+    }
+
+    fn reaches(domain: &DomainState, from: &Task, target: &TaskId) -> bool {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![from];
+        while let Some(task) = stack.pop() {
+            if !seen.insert(&task.id) { continue; }
+            if task.dependencies.contains(target) { return true; }
+            stack.extend(task.dependencies.iter().filter_map(|id| domain.tasks.get(id)));
+        }
+        false
+    }
+
+    fn tasks_of(&self, request: &RequestId) -> &[&'a Task] {
+        self.by_request.get(request).map_or(&[], Vec::as_slice)
+    }
+
+    fn is_away(&self, task: &Task) -> bool {
+        let mut current = task;
+        for _ in 0..=self.same_parent.len() {
+            if self.nested_under.contains_key(&current.id) { return true; }
+            match self.same_parent.get(&current.id) {
+                Some(parent) => current = parent,
+                None => return false,
+            }
+        }
+        false
+    }
+
+    fn other_requests_dependencies(&self, task: &Task) -> Vec<&'a Task> {
+        task.dependencies.iter().filter_map(|id| self.domain.tasks.get(id))
+            .filter(|dependency| dependency.request_id != task.request_id)
+            .collect()
+    }
+
+    fn request_title(&self, request_id: &RequestId) -> Option<String> {
+        let request = self.domain.requests.get(request_id)?;
+        request.title.clone().or_else(|| match self.tasks_of(request_id) {
+            [task] => Some(task.title.clone()),
+            _ => None,
+        })
+    }
+}
+
+fn request_row(request: &Request, forest: &Forest<'_>, context: &RenderContext<'_>) -> super::Row {
+    let tasks = forest.tasks_of(&request.id);
+    let title = forest.request_title(&request.id)
+        .unwrap_or_else(|| t!(context.lang, "New request", "Nueva petición").into());
     let mut row = common::row(
         &request.id.0,
         &format!("request:{}", request.id),
         Icon::Mission,
         title,
-        Some(
-            if request.withdrawn {
-                t!(context.lang, "Withdrawn", "Retirada")
-            } else if request.closed {
-                t!(context.lang, "Finished", "Terminada")
-            } else if tasks.is_empty() && context.live.orchestrator.as_ref().is_some_and(|o| o.can_retry) {
-                t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
-            } else if tasks.is_empty() {
-                t!(
-                    context.lang,
-                    "The orchestrator is splitting it",
-                    "El orquestador la está dividiendo"
-                )
-            } else {
-                t!(context.lang, "Active", "Activa")
-            }
-            .into(),
-        ),
+        Some(request_state(request, tasks, context).into()),
     );
     row.trailing = context
         .live
@@ -126,18 +191,26 @@ fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
     row.link = tasks.iter().max_by_key(|task| task.revision).map(|task| super::Link::View {
         key: format!("task:{}", task.id),
     });
-    if context.client == super::Client::Tui {
-        match tasks.as_slice() {
+    if request.closed && !request.withdrawn && tasks.is_empty() && request.answer.is_some() {
+        row.icon = Icon::Check;
+    }
+    let mut children = task_tree(tasks, forest, context);
+    if context.client != super::Client::Ios {
+        match tasks {
             [task] => {
                 let (icon, tone) = common::task_presentation(task.state);
                 row.icon = icon;
                 row.struck = task.state == TaskState::Cancelled;
                 row.subtitle = None;
                 row.badges.insert(0, super::Label { text: state(task, context.domain, context.lang).into(), tone });
+                row.children = match children.as_mut_slice() {
+                    [only] if only.id == task.id.0 => std::mem::take(&mut only.children),
+                    _ => children,
+                };
                 return row;
             }
             [] => {}
-            many => {
+            many if context.client == super::Client::Tui => {
                 let done = many.iter().filter(|task| task.state.terminal()).count();
                 row.subtitle = None;
                 row.badges.insert(0, super::Label {
@@ -145,42 +218,106 @@ fn request_row(request: &Request, context: &RenderContext<'_>) -> super::Row {
                     tone: Tone::Neutral,
                 });
             }
+            _ => {}
         }
     }
-    row.children = task_tree(&tasks, context);
+    row.children = children;
     row
 }
 
-fn task_tree(tasks: &[&Task], context: &RenderContext<'_>) -> Vec<super::Row> {
-    let positions: BTreeMap<_, _> = tasks.iter().enumerate().map(|(index, task)| (task.id.0.clone(), index)).collect();
-    let mut parents = BTreeMap::<String, String>::new();
-    for task in tasks {
-        let parent = task.dependencies.iter().filter(|id| id.0 != task.id.0)
-            .filter_map(|id| positions.get(&id.0).map(|position| (id.0.as_str(), *position)))
-            .max_by_key(|(_, position)| *position);
-        if let Some((id, _)) = parent { parents.insert(task.id.0.clone(), id.into()); }
+fn request_state(request: &Request, tasks: &[&Task], context: &RenderContext<'_>) -> &'static str {
+    let without_tasks = tasks.is_empty();
+    if request.withdrawn {
+        t!(context.lang, "Withdrawn", "Retirada")
+    } else if request.closed && without_tasks && request.answer.is_some() {
+        t!(context.lang, "Answered", "Respondida")
+    } else if request.closed || (!without_tasks && tasks.iter().all(|task| task.state.terminal())) {
+        t!(context.lang, "Finished", "Terminada")
+    } else if without_tasks && context.live.orchestrator.as_ref().is_some_and(|o| o.can_retry) {
+        t!(context.lang, "Waiting for your decision", "Esperando tu decisión")
+    } else if without_tasks {
+        t!(context.lang, "The orchestrator is splitting it", "El orquestador la está dividiendo")
+    } else {
+        t!(context.lang, "Active", "Activa")
     }
-    fn branch(task: &Task, tasks: &[&Task], parents: &BTreeMap<String, String>,
-        placed: &mut BTreeSet<String>, depth: u8, context: &RenderContext<'_>) -> Option<super::Row> {
-        if !placed.insert(task.id.0.clone()) { return None; }
-        let mut row = task_row(task, context);
-        row.depth = depth;
-        if context.client == super::Client::Ios {
-            row.children.extend(task.agent_id.as_ref()
-                .and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
-                .and_then(super::fleet::activity));
+}
+
+fn request_items(request: &Request, forest: &Forest<'_>, context: &RenderContext<'_>) -> Vec<Item> {
+    let tasks = forest.tasks_of(&request.id);
+    if request.title.is_none() && tasks.len() > 1 {
+        return task_tree(tasks, forest, context).into_iter().map(Item::Row).collect();
+    }
+    vec![Item::Row(request_row(request, forest, context))]
+}
+
+fn waits_row(dependent: &Task, parent: &Task, depth: u8, name_dependent: bool, context: &RenderContext<'_>) -> super::Row {
+    let mut row = common::row(
+        &format!("waits:{}:{}", dependent.id, parent.id),
+        &format!("task:{}", dependent.id),
+        Icon::Branch,
+        tf!(context.lang, "waits for {title}", "espera a {title}", title = parent.title),
+        name_dependent.then(|| dependent.title.clone()),
+    );
+    row.depth = depth;
+    row
+}
+
+fn mark_origin(row: &mut super::Row, request: &str, context: &RenderContext<'_>) {
+    let text = tf!(context.lang, "from: {request}", "de: {request}", request = request);
+    match context.client {
+        super::Client::Ios => {
+            let mut note = common::row("from", "", Icon::Request, text, None);
+            note.link = None;
+            row.children.push(note);
         }
-        row.children.extend(tasks.iter().filter(|child| parents.get(&child.id.0) == Some(&task.id.0))
-            .filter_map(|child| branch(child, tasks, parents, placed, depth.saturating_add(1), context)));
-        Some(row)
+        super::Client::Tui => row.subtitle = Some(text),
+        _ => row.subtitle = Some(match row.subtitle.take() {
+            Some(state) => format!("{state} · {text}"),
+            None => text,
+        }),
     }
+}
+
+fn branch(task: &Task, depth: u8, forest: &Forest<'_>, placed: &mut BTreeSet<TaskId>,
+    context: &RenderContext<'_>) -> Option<super::Row> {
+    if !placed.insert(task.id.clone()) { return None; }
+    let mut row = task_row(task, context);
+    row.depth = depth;
+    if context.client == super::Client::Ios {
+        row.children.extend(task.agent_id.as_ref()
+            .and_then(|id| context.live.nodes.iter().find(|node| node.agent_id == id.0))
+            .and_then(super::fleet::activity));
+    }
+    if forest.nested_under.contains_key(&task.id)
+        && let Some(origin) = forest.request_title(&task.request_id) {
+        mark_origin(&mut row, &origin, context);
+    }
+    let children = forest.tasks_of(&task.request_id).iter()
+        .filter(|child| forest.same_parent.get(&child.id).is_some_and(|parent| parent.id == task.id))
+        .chain(forest.dependents.get(&task.id).into_iter().flatten())
+        .filter_map(|child| branch(child, depth.saturating_add(1), forest, placed, context))
+        .collect::<Vec<_>>();
+    row.children.extend(children);
+    let named = forest.nested_under.get(&task.id).map(|parent| parent.id.clone());
+    for parent in forest.other_requests_dependencies(task).into_iter().filter(|parent| Some(&parent.id) != named.as_ref()) {
+        row.children.push(waits_row(task, parent, depth.saturating_add(1), false, context));
+    }
+    Some(row)
+}
+
+fn task_tree(tasks: &[&Task], forest: &Forest<'_>, context: &RenderContext<'_>) -> Vec<super::Row> {
     let mut placed = BTreeSet::new();
     let mut rows = Vec::new();
-    for task in tasks.iter().filter(|task| !parents.contains_key(&task.id.0)) {
-        if let Some(row) = branch(task, tasks, &parents, &mut placed, 1, context) { rows.push(row); }
+    for task in tasks.iter().filter(|task| !forest.same_parent.contains_key(&task.id)) {
+        if forest.nested_under.contains_key(&task.id) {
+            rows.extend(forest.other_requests_dependencies(task).into_iter()
+                .map(|parent| waits_row(task, parent, 1, tasks.len() > 1, context)));
+        } else if let Some(row) = branch(task, 1, forest, &mut placed, context) {
+            rows.push(row);
+        }
     }
-    for task in tasks {
-        if let Some(row) = branch(task, tasks, &parents, &mut placed, 1, context) { rows.push(row); }
+    for task in tasks.iter().filter(|task| !forest.is_away(task)) {
+        if let Some(row) = branch(task, 1, forest, &mut placed, context) { rows.push(row); }
     }
     rows
 }
@@ -248,6 +385,7 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
         .filter(|schedule| schedule.deleted_at.is_none()).count() as u32;
     scheduled.count = (scheduled_count > 0).then_some(scheduled_count);
     view.sections.push(scheduled);
+    let forest = Forest::new(context.domain);
     for (id, title) in [
         ("active", t!(context.lang, "Active", "Activas")),
         ("finished", t!(context.lang, "Finished", "Terminadas")),
@@ -258,20 +396,8 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
             .requests
             .values()
             .filter(|request| {
-                let tasks: Vec<_> = context
-                    .domain
-                    .tasks
-                    .values()
-                    .filter(|task| task.request_id == request.id)
-                    .collect();
-                let archived = !tasks.is_empty() && tasks.iter().all(|task| task.archived);
-                let finished = request.closed
-                    || (!tasks.is_empty() && tasks.iter().all(|task| task.state.terminal()));
-                match id {
-                    "archived" => archived,
-                    "finished" => finished && !archived,
-                    _ => !finished && !archived,
-                }
+                let bucket = bucket(request, forest.tasks_of(&request.id));
+                matches!((id, bucket), ("archived", Bucket::Archived) | ("finished", Bucket::Finished) | ("active", Bucket::Active))
             })
             .collect();
         let after = page
@@ -281,7 +407,7 @@ pub(super) fn list(key: &str, context: &RenderContext<'_>) -> Result<View, Build
             .iter()
             .skip(after)
             .take(20)
-            .map(|request| Item::Row(request_row(request, context)))
+            .flat_map(|request| request_items(request, &forest, context))
             .collect();
         let mut section = common::section(id, Some(title.into()), shown);
         section.count = Some(requests.len() as u32);
@@ -396,10 +522,13 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     facts.push(Fact {
         label: t!(context.lang, "Request", "Solicitud").into(),
         value: request
-            .and_then(|r| r.title.clone())
-            .or_else(|| request.map(|r| r.body.lines().next().unwrap_or("").trim().chars().take(120).collect()))
-            .filter(|title: &String| !title.is_empty())
-            .unwrap_or_else(|| t!(context.lang, "Request details unavailable", "Detalles de la solicitud no disponibles").into()),
+            .and_then(|request| request.title.clone())
+            .or_else(|| request.filter(|_| context.domain.tasks.values().filter(|other| other.request_id == task.request_id).count() == 1)
+                .map(|_| task.title.clone()))
+            .unwrap_or_else(|| match request {
+                Some(_) => t!(context.lang, "Untitled request", "Petición sin título").into(),
+                None => t!(context.lang, "Request details unavailable", "Detalles de la solicitud no disponibles").into(),
+            }),
         tone: None,
         link: (context.client != super::Client::Ios).then(|| super::Link::View {
             key: format!("request:{}", task.request_id),
@@ -703,14 +832,11 @@ pub(super) fn request(id: &str, context: &RenderContext<'_>) -> Result<View, Bui
         vec![Item::Facts(Facts {
             items: vec![Fact {
                 label: t!(context.lang, "State", "Estado").into(),
-                value: if request.withdrawn {
-                    t!(context.lang, "Withdrawn", "Retirada")
-                } else if request.closed {
-                    t!(context.lang, "Finished", "Terminada")
-                } else {
-                    t!(context.lang, "Active", "Activa")
-                }
-                .into(),
+                value: request_state(
+                    request,
+                    &context.domain.tasks.values().filter(|task| task.request_id == request.id).collect::<Vec<_>>(),
+                    context,
+                ).into(),
                 tone: None,
                 link: None,
             }],

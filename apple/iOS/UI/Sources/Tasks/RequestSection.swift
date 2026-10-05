@@ -14,9 +14,13 @@ struct RequestSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            header
+            if !request.isLoose { header }
             ForEach(request.tasks) { line in
-                TaskCard(line: line, open: open)
+                if line.isWait {
+                    WaitsRow(line: line, open: open)
+                } else {
+                    TaskCard(line: line, open: open)
+                }
             }
         }
         .padding(.horizontal, 16)
@@ -89,9 +93,9 @@ struct RequestSection: View {
             }
             HStack(spacing: 4) {
                 if let touchedAt = request.touchedAt { RelativeTime(date: touchedAt) }
-                if request.tasks.count > 1 {
+                if request.taskCount > 1 {
                     if request.touchedAt != nil { Text(verbatim: "·") }
-                    Text("\(request.tasks.count) tasks")
+                    Text("\(request.taskCount) tasks")
                 }
             }
             .font(.caption)
@@ -148,6 +152,13 @@ struct TaskCard: View {
                 .strikethrough(line.struck)
                 .lineLimit(3)
                 .multilineTextAlignment(.leading)
+            if let origin = line.origin {
+                Text(verbatim: origin)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+            }
             if line.activity != nil || line.activityAt != nil {
                 let layout = typeSize.isAccessibilitySize
                     ? AnyLayout(VStackLayout(alignment: .leading, spacing: 2))
@@ -169,5 +180,42 @@ struct TaskCard: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Palette.card.opacity(0.85), in: .rect(cornerRadius: 22, style: .continuous))
         .contentShape(.rect)
+    }
+}
+
+/// A task that waits on another request's task is drawn in full under that task; here, in its own request, one short
+/// line says what it waits for and opens the waiting task.
+struct WaitsRow: View {
+    let line: TasksBoard.Line
+    let open: (AlondraContract.Link) -> Void
+
+    var body: some View {
+        Button { if let link = line.link { open(link) } } label: {
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Image(systemName: "arrow.turn.down.right")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 2) {
+                    if let dependent = line.dependent {
+                        Text(verbatim: dependent)
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(Palette.ink)
+                            .lineLimit(2)
+                    }
+                    Text(verbatim: line.title)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                .multilineTextAlignment(.leading)
+                Spacer(minLength: 8)
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+            .contentShape(.rect)
+        }
+        .buttonStyle(PressStyle())
+        .accessibilityElement(children: .combine)
     }
 }

@@ -38,7 +38,7 @@ pub fn entries(view: &View) -> Vec<(String, bool, Option<alondra_core::views::Li
                 Item::Row(row) if opens_schedules(view, &row.id) => {}
                 Item::Row(row) => {
                     result.push((row.id.clone(), false, row.link.clone()));
-                    result.extend(row.children.iter().map(|child| (child.id.clone(), true, child.link.clone())));
+                    result.extend(nested_rows(row).into_iter().map(|child| (child.id.clone(), true, child.link.clone())));
                 }
                 Item::Card(card) if section.id != "detail" => {
                     result.push((card.id.clone(), false, card.link.clone()));
@@ -50,6 +50,11 @@ pub fn entries(view: &View) -> Vec<(String, bool, Option<alondra_core::views::Li
     result
 }
 
+/// Everything under a row, in reading order: the list draws a task tree as one indented column.
+pub fn nested_rows(row: &Row) -> Vec<&Row> {
+    row.children.iter().flat_map(|child| std::iter::once(child).chain(nested_rows(child))).collect()
+}
+
 pub fn rows(view: &View) -> Vec<(&Row, bool)> {
     let mut result = Vec::new();
     for section in &view.sections {
@@ -58,7 +63,7 @@ pub fn rows(view: &View) -> Vec<(&Row, bool)> {
                 Item::Row(row) if opens_schedules(view, &row.id) => {}
                 Item::Row(row) => {
                     result.push((row, false));
-                    result.extend(row.children.iter().map(|child| (child, true)));
+                    result.extend(nested_rows(row).into_iter().map(|child| (child, true)));
                 }
                 Item::Card(_) => {}
                 Item::Markdown(_)
@@ -446,7 +451,7 @@ pub fn document_lines(view: &View, width: usize) -> Vec<Line<'static>> {
                 Item::Card(card) => lines.extend(card_lines(card, width)),
                 Item::Row(row) => {
                     lines.extend(row_lines(row, width, false, row.depth > 0));
-                    for child in &row.children {
+                    for child in nested_rows(row) {
                         lines.extend(row_lines(child, width, false, true));
                     }
                 }

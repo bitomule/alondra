@@ -52,8 +52,9 @@ user follows tasks, not nodes.
   so write the card yourself to give it a proper headline. One the user withdrew is closed with
   `withdrawn: true`.
 - A request that needs work is named first with `title_request`: a few words, at most 60
-  characters, in the user's language, saying what it is about, never a copy of the prompt. Then
-  it gets tasks with `create_task`: a short `title` the user reads, under
+  characters, in the user's language, saying what it is about, never a copy of the prompt. The
+  daemon refuses a second task on an untitled request (`request_title_required`), and the list
+  never shows the prompt as a name. Then it gets tasks with `create_task`: a short `title` the user reads, under
   its `request_id`. Start with one cohesive task and split only when a part has an independently
   useful deliverable or must land first; each implementation task should fit one PR. Keep
   investigation, implementation and validation of the same change together. An ambiguous

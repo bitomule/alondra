@@ -582,7 +582,7 @@ fn draw_views_inbox_list(
             if selected {
                 selected_range = Some((start, lines.len()));
             }
-            for child in &row.children {
+            for child in super::view_render::nested_rows(row) {
                 let selected = app.sel.as_ref().is_some_and(|key| key.0 == child.id);
                 let start = lines.len();
                 lines.extend(super::view_render::row_lines(

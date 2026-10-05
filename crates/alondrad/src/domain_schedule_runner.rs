@@ -378,6 +378,17 @@ async fn dispatch_pending(
     hand_over(domain, run_id, &intent.name, &session, &settings)
 }
 
+fn task_is_closed(domain: &DomainRuntime, run_id: &ScheduleRunId) -> Result<bool> {
+    let state = domain.state()?;
+    Ok(state
+        .schedule
+        .runs
+        .get(run_id)
+        .and_then(|run| run.task_id.as_ref())
+        .and_then(|task| state.tasks.get(task))
+        .is_some_and(|task| task.state.terminal()))
+}
+
 /// The launched session is known: it becomes the run's Agent, its bearer is written into the
 /// settings file it reads, and the run is handed.
 fn hand_over(
@@ -387,6 +398,10 @@ fn hand_over(
     session: &str,
     settings: &Path,
 ) -> Result<()> {
+    if task_is_closed(domain, run_id)? {
+        crate::domain_sessions::remove(settings);
+        return fail_run(domain, run_id, "its Task was closed".into());
+    }
     let agent_id = AgentId(session.to_owned());
     match execute_system(
         domain,
@@ -1341,6 +1356,35 @@ mod tests {
         let state = restarted.state().unwrap();
         assert_eq!(state.schedule.runs[&ScheduleRunId::from("closed")].state, ScheduleRunState::Failed);
         assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-closed")), "no Problem on a closed Task");
+    }
+
+    #[tokio::test]
+    async fn a_found_session_whose_task_was_closed_is_not_bound_and_the_run_stops_retrying() {
+        let fixture = Fixture::new();
+        fixture.claim("closed-found");
+        finish_claim(&fixture.domain, &fixture.home, &"closed-found".into()).unwrap();
+        execute_system(
+            &fixture.domain,
+            Command::ClaimScheduleLaunch { run_id: "closed-found".into(), now: alondra_core::now_millis() },
+        )
+        .unwrap();
+        let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed-found")].task_id.clone().unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
+        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        restarted.live.mods.loaded_for(FOUND_SESSION, Some("closed-found"));
+        let launcher = WithoutMods(Mutex::new(vec![]));
+        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+
+        let state = restarted.state().unwrap();
+        let run = &state.schedule.runs[&ScheduleRunId::from("closed-found")];
+        assert_eq!(run.state, ScheduleRunState::Failed);
+        assert_eq!(run.error.as_deref(), Some("its Task was closed"));
+        assert!(!state.agents.contains_key(&AgentId(FOUND_SESSION.into())), "a closed Task's session is never bound");
+        assert!(state.tasks[run.task_id.as_ref().unwrap()].agent_id.is_none());
+        assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-closed-found")), "no card on a closed Task");
+        let revision = state.revision;
+        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+        assert_eq!(restarted.state().unwrap().revision, revision, "the run is not retried every cycle");
     }
 
     #[tokio::test]

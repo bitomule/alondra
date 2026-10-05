@@ -234,6 +234,18 @@ fn setup_base(store: &mut DomainStore, base: &Value) {
             .iter()
             .map(|value| TaskId::from(string(value)))
             .collect::<BTreeSet<_>>();
+        let request_id: RequestId = string(field(task, "request_id")).into();
+        let loaded = store.load().unwrap();
+        if loaded.requests.get(&request_id).is_some_and(|request| request.title.is_none())
+            && loaded.tasks.values().any(|other| other.request_id == request_id)
+        {
+            setup_command(
+                store,
+                &format!("setup-title-{request_id}"),
+                actor("user-a"),
+                Command::TitleRequest { request_id: request_id.clone(), title: "Setup".into() },
+            );
+        }
         setup_command(
             store,
             &format!("setup-task-{id}"),

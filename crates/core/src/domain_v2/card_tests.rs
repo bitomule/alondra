@@ -49,6 +49,7 @@ fn fixture() -> DomainState {
     let mut s = DomainState::new("epoch");
     register_agent(&mut s, "a");
     ok(&mut s, user(), Command::CreateRequest { request_id: "r".into(), body: "Build it".into(), auto_merge: false });
+    s.requests.get_mut(&"r".into()).unwrap().title = Some("Build it".into());
     task(&mut s, "t", "a");
     s
 }

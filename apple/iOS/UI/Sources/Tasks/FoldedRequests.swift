@@ -55,7 +55,7 @@ private struct FinishedRequestRow: View {
     let first: Bool
     let open: (AlondraContract.Link) -> Void
 
-    private var cancelled: Bool { request.tasks.allSatisfy(\.struck) }
+    private var cancelled: Bool { request.icon != .check && request.tasks.allSatisfy(\.struck) }
 
     var body: some View {
         if let link = request.link {
@@ -79,12 +79,12 @@ private struct FinishedRequestRow: View {
                     if let state = request.state {
                         StateLine(label: state, tint: cancelled ? Palette.slate : Palette.sage, since: request.touchedAt)
                     }
-                    if request.tasks.count != 1 {
+                    if request.taskCount != 1 {
                         Group {
                             if request.tasks.isEmpty {
                                 Text("Finished without tasks")
                             } else {
-                                Text("\(request.tasks.count) tasks")
+                                Text("\(request.taskCount) tasks")
                             }
                         }
                         .font(.subheadline)

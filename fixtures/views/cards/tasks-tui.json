@@ -1,0 +1,261 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "tasks",
+  "key": "tasks",
+  "client": "tui",
+  "version": "v614737a716628609",
+  "cursor": "cursor-1",
+  "title": "Tasks",
+  "status": {
+    "version": "v275224cee54b15ef",
+    "summary": "2 questions · 3 to read · 0 nodes working",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Inbox",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tasks",
+        "value": 5
+      },
+      {
+        "id": "agents",
+        "label": "Fleet",
+        "value": 1
+      },
+      {
+        "id": "working",
+        "label": "working",
+        "value": 0
+      },
+      {
+        "id": "waiting",
+        "label": "waiting",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "idle",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "scheduled",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "schedules",
+          "link": {
+            "kind": "view",
+            "key": "schedules"
+          },
+          "icon": "schedule",
+          "title": "Scheduled Tasks",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "active",
+      "title": "Active",
+      "count": 4,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-9f2156b5a8894e53901f0af576dff6a2",
+          "link": {
+            "kind": "view",
+            "key": "task:t-651c38484cd2f34e74d5107ba05f7f15"
+          },
+          "icon": "action",
+          "title": "Polish the Alondra beta",
+          "badges": [
+            {
+              "text": "Needs you",
+              "tone": "warning"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:40:00.000Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-badge-decrement",
+              "link": {
+                "kind": "view",
+                "key": "task:t-badge-decrement"
+              },
+              "icon": "task",
+              "title": "Decrement the badge on retraction",
+              "subtitle": "from: Badge accuracy",
+              "badges": [
+                {
+                  "text": "Not started",
+                  "tone": "neutral"
+                }
+              ],
+              "depth": 2,
+              "struck": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "r-badge",
+          "link": {
+            "kind": "view",
+            "key": "task:t-badge-decrement"
+          },
+          "icon": "mission",
+          "title": "Badge accuracy",
+          "badges": [
+            {
+              "text": "0 of 2",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:52:00.000Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-badge-count",
+              "link": {
+                "kind": "view",
+                "key": "task:t-badge-count"
+              },
+              "icon": "mission",
+              "title": "Count the retracted pushes",
+              "badges": [
+                {
+                  "text": "Working",
+                  "tone": "accent"
+                }
+              ],
+              "depth": 1,
+              "struck": false
+            },
+            {
+              "id": "waits:t-badge-decrement:t-651c38484cd2f34e74d5107ba05f7f15",
+              "link": {
+                "kind": "view",
+                "key": "task:t-badge-decrement"
+              },
+              "icon": "branch",
+              "title": "waits for Restore the native review experience",
+              "subtitle": "Decrement the badge on retraction",
+              "depth": 1,
+              "struck": false
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "t-legacy-editor",
+          "link": {
+            "kind": "view",
+            "key": "task:t-legacy-editor"
+          },
+          "icon": "pull_request",
+          "title": "Review the schedule editor",
+          "badges": [
+            {
+              "text": "In review",
+              "tone": "info"
+            }
+          ],
+          "depth": 1,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "t-legacy-notes",
+          "link": {
+            "kind": "view",
+            "key": "task:t-legacy-notes"
+          },
+          "icon": "task",
+          "title": "Write the release notes",
+          "badges": [
+            {
+              "text": "Not started",
+              "tone": "neutral"
+            }
+          ],
+          "depth": 1,
+          "struck": false
+        },
+        {
+          "type": "row",
+          "id": "r-new",
+          "icon": "mission",
+          "title": "New request",
+          "subtitle": "The orchestrator is splitting it",
+          "trailing": {
+            "kind": "time",
+            "at": "2026-09-30T09:59:00.000Z",
+            "format": "relative"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "finished",
+      "title": "Finished",
+      "count": 1,
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "r-answer",
+          "icon": "check",
+          "title": "Is main green?",
+          "subtitle": "Answered",
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "archived",
+      "title": "Archived",
+      "count": 0,
+      "collapsed": true,
+      "items": []
+    }
+  ]
+}

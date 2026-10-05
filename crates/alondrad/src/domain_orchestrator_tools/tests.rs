@@ -36,6 +36,7 @@ fn world() -> Fixture {
     let domain = Arc::new(DomainRuntime::open(&home).unwrap());
     command(&domain, Actor::System, Command::RegisterAgent { agent_id: "agent-b".into(), name: "Instance B".into() });
     command(&domain, user(), Command::CreateRequest { request_id: "r".into(), body: "Make the editor readable".into(), auto_merge: false });
+    command(&domain, user(), Command::TitleRequest { request_id: "r".into(), title: "Readable editor".into() });
     command(&domain, user(), Command::CreateTask { task_id: "t".into(), request_id: "r".into(), title: "Editor colours".into(),
         agent_id: None, review_prs: false, dependencies: Default::default(), stack: None });
     Fixture { root, home, project, domain }
