@@ -91,7 +91,9 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
         None => None,
     };
     let text = wording(&body, task, name, home)?;
-    if domain.live.mods.session(&agent.0).is_some_and(|reported| reported.silent(alondra_core::now_millis())) {
+    if domain.live.mods.session(&agent.0).is_some_and(|reported| reported.silent(alondra_core::now_millis()))
+        && !crate::domain_holds::waits_on_user(&state, &agent.0)
+    {
         return Err(refused("session_stalled", format!("{name} stopped processing in the middle of a turn, so a message would not reach it. Alondra restarts it; send again once it is back. Nothing was sent")));
     }
     let acked = domain.live.pushes.message(&agent.0, &text, as_user)

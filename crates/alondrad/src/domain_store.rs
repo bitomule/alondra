@@ -635,6 +635,18 @@ impl DomainStore {
         })?
         .collect::<rusqlite::Result<_>>()?)
     }
+    /// Whether the user was already pushed any of these cards: its push left (or may have) and
+    /// the record outlives a daemon restart.
+    pub(crate) fn user_push_handed(&self, interaction_ids: &[InteractionId]) -> Result<bool> {
+        let mut q = self.conn.prepare("SELECT EXISTS(SELECT 1 FROM domain_messages m JOIN domain_message_user_targets u ON u.message_id=m.id
+            JOIN domain_outbox o ON o.message_id=m.id WHERE m.interaction_id=?1 AND o.state IN('handed','uncertain'))")?;
+        for id in interaction_ids {
+            if q.query_row([&id.0], |row| row.get::<_, bool>(0))? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
     /// Expire orchestrator inbox entries older than the supplied cutoff.
     /// User notifications share the `orchestrator` recipient kind but are
     /// distinguished by their user-target row and keep their own delivery policy.

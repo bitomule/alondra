@@ -51,6 +51,30 @@ pub(crate) async fn check(
     Gate::Send
 }
 
+/// The earlier cards this one repeats: same Task and author, same kind, words and card, each
+/// withdrawn unanswered. A node whose call was cut puts the same card to the user again under a
+/// new id; the user was already told about it, so its push is not a new notice.
+pub(crate) fn earlier_copies(state: &DomainState, id: &InteractionId) -> Vec<InteractionId> {
+    let Some(card) = state.interactions.get(id) else { return vec![] };
+    state.interactions.values()
+        .filter(|earlier| earlier.id != card.id && earlier.withdrawn && earlier.order < card.order)
+        .filter(|earlier| earlier.scope == card.scope && earlier.author == card.author)
+        .filter(|earlier| earlier.body == card.body && earlier.card == card.card)
+        .filter(|earlier| same_kind(&earlier.payload, &card.payload))
+        .map(|earlier| earlier.id.clone())
+        .collect()
+}
+
+fn same_kind(earlier: &InteractionPayload, card: &InteractionPayload) -> bool {
+    match (earlier, card) {
+        (InteractionPayload::Question { options: a, answer: None }, InteractionPayload::Question { options: b, .. })
+        | (InteractionPayload::ActionRequest { options: a, answer: None, .. }, InteractionPayload::ActionRequest { options: b, .. }) => a == b,
+        (InteractionPayload::Delivery { targets: a, is_final: x, .. }, InteractionPayload::Delivery { targets: b, is_final: y, .. }) => a == b && x == y,
+        (InteractionPayload::Information { .. }, InteractionPayload::Information { .. }) => true,
+        _ => false,
+    }
+}
+
 fn card_pending(items: &[InboxItem], id: &InteractionId) -> bool {
     items.iter().any(|item| {
         let InboxSubject::Interaction { interaction_id } = &item.subject;
