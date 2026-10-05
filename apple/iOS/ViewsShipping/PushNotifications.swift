@@ -165,6 +165,7 @@ final class PushCenter {
     }
 
     private func currentBinding() -> NotificationPayload.Binding? { client?.binding }
+    var selectedBinding: NotificationPayload.Binding? { currentBinding() }
     func isCurrent(_ route: NotificationRoute) -> Bool { currentBinding() == route.binding }
 
     /// Simulators and development-signed builds talk to the APNs sandbox; the embedded

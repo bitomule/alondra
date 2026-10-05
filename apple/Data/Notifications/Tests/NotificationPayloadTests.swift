@@ -155,7 +155,7 @@ final class NotificationPayloadTests: XCTestCase {
         XCTAssertEqual(try alert("action_request").level, .timeSensitive)
         XCTAssertEqual(try alert("question").level, .active)
         XCTAssertEqual(try alert("information").level, .passive)
-        XCTAssertEqual(try alert("question").thread, "orchestrator")
+        XCTAssertEqual(try alert("question").thread, "task-a")
         XCTAssertNil(NotificationAlert(aps: ["interruption-level": "critical", "thread-id": ""]).level)
         XCTAssertNil(NotificationAlert(aps: ["thread-id": ""]).thread)
     }

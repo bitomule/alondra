@@ -3040,7 +3040,7 @@ fn a_push_shows_what_the_card_needs_over_why() {
 }
 
 #[test]
-fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_node() {
+fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_task_then_request() {
     use crate::domain_v2::{CardKind::*, Hold};
     let level = |kind, blocking: bool| {
         let mut state = held_fixture(Hold::Permission, spec(kind, "Do it", "Because."));
@@ -3056,8 +3056,13 @@ fn a_push_interrupts_by_what_the_card_holds_back_and_groups_by_node() {
         assert_eq!(level(kind, blocking), expected, "{kind:?} blocking={blocking}");
     }
     let state = held_fixture(Hold::Permission, spec(Authorize, "Do it", "Because."));
-    assert_eq!(push_content(&state, "i-1", Lang::En).unwrap().thread.as_deref(), Some("a-1"), "one thread per node");
-    assert_eq!(push_content(&state, "i-4", Lang::En).unwrap().thread.as_deref(), Some("orchestrator"));
+    let thread = |state: &DomainState, id: &str| push_content(state, id, Lang::En).unwrap().thread;
+    assert_eq!(thread(&state, "i-1").as_deref(), Some("t-1"), "one thread per Task, whoever wrote the card");
+    assert_eq!(thread(&state, "i-2").as_deref(), Some("t-1"), "a system card of the Task joins the agent's");
+    assert_eq!(thread(&state, "i-4").as_deref(), Some("orchestrator"), "no Task and no Request");
+    let mut requested = state.clone();
+    requested.interactions.get_mut(&"i-4".into()).unwrap().scope = Scope::Orchestrator { request_id: Some("r-9".into()) };
+    assert_eq!(thread(&requested, "i-4").as_deref(), Some("r-9"), "an orchestrator card groups under its Request");
 }
 
 /// The actions the terminal offers for a document: its cards' own (each child card is a row of
@@ -3248,5 +3253,6 @@ fn an_orchestrator_answer_waits_in_every_inbox_after_its_request_closes() {
     let pushed = push_content(&with_cards(&state), "a7efd99d-answer-1", Lang::Es).unwrap();
     let alert = pushed.alert.unwrap();
     assert_eq!(alert.title, "Sí. Para el cifrado una imagen son bytes como cualquier otro.");
-    assert_eq!((pushed.interruption_level, pushed.thread.as_deref()), ("passive", Some("orchestrator")));
+    assert_eq!((pushed.interruption_level, pushed.thread.as_deref()), ("passive", Some("a7efd99d")),
+        "the answer groups with the rest of its Request");
 }

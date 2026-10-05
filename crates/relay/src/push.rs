@@ -59,12 +59,60 @@ pub fn validate_registration(reg: &PushRegistration) -> Result<()> {
     Ok(())
 }
 
+/// How APNs hands the push to the phone: an alert the notification service extension
+/// decrypts and shows, or a silent wake of the app that shows nothing.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PushType {
+    #[default]
+    Alert,
+    Background,
+}
+
+/// What the Mac asks of APNs besides the envelope. The collapse id is an opaque digest:
+/// APNs and the relay read it in the clear.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Delivery {
+    pub push_type: PushType,
+    pub collapse_id: Option<String>,
+}
+
+/// Apple caps `apns-collapse-id` at 64 bytes; only base64url keeps it a safe header value.
+pub fn valid_collapse_id(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+}
+
 /// Exact payload submitted to APNs. The caller must enforce its serialized byte limit.
 pub fn payload(envelope: &EnvelopeV1, binding: &str) -> Value {
     json!({
         "aps": {"alert": {"title": "Alondra", "body": "Nueva actividad"}, "mutable-content": 1},
         "alondra": {"envelope": envelope, "push_binding": binding}
     })
+}
+
+/// A background push carries only `content-available`: an alert, badge or sound would make
+/// APNs treat it as an alert.
+pub fn background_payload(envelope: &EnvelopeV1, binding: &str) -> Value {
+    json!({
+        "aps": {"content-available": 1},
+        "alondra": {"envelope": envelope, "push_binding": binding}
+    })
+}
+
+pub fn payload_for(delivery: &Delivery, envelope: &EnvelopeV1, binding: &str) -> Value {
+    match delivery.push_type {
+        PushType::Alert => payload(envelope, binding),
+        PushType::Background => background_payload(envelope, binding),
+    }
+}
+
+/// Apple: a background push must use priority 5; 10 is an error.
+fn headers_for(delivery: &Delivery) -> [(&'static str, &'static str); 2] {
+    match delivery.push_type {
+        PushType::Alert => [("apns-push-type", "alert"), ("apns-priority", "10")],
+        PushType::Background => [("apns-push-type", "background"), ("apns-priority", "5")],
+    }
 }
 
 impl Apns {
@@ -170,8 +218,13 @@ impl Apns {
         ))
     }
 
-    pub async fn send(&self, reg: &PushRegistration, envelope: &EnvelopeV1) -> Result<()> {
-        let body = serde_json::to_vec(&payload(envelope, &reg.push_binding))?;
+    pub async fn send(
+        &self,
+        reg: &PushRegistration,
+        envelope: &EnvelopeV1,
+        delivery: &Delivery,
+    ) -> Result<()> {
+        let body = serde_json::to_vec(&payload_for(delivery, envelope, &reg.push_binding))?;
         if body.len() > APNS_MAX_BYTES {
             bail!("APNs payload exceeds 4096 bytes");
         }
@@ -187,18 +240,23 @@ impl Apns {
             .as_ref()
             .map(|base| format!("{base}/3/device/{}", reg.token))
             .unwrap_or(url);
-        let response = self
+        let mut request = self
             .client
             .post(url)
             .header("authorization", format!("bearer {}", self.bearer()?))
             .header("apns-topic", &self.topic)
-            .header("apns-push-type", "alert")
             .header(
                 "apns-expiration",
                 (envelope.expires_at_ms / 1000).to_string(),
             )
-            .header("apns-priority", "10")
-            .header("content-type", "application/json")
+            .header("content-type", "application/json");
+        for (name, value) in headers_for(delivery) {
+            request = request.header(name, value);
+        }
+        if let Some(collapse_id) = &delivery.collapse_id {
+            request = request.header("apns-collapse-id", collapse_id);
+        }
+        let response = request
             .body(body)
             .send()
             .await
@@ -303,6 +361,29 @@ mod tests {
             fixture["apns"],
             "the notification service extension decrypts exactly this shape"
         );
+    }
+
+    #[test]
+    fn background_payload_matches_the_retract_fixture() {
+        let fixture: Value =
+            serde_json::from_str(include_str!("../../../fixtures/push/retract.json")).unwrap();
+        let alondra = &fixture["apns"]["alondra"];
+        let envelope: EnvelopeV1 = serde_json::from_value(alondra["envelope"].clone()).unwrap();
+        let delivery = Delivery { push_type: PushType::Background, collapse_id: None };
+        assert_eq!(
+            payload_for(&delivery, &envelope, alondra["push_binding"].as_str().unwrap()),
+            fixture["apns"],
+            "the app opens exactly this shape when it wakes in the background"
+        );
+        assert_eq!(headers_for(&delivery), [("apns-push-type", "background"), ("apns-priority", "5")]);
+    }
+
+    #[test]
+    fn collapse_ids_are_short_header_safe_tokens() {
+        assert!(valid_collapse_id(&"A-_9".repeat(16)));
+        for bad in ["", &"a".repeat(65), "card id", "card\nforged", "card/1", "café"] {
+            assert!(!valid_collapse_id(bad), "{bad:?}");
+        }
     }
 
     #[test]

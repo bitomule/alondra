@@ -114,6 +114,32 @@ final class NotificationRuntime {
         }
     }
 
+    /// A Mac's silent push saying which of its cards still wait: their notifications stay, the
+    /// rest leave Notification Center, and the icon badge follows the Mac's queue.
+    func retract(_ userInfo: [AnyHashable: Any]) async -> Bool {
+        guard let vault, let payload = NotificationDecoder.open(userInfo: userInfo, store: vault),
+              let retraction = DeliveredNotificationSync.Retraction(userInfo: payload) else { return false }
+        await removeDelivered(of: retraction.binding, outside: retraction.queue)
+        if let badge = retraction.badge { try? await UNUserNotificationCenter.current().setBadgeCount(badge) }
+        return true
+    }
+
+    /// The scene's loaded queue is the truth for the selected Mac, whether or not its silent
+    /// pushes ever arrived.
+    func reconcile(waiting cards: [String], for services: Connection) async {
+        guard owns(services), let binding = push.selectedBinding else { return }
+        await removeDelivered(of: binding, outside: .open(Set(cards)))
+    }
+
+    private func removeDelivered(of binding: NotificationPayload.Binding, outside queue: DeliveredNotificationSync.Queue) async {
+        let center = UNUserNotificationCenter.current()
+        let delivered = await center.deliveredNotifications().map {
+            DeliveredNotificationSync.Delivered(identifier: $0.request.identifier, userInfo: $0.request.content.userInfo)
+        }
+        let stale = DeliveredNotificationSync.stale(delivered, binding: binding, queue: queue)
+        if !stale.isEmpty { center.removeDeliveredNotifications(withIdentifiers: stale) }
+    }
+
     /// Main-actor claim delivers a tap once, to whichever active scene is ready first.
     func consumeRoute(for services: Connection) -> NotificationRoute? {
         guard owns(services), let route = push.route, push.isCurrent(route) else { return nil }
