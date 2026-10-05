@@ -11,24 +11,42 @@ struct GlassActionBar<Content: View>: View {
                 .controlSize(.large)
                 .buttonBorderShape(.capsule)
                 .font(.headline)
-                .lineLimit(1)
-                .minimumScaleFactor(0.7)
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 8)
     }
 }
 
-/// A row of bar buttons side by side, stacked instead at accessibility text sizes so no label
-/// has to shrink or cut.
-struct GlassBarRow<Content: View>: View {
-    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    @ViewBuilder let content: Content
+/// The bar's buttons in the roomiest layout that fits: all on one line; else the main button
+/// alone with the rest and the accessory under it; else one per line (large text, long labels).
+/// The accessory is told whether it sits in a line (compact) or stacked, to draw itself to match.
+struct GlassBarRow<Primary: View, Secondary: View, Accessory: View>: View {
+    @ViewBuilder let primary: Primary
+    @ViewBuilder let secondary: Secondary
+    @ViewBuilder let accessory: (_ stacked: Bool) -> Accessory
 
     var body: some View {
-        let layout = dynamicTypeSize.isAccessibilitySize
-            ? AnyLayout(VStackLayout(spacing: 10)) : AnyLayout(HStackLayout(spacing: 10))
-        layout { content }
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) {
+                primary
+                secondary
+                accessory(false)
+            }
+            .lineLimit(1)
+            VStack(spacing: 10) {
+                primary
+                HStack(spacing: 10) {
+                    secondary
+                    accessory(false)
+                }
+                .lineLimit(1)
+            }
+            VStack(spacing: 10) {
+                primary
+                secondary
+                accessory(true)
+            }
+        }
     }
 }
 

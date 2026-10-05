@@ -11,7 +11,7 @@
     "Propose": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Propuesta"}}}},
     "Know": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Saber"}}}},
     "Opens the details": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abre el detalle"}}}},
-    "More… (%lld)": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más… (%lld)"}}}},
+    "More actions": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más acciones"}}}},
     "Reply to the node…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Responder al nodo…"}}}},
     "This item changed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Esto ha cambiado"}}}},
     "since": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "desde"}}}},
