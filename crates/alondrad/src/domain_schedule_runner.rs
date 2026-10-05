@@ -600,7 +600,9 @@ pub(crate) async fn run_cycle(
         .map(|run| run.id.clone())
         .collect();
     for run_id in uncertain {
-        recover_uncertain(domain, home, &run_id, launcher).await?;
+        if let Err(error) = recover_uncertain(domain, home, &run_id, launcher).await {
+            log!("could not recover scheduled run {run_id}: {error:#}");
+        }
     }
     answer_failed_launches(domain, home)?;
     let paused = domain.live.usage_pause.is_active();
@@ -1318,6 +1320,27 @@ mod tests {
         let bound: serde_json::Value = serde_json::from_slice(&bound).unwrap();
         assert_eq!(bound["env"]["ALONDRA_DOMAIN_AGENT"], FOUND_SESSION);
         assert_eq!(bound["env"]["ALONDRA_DOMAIN_CAPABILITY"].as_str().unwrap().len(), 64);
+    }
+
+    #[tokio::test]
+    async fn an_uncertain_launch_whose_task_was_closed_fails_quietly_and_never_stops_the_runner() {
+        let fixture = Fixture::new();
+        fixture.claim("closed");
+        finish_claim(&fixture.domain, &fixture.home, &"closed".into()).unwrap();
+        execute_system(
+            &fixture.domain,
+            Command::ClaimScheduleLaunch { run_id: "closed".into(), now: alondra_core::now_millis() },
+        )
+        .unwrap();
+        let task = fixture.domain.state().unwrap().schedule.runs[&ScheduleRunId::from("closed")].task_id.clone().unwrap();
+        execute_system(&fixture.domain, Command::CancelTask { task_id: task }).unwrap();
+        let restarted = DomainRuntime::open(&fixture.home).unwrap();
+        let launcher = WithoutMods(Mutex::new(vec![]));
+        run_cycle(&restarted, &fixture.home, false, &launcher).await.unwrap();
+
+        let state = restarted.state().unwrap();
+        assert_eq!(state.schedule.runs[&ScheduleRunId::from("closed")].state, ScheduleRunState::Failed);
+        assert!(!state.interactions.contains_key(&InteractionId::from("problem-launch-closed")), "no Problem on a closed Task");
     }
 
     #[tokio::test]
