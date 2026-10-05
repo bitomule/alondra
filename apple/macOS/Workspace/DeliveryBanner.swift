@@ -1,3 +1,5 @@
+import AlondraContract
+import AlondraDesign
 import AlondraFeatures
 import ComposableArchitecture
 import SwiftUI
@@ -54,5 +56,20 @@ struct MacNoticeToast: View {
         switch event {
         case .actionCompleted(let message), .failure(let message): message
         }
+    }
+}
+
+public struct UsageExhaustedWindowBanner: View {
+    let usage: UsageExhausted?
+    public init(usage: UsageExhausted?) { self.usage = usage }
+    public var body: some View {
+        ZStack {
+            if let usage {
+                UsageExhaustedBanner(usage)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy, value: usage)
     }
 }
