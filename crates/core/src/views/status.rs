@@ -93,6 +93,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             until: exhausted.until.clone(),
             macs_exhausted: 1,
             macs_total: 1,
+            paused_by_user: exhausted.paused_by_user,
         }),
     };
     for gauge in &mut status.gauges {

@@ -2,6 +2,10 @@ use alondra_core::views::UsageExhausted;
 
 /// The line shown across the top while Claude usage has run out.
 pub(super) fn banner_text(usage: &UsageExhausted, now_millis: i64) -> String {
+    if usage.paused_by_user {
+        let clock = usage.until.get(11..16).unwrap_or(&usage.until);
+        return trf!("Paused by you until tomorrow {clock}", "Pausado por ti hasta mañana {clock}");
+    }
     let when = when_text(&usage.until, now_millis);
     let (exhausted, total) = (usage.macs_exhausted, usage.macs_total);
     if total > 1 && exhausted >= total {
@@ -81,7 +85,7 @@ mod tests {
     use crate::i18n::{Lang, set_for_this_thread};
 
     fn usage(scope: &str, until: &str, exhausted: u32, total: u32) -> UsageExhausted {
-        UsageExhausted { scope: scope.into(), until: until.into(), macs_exhausted: exhausted, macs_total: total }
+        UsageExhausted { scope: scope.into(), until: until.into(), macs_exhausted: exhausted, macs_total: total, paused_by_user: false }
     }
 
     #[test]
@@ -106,6 +110,16 @@ mod tests {
         assert_eq!(banner_text(&all, now), "Todos tus Macs sin cuota de Claude hasta 14:30 · todo está en pausa");
         set_for_this_thread(Lang::En);
         assert_eq!(banner_text(&all, now), "All your Macs are out of Claude usage until 14:30 · everything is paused");
+    }
+
+    #[test]
+    fn a_pause_by_the_user_says_so_in_both_languages() {
+        let now = parse_millis("2026-10-05T20:00:00.000+02:00").unwrap();
+        let paused = UsageExhausted { paused_by_user: true, ..usage("this_mac", "2026-10-06T00:00:00.000+02:00", 1, 1) };
+        set_for_this_thread(Lang::En);
+        assert_eq!(banner_text(&paused, now), "Paused by you until tomorrow 00:00");
+        set_for_this_thread(Lang::Es);
+        assert_eq!(banner_text(&paused, now), "Pausado por ti hasta mañana 00:00");
     }
 
     #[test]

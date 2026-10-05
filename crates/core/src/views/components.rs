@@ -145,6 +145,9 @@ pub struct UsageExhausted {
     pub until: String,
     pub macs_exhausted: u32,
     pub macs_total: u32,
+    /// The user paused until tomorrow instead of Claude running out.
+    #[serde(default)]
+    pub paused_by_user: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Count {

@@ -32,6 +32,9 @@ pub(crate) const RESUME_MESSAGE: &str = "Your Claude usage limit has reset. Carr
 pub(crate) struct Exhausted {
     pub until: Millis,
     pub since: Millis,
+    /// The user paused until tomorrow; Claude did not run out.
+    #[serde(default)]
+    pub by_user: bool,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -45,6 +48,9 @@ struct Record {
     /// Exhaustions that came back right after a resume, which lengthen the next wait.
     #[serde(default)]
     strikes: u32,
+    /// Pace cards whose answer was already acted on, the latest last.
+    #[serde(default)]
+    settled_cards: Vec<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -114,6 +120,12 @@ impl UsagePause {
         let mut record = self.record.lock().expect("usage pause poisoned");
         let reported = until.filter(|at| *at > now).unwrap_or(now + UNKNOWN_RESET_WAIT_MS);
         let change = match record.exhausted.as_mut() {
+            Some(standing) if standing.by_user => {
+                standing.by_user = false;
+                standing.until = standing.until.max(reported);
+                record.announced = false;
+                Change::Extended
+            }
             Some(standing) if reported > standing.until => {
                 standing.until = reported;
                 Change::Extended
@@ -123,7 +135,7 @@ impl UsagePause {
                 let flapping = record.resumed_at.is_some_and(|at| now - at < FLAP_WINDOW_MS);
                 record.strikes = if flapping { record.strikes + 1 } else { 0 };
                 let backoff = if record.strikes == 0 { 0 } else { (BACKOFF_BASE_MS << record.strikes.min(10)).min(BACKOFF_CAP_MS) };
-                record.exhausted = Some(Exhausted { until: reported.max(now + backoff), since: now });
+                record.exhausted = Some(Exhausted { until: reported.max(now + backoff), since: now, by_user: false });
                 record.announced = false;
                 Change::Started
             }
@@ -135,6 +147,41 @@ impl UsagePause {
         change
     }
 
+    /// The user chose to pause until `until`. A standing pause or exhaustion is kept, lasting at
+    /// least until then.
+    pub(crate) fn pause_by_user(&self, until: Millis, now: Millis) -> Change {
+        let mut record = self.record.lock().expect("usage pause poisoned");
+        let change = match record.exhausted.as_mut() {
+            Some(standing) if until > standing.until => {
+                standing.until = until;
+                Change::Extended
+            }
+            Some(_) => Change::Unchanged,
+            None => {
+                record.exhausted = Some(Exhausted { until, since: now, by_user: true });
+                Change::Started
+            }
+        };
+        if change != Change::Unchanged {
+            self.save(&record);
+            self.changed.send_replace(record.exhausted.clone());
+        }
+        change
+    }
+
+    /// True the first time a pace card's answer is claimed, so it is acted on once.
+    pub(crate) fn claim_card(&self, id: &str) -> bool {
+        let mut record = self.record.lock().expect("usage pause poisoned");
+        if record.settled_cards.iter().any(|settled| settled == id) {
+            return false;
+        }
+        record.settled_cards.push(id.to_owned());
+        let excess = record.settled_cards.len().saturating_sub(32);
+        record.settled_cards.drain(..excess);
+        self.save(&record);
+        true
+    }
+
     /// The exhaustion the user has not been told about yet, marked as told, and whether it
     /// returned after a resume.
     pub(crate) fn claim_announcement(&self) -> Option<(Exhausted, bool)> {
@@ -142,7 +189,7 @@ impl UsagePause {
         if record.announced {
             return None;
         }
-        let exhausted = record.exhausted.clone()?;
+        let exhausted = record.exhausted.clone().filter(|standing| !standing.by_user)?;
         record.announced = true;
         self.save(&record);
         Some((exhausted, record.strikes > 0))
@@ -151,8 +198,10 @@ impl UsagePause {
     /// Clears the exhaustion; true when the user was told about it, so they hear it is over.
     pub(crate) fn resume(&self, now: Millis) -> Option<bool> {
         let mut record = self.record.lock().expect("usage pause poisoned");
-        record.exhausted.take()?;
-        record.resumed_at = Some(now);
+        let ended = record.exhausted.take()?;
+        if !ended.by_user {
+            record.resumed_at = Some(now);
+        }
         let announced = std::mem::take(&mut record.announced);
         self.save(&record);
         self.changed.send_replace(None);
@@ -242,22 +291,80 @@ pub(crate) fn back_text(spanish: bool) -> String {
     if spanish { "Vuelve la cuota de Claude: los nodos continúan".into() } else { "Claude usage is back: nodes are carrying on".into() }
 }
 
-/// What the orchestrator and the user are told when a launch goes ahead over today's slice of
-/// the week: going over pace is a warning, never a refusal.
-pub(crate) fn pace_warning(usage: &alondra_core::usage::Usage) -> Option<String> {
-    usage.over_pace.then(|| format!(
-        "Today has already used {:.0}% of the week against a {:.0}% slice ({:.0}% of the week used, ~{:.0}% per day left). The launch went ahead: mention it to the user.",
-        usage.today_spent.unwrap_or(0.0),
-        usage.today_share.unwrap_or(0.0),
-        usage.week_percent,
-        usage.per_day_left,
-    ))
+/// The next local midnight after `now`.
+pub(crate) fn next_local_midnight(now: Millis) -> Millis {
+    local_at(now, 1, 0, 0)
 }
 
-/// The warning for a launch now. It goes to the orchestrator only: the user already sees the
-/// pace on the usage gauge, so no card is raised for it.
-pub(crate) fn warn_when_over_pace(domain: &crate::domain_runtime::DomainRuntime, now: Millis) -> Option<String> {
-    pace_warning(&domain.live.mods.usage(now)?)
+fn option(id: &str, label: &str) -> alondra_core::domain_v2::QuestionOption {
+    alondra_core::domain_v2::QuestionOption { id: id.into(), label: label.into(), description: None, inputs: vec![] }
+}
+
+/// A launch going ahead over today's slice of the week puts a card in front of the user, once
+/// per local day: pause until tomorrow or keep going. The launch is never refused.
+pub(crate) fn raise_over_pace_card(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
+    use alondra_core::usage::{OVER_PACE_KEEP_OPTION, OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PaceNumbers};
+    let Some(usage) = domain.live.mods.usage(now).filter(|usage| usage.over_pace) else { return };
+    let numbers = PaceNumbers::of(&usage);
+    let id = format!("{OVER_PACE_PREFIX}{}", crate::node_reports::local_day(now));
+    let options = vec![option(OVER_PACE_PAUSE_OPTION, "Pause until tomorrow"), option(OVER_PACE_KEEP_OPTION, "Keep going")];
+    let raised = domain.ask_user(&id, "Today is over its share of the weekly Claude usage".into(),
+        format!("{}% used today against a {}% share · {}% of the week used", numbers.today_spent, numbers.today_share, numbers.week_percent),
+        numbers.to_body(), options, OVER_PACE_KEEP_OPTION);
+    log_unless_repeated(raised, "the usage pace");
+}
+
+fn log_unless_repeated(result: Result<alondra_core::domain_v2::CommandOutcome, crate::domain_store::StoreError>, what: &str) {
+    if let Err(error) = result
+        && !matches!(&error, crate::domain_store::StoreError::Domain(domain) if domain.code == "invalid_input")
+    {
+        log!("could not tell the user about {what}: {error:?}");
+    }
+}
+
+/// Acts on the answers to the pace cards, once each: "Pause until tomorrow" pauses everything
+/// until the next local midnight and offers to resume early, "Resume now" ends that pause. A
+/// resume card that no longer has a pause behind it is withdrawn.
+pub(crate) fn settle_pace_cards(domain: &crate::domain_runtime::DomainRuntime, now: Millis) {
+    use alondra_core::domain_v2::InteractionPayload;
+    use alondra_core::usage::{OVER_PACE_PAUSE_OPTION, OVER_PACE_PREFIX, PACE_RESUME_OPTION, PACE_RESUME_PREFIX, PACE_STAY_OPTION};
+    let Ok(state) = domain.state() else { return };
+    let pause = &domain.live.usage_pause;
+    for (id, interaction) in state.interactions.iter().filter(|(_, interaction)| !interaction.withdrawn) {
+        let InteractionPayload::Question { answer: Some(answer), .. } = &interaction.payload else { continue };
+        if id.0.starts_with(OVER_PACE_PREFIX) && answer.option_id == OVER_PACE_PAUSE_OPTION && pause.claim_card(&id.0) {
+            pause.pause_by_user(next_local_midnight(now), now);
+            let resume = format!("{PACE_RESUME_PREFIX}{}", crate::node_reports::local_day(now));
+            let options = vec![option(PACE_RESUME_OPTION, "Resume now"), option(PACE_STAY_OPTION, "Stay paused")];
+            let raised = domain.ask_user(&resume, "Resume Claude work now?".into(),
+                "Paused by you until tomorrow 00:00".into(), "paused".into(), options, PACE_STAY_OPTION);
+            log_unless_repeated(raised, "the pause");
+        } else if id.0.starts_with(PACE_RESUME_PREFIX) && answer.option_id == PACE_RESUME_OPTION && pause.claim_card(&id.0)
+            && pause.current().is_some_and(|standing| standing.by_user)
+        {
+            pause.resume(now);
+            wake_nodes(domain);
+        }
+    }
+    if !pause.current().is_some_and(|standing| standing.by_user) {
+        for (id, interaction) in &state.interactions {
+            if id.0.starts_with(PACE_RESUME_PREFIX) && !interaction.withdrawn && state.open(interaction) {
+                let _ = domain.withdraw_problem(id);
+            }
+        }
+    }
+}
+
+async fn watch_pace_cards(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>) {
+    let mut cards = domain.subscribe();
+    let mut pauses = domain.live.usage_pause.subscribe();
+    loop {
+        settle_pace_cards(&domain, now_millis());
+        tokio::select! {
+            changed = cards.changed() => if changed.is_err() { return },
+            changed = pauses.changed() => if changed.is_err() { return },
+        }
+    }
 }
 
 /// How the user hears it: a push that never carries a card.
@@ -301,6 +408,7 @@ impl Alerts for PushAlerts {
 /// Watches the exhaustion: tells the user once when it starts and once when it ends, resumes at
 /// the reset time plus a little jitter, and wakes what waited.
 pub(crate) async fn run(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, alerts: impl Alerts) {
+    tokio::spawn(watch_pace_cards(domain.clone()));
     watch(domain, alerts, JITTER_MAX_MS).await
 }
 
@@ -316,7 +424,7 @@ async fn watch(domain: std::sync::Arc<crate::domain_runtime::DomainRuntime>, ale
             let _ = changes.changed().await;
             continue;
         };
-        let wait = (standing.until - now_millis()).max(0) as u64 + jitter(jitter_max_ms);
+        let wait = (standing.until - now_millis()).max(0) as u64 + if standing.by_user { 0 } else { jitter(jitter_max_ms) };
         tokio::select! {
             _ = tokio::time::sleep(Duration::from_millis(wait)) => {
                 if let Some(announced) = pause.resume(now_millis()) {
@@ -383,14 +491,14 @@ mod tests {
         let pause = UsagePause::persisted_in(&home);
         assert!(!pause.is_active());
         assert_eq!(pause.exhaust(Some(5_000_000), 1_000_000), Change::Started);
-        assert_eq!(pause.current(), Some(Exhausted { until: 5_000_000, since: 1_000_000 }));
+        assert_eq!(pause.current(), Some(Exhausted { until: 5_000_000, since: 1_000_000, by_user: false }));
         assert_eq!(pause.exhaust(Some(4_000_000), 1_100_000), Change::Unchanged, "an earlier reset changes nothing");
         assert_eq!(pause.exhaust(Some(6_000_000), 1_200_000), Change::Extended);
-        assert_eq!(pause.current(), Some(Exhausted { until: 6_000_000, since: 1_000_000 }), "extended, still since the start");
+        assert_eq!(pause.current(), Some(Exhausted { until: 6_000_000, since: 1_000_000, by_user: false }), "extended, still since the start");
 
         let restarted = UsagePause::persisted_in(&home);
         assert_eq!(restarted.current(), pause.current(), "a restart still knows");
-        assert_eq!(restarted.claim_announcement(), Some((Exhausted { until: 6_000_000, since: 1_000_000 }, false)));
+        assert_eq!(restarted.claim_announcement(), Some((Exhausted { until: 6_000_000, since: 1_000_000, by_user: false }, false)));
         assert_eq!(restarted.claim_announcement(), None, "told once");
         assert_eq!(UsagePause::persisted_in(&home).claim_announcement(), None, "and a restart does not tell again");
 
@@ -567,6 +675,137 @@ mod tests {
         assert_eq!(told.len(), 2, "one when it started and one when it ended: {told:?}");
         assert!(told[0].0.starts_with("Out of Claude usage until "), "{told:?}");
         assert_eq!(told[1].0, "Claude usage is back: nodes are carrying on");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    fn over_pace_domain() -> (Arc<DomainRuntime>, std::path::PathBuf) {
+        let (domain, home) = domain();
+        let reset = rfc3339(now_millis() + 5 * 86_400_000);
+        for percent in [12.0, 53.0] {
+            measure(&domain, json!([{"kind": "seven_day", "percent_used": percent, "resets_at": reset}]));
+        }
+        assert!(domain.live.mods.usage(now_millis()).unwrap().over_pace);
+        (domain, home)
+    }
+
+    fn the_card(domain: &DomainRuntime, prefix: &str) -> Option<alondra_core::domain_v2::Interaction> {
+        domain.state().unwrap().interactions.values().find(|card| card.id.0.starts_with(prefix) && !card.withdrawn).cloned()
+    }
+
+    fn answer(domain: &DomainRuntime, card: &str, option: &str) {
+        let state = domain.state().unwrap();
+        domain.execute(&alondra_core::domain_v2::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain_v2::CommandEnvelope {
+            protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION,
+            data_epoch: state.data_epoch,
+            command_id: format!("answer-{card}-{option}").into(),
+            expected_revision: state.revision,
+            command: alondra_core::domain_v2::Command::AnswerQuestion {
+                attachments: vec![], interaction_id: card.into(), option_id: option.into(), inputs: Default::default(),
+            },
+        }, None, || Ok(())).unwrap();
+    }
+
+    #[test]
+    fn the_over_pace_card_has_the_numbers_and_two_options_and_reads_in_each_devices_language() {
+        use alondra_core::views::{Lang, push_content};
+        let (domain, home) = over_pace_domain();
+        raise_over_pace_card(&domain, now_millis());
+        let card = the_card(&domain, "over-pace-").expect("a card for the day");
+        assert_eq!(card.id.0, format!("over-pace-{}", crate::node_reports::local_day(now_millis())));
+        assert_eq!(card.card.kind, alondra_core::domain_v2::CardKind::Decide);
+        assert_eq!(card.author, alondra_core::domain_v2::Author::System);
+        assert!(!card.blocking);
+        assert_eq!(card.card.recommended.as_deref(), Some("keep_going"));
+        let alondra_core::domain_v2::InteractionPayload::Question { options, .. } = &card.payload else { panic!("a question") };
+        assert_eq!(options.iter().map(|option| option.id.as_str()).collect::<Vec<_>>(), ["pause_until_tomorrow", "keep_going"]);
+
+        let state = domain.state().unwrap();
+        let english = push_content(&state, &card.id.0, Lang::En).unwrap();
+        let spanish = push_content(&state, &card.id.0, Lang::Es).unwrap();
+        assert_eq!(english.interruption_level, "passive");
+        assert_eq!(english.alert.as_ref().unwrap().title, "Today is over its share of the weekly Claude usage");
+        assert_eq!(english.alert.unwrap().body.as_deref(), Some("41% used today against a 18% share · 53% of the week used"));
+        assert_eq!(spanish.alert.as_ref().unwrap().title, "Hoy vas por encima de tu parte del uso semanal");
+        assert_eq!(spanish.alert.unwrap().body.as_deref(), Some("41% usado hoy frente a una parte del 18% · 53% de la semana usado"));
+        let labels = |lang| push_content(&state, &card.id.0, lang).unwrap().actions.into_iter().map(|action| action.label).collect::<Vec<_>>();
+        let english_labels = labels(Lang::En);
+        let spanish_labels = labels(Lang::Es);
+        assert!(english_labels.iter().any(|label| label == "Pause until tomorrow") && english_labels.iter().any(|label| label.ends_with("Keep going")), "{english_labels:?}");
+        assert!(spanish_labels.iter().any(|label| label == "Pausar hasta mañana") && spanish_labels.iter().any(|label| label.ends_with("Seguir")), "{spanish_labels:?}");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn answering_pause_pauses_until_local_midnight_and_resume_now_clears_it() {
+        let (domain, home) = over_pace_domain();
+        raise_over_pace_card(&domain, now_millis());
+        let id = the_card(&domain, "over-pace-").unwrap().id.0;
+        answer(&domain, &id, "pause_until_tomorrow");
+        let now = now_millis();
+        settle_pace_cards(&domain, now);
+        let standing = domain.live.usage_pause.current().expect("paused");
+        assert!(standing.by_user);
+        assert_eq!(standing.until, next_local_midnight(now));
+        assert!(standing.until > now && standing.until <= now + 25 * 3_600_000);
+        assert!(domain.live.usage_pause.claim_announcement().is_none(), "the user did this: no push about it");
+        let resume = the_card(&domain, "pace-resume-").expect("a way to resume early");
+
+        settle_pace_cards(&domain, now);
+        assert_eq!(domain.live.usage_pause.current().unwrap().until, standing.until, "answered once, acted on once");
+        answer(&domain, &resume.id.0, "resume_now");
+        settle_pace_cards(&domain, now_millis());
+        assert!(!domain.live.usage_pause.is_active(), "resume now clears the pause");
+        assert_eq!(domain.live.usage_pause.record.lock().unwrap().strikes, 0);
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn answering_keep_going_leaves_nothing_paused() {
+        let (domain, home) = over_pace_domain();
+        raise_over_pace_card(&domain, now_millis());
+        let id = the_card(&domain, "over-pace-").unwrap().id.0;
+        answer(&domain, &id, "keep_going");
+        settle_pace_cards(&domain, now_millis());
+        assert!(!domain.live.usage_pause.is_active());
+        assert!(the_card(&domain, "pace-resume-").is_none());
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn a_resume_card_goes_when_the_pause_ends_by_itself_and_a_claude_limit_takes_over_a_user_pause() {
+        let (domain, home) = over_pace_domain();
+        raise_over_pace_card(&domain, now_millis());
+        answer(&domain, &the_card(&domain, "over-pace-").unwrap().id.0, "pause_until_tomorrow");
+        settle_pace_cards(&domain, now_millis());
+        assert!(the_card(&domain, "pace-resume-").is_some());
+        let pause = &domain.live.usage_pause;
+        let until = pause.current().unwrap().until;
+        pause.exhaust(Some(until + 3_600_000), now_millis());
+        let standing = pause.current().unwrap();
+        assert!(!standing.by_user && standing.until == until + 3_600_000, "Claude's limit is the reason now");
+        assert!(pause.claim_announcement().is_some(), "and the user hears about it");
+        pause.resume(now_millis());
+        settle_pace_cards(&domain, now_millis());
+        assert!(the_card(&domain, "pace-resume-").is_none(), "nothing left to resume");
+        std::fs::remove_dir_all(home).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_pause_by_the_user_resumes_by_itself_at_its_time_without_telling_anyone() {
+        let (domain, home) = domain();
+        let told = Arc::new(Told(Mutex::new(vec![])));
+        domain.live.usage_pause.pause_by_user(now_millis() + 100, now_millis());
+        let watcher = tokio::spawn(watch(domain.clone(), told.clone(), 0));
+        for _ in 0..200 {
+            if !domain.live.usage_pause.is_active() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        watcher.abort();
+        assert!(!domain.live.usage_pause.is_active());
+        assert!(told.0.lock().unwrap().is_empty());
         std::fs::remove_dir_all(home).unwrap();
     }
 }

@@ -38,6 +38,45 @@ pub struct Usage {
     pub over_pace: bool,
 }
 
+/// The cards Alondra raises about the pace of the week's usage. The first is raised once per local
+/// day when a launch goes ahead over today's slice; pausing from it raises the second, which
+/// resumes early. Their words are written when a client asks for them, in its language.
+pub const OVER_PACE_PREFIX: &str = "over-pace-";
+pub const OVER_PACE_PAUSE_OPTION: &str = "pause_until_tomorrow";
+pub const OVER_PACE_KEEP_OPTION: &str = "keep_going";
+pub const PACE_RESUME_PREFIX: &str = "pace-resume-";
+pub const PACE_RESUME_OPTION: &str = "resume_now";
+pub const PACE_STAY_OPTION: &str = "stay_paused";
+
+/// The whole percentages an over-pace card quotes, kept in the card's body.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PaceNumbers {
+    pub today_spent: u32,
+    pub today_share: u32,
+    pub week_percent: u32,
+}
+
+impl PaceNumbers {
+    pub fn of(usage: &Usage) -> Self {
+        let whole = |percent: f64| percent.round().max(0.0) as u32;
+        Self {
+            today_spent: whole(usage.today_spent.unwrap_or(0.0)),
+            today_share: whole(usage.today_share.unwrap_or(0.0)),
+            week_percent: whole(usage.week_percent),
+        }
+    }
+
+    pub fn to_body(self) -> String {
+        format!("{}/{}/{}", self.today_spent, self.today_share, self.week_percent)
+    }
+
+    pub fn from_body(body: &str) -> Option<Self> {
+        let mut parts = body.split('/').map(|part| part.parse::<u32>().ok());
+        let numbers = Self { today_spent: parts.next()??, today_share: parts.next()??, week_percent: parts.next()?? };
+        parts.next().is_none().then_some(numbers)
+    }
+}
+
 const DAY_MILLIS: f64 = 86_400_000.0;
 
 /// `day_start` is the week's percent at today's first measurement; `now` and `measured_at` are

@@ -56,6 +56,42 @@ impl DomainRuntime {
         })
     }
 
+    /// A Decide card authored by Alondra that holds nothing back. `need` and `why` are the English
+    /// source; clients render the text in their own language from the id and `body`. `id` names
+    /// it, so asking twice leaves the first.
+    pub(crate) fn ask_user(
+        &self,
+        id: &str,
+        need: String,
+        why: String,
+        body: String,
+        options: Vec<QuestionOption>,
+        recommended: &str,
+    ) -> Result<CommandOutcome, StoreError> {
+        let state = self.state().map_err(StoreError::Storage)?;
+        if state.interactions.contains_key(&InteractionId(id.to_owned())) {
+            return Err(DomainError::new("invalid_input", "Question already asked").into());
+        }
+        let mut card = CardSpec::new(CardKind::Decide, need).why(why);
+        card.recommended = Some(recommended.to_owned());
+        self.execute_as_system(CommandEnvelope {
+            protocol_version: PROTOCOL_VERSION,
+            data_epoch: state.data_epoch,
+            command_id: format!("ask-{id}").into(),
+            expected_revision: state.revision,
+            command: Command::AskQuestion {
+                attachments: vec![],
+                interaction_id: id.to_owned().into(),
+                scope: Scope::Orchestrator { request_id: None },
+                recipient: Recipient::User,
+                body,
+                blocking: false,
+                options,
+                card,
+            },
+        })
+    }
+
     /// A card of Alondra's that stopped mattering.
     pub(crate) fn withdraw_problem(&self, id: &InteractionId) -> Result<CommandOutcome, StoreError> {
         let state = self.state().map_err(StoreError::Storage)?;

@@ -50,6 +50,8 @@ pub struct LiveSnapshot {
 pub struct LiveUsageExhausted {
     pub since: String,
     pub until: String,
+    #[serde(default)]
+    pub paused_by_user: bool,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LiveNode {

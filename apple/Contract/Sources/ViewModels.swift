@@ -115,13 +115,25 @@ public struct UsageExhausted: Codable, Equatable, Sendable {
     public let until: String
     public let macsExhausted: UInt32
     public let macsTotal: UInt32
-    public init(scope: String, until: String, macsExhausted: UInt32, macsTotal: UInt32) {
+    /// The user paused until tomorrow; Claude did not run out.
+    public let pausedByUser: Bool
+    public init(scope: String, until: String, macsExhausted: UInt32, macsTotal: UInt32, pausedByUser: Bool = false) {
         self.scope = scope; self.until = until; self.macsExhausted = macsExhausted; self.macsTotal = macsTotal
+        self.pausedByUser = pausedByUser
+    }
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        scope = try container.decode(String.self, forKey: .scope)
+        until = try container.decode(String.self, forKey: .until)
+        macsExhausted = try container.decode(UInt32.self, forKey: .macsExhausted)
+        macsTotal = try container.decode(UInt32.self, forKey: .macsTotal)
+        pausedByUser = try container.decodeIfPresent(Bool.self, forKey: .pausedByUser) ?? false
     }
     enum CodingKeys: String, CodingKey {
         case scope, until
         case macsExhausted = "macs_exhausted"
         case macsTotal = "macs_total"
+        case pausedByUser = "paused_by_user"
     }
 }
 public struct ViewCount: Codable, Equatable, Sendable { public let id: String; public let label: String; public let value: UInt32 }
