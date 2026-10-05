@@ -172,7 +172,16 @@ async fn node_connection(mut stream: UnixStream, domain: &DomainRuntime, hello: 
     if domain.live.sandbox.load(std::sync::atomic::Ordering::Relaxed) {
         register_probe(domain, &session)?;
     }
+    let launch_key = hello.launch_key.clone();
     let number = domain.live.mods.connect(hello, alondra_core::now_millis());
+    if let Some(key) = launch_key
+        && let Err(error) = crate::domain_sessions::reissue(domain, &key, &AgentId(session.clone()))
+    {
+        log!("could not issue {session} a new capability: {error:#}");
+    }
+    if let Some(pid) = stream.peer_cred().ok().and_then(|credentials| credentials.pid()) {
+        domain.live.mods.set_peer(&session, pid as u32);
+    }
     let mut lines = domain.live.pushes.attach(&session, number);
     let mut changed = domain.subscribe();
     let held = async {
@@ -305,6 +314,17 @@ fn text(payload: &Value, key: &str) -> Option<String> {
     payload.get(key).and_then(Value::as_str).map(str::to_owned)
 }
 
+/// The bearer of a session that ended is revoked. Its settings file goes with it unless the Agent
+/// still has work: then `claude respawn` finds the file it passes again.
+pub(crate) fn session_ended(domain: &DomainRuntime, agent: &AgentId) -> Result<()> {
+    domain.revoke_agent(&agent.0)?;
+    if crate::node_revival::has_open_task(domain, &agent.0) {
+        crate::domain_sessions::suspend_for(domain.home(), agent)
+    } else {
+        crate::domain_sessions::remove_for(domain.home(), agent)
+    }
+}
+
 fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
     let Some(session_id) = text(payload, "session_id") else {
         return Ok(Reply::Plain(json!({})));
@@ -331,8 +351,7 @@ fn respond(domain: &DomainRuntime, payload: &Value) -> Result<Reply> {
         let event_id = format!("{event}-{session_id}-{}", crate::auth::random_hex(8));
         lifecycle::observe_instance(domain, &agent_id, connected, &lifecycle::prepare_event(domain, &event_id)?)?;
         if !connected {
-            domain.revoke_agent(&session_id)?;
-            crate::domain_sessions::remove_for(domain.home(), &agent_id)?;
+            session_ended(domain, &agent_id)?;
         }
     }
     if !matches!(event.as_str(), "SessionStart" | "SessionEnd") {

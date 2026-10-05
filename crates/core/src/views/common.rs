@@ -74,7 +74,7 @@ pub(super) fn state_tone(state: &str) -> super::Tone {
         "running" | "working" | "busy" | "free" | "waiting_answer" => Tone::Accent,
         "done" | "delivered" => Tone::Success,
         "cancelled" | "archived" | "not_started" | "connected" | "idle" => Tone::Neutral,
-        "offline" => Tone::Critical,
+        "offline" | "failed" => Tone::Critical,
         _ => Tone::Neutral,
     }
 }

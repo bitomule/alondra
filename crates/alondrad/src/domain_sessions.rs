@@ -51,21 +51,57 @@ pub(crate) fn flags(plugins: &[&Path], settings: &Path) -> Vec<String> {
 
 /// The files bound to an Agent whose session ended.
 pub(crate) fn remove_for(home: &Path, agent: &AgentId) -> Result<()> {
-    let entries = match std::fs::read_dir(home.join(DIR)) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(error.into()),
-    };
-    for entry in entries {
-        let path = entry?.path();
-        let bound = std::fs::read(&path).ok()
-            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
-            .is_some_and(|settings| settings["env"][AGENT_ENV] == json!(agent.0));
-        if bound {
-            std::fs::remove_file(&path)?;
-        }
+    for path in files_bound_to(home, agent)? {
+        std::fs::remove_file(&path)?;
     }
     Ok(())
+}
+
+/// The session ended while its Agent still has work: `claude respawn` and a restart pass the
+/// same `--settings` path again, so the file stays and only the bearer, which was revoked, goes.
+pub(crate) fn suspend_for(home: &Path, agent: &AgentId) -> Result<()> {
+    for path in files_bound_to(home, agent)? {
+        let mut settings: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
+        if let Some(env) = settings["env"].as_object_mut() {
+            env.remove("ALONDRA_DOMAIN_CAPABILITY");
+        }
+        write_private(&path, &settings)?;
+    }
+    Ok(())
+}
+
+/// A restarted session connected under a settings file that kept no bearer: it gets a new one.
+/// True when it was issued.
+pub(crate) fn reissue(domain: &crate::domain_runtime::DomainRuntime, key: &str, agent: &AgentId) -> Result<bool> {
+    anyhow::ensure!(!key.is_empty() && key.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'), "invalid session settings key");
+    let path = domain.home().join(DIR).join(format!("{key}.json"));
+    let Ok(bytes) = std::fs::read(&path) else { return Ok(false) };
+    let settings: Value = serde_json::from_slice(&bytes)?;
+    if settings["env"][AGENT_ENV] != json!(agent.0) || settings["env"].get("ALONDRA_DOMAIN_CAPABILITY").is_some() {
+        return Ok(false);
+    }
+    let capability = domain.bind_agent(&agent.0)?;
+    bind(&path, agent, capability.expose_for_child_environment())?;
+    Ok(true)
+}
+
+fn files_bound_to(home: &Path, agent: &AgentId) -> Result<Vec<PathBuf>> {
+    let entries = match std::fs::read_dir(home.join(DIR)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+    };
+    let mut bound = vec![];
+    for entry in entries {
+        let path = entry?.path();
+        let ours = std::fs::read(&path).ok()
+            .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+            .is_some_and(|settings| settings["env"][AGENT_ENV] == json!(agent.0));
+        if ours {
+            bound.push(path);
+        }
+    }
+    Ok(bound)
 }
 
 pub(crate) fn remove(path: &Path) {
