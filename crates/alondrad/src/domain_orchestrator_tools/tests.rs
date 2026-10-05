@@ -306,7 +306,7 @@ fn measured(domain: &DomainRuntime, week_percent: f64) {
 }
 
 #[tokio::test]
-async fn going_over_todays_slice_warns_and_still_launches_and_tells_the_user_once_a_day() {
+async fn going_over_todays_slice_warns_the_orchestrator_and_still_launches_without_a_card() {
     let f = world();
     measured(&f.domain, 12.0);
     measured(&f.domain, 53.0);
@@ -321,9 +321,8 @@ async fn going_over_todays_slice_warns_and_still_launches_and_tells_the_user_onc
 
     let notices = || f.domain.state().unwrap().interactions.values()
         .filter(|card| card.card.kind == alondra_core::domain_v2::CardKind::Know && card.id.0.starts_with("over-pace-")).count();
-    assert_eq!(notices(), 1, "a Know card tells the user");
+    assert_eq!(notices(), 0, "the gauge shows the pace; no card for it");
     assert!(crate::usage_pause::warn_when_over_pace(&f.domain, alondra_core::now_millis()).is_some(), "later launches still warn");
-    assert_eq!(notices(), 1, "but the user is told once that day");
 
     let within = world();
     measured(&within.domain, 12.0);
