@@ -4,7 +4,10 @@ load("@rules_rust//rust:defs.bzl", "rust_binary", "rust_test")
 rust_binary(
     name = "alondrad",
     srcs = glob(["src/**/*.rs"]),
-    compile_data = ["src/domain_store/schema.sql"],
+    compile_data = [
+        "src/domain_store/schema.sql",
+        "src/domain_store/schedule_launch_transition.sql",
+    ],
     edition = "2024",
     version = "0.1.0",
     visibility = ["//visibility:public"],

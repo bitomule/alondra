@@ -1500,7 +1500,7 @@ impl DomainState {
                         title: task.title.clone(),
                         reason: reason.trim().to_owned(),
                     });
-                    let problem = InteractionId(format!("problem-launch-{}", run_id.0));
+                    let problem = InteractionId(format!("{LAUNCH_PROBLEM_PREFIX}{}", run_id.0));
                     let card = CardSpec::new(CardKind::Problem, clip(&format!("Scheduled task \"{}\" could not start", task.title), CardSpec::NEED_MAX))
                         .why(clip(reason, CardSpec::WHY_MAX))
                         .content(ContentKind::Diagnosis, reason.trim());
@@ -1513,7 +1513,10 @@ impl DomainState {
                         false,
                         &[],
                         InteractionPayload::Question {
-                            options: vec![QuestionOption { id: "seen".into(), label: "Got it".into(), description: Some("It stays not started; ask the orchestrator to start it again".into()), inputs: vec![] }],
+                            options: vec![
+                                QuestionOption { id: LAUNCH_RETRY_OPTION.into(), label: "Try again".into(), description: Some("Launch this schedule once more".into()), inputs: vec![] },
+                                QuestionOption { id: "seen".into(), label: "Skip it".into(), description: Some("It stays not started; ask the orchestrator to start it again".into()), inputs: vec![] },
+                            ],
                             answer: None,
                         },
                         &card,
