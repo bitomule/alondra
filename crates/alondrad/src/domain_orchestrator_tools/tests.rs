@@ -99,8 +99,8 @@ fn launch_body(f: &Fixture, extra: Value) -> LaunchBody {
 
 fn settings_files(home: &Path) -> Vec<Value> {
     std::fs::read_dir(home.join("runtime/sessions")).map(|entries| entries.map(|entry| {
-        serde_json::from_slice(&std::fs::read(entry.unwrap().path()).unwrap()).unwrap()
-    }).collect()).unwrap_or_default()
+        serde_json::from_slice::<Value>(&std::fs::read(entry.unwrap().path()).unwrap()).unwrap()
+    }).filter(|settings| settings["env"].as_object().is_some_and(|env| !env.is_empty())).collect()).unwrap_or_default()
 }
 
 #[test]

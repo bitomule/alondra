@@ -148,7 +148,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
     args.push("--".into());
     args.push(prompt);
     let discard = |error: DomainError| {
-        crate::domain_sessions::remove(&settings);
+        crate::domain_sessions::release(&settings);
         error
     };
     let output = launcher.run(&body.cwd, &args).await.map_err(|(_, reason)| discard(DomainError::new("launch_failed", reason)))?;

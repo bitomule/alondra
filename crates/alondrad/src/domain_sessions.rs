@@ -104,8 +104,12 @@ fn files_bound_to(home: &Path, agent: &AgentId) -> Result<Vec<PathBuf>> {
     Ok(bound)
 }
 
-pub(crate) fn remove(path: &Path) {
-    let _ = std::fs::remove_file(path);
+/// A launch Alondra gave up on. A Claude session may still exist for it, and Claude Code passes
+/// the same `--settings` path when it is resumed, so the file stays, unbound from Alondra.
+pub(crate) fn release(path: &Path) {
+    if path.exists() {
+        let _ = write_private(path, &json!({"enabledPlugins": {"alondra@alondra": false, "alondra-orchestrator@alondra": false}, "env": {}}));
+    }
 }
 
 fn write_private(path: &Path, value: &Value) -> Result<()> {
