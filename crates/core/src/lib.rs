@@ -8,6 +8,7 @@ pub mod event;
 pub mod issues;
 pub mod keeper;
 pub mod model;
+pub mod model_label;
 pub mod mods;
 pub mod options;
 pub mod orchestrator;

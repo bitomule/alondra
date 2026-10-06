@@ -24,8 +24,13 @@ fn wire<T: serde::Serialize>(value: &T) -> Value {
 }
 
 /// A live session as the legacy overview listed it, named after its Agent.
-fn node_row(node: &Node, state: &DomainState) -> Value {
+fn model_of(domain: &DomainRuntime, session_id: &str) -> Value {
+    json!(domain.live.mods.session(session_id).and_then(|reported| reported.model))
+}
+
+fn node_row(node: &Node, state: &DomainState, domain: &DomainRuntime) -> Value {
     let mut row = wire(node);
+    row["model"] = model_of(domain, &node.session_id);
     if node.name.is_none() {
         row["name"] = json!(state.agents.get(&AgentId(node.session_id.clone())).map(|a| a.name.clone()));
     }
@@ -94,7 +99,7 @@ pub(crate) fn fleet(domain: &DomainRuntime, machine: Value, usage: Value) -> Res
     let state = state(domain)?;
     let nodes: Vec<Value> = domain.live.nodes().iter()
         .filter(|n| state.agents.contains_key(&AgentId(n.session_id.clone())))
-        .map(|n| node_row(n, &state)).collect();
+        .map(|n| node_row(n, &state, domain)).collect();
     let interactions = || state.interactions.values().filter(|i| matches!(i.recipient, Recipient::User | Recipient::Orchestrator));
     let open_questions: Vec<Value> = interactions().filter_map(|i| question(i, &state))
         .filter(|q| q["status"] == "open").collect();
@@ -126,7 +131,7 @@ pub(crate) fn node(domain: &DomainRuntime, key: &str) -> Result<Value, DomainErr
     let state = state(domain)?;
     let agent = agent_named(domain, &state, key)?;
     let live = domain.live.node(&agent.0);
-    let mut node = live.as_ref().map_or_else(|| json!({"session_id": agent.0, "alive": false}), |n| node_row(n, &state));
+    let mut node = live.as_ref().map_or_else(|| json!({"session_id": agent.0, "alive": false}), |n| node_row(n, &state, domain));
     if node["name"].is_null() {
         node["name"] = json!(state.agents[&agent].name);
     }
@@ -201,7 +206,7 @@ pub(crate) fn candidates(domain: &DomainRuntime, task: Option<&str>, repo: Optio
         }
         let name = n.name.clone().unwrap_or_else(|| agent.name.clone());
         let mut row = json!({"node": name, "session_id": agent.id, "short_id": n.short_id, "project": n.project(),
-            "status": wire(&n.status), "why": why});
+            "status": wire(&n.status), "model": model_of(domain, &n.session_id), "why": why});
         let key = (why.len(), n.status != NodeStatus::Free, name);
         match state.busy_with(&agent.id, task.map_or(&none, |t| &t.id)) {
             Some(current) => {

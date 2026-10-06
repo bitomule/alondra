@@ -165,6 +165,7 @@ pub(crate) async fn gather(
                 context_percent: reported.context.as_ref().and_then(|context| context.percent).map(|percent| percent.round().clamp(0.0, 999.0) as u32),
                 context_window: reported.context.as_ref().map(|context| context.window),
                 cost_cents: reported.cost_usd.map(|usd| (usd * 100.0).round().max(0.0) as u64),
+                model: reported.model.clone(),
                 reconnecting,
                 waiting_until: exhausted.as_ref().filter(|_| node.usage_limited).map(|exhausted| timestamp(exhausted.until)),
             })

@@ -36,6 +36,8 @@ pub(crate) enum Report {
         #[serde(default)]
         cost_usd: Option<f64>,
     },
+    #[serde(rename = "model")]
+    Model { model: String },
     #[serde(rename = "turn.start")]
     TurnStart,
     #[serde(rename = "turn.complete")]
@@ -149,6 +151,8 @@ pub(crate) struct Reported {
     pub answer: Option<Answer>,
     pub context: Option<ContextReading>,
     pub cost_usd: Option<f64>,
+    /// The model id the main thread last sent a request with.
+    pub model: Option<String>,
     /// The subagents and background shells the node has running, by the id Claude Code gives them.
     pub background: Vec<(String, BackgroundItem)>,
 }
@@ -331,6 +335,7 @@ impl Reports {
                 }
                 session.cost_usd = cost_usd.or(session.cost_usd);
             }
+            Report::Model { model } => session.model = Some(model),
             Report::TurnStart => session.working_since = Some(now),
             Report::TurnComplete { answer, aborted } => {
                 session.working_since = None;
@@ -625,6 +630,14 @@ mod tests {
         let session = reports.session("s").unwrap();
         assert_eq!(session.answer, Some(Answer { text: "Stopped.".into(), at: 6, aborted: true }));
         assert_eq!(session.working_since, None);
+    }
+
+    #[test]
+    fn the_model_a_session_reports_is_the_one_it_keeps() {
+        let reports = Reports::default();
+        reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-opus-5-5"})), 1, "2026-10-02");
+        reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-sonnet-5-5"})), 2, "2026-10-02");
+        assert_eq!(reports.session("s").unwrap().model.as_deref(), Some("claude-sonnet-5-5"));
     }
 
     #[test]

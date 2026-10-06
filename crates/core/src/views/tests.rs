@@ -2367,6 +2367,23 @@ fn node_last_message_keeps_its_time_next_to_the_message() {
 }
 
 #[test]
+fn a_node_shows_the_model_it_runs_on_in_its_row_and_its_detail() {
+    let mut state = fixture();
+    state.interactions.clear();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    let mut live = LiveSnapshot::default();
+    live.nodes.push(LiveNode { agent_id: "a-1".into(), name: "Build a feature".into(), model: Some("claude-opus-5-5[1m]".into()), ..Default::default() });
+    let fleet = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    let row = fleet.sections.iter().flat_map(|section| &section.items)
+        .find_map(|item| if let Item::Row(row) = item && row.id == "a-1" { Some(row.clone()) } else { None }).unwrap();
+    assert!(row.badges.iter().any(|badge| badge.text == "Opus 5.5"));
+    let detail = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    let facts: Vec<_> = detail.sections.iter().flat_map(|section| &section.items)
+        .flat_map(|item| match item { Item::Facts(facts) => facts.items.clone(), _ => vec![] }).collect();
+    assert!(facts.iter().any(|fact| fact.label == "Modelo" && fact.value == "Opus 5.5"));
+}
+
+#[test]
 fn an_ios_fleet_item_is_the_node_and_its_one_task_without_readings() {
     let mut state = fixture();
     state.interactions.clear();
