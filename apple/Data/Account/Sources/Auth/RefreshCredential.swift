@@ -3,7 +3,11 @@ import Foundation
 /// Stored atomically in one Keychain item. A pending or uncertain credential must
 /// never be used to restore application services after a process restart.
 public struct RefreshCredential: Codable, Equatable, Sendable {
-    public enum Status: String, Codable, Sendable { case active, pendingRevocation, rotationUncertain }
+    public enum Status: String, Codable, Sendable { case active, pendingRevocation, rotationUncertain
+        /// The issuer refused this token after a lost refresh. Never refresh it again; signing
+        /// in revokes it first so a successor it may have issued cannot outlive it.
+        case rejected
+    }
     public let token: String
     public var status: Status
     private let version: Int

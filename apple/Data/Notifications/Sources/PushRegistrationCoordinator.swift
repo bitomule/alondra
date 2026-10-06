@@ -56,7 +56,8 @@ public final class PushRegistrationCoordinator {
                     registered[client.binding] = fingerprint
                 } catch {
                     guard current == generation, !Task.isCancelled else { return }
-                    failures.append(error.localizedDescription)
+                    let message = Self.failureMessage(error)
+                    if !failures.contains(message) { failures.append(message) }
                 }
             }
             guard current == generation, !Task.isCancelled else { return }
@@ -77,5 +78,23 @@ public final class PushRegistrationCoordinator {
 
     func waitForPendingRegistration() async { await task?.value }
     private func setState(_ state: State) { self.state = state; onChange?(state) }
-    private enum Failure: Error { case duplicateIdentity }
+    /// What the Settings row says about a Mac that did not take this device's alerts.
+    nonisolated static func failureMessage(_ error: any Error) -> String {
+        switch error {
+        case RelayWireError.unauthorized, APIError.unauthorized,
+             RelaySessionError.localStatus(401), RelaySessionError.localStatus(403):
+            String(localized: "Your Mac no longer accepts this device. Link it again in Settings.")
+        case is URLError, RelayWireError.outcomeUnknown, RelaySessionError.outcomeUnknown:
+            String(localized: "Your Mac couldn’t be reached to turn on alerts. Alondra tries again when you reopen the app.")
+        default:
+            String(localized: "Your Mac didn’t accept this device’s alerts. Alondra tries again when you reopen the app.")
+        }
+    }
+
+    enum Failure: LocalizedError, Equatable {
+        case duplicateIdentity
+        var errorDescription: String? {
+            String(localized: "Two linked Macs look like the same Mac. Remove one in Settings and link it again.")
+        }
+    }
 }

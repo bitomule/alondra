@@ -5,7 +5,7 @@ import SwiftUI
 public extension SignInFeature.State {
     /// What the connection screen shows while the saved workspace is being restored.
     var connectionProblem: ConnectionProblem? {
-        if logoutIncomplete { return .unexpected }
+        if logoutIncomplete { return .signOutIncomplete }
         return restoreProblem
     }
 }
@@ -26,7 +26,8 @@ public struct RestoreConnectionView: View {
         ConnectionLostView(problem: store.connectionProblem,
                            retry: { store.send(.retryRestore) },
                            signIn: { store.send(.reauthenticate) },
-                           settings: { settingsPresented = true })
+                           settings: { settingsPresented = true },
+                           signOut: { store.send(.logout) })
             .disabled(store.restorationInFlight && store.connectionProblem?.needsAction == true)
             .retriesConnection(networkChanges: networkChanges) { store.send(.retryNow) }
             .sheet(isPresented: $settingsPresented) {

@@ -101,7 +101,7 @@ import Testing
         let store = TestStore(initialState: SignInFeature.State()) { SignInFeature() } withDependencies: {
             $0.continuousClock = clock
             $0.cloudPairing.hasSavedConfiguration = { true }
-            $0.cloudPairing.restore = { throw RestoreError.reauthenticationRequired("Sign in again") }
+            $0.cloudPairing.restore = { throw RestoreError.reauthenticationRequired }
             $0.cloudPairing.logout = { Issue.record("Reauthentication must preserve pairing") }
         }
         await store.send(.appeared) { $0.restorationInFlight = true }

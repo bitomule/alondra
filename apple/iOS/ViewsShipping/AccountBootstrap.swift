@@ -10,7 +10,7 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
         UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }
             .first(where: { $0.activationState == .foregroundActive })?.windows.first(where: \.isKeyWindow)
     })
-    return AccountSession(auth: AuthSession(browser: browser), displayName: "iPhone",
+    return AccountSession(auth: AuthSession(browser: browser, refreshGrant: keepRefreshAlive), displayName: "iPhone",
         storageDirectory: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra"), prepareCamera: {
         guard await DataScannerViewController.isSupported else { return false }
         let allowed = await AVCaptureDevice.requestAccess(for: .video)
@@ -22,3 +22,9 @@ func makeAccountSession(notifications: NotificationRuntime) -> AccountSession {
         try await notifications.deactivate()
     })
 }
+
+/// A refresh cut off by suspension loses the issuer's answer; finish it in the background.
+private let keepRefreshAlive = pairedRefreshGrant(begin: { expiration in
+    let task = UIApplication.shared.beginBackgroundTask(withName: "alondra.auth-refresh", expirationHandler: expiration)
+    return task == .invalid ? nil : task
+}, end: { UIApplication.shared.endBackgroundTask($0) })

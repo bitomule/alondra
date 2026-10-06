@@ -23,8 +23,8 @@ struct LogoutFailureTests {
         await store.receive(\.failed) {
             $0.phase = .restoring
             $0.logoutIncomplete = true
-            $0.error = "Revocation unavailable"
         }
+        #expect(store.state.connectionProblem == .signOutIncomplete)
         await store.send(.login)
         await store.send(.reauthenticate)
         await store.send(.retryRestore)
@@ -44,7 +44,7 @@ struct LogoutFailureTests {
     @Test func pendingRevocationOnRestoreOffersOnlyLogoutRetry() async {
         let store = TestStore(initialState: SignInFeature.State()) { SignInFeature() } withDependencies: {
             $0.cloudPairing = SignInClient(
-                restore: { throw RestoreError.revocationRequired("Incomplete logout") },
+                restore: { throw RestoreError.revocationRequired },
                 login: { Issue.record("Must not authorize") }, begin: { _ in "" }, approve: {}, cancel: {}, logout: {})
             $0.cloudPairing.hasSavedConfiguration = { true }
         }
@@ -53,10 +53,23 @@ struct LogoutFailureTests {
         await store.receive(\.revocationRequired) {
             $0.restorationInFlight = false
             $0.logoutIncomplete = true
-            $0.restoreProblem = .unexpected
-            $0.error = "Incomplete logout"
+            $0.restoreProblem = .signOutIncomplete
         }
+        #expect(store.state.error == nil)
+        #expect(store.state.connectionProblem == .signOutIncomplete)
+        #expect(store.state.connectionProblem?.needsAction == true)
         await store.send(.reauthenticate)
+        await store.send(.retryRestore)
+        await store.receive(\.logout) {
+            $0.generation = 1
+            $0.phase = .signingOut
+            $0.restoreProblem = nil
+        }
+        await store.receive(\.loggedOut) {
+            $0.configuration = .missing
+            $0.phase = .signedOut
+            $0.logoutIncomplete = false
+        }
         await store.finish()
     }
 }
