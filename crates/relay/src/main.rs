@@ -64,6 +64,7 @@ fn router(server: Arc<Server>) -> Router {
         .route("/v1/devices", post(enroll))
         .route("/v1/devices/{id}", axum::routing::delete(revoke))
         .route("/v1/push/register", post(register_push))
+        .route("/v1/push/unregister", post(unregister_push))
         .route("/v1/mac/push", post(send_push))
         .route("/v1/requests", post(submit))
         .route("/v1/requests/{id}", get(request_status))
@@ -360,9 +361,64 @@ async fn register_push(
         .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_registration"))?;
     server
         .auth
-        .register_push(&who.device_id, registration)
+        .register_push(&who.device_id, registration, Auth::bearer_push_session(&headers))
         .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "push_registration_failed"))?;
     Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PushUnregistration {
+    push_binding: String,
+}
+
+/// No account token or device signature: a phone that signed out or lost its session still
+/// has to be able to stop the pushes it can no longer read.
+async fn unregister_push(State(server): State<Arc<Server>>, body: Bytes) -> ApiResult {
+    if body.len() > 256 {
+        return Err(error(StatusCode::PAYLOAD_TOO_LARGE, "body_too_large"));
+    }
+    let request: PushUnregistration = serde_json::from_slice(&body)
+        .map_err(|_| error(StatusCode::BAD_REQUEST, "invalid_unregistration"))?;
+    if !push::valid_binding(&request.push_binding) {
+        return Err(error(StatusCode::BAD_REQUEST, "invalid_unregistration"));
+    }
+    let _gate = server.device_gate.read().await;
+    server
+        .auth
+        .unregister_push(&request.push_binding)
+        .map_err(|_| error(StatusCode::SERVICE_UNAVAILABLE, "push_unregistration_failed"))?;
+    Ok(StatusCode::NO_CONTENT.into_response())
+}
+
+const PUSH_SESSION_SWEEP: Duration = Duration::from_secs(15 * 60);
+
+/// Pushes registered by a Keycloak offline session stop once that session ends: signed out
+/// elsewhere, revoked by an administrator or expired. An unreachable Keycloak removes nothing.
+async fn sweep_ended_push_sessions(
+    server: &Server,
+    keycloak: &management::keycloak::Keycloak,
+) {
+    for ((owner, client_id), registrations) in server.auth.push_sessions() {
+        let live = match keycloak.offline_session_ids(&owner, &client_id).await {
+            Ok(live) => live,
+            Err(failure) => {
+                eprintln!("alondra-relay: could not list offline sessions: {failure:#}");
+                continue;
+            }
+        };
+        for (device_id, sid) in registrations {
+            if live.contains(&sid) {
+                continue;
+            }
+            let _gate = server.device_gate.read().await;
+            if let Err(failure) = server.auth.forget_ended_session_push(&device_id, &sid) {
+                eprintln!(
+                    "alondra-relay: could not forget the push registration of device {device_id}: {failure:#}"
+                );
+            }
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -866,6 +922,16 @@ async fn main() -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     if server.auth.management.is_some() {tokio::spawn(management::worker::run(server.clone()));}
     if let Some(web)=&server.web_session {tokio::spawn(web_session::reconcile(web.clone()));}
+    if server.management_keycloak.is_some() && server.apns.is_some() {
+        let sweeping = server.clone();
+        tokio::spawn(async move {
+            let Some(keycloak) = &sweeping.management_keycloak else { return };
+            loop {
+                tokio::time::sleep(PUSH_SESSION_SWEEP).await;
+                sweep_ended_push_sessions(&sweeping, keycloak).await;
+            }
+        });
+    }
     let refreshing = server.clone();
     tokio::spawn(async move {
         loop {
@@ -1677,10 +1743,10 @@ mod http_tests {
             push_binding: URL_SAFE_NO_PAD.encode([binding; 32]),
         };
         let auth = &server.auth;
-        auth.register_push("phone-old", registration("ab", 1)).unwrap();
-        auth.register_push("phone-other-mac", registration("ab", 2)).unwrap();
-        auth.register_push("phone-other-install", registration("cd", 3)).unwrap();
-        auth.register_push("phone-new", registration("ab", 4)).unwrap();
+        auth.register_push("phone-old", registration("ab", 1), None).unwrap();
+        auth.register_push("phone-other-mac", registration("ab", 2), None).unwrap();
+        auth.register_push("phone-other-install", registration("cd", 3), None).unwrap();
+        auth.register_push("phone-new", registration("ab", 4), None).unwrap();
 
         assert!(
             auth.push_registration("phone-old").is_none(),
@@ -1718,11 +1784,186 @@ mod http_tests {
             environment: "sandbox".into(),
             push_binding: URL_SAFE_NO_PAD.encode([1u8; 32]),
         };
-        server.auth.register_push("phone-1", registration("cd")).unwrap();
+        server.auth.register_push("phone-1", registration("cd"), None).unwrap();
         server.auth.forget_dead_push("phone-1", &"ab".repeat(32)).unwrap();
         assert_eq!(server.auth.push_registration("phone-1"), Some(registration("cd")));
         server.auth.forget_dead_push("phone-1", &"cd".repeat(32)).unwrap();
         assert!(server.auth.push_registration("phone-1").is_none());
+        task.abort();
+    }
+
+    fn enroll_phones(server: &Server, phones: &[&str]) {
+        for (index, phone) in phones.iter().enumerate() {
+            let key = SigningKey::from_slice(&[60 + index as u8; 32]).unwrap();
+            server
+                .auth
+                .enroll(
+                    &auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() },
+                    PhoneDevice {
+                        device_id: (*phone).into(),
+                        owner_sub: "owner".into(),
+                        signing_key: key_bytes(&key),
+                    },
+                )
+                .unwrap();
+        }
+    }
+
+    fn push_for(binding: u8) -> PushRegistration {
+        PushRegistration {
+            token: format!("{binding:02x}").repeat(32),
+            environment: "sandbox".into(),
+            push_binding: URL_SAFE_NO_PAD.encode([binding; 32]),
+        }
+    }
+
+    fn offline_session(sid: &str) -> Option<auth::PushSession> {
+        Some(auth::PushSession { sid: sid.into(), client_id: "alondra-ios".into() })
+    }
+
+    #[tokio::test]
+    async fn a_signed_out_phone_stops_its_pushes_with_the_binding_alone() {
+        let mac_sign = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let (url, server, task) = test_server(&mac_sign).await;
+        enroll_phones(&server, &["phone-1", "phone-2"]);
+        server.auth.register_push("phone-1", push_for(1), offline_session("s1")).unwrap();
+        server.auth.register_push("phone-2", push_for(2), None).unwrap();
+        let client = reqwest::Client::new();
+        let unregister = |body: Vec<u8>| {
+            client
+                .post(format!("{url}/v1/push/unregister"))
+                .header("content-type", "application/json")
+                .body(body)
+                .send()
+        };
+        let unknown = json!({"push_binding": URL_SAFE_NO_PAD.encode([9u8; 32])});
+        assert_eq!(unregister(serde_json::to_vec(&unknown).unwrap()).await.unwrap().status(), 204);
+        assert_eq!(server.auth.push_registration("phone-1"), Some(push_for(1)));
+        let malformed = json!({"push_binding": "short"});
+        assert_eq!(unregister(serde_json::to_vec(&malformed).unwrap()).await.unwrap().status(), 400);
+        assert_eq!(unregister(vec![b' '; 257]).await.unwrap().status(), 413);
+        let mine = json!({"push_binding": push_for(1).push_binding});
+        assert_eq!(unregister(serde_json::to_vec(&mine).unwrap()).await.unwrap().status(), 204);
+        assert_eq!(unregister(serde_json::to_vec(&mine).unwrap()).await.unwrap().status(), 204);
+        assert!(server.auth.push_registration("phone-1").is_none());
+        assert_eq!(server.auth.push_registration("phone-2"), Some(push_for(2)));
+        let stored: Value = serde_json::from_slice(
+            &std::fs::read(&server.auth.config.device_registry_path).unwrap(),
+        )
+        .unwrap();
+        assert!(stored["push"].get("phone-1").is_none());
+        assert!(stored["push_sessions"].get("phone-1").is_none());
+        task.abort();
+    }
+
+    #[tokio::test]
+    async fn a_mac_that_leaves_takes_its_phones_push_registrations_with_it() {
+        let mac_sign = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let (_url, server, task) = test_server(&mac_sign).await;
+        enroll_phones(&server, &["phone-1", "phone-2"]);
+        server.auth.register_push("phone-1", push_for(1), None).unwrap();
+        server.auth.register_push("phone-2", push_for(2), None).unwrap();
+        server.auth.reconcile_device_revocation("owner", "client", "phone-2", "mac-1").unwrap();
+        assert!(server.auth.push_registration("phone-2").is_none());
+        assert!(server.auth.push_registration("phone-1").is_some());
+        server
+            .auth
+            .revoke_mac(&auth::Identity { device_id: "mac-1".into(), owner_sub: "owner".into() })
+            .unwrap();
+        assert!(server.auth.push_registration("phone-1").is_none());
+        task.abort();
+    }
+
+    #[test]
+    fn only_an_offline_bearer_names_the_session_its_push_ends_with() {
+        let bearer = |claims: Value| {
+            let mut headers = HeaderMap::new();
+            let token = format!(
+                "e30.{}.sig",
+                URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).unwrap())
+            );
+            headers.insert("authorization", format!("Bearer {token}").parse().unwrap());
+            Auth::bearer_push_session(&headers)
+        };
+        assert_eq!(
+            bearer(json!({"sid":"cRHwoE82NmiLwk5ZFBWMZUg7","azp":"alondra-ios","scope":"openid offline_access"})),
+            Some(auth::PushSession { sid: "cRHwoE82NmiLwk5ZFBWMZUg7".into(), client_id: "alondra-ios".into() })
+        );
+        assert_eq!(bearer(json!({"sid":"s","azp":"alondra-ios","scope":"openid"})), None);
+        assert_eq!(bearer(json!({"azp":"alondra-ios","scope":"offline_access"})), None);
+        assert_eq!(bearer(json!({"sid":"a/b","azp":"alondra-ios","scope":"offline_access"})), None);
+    }
+
+    async fn fake_keycloak(
+        live: Option<Vec<&'static str>>,
+    ) -> (management::keycloak::Keycloak, tokio::task::JoinHandle<()>) {
+        let live = Arc::new(live);
+        let router = Router::new()
+            .route(
+                "/realms/alondra/protocol/openid-connect/token",
+                post(|| async { Json(json!({"access_token":"synthetic"})) }),
+            )
+            .route(
+                "/admin/realms/alondra/users/{sub}/consents",
+                get({
+                    let live = live.clone();
+                    move || async move {
+                        if live.is_none() {
+                            return StatusCode::BAD_GATEWAY.into_response();
+                        }
+                        Json(json!([
+                            {"clientId":"other","additionalGrants":[{"client":"other-uuid","key":"Offline Token"}]},
+                            {"clientId":"alondra-ios","additionalGrants":[{"client":"ios-uuid","key":"Offline Token"}]}
+                        ]))
+                        .into_response()
+                    }
+                }),
+            )
+            .route(
+                "/admin/realms/alondra/users/{sub}/offline-sessions/ios-uuid",
+                get(move || async move {
+                    let ids = live.as_ref().clone().unwrap_or_default();
+                    Json(ids.iter().map(|id| json!({"id": id})).collect::<Vec<_>>())
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let task = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let keycloak = management::keycloak::Keycloak::new(
+            "https://id.example/realms/alondra".into(),
+            format!("{base}/admin/realms/alondra/").parse().unwrap(),
+            format!("{base}/realms/alondra/protocol/openid-connect/token").parse().unwrap(),
+            "management".into(),
+            "secret".into(),
+        )
+        .unwrap();
+        (keycloak, task)
+    }
+
+    #[tokio::test]
+    async fn pushes_stop_when_the_offline_session_that_registered_them_ends() {
+        let mac_sign = SigningKey::from_slice(&[21u8; 32]).unwrap();
+        let (_url, server, task) = test_server(&mac_sign).await;
+        enroll_phones(&server, &["phone-live", "phone-ended", "phone-legacy"]);
+        server.auth.register_push("phone-live", push_for(1), offline_session("live")).unwrap();
+        server.auth.register_push("phone-ended", push_for(2), offline_session("ended")).unwrap();
+        server.auth.register_push("phone-legacy", push_for(3), None).unwrap();
+
+        let (unreachable, keycloak_task) = fake_keycloak(None).await;
+        sweep_ended_push_sessions(&server, &unreachable).await;
+        keycloak_task.abort();
+        assert!(server.auth.push_registration("phone-ended").is_some());
+
+        let (keycloak, keycloak_task) = fake_keycloak(Some(vec!["live"])).await;
+        sweep_ended_push_sessions(&server, &keycloak).await;
+        keycloak_task.abort();
+        assert_eq!(server.auth.push_registration("phone-live"), Some(push_for(1)));
+        assert!(server.auth.push_registration("phone-ended").is_none());
+        assert_eq!(server.auth.push_registration("phone-legacy"), Some(push_for(3)));
+
+        server.auth.register_push("phone-ended", push_for(4), offline_session("new")).unwrap();
+        server.auth.forget_ended_session_push("phone-ended", "ended").unwrap();
+        assert_eq!(server.auth.push_registration("phone-ended"), Some(push_for(4)));
         task.abort();
     }
 

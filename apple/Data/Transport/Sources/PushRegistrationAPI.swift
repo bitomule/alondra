@@ -33,4 +33,16 @@ public extension AlondraAPIClient {
             guard (200..<300).contains(status) else { throw APIError.from(status: status, body: response) }
         }
     }
+
+    /// Sign-out tells the Mac to stop pushing to this device before its session is gone.
+    func removeServicePushBinding() async throws {
+        let endpoint = Endpoint<Data>.data(.post, path: ["device", "push-binding", "remove"], body: Data("{}".utf8),
+                                           contentType: "application/json")
+        let request = try APIRequest(endpoint: endpoint, operationID: UUID().uuidString)
+        switch try await operations.perform(request) {
+        case .unknown: throw OperationError.outcomeUnknown
+        case .completed(let status, let response):
+            guard (200..<300).contains(status) else { throw APIError.from(status: status, body: response) }
+        }
+    }
 }

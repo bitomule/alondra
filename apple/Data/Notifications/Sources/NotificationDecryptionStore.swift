@@ -124,12 +124,13 @@ protocol NotificationDecryptionItemStorage: Sendable {
     func clear() throws
 }
 
-private struct KeychainNotificationDecryptionItem: NotificationDecryptionItemStorage {
+struct KeychainNotificationDecryptionItem: NotificationDecryptionItemStorage {
     let accessGroup: String
+    var account = "approved-client"
     private var query: [String: Any] {
         [kSecClass as String: kSecClassGenericPassword,
          kSecAttrService as String: "com.bitomule.alondra.notification-decryption.v1",
-         kSecAttrAccount as String: "approved-client", kSecAttrAccessGroup as String: accessGroup]
+         kSecAttrAccount as String: account, kSecAttrAccessGroup as String: accessGroup]
     }
     func read() throws -> Data? {
         var q = query

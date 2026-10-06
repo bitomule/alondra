@@ -331,6 +331,7 @@ fn approval_bound_read_digest(envelope: &[u8], binding: &str) -> [u8; 32] {
 
 /// Where a domain client registers its push preferences; the older route serves the legacy daemon.
 const PUSH_BINDING_ROUTE: &str = "/device/push-binding";
+const PUSH_BINDING_REMOVE_ROUTE: &str = "/device/push-binding/remove";
 
 fn parse_push_preferences(
     request: &LocalRequest,
@@ -468,6 +469,7 @@ impl Service {
                 || crate::views::actions::approved_path(&request.method, &request.path)
                 || request.method == "POST"
                     && (request.path == PUSH_BINDING_ROUTE
+                        || request.path == PUSH_BINDING_REMOVE_ROUTE
                         || crate::client_routes::atomic_write_path(&request.path)
                         || agent_message(&request.path).is_some()
                         || crate::domain_orchestrator::decision_route(&request.path).is_some()
@@ -497,6 +499,13 @@ impl Service {
         transport: Transport,
     ) -> Result<Vec<u8>> {
         self.require_device_approval(&envelope.sender, device, transport)?;
+        if self.domain.is_some() && request.path == PUSH_BINDING_REMOVE_ROUTE {
+            self.journal.forget_push_binding(&envelope.sender, None)?;
+            let bytes = self.encode_response(envelope, device, &json!({"status":204}), request)?;
+            self.journal
+                .complete(&envelope.sender, &envelope.request_id, &bytes)?;
+            return Ok(bytes);
+        }
         if request.path == "/v1/service/push-binding"
             || self.domain.is_some() && request.path == PUSH_BINDING_ROUTE
         {
@@ -855,6 +864,7 @@ impl Service {
                     || agent_message(&request.path).is_some()
                     || crate::domain_orchestrator::decision_route(&request.path).is_some()
                     || request.path == PUSH_BINDING_ROUTE
+                    || request.path == PUSH_BINDING_REMOVE_ROUTE
                     || request.path == crate::direct::routes::PATH
                     || crate::views::routes::approved_read_path(&request.path)
                     || crate::views::actions::approved_path(&request.method, &request.path))
@@ -1715,6 +1725,13 @@ fn relay_error_code(body: &[u8]) -> String {
         .unwrap_or_else(|| "unknown".into())
 }
 
+/// The relay dropped the phone's registration: the phone signed out, its session or pairing
+/// ended, or APNs said the token is dead.
+fn registration_ended(status: reqwest::StatusCode, code: &str) -> bool {
+    status == reqwest::StatusCode::NOT_FOUND && code == "push_registration_not_found"
+        || status == reqwest::StatusCode::GONE && code == "push_registration_gone"
+}
+
 fn id(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 128
@@ -1809,6 +1826,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     if request.method == "POST"
         && request.body.is_some()
         && (request.path == PUSH_BINDING_ROUTE
+            || request.path == PUSH_BINDING_REMOVE_ROUTE
             || crate::client_routes::upload_step(&request.path).is_some()
             || agent_message(&request.path).is_some()
             || crate::domain_orchestrator::decision_route(&request.path).is_some()
@@ -2128,6 +2146,22 @@ impl Journal {
             params![id],
         )?;
         tx.commit()?;
+        Ok(())
+    }
+    /// The phone, or the relay on its behalf, said this binding gets no more pushes. With a
+    /// binding, one the phone registered since stays.
+    fn forget_push_binding(&self, id: &str, binding: Option<&str>) -> Result<()> {
+        let c = self.db()?;
+        match binding {
+            Some(binding) => c.execute(
+                "DELETE FROM service_push_bindings WHERE device_id=?1 AND binding=?2",
+                params![id, binding],
+            )?,
+            None => c.execute(
+                "DELETE FROM service_push_bindings WHERE device_id=?1",
+                params![id],
+            )?,
+        };
         Ok(())
     }
     #[cfg(test)]
@@ -4413,6 +4447,61 @@ agreement_key = "{}"
         std::fs::remove_dir_all(&service.home).unwrap();
     }
 
+    /// A phone that signed out, lost its session or was unlinked on the web is gone from the
+    /// relay before the Mac hears of it: the relay's answer is what stops the Mac pushing.
+    #[tokio::test]
+    async fn the_mac_stops_pushing_to_a_phone_the_relay_no_longer_knows() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for (status, code, ended) in [
+            (StatusCode::NOT_FOUND, "push_registration_not_found", true),
+            (StatusCode::GONE, "push_registration_gone", true),
+            (StatusCode::NOT_FOUND, "not_found", false),
+            (StatusCode::SERVICE_UNAVAILABLE, "push_registration_failed", false),
+        ] {
+            let (mut service, _) = push_fixture();
+            activate_push(&service);
+            let calls = Arc::new(AtomicUsize::new(0));
+            let counted = calls.clone();
+            let router = Router::new()
+                .route(
+                    "/v1/bootstrap",
+                    get(|| async { axum::Json(json!({"epoch":URL_SAFE_NO_PAD.encode([1u8;16])})) }),
+                )
+                .route(
+                    "/v1/mac/push",
+                    post(move || {
+                        counted.fetch_add(1, Ordering::SeqCst);
+                        async move { (status, axum::Json(json!({"error": code}))) }
+                    }),
+                );
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+            let payload = json!({"aps":{"alert":"hint"},"alondra":{}});
+            assert_eq!(service.broadcast_push_report(&payload, true).await.unwrap(), (1, 0));
+            assert_eq!(service.journal.push_binding("phone-1").unwrap().is_none(), ended, "{code}");
+            let again = service.broadcast_push_report(&payload, true).await.unwrap();
+            assert_eq!(again, if ended { (0, 0) } else { (1, 0) }, "{code}");
+            assert_eq!(calls.load(Ordering::SeqCst), if ended { 1 } else { 2 }, "{code}");
+            server.abort();
+            std::fs::remove_dir_all(&service.home).unwrap();
+        }
+    }
+
+    #[test]
+    fn a_binding_the_phone_registered_after_the_relay_dropped_the_old_one_stays() {
+        let (service, _) = push_fixture();
+        activate_push(&service);
+        let old = URL_SAFE_NO_PAD.encode([4u8; 32]);
+        let new = URL_SAFE_NO_PAD.encode([5u8; 32]);
+        service.journal.set_push_binding("phone-1", &new).unwrap();
+        service.journal.forget_push_binding("phone-1", Some(&old)).unwrap();
+        assert_eq!(service.journal.push_binding("phone-1").unwrap(), Some(new));
+        service.journal.forget_push_binding("phone-1", None).unwrap();
+        assert_eq!(service.journal.push_binding("phone-1").unwrap(), None);
+        std::fs::remove_dir_all(&service.home).unwrap();
+    }
+
     #[test]
     fn a_cards_collapse_id_is_an_opaque_stable_header_per_phone() {
         let (first, second) = (URL_SAFE_NO_PAD.encode([1u8; 32]), URL_SAFE_NO_PAD.encode([2u8; 32]));
@@ -4610,7 +4699,7 @@ agreement_key = "{}"
         let (service, phone_agreement) = push_fixture();
         let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let home = service.home.clone();
-        let sealed = |service: &Service, request_id: &str, body: Value| Work {
+        let sealed = |service: &Service, request_id: &str, path: &str, body: Value| Work {
             request_id: request_id.into(),
             envelope: Envelope::seal_random(
                 EnvelopeContext {
@@ -4622,7 +4711,7 @@ agreement_key = "{}"
                     expires_at_ms: now_ms() + 60_000,
                 },
                 serde_json::to_vec(
-                    &json!({"method":"POST","path":"/device/push-binding","body":body}),
+                    &json!({"method":"POST","path":path,"body":body}),
                 )
                 .unwrap()
                 .as_slice(),
@@ -4641,7 +4730,7 @@ agreement_key = "{}"
             service
                 .prepare_work(&sealed(
                     &service,
-                    "legacy",
+                    "legacy", PUSH_BINDING_ROUTE,
                     json!({"push_binding": binding})
                 ), Transport::Relay)
                 .is_err(),
@@ -4649,10 +4738,10 @@ agreement_key = "{}"
         );
         let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
         let service = service.with_domain(domain);
-        let register = |request_id: &'static str, body: Value| {
+        let send = |request_id: &'static str, path: &'static str, body: Value| {
             let service = &service;
             let phone_agreement = &phone_agreement;
-            let work = sealed(service, request_id, body);
+            let work = sealed(service, request_id, path, body);
             async move {
                 let prepared = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
                 assert!(
@@ -4693,6 +4782,7 @@ agreement_key = "{}"
                 .unwrap()
             }
         };
+        let register = |request_id: &'static str, body: Value| send(request_id, PUSH_BINDING_ROUTE, body);
         let first = register("first", json!({"push_binding": binding, "preferences_revision": 2, "quiet_start": "23:00", "quiet_end": "08:00"})).await;
         assert_eq!(first["status"], 204, "{first}");
         assert_eq!(
@@ -4720,6 +4810,16 @@ agreement_key = "{}"
         )
         .await;
         assert_eq!(refused["status"], 422, "{refused}");
+        let removed = send("remove", PUSH_BINDING_REMOVE_ROUTE, json!({})).await;
+        assert_eq!(removed["status"], 204, "{removed}");
+        assert_eq!(service.journal.push_binding("phone-1").unwrap(), None);
+        assert_eq!(
+            service.journal.quiet_hours("phone-1").unwrap().start.as_deref(),
+            Some("23:00"),
+            "signing out keeps the phone's quiet hours for when it signs back in"
+        );
+        let again = send("remove-again", PUSH_BINDING_REMOVE_ROUTE, json!({})).await;
+        assert_eq!(again["status"], 204, "{again}");
         assert!(
             approved_method(&LocalRequest {
                 method: "POST".into(),

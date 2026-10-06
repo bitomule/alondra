@@ -1,5 +1,6 @@
 version: 1
 satisfied:
+- {check: "root/apple-tests", scope_hash: "01efcd7c383b8d51368ce701cd5b62549130e39f4764b18b52153bfb606d0f02"}
 - {check: "root/apple-tests", scope_hash: "0335ad65eca952ac0d014a2af27c2a479b822dec8a6717bde0cfc5625da76d5f"}
 - {check: "root/apple-tests", scope_hash: "040d0c784e62908a139d8ac33e4d41aebcf7026917499f4c0d99729e7bc8f245"}
 - {check: "root/apple-tests", scope_hash: "05399fcdebd41faaf46064b8ea8e921bb084734835a3295f68f8d41728c3469e"}
@@ -634,6 +635,7 @@ satisfied:
 - {check: "root/bazel-build", scope_hash: "f6ba473ca5265495be57641e00fe8658baaef2b5528662adffc290c37f957af2"}
 - {check: "root/bazel-build", scope_hash: "f77523e4f0a581ac42705477bde9c24f1375cd2e39df351ce4efa5a32e00a863"}
 - {check: "root/bazel-build", scope_hash: "f7abee7bb79cb9709c332bbb4504668bd4dcf84d760418e5f25f5ed8bf3ed7f0"}
+- {check: "root/bazel-build", scope_hash: "f7b4a8c1c9660831cd286b0322f885ed85221c3dbda39eff76dbc3f905b35360"}
 - {check: "root/bazel-build", scope_hash: "f88a66fac117248ffe48c01f248d6fce0ed881c0f6eb96a35ad6311e9ca2b7d4"}
 - {check: "root/bazel-build", scope_hash: "f8c21938912e78570c13c1dcc6fd216f0f1410c33aa471bd4384c037982e97f7"}
 - {check: "root/bazel-build", scope_hash: "f8e6c2d7d1b85c3686da8e5aeb1f75cd70659032999719096397c28577df7a7c"}
@@ -1012,6 +1014,7 @@ satisfied:
 - {check: "root/bazel-test", scope_hash: "d8d0c66b149eda5a2fd485d307e74b9f98d445bb7cf0ca1ef6b5c290290b389c"}
 - {check: "root/bazel-test", scope_hash: "d94d017ff523697680323af1fe58262d3f76891275f98dec2b19eb6dd485a337"}
 - {check: "root/bazel-test", scope_hash: "d9b31cf371de77f6500c82024bbca1d615e586f0fb3d14ac88c6cc1e8bfc6c8e"}
+- {check: "root/bazel-test", scope_hash: "da80a418367d5cf264976de95400ea90631f9b11d4305c37d8635b92d451d997"}
 - {check: "root/bazel-test", scope_hash: "dbb8a2c9295665c680fa54560cc893720d4a2a9d48011c13c1d6150548d6d95c"}
 - {check: "root/bazel-test", scope_hash: "dbe731a83abdc0249305fd7e19c2909444e0789cc24be5a014ad3c71bc3aeb85"}
 - {check: "root/bazel-test", scope_hash: "ddac51d183b50ea9bbbc9b0d0a6e6313b8d4ae83b96e98a2feee6f2975664c79"}

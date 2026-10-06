@@ -58,6 +58,7 @@ public actor AuthSession {
     // A successful issuer response can outlive a failed Keychain write. Keep its
     // successor until it is durable; logout must never fall back to the old token.
     private var unpersistedCredential: RefreshCredential?
+    private let sessionLost: @Sendable () -> Void
     private var mutationLocked = false
     private var mutationWaiters: [AsyncStream<Void>.Continuation] = []
 
@@ -89,8 +90,10 @@ public actor AuthSession {
                 transport: any AuthHTTPTransport = URLSessionAuthTransport(),
                 browser: any AuthBrowser,
                 storage: any RefreshTokenStorage = KeychainRefreshTokenStorage(),
-                now: @escaping @Sendable () -> Date = { Date() }) {
+                now: @escaping @Sendable () -> Date = { Date() },
+                sessionLost: @escaping @Sendable () -> Void = {}) {
         self.configuration = configuration
+        self.sessionLost = sessionLost
         self.transport = transport
         self.browser = browser
         self.storage = storage
@@ -332,6 +335,7 @@ public actor AuthSession {
         } catch AuthError.oauth(let status, let code) {
             if code == "invalid_grant" {
                 try storage.delete()
+                sessionLost()
                 throw AuthError.noSession
             }
             // An explicit OAuth rejection did not issue a rotated credential.

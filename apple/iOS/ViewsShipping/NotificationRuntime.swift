@@ -13,6 +13,9 @@ final class NotificationRuntime {
     let push: PushCenter
     private let bindings = PushBindingStore()
     private let vault: NotificationDecryptionStore?
+    private let orphans: OrphanBindingStore?
+    private let unregistrar = PushUnregistrar(ledger: PushUnregistrationLedger(
+        file: AppStorageLocation.applicationSupport(bundleID: "com.bitomule.alondra").appendingPathComponent("push-unregistration.json")))
     @ObservationIgnored var selectSession: (@MainActor (ApprovedPairingID) async throws -> Void)?
     @ObservationIgnored var prepareSession: (@MainActor () async throws -> Void)?
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
@@ -28,7 +31,9 @@ final class NotificationRuntime {
         let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String
         let store = group.flatMap { $0.isEmpty || $0.contains("$(") ? nil : NotificationDecryptionStore(accessGroup: $0) }
         vault = store
+        orphans = store == nil ? nil : group.map(OrphanBindingStore.init(accessGroup:))
         push = PushCenter()
+        push.onRegistered = { [weak self] in self?.drainUnregistrations() }
     }
 
     func owns(_ services: Connection) -> Bool { identity == ObjectIdentifier(services) }
@@ -96,7 +101,8 @@ final class NotificationRuntime {
         let current = generation
         identity = nil
         push.clear()
-        bindings.clear()
+        bindings.retire(into: unregistrar.ledger)
+        drainUnregistrations()
         UNUserNotificationCenter.current().removeAllDeliveredNotifications()
         UNUserNotificationCenter.current().removeAllPendingNotificationRequests()
         do {
@@ -107,6 +113,18 @@ final class NotificationRuntime {
             if current == generation { self.error = error.localizedDescription }
             throw error
         }
+    }
+
+    /// The account session ended without a sign-out: its bindings stop receiving pushes.
+    func retireBindings() {
+        bindings.retire(into: unregistrar.ledger)
+        drainUnregistrations()
+    }
+
+    func drainUnregistrations() {
+        let live = bindings.live
+        if let orphans { try? PushUnregistrar.promote(orphans, into: unregistrar.ledger, live: live, relay: bindings.relayURL) }
+        Task { [unregistrar] in await unregistrar.drain(live: live) }
     }
 
     /// A Mac's silent push saying which of its cards still wait: their notifications stay, the

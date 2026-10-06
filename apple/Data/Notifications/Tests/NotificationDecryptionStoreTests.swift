@@ -235,3 +235,19 @@ func failedContextMigrationDoesNotDeletePreviousKeys(failure: String) throws {
     #expect(try store.load(binding: fixture.binding) == nil)
     #expect(registry.snapshot.entries.isEmpty)
 }
+
+@Test func failedOpenTellsALockedKeychainFromAnEndedSession() throws {
+    let fixture = try PushFixture(1)
+    let userInfo = try #require(try JSONSerialization.jsonObject(with: fixture.wire()) as? [AnyHashable: Any])
+    let locked = MemoryDecryptionItem()
+    locked.state.withLock { $0.readError = .keychain(errSecInteractionNotAllowed) }
+    #expect(NotificationDecoder.failure(userInfo: userInfo, store: NotificationDecryptionStore(item: locked)) == .locked)
+    let signedOut = NotificationDecryptionStore(item: MemoryDecryptionItem())
+    #expect(NotificationDecoder.failure(userInfo: userInfo, store: signedOut) == .noKeys(fixture.binding))
+    let other = NotificationDecryptionStore(item: MemoryDecryptionItem())
+    try other.save(try PushFixture(2).context)
+    #expect(NotificationDecoder.failure(userInfo: userInfo, store: other) == .noKeys(fixture.binding))
+    let current = NotificationDecryptionStore(item: MemoryDecryptionItem())
+    try current.save(fixture.context)
+    #expect(NotificationDecoder.failure(userInfo: [:], store: current) == .invalid)
+}

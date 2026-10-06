@@ -70,6 +70,7 @@ final class PushCenter {
     private var client: NotificationClient?
     private let routing = NotificationRoutingCoordinator()
     var selectBinding: (@MainActor (NotificationPayload.Binding) async throws -> Void)?
+    @ObservationIgnored var onRegistered: (@MainActor () -> Void)?
     private var clients: [NotificationClient] = []
     private let registrations: PushRegistrationCoordinator
 
@@ -97,6 +98,7 @@ final class PushCenter {
             case .registered: .registered
             case .failed(let message): .failed(message)
             }
+            if state == .registered { self?.onRegistered?() }
         }
     }
 

@@ -268,12 +268,34 @@ public final class AccountSession {
     private func logout() async throws {
         // Attempt every revocation even when notification/keychain cleanup fails.
         var failures: [String] = []
+        await removePushBindings()
         do { try await deactivate() } catch { failures.append(error.localizedDescription) }
         do {
             try await auth.logout()
             try await pairing.removeApprovedPairing()
         } catch { failures.append(error.localizedDescription) }
         if !failures.isEmpty { throw CleanupFailure(details: failures.joined(separator: "\n")) }
+    }
+    /// Best effort while the sessions can still reach each Mac; the relay unregistration
+    /// queued by the notification cleanup covers a Mac that does not answer in time.
+    private func removePushBindings() async {
+        guard let storedRegistry else { return }
+        let apis = storedRegistry.snapshot.entries.map(\.session.api)
+        guard !apis.isEmpty else { return }
+        let (settled, settle) = AsyncStream<Void>.makeStream()
+        let removal = Task {
+            await withTaskGroup(of: Void.self) { group in
+                for api in apis { group.addTask { try? await api.removeServicePushBinding() } }
+            }
+            settle.yield()
+        }
+        let deadline = Task {
+            try? await Task.sleep(for: .seconds(3))
+            settle.yield()
+        }
+        for await _ in settled { break }
+        removal.cancel()
+        deadline.cancel()
     }
     private struct CleanupFailure: LocalizedError {
         let details: String

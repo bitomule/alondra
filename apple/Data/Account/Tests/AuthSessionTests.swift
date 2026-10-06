@@ -536,6 +536,23 @@ final class AuthSessionTests: XCTestCase {
         }
     }
 
+    func testOnlyAnIssuerRejectionReportsTheSessionLost() async throws {
+        let browser = FixtureBrowser { _ in XCTFail("Should not open"); return URL(string: "https://invalid.example")! }
+        let replies: [(String, @Sendable (URLRequest) throws -> AuthHTTPResponse, Bool)] = [
+            ("invalid_grant", { _ in AuthHTTPResponse(status: 400, body: Data("{\"error\":\"invalid_grant\"}".utf8)) }, true),
+            ("invalid_client", { _ in AuthHTTPResponse(status: 400, body: Data("{\"error\":\"invalid_client\"}".utf8)) }, false),
+            ("offline", { _ in throw URLError(.notConnectedToInternet) }, false),
+        ]
+        for (name, reply, reported) in replies {
+            let lost = expectation(description: name)
+            lost.isInverted = !reported
+            let session = AuthSession(transport: FixtureTransport(tokenResponse: reply), browser: browser,
+                                      storage: MemoryStorage("saved"), sessionLost: { lost.fulfill() })
+            _ = try? await session.bearerToken()
+            await fulfillment(of: [lost], timeout: reported ? 1 : 0.1)
+        }
+    }
+
     func testLostRefreshResponseNeverBecomesSuccessfulLogoutOrAutomaticReplay() async throws {
         // Generic issuers retain the conservative default. Only the verified Alondra
         // offline-session contract may revoke an unknown successor via its predecessor.

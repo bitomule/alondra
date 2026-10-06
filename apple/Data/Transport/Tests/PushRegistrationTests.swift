@@ -46,6 +46,17 @@ import Testing
         #expect(reenabled.operationID != enabled.operationID)
     }
 
+    @Test func signOutAsksTheMacToDropThisDevicesBinding() async throws {
+        let transport = PushTransport()
+        let api = AlondraAPIClient(serviceURL: URL(string: "https://example.test")!, deviceID: "client-1", operations: transport)
+        try await api.removeServicePushBinding()
+        #expect(await transport.events == ["binding"])
+        let request = try #require(await transport.request)
+        #expect(request.method == "POST")
+        #expect(request.path == "/device/push-binding/remove")
+        #expect(request.body == Data("{}".utf8))
+    }
+
     @Test func authenticatedStalePreferenceResponseExposesRevisionForRecovery() async throws {
         let transport = PushTransport(response: .completed(status: 409,
             body: Data(#"{"kind":"stale_push_preferences","current_revision":77}"#.utf8)))

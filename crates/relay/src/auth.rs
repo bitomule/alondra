@@ -55,6 +55,15 @@ pub struct PushRegistration {
     pub push_binding: String,
 }
 
+/// The Keycloak offline session whose token registered a push. When that session ends the
+/// phone can no longer act on what it is sent, so the registration ends with it.
+#[derive(Clone, Serialize, Deserialize, Debug, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PushSession {
+    pub sid: String,
+    pub client_id: String,
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct PhoneDevice {
     pub device_id: String,
@@ -85,6 +94,7 @@ struct DeviceRegistry {
     phone_macs: HashMap<String, String>,
     revoked_ids: HashSet<String>,
     push: HashMap<String, PushRegistration>,
+    push_sessions: HashMap<String, PushSession>,
     macs: HashMap<String, MacDevice>,
     revoked_mac_ids: HashSet<String>,
 }
@@ -99,6 +109,8 @@ struct StoredDeviceRegistry {
     revoked_ids: Vec<String>,
     #[serde(default)]
     push: HashMap<String, PushRegistration>,
+    #[serde(default)]
+    push_sessions: HashMap<String, PushSession>,
     #[serde(default)]
     macs: Vec<MacDevice>,
     #[serde(default)]
@@ -138,6 +150,12 @@ struct Claims {
     aud: serde_json::Value,
     exp: u64,
     nbf: Option<u64>,
+}
+#[derive(Deserialize)]
+struct SessionClaims {
+    sid: Option<String>,
+    azp: Option<String>,
+    scope: Option<String>,
 }
 type RsaJwks = HashMap<String, (Vec<u8>, Vec<u8>)>;
 struct CachedJwks {
@@ -203,35 +221,46 @@ impl Auth {
         let mut migrated_registry = !guarded;
         let mut devices = if config.device_registry_path.exists() {
             let raw = std::fs::read(&config.device_registry_path)?;
-            let (schema_version, list, mut phone_macs, revoked_ids, push, macs, revoked_mac_ids) =
-                match serde_json::from_slice(&raw)? {
-                    RegistryOnDisk::Current(StoredDeviceRegistry {
-                        schema_version,
-                        devices,
-                        phone_macs,
-                        revoked_ids,
-                        push,
-                        macs,
-                        revoked_mac_ids,
-                    }) => (
-                        schema_version,
-                        devices,
-                        phone_macs,
-                        revoked_ids,
-                        push,
-                        macs,
-                        revoked_mac_ids,
-                    ),
-                    RegistryOnDisk::Legacy(devices) => (
-                        None,
-                        devices,
-                        HashMap::new(),
-                        Vec::new(),
-                        HashMap::new(),
-                        Vec::new(),
-                        Vec::new(),
-                    ),
-                };
+            let (
+                schema_version,
+                list,
+                mut phone_macs,
+                revoked_ids,
+                push,
+                mut push_sessions,
+                macs,
+                revoked_mac_ids,
+            ) = match serde_json::from_slice(&raw)? {
+                RegistryOnDisk::Current(StoredDeviceRegistry {
+                    schema_version,
+                    devices,
+                    phone_macs,
+                    revoked_ids,
+                    push,
+                    push_sessions,
+                    macs,
+                    revoked_mac_ids,
+                }) => (
+                    schema_version,
+                    devices,
+                    phone_macs,
+                    revoked_ids,
+                    push,
+                    push_sessions,
+                    macs,
+                    revoked_mac_ids,
+                ),
+                RegistryOnDisk::Legacy(devices) => (
+                    None,
+                    devices,
+                    HashMap::new(),
+                    Vec::new(),
+                    HashMap::new(),
+                    HashMap::new(),
+                    Vec::new(),
+                    Vec::new(),
+                ),
+            };
             if guarded && schema_version != Some(REGISTRY_SCHEMA_VERSION) {
                 bail!(
                     "device registry was rewritten by an older version; refusing unsafe migration"
@@ -270,6 +299,7 @@ impl Auth {
             if push.keys().any(|id| !devices.contains_key(id)) {
                 bail!("push registration references an inactive device");
             }
+            push_sessions.retain(|id, _| push.contains_key(id));
             let mac_count = macs.len();
             let macs: HashMap<_, _> = macs.into_iter().map(|m| (m.mac_id.clone(), m)).collect();
             if macs.len() != mac_count {
@@ -298,6 +328,7 @@ impl Auth {
                 phone_macs,
                 revoked_ids,
                 push,
+                push_sessions,
                 macs,
                 revoked_mac_ids,
             }
@@ -456,7 +487,12 @@ impl Auth {
     /// Store token and binding atomically with device state; an old binding cannot remain after revoke.
     /// A token belongs to one app install, which holds one pairing per Mac: re-pairing with the
     /// same Mac supersedes the older pairing's registration, whose keys the phone no longer has.
-    pub fn register_push(&self, device_id: &str, registration: PushRegistration) -> Result<()> {
+    pub fn register_push(
+        &self,
+        device_id: &str,
+        registration: PushRegistration,
+        session: Option<PushSession>,
+    ) -> Result<()> {
         self.ensure_registry_ready()?;
         crate::push::validate_registration(&registration)?;
         let mut registry = self.devices.lock().unwrap();
@@ -483,16 +519,124 @@ impl Auth {
             .filter_map(|id| registry.push.remove(&id).map(|old| (id, old)))
             .collect();
         let old = registry.push.insert(device_id.to_owned(), registration);
+        let old_session = match session {
+            Some(session) => registry.push_sessions.insert(device_id.to_owned(), session),
+            None => registry.push_sessions.remove(device_id),
+        };
         if let Err(e) = self.persist_registry(&registry) {
             if let Some(old) = old {
                 registry.push.insert(device_id.to_owned(), old);
             } else {
                 registry.push.remove(device_id);
             }
+            match old_session {
+                Some(old) => registry.push_sessions.insert(device_id.to_owned(), old),
+                None => registry.push_sessions.remove(device_id),
+            };
             registry.push.extend(removed);
             return Err(e);
         }
         Ok(())
+    }
+
+    /// The binding travels in every push, so the phone can stop them even after it lost its
+    /// session, its keys and its pairing. Knowing it only ever stops pushes to that phone.
+    pub fn unregister_push(&self, push_binding: &str) -> Result<()> {
+        use subtle::ConstantTimeEq;
+        self.ensure_registry_ready()?;
+        let mut registry = self.devices.lock().unwrap();
+        let Some(device_id) = registry
+            .push
+            .iter()
+            .find(|(_, registration)| {
+                bool::from(registration.push_binding.as_bytes().ct_eq(push_binding.as_bytes()))
+            })
+            .map(|(id, _)| id.clone())
+        else {
+            return Ok(());
+        };
+        let removed = registry.push.remove(&device_id);
+        if let Err(e) = self.persist_registry(&registry) {
+            if let Some(removed) = removed {
+                registry.push.insert(device_id, removed);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// Every push registration made with an offline session, grouped by account and client so
+    /// one identity-provider lookup answers for all of that account's phones.
+    pub fn push_sessions(&self) -> HashMap<(String, String), Vec<(String, String)>> {
+        let mut grouped: HashMap<(String, String), Vec<(String, String)>> = HashMap::new();
+        if self.ensure_registry_ready().is_err() {
+            return grouped;
+        }
+        let registry = self.devices.lock().unwrap();
+        for (device_id, session) in &registry.push_sessions {
+            let Some(device) = registry.devices.get(device_id) else {
+                continue;
+            };
+            if !registry.push.contains_key(device_id) {
+                continue;
+            }
+            grouped
+                .entry((device.owner_sub.clone(), session.client_id.clone()))
+                .or_default()
+                .push((device_id.clone(), session.sid.clone()));
+        }
+        grouped
+    }
+
+    /// The offline session that registered this push has ended. A registration made since by
+    /// another session stays.
+    pub fn forget_ended_session_push(&self, device_id: &str, sid: &str) -> Result<()> {
+        self.ensure_registry_ready()?;
+        let mut registry = self.devices.lock().unwrap();
+        if registry
+            .push_sessions
+            .get(device_id)
+            .is_none_or(|session| session.sid != sid)
+        {
+            return Ok(());
+        }
+        let removed = registry.push.remove(device_id);
+        let session = registry.push_sessions.remove(device_id);
+        if let Err(e) = self.persist_registry(&registry) {
+            if let Some(removed) = removed {
+                registry.push.insert(device_id.to_owned(), removed);
+            }
+            if let Some(session) = session {
+                registry.push_sessions.insert(device_id.to_owned(), session);
+            }
+            return Err(e);
+        }
+        Ok(())
+    }
+
+    /// The offline session of a bearer `authenticate_phone` already verified. Online sessions
+    /// are not recorded: the phone only signs in with `offline_access`.
+    pub fn bearer_push_session(headers: &HeaderMap) -> Option<PushSession> {
+        let token = headers
+            .get(axum::http::header::AUTHORIZATION)?
+            .to_str()
+            .ok()?
+            .strip_prefix("Bearer ")?;
+        let payload = token.split('.').nth(1)?;
+        let claims: SessionClaims =
+            serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload).ok()?).ok()?;
+        let offline = claims
+            .scope
+            .as_deref()
+            .is_some_and(|scope| scope.split(' ').any(|s| s == "offline_access"));
+        match (claims.sid, claims.azp) {
+            (Some(sid), Some(client_id))
+                if offline && valid_session_part(&sid) && valid_session_part(&client_id) =>
+            {
+                Some(PushSession { sid, client_id })
+            }
+            _ => None,
+        }
     }
 
     /// APNs said this token will never be delivered to again; keep the slot empty until the
@@ -651,9 +795,20 @@ impl Auth {
             bail!("Mac owner mismatch");
         }
         registry.revoked_mac_ids.insert(who.device_id.clone());
+        let phones: Vec<String> = registry
+            .phone_macs
+            .iter()
+            .filter(|(_, mac)| **mac == who.device_id)
+            .map(|(phone, _)| phone.clone())
+            .collect();
+        let silenced: Vec<(String, PushRegistration)> = phones
+            .into_iter()
+            .filter_map(|phone| registry.push.remove(&phone).map(|push| (phone, push)))
+            .collect();
         if let Err(err) = self.persist_registry(&registry) {
             registry.revoked_mac_ids.remove(&who.device_id);
             registry.macs.insert(who.device_id.clone(), existing);
+            registry.push.extend(silenced);
             return Err(err);
         }
         Ok(())
@@ -1148,6 +1303,14 @@ fn header<'a>(headers: &'a HeaderMap, name: &str) -> Result<&'a str> {
         .to_str()?)
 }
 
+fn valid_session_part(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 128
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"-_.".contains(&b))
+}
+
 fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     let mut devices: Vec<_> = registry.devices.values().cloned().collect();
     devices.sort_by(|a, b| a.device_id.cmp(&b.device_id));
@@ -1157,6 +1320,12 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
     macs.sort_by(|a, b| a.mac_id.cmp(&b.mac_id));
     let mut revoked_mac_ids: Vec<_> = registry.revoked_mac_ids.iter().cloned().collect();
     revoked_mac_ids.sort();
+    let push_sessions = registry
+        .push_sessions
+        .iter()
+        .filter(|(id, _)| registry.push.contains_key(*id))
+        .map(|(id, session)| (id.clone(), session.clone()))
+        .collect();
     write_atomic(
         path,
         &serde_json::to_vec(&StoredDeviceRegistry {
@@ -1165,6 +1334,7 @@ fn persist_registry_at(path: &Path, registry: &DeviceRegistry) -> Result<()> {
             phone_macs: registry.phone_macs.clone(),
             revoked_ids,
             push: registry.push.clone(),
+            push_sessions,
             macs,
             revoked_mac_ids,
         })?,
