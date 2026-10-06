@@ -6,6 +6,7 @@ mod classify;
 mod cleanup;
 mod claude_trust;
 mod delivery;
+mod direct;
 mod domain_agent_lifecycle;
 mod domain_api;
 mod domain_authority;
@@ -228,6 +229,32 @@ fn relaunch_now() -> ! {
     std::process::exit(relaunch::RELAUNCH)
 }
 
+/// What approving a direct pairing request does on this Mac: pin the device's keys in
+/// `service.toml`, approve it in the registry, and make the running service accept it.
+fn direct_approval(
+    home: std::path::PathBuf,
+    auth: Arc<auth::Auth>,
+    service: Arc<service::Service>,
+) -> Box<dyn Fn(&direct::pairing::ApprovedDevice) -> std::result::Result<(), String> + Send + Sync> {
+    use alondra_core::service_config::{NewDevice, ServiceConfigLock, add_device};
+    Box::new(move |device| {
+        let lock = ServiceConfigLock::exclusive(&home).map_err(|error| error.to_string())?;
+        add_device(
+            &home,
+            &lock,
+            &NewDevice {
+                device_id: &device.device_id,
+                signing_key: &device.signing_key,
+                agreement_key: &device.agreement_key,
+            },
+        )
+        .map_err(|error| error.to_string())?;
+        drop(lock);
+        auth.approve_service(&device.device_id, &device.name, &device.signing_key)?;
+        service.reload_devices().map_err(|error| format!("{error:#}"))
+    })
+}
+
 /// Critical v2 workers must not disappear while the local listener remains healthy.
 async fn supervise_workers<S>(
     server: S,
@@ -426,6 +453,16 @@ async fn run_domain(config: &Config) -> Result<()> {
     // The producer transport owns the per-home hook socket before any outbox
     // message can be claimed for a session.
     let hooks = hook_socket::bind(&config.home).await?;
+    if let Some(service) = service.clone().filter(|service| service.direct_config().enabled) {
+        let direct = Arc::new(direct::Direct::new(
+            service.clone(),
+            Arc::new(direct::pairing::PairingBook::new(&config.home)),
+            config.name.clone(),
+            direct_approval(config.home.clone(), auth.clone(), service),
+        ));
+        state.attach_direct(direct.clone());
+        tokio::spawn(direct::run(direct, config.sandbox));
+    }
     let app = domain_bootstrap::router(state)
         .layer(axum::middleware::from_fn_with_state(auth, auth::guard));
     log!(
@@ -490,7 +527,9 @@ async fn run_domain(config: &Config) -> Result<()> {
             watcher::claude_home(),
         ))
     });
-    let connector = service.map(|service| tokio::spawn(async move { service.run().await }));
+    let connector = service
+        .filter(|service| service.has_relay())
+        .map(|service| tokio::spawn(async move { service.run().await }));
     tokio::spawn(updates::updater(config).run());
     start_guard::served();
     tokio::select! {

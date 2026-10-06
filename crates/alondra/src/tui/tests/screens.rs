@@ -594,6 +594,37 @@ fn clarify_without_text_is_sent_with_just_the_reason() {
     assert_eq!(sent[0].1["input"], serde_json::json!({}));
 }
 
+fn with_note_input(required: bool) -> views::View {
+    edited("card-question.json", |card| {
+        for action in card["actions"].as_array_mut().unwrap() {
+            action["input"] = serde_json::json!({"kind": "text", "placeholder": "Add a note", "required": required, "multiline": true});
+        }
+    })
+}
+
+#[test]
+fn both_default_choices_with_an_optional_note_send_at_once_without_it() {
+    for key in ['1', '2'] {
+        let mut app = english(with_note_input(false));
+        press(&mut app, KeyCode::Char(key));
+        let sent = app.posted.borrow().clone();
+        assert!(app.composer.is_none(), "key {key} opened the text box");
+        assert_eq!(sent.len(), 1, "key {key}: {sent:?}");
+        assert_eq!(sent[0].1["input"], serde_json::json!({}));
+    }
+}
+
+#[test]
+fn a_choice_with_a_required_note_opens_the_text_box_first() {
+    let mut app = english(with_note_input(true));
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.posted.borrow().is_empty());
+    assert!(matches!(
+        app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { required: true, option_id: Some(_), .. })
+    ));
+}
+
 #[test]
 fn a_button_with_options_asks_which_before_it_sends() {
     let mut app = english(fixture_view("card-pr.json"));
@@ -645,4 +676,101 @@ fn cards_read_in_spanish() {
     assert!(footer.iter().any(|(key, label)| key == "⏎" && label == "abrir"), "{footer:?}");
     press(&mut app, KeyCode::Char('m'));
     assert!(rendered(&mut app, 120, 40).contains("MÁS"));
+}
+
+fn header(screen: &str) -> &str {
+    screen.lines().find(|line| line.contains("Bandeja")).unwrap_or_default()
+}
+
+#[test]
+fn the_header_shows_every_mac_as_a_tab_with_how_it_is_reached() {
+    let domain = DomainState::new("screens");
+    let live = LiveSnapshot::default();
+    let mut app = app_on(Screen::Inbox, build(&domain, &live, "home"));
+    let alone = rendered(&mut app, 160, 16);
+    assert!(header(&alone).starts_with(" Alondra  "), "{alone}");
+
+    app.macs = vec![
+        MacTab { name: "Este Mac".into(), status: MacStatus::Here, attention: 2, active: false },
+        MacTab { name: "Studio".into(), status: MacStatus::Lan, attention: 0, active: true },
+        MacTab { name: "Mini".into(), status: MacStatus::Tailscale, attention: 1, active: false },
+        MacTab { name: "Air".into(), status: MacStatus::Offline, attention: 0, active: false },
+    ];
+    let backend = ratatui::backend::TestBackend::new(160, 16);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    terminal.draw(|frame| draw::draw(frame, &mut app)).unwrap();
+    let buffer = terminal.backend().buffer();
+    let row: String = (0..buffer.area.width).map(|x| buffer[(x, 0)].symbol()).collect();
+    dump("header with four Macs", &row);
+    assert!(
+        row.starts_with(
+            " Este Mac 2  Studio · En la red local  Mini · Por Tailscale 1  Air · Sin conexión  "
+        ),
+        "{row}"
+    );
+    assert!(!row.contains("Alondra"), "{row}");
+    let studio = row.chars().position(|c| c == 'S').unwrap() as u16;
+    let accent = ratatui::style::Color::LightYellow;
+    assert_eq!(buffer[(studio, 0)].bg, accent, "{row}");
+    assert_ne!(buffer[(1, 0)].bg, accent, "{row}");
+}
+
+#[test]
+fn a_direct_mac_tab_says_whether_it_answers() {
+    crate::i18n::set_for_this_thread(crate::i18n::Lang::En);
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let here = App::new(tx.clone());
+    assert_eq!(
+        here.mac_tab(true),
+        MacTab { name: "This Mac".into(), status: MacStatus::Here, attention: 0, active: true }
+    );
+    let mac: crate::direct_client::DirectMac = serde_json::from_value(json!({
+        "mac_id": "mac-studio", "name": "Studio", "mac_signing_key": "k", "mac_agreement_key": "k",
+        "device_id": "d", "signing_key": "k", "agreement_key": "k", "routes": ["192.168.1.20:47801"]
+    }))
+    .unwrap();
+    let mut studio = App::with_target(
+        tx,
+        MacTarget::Direct(std::sync::Arc::new(crate::direct_client::Connection::new(mac))),
+    );
+    assert_eq!(studio.mac_tab(false).name, "Studio");
+    assert_eq!(studio.mac_tab(false).status, MacStatus::Connecting);
+    studio.on_msg(Msg::ViewHome(Err("refused".into())));
+    assert_eq!(studio.mac_tab(false).status, MacStatus::Offline);
+    use crate::direct_client::RouteKind;
+    assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Lan)), MacStatus::Lan);
+    assert_eq!(MacStatus::direct(false, true, Some(RouteKind::Tailscale)), MacStatus::Tailscale);
+    assert_eq!(MacStatus::direct(true, false, Some(RouteKind::Lan)), MacStatus::Offline);
+}
+
+fn waiting_device(id: &str, name: &str, expires_at_ms: i64) -> PendingDevice {
+    PendingDevice { id: id.into(), name: name.into(), code: "482913".into(), expires_at_ms }
+}
+
+#[test]
+fn a_device_asking_to_pair_shows_a_prompt_until_the_mac_stops_listing_it() {
+    let domain = DomainState::new("screens");
+    let live = LiveSnapshot::default();
+    let mut app = app_on(Screen::Inbox, build(&domain, &live, "home"));
+    let question =
+        "¿Permitir que «iPad de Ana» use Alondra? Código 482913 — [p] Permitir · [d] Denegar";
+    let later = now_millis() + 60_000;
+    app.on_msg(Msg::PendingDevices(vec![
+        waiting_device("p-1", "iPad de Ana", later),
+        waiting_device("p-2", "Portátil", later),
+    ]));
+    let screen = rendered(&mut app, 120, 20);
+    dump("pairing prompt", &screen);
+    assert!(screen.contains(question), "{screen}");
+    assert!(!screen.contains("Portátil"), "{screen}");
+
+    app.on_msg(Msg::PendingDevices(vec![]));
+    assert!(!rendered(&mut app, 120, 20).contains("Permitir"));
+
+    app.on_msg(Msg::PendingDevices(vec![waiting_device(
+        "p-3",
+        "iPad de Ana",
+        now_millis() - 1,
+    )]));
+    assert!(!rendered(&mut app, 120, 20).contains("Permitir"));
 }

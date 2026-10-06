@@ -46,6 +46,14 @@ impl App {
         0
     }
 
+    /// Items waiting for the user, as the daemon counts them, else as the inbox shows them.
+    pub fn attention(&self) -> usize {
+        self.view_status
+            .as_ref()
+            .and_then(|s| s.counts.iter().find(|c| c.id == "inbox"))
+            .map_or_else(|| self.inbox_count(), |c| c.value as usize)
+    }
+
     pub(super) fn move_inbox(&mut self, to: isize) {
         let keys = self.inbox_keys();
         if keys.is_empty() {
@@ -436,8 +444,9 @@ impl App {
             Some(option) => &option.input,
             None => &action.input,
         };
+        let answers_a_choice = option.is_none() && action.option_id.is_some();
         match input {
-            alondra_core::views::Input::Text { required, .. } => {
+            alondra_core::views::Input::Text { required, .. } if *required || !answers_a_choice => {
                 self.compose(
                     super::Target::ViewAction {
                         action_id: action.id.clone(),
@@ -450,7 +459,7 @@ impl App {
                     "",
                 );
             }
-            alondra_core::views::Input::None => {
+            alondra_core::views::Input::None | alondra_core::views::Input::Text { .. } => {
                 let action_id = action.id.clone();
                 let data_epoch = epoch;
                 let option_id = option_id.clone();

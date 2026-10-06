@@ -40,6 +40,12 @@ enum Command {
         home: PathBuf,
         #[arg(long)]
         relay: String,
+        /// The port of the Mac's direct listener.
+        #[arg(long)]
+        direct_port: u16,
+        /// Where the direct listener binds: loopback, or 0.0.0.0 to reach it from a real phone.
+        #[arg(long, default_value = "127.0.0.1")]
+        direct_listen: String,
     },
     /// Registers a provisioned Mac with the relay under the sandbox owner.
     EnrollMac {
@@ -67,15 +73,22 @@ enum Command {
 
 #[derive(Subcommand)]
 enum PhoneAction {
-    /// Approves the phone on the Mac and waits until the relay carries its requests.
-    Pair,
-    /// Sends one encrypted request and prints the decrypted response.
+    /// Approves the phone on the Mac and waits until the relay carries its requests. With
+    /// --direct, pairs over the Mac's direct listener instead: it compares the code with the
+    /// one the Mac shows and approves it there, as a person would.
+    Pair {
+        #[arg(long)]
+        direct: bool,
+    },
+    /// Sends one encrypted request and prints the decrypted response; --direct skips the relay.
     Request {
         method: String,
         path: String,
         body: Option<String>,
         #[arg(long)]
         request_id: Option<String>,
+        #[arg(long)]
+        direct: bool,
     },
     /// Revokes the phone on the Mac and waits until the relay refuses it.
     Revoke,
@@ -88,8 +101,8 @@ fn main() -> Result<()> {
         Command::RelayConfig { listen, issuer, registry, out } => {
             relay::write_config(&listen, &issuer, &registry, &out)
         }
-        Command::ProvisionMac { home, relay } => {
-            println!("{}", mac::provision(&home, &relay)?);
+        Command::ProvisionMac { home, relay, direct_port, direct_listen } => {
+            println!("{}", mac::provision(&home, &relay, direct_port, &direct_listen)?);
             Ok(())
         }
         Command::EnrollMac { home, relay, issuer, key } => {
@@ -101,10 +114,15 @@ fn main() -> Result<()> {
             let target = sandbox.mac(mac)?;
             let phone = phone::Phone::open(&sandbox, &name)?;
             match action {
-                PhoneAction::Pair => phone.pair(&target),
-                PhoneAction::Request { method, path, body, request_id } => {
+                PhoneAction::Pair { direct: false } => phone.pair(&target),
+                PhoneAction::Pair { direct: true } => phone.pair_direct(&target).map(drop),
+                PhoneAction::Request { method, path, body, request_id, direct } => {
                     let body = body.map(|text| serde_json::from_str(&text)).transpose()?;
-                    let reply = phone.request(&target, &method, &path, body, request_id)?;
+                    let reply = if direct {
+                        phone.request_direct(&target, &method, &path, body, request_id)?
+                    } else {
+                        phone.request(&target, &method, &path, body, request_id)?
+                    };
                     println!("{}", serde_json::to_string_pretty(&reply)?);
                     Ok(())
                 }

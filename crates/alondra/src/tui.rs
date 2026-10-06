@@ -103,7 +103,7 @@ use crossterm::terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate};
 use ratatui::DefaultTerminal;
 use serde_json::{Value, json};
 
-use crate::client::Client;
+use crate::client::{Client, Target as MacTarget};
 use crate::i18n;
 use crate::mcp::urlencode;
 use crate::ops;
@@ -124,6 +124,7 @@ const ACTIVITY_EVERY_MS: i64 = 60_000;
 /// Threads move with every tool call, which does not move the domain: the open agent asks again this often.
 const THREADS_EVERY_MS: i64 = 10_000;
 const PREVIEW_PIXELS: u32 = 480;
+const PAIRING_POLL: Duration = Duration::from_secs(2);
 
 /// An inbox item by the id the daemon gave it.
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
@@ -154,6 +155,60 @@ pub struct Flash {
     pub text: String,
     pub error: bool,
     pub at: i64,
+}
+
+/// A device asking to use Alondra on this Mac, as `/devices/pending` lists it.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct PendingDevice {
+    pub id: String,
+    pub name: String,
+    pub code: String,
+    pub expires_at_ms: i64,
+}
+
+#[derive(serde::Deserialize)]
+struct PendingDevices {
+    pending: Vec<PendingDevice>,
+}
+
+/// One Mac this terminal is connected to, as its tab in the header shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MacTab {
+    pub name: String,
+    pub status: MacStatus,
+    pub attention: usize,
+    pub active: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MacStatus {
+    Here,
+    Lan,
+    Tailscale,
+    Connecting,
+    Offline,
+}
+
+impl MacStatus {
+    pub fn label(self) -> Option<&'static str> {
+        match self {
+            MacStatus::Here => None,
+            MacStatus::Lan => Some(tr!("On the local network", "En la red local")),
+            MacStatus::Tailscale => Some(tr!("Through Tailscale", "Por Tailscale")),
+            MacStatus::Connecting => Some(tr!("Connecting…", "Conectando…")),
+            MacStatus::Offline => Some(tr!("Offline", "Sin conexión")),
+        }
+    }
+
+    fn direct(offline: bool, connected: bool, route: Option<crate::direct_client::RouteKind>) -> Self {
+        use crate::direct_client::RouteKind;
+        match (offline, connected, route) {
+            (true, _, _) => MacStatus::Offline,
+            (false, true, Some(RouteKind::Lan)) => MacStatus::Lan,
+            (false, true, Some(RouteKind::Tailscale)) => MacStatus::Tailscale,
+            _ => MacStatus::Connecting,
+        }
+    }
 }
 
 pub struct Comment {
@@ -492,6 +547,12 @@ enum Msg {
         task: TaskId,
         result: Result<TaskHistory, String>,
     },
+    PendingDevices(Vec<PendingDevice>),
+    PairingAnswered {
+        device: PendingDevice,
+        allow: bool,
+        result: Result<(), String>,
+    },
 }
 
 /// How a close that alondrad accepted ended: a background job is gone; an interactive session
@@ -505,6 +566,7 @@ pub enum Closed {
 pub enum Flow {
     Go,
     Quit,
+    NextMac,
     Attach(String),
     /// The PR in tuicr on its local clone; its comments come back as feedback on `key`.
     Review {
@@ -547,6 +609,15 @@ pub struct App {
     /// Every request that is not a domain command, as the tests read what it would have sent.
     #[cfg(test)]
     posted: std::cell::RefCell<Vec<(String, Value)>>,
+    /// The direct Mac each background request would have gone to; `None` is this Mac.
+    #[cfg(test)]
+    spawned: std::cell::RefCell<Vec<Option<String>>>,
+    target: MacTarget,
+    /// Every Mac this terminal is connected to, when there is more than one.
+    pub macs: Vec<MacTab>,
+    /// Devices waiting for this Mac to let them in; only the instance for this Mac asks.
+    pub pairing: Vec<PendingDevice>,
+    pairing_answered: HashSet<String>,
     pub search: Option<Search>,
     pub composer: Option<Composer>,
     pub reader: Option<Reader>,
@@ -604,17 +675,36 @@ pub struct App {
 }
 
 pub fn run() -> Result<()> {
-    let (tx, rx) = mpsc::sync_channel::<Msg>(64);
     crate::attach::reset_terminal_modes();
     let mut terminal = ratatui::init();
     let _ = execute!(stdout(), EnableBracketedPaste);
-    let mut app = App::new(tx);
-    app.picker = Some(
-        ratatui_image::picker::Picker::from_query_stdio()
-            .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks()),
-    );
-    app.start_view_feed();
-    let res = main_loop(&mut terminal, app, rx);
+    let picker = ratatui_image::picker::Picker::from_query_stdio()
+        .unwrap_or_else(|_| ratatui_image::picker::Picker::halfblocks());
+    let (direct, unreadable) = match crate::direct_client::load() {
+        Ok(macs) => (macs, None),
+        Err(e) => (Vec::new(), Some(e)),
+    };
+    let targets = std::iter::once(MacTarget::Local).chain(direct.into_iter().map(|mac| {
+        MacTarget::Direct(std::sync::Arc::new(crate::direct_client::Connection::new(mac)))
+    }));
+    let mut macs: Vec<(App, Receiver<Msg>)> = targets
+        .map(|target| {
+            let (tx, rx) = mpsc::sync_channel::<Msg>(64);
+            let mut app = App::with_target(tx, target);
+            app.picker = Some(picker.clone());
+            app.start_view_feed();
+            (app, rx)
+        })
+        .collect();
+    let local = &mut macs[0].0;
+    local.start_pairing_feed();
+    if let Some(e) = unreadable {
+        local.fail(trf!(
+            "Could not read the Macs this terminal paired with: {e}",
+            "No pude leer los Macs emparejados con este terminal: {e}"
+        ));
+    }
+    let res = main_loop(&mut terminal, macs);
     let _ = execute!(stdout(), DisableBracketedPaste);
     ratatui::restore();
     crate::attach::reset_terminal_modes();
@@ -650,22 +740,46 @@ fn repaint(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     Ok(())
 }
 
-fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) -> Result<()> {
+fn mac_tabs(macs: &[(App, Receiver<Msg>)], active: usize) -> Vec<MacTab> {
+    if macs.len() < 2 {
+        return Vec::new();
+    }
+    macs.iter()
+        .enumerate()
+        .map(|(i, (app, _))| app.mac_tab(i == active))
+        .collect()
+}
+
+/// Every Mac's instance stays alive and takes its own messages; only the active one is drawn
+/// and gets the keys. Without an answer from this Mac's daemon, the first direct Mac opens.
+fn main_loop(terminal: &mut DefaultTerminal, mut macs: Vec<(App, Receiver<Msg>)>) -> Result<()> {
+    let mut active = 0;
+    let mut chosen = false;
     let mut dirty = true;
     loop {
         if dirty {
+            let tabs = mac_tabs(&macs, active);
+            let app = &mut macs[active].0;
+            app.macs = tabs;
             app.reconcile();
-            draw(terminal, &mut app)?;
+            draw(terminal, app)?;
             dirty = false;
         }
         if event::poll(IDLE_POLL)? {
+            let app = &mut macs[active].0;
             app.note_activity();
             loop {
                 match event::read()? {
                     Event::Key(k) if k.kind != KeyEventKind::Release => match app.on_key(k) {
                         Flow::Quit => return Ok(()),
+                        Flow::NextMac => {
+                            active = (active + 1) % macs.len();
+                            chosen = true;
+                            dirty = true;
+                            break;
+                        }
                         Flow::Attach(agent) => {
-                            if crate::service_client::target().is_some() {
+                            if app.remote_mac().is_some() {
                                 app.fail(tr!("Remote terminal attachment is unavailable; open the terminal on the destination Mac", "El terminal remoto no está disponible; ábrelo en el Mac de destino"));
                                 break;
                             }
@@ -679,7 +793,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                                     "No pude abrir su terminal: {e}"
                                 ));
                             }
-                            repaint(terminal, &mut app)?;
+                            repaint(terminal, app)?;
                             break;
                         }
                         Flow::Review {
@@ -688,11 +802,11 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             number,
                             dir,
                         } => {
-                            if crate::service_client::target().is_some() {
+                            if app.remote_mac().is_some() {
                                 app.fail(tr!("tuicr runs on the destination Mac; the diff opens here instead", "tuicr funciona en el Mac de destino; aquí se abre el diff"));
                                 break;
                             }
-                            draw(terminal, &mut app)?;
+                            draw(terminal, app)?;
                             let _ = execute!(stdout(), DisableBracketedPaste);
                             let res = crate::attach::run_tool(
                                 "tuicr",
@@ -703,7 +817,7 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                             crossterm::terminal::enable_raw_mode()?;
                             let _ = execute!(stdout(), EnableBracketedPaste);
                             app.reviewed(key, pr, number, res);
-                            repaint(terminal, &mut app)?;
+                            repaint(terminal, app)?;
                             break;
                         }
                         Flow::Go => {}
@@ -717,11 +831,19 @@ fn main_loop(terminal: &mut DefaultTerminal, mut app: App, rx: Receiver<Msg>) ->
                 }
             }
         }
-        while let Ok(m) = rx.try_recv() {
-            app.on_msg(m);
+        for (app, rx) in &mut macs {
+            while let Ok(m) = rx.try_recv() {
+                app.on_msg(m);
+                dirty = true;
+            }
+            dirty |= app.on_timers();
+        }
+        let local = &macs[0].0;
+        if !chosen && macs.len() > 1 && local.offline && !local.loaded {
+            active = 1;
+            chosen = true;
             dirty = true;
         }
-        dirty |= app.on_timers();
     }
 }
 
@@ -818,9 +940,9 @@ fn open_with_mac(target: &str) {
 
 /// A stored file handed to the Mac's app for it: always a private local copy, never a path of
 /// the daemon's, so a remote destination and the local Mac read the same bytes.
-fn open_stored(name: &str, route: &str) -> Result<()> {
+fn open_stored(target: &MacTarget, name: &str, route: &str) -> Result<()> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let bytes = Client::for_tui(Duration::from_secs(120)).content(route)?;
+    let bytes = Client::for_target(target, Duration::from_secs(120)).content(route)?;
     let suffix: String = crate::service_client::random::<16>()?
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -867,6 +989,10 @@ fn has_comments(export: &str) -> bool {
 
 impl App {
     fn new(tx: SyncSender<Msg>) -> Self {
+        Self::with_target(tx, MacTarget::Local)
+    }
+
+    fn with_target(tx: SyncSender<Msg>, target: MacTarget) -> Self {
         App {
             home_view: None,
             card_view: None,
@@ -895,6 +1021,12 @@ impl App {
             pressed: KeyCode::Null,
             #[cfg(test)]
             posted: Default::default(),
+            #[cfg(test)]
+            spawned: Default::default(),
+            target,
+            macs: Vec::new(),
+            pairing: Vec::new(),
+            pairing_answered: HashSet::new(),
             search: None,
             composer: None,
             reader: None,
@@ -945,7 +1077,118 @@ impl App {
     fn start_view_feed(&self) {
         let tx = self.tx.clone();
         let open_views = self.open_views.clone();
-        view_feed::start(tx, open_views);
+        view_feed::start(tx, open_views, self.target.clone());
+    }
+
+    /// Asks this Mac's daemon every few seconds which devices wait to be let in.
+    fn start_pairing_feed(&self) {
+        let tx = self.tx.clone();
+        let _ = std::thread::Builder::new()
+            .name("alondra-pairing-feed".into())
+            .spawn(move || {
+                let client = Client::for_user(Duration::from_secs(5));
+                let mut last = None;
+                loop {
+                    let pending = client
+                        .get::<PendingDevices>("/devices/pending")
+                        .map(|p| p.pending)
+                        .unwrap_or_default();
+                    if last.as_ref() != Some(&pending) {
+                        if tx.send(Msg::PendingDevices(pending.clone())).is_err() {
+                            return;
+                        }
+                        last = Some(pending);
+                    }
+                    std::thread::sleep(PAIRING_POLL);
+                }
+            });
+    }
+
+    /// The Mac this instance reaches from afar, by id; `None` for this Mac over loopback.
+    fn remote_mac(&self) -> Option<String> {
+        match &self.target {
+            MacTarget::Local => crate::service_client::target().map(str::to_owned),
+            MacTarget::Direct(connection) => Some(connection.mac().mac_id.clone()),
+        }
+    }
+
+    fn mac_tab(&self, active: bool) -> MacTab {
+        let (name, status) = match &self.target {
+            MacTarget::Local => (
+                crate::service_client::target()
+                    .map_or_else(|| tr!("This Mac", "Este Mac").to_owned(), str::to_owned),
+                if self.offline {
+                    MacStatus::Offline
+                } else {
+                    MacStatus::Here
+                },
+            ),
+            MacTarget::Direct(connection) => (
+                connection.mac().name.clone(),
+                MacStatus::direct(
+                    self.offline,
+                    self.connected,
+                    connection.route().map(|(_, kind)| kind),
+                ),
+            ),
+        };
+        MacTab {
+            name,
+            status,
+            attention: self.attention() + self.pairing.len(),
+            active,
+        }
+    }
+
+    pub fn pairing_prompt(&self) -> Option<&PendingDevice> {
+        self.pairing.first()
+    }
+
+    fn answer_pairing(&mut self, device: PendingDevice, allow: bool) {
+        let verb = if allow { "approve" } else { "deny" };
+        let path = format!("/devices/pending/{}/{verb}", urlencode(&device.id));
+        #[cfg(test)]
+        self.posted.borrow_mut().push((path.clone(), json!({})));
+        self.pairing_answered.insert(device.id.clone());
+        self.pairing.retain(|d| d.id != device.id);
+        self.spawn(move |tx, _| {
+            let result = Client::for_user(Duration::from_secs(10))
+                .post(&path, &json!({}))
+                .map(|_| ())
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::PairingAnswered {
+                device,
+                allow,
+                result,
+            });
+        });
+    }
+
+    fn pairing_key(&mut self, k: KeyEvent) -> bool {
+        let Some(device) = self.pairing_prompt().cloned() else {
+            return false;
+        };
+        if !self.target.is_local() || !k.modifiers.is_empty() {
+            return false;
+        }
+        match k.code {
+            KeyCode::Char('p') => self.answer_pairing(device, true),
+            KeyCode::Char('d') => self.answer_pairing(device, false),
+            _ => return false,
+        }
+        true
+    }
+
+    fn typing(&self) -> bool {
+        self.composer.is_some()
+            || self.cmdline.is_some()
+            || self
+                .reader
+                .as_ref()
+                .is_some_and(|r| r.find.as_ref().is_some_and(|f| f.editing))
+            || (self.screen == Screen::Fleet
+                && self.reader.is_none()
+                && self.search.as_ref().is_some_and(|s| s.editing))
     }
 
     fn load_selected_view(&mut self) {
@@ -959,8 +1202,8 @@ impl App {
             return;
         }
         self.card_view_asked = Some(key.clone());
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(25))
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(25))
                 .views(&key, None)
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::ViewCard { key, result });
@@ -1010,8 +1253,8 @@ impl App {
         }
         self.screen_view_asked = Some(key.clone());
         self.home_view = None;
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(25))
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(25))
                 .views(&key, None)
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::ViewHome(result));
@@ -1047,8 +1290,8 @@ impl App {
         self.posted
             .borrow_mut()
             .push(("/actions".into(), request.clone()));
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(30))
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(30))
                 .post("/actions", &request)
                 .map_err(|error| format!("{error:#}"))
                 .and_then(view_action_result);
@@ -1089,12 +1332,18 @@ impl App {
     }
 
     /// Every call to alondrad runs here. Tests never reach the user's live alondrad.
-    fn spawn(&self, job: impl FnOnce(&SyncSender<Msg>) + Send + 'static) {
+    fn spawn(&self, job: impl FnOnce(&SyncSender<Msg>, &MacTarget) + Send + 'static) {
+        #[cfg(test)]
+        self.spawned.borrow_mut().push(match &self.target {
+            MacTarget::Local => None,
+            MacTarget::Direct(connection) => Some(connection.mac().mac_id.clone()),
+        });
         if cfg!(test) {
             return;
         }
         let tx = self.tx.clone();
-        std::thread::spawn(move || job(&tx));
+        let target = self.target.clone();
+        std::thread::spawn(move || job(&tx, &target));
     }
 
     /// A second press of the same step within a few seconds confirms it; anything else starts over.
@@ -1124,8 +1373,8 @@ impl App {
         self.posted
             .borrow_mut()
             .push((ops::PRESENCE.into(), json!({"client": "tui"})));
-        self.spawn(|_| {
-            let _ = Client::for_tui(Duration::from_secs(5))
+        self.spawn(|_, target| {
+            let _ = Client::for_target(target, Duration::from_secs(5))
                 .post(ops::PRESENCE, &json!({"client": "tui"}));
         });
     }
@@ -1135,13 +1384,11 @@ impl App {
     fn op(&mut self, key: Option<Key>, path: String, body: Value, ok: String) {
         #[cfg(test)]
         self.posted.borrow_mut().push((path.clone(), body.clone()));
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(15))
+        let mac = self.remote_mac();
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(15))
                 .post(&path, &body)
-                .map(|v| {
-                    crate::delivery::response_notice(&v, crate::service_client::target())
-                        .unwrap_or(ok)
-                })
+                .map(|v| crate::delivery::response_notice(&v, mac.as_deref()).unwrap_or(ok))
                 .map_err(|e| {
                     if crate::client::missing(&e) {
                         trf!("{e} ({path})", "{e} ({path})")
@@ -1169,8 +1416,8 @@ impl App {
             return;
         }
         let route = route.to_string();
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(30))
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(30))
                 .content(&route)
                 .map(files::FileBody::classify)
                 .map_err(|e| format!("{e:#}"));
@@ -1190,8 +1437,8 @@ impl App {
             "Diferencias incompletas. Abre la PR en GitHub para leer el resto."
         )
         .to_string();
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(30))
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(30))
                 .pull_request_diff(&id, &expected_head)
                 .map(|diff| files::FileBody::Text(diff_reader_text(diff, &truncated_notice)))
                 .map_err(|e| format!("{e:#}"));
@@ -1294,7 +1541,7 @@ impl App {
         };
         let preview = self.picker.is_some() && chip.image();
         c.chips.push(chip);
-        self.spawn(move |tx| {
+        self.spawn(move |tx, target| {
             if preview && let Ok(image) = image::open(&path) {
                 let _ = tx.send(Msg::Preview {
                     seq,
@@ -1304,7 +1551,7 @@ impl App {
             let result = std::fs::read(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|bytes| {
-                    Client::for_tui(Duration::from_secs(120))
+                    Client::for_target(target, Duration::from_secs(120))
                         .upload(&name, &bytes)
                         .map_err(|e| {
                             let route = crate::client::UPLOADS;
@@ -1533,6 +1780,37 @@ impl App {
             },
             Msg::Runtime(runtime) => self.runtime = runtime.map(|r| *r),
             Msg::Daemon(daemon) => self.daemon = daemon.map(|d| *d),
+            Msg::PendingDevices(pending) => {
+                let now = now_millis();
+                self.pairing_answered
+                    .retain(|id| pending.iter().any(|d| &d.id == id));
+                self.pairing = pending
+                    .into_iter()
+                    .filter(|d| d.expires_at_ms > now && !self.pairing_answered.contains(&d.id))
+                    .collect();
+            }
+            Msg::PairingAnswered {
+                device,
+                allow,
+                result,
+            } => {
+                let name = device.name.clone();
+                match result {
+                    Ok(()) if allow => self.flash(trf!(
+                        "“{name}” can use Alondra now",
+                        "«{name}» ya puede usar Alondra"
+                    )),
+                    Ok(()) => self.flash(trf!("“{name}” was denied", "«{name}» denegado")),
+                    Err(e) => {
+                        self.pairing_answered.remove(&device.id);
+                        self.pairing.insert(0, device);
+                        self.fail(trf!(
+                            "Could not answer “{name}”: {e}",
+                            "No pude responder a «{name}»: {e}"
+                        ));
+                    }
+                }
+            }
             Msg::Posted { key, result } => match result {
                 Ok(text) => {
                     if let Some(k) = key {
@@ -1643,6 +1921,9 @@ impl App {
         if self.hidden.values().any(|at| now - at >= HIDE_GRACE_MS) {
             dirty = true;
         }
+        let waiting = self.pairing.len();
+        self.pairing.retain(|d| d.expires_at_ms > now);
+        dirty |= self.pairing.len() != waiting;
         self.load_threads();
         dirty
     }
@@ -1708,9 +1989,15 @@ impl App {
             }
             self.pending_changed_action = None;
         }
+        if !self.typing() && self.pairing_key(k) {
+            return Flow::Go;
+        }
         if self.help {
             self.help_key(k);
             return Flow::Go;
+        }
+        if !self.typing() && k.code == KeyCode::Char(']') && k.modifiers.is_empty() {
+            return Flow::NextMac;
         }
         if self.composer.is_some() {
             self.composer_key(k);
@@ -2017,13 +2304,13 @@ impl App {
 
     /// Asks alondrad for the open issues, which it keeps for ten minutes unless `refresh`.
     fn load_issues(&self, refresh: bool) {
-        self.spawn(move |tx| {
+        self.spawn(move |tx, target| {
             let key = if refresh {
                 "issue_picker?refresh=1"
             } else {
                 "issue_picker"
             };
-            let result = Client::for_tui(Duration::from_secs(40))
+            let result = Client::for_target(target, Duration::from_secs(40))
                 .views(key, None)
                 .map_err(|e| format!("{e:#}"))
                 .map(|view| {
@@ -2069,8 +2356,8 @@ impl App {
             Some(project) => format!("{view}?project={}", crate::mcp::urlencode(project)),
             None => view.clone(),
         };
-        self.spawn(move |tx| {
-            let result = Client::for_tui(Duration::from_secs(25))
+        self.spawn(move |tx, target| {
+            let result = Client::for_target(target, Duration::from_secs(25))
                 .views(&key, None)
                 .map_err(|e| format!("{e:#}"));
             let _ = tx.send(Msg::FormView {

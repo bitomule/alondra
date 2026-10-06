@@ -83,6 +83,9 @@ pub fn draw(f: &mut Frame, app: &mut App) {
     if app.help {
         draw_help(f, app);
     }
+    if let Some(device) = app.pairing_prompt() {
+        draw_pairing(f, device, body);
+    }
 }
 
 fn panel(title: Line<'static>, focused: bool) -> Panel<'static> {
@@ -260,27 +263,45 @@ fn draw_head(f: &mut Frame, app: &App, area: Rect) {
             Span::styled(format!(" {label} "), Style::new().fg(SOFT))
         }
     };
-    let mut left = vec![
-        Span::styled(
+    let title = Style::new()
+        .fg(Color::Black)
+        .bg(ACCENT)
+        .add_modifier(Modifier::BOLD);
+    let mut left = if app.macs.len() > 1 {
+        app.macs
+            .iter()
+            .map(|mac| {
+                let mut label = mac.name.clone();
+                if let Some(status) = mac.status.label() {
+                    label = format!("{label} · {status}");
+                }
+                if mac.attention > 0 {
+                    label = format!("{label} {}", mac.attention);
+                }
+                Span::styled(
+                    format!(" {label} "),
+                    if mac.active {
+                        title
+                    } else {
+                        Style::new().fg(SOFT)
+                    },
+                )
+            })
+            .collect()
+    } else {
+        vec![Span::styled(
             format!(" {} ", crate::service_client::target().unwrap_or("Alondra")),
-            Style::new()
-                .fg(Color::Black)
-                .bg(ACCENT)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(" "),
-    ];
+            title,
+        )]
+    };
+    left.push(Span::raw(" "));
     let count = |id: &str, fallback: usize| {
         app.view_status
             .as_ref()
             .and_then(|s| s.counts.iter().find(|c| c.id == id))
             .map_or(fallback, |c| c.value as usize)
     };
-    let (inbox, tasks, agents) = (
-        count("inbox", app.inbox_count()),
-        count("tasks", 0),
-        count("agents", 0),
-    );
+    let (inbox, tasks, agents) = (app.attention(), count("tasks", 0), count("agents", 0));
     left.push(tab(
         trf!("Inbox {inbox}", "Bandeja {inbox}"),
         app.screen == Screen::Inbox,
@@ -1759,6 +1780,34 @@ pub(super) fn footer_keys(app: &App) -> Vec<(String, String)> {
 }
 
 /// Action results float above the key bar, wrapped, so they never hide the keys or get cut.
+fn draw_pairing(f: &mut Frame, device: &super::PendingDevice, body: Rect) {
+    let (name, code) = (&device.name, &device.code);
+    let text = trf!(
+        "Allow “{name}” to use Alondra? Code {code} — [p] Allow · [d] Deny",
+        "¿Permitir que «{name}» use Alondra? Código {code} — [p] Permitir · [d] Denegar"
+    );
+    let width = body.width.saturating_sub(4).clamp(10, 90);
+    let inner_width = width.saturating_sub(4).max(1);
+    let height = (text.chars().count() as u16).div_ceil(inner_width).clamp(1, 6) + 2;
+    let area = Rect {
+        x: body.x + body.width.saturating_sub(width) / 2,
+        y: body.y + body.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    f.render_widget(Clear, area);
+    f.render_widget(
+        Paragraph::new(Text::styled(text, Style::new().fg(ACCENT).bold()))
+            .wrap(Wrap { trim: true })
+            .block(
+                Panel::bordered()
+                    .border_type(BorderType::Thick)
+                    .border_style(Style::new().fg(ACCENT)),
+            ),
+        area,
+    );
+}
+
 fn draw_flash(f: &mut Frame, app: &App, body: Rect) {
     let Some(fl) = &app.flash else { return };
     let (mark, color) = if fl.error {
@@ -2179,6 +2228,20 @@ pub(super) fn help_lines() -> Vec<Line<'static>> {
             tr!(
                 "new work for the orchestrator · message the orchestrator",
                 "trabajo nuevo para el orquestador · mensaje al orquestador"
+            ),
+        ),
+        row(
+            "]",
+            tr!(
+                "next Mac, when this terminal is connected to several (tabs in the header)",
+                "siguiente Mac, cuando este terminal está conectado a varios (pestañas de la cabecera)"
+            ),
+        ),
+        row(
+            "p · d",
+            tr!(
+                "when a device asks to use Alondra on this Mac: allow · deny",
+                "cuando un dispositivo pide usar Alondra en este Mac: permitir · denegar"
             ),
         ),
         row("q  Ctrl-c", tr!("quit", "salir")),

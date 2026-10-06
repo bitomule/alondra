@@ -1,4 +1,6 @@
+pub mod bonjour;
 pub mod home_lock;
+pub mod service_config;
 pub mod delivery;
 pub mod activity;
 pub mod artifact;

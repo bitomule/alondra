@@ -4,6 +4,7 @@ mod attach;
 mod account;
 mod cli;
 mod client;
+mod direct_client;
 mod claude_auth;
 mod cleanup;
 mod doctor;
@@ -45,8 +46,17 @@ enum Cmd {
     Delivery(delivery::Options),
     #[command(about = "List Macs enrolled in your service account")]
     Machines,
-    #[command(about = "Pair or repair this Mac's access to a remote Mac; the TUI stays Local")]
-    Connect { mac: String, #[arg(long, help = "Request new approval on the destination; keep current trust until approval succeeds")] repair: bool },
+    #[command(about = tr!(
+        "Pair this terminal with another Mac: found on this network, at --host, or by Mac ID through the relay",
+        "Empareja este terminal con otro Mac: encontrado en esta red, en --host, o por ID de Mac a través del relay"
+    ))]
+    Connect {
+        mac: Option<String>,
+        #[arg(long, conflicts_with = "mac", help = tr!("Address of the Mac (IP or name, optional :port)", "Dirección del Mac (IP o nombre, :puerto opcional)"))]
+        host: Option<String>,
+        #[arg(long, help = tr!("Pair again even if this terminal already trusts that Mac", "Vuelve a emparejar aunque este terminal ya confíe en ese Mac"))]
+        repair: bool,
+    },
     #[command(about = tr!("Sign in to the Alondra service in your browser", "Inicia sesión en el servicio Alondra desde el navegador"))]
     Login,
     #[command(about = tr!("Show the signed-in Alondra service account", "Muestra la cuenta conectada al servicio Alondra"))]
@@ -110,10 +120,17 @@ enum Cmd {
         ))]
         url: Option<String>,
     },
-    #[command(about = tr!("Paired devices; --revoke <id> removes one", "Dispositivos vinculados; con --revoke <id> quita uno"))]
+    #[command(about = tr!(
+        "Paired devices and pairing requests waiting on this Mac; --approve, --deny or --revoke one",
+        "Dispositivos vinculados y peticiones de emparejamiento pendientes en este Mac; --approve, --deny o --revoke uno"
+    ))]
     Devices {
         #[arg(long, help = tr!("Id of the device to unpair", "Id del dispositivo que se desvincula"))]
         revoke: Option<String>,
+        #[arg(long, conflicts_with_all = ["revoke", "deny"], help = tr!("Id of the pairing request to approve", "Id de la petición de emparejamiento que se aprueba"))]
+        approve: Option<String>,
+        #[arg(long, conflicts_with_all = ["revoke", "approve"], help = tr!("Id of the pairing request to deny", "Id de la petición de emparejamiento que se rechaza"))]
+        deny: Option<String>,
     },
     #[command(about = tr!(
         "Check the whole installation: daemon, service, plugin, notifications, tmux",
@@ -185,7 +202,8 @@ fn main() -> Result<()> {
     match cli.command {
         Some(Cmd::Delivery(options)) => delivery::run(options),
         Some(Cmd::Machines) => service_client::list(),
-        Some(Cmd::Connect { mac, repair }) => service_client::connect(&mac, repair),
+        Some(Cmd::Connect { mac: Some(mac), repair, .. }) => service_client::connect(&mac, repair),
+        Some(Cmd::Connect { mac: None, host, repair }) => direct_client::connect(host.as_deref(), repair),
         None => tui::run(),
         Some(Cmd::Login) => account::login(),
         Some(Cmd::Account) => account::status(),
@@ -209,7 +227,7 @@ fn main() -> Result<()> {
                 "No hay URL pública: pasa --url o ponla con `alondra setup --public-url …`"
             )),
         },
-        Some(Cmd::Devices { revoke }) => devices(revoke),
+        Some(Cmd::Devices { revoke, approve, deny }) => devices(revoke, approve, deny),
         Some(Cmd::Doctor { json }) => doctor::run(json),
         Some(Cmd::Update { check }) => update::run(check),
         Some(Cmd::State { command }) => {
@@ -486,8 +504,30 @@ fn pair(url: &str) -> Result<()> {
     Ok(())
 }
 
-fn devices(revoke: Option<String>) -> Result<()> {
+fn devices(revoke: Option<String>, approve: Option<String>, deny: Option<String>) -> Result<()> {
     let client = Client::new(Duration::from_secs(10));
+    if let Some(id) = approve {
+        client.post(&format!("/devices/pending/{}/approve", mcp::urlencode(&id)), &serde_json::json!({}))?;
+        println!("{}", trf!("Pairing request {id} approved.", "Petición de emparejamiento {id} aprobada."));
+        return Ok(());
+    }
+    if let Some(id) = deny {
+        client.post(&format!("/devices/pending/{}/deny", mcp::urlencode(&id)), &serde_json::json!({}))?;
+        println!("{}", trf!("Pairing request {id} denied.", "Petición de emparejamiento {id} rechazada."));
+        return Ok(());
+    }
+    let pending: serde_json::Value = client.get("/devices/pending")?;
+    for request in pending["pending"].as_array().into_iter().flatten() {
+        let (id, name, code) = (
+            request["id"].as_str().unwrap_or(""),
+            request["name"].as_str().unwrap_or(""),
+            request["code"].as_str().unwrap_or(""),
+        );
+        println!("{}", trf!(
+            "Waiting: “{name}” wants to use Alondra. Code {code}. Approve: alondra devices --approve {id}",
+            "Pendiente: «{name}» quiere usar Alondra. Código {code}. Aprobar: alondra devices --approve {id}"
+        ));
+    }
     if let Some(id) = revoke {
         let path = format!("/devices/{}", mcp::urlencode(&id));
         client.delete(&path)?;
@@ -497,7 +537,7 @@ fn devices(revoke: Option<String>) -> Result<()> {
     let v: serde_json::Value = client.get("/devices")?;
     let list = v.get("devices").and_then(|d| d.as_array()).cloned().unwrap_or_default();
     if list.is_empty() {
-        println!("{}", tr!("No paired devices. Use: alondra pair --url <public URL>", "No hay dispositivos vinculados. Usa: alondra pair --url <URL pública>"));
+        println!("{}", tr!("No paired devices. Devices on the same network pair on their own: open the app, or run alondra connect on the other computer.", "No hay dispositivos vinculados. Los dispositivos de la misma red se emparejan solos: abre la app, o ejecuta alondra connect en el otro ordenador."));
     }
     for d in list {
         let last = d.get("last_seen").and_then(|x| x.as_i64()).map(|t| {
@@ -563,7 +603,10 @@ mod destination_tests {
         assert!(Cli::try_parse_from(["alondra", "--mac", "mac-a"]).is_err());
         assert!(Cli::try_parse_from(["alondra", "--remote"]).is_err());
         let connect = Cli::try_parse_from(["alondra", "connect", "mac-a"]).unwrap();
-        assert!(matches!(connect.command, Some(Cmd::Connect { mac, repair: false }) if mac == "mac-a"));
+        assert!(matches!(connect.command, Some(Cmd::Connect { mac: Some(mac), host: None, repair: false }) if mac == "mac-a"));
+        let direct = Cli::try_parse_from(["alondra", "connect", "--host", "192.168.1.2"]).unwrap();
+        assert!(matches!(direct.command, Some(Cmd::Connect { mac: None, host: Some(host), .. }) if host == "192.168.1.2"));
+        assert!(Cli::try_parse_from(["alondra", "connect", "mac-a", "--host", "x"]).is_err());
     }
 }
 

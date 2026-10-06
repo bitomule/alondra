@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>dev.alondra.alondrad</string>
+    <key>CFBundleName</key>
+    <string>alondrad</string>
+    <key>CFBundleDisplayName</key>
+    <string>Alondra</string>
+    <key>NSLocalNetworkUsageDescription</key>
+    <string>Alondra shows this Mac to your iPhone and your other Macs on the same network, so they connect to it directly.</string>
+    <key>NSBonjourServices</key>
+    <array>
+        <string>_alondra._tcp</string>
+        <string>_alondra-sandbox._tcp</string>
+    </array>
+</dict>
+</plist>

@@ -1,0 +1,678 @@
+//! Talking to Macs directly on the local network or a tailnet, without the relay. Every Mac is
+//! its own pairing: its pinned keys, this terminal's keys for it, and the addresses it can be
+//! reached at. Requests are the same end-to-end envelopes the relay carries; a route is used
+//! only after `GET /direct/hello` there returns exactly the pinned Mac.
+use alondra_e2e::pairing::{self as protocol, Approval, Transcript};
+use alondra_e2e::{Context as EnvelopeContext, Envelope};
+use anyhow::{Context, Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
+use p256::ecdsa::{SigningKey, VerifyingKey};
+use p256::elliptic_curve::sec1::ToSec1Point;
+use p256::{PublicKey, SecretKey};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
+use std::fs;
+use std::io::Write as _;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+use std::sync::Mutex;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+pub const DEFAULT_PORT: u16 = 47810;
+const STORE: &str = "direct-macs.json";
+const LOCK: &str = "direct-macs.lock";
+const HELLO_TIMEOUT: Duration = Duration::from_millis(1500);
+const PAIRING_WAIT: Duration = Duration::from_secs(130);
+
+/// One Mac this terminal paired with directly.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DirectMac {
+    pub mac_id: String,
+    pub name: String,
+    pub mac_signing_key: String,
+    pub mac_agreement_key: String,
+    pub device_id: String,
+    signing_key: String,
+    agreement_key: String,
+    /// `host:port`, best first: LAN addresses, then the tailnet address, then names.
+    pub routes: Vec<String>,
+}
+
+#[derive(Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Store {
+    macs: Vec<DirectMac>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+pub struct Hello {
+    pub mac_id: String,
+    pub name: String,
+    pub signing_key: String,
+    pub agreement_key: String,
+}
+
+/// How a route reaches its Mac, for the connection status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RouteKind {
+    Lan,
+    Tailscale,
+}
+
+pub fn route_kind(route: &str) -> RouteKind {
+    let host = route.rsplit_once(':').map_or(route, |(host, _)| host).trim_matches(['[', ']']);
+    let tailnet = match host.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(v4)) => v4.octets()[0] == 100 && (64..128).contains(&v4.octets()[1]),
+        Ok(std::net::IpAddr::V6(v6)) => v6.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+        Err(_) => host.ends_with(".ts.net"),
+    };
+    if tailnet { RouteKind::Tailscale } else { RouteKind::Lan }
+}
+
+fn now_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+fn random<const N: usize>() -> Result<[u8; N]> {
+    let mut bytes = [0u8; N];
+    ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut bytes)
+        .map_err(|_| anyhow!("OS randomness failed"))?;
+    Ok(bytes)
+}
+
+fn agent(timeout: Duration) -> ureq::Agent {
+    ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .http_status_as_error(false)
+        .build()
+        .into()
+}
+
+fn store_path(home: &Path) -> PathBuf {
+    home.join(STORE)
+}
+
+struct StoreLock(fs::File);
+
+impl StoreLock {
+    fn acquire(home: &Path) -> Result<Self> {
+        fs::create_dir_all(home)?;
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(home.join(LOCK))?;
+        file.lock()?;
+        Ok(Self(file))
+    }
+}
+
+impl Drop for StoreLock {
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
+}
+
+pub fn load_from(home: &Path) -> Result<Vec<DirectMac>> {
+    let path = store_path(home);
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(error) => return Err(error.into()),
+    };
+    if !meta.is_file() || meta.file_type().is_symlink() || meta.permissions().mode() & 0o077 != 0 {
+        bail!("{} must be a regular owner-only file", path.display());
+    }
+    let store: Store = serde_json::from_slice(&fs::read(&path)?)?;
+    Ok(store.macs)
+}
+
+pub fn load() -> Result<Vec<DirectMac>> {
+    load_from(&crate::client::config().home)
+}
+
+fn save_to(home: &Path, macs: Vec<DirectMac>) -> Result<()> {
+    let path = store_path(home);
+    let bytes = serde_json::to_vec_pretty(&Store { macs })?;
+    let temp = path.with_extension(format!("tmp-{}", B64.encode(random::<9>()?)));
+    let mut file = fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    fs::rename(&temp, &path)?;
+    fs::File::open(home)?.sync_all()?;
+    Ok(())
+}
+
+/// Adds or replaces one Mac's pairing, under the store lock.
+pub fn remember(home: &Path, mac: DirectMac) -> Result<()> {
+    let _lock = StoreLock::acquire(home)?;
+    let mut macs = load_from(home)?;
+    macs.retain(|known| known.mac_id != mac.mac_id);
+    macs.push(mac);
+    save_to(home, macs)
+}
+
+fn forget_routes_of_others(home: &Path, mac_id: &str, routes: &[String]) -> Result<()> {
+    let _lock = StoreLock::acquire(home)?;
+    let mut macs = load_from(home)?;
+    for mac in macs.iter_mut().filter(|mac| mac.mac_id == mac_id) {
+        mac.routes = routes.to_vec();
+    }
+    save_to(home, macs)
+}
+
+pub fn hello(route: &str) -> Result<Hello> {
+    let mut response = agent(HELLO_TIMEOUT).get(format!("http://{route}/direct/hello")).call()?;
+    if response.status() != 200 {
+        bail!("{route} answered HTTP {}", response.status());
+    }
+    Ok(serde_json::from_slice(&response.body_mut().with_config().limit(16 * 1024).read_to_vec()?)?)
+}
+
+/// What a route's `hello` says about the Mac this terminal pinned.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Check {
+    Same,
+    OtherMac,
+    KeyChanged,
+}
+
+pub fn check(mac: &DirectMac, hello: &Hello) -> Check {
+    if hello.mac_id != mac.mac_id {
+        Check::OtherMac
+    } else if hello.signing_key != mac.mac_signing_key || hello.agreement_key != mac.mac_agreement_key {
+        Check::KeyChanged
+    } else {
+        Check::Same
+    }
+}
+
+fn key_changed(name: &str) -> anyhow::Error {
+    anyhow!(trf!(
+        "The identity of {name} has changed: this terminal no longer trusts it. If you reinstalled that Mac, pair again with: alondra connect --repair",
+        "La identidad de {name} ha cambiado: este terminal ya no confía en él. Si has reinstalado ese Mac, vuelve a emparejar con: alondra connect --repair"
+    ))
+}
+
+/// A live connection to one paired Mac; it remembers which route last worked.
+pub struct Connection {
+    mac: DirectMac,
+    current: Mutex<Option<String>>,
+}
+
+impl Connection {
+    pub fn new(mac: DirectMac) -> Self {
+        Self { mac, current: Mutex::new(None) }
+    }
+
+    pub fn mac(&self) -> &DirectMac {
+        &self.mac
+    }
+
+    /// The route in use and how it reaches the Mac, once one answered.
+    pub fn route(&self) -> Option<(String, RouteKind)> {
+        let current = self.current.lock().expect("route lock poisoned").clone()?;
+        let kind = route_kind(&current);
+        Some((current, kind))
+    }
+
+    fn candidates(&self) -> Vec<String> {
+        let current = self.current.lock().expect("route lock poisoned").clone();
+        let mut routes: Vec<String> = current.into_iter().collect();
+        for route in &self.mac.routes {
+            if !routes.contains(route) {
+                routes.push(route.clone());
+            }
+        }
+        routes
+    }
+
+    fn validate(&self, route: &str) -> Result<bool> {
+        let Ok(hello) = hello(route) else { return Ok(false) };
+        match check(&self.mac, &hello) {
+            Check::Same => Ok(true),
+            Check::OtherMac => Ok(false),
+            Check::KeyChanged => Err(key_changed(&self.mac.name)),
+        }
+    }
+
+    fn seal(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration) -> Result<(String, Vec<u8>)> {
+        let request_id = format!("op-{}", B64.encode(random::<16>()?));
+        let plaintext = serde_json::to_vec(&json!({"method": method, "path": path, "body": body}))?;
+        let envelope = Envelope::seal_random(
+            EnvelopeContext {
+                route: &self.mac.mac_id,
+                sender: &self.mac.device_id,
+                recipient: &self.mac.mac_id,
+                request_id: &request_id,
+                kind: "request",
+                expires_at_ms: now_ms() + timeout.as_millis().min(590_000) as u64,
+            },
+            &plaintext,
+            &SigningKey::from_slice(&B64.decode(&self.mac.signing_key)?)?,
+            &PublicKey::from_sec1_bytes(&B64.decode(&self.mac.mac_agreement_key)?)?,
+        )?;
+        Ok((request_id, serde_json::to_vec(&envelope)?))
+    }
+
+    fn open(&self, bytes: &[u8], request_id: &str) -> Result<(u16, Value)> {
+        let response: Envelope = serde_json::from_slice(bytes)?;
+        if response.kind != "response" || response.request_id != request_id {
+            bail!("response correlation mismatch");
+        }
+        let plaintext = response
+            .open(
+                &VerifyingKey::from_sec1_bytes(&B64.decode(&self.mac.mac_signing_key)?)?,
+                &SecretKey::from_slice(&B64.decode(&self.mac.agreement_key)?)?,
+                &self.mac.mac_id,
+                &self.mac.device_id,
+                &self.mac.mac_id,
+                now_ms(),
+            )
+            .map_err(|_| key_changed(&self.mac.name))?;
+        let result: Value = serde_json::from_slice(&plaintext)?;
+        let status = result["status"].as_u64().filter(|s| (100..600).contains(s)).context("invalid endpoint status")?
+            as u16;
+        Ok((status, result.get("body").cloned().unwrap_or(result)))
+    }
+
+    /// Sends one request and returns the Mac's answer. If a route fails mid-way, the same sealed
+    /// bytes go to the next route: the Mac runs a request ID once and replays its answer.
+    pub fn request(&self, method: &str, path: &str, body: Option<&Value>, timeout: Duration) -> Result<(u16, Value)> {
+        let (request_id, bytes) = self.seal(method, path, body, timeout)?;
+        let deadline = Instant::now() + timeout;
+        let name = &self.mac.name;
+        let mut sent = false;
+        for route in self.candidates() {
+            let known = self.current.lock().expect("route lock poisoned").as_deref() == Some(route.as_str());
+            if !known && !self.validate(&route)? {
+                continue;
+            }
+            let wait = deadline.saturating_duration_since(Instant::now()) + Duration::from_secs(5);
+            let attempt = agent(wait)
+                .post(format!("http://{route}/direct/request"))
+                .header("content-type", "application/json")
+                .send(&bytes[..]);
+            let mut response = match attempt {
+                Ok(response) => response,
+                Err(_) => {
+                    sent = true;
+                    *self.current.lock().expect("route lock poisoned") = None;
+                    continue;
+                }
+            };
+            *self.current.lock().expect("route lock poisoned") = Some(route.clone());
+            let status = response.status().as_u16();
+            let text = response.body_mut().with_config().limit(2 * 1024 * 1024).read_to_vec()?;
+            return match status {
+                200 => self.open(&text, &request_id),
+                401 => Err(anyhow!(trf!(
+                    "{name} no longer accepts this terminal; pair again with: alondra connect",
+                    "{name} ya no acepta este terminal; vuelve a emparejar con: alondra connect"
+                ))),
+                409 => Ok((409, json!({"error": "idempotency_conflict"}))),
+                421 => {
+                    *self.current.lock().expect("route lock poisoned") = None;
+                    continue;
+                }
+                other => Err(anyhow!("{name} refused the request (HTTP {other}): {}", String::from_utf8_lossy(&text))),
+            };
+        }
+        if sent {
+            bail!(trf!(
+                "{name} stopped answering mid-request; check it before repeating an action",
+                "{name} dejó de responder a mitad de la petición; compruébalo antes de repetir una acción"
+            ));
+        }
+        bail!(trf!("{name} is not on this network", "{name} no está en esta red"))
+    }
+
+    /// Asks the Mac where else it can be reached, and keeps those routes for next time.
+    pub fn learn_routes(&self, home: &Path) -> Result<Vec<String>> {
+        let (status, body) = self.request("GET", "/routes", None, Duration::from_secs(10))?;
+        if status != 200 {
+            bail!("routes unavailable (HTTP {status})");
+        }
+        let routes = ordered_routes(&body, &self.mac.routes);
+        forget_routes_of_others(home, &self.mac.mac_id, &routes)?;
+        Ok(routes)
+    }
+}
+
+/// LAN addresses first, then the tailnet address, then its name, then what was known before.
+pub fn ordered_routes(body: &Value, known: &[String]) -> Vec<String> {
+    let port = body["port"].as_u64().unwrap_or(DEFAULT_PORT as u64);
+    let address = |ip: &str| match ip.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V6(_)) => format!("[{ip}]:{port}"),
+        _ => format!("{ip}:{port}"),
+    };
+    let mut routes: Vec<String> = body["lan"].as_array().into_iter().flatten().filter_map(Value::as_str).map(address).collect();
+    if let Some(ip) = body["tailscale"]["ip"].as_str() {
+        routes.push(address(ip));
+    }
+    if let Some(name) = body["tailscale"]["name"].as_str() {
+        routes.push(format!("{name}:{port}"));
+    }
+    for route in known {
+        if !routes.contains(route) {
+            routes.push(route.clone());
+        }
+    }
+    routes
+}
+
+/// A Mac Bonjour found on this network.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Found {
+    pub name: String,
+    pub route: String,
+}
+
+pub fn service_type() -> &'static str {
+    if std::env::var("ALONDRA_SANDBOX").is_ok_and(|v| v == "1") { "_alondra-sandbox._tcp" } else { "_alondra._tcp" }
+}
+
+/// Lists the Macs advertising Alondra here, for a few seconds.
+pub fn browse(window: Duration) -> Result<Vec<Found>> {
+    let services = alondra_core::bonjour::browse(service_type(), window)
+        .map_err(|error| anyhow!("Bonjour search failed: {error}"))?;
+    Ok(services
+        .into_iter()
+        .map(|service| Found { name: service.name, route: format!("{}:{}", service.host, service.port) })
+        .collect())
+}
+
+/// One pairing attempt with a Mac, from `hello` to its signed approval.
+pub struct Pairing {
+    pub route: String,
+    pub hello: Hello,
+    device_id: String,
+    signing: SigningKey,
+    agreement: SecretKey,
+    signing_key: String,
+    agreement_key: String,
+    nonce: String,
+    pub pairing_id: String,
+    mac_nonce: String,
+}
+
+fn post_json(route: &str, path: &str, body: &Value) -> Result<(u16, Value)> {
+    let mut response = agent(Duration::from_secs(10))
+        .post(format!("http://{route}{path}"))
+        .header("content-type", "application/json")
+        .send(&serde_json::to_vec(body)?[..])?;
+    let status = response.status().as_u16();
+    let bytes = response.body_mut().with_config().limit(64 * 1024).read_to_vec()?;
+    Ok((status, serde_json::from_slice(&bytes).unwrap_or(Value::Null)))
+}
+
+fn refusal(status: u16, body: &Value) -> anyhow::Error {
+    match body["error"].as_str() {
+        Some("pairing_denied") => anyhow!(tr!("That Mac denied this terminal earlier.", "Ese Mac ya rechazó este terminal.")),
+        Some("pairing_busy") => anyhow!(tr!("That Mac has too many pairing requests right now; try again in a few minutes.", "Ese Mac tiene demasiadas peticiones de emparejamiento ahora; vuelve a intentarlo en unos minutos.")),
+        Some("pairing_expired") => anyhow!(tr!("The pairing request expired; start again.", "La petición de emparejamiento caducó; empieza de nuevo.")),
+        _ => anyhow!("pairing refused (HTTP {status}): {body}"),
+    }
+}
+
+impl Pairing {
+    /// Sends this terminal's fresh keys and commitment, then reveals its nonce.
+    pub fn start(route: &str, hello: Hello, terminal_name: &str) -> Result<Self> {
+        let signing = SigningKey::from_slice(&random::<32>()?)?;
+        let agreement = SecretKey::from_slice(&random::<32>()?)?;
+        let signing_key = B64.encode(signing.verifying_key().to_sec1_point(false).as_bytes());
+        let agreement_key = B64.encode(agreement.public_key().to_sec1_point(false).as_bytes());
+        let device_id = format!("client-{}", B64.encode(random::<16>()?));
+        let nonce = protocol::random_nonce()?;
+        let commitment = protocol::commitment(&nonce, &device_id, &signing_key, &agreement_key)?;
+        let mac_agreement = PublicKey::from_sec1_bytes(&B64.decode(&hello.agreement_key)?)?;
+        let seal = |request_id: &str, plain: Value| -> Result<Envelope> {
+            Ok(Envelope::seal_random(
+                EnvelopeContext {
+                    route: &hello.mac_id,
+                    sender: &device_id,
+                    recipient: &hello.mac_id,
+                    request_id,
+                    kind: "pairing",
+                    expires_at_ms: now_ms() + 120_000,
+                },
+                &serde_json::to_vec(&plain)?,
+                &signing,
+                &mac_agreement,
+            )?)
+        };
+        let start = seal(
+            &format!("pair-{}", B64.encode(random::<12>()?)),
+            json!({"device_id": device_id, "name": terminal_name, "signing_key": signing_key,
+                "agreement_key": agreement_key, "commitment": commitment}),
+        )?;
+        let (status, started) = post_json(route, "/direct/pairing", &json!({"signing_key": signing_key, "envelope": start}))?;
+        if status != 200 {
+            return Err(refusal(status, &started));
+        }
+        let pairing_id = started["pairing_id"].as_str().context("pairing id missing")?.to_owned();
+        let mac_nonce = started["mac_nonce"].as_str().context("Mac nonce missing")?.to_owned();
+        let reveal = seal(
+            &format!("pair-{}", B64.encode(random::<12>()?)),
+            json!({"pairing_id": pairing_id, "client_nonce": nonce}),
+        )?;
+        let (status, body) = post_json(route, &format!("/direct/pairing/{pairing_id}/reveal"), &json!({"envelope": reveal}))?;
+        if status != 200 {
+            return Err(refusal(status, &body));
+        }
+        Ok(Self {
+            route: route.into(),
+            hello,
+            device_id,
+            signing,
+            agreement,
+            signing_key,
+            agreement_key,
+            nonce,
+            pairing_id,
+            mac_nonce,
+        })
+    }
+
+    fn transcript(&self) -> Transcript<'_> {
+        Transcript {
+            pairing_id: &self.pairing_id,
+            mac_id: &self.hello.mac_id,
+            mac_signing_key: &self.hello.signing_key,
+            mac_agreement_key: &self.hello.agreement_key,
+            device_id: &self.device_id,
+            client_signing_key: &self.signing_key,
+            client_agreement_key: &self.agreement_key,
+            client_nonce: &self.nonce,
+            mac_nonce: &self.mac_nonce,
+        }
+    }
+
+    /// The code this terminal shows; the Mac shows the same one if nobody is in between.
+    pub fn code(&self) -> Result<String> {
+        Ok(self.transcript().code()?)
+    }
+
+    /// Waits for the decision on the Mac and verifies its signed approval against `hello`.
+    pub fn wait(self) -> Result<DirectMac> {
+        let until = Instant::now() + PAIRING_WAIT;
+        let mac_key = VerifyingKey::from_sec1_bytes(&B64.decode(&self.hello.signing_key)?)?;
+        loop {
+            let mut response = agent(Duration::from_secs(10))
+                .get(format!("http://{}/direct/pairing/{}", self.route, self.pairing_id))
+                .call()?;
+            let status: Value = serde_json::from_slice(&response.body_mut().with_config().limit(64 * 1024).read_to_vec()?)
+                .unwrap_or(Value::Null);
+            match status["state"].as_str() {
+                Some("approved") => {
+                    let approval: Approval = serde_json::from_value(status["approval"].clone())?;
+                    let signature = status["signature"].as_str().context("approval signature missing")?;
+                    approval
+                        .verify(signature, &mac_key, &self.transcript(), now_ms())
+                        .map_err(|error| anyhow!("the Mac's approval does not verify ({error}); nothing was saved"))?;
+                    return Ok(DirectMac {
+                        mac_id: self.hello.mac_id.clone(),
+                        name: self.hello.name.clone(),
+                        mac_signing_key: self.hello.signing_key.clone(),
+                        mac_agreement_key: self.hello.agreement_key.clone(),
+                        device_id: self.device_id.clone(),
+                        signing_key: B64.encode(self.signing.to_bytes()),
+                        agreement_key: B64.encode(self.agreement.to_bytes()),
+                        routes: vec![self.route.clone()],
+                    });
+                }
+                Some("denied") => bail!(tr!("The Mac denied this terminal.", "El Mac ha rechazado este terminal.")),
+                Some("expired") => bail!(tr!("Nobody approved it on the Mac in time; start again.", "Nadie lo aprobó en el Mac a tiempo; empieza de nuevo.")),
+                _ if Instant::now() >= until => bail!(tr!("Nobody approved it on the Mac in time; start again.", "Nadie lo aprobó en el Mac a tiempo; empieza de nuevo.")),
+                _ => std::thread::sleep(Duration::from_secs(1)),
+            }
+        }
+    }
+}
+
+fn with_port(host: &str) -> String {
+    let bracketed_v6 = host.starts_with('[') && host.contains("]:");
+    let plain_v6 = host.parse::<std::net::Ipv6Addr>().is_ok();
+    if plain_v6 {
+        format!("[{host}]:{DEFAULT_PORT}")
+    } else if bracketed_v6 || (host.contains(':') && !host.starts_with('[')) {
+        host.to_owned()
+    } else {
+        format!("{host}:{DEFAULT_PORT}")
+    }
+}
+
+fn choose(found: &[Found]) -> Result<Found> {
+    if found.is_empty() {
+        bail!(tr!(
+            "No Mac with Alondra found on this network. Is it on the same Wi-Fi? You can also use: alondra connect --host <address>",
+            "No he encontrado ningún Mac con Alondra en esta red. ¿Está en la misma Wi-Fi? También puedes usar: alondra connect --host <dirección>"
+        ));
+    }
+    for (index, mac) in found.iter().enumerate() {
+        println!("  {}. {}  ({})", index + 1, mac.name, mac.route);
+    }
+    print!("{}", tr!("Which Mac? [1] ", "¿Qué Mac? [1] "));
+    std::io::stdout().flush()?;
+    let mut line = String::new();
+    std::io::stdin().read_line(&mut line)?;
+    let index = line.trim().parse::<usize>().unwrap_or(1).saturating_sub(1);
+    found.get(index).cloned().context("no such Mac")
+}
+
+/// `alondra connect` without a Mac ID: find a Mac on this network (or use `--host`), compare the
+/// code on both screens, and keep the pairing once the Mac approves it.
+pub fn connect(host: Option<&str>, repair: bool) -> Result<()> {
+    let home = crate::client::config().home.clone();
+    let route = match host {
+        Some(host) => with_port(host),
+        None => {
+            println!("{}", tr!("Looking for Macs on this network…", "Buscando Macs en esta red…"));
+            choose(&browse(Duration::from_secs(3))?)?.route
+        }
+    };
+    let hello = hello(&route).with_context(|| trf!("{route} does not answer as an Alondra Mac", "{route} no responde como un Mac con Alondra"))?;
+    if let Some(known) = load_from(&home)?.into_iter().find(|mac| mac.mac_id == hello.mac_id) {
+        match check(&known, &hello) {
+            Check::Same if !repair => {
+                let name = &known.name;
+                println!("{}", trf!("Already paired with {name}.", "Ya está emparejado con {name}."));
+                return Ok(());
+            }
+            Check::KeyChanged if !repair => return Err(key_changed(&known.name)),
+            _ => {}
+        }
+    }
+    let terminal = format!("Terminal ({})", crate::client::computer_name());
+    let pairing = Pairing::start(&route, hello, &terminal)?;
+    let (code, name) = (pairing.code()?, pairing.hello.name.clone());
+    println!(
+        "{}",
+        trf!(
+            "Code: {code}. Check that {name} shows the same code and approve it there.",
+            "Código: {code}. Comprueba que {name} muestra el mismo código y apruébalo allí."
+        )
+    );
+    let mac = pairing.wait()?;
+    let name = mac.name.clone();
+    remember(&home, mac.clone())?;
+    let connection = Connection::new(mac);
+    if let Err(error) = connection.learn_routes(&home) {
+        eprintln!("{}", trf!("Paired, but could not learn other routes yet: {error}", "Emparejado, pero aún no he podido aprender otras rutas: {error}"));
+    }
+    println!("{}", trf!("Paired with {name}.", "Emparejado con {name}."));
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mac(id: &str, signing: &str, agreement: &str) -> DirectMac {
+        DirectMac {
+            mac_id: id.into(),
+            name: "Mac".into(),
+            mac_signing_key: signing.into(),
+            mac_agreement_key: agreement.into(),
+            device_id: "client-1".into(),
+            signing_key: "s".into(),
+            agreement_key: "a".into(),
+            routes: vec!["192.168.1.2:47810".into()],
+        }
+    }
+
+    fn hello_of(id: &str, signing: &str, agreement: &str) -> Hello {
+        Hello { mac_id: id.into(), name: "Mac".into(), signing_key: signing.into(), agreement_key: agreement.into() }
+    }
+
+    #[test]
+    fn a_route_is_used_only_for_the_pinned_mac_and_a_changed_key_is_never_accepted() {
+        let pinned = mac("mac-a", "sk", "ak");
+        assert_eq!(check(&pinned, &hello_of("mac-a", "sk", "ak")), Check::Same);
+        assert_eq!(check(&pinned, &hello_of("mac-b", "sk2", "ak2")), Check::OtherMac);
+        assert_eq!(check(&pinned, &hello_of("mac-a", "other", "ak")), Check::KeyChanged);
+        assert_eq!(check(&pinned, &hello_of("mac-a", "sk", "other")), Check::KeyChanged);
+    }
+
+    #[test]
+    fn learned_routes_put_lan_first_then_tailnet_then_what_was_known() {
+        let body = json!({"port": 47810, "lan": ["192.168.1.20", "fd12::1"], "tailscale": {"ip": "100.101.1.2", "name": "mac.tail.ts.net"}});
+        let routes = ordered_routes(&body, &["mac.local:47810".into(), "192.168.1.20:47810".into()]);
+        assert_eq!(
+            routes,
+            ["192.168.1.20:47810", "[fd12::1]:47810", "100.101.1.2:47810", "mac.tail.ts.net:47810", "mac.local:47810"]
+        );
+        assert_eq!(route_kind("100.101.1.2:47810"), RouteKind::Tailscale);
+        assert_eq!(route_kind("mac.tail.ts.net:47810"), RouteKind::Tailscale);
+        assert_eq!(route_kind("192.168.1.20:47810"), RouteKind::Lan);
+        assert_eq!(route_kind("[fd12::1]:47810"), RouteKind::Lan);
+    }
+
+    #[test]
+    fn a_host_without_port_gets_the_direct_port() {
+        assert_eq!(with_port("192.168.1.2"), "192.168.1.2:47810");
+        assert_eq!(with_port("mac.local:47999"), "mac.local:47999");
+        assert_eq!(with_port("fd12::1"), "[fd12::1]:47810");
+        assert_eq!(with_port("[fd12::1]:47999"), "[fd12::1]:47999");
+    }
+
+    #[test]
+    fn the_store_is_owner_only_and_keeps_one_pairing_per_mac() {
+        let home = std::env::temp_dir().join(format!("alondra-direct-store-{}", B64.encode(random::<6>().unwrap())));
+        fs::create_dir_all(&home).unwrap();
+        remember(&home, mac("mac-a", "sk", "ak")).unwrap();
+        remember(&home, mac("mac-b", "sk2", "ak2")).unwrap();
+        remember(&home, mac("mac-a", "sk3", "ak3")).unwrap();
+        let macs = load_from(&home).unwrap();
+        assert_eq!(macs.len(), 2);
+        assert_eq!(macs.iter().find(|m| m.mac_id == "mac-a").unwrap().mac_signing_key, "sk3");
+        assert_eq!(fs::metadata(store_path(&home)).unwrap().permissions().mode() & 0o777, 0o600);
+        fs::set_permissions(store_path(&home), fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_from(&home).is_err(), "a readable store is refused");
+        fs::remove_dir_all(home).unwrap();
+    }
+}
