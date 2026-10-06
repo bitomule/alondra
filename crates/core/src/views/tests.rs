@@ -2475,6 +2475,50 @@ fn the_task_a_node_works_shows_the_nodes_progress_and_a_finished_task_does_not()
     assert!(done.sections.iter().all(|section| section.id != "steps"));
 }
 
+fn workflow_agent(label: &str, phase: &str, model: Option<&str>, running: bool) -> LiveWorkflowAgent {
+    LiveWorkflowAgent { label: label.into(), phase: Some(phase.into()), model: model.map(Into::into), running }
+}
+
+#[test]
+fn a_running_workflow_shows_its_phase_its_agents_and_how_many_more_there_are() {
+    let mut state = fixture();
+    state.tasks.get_mut(&"t-1".into()).unwrap().agent_id = Some("a-1".into());
+    state.tasks.get_mut(&"t-1".into()).unwrap().state = TaskState::Running;
+    let mut node = working_node();
+    let mut agents = vec![workflow_agent("review-auth", "Review", Some("haiku"), true),
+        workflow_agent("review-db", "Review", Some("claude-sonnet-5-5"), false)];
+    agents.extend((0..6).map(|index| workflow_agent(&format!("scan-{index}"), "Scan", None, false)));
+    node.workflows[0].agents = Some(10);
+    node.workflows[0].workflow = Some(LiveWorkflow {
+        phase: Some("Review".into()), phase_index: Some(2), phase_count: Some(4), running: 1, done: 9, agents, ..Default::default()
+    });
+    let live = LiveSnapshot { nodes: vec![node], ..Default::default() };
+    for view in ["node:a-1", "task:t-1"] {
+        let english = render(&state, &live, Client::Ios, Lang::En, view, "");
+        assert_eq!(section_facts(&english, "workflows"), [("Phase".into(), "Review (2 of 4)".into()), ("Agents".into(), "1 running · 9 done".into())]);
+        let rows = node_work_rows(&english, "workflows");
+        assert_eq!(rows.len(), 1 + 8 + 1, "{view}");
+        assert_eq!((rows[1].title.as_str(), rows[1].subtitle.as_deref(), badges(rows[1])), ("review-auth", Some("Review · Haiku"), vec!["Running"]));
+        assert_eq!((rows[2].subtitle.as_deref(), badges(rows[2])), (Some("Review · Sonnet 5.5"), vec!["Done"]));
+        assert_eq!(rows[3].subtitle.as_deref(), Some("Scan"));
+        assert_eq!(rows[9].title, "+2 more");
+        assert!(rows.iter().all(|row| row.link.is_none()));
+    }
+
+    let spanish = render(&state, &live, Client::Ios, Lang::Es, "node:a-1", "");
+    assert_eq!(section_facts(&spanish, "workflows"), [("Fase".into(), "Review (2 de 4)".into()), ("Agentes".into(), "1 en marcha · 9 terminados".into())]);
+    let rows = node_work_rows(&spanish, "workflows");
+    assert_eq!((badges(rows[1]), badges(rows[2]), rows[9].title.as_str()), (vec!["En marcha"], vec!["Hecho"], "+2 más"));
+
+    let mut finished = live.clone();
+    let workflow = finished.nodes[0].workflows[0].workflow.as_mut().unwrap();
+    *workflow = LiveWorkflow { phase: Some("Second".into()), running: 0, done: 3, total_tokens: Some(88_896),
+        agents: vec![workflow_agent("count-c", "Second", Some("claude-haiku-4-5-20251001"), false)], ..Default::default() };
+    let view = render(&state, &finished, Client::Ios, Lang::En, "node:a-1", "");
+    assert_eq!(section_facts(&view, "workflows"), [("Phase".into(), "Second".into()), ("Agents".into(), "0 running · 3 done".into()), ("Tokens".into(), "88K".into())]);
+    assert_eq!(node_work_rows(&view, "workflows").last().unwrap().title, "+2 more");
+}
+
 #[test]
 fn a_fleet_row_shows_how_far_the_task_list_has_got_until_every_step_is_done() {
     let mut state = fixture();

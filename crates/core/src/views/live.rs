@@ -133,6 +133,42 @@ pub struct LiveRun {
     pub ran_secs: Option<u64>,
     #[serde(default)]
     pub suspect: bool,
+    /// What a workflow's own files say about it: its phase and the agents it runs.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<LiveWorkflow>,
+}
+/// The most agent rows a workflow carries; the rest are only counted.
+pub const WORKFLOW_AGENT_ROWS: usize = 8;
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveWorkflow {
+    #[serde(default)]
+    pub phase: Option<String>,
+    /// The phase's place in the script's phase list, from 1, and how many phases it lists.
+    #[serde(default)]
+    pub phase_index: Option<u32>,
+    #[serde(default)]
+    pub phase_count: Option<u32>,
+    #[serde(default)]
+    pub running: u32,
+    #[serde(default)]
+    pub done: u32,
+    /// The most recently started agents first, at most `WORKFLOW_AGENT_ROWS`.
+    #[serde(default)]
+    pub agents: Vec<LiveWorkflowAgent>,
+    #[serde(default)]
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub total_tokens: Option<u64>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveWorkflowAgent {
+    pub label: String,
+    #[serde(default)]
+    pub phase: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub running: bool,
 }
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
