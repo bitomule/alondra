@@ -444,8 +444,9 @@ impl App {
             Some(option) => &option.input,
             None => &action.input,
         };
+        let answers_a_choice = option.is_none() && action.option_id.is_some();
         match input {
-            alondra_core::views::Input::Text { required, .. } => {
+            alondra_core::views::Input::Text { required, .. } if *required || !answers_a_choice => {
                 self.compose(
                     super::Target::ViewAction {
                         action_id: action.id.clone(),
@@ -458,7 +459,7 @@ impl App {
                     "",
                 );
             }
-            alondra_core::views::Input::None => {
+            alondra_core::views::Input::None | alondra_core::views::Input::Text { .. } => {
                 let action_id = action.id.clone();
                 let data_epoch = epoch;
                 let option_id = option_id.clone();

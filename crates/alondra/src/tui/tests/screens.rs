@@ -593,6 +593,37 @@ fn clarify_without_text_is_sent_with_just_the_reason() {
     assert_eq!(sent[0].1["input"], serde_json::json!({}));
 }
 
+fn with_note_input(required: bool) -> views::View {
+    edited("card-question.json", |card| {
+        for action in card["actions"].as_array_mut().unwrap() {
+            action["input"] = serde_json::json!({"kind": "text", "placeholder": "Add a note", "required": required, "multiline": true});
+        }
+    })
+}
+
+#[test]
+fn both_default_choices_with_an_optional_note_send_at_once_without_it() {
+    for key in ['1', '2'] {
+        let mut app = english(with_note_input(false));
+        press(&mut app, KeyCode::Char(key));
+        let sent = app.posted.borrow().clone();
+        assert!(app.composer.is_none(), "key {key} opened the text box");
+        assert_eq!(sent.len(), 1, "key {key}: {sent:?}");
+        assert_eq!(sent[0].1["input"], serde_json::json!({}));
+    }
+}
+
+#[test]
+fn a_choice_with_a_required_note_opens_the_text_box_first() {
+    let mut app = english(with_note_input(true));
+    press(&mut app, KeyCode::Char('2'));
+    assert!(app.posted.borrow().is_empty());
+    assert!(matches!(
+        app.composer.as_ref().map(|composer| &composer.target),
+        Some(Target::ViewAction { required: true, option_id: Some(_), .. })
+    ));
+}
+
 #[test]
 fn a_button_with_options_asks_which_before_it_sends() {
     let mut app = english(fixture_view("card-pr.json"));
