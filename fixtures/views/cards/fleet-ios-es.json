@@ -1,0 +1,400 @@
+{
+  "protocol": 1,
+  "data_epoch": "test-epoch",
+  "view": "fleet",
+  "key": "fleet",
+  "client": "ios",
+  "version": "v1df938c515675882",
+  "cursor": "cursor-1",
+  "title": "Flota",
+  "status": {
+    "version": "va07676e28ebc85d2",
+    "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
+    "badge": 5,
+    "counts": [
+      {
+        "id": "inbox",
+        "label": "Bandeja",
+        "value": 5
+      },
+      {
+        "id": "tasks",
+        "label": "Tareas",
+        "value": 6
+      },
+      {
+        "id": "agents",
+        "label": "Flota",
+        "value": 5
+      },
+      {
+        "id": "working",
+        "label": "trabajando",
+        "value": 1
+      },
+      {
+        "id": "waiting",
+        "label": "esperando",
+        "value": 1
+      }
+    ],
+    "gauges": [
+      {
+        "id": "memory",
+        "label": "Memory",
+        "value": 0.38,
+        "text": "6.1 GB of 16 GB",
+        "level": "calm"
+      },
+      {
+        "id": "disk",
+        "label": "Disk available",
+        "value": 0.72,
+        "text": "120 GB",
+        "level": "calm"
+      }
+    ],
+    "orchestrator": {
+      "text": "inactivo",
+      "tone": "neutral"
+    }
+  },
+  "sections": [
+    {
+      "id": "orchestrator",
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "orchestrator",
+          "link": {
+            "kind": "view",
+            "key": "node:orchestrator"
+          },
+          "icon": "orchestrator",
+          "title": "Orquestador",
+          "badges": [
+            {
+              "text": "Inactivo",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "text",
+            "text": "Inactivo"
+          },
+          "depth": 0,
+          "struck": false
+        }
+      ]
+    },
+    {
+      "id": "project:Demo Garden",
+      "title": "Demo Garden",
+      "count": 2,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "d887a34b-249e-4487-a89b-57de38c26372",
+          "link": {
+            "kind": "view",
+            "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
+          },
+          "icon": "node",
+          "title": "Restore the native review experience",
+          "subtitle": "Alondra · iOS",
+          "badges": [
+            {
+              "text": "Esperando respuesta",
+              "tone": "warning"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 2
+          },
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "activity",
+              "icon": "notice",
+              "title": "The simulator pass completed successfully.",
+              "trailing": {
+                "kind": "time",
+                "at": "2026-09-30T09:58:00Z",
+                "format": "relative"
+              },
+              "depth": 0,
+              "struck": false
+            }
+          ],
+          "actions": [
+            {
+              "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "queued",
+          "link": {
+            "kind": "view",
+            "key": "node:queued"
+          },
+          "icon": "node",
+          "title": "Wire the badge after the review",
+          "subtitle": "queued",
+          "badges": [
+            {
+              "text": "Esperando a Restore the native review experience",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:queued@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Zeta",
+      "title": "Zeta",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "zeta-worker",
+          "link": {
+            "kind": "view",
+            "key": "node:zeta-worker"
+          },
+          "icon": "node",
+          "title": "Build the importer",
+          "subtitle": "zeta-worker",
+          "badges": [
+            {
+              "text": "Trabajando",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "interrupt:zeta-worker@6",
+              "label": "Interrumpir",
+              "style": "secondary",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Interrumpir",
+                "message": "¿Detener lo que hace ahora este nodo? Conserva su tarea y te espera.",
+                "button": "Interrumpir"
+              },
+              "enabled": true
+            },
+            {
+              "id": "close:zeta-worker@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Alpha",
+      "title": "Alpha",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "alpha-waiting",
+          "link": {
+            "kind": "view",
+            "key": "node:alpha-waiting"
+          },
+          "icon": "node",
+          "title": "Plan the migration",
+          "subtitle": "alpha-waiting",
+          "badges": [
+            {
+              "text": "En cola",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:alpha-waiting@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "idle",
+      "title": "Inactivos",
+      "count": 2,
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "finished-today",
+          "link": {
+            "kind": "view",
+            "key": "node:finished-today"
+          },
+          "icon": "node",
+          "title": "Trim the push payload",
+          "subtitle": "finished-today",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "success"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:finished-today@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "finished-yesterday",
+          "link": {
+            "kind": "view",
+            "key": "node:finished-yesterday"
+          },
+          "icon": "node",
+          "title": "Ship the compact editor",
+          "subtitle": "finished-yesterday",
+          "badges": [
+            {
+              "text": "Terminado",
+              "tone": "success"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:finished-yesterday@6",
+              "label": "Cerrar nodo",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Cerrar nodo",
+                "message": "¿Cerrar este nodo?",
+                "button": "Cerrar nodo"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

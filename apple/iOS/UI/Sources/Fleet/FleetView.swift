@@ -8,6 +8,7 @@ import SwiftUI
 /// answered by the daemon; a node closes from its row.
 public struct FleetView: View {
     @Bindable var store: StoreOf<FleetFeature>
+    @State private var opened: Set<String> = []
 
     public init(store: StoreOf<FleetFeature>) { self.store = store }
 
@@ -49,10 +50,16 @@ public struct FleetView: View {
                 .listSectionSpacing(.compact)
             }
             ForEach(overview.groups) { group in
+                let shown = !group.collapsed || opened.contains(group.id)
                 Section {
-                    ForEach(group.nodes) { node in row(node) }
+                    if shown {
+                        ForEach(group.nodes) { node in row(node) }
+                    }
                 } header: {
-                    ProjectHeader(title: group.title, count: group.count)
+                    ProjectHeader(title: group.title, count: group.count,
+                                  expansion: group.collapsed ? shown : nil) {
+                        withAnimation(.smooth) { opened.formSymmetricDifference([group.id]) }
+                    }
                 }
             }
         }
@@ -133,8 +140,20 @@ public struct FleetView: View {
 private struct ProjectHeader: View {
     let title: String?
     let count: UInt32?
+    var expansion: Bool?
+    var toggle: () -> Void = {}
 
     var body: some View {
+        if let expansion {
+            Button(action: toggle) { content(chevron: expansion) }
+                .buttonStyle(.plain)
+                .accessibilityValue(expansion ? Text("Expanded") : Text("Collapsed"))
+        } else {
+            content(chevron: nil)
+        }
+    }
+
+    private func content(chevron: Bool?) -> some View {
         HStack(spacing: 8) {
             if let title {
                 Text(title).font(.display(.title3, weight: .bold)).foregroundStyle(Palette.ink).textCase(nil)
@@ -143,7 +162,12 @@ private struct ProjectHeader: View {
             if let count, count > 0 {
                 Text(count, format: .number).font(.caption.monospacedDigit()).foregroundStyle(.secondary)
             }
+            if let chevron {
+                Image(systemName: "chevron.right").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(chevron ? 90 : 0))
+            }
         }
         .padding(.top, 6)
+        .contentShape(.rect)
     }
 }

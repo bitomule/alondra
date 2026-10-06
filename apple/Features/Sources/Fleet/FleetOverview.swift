@@ -42,6 +42,7 @@ public struct FleetOverview: Equatable, Sendable {
         public var id: String
         public var title: String?
         public var count: UInt32?
+        public var collapsed = false
         public var nodes: [Node]
     }
 
@@ -59,7 +60,7 @@ public struct FleetOverview: Equatable, Sendable {
             if section.id == "orchestrator" {
                 orchestrator = nodes.first
             } else if !nodes.isEmpty {
-                groups.append(Group(id: section.id, title: section.title, count: section.count, nodes: nodes))
+                groups.append(Group(id: section.id, title: section.title, count: section.count, collapsed: section.collapsed, nodes: nodes))
             }
         }
     }

@@ -34,13 +34,15 @@ final class FleetFeatureTests: XCTestCase {
 
         XCTAssertEqual(overview.orchestrator?.title, "Orchestrator")
         XCTAssertEqual(overview.orchestrator?.isOrchestrator, true)
-        XCTAssertEqual(overview.groups.map(\.title), ["Demo Garden"])
-        XCTAssertEqual(overview.groups.first?.count, 1)
+        XCTAssertEqual(overview.groups.map(\.title), ["Demo Garden", "Zeta", "Alpha", "Idle"])
+        XCTAssertEqual(overview.groups.map(\.collapsed), [false, false, false, true], "idle nodes start collapsed, last")
+        XCTAssertEqual(overview.groups.last?.count, 2)
+        XCTAssertEqual(overview.groups.first?.count, 2)
         let node = try XCTUnwrap(overview.groups.first?.nodes.first)
-        XCTAssertEqual(node.title, "Alondra · iOS")
+        XCTAssertEqual(node.title, "Restore the native review experience")
         XCTAssertEqual(node.state?.text, "Waiting for an answer")
         XCTAssertEqual(node.state?.tone, .warning)
-        XCTAssertNil(node.subtitle)
+        XCTAssertEqual(node.subtitle, "Alondra · iOS")
         XCTAssertEqual(node.badges, [], "context and cost stay on the node's screen")
         XCTAssertEqual(overview.orchestrator?.state?.text, "Idle")
         XCTAssertEqual(node.pending, 2)
@@ -209,7 +211,7 @@ final class FleetFeatureTests: XCTestCase {
         let request = ActionRequest(commandId: "c-1", dataEpoch: "", client: .ios, lang: "en", actionId: close)
 
         await store.send(.handedOff(request))
-        XCTAssertTrue(store.state.overview?.groups.isEmpty == true)
+        XCTAssertFalse(store.state.overview?.groups.flatMap(\.nodes).contains { $0.close?.id == close } == true)
         await store.send(.handOffSettled(request, applied: false))
         XCTAssertEqual(store.state.overview?.groups.first?.nodes.first?.close?.id, close)
     }

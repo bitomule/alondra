@@ -4,6 +4,8 @@
     "Couldn’t load this card": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar esta tarjeta"}}}},
     "Loading…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Cargando…"}}}},
     "More…": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Más…"}}}},
+    "Expanded": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Desplegado"}}}},
+    "Collapsed": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Plegado"}}}},
     "Decide": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Decidir"}}}},
     "Authorize": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Autorizar"}}}},
     "Provide": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Aportar"}}}},

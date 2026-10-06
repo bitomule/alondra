@@ -4,12 +4,12 @@
   "view": "fleet",
   "key": "fleet",
   "client": "mac",
-  "version": "vf1bfc03d13a2447e",
+  "version": "v8d806c8e9b6c5921",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
-    "version": "v29e230088bd2c22c",
-    "summary": "2 questions · 3 to read · 0 nodes working",
+    "version": "vb1dc61d00c550e3b",
+    "summary": "2 questions · 3 to read · 1 node working",
     "badge": 5,
     "counts": [
       {
@@ -20,17 +20,17 @@
       {
         "id": "tasks",
         "label": "Tasks",
-        "value": 1
+        "value": 6
       },
       {
         "id": "agents",
         "label": "Fleet",
-        "value": 1
+        "value": 5
       },
       {
         "id": "working",
         "label": "working",
-        "value": 0
+        "value": 1
       },
       {
         "id": "waiting",
@@ -91,7 +91,7 @@
     {
       "id": "project:Demo Garden",
       "title": "Demo Garden",
-      "count": 1,
+      "count": 2,
       "collapsed": false,
       "items": [
         {
@@ -102,7 +102,8 @@
             "key": "node:d887a34b-249e-4487-a89b-57de38c26372"
           },
           "icon": "node",
-          "title": "Alondra · iOS",
+          "title": "Restore the native review experience",
+          "subtitle": "Alondra · iOS",
           "badges": [
             {
               "text": "Waiting for an answer",
@@ -118,6 +119,235 @@
           "actions": [
             {
               "id": "close:d887a34b-249e-4487-a89b-57de38c26372@6",
+              "label": "Close Node",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close Node",
+                "message": "Close this node?",
+                "button": "Close Node"
+              },
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "queued",
+          "link": {
+            "kind": "view",
+            "key": "node:queued"
+          },
+          "icon": "node",
+          "title": "Wire the badge after the review",
+          "subtitle": "queued",
+          "badges": [
+            {
+              "text": "Waiting for Restore the native review experience",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:queued@6",
+              "label": "Close Node",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close Node",
+                "message": "Close this node?",
+                "button": "Close Node"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Zeta",
+      "title": "Zeta",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "zeta-worker",
+          "link": {
+            "kind": "view",
+            "key": "node:zeta-worker"
+          },
+          "icon": "node",
+          "title": "Build the importer",
+          "subtitle": "zeta-worker",
+          "badges": [
+            {
+              "text": "Working",
+              "tone": "info"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:zeta-worker@6",
+              "label": "Close Node",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close Node",
+                "message": "Close this node?",
+                "button": "Close Node"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "project:Alpha",
+      "title": "Alpha",
+      "count": 1,
+      "collapsed": false,
+      "items": [
+        {
+          "type": "row",
+          "id": "alpha-waiting",
+          "link": {
+            "kind": "view",
+            "key": "node:alpha-waiting"
+          },
+          "icon": "node",
+          "title": "Plan the migration",
+          "subtitle": "alpha-waiting",
+          "badges": [
+            {
+              "text": "Queued",
+              "tone": "neutral"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:alpha-waiting@6",
+              "label": "Close Node",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close Node",
+                "message": "Close this node?",
+                "button": "Close Node"
+              },
+              "enabled": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "idle",
+      "title": "Idle",
+      "count": 2,
+      "collapsed": true,
+      "items": [
+        {
+          "type": "row",
+          "id": "finished-today",
+          "link": {
+            "kind": "view",
+            "key": "node:finished-today"
+          },
+          "icon": "node",
+          "title": "Trim the push payload",
+          "subtitle": "finished-today",
+          "badges": [
+            {
+              "text": "Done",
+              "tone": "success"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:finished-today@6",
+              "label": "Close Node",
+              "style": "destructive",
+              "presentation": "button",
+              "input": {
+                "kind": "none"
+              },
+              "attachments": false,
+              "confirm": {
+                "title": "Close Node",
+                "message": "Close this node?",
+                "button": "Close Node"
+              },
+              "enabled": true
+            }
+          ]
+        },
+        {
+          "type": "row",
+          "id": "finished-yesterday",
+          "link": {
+            "kind": "view",
+            "key": "node:finished-yesterday"
+          },
+          "icon": "node",
+          "title": "Ship the compact editor",
+          "subtitle": "finished-yesterday",
+          "badges": [
+            {
+              "text": "Done",
+              "tone": "success"
+            }
+          ],
+          "trailing": {
+            "kind": "count",
+            "value": 0
+          },
+          "depth": 0,
+          "struck": false,
+          "actions": [
+            {
+              "id": "close:finished-yesterday@6",
               "label": "Close Node",
               "style": "destructive",
               "presentation": "button",

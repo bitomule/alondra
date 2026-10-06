@@ -1084,7 +1084,7 @@ async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stop
 }
 
 #[tokio::test]
-async fn a_node_that_has_not_reconnected_after_a_restart_keeps_its_project_and_never_reads_disconnected() {
+async fn a_node_that_has_not_reconnected_after_a_restart_is_idle_and_never_reads_disconnected() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
     let domain = &fixture.domain;
@@ -1100,7 +1100,7 @@ async fn a_node_that_has_not_reconnected_after_a_restart_keeps_its_project_and_n
     let fleet = view_json(&fixture, "fleet", "es").await;
     let project = fleet["sections"].as_array().unwrap().iter()
         .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "ghost")).unwrap();
-    assert_eq!(project["id"], "project:alondra", "its project comes from its launch, not from a live connection");
+    assert_eq!(project["id"], "idle", "a connected node with no open task is idle, whatever its project");
     assert_eq!(badges(node_row(&fleet, "ghost"))[0], ("Inactivo".into(), "neutral".into()), "a connected node whose turn ended is idle");
 }
 
@@ -1133,7 +1133,7 @@ async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_
     let section = fleet["sections"].as_array().unwrap().iter()
         .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "stopped")).unwrap();
     assert_eq!(section["id"], "project:alondra");
-    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("Inactivo".into(), "neutral".into()));
+    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("En cola".into(), "neutral".into()));
 }
 
 #[tokio::test]
