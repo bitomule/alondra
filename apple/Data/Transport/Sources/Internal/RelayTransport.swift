@@ -44,7 +44,7 @@ actor RelayTransport: Transport {
         return try Self.decoder.decode(Health.self, from: response.body).ok
     }
 
-    public func submit(_ envelope: EnvelopeV1) async throws -> RelayJob {
+    public func submit(_ envelope: Envelope) async throws -> RelayJob {
         guard envelope.kind == "request", envelope.sender == deviceID, envelope.route == envelope.recipient else {
             throw RelayWireError.invalidField
         }
@@ -160,7 +160,7 @@ actor RelayTransport: Transport {
 }
 
 extension RelayTransport {
-    public func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt {
+    public func submitRequest(_ envelope: Envelope) async throws -> RelayReceipt {
         let job: RelayJob = try await submit(envelope)
         return RelayReceipt(requestID: job.requestID, status: job.status,
                             revision: job.revision, response: job.response)

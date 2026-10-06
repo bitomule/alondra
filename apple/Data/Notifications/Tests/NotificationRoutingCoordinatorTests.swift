@@ -102,7 +102,7 @@ import Testing
         func wire(hint: NotificationPayload.Binding? = nil, inner: NotificationPayload.Binding? = nil) throws -> Data {
             let payload = try JSONSerialization.data(withJSONObject: ["push_binding": (inner ?? binding).value, "with_sound": false,
                 "payload": ["aps": ["alert": "Synthetic"], "alondra": ["protocol": 1, "kind": "question", "card": "q-42", "data_epoch": "e", "actions": [["id": "ctx:q-42@1", "label": "Need context"]]]]])
-            let envelope = try EnvelopeV1.seal(route: mac, sender: mac, recipient: "phone", requestID: UUID().uuidString,
+            let envelope = try Envelope.seal(route: mac, sender: mac, recipient: "phone", requestID: UUID().uuidString,
                 kind: "push", expiresAtMilliseconds: 2000, plaintext: payload, senderKey: signer, recipientKey: recipient.publicKey)
             return try JSONSerialization.data(withJSONObject: ["alondra": ["push_binding": (hint ?? binding).value,
                 "envelope": JSONSerialization.jsonObject(with: JSONEncoder().encode(envelope))]])

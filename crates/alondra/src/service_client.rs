@@ -1,5 +1,5 @@
 //! A terminal is an approved client, never the executor identity of its host Mac.
-use alondra_e2e::{Context as EnvelopeContext, EnvelopeV1, sign_http_challenge};
+use alondra_e2e::{Context as EnvelopeContext, Envelope, sign_http_challenge};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use p256::{
@@ -373,7 +373,7 @@ impl Profile {
         let timeout = remaining(deadline)?;
         let request_id = format!("op-{}", B64.encode(random::<16>()?));
         let plaintext = serde_json::to_vec(&json!({"method":method,"path":path,"body":body}))?;
-        let envelope = EnvelopeV1::seal_random(
+        let envelope = Envelope::seal_random(
             EnvelopeContext {
                 route: &self.mac_id,
                 sender: &self.device_id,
@@ -457,7 +457,7 @@ impl Profile {
         }
     }
     fn open_response(&self, value: Value, request_id: &str, now: u64) -> Result<(u16, Value)> {
-        let response: EnvelopeV1 = serde_json::from_value(value)?;
+        let response: Envelope = serde_json::from_value(value)?;
         if response.kind != "response" || response.request_id != request_id {
             bail!("response correlation mismatch");
         }
@@ -1001,7 +1001,7 @@ mod tests {
                 1 => {
                     assert_eq!((method,path), ("POST", "/v1/requests"));
                     assert!(!String::from_utf8_lossy(bytes).contains("questions"));
-                    let envelope: EnvelopeV1 = serde_json::from_slice(bytes)?;
+                    let envelope: Envelope = serde_json::from_slice(bytes)?;
                     let plain = envelope.open(profile.signing()?.verifying_key(), &mac_agreement, "client-a", "mac-a", "mac-a", now_ms()?)?;
                     assert_eq!(serde_json::from_slice::<Value>(&plain)?, json!({"method":"POST","path":"/v1/questions/7/answer","body":{"text":"yes"}}));
                     request_id = envelope.request_id;
@@ -1030,7 +1030,7 @@ mod tests {
                 }
                 4 => {
                     assert_eq!(path, format!("/v1/requests/{request_id}"));
-                    let envelope = EnvelopeV1::seal_random(EnvelopeContext { route:"mac-a",sender:"mac-a",recipient:"client-a",request_id:&request_id,kind:"response",expires_at_ms:now_ms()?+5000 }, br#"{"status":200,"body":{"ok":true}}"#, &mac, &profile.agreement()?.public_key())?;
+                    let envelope = Envelope::seal_random(EnvelopeContext { route:"mac-a",sender:"mac-a",recipient:"client-a",request_id:&request_id,kind:"response",expires_at_ms:now_ms()?+5000 }, br#"{"status":200,"body":{"ok":true}}"#, &mac, &profile.agreement()?.public_key())?;
                     Ok((200,json!({"request_id":request_id,"status":"completed","revision":1002,"response":envelope})))
                 }
                 _ => panic!("operation unexpectedly resubmitted"),
@@ -1048,7 +1048,7 @@ mod tests {
                 |method,_,bytes,_| {
                     calls+=1;
                     assert_eq!(method,"POST");
-                    let envelope: EnvelopeV1=serde_json::from_slice(bytes)?;
+                    let envelope: Envelope=serde_json::from_slice(bytes)?;
                     let mut receipt=json!({"request_id":envelope.request_id,"status":"queued","revision":1001});
                     match invalid {
                         "missing-id" => { receipt.as_object_mut().unwrap().remove("request_id"); },
@@ -1077,7 +1077,7 @@ mod tests {
                 |_,path,bytes,_| {
                     calls+=1;
                     match calls {
-                        1 => { id=serde_json::from_slice::<EnvelopeV1>(bytes)?.request_id;
+                        1 => { id=serde_json::from_slice::<Envelope>(bytes)?.request_id;
                             Ok((202,json!({"request_id":id,"status":"queued","revision":1001}))) },
                         2 => Ok((200,json!({"request_id":id,"status":"received","revision":revision,"response":null}))),
                         3 => { assert!(path.starts_with("/v1/changes?since=1003&")); bail!("stop after verified poll") },
@@ -1132,7 +1132,7 @@ mod tests {
         profile.validate().unwrap();
         let seal = |route: &str, kind: &str, key: &SigningKey| {
             serde_json::to_value(
-                EnvelopeV1::seal_random(
+                Envelope::seal_random(
                     EnvelopeContext {
                         route,
                         sender: "mac-a",

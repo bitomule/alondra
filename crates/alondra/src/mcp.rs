@@ -59,9 +59,9 @@ fn tools(role: Role, user: &str) -> Value {
             json!({"name": "node", "description": "A node's state, tool in progress, last message, open questions and actions, unread reports, pending messages and recent events.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}, "history": {"type": "boolean", "description": "Add every question, report and message, and 100 events"}, "before": {"type": "integer", "description": "The 100 events before this seq"}}, "required": ["node"]}}),
             json!({"name": "machine", "description": "Machine capacity (memory, load, CPU, disk) and the subscription's usage: the week, today against its slice, and whether today is over pace.", "inputSchema": {"type": "object", "properties": {}}}),
             json!({"name": "daemon_log", "description": "The last lines of Alondra's daemon log (alondrad.log), to find out why something in Alondra failed.", "inputSchema": {"type": "object", "properties": {"lines": {"type": "integer", "description": "How many lines from the end: 200 by default, at most 1000"}}}}),
-            json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task: the node is told which one, a task no node works on yet becomes this node's, and a done task is reopened. A node works on one task at a time: a task for a node still on another is refused (agent_busy); launch a new node for it.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}, "model": {"type": "string", "description": "With task: the model the task needs (haiku, sonnet, opus, fable). A node running another model is refused (model_mismatch): launch a new node"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}}, "required": ["node", "text"]}}),
+            json!({"name": "send", "description": "Send a message to a node; Alondra types it into the node's session (waking it if it is dormant). With task, the message is about that task: the node is told which one, a task no node works on yet becomes this node's, and a done task is reopened. A node works on one task at a time: a task for a node still on another is refused (agent_busy); launch a new node for it.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string"}, "text": {"type": "string"}, "task": {"type": "string", "description": "The id of the task (t-…) the message is about"}, "model": {"type": "string", "description": "With task: the model the task needs (haiku, sonnet, opus, fable). A node running another model is refused (model_mismatch): launch a new node"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": "With task and a model or approach: one short line on what the task is and why this model or approach. Kept to measure how each model does"}}, "required": ["node", "text"]}}),
             json!({"name": "interrupt", "description": "Press Esc in a node's session to stop the call it is stuck in, for when Alondra reports a node inside one call that looks hung; `send` then moves it on.", "inputSchema": {"type": "object", "properties": {"node": {"type": "string", "description": "Name, short id or session_id"}}, "required": ["node"]}}),
-            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While Claude usage has run out, launches are refused until it comes back."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "model": {"type": "string", "description": format!("The model, a Claude Code alias (haiku, sonnet, opus, fable). Required when the request's effort is auto; refused when {user} chose an effort, which already sets the model")}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"], "description": "Thinking effort: medium for ordinary opus work, high for architecture design or a hard bug; leave it out for sonnet"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}}, "required": ["name", "cwd"]}}),
+            json!({"name": "launch", "description": format!("Launch a new node with the Alondra plugin. With task, the node is launched for that task (one whose start failed, or whose node is gone) and gets its brief unless you pass a prompt. Over today's slice of the weekly subscription usage (see `machine`) the launch goes ahead and Alondra asks {user} itself whether to pause until tomorrow: do not relay it. While Claude usage has run out, launches are refused until it comes back."), "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}, "cwd": {"type": "string"}, "prompt": {"type": "string", "description": "The node's mission; optional with task"}, "task": {"type": "string", "description": "The id of the task (t-…) the node is launched for"}, "title": {"type": "string", "description": format!("A short name for the task {user} reads (a few words); without it the task goes by the node's name")}, "model": {"type": "string", "description": format!("The model, a Claude Code alias (haiku, sonnet, opus, fable). Required when the request's effort is auto; refused when {user} chose an effort, which already sets the model")}, "request_id": {"type": "string", "description": format!("Without task, the request_id of {user}'s request this launch serves: Alondra adds the options {user} chose to the node's mission")}, "effort": {"type": "string", "enum": ["low", "medium", "high", "xhigh", "max"], "description": "Thinking effort: medium for ordinary opus work, high for architecture design or a hard bug; leave it out for sonnet"}, "approach": {"type": "string", "enum": ["solo", "subagents", "workflow"], "default": "solo", "description": "How the node should work: solo (alone), subagents (hands independent parts to subagents and reviews them) or workflow (a parallel, checkable run). Alondra writes the instructions into the mission"}, "reason": {"type": "string", "description": format!("One short line on what the task is and why this model (and effort) fits it. Required when the request's effort is auto; optional when {user} chose the effort. Kept to measure how each model does")}}, "required": ["name", "cwd"]}}),
             json!({"name": "candidates", "description": "The live nodes a task, or work in a repo or project, could go to: the ones in that project or repo, or that worked on tasks it depends on, that depend on it, or of the same request, each with why. A node works on one task at a time: `candidates` are the free ones; `busy` lists the ones still on another task, with that task, so a new node's mission can say what they are doing.", "inputSchema": {"type": "object", "properties": {"task": {"type": "string", "description": "A task id (t-…)"}, "repo": {"type": "string", "description": "A project name or owner/repo, when there is no task yet"}, "model": {"type": "string", "description": "The model the task needs (haiku, sonnet, opus, fable): each node then says in `fits` whether it runs that model"}}}}),
         ]);
     }
@@ -458,9 +458,9 @@ fn call_timeout(tool: &str) -> Duration {
 
 fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
-        "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY),
+        "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain::NODES_DO_NOT_NOTIFY),
         "answer_clarification" if args.get("text").is_some() => {
-            anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY)
+            anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_core::domain::NODES_DO_NOT_NOTIFY)
         }
         "start_task"
         | "ask"
@@ -486,7 +486,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
 
 fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
-        "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY),
+        "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain::NODES_DO_NOT_NOTIFY),
         "create_request"
         | "close_request"
         | "title_request"
@@ -731,7 +731,7 @@ fn answer_clarification(client: &Client, args: &Value) -> Result<String> {
                 notice.insert(key.into(), value.clone());
             }
             let first_line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or(text);
-            notice.insert("need".into(), json!(alondra_core::domain_v2::clip(first_line, alondra_core::domain_v2::CardSpec::NEED_MAX)));
+            notice.insert("need".into(), json!(alondra_core::domain::clip(first_line, alondra_core::domain::CardSpec::NEED_MAX)));
             notice.insert("body".into(), json!(text));
             let bearer = domain_bearer()?;
             submit(client, &bearer, "publish_information", &Value::Object(notice))?;
@@ -830,14 +830,14 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
     attach_card(name, &mut command)?;
     if name == "register_pr" {
         if let Some(host) = command.get("host").and_then(Value::as_str) {
-            let host = alondra_core::domain_v2::normalize_pr_host(host);
+            let host = alondra_core::domain::normalize_pr_host(host);
             command.insert("host".into(), Value::String(host));
         }
     }
     command.insert("kind".into(), Value::String(kind.into()));
     let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
         "command_id":command_id,"expected_revision":0,"command":command});
-    serde_json::from_value::<alondra_core::domain_v2::CommandEnvelope>(envelope.clone()).map_err(|error| {
+    serde_json::from_value::<alondra_core::domain::CommandEnvelope>(envelope.clone()).map_err(|error| {
         anyhow::anyhow!("invalid_input: {error}. Fix the arguments of {name} to match its schema and call it again")
     })?;
     Ok(envelope)
@@ -890,7 +890,7 @@ fn asks_together(command: &Value) -> bool {
 fn recommend_marked(options: Option<&mut Value>, recommended: &mut Option<Value>) {
     let Some(options) = options.and_then(Value::as_array_mut) else { return };
     for option in options {
-        let bare = option["label"].as_str().and_then(alondra_core::domain_v2::without_recommended_suffix);
+        let bare = option["label"].as_str().and_then(alondra_core::domain::without_recommended_suffix);
         if let Some(bare) = bare {
             if recommended.is_none() {
                 *recommended = Some(option["id"].clone()).filter(|id| id.is_string());
@@ -1005,7 +1005,7 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
                 anyhow::bail!("invalid_input: where and what are required: say where to test it (build, version, screen) and what to look at");
             }
             if why.is_empty() {
-                why = alondra_core::domain_v2::clip(&format!("{place}: {what}"), alondra_core::domain_v2::CardSpec::WHY_MAX);
+                why = alondra_core::domain::clip(&format!("{place}: {what}"), alondra_core::domain::CardSpec::WHY_MAX);
             }
             content = content.or_else(|| Some(json!({"kind":"steps","body":format!("Where: {place}\nWhat to look at: {what}")})));
             command.insert("options".into(), json!([choice("works", "Works", true), choice("fails", "Doesn't work", true)]));
@@ -1478,6 +1478,7 @@ mod tests {
         for name in ["launch","send"] {
             let tool=orchestrator_catalog.as_array().unwrap().iter().find(|t|t["name"]==name).unwrap();
             assert_eq!(tool["inputSchema"]["properties"]["approach"]["enum"],json!(["solo","subagents","workflow"]),"{name}");
+            assert_eq!(tool["inputSchema"]["properties"]["reason"]["type"],"string","{name}");
         }
         let node_catalog=tools(Role::Node,"Ana");
         let pr=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="register_pr").unwrap();
@@ -1501,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn the_v2_fleet_and_node_answers_read_through_the_8ccd131_summaries() {
+    fn the_fleet_and_node_answers_read_through_the_8ccd131_summaries() {
         let fleet = json!({
             "nodes": [{"session_id": "agent-a", "name": "Instance A", "short_id": "", "project": "App", "state": "working", "alive": true, "in_daemon": false}],
             "open_questions": [{"id": "q", "title": "Ship?", "node_name": "Instance A", "to_orchestrator": false, "action": false, "session_id": "agent-a"}],
@@ -1542,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_catalog_is_selected_before_a_bearer_handoff() {
+    fn the_domain_catalog_is_selected_before_a_bearer_handoff() {
         let catalog = tools(Role::Orchestrator, "User");
         let tools = catalog.as_array().unwrap();
         let ask = tools.iter().find(|tool| tool["name"] == "ask").unwrap();
@@ -1829,7 +1830,7 @@ mod tests {
 #[cfg(test)]
 mod card_tool_tests {
     use super::*;
-    use alondra_core::domain_v2::DomainError;
+    use alondra_core::domain::DomainError;
 
     fn tool(role: Role, name: &str) -> Value {
         tools(role, "Ana").as_array().unwrap().iter().find(|t| t["name"] == name)
@@ -1993,10 +1994,10 @@ mod card_tool_tests {
             "a missing need is not read from the body: alondrad refuses it with the field and the fix");
         assert!(without["card"].get("content").is_none());
 
-        let parsed: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(
+        let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(
             domain_envelope("ask", &with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":false})), "epoch", "id").unwrap(),
         ).unwrap();
-        assert!(matches!(parsed.command, alondra_core::domain_v2::Command::AskQuestion { .. }));
+        assert!(matches!(parsed.command, alondra_core::domain::Command::AskQuestion { .. }));
     }
 
     #[test]
@@ -2018,8 +2019,8 @@ mod card_tool_tests {
             (Some("Which name?"), Some("It goes on the tag"), Some("a")));
         assert_eq!(questions[1]["options"][0]["label"], "Yes", "the mark is taken off the label");
         assert_eq!(questions[1]["recommended"], "y", "and becomes the recommendation");
-        let parsed: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope).unwrap();
-        let alondra_core::domain_v2::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
+        let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(envelope).unwrap();
+        let alondra_core::domain::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
         assert_eq!((questions.len(), blocking), (2, true));
     }
 

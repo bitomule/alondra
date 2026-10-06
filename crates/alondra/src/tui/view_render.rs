@@ -1,7 +1,7 @@
 //! Text rendering for daemon-built views. The component switch lives here so new view
 //! components have one deliberate TUI representation.
 
-use alondra_core::domain_v2::CardKind;
+use alondra_core::domain::CardKind;
 use alondra_core::views::{Action, Card, Icon, Item, Label, Row, Section, View};
 use ratatui::{
     style::{Color, Modifier, Style, Stylize},

@@ -282,7 +282,7 @@ pub struct Invocation<'a> {
     pub cwd: &'a Path,
     pub home: &'a Path,
     pub plugins: Vec<&'a Path>,
-    pub domain_v2: bool,
+    pub domain: bool,
     pub projects_root: Option<&'a Path>,
     /// The bearer bound to this execution; only a v2 invocation carries one.
     pub capability: Option<&'a str>,
@@ -298,7 +298,7 @@ impl Invocation<'_> {
         // `--strict-mcp-config` discards user/managed MCP servers. Supply only
         // Alondra's server, with no credential in the command line or config.
         cmd.current_dir(self.cwd).args(["-p", "--output-format", "stream-json", "--verbose", "--model", "opus", "--permission-mode", "auto", "--permission-prompts", "none"]);
-        if self.domain_v2 {
+        if self.domain {
             let mcp_config = serde_json::json!({"mcpServers":{"alondra-orchestrator":{
                 "command":self.plugins[0].join("bin/alondra"), "args":["mcp-orchestrator"]
             }}}).to_string();
@@ -308,7 +308,7 @@ impl Invocation<'_> {
             cmd.args(["--setting-sources", "user"]);
         }
         cmd.args(["--disallowedTools", "AskUserQuestion", "ExitPlanMode"])
-            .args(crate::plugins::launch_flags_with(&self.plugins, self.projects_root.filter(|_| self.domain_v2).map(read_only)))
+            .args(crate::plugins::launch_flags_with(&self.plugins, self.projects_root.filter(|_| self.domain).map(read_only)))
             .args([if self.resume { "--resume" } else { "--session-id" }, self.session])
             .env("ALONDRA_HOME", self.home)
             .env("ALONDRA_ORCHESTRATOR", "1")
@@ -316,11 +316,11 @@ impl Invocation<'_> {
             .env("ALONDRA_SESSION_ID", alondra_core::orchestrator::NODE_ID)
             .env_remove("CLAUDECODE")
             .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true).process_group(0);
-        match self.capability.filter(|_| self.domain_v2) {
+        match self.capability.filter(|_| self.domain) {
             Some(capability) => { cmd.env("ALONDRA_DOMAIN_CAPABILITY", capability); }
             None => { cmd.env_remove("ALONDRA_DOMAIN_CAPABILITY"); }
         }
-        if self.domain_v2 { cmd.env("ALONDRA_DOMAIN_PROTOCOL", "2"); }
+        if self.domain { cmd.env("ALONDRA_DOMAIN_PROTOCOL", "2"); }
         else { cmd.env_remove("ALONDRA_DOMAIN_PROTOCOL"); }
         self.ownership.lent.store(true, std::sync::atomic::Ordering::SeqCst);
         let fd = self.ownership.file.as_raw_fd();
@@ -346,7 +346,7 @@ pub struct Output { pub stream: Stream, pub diagnostic: String, pub exit_ok: boo
 
 pub async fn execute(invocation: Invocation<'_>, mut spawned: impl FnMut(u32) -> Result<()>, mut initialized: impl FnMut() -> Result<()>, cancel: impl std::future::Future<Output = ()>) -> Output {
     let mut stream = Stream::default();
-    stream.restricted = invocation.domain_v2;
+    stream.restricted = invocation.domain;
     let mut child = match invocation.command().spawn() {
         Ok(child) => child,
         Err(e) => return Output { stream, diagnostic: bounded(format!("cannot launch Claude: {e}")), exit_ok: false, spawned: false },
@@ -652,7 +652,7 @@ mod tests {
         path
     }
     fn invocation<'a>(dir: &'a Path, exe: &'a Path, lock: &'a Ownership) -> Invocation<'a> {
-        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain_v2: true, projects_root: None, capability: None, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
+        Invocation { executable: exe, cwd: dir, home: dir, plugins: vec![dir], domain: true, projects_root: None, capability: None, session: "test-session", resume: true, execution: "test-run", prompt: "work", ownership: lock }
     }
     #[tokio::test]
     async fn real_process_drains_stderr_and_checks_terminal_result() {

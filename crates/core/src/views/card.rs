@@ -10,7 +10,7 @@ use super::{
     summary,
     text::{t, tf},
 };
-use crate::domain_v2::{
+use crate::domain::{
     AvailableAction, Author, CardKind, CardSpec, ClarificationReason, ContentKind as DomainContent,
     DeliveryTarget, DomainProjection, DomainState, Hold, InboxItem, InboxSubject, Interaction, InteractionId,
     InteractionPayload, InteractionSubject, PrId, PullRequest, QuestionGroup, QuestionOption, Recipient, Scope, clip,
@@ -48,7 +48,7 @@ fn pr_target<'a>(interaction: &Interaction, domain: &'a DomainState) -> Option<&
 /// The document revision a card is about: a delivery of one, or a question its node linked to one.
 fn reviewed_revision<'a>(
     interaction: &'a Interaction,
-) -> Option<&'a crate::domain_v2::DocumentRevisionId> {
+) -> Option<&'a crate::domain::DocumentRevisionId> {
     targets_of(interaction)
         .iter()
         .find_map(|target| match target {
@@ -77,7 +77,7 @@ pub(super) fn item_for_pr<'a>(projection: &'a DomainProjection, pr_id: &PrId, do
 }
 pub(super) fn item_for_revision<'a>(
     projection: &'a DomainProjection,
-    revision_id: &crate::domain_v2::DocumentRevisionId,
+    revision_id: &crate::domain::DocumentRevisionId,
     domain: &DomainState,
 ) -> Option<&'a InboxItem> {
     projection
@@ -773,7 +773,7 @@ fn answer_actions(
             action.option_id = Some(option.id.clone());
             action.description = fixed_description.filter(|_| matches!(hold, None | Some(Hold::Question)));
             action.input = input;
-            action.attachments = option.inputs.iter().any(|input| input.kind == crate::domain_v2::InputKind::Text);
+            action.attachments = option.inputs.iter().any(|input| input.kind == crate::domain::InputKind::Text);
             action.stamp = Some(t!(lang, "Answered", "Respondida").into());
             buttons.push(with_availability(action, available, lang));
         }
@@ -972,7 +972,7 @@ fn change_answers(interaction: &Interaction, context: &RenderContext<'_>) -> Opt
         let InteractionPayload::Question { options, answer: Some(answer), .. } = &member.payload else { return None };
         let said = options.iter().find(|option| option.id == answer.option_id).map(|option| option.label.clone())
             .or_else(|| answer.inputs.values().find_map(|value| match value {
-                crate::domain_v2::InputValue::Text(text) if !text.trim().is_empty() => Some(clip(text, 40)),
+                crate::domain::InputValue::Text(text) if !text.trim().is_empty() => Some(clip(text, 40)),
                 _ => None,
             }))?;
         Some(ActionOption {
@@ -1271,7 +1271,7 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         | InteractionPayload::ActionRequest { options, answer: Some(answer) } => {
             let label = options.iter().find(|option| option.id == answer.option_id).map(|option| fixed_option_text(option, lang).0);
             let text = answer.inputs.values().find_map(|value| match value {
-                crate::domain_v2::InputValue::Text(text) => Some(clip(text, 240)),
+                crate::domain::InputValue::Text(text) => Some(clip(text, 240)),
                 _ => None,
             });
             row(
@@ -1286,7 +1286,7 @@ fn history_rows(item: &InboxItem, context: &RenderContext<'_>) -> Vec<Item> {
         }
         InteractionPayload::Delivery { acceptance, feedback, .. } => {
             for (index, feedback) in feedback.iter().enumerate() {
-                use crate::domain_v2::Instruction;
+                use crate::domain::Instruction;
                 let title = match feedback.instruction {
                     Instruction::Changes => t!(lang, "You asked for changes", "Pediste cambios"),
                     Instruction::Question => t!(lang, "You asked a question", "Hiciste una pregunta"),

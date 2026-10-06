@@ -82,7 +82,7 @@ private actor FakeRelay: HTTPTransport {
         return answer(200, try JSONSerialization.data(withJSONObject: proof), request)
     }
 
-    private func decryptedCandidateAgreement(_ envelope: EnvelopeV1) throws -> String {
+    private func decryptedCandidateAgreement(_ envelope: Envelope) throws -> String {
         let epk = try P256.KeyAgreement.PublicKey(x963Representation: PairingWire.decode(envelope.ephemeralKey)!)
         let nonce = PairingWire.decode(envelope.nonce)!
         var header = Data("alondra-e2e-envelope-v1".utf8)

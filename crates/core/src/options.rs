@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::domain_v2::{ModelChooser, TaskModel};
+use crate::domain::{ModelChooser, TaskModel};
 
 pub const FILE_NAME: &str = "options.toml";
 pub const PR: &str = "pr";

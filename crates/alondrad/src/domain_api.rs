@@ -7,8 +7,8 @@ use crate::domain_store::{StoreError, TransportIdentity};
 use crate::hub::Hub;
 use crate::domain_runtime::DomainRuntime;
 use std::path::Path as FsPath;
-use alondra_core::domain_v2::*;
-use alondra_core::domain_v2::reads;
+use alondra_core::domain::*;
+use alondra_core::domain::reads;
 use axum::extract::{ConnectInfo, Path, RawQuery, State, rejection::JsonRejection};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -31,7 +31,7 @@ pub(crate) trait DomainHost: Send + Sync + 'static {
     fn cutover_committed(&self) -> bool;
     /// Who confirms a PR's remote head and base before an Agent's merge claim is admitted.
     fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver;
-    fn new_work_client(&self) -> Option<&crate::v2_client_routes::Client> { None }
+    fn new_work_client(&self) -> Option<&crate::client_routes::Client> { None }
 }
 impl DomainHost for Hub {
     fn domain(&self) -> &DomainRuntime {
@@ -880,7 +880,7 @@ async fn request_resource<H: DomainHost>(
         let Some(client) = host.new_work_client() else { return storage_error(); };
         let user_id = format!("device:{}", device.device_id);
         let home = host.home().to_owned();
-        return match client.write(&user_id, crate::v2_client_routes::Write::NewRequest, &body, None,
+        return match client.write(&user_id, crate::client_routes::Write::NewRequest, &body, None,
             &|| approved(&home, &device)).await {
             Ok(reply) => reply.into_response(),
             Err(_) => storage_error(),
@@ -1179,7 +1179,7 @@ pub(crate) fn encrypted_command_runtime(
 }
 
 pub(crate) async fn encrypted_resource_command_runtime(
-    domain: &DomainRuntime, new_work: Option<&crate::v2_client_routes::Client>,
+    domain: &DomainRuntime, new_work: Option<&crate::client_routes::Client>,
     sender: &str, method: &str, path: &str, body: Option<&Value>,
     identity: TransportIdentity<'_>, authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
@@ -1190,14 +1190,14 @@ pub(crate) async fn encrypted_resource_command_runtime(
 }
 
 pub(crate) async fn resource_command_runtime(
-    domain: &DomainRuntime, new_work: Option<&crate::v2_client_routes::Client>,
+    domain: &DomainRuntime, new_work: Option<&crate::client_routes::Client>,
     sender: &str, method: &str, path: &str, body: Option<&Value>,
     identity: Option<TransportIdentity<'_>>, authorize: impl Fn() -> anyhow::Result<()> + Sync,
 ) -> anyhow::Result<Value> {
     if method == "POST" && path == "/requests" && body.is_some_and(|body| body.get("text").is_some()) {
         let Some(client) = new_work else { anyhow::bail!("request launch support unavailable"); };
         let Some(body) = body else { anyhow::bail!("request body required"); };
-        let reply = client.write(&format!("device:{sender}"), crate::v2_client_routes::Write::NewRequest,
+        let reply = client.write(&format!("device:{sender}"), crate::client_routes::Write::NewRequest,
             body, identity, &authorize).await?;
         return Ok(reply.into_value());
     }
@@ -1274,14 +1274,14 @@ mod tests {
             &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
         let signed = Some(Extension(Signed { device_id: device.id,
             name: device.name, public_key: device.public_key }));
-        let host = crate::domain_bootstrap::V2Only::open(&home).unwrap();
+        let host = crate::domain_bootstrap::DomainDaemon::open(&home).unwrap();
         let epoch = host.domain().state().unwrap().data_epoch.0;
 
-        let legacy = changes::<crate::domain_bootstrap::V2Only>(State(host.clone()), signed.clone(),
+        let legacy = changes::<crate::domain_bootstrap::DomainDaemon>(State(host.clone()), signed.clone(),
             RawQuery(Some(format!("data_epoch={epoch}&after=0&wait=0")))).await;
         assert_eq!(legacy.status(), StatusCode::UNPROCESSABLE_ENTITY);
 
-        let views = changes::<crate::domain_bootstrap::V2Only>(State(host.clone()), signed,
+        let views = changes::<crate::domain_bootstrap::DomainDaemon>(State(host.clone()), signed,
             RawQuery(Some("protocol=1&client=tui&lang=en&wait=0".into()))).await;
         assert_eq!(views.status(), StatusCode::OK);
         let bytes = axum::body::to_bytes(views.into_body(), 1024 * 1024).await.unwrap();
@@ -1289,7 +1289,7 @@ mod tests {
         assert_eq!(body["protocol"], 1);
         assert_eq!(body["superseded"], false);
 
-        let unsigned = changes::<crate::domain_bootstrap::V2Only>(State(host.clone()), None,
+        let unsigned = changes::<crate::domain_bootstrap::DomainDaemon>(State(host.clone()), None,
             RawQuery(Some("protocol=1&client=tui&lang=en&wait=0".into()))).await;
         assert_eq!(unsigned.status(), StatusCode::FORBIDDEN);
         drop(host);
@@ -1545,7 +1545,7 @@ mod tests {
                     },
                     recipient: Recipient::User,
                     body: "Information".into(),
-                    attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+                    attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
                 },
             ),
         ] {
@@ -1959,7 +1959,7 @@ mod tests {
 }
 
 #[cfg(test)]
-mod v2_only_encrypted_tests {
+mod domain_encrypted_tests {
     use super::*;
     use crate::auth::Auth;
     use crate::domain_runtime::DomainRuntime;

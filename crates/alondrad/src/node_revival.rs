@@ -11,7 +11,7 @@
 //! to not started, waiting for a relaunch.
 use crate::domain_runtime::DomainRuntime;
 use crate::orchestrate::Launcher;
-use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, QuestionOption, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, QuestionOption, PROTOCOL_VERSION};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -135,7 +135,7 @@ pub(crate) fn has_open_task(domain: &DomainRuntime, session: &str) -> bool {
     domain.state().is_ok_and(|state| open_task(&state, session))
 }
 
-fn open_task(state: &alondra_core::domain_v2::DomainState, session: &str) -> bool {
+fn open_task(state: &alondra_core::domain::DomainState, session: &str) -> bool {
     let agent = AgentId(session.to_owned());
     state.agents.contains_key(&agent) && state.tasks.values().any(|task| task.agent_id.as_ref() == Some(&agent) && !task.state.terminal() && !task.archived)
 }
@@ -252,7 +252,7 @@ async fn restart_until_back(domain: &DomainRuntime, session: &str, launcher: &im
 pub(crate) fn user_closed(domain: &DomainRuntime, session: &str) -> anyhow::Result<()> {
     let agent = AgentId(session.to_owned());
     let state = domain.state()?;
-    let node = state.agents.get(&agent).map(|known| crate::v2_client_routes::ClosedNode {
+    let node = state.agents.get(&agent).map(|known| crate::client_routes::ClosedNode {
         name: known.name.clone(),
         cwd: domain.live.mods.session(session).and_then(|reported| reported.cwd),
     });
@@ -307,7 +307,7 @@ async fn ask_to_retry(domain: &DomainRuntime, session: &str, error: &str) -> boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::{Actor, Command, CommandEnvelope, InteractionId};
+    use alondra_core::domain::{Actor, Command, CommandEnvelope, InteractionId};
     use serde_json::json;
     use std::sync::Mutex;
 
@@ -605,13 +605,13 @@ mod tests {
 
     fn working(domain: &DomainRuntime) {
         command(domain, Actor::Agent { agent_id: SESSION.into() }, "start", Command::StartTask { task_id: "t".into() });
-        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, alondra_core::domain_v2::TaskState::Running);
+        assert_eq!(domain.state().unwrap().tasks[&"t".into()].state, alondra_core::domain::TaskState::Running);
     }
 
     fn freed(domain: &DomainRuntime) {
         let state = domain.state().unwrap();
         let task = &state.tasks[&"t".into()];
-        assert_eq!((task.state, task.agent_id.clone(), task.started), (alondra_core::domain_v2::TaskState::NotStarted, None, false), "the task waits for a new node");
+        assert_eq!((task.state, task.agent_id.clone(), task.started), (alondra_core::domain::TaskState::NotStarted, None, false), "the task waits for a new node");
         assert!(domain.live.is_closed(SESSION) && domain.live.closed_sessions() == [SESSION], "the node leaves Fleet");
         let closed = domain.live.closed_task("t").expect("the relaunch knows the node that was closed");
         assert_eq!(closed.name, "alondra/probe");

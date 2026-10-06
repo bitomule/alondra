@@ -12,7 +12,7 @@
 //! without the notification service extension, so the count travels in the clear.
 use crate::domain_runtime::DomainRuntime;
 use crate::service::Service;
-use alondra_core::domain_v2::DomainState;
+use alondra_core::domain::DomainState;
 use alondra_core::views;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
@@ -206,7 +206,7 @@ mod tests {
     }
 
     fn state_waiting(ids: &[String]) -> DomainState {
-        use alondra_core::domain_v2::*;
+        use alondra_core::domain::*;
         let mut state = DomainState::new("epoch-1");
         for (order, id) in ids.iter().enumerate() {
             state.interactions.insert(id.as_str().into(), Interaction {
@@ -285,7 +285,7 @@ mod tests {
         }
         assert_eq!(fixture["apns"]["aps"], generated["apns"]["aps"], "{stale} (APNs wrapper)");
         let open = |envelope: &Value| -> Value {
-            let envelope: alondra_e2e::EnvelopeV1 = serde_json::from_value(envelope.clone()).unwrap();
+            let envelope: alondra_e2e::Envelope = serde_json::from_value(envelope.clone()).unwrap();
             let plaintext = envelope
                 .open(mac_signing.verifying_key(), &phone_agreement, mac_id, device_id, mac_id, envelope.expires_at_ms)
                 .unwrap();

@@ -78,7 +78,7 @@ public enum NotificationDecoder {
     private struct Outer: Decodable {
         let alondra: Encrypted
         struct Encrypted: Decodable {
-            let envelope: EnvelopeV1
+            let envelope: Envelope
             let pushBinding: String
             enum CodingKeys: String, CodingKey { case envelope, pushBinding = "push_binding" }
         }

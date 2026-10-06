@@ -1,6 +1,6 @@
 use super::*;
 use crate::node_push::testing::Node;
-use alondra_core::domain_v2::{AttachmentRef, ModelChooser, TaskModel, TaskState};
+use alondra_core::domain::{AttachmentRef, ModelChooser, TaskModel, TaskState};
 use alondra_core::options::OptionsFile;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -92,7 +92,7 @@ impl crate::orchestrate::Launcher for FakeClaude {
 }
 
 fn launch_body(f: &Fixture, extra: Value) -> LaunchBody {
-    let mut body = json!({"name": "editor", "cwd": f.project.to_str().unwrap(), "task": "t"});
+    let mut body = json!({"name": "editor", "cwd": f.project.to_str().unwrap(), "task": "t", "reason": "Colour tokens in one file: sonnet"});
     body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
     serde_json::from_value(body).unwrap()
 }
@@ -378,8 +378,8 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     let cards = || f.domain.state().unwrap().interactions.values()
         .filter(|card| card.id.0.starts_with("over-pace-")).cloned().collect::<Vec<_>>();
     let [card] = cards().try_into().unwrap();
-    assert_eq!(card.card.kind, alondra_core::domain_v2::CardKind::Decide);
-    assert_eq!(card.author, alondra_core::domain_v2::Author::System);
+    assert_eq!(card.card.kind, alondra_core::domain::CardKind::Decide);
+    assert_eq!(card.author, alondra_core::domain::Author::System);
     assert!(!card.blocking);
     assert_eq!(card.body, "41/18/53");
     crate::usage_pause::raise_over_pace_card(&f.domain, alondra_core::now_millis());
@@ -475,4 +475,96 @@ async fn a_message_with_an_approach_ends_with_how_to_work() {
     send(&f.domain, &f.home, &actor, body).await.unwrap();
     let text = &node.texts()[0];
     assert!(text.contains("Take it") && text.contains("## How to work") && text.contains("the Workflow tool"), "{text}");
+}
+
+type DecisionRow = (String, String, Option<String>, Option<String>, Option<String>, Option<String>);
+
+fn decisions(domain: &DomainRuntime) -> Vec<DecisionRow> {
+    domain.store.lock().unwrap().model_decision_rows().unwrap()
+}
+
+fn row(kind: &str, model: Option<&str>, effort: Option<&str>, approach: Option<&str>, reason: Option<&str>) -> DecisionRow {
+    let text = |value: Option<&str>| value.map(str::to_owned);
+    ("t".into(), kind.into(), text(model), text(effort), text(approach), text(reason))
+}
+
+#[tokio::test]
+async fn with_auto_effort_a_launch_without_a_reason_is_refused_before_claude_runs() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    for reason in [json!(null), json!("   ")] {
+        let refused = launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet", "reason": reason})), |_| None, &claude).await.unwrap_err();
+        assert_eq!(refused.code, "invalid_input");
+        assert!(refused.message.contains("pass reason"), "{}", refused.message);
+    }
+    assert!(claude.calls.lock().unwrap().is_empty(), "nothing launched");
+    assert!(decisions(&f.domain).is_empty());
+
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"reason": null})), |_| Some(hard_choices()), &claude).await.unwrap();
+    assert_eq!(decisions(&f.domain), [row("launch", Some("opus"), Some("xhigh"), Some("solo"), None)],
+        "the user's effort needs no reason");
+    assert_eq!(f.domain.store.lock().unwrap().model_decision_meta().unwrap(), [(SESSION.to_owned(), "user".to_owned(), "Editor colours".to_owned())]);
+}
+
+#[tokio::test]
+async fn every_launch_records_the_model_effort_approach_and_reason_the_orchestrator_chose() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet", "effort": "medium", "approach": "subagents"})), |_| None, &claude).await.unwrap();
+    assert_eq!(decisions(&f.domain), [row("launch", Some("sonnet"), Some("medium"), Some("subagents"), Some("Colour tokens in one file: sonnet"))]);
+    assert_eq!(f.domain.store.lock().unwrap().model_decision_meta().unwrap(), [(SESSION.to_owned(), "orchestrator".to_owned(), "Editor colours".to_owned())]);
+}
+
+#[tokio::test]
+async fn a_message_handing_a_task_over_with_a_model_or_approach_is_recorded_and_a_plain_one_is_not() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let _node = Node::connect(&f.domain, "agent-b");
+    f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": "agent-b", "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 1);
+    let body = |extra: Value| -> SendBody {
+        let mut body = json!({"node": "Instance B", "text": "Go", "task": "t"});
+        body.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        serde_json::from_value(body).unwrap()
+    };
+    send(&f.domain, &f.home, &actor, body(json!({}))).await.unwrap();
+    send(&f.domain, &f.home, &actor, body(json!({"task": null, "approach": "solo"}))).await.unwrap();
+    assert!(decisions(&f.domain).is_empty(), "a message without a task, or without model or approach, is no decision");
+    send(&f.domain, &f.home, &actor, body(json!({"model": "sonnet", "approach": "workflow", "reason": "Same files as its last task"}))).await.unwrap();
+    send(&f.domain, &f.home, &actor, body(json!({"approach": "solo"}))).await.unwrap();
+    assert_eq!(decisions(&f.domain), [
+        row("send", Some("sonnet"), None, Some("workflow"), Some("Same files as its last task")),
+        row("send", Some("sonnet"), None, Some("solo"), None),
+    ]);
+}
+
+#[tokio::test]
+async fn a_relaunch_is_recorded_as_one_and_needs_no_reason() {
+    let f = world();
+    command(&f.domain, user(), Command::AssignTask { task_id: "t".into(), agent_id: "agent-b".into(), model: None });
+    command(&f.domain, Actor::Agent { agent_id: "agent-b".into() }, Command::StartTask { task_id: "t".into() });
+    f.domain.live.mods.connect(serde_json::from_value(json!({"session_id": "agent-b", "version": "2.1.287", "cwd": f.project.to_str().unwrap()})).unwrap(), 1);
+    crate::node_revival::user_closed(&f.domain, "agent-b").unwrap();
+    relaunch(&f.domain, &f.home, &user(), &"t".into(), &FakeClaude::loading(&f.domain)).await.unwrap();
+    assert_eq!(decisions(&f.domain), [row("relaunch", Some("sonnet"), None, Some("solo"), None)]);
+}
+
+#[tokio::test]
+async fn closing_a_launched_node_keeps_its_cost_and_the_fullest_its_context_got() {
+    let f = world();
+    let actor = the_orchestrator(&f.domain);
+    let claude = FakeClaude::loading(&f.domain);
+    launch(&f.domain, &f.home, &actor, launch_body(&f, json!({"model": "sonnet"})), |_| None, &claude).await.unwrap();
+    for (context, cost) in [(json!({"window": 200000, "percent": 62.5}), 0.8), (json!({"window": 200000, "tokens": 50000}), 1.25)] {
+        f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": SESSION, "event": "session.measure", "context": context, "cost_usd": cost})).unwrap(), 2);
+    }
+    f.domain.live.mods.apply(serde_json::from_value(json!({"session_id": SESSION, "event": "model", "model": "claude-sonnet-5-5"})).unwrap(), 3);
+    assert!(f.domain.store.lock().unwrap().node_cost(SESSION).unwrap().is_none());
+
+    crate::node_revival::user_closed(&f.domain, SESSION).unwrap();
+    let kept = f.domain.store.lock().unwrap().node_cost(SESSION).unwrap().expect("the closed node's cost is kept");
+    assert_eq!((kept.task_id.as_deref(), kept.model.as_deref(), kept.cost_usd, kept.context_peak_percent),
+        (Some("t"), Some("claude-sonnet-5-5"), Some(1.25), Some(62.5)), "the task comes from its launch, though closing freed it");
+    assert!(kept.started_at.is_some_and(|started| kept.ended_at >= started));
 }

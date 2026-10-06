@@ -2,7 +2,7 @@ use super::{
     BuildError, ContentKind, ContentRef, Fact, Facts, Item, Notice, RenderContext, Tone, View,
     common, text::t,
 };
-use crate::domain_v2::{DocumentRevisionId, PrId, PrState};
+use crate::domain::{DocumentRevisionId, PrId, PrState};
 
 pub(super) fn document(id: &str, context: &RenderContext<'_>) -> Result<View, BuildError> {
     common::id(id)?;

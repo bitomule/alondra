@@ -1,7 +1,7 @@
 //! The last look before a user push leaves: a push only ever announces a card the user can act
 //! on when it arrives.
-use crate::v2_client_routes::{Client, Merge};
-use alondra_core::domain_v2::{
+use crate::client_routes::{Client, Merge};
+use alondra_core::domain::{
     DeliveryTarget, DomainState, InboxItem, InboxSubject, InteractionId, InteractionPayload, PrState,
 };
 use std::time::Duration;
@@ -37,7 +37,7 @@ pub(crate) async fn check(
         match client.merge_state(pr, head, SEND_ATTEMPTS, SEND_PAUSE).await {
             Merge::Clean => {}
             Merge::Conflicts => {
-                crate::v2_client_routes::hand_back_conflicts(
+                crate::client_routes::hand_back_conflicts(
                     &client.domain,
                     &client.details,
                     &crate::domain_messages::user_name(),
@@ -86,8 +86,8 @@ fn card_pending(items: &[InboxItem], id: &InteractionId) -> bool {
 mod tests {
     use super::{Gate, UNKNOWN_MERGE_PATIENCE, check};
     use crate::domain_runtime::DomainRuntime;
-    use crate::v2_client_routes::{Client, FakePrView};
-    use alondra_core::domain_v2::{
+    use crate::client_routes::{Client, FakePrView};
+    use alondra_core::domain::{
         Actor, CardSpec, Command, CommandEnvelope, DeliveryTarget, Instruction, InteractionPayload, MergeMethod,
     };
     use serde_json::json;

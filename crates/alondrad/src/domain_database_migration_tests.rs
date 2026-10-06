@@ -212,12 +212,12 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
     let target = home.path().join(DATABASE);
     let mut store = crate::domain_store::DomainStore::open(&target).unwrap();
     let state = store.load().unwrap();
-    let envelope = alondra_core::domain_v2::CommandEnvelope {
+    let envelope = alondra_core::domain::CommandEnvelope {
         protocol_version: 2,
         data_epoch: state.data_epoch,
         command_id: "post-migration-request".into(),
         expected_revision: state.revision,
-        command: alondra_core::domain_v2::Command::CreateRequest {
+        command: alondra_core::domain::Command::CreateRequest {
             request_id: "request-after-migration".into(),
             body: "A normal durable post-migration write".into(),
             auto_merge: false,
@@ -225,7 +225,7 @@ fn committed_migration_allows_normal_writes_and_restarts_without_losing_them() {
     };
     store
         .execute_authenticated(
-            &alondra_core::domain_v2::Actor::Orchestrator { generation: 0 },
+            &alondra_core::domain::Actor::Orchestrator { generation: 0 },
             &envelope,
             None,
         )

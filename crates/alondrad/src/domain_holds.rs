@@ -9,7 +9,7 @@
 //! settings hook keeps waiting and a hook that goes away withdraws its card.
 use crate::domain_runtime::DomainRuntime;
 use crate::http::{elicitation_card, elicitation_content, permission_detail, permission_title, str_field, tool_summary};
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     clip, without_recommended_suffix, Actor, AgentId, Answer, Author, CardKind, CardSpec, Command, CommandEnvelope,
     ContentKind, DomainState, GroupQuestion, Hold, InputValue, InteractionId, InteractionPayload, QuestionGroup,
     QuestionOption, TaskState, PROTOCOL_VERSION,

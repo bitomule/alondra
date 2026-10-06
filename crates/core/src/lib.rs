@@ -10,6 +10,7 @@ pub mod keeper;
 pub mod machine_incident;
 pub mod model;
 pub mod model_label;
+pub mod model_report;
 pub mod mods;
 pub mod options;
 pub mod orchestrator;
@@ -59,4 +60,4 @@ pub fn now_millis() -> Millis {
         .unwrap_or(0)
 }
 
-pub mod domain_v2;
+pub mod domain;

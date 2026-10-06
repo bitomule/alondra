@@ -3,8 +3,8 @@
 //! token; nothing here re-projects state or touches SQL per request.
 use crate::domain_api::domain_error;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain_v2::reads::*;
-use alondra_core::domain_v2::*;
+use alondra_core::domain::reads::*;
+use alondra_core::domain::*;
 use anyhow::Result;
 use axum::Json;
 use axum::response::{IntoResponse, Response};

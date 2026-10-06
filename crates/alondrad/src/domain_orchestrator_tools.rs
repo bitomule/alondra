@@ -3,7 +3,8 @@
 //! machine. Each call carries the orchestrator execution's bearer; the domain changes a call
 //! implies (the new Agent, an assignment, a reopened Task) are that orchestrator's commands.
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain_v2::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, RequestId, TaskId, PROTOCOL_VERSION};
+use crate::domain_store::model_metrics::{Decision, DecisionKind};
+use alondra_core::domain::{Actor, AgentId, Command, CommandEnvelope, DomainError, DomainState, ModelChooser, RequestId, TaskId, PROTOCOL_VERSION};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -87,6 +88,9 @@ pub(crate) struct LaunchBody {
     effort: Option<String>,
     #[serde(default)]
     approach: Option<alondra_core::options::Approach>,
+    /// What the task is and why this model: required when the orchestrator chooses the model.
+    #[serde(default)]
+    reason: Option<String>,
     /// What a relaunch passes when the orchestrator chose the model: the one the task had.
     #[serde(skip)]
     relaunch_model: Option<String>,
@@ -130,9 +134,14 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         Some(choices) => choices.options.clone(),
         None => file.orchestrator_defaults(crate::options::project_of(&file, Path::new(&body.cwd)).as_deref(), None),
     };
-    let model = body.model.as_deref().or(body.relaunch_model.as_deref().filter(|_| requested.effort == alondra_core::options::AUTO));
+    let auto = requested.effort == alondra_core::options::AUTO;
+    let model = body.model.as_deref().or(body.relaunch_model.as_deref().filter(|_| auto));
     let resolved = requested.with_orchestrator_model(&file, model, body.effort.as_deref())
         .map_err(|reason| DomainError::new("invalid_input", reason))?;
+    let reason = given(body.reason.as_deref());
+    if auto && body.relaunch_model.is_none() && reason.is_none() {
+        return Err(DomainError::new("invalid_input", "effort is auto for this request: pass reason, one short line on what the task is and why this model fits it"));
+    }
     let mission = body.prompt.clone().unwrap_or_else(|| {
         let mut text = format!("{}\n\n{}", task.title, request.map(|r| r.body.as_str()).unwrap_or_default());
         if let Some(choices) = &choices {
@@ -186,6 +195,15 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
         let _ = domain.revoke_agent(&session);
         return Err(discard(error));
     }
+    record(domain, Decision {
+        task_id: task.id.0.clone(), request_id: task.request_id.0.clone(), agent_id: Some(session.clone()), at: alondra_core::now_millis(),
+        kind: if body.relaunch_model.is_some() { DecisionKind::Relaunch } else { DecisionKind::Launch },
+        model: resolved.flags.model.as_deref().map(alondra_core::model_label::model_family),
+        effort: resolved.flags.effort.clone(),
+        approach: Some(body.approach.unwrap_or_default()),
+        chosen_by: resolved.launch_model().map_or_else(|| chooser(auto), |launched| launched.chosen_by),
+        reason, title: task.title.clone(),
+    });
     domain.live.forget_closed_task(&task.id.0);
     crate::usage_pause::raise_over_pace_card(domain, alondra_core::now_millis());
     Ok(json!({"agent_id": agent_id, "short_id": session.chars().take(8).collect::<String>(), "task": task.id}))
@@ -196,7 +214,7 @@ pub(crate) async fn launch(domain: &DomainRuntime, home: &Path, actor: &Actor, b
 pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor, task_id: &TaskId, launcher: &impl crate::orchestrate::Launcher) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let waiting = current.tasks.get(task_id)
-        .filter(|task| task.state == alondra_core::domain_v2::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
+        .filter(|task| task.state == alondra_core::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived);
     let (Some(task), Some(closed)) = (waiting, domain.live.closed_task(&task_id.0)) else {
         return Err(DomainError::new("conflict", "This task is not waiting for a relaunch"));
     };
@@ -214,6 +232,21 @@ pub(crate) async fn relaunch(domain: &DomainRuntime, home: &Path, actor: &Actor,
     launch(domain, home, actor, body, |request| request_choices(domain, request).ok().flatten(), launcher).await
 }
 
+fn given(text: Option<&str>) -> Option<String> {
+    text.map(str::trim).filter(|text| !text.is_empty()).map(str::to_owned)
+}
+
+fn chooser(auto: bool) -> ModelChooser {
+    if auto { ModelChooser::Orchestrator } else { ModelChooser::User }
+}
+
+/// The decision is evidence for tuning the model policy; failing to keep it never undoes the work.
+fn record(domain: &DomainRuntime, decision: Decision) {
+    if let Err(error) = domain.record_model_decision(&decision) {
+        log!("could not record the model decision for {}: {error:#}", decision.task_id);
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SendBody {
@@ -225,6 +258,8 @@ pub(crate) struct SendBody {
     model: Option<String>,
     #[serde(default)]
     approach: Option<alondra_core::options::Approach>,
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 /// Sends the orchestrator's text to an Agent's session. With a Task, the Agent is told which
@@ -233,14 +268,15 @@ pub(crate) struct SendBody {
 pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, body: SendBody) -> Result<Value, DomainError> {
     let current = state(domain)?;
     let agent_id = agent(&current, &body.node)?;
+    let node_runs = domain.live.mods.session(&agent_id.0).and_then(|reported| reported.model);
+    let node_model = node_runs.as_deref().map(alondra_core::model_label::model_family);
     if let Some(task_id) = &body.task {
         let task = current.tasks.get(task_id).ok_or_else(|| DomainError::new("not_found", "task does not exist"))?;
         if let Some(wanted) = &body.model {
             let file = crate::domain_schedule_runner::options_at(home).map_err(|error| DomainError::new("invalid_input", format!("options.toml: {error}")))?;
             let family = file.model_family(wanted).ok_or_else(|| DomainError::new("invalid_input", format!("{wanted} is not a model; use one of {}", file.model_aliases().join(", "))))?;
-            let node = domain.live.mods.session(&agent_id.0).and_then(|reported| reported.model);
-            if node.as_deref().map(alondra_core::model_label::model_family).as_deref() != Some(family.as_str()) {
-                let has = node.as_deref().map_or("an unknown model".to_owned(), alondra_core::model_label::launched_model_label);
+            if node_model.as_deref() != Some(family.as_str()) {
+                let has = node_runs.as_deref().map_or("an unknown model".to_owned(), alondra_core::model_label::launched_model_label);
                 return Err(DomainError::new("model_mismatch", format!("{} runs {has}, not {wanted}: launch a new node for {task_id}", body.node)));
             }
         }
@@ -262,7 +298,18 @@ pub(crate) async fn send(domain: &DomainRuntime, home: &Path, actor: &Actor, bod
     };
     let message = serde_json::from_value(json!({"text": text, "task_id": body.task}))
         .map_err(|error| DomainError::new("invalid_input", error.to_string()))?;
-    crate::domain_messages::deliver(domain, home, actor, "The orchestrator", &agent_id, message, false).await
+    let delivered = crate::domain_messages::deliver(domain, home, actor, "The orchestrator", &agent_id, message, false).await?;
+    if let Some(task) = body.task.as_ref().and_then(|id| current.tasks.get(id))
+        && (body.model.is_some() || body.approach.is_some())
+    {
+        let auto = request_choices(domain, &task.request_id).ok().flatten().is_none_or(|choices| choices.options.effort == alondra_core::options::AUTO);
+        record(domain, Decision {
+            task_id: task.id.0.clone(), request_id: task.request_id.0.clone(), agent_id: Some(agent_id.0.clone()), at: alondra_core::now_millis(),
+            kind: DecisionKind::Send, model: node_model, effort: None, approach: body.approach, chosen_by: chooser(auto),
+            reason: given(body.reason.as_deref()), title: task.title.clone(),
+        });
+    }
+    Ok(delivered)
 }
 
 #[derive(Deserialize)]

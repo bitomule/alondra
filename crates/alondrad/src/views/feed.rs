@@ -1,4 +1,4 @@
-use alondra_core::domain_v2::DomainError;
+use alondra_core::domain::DomainError;
 use alondra_core::views::{Client, Lang, Transport, VIEWS_PROTOCOL};
 use axum::{
     Json,
@@ -70,7 +70,7 @@ impl Feeds {
 
 /// One live sampler belongs to the daemon client, independently of how many devices poll.
 /// It reads in-memory live state and publishes only when its visible projection changes.
-pub(crate) fn start_clock(client: &Arc<crate::v2_client_routes::Client>) {
+pub(crate) fn start_clock(client: &Arc<crate::client_routes::Client>) {
     let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
     let weak = Arc::downgrade(client);
     runtime.spawn(async move {
@@ -102,8 +102,8 @@ pub(crate) fn start_clock(client: &Arc<crate::v2_client_routes::Client>) {
 }
 
 async fn sample_live(
-    client: &crate::v2_client_routes::Client,
-    state: &alondra_core::domain_v2::DomainState,
+    client: &crate::client_routes::Client,
+    state: &alondra_core::domain::DomainState,
     last: &mut Option<String>,
 ) -> bool {
     let keys = client.feeds.live_keys();
@@ -141,7 +141,7 @@ struct Current {
 }
 
 pub(crate) async fn handle(
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     device: &str,
     query: &str,
     transport: Transport,
@@ -229,7 +229,7 @@ pub(crate) fn approved_path(path: &str) -> bool {
 }
 
 async fn current(
-    client: &crate::v2_client_routes::Client,
+    client: &crate::client_routes::Client,
     kind: Client,
     lang: Lang,
     transport: Transport,
@@ -298,7 +298,7 @@ fn feed_key(kind: Client, lang: Lang, transport: Transport, views: &[(String, St
     format!("{kind:?}/{lang:?}/{transport:?}/{views:?}")
 }
 
-fn cache_current(client: &crate::v2_client_routes::Client, key: String, current: &Current) {
+fn cache_current(client: &crate::client_routes::Client, key: String, current: &Current) {
     let mut cache = client.feeds.cache.lock().expect("feed cache poisoned");
     if cache.len() >= 64 && !cache.contains_key(&key) {
         cache.clear();
@@ -431,7 +431,7 @@ fn valid_key(key: &str) -> bool {
             || matches!(byte, b'_' | b'-' | b'.' | b':' | b'/' | b'#' | b'?' | b'=' | b'&' | b'%'))
 }
 
-fn remove_waiter(client: &crate::v2_client_routes::Client, device: &str, generation: u64) {
+fn remove_waiter(client: &crate::client_routes::Client, device: &str, generation: u64) {
     let mut waiters = client.feeds.waiters.lock().expect("feed waiters poisoned");
     if waiters
         .get(device)
@@ -444,14 +444,14 @@ fn remove_waiter(client: &crate::v2_client_routes::Client, device: &str, generat
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::{
+    use alondra_core::domain::{
         Actor, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
     };
     use std::{fs, path::PathBuf, sync::Arc};
 
     struct FeedFixture {
         home: PathBuf,
-        client: Arc<crate::v2_client_routes::Client>,
+        client: Arc<crate::client_routes::Client>,
     }
 
     impl FeedFixture {
@@ -459,7 +459,7 @@ mod tests {
             let home = std::env::temp_dir().join(format!("alondra-feed-{}", crate::auth::random_hex(16)));
             fs::create_dir(&home).unwrap();
             let domain = Arc::new(crate::domain_runtime::DomainRuntime::open(&home).unwrap());
-            let client = crate::v2_client_routes::Client::open(
+            let client = crate::client_routes::Client::open(
                 domain,
                 &home,
                 Arc::new(std::sync::Mutex::new(None)),
@@ -554,7 +554,7 @@ mod tests {
                             label: "Yes".into(),
                             description: None,
                             inputs: vec![],
-                        }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+                        }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
                     },
                 },
                 None,

@@ -1246,7 +1246,7 @@ fn help_lists_scheduled_tasks_the_disk_bar_and_says_node_and_fleet() {
 }
 
 fn held_plan_card() -> alondra_core::views::View {
-    use alondra_core::domain_v2::*;
+    use alondra_core::domain::*;
     let mut state = DomainState::new("e");
     let mut run = |actor: Actor, command: Command| {
         let envelope = CommandEnvelope { protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch.clone(),
@@ -1260,8 +1260,8 @@ fn held_plan_card() -> alondra_core::views::View {
         agent_id: Some("agent-a".into()), review_prs: false, dependencies: Default::default(), stack: None });
     run(Actor::System, Command::HoldHook { interaction_id: "hold-1".into(), task_id: "t".into(),
         agent_id: "agent-a".into(), hold: Hold::Plan, body: "# Ship the parser\n\n1. Split the lexer".into(),
-        options: Hold::Plan.options(), card: alondra_core::domain_v2::CardSpec::new(alondra_core::domain_v2::CardKind::Review, "Ship the parser")
-            .content(alondra_core::domain_v2::ContentKind::Plan, "1. Split the lexer") });
+        options: Hold::Plan.options(), card: alondra_core::domain::CardSpec::new(alondra_core::domain::CardKind::Review, "Ship the parser")
+            .content(alondra_core::domain::ContentKind::Plan, "1. Split the lexer") });
     let live = alondra_core::views::LiveSnapshot::default();
     alondra_core::views::build("card:hold-1", alondra_core::views::RenderContext {
         domain: &state, live: &live, client: alondra_core::views::Client::Tui, lang: alondra_core::views::Lang::En,

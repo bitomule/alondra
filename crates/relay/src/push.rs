@@ -2,7 +2,7 @@
 //! APNs sees a device token, routing metadata and ciphertext, never notification content.
 
 use crate::auth::PushRegistration;
-use alondra_e2e::EnvelopeV1;
+use alondra_e2e::Envelope;
 use anyhow::{Context, Result, bail};
 use base64::{
     Engine as _,
@@ -100,7 +100,7 @@ pub fn valid_collapse_id(value: &str) -> bool {
 }
 
 /// Exact payload submitted to APNs. The caller must enforce its serialized byte limit.
-pub fn payload(envelope: &EnvelopeV1, binding: &str) -> Value {
+pub fn payload(envelope: &Envelope, binding: &str) -> Value {
     json!({
         "aps": {"alert": {"title": "Alondra", "body": "Nueva actividad"}, "mutable-content": 1},
         "alondra": {"envelope": envelope, "push_binding": binding}
@@ -109,7 +109,7 @@ pub fn payload(envelope: &EnvelopeV1, binding: &str) -> Value {
 
 /// A background push carries only `content-available`: an alert, badge or sound would make
 /// APNs treat it as an alert.
-pub fn background_payload(envelope: &EnvelopeV1, binding: &str) -> Value {
+pub fn background_payload(envelope: &Envelope, binding: &str) -> Value {
     json!({
         "aps": {"content-available": 1},
         "alondra": {"envelope": envelope, "push_binding": binding}
@@ -123,7 +123,7 @@ pub fn badge_payload(badge: u32) -> Value {
     json!({"aps": {"badge": badge}})
 }
 
-pub fn payload_for(delivery: &Delivery, envelope: &EnvelopeV1, binding: &str) -> Value {
+pub fn payload_for(delivery: &Delivery, envelope: &Envelope, binding: &str) -> Value {
     match delivery.push_type {
         PushType::Alert => payload(envelope, binding),
         PushType::Background => background_payload(envelope, binding),
@@ -143,7 +143,7 @@ fn headers_for(delivery: &Delivery) -> [(&'static str, &'static str); 2] {
 
 /// APNs keeps only one push per app while the phone is offline. A badge push is delivered once
 /// or never, so it can never take the place of an alert still waiting there.
-fn expiration_for(delivery: &Delivery, envelope: &EnvelopeV1) -> String {
+fn expiration_for(delivery: &Delivery, envelope: &Envelope) -> String {
     match delivery.push_type {
         PushType::Badge => "0".into(),
         PushType::Alert | PushType::Background => (envelope.expires_at_ms / 1000).to_string(),
@@ -256,7 +256,7 @@ impl Apns {
     pub async fn send(
         &self,
         reg: &PushRegistration,
-        envelope: &EnvelopeV1,
+        envelope: &Envelope,
         delivery: &Delivery,
     ) -> Result<()> {
         let body = serde_json::to_vec(&payload_for(delivery, envelope, &reg.push_binding))?;
@@ -387,7 +387,7 @@ mod tests {
         let fixture: Value =
             serde_json::from_str(include_str!("../../../fixtures/push/encrypted.json")).unwrap();
         let alondra = &fixture["apns"]["alondra"];
-        let envelope: EnvelopeV1 = serde_json::from_value(alondra["envelope"].clone()).unwrap();
+        let envelope: Envelope = serde_json::from_value(alondra["envelope"].clone()).unwrap();
         assert_eq!(
             payload(&envelope, alondra["push_binding"].as_str().unwrap()),
             fixture["apns"],
@@ -400,7 +400,7 @@ mod tests {
         let fixture: Value =
             serde_json::from_str(include_str!("../../../fixtures/push/retract.json")).unwrap();
         let alondra = &fixture["apns"]["alondra"];
-        let envelope: EnvelopeV1 = serde_json::from_value(alondra["envelope"].clone()).unwrap();
+        let envelope: Envelope = serde_json::from_value(alondra["envelope"].clone()).unwrap();
         let delivery = Delivery { push_type: PushType::Background, ..Delivery::default() };
         assert_eq!(
             payload_for(&delivery, &envelope, alondra["push_binding"].as_str().unwrap()),
@@ -414,7 +414,7 @@ mod tests {
     fn a_badge_push_shows_only_the_count_and_is_never_stored_in_place_of_an_alert() {
         let fixture: Value =
             serde_json::from_str(include_str!("../../../fixtures/push/retract.json")).unwrap();
-        let envelope: EnvelopeV1 =
+        let envelope: Envelope =
             serde_json::from_value(fixture["apns"]["alondra"]["envelope"].clone()).unwrap();
         let delivery = Delivery { push_type: PushType::Badge, badge: Some(3), ..Delivery::default() };
         assert_eq!(payload_for(&delivery, &envelope, "binding"), json!({"aps": {"badge": 3}}));

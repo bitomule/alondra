@@ -9,7 +9,7 @@ use std::{
 };
 
 use alondra_core::home_lock::HomeLock;
-use alondra_e2e::{EnvelopeV1, sign_http_challenge};
+use alondra_e2e::{Envelope, sign_http_challenge};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{
     Engine as _,
@@ -77,7 +77,7 @@ struct Bootstrap {
 struct Candidate {
     device_id: String,
     signing_key: String,
-    envelope: EnvelopeV1,
+    envelope: Envelope,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -738,7 +738,7 @@ mod tests {
                 agreement_key:URL_SAFE_NO_PAD.encode(SecretKey::from_slice(&[agreement_byte;32]).unwrap().public_key().to_sec1_bytes()),
                 display_name:"My iPhone".into(),owner_sub:"owner".into(),session_id:"pair-test".into()};
             Candidate {device_id:plain.device_id.clone(),signing_key:key,
-                envelope:EnvelopeV1::seal_random(alondra_e2e::Context {route:"mac-test",sender:"phone-test",recipient:"mac-test",
+                envelope:Envelope::seal_random(alondra_e2e::Context {route:"mac-test",sender:"phone-test",recipient:"mac-test",
                     request_id:"pair-test",kind:"pairing",expires_at_ms:expires},
                     &serde_json::to_vec(&plain).unwrap(),signing,&agreement.public_key()).unwrap()}
         };

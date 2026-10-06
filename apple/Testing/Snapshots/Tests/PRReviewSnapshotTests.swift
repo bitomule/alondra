@@ -162,8 +162,8 @@ final class PRReviewSnapshotTests: XCTestCase {
     }
 
     private func spanishImage(_ style: UIUserInterfaceStyle) -> Snapshotting<AnyView, UIImage> {
-        .image(drawHierarchyInKeyWindow: true, perceptualPrecision: 0.98,
-               layout: .fixed(width: 393, height: 852), traits: .init(userInterfaceStyle: style))
+        Snapshotting<AnyView, UIImage>.image(drawHierarchyInKeyWindow: true, perceptualPrecision: 0.98,
+               layout: .fixed(width: 393, height: 852), traits: .init(userInterfaceStyle: style)).asRecorded
     }
 
     func test_prReview_noLongerAvailable() {

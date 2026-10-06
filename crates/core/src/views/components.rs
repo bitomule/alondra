@@ -204,7 +204,7 @@ pub enum Item {
     Actions(ActionBar),
 }
 /// What a card asks of the user; the stable string clients draw the label, colour and icon from.
-pub use crate::domain_v2::CardKind;
+pub use crate::domain::CardKind;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Card {

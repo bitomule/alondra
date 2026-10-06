@@ -1,6 +1,6 @@
 //! The terminal consumes a destination invitation; only a human on that Mac approves it.
 use crate::service_client::{self as service, Profile};
-use alondra_e2e::{Context as EnvelopeContext, EnvelopeV1};
+use alondra_e2e::{Context as EnvelopeContext, Envelope};
 use anyhow::{Context, Result, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use p256::{
@@ -144,7 +144,7 @@ pub fn pair(mac: &str, owner: &str) -> Result<Profile> {
     let plaintext = serde_json::to_vec(
         &json!({"device_id":profile.device_id,"signing_key":signing_public,"agreement_key":agreement_public,"display_name":"Alondra terminal","owner_sub":owner,"session_id":invite.session_id}),
     )?;
-    let envelope = EnvelopeV1::seal_random(
+    let envelope = Envelope::seal_random(
         EnvelopeContext {
             route: mac,
             sender: &profile.device_id,

@@ -1,7 +1,7 @@
 //! What GitHub says about each open pull request that the domain does not keep: its
 //! title, checks and whether it merges cleanly. Refreshed in the background and read from
 //! memory, so a client's poll never waits on `gh`.
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, Command, CommandEnvelope, DeliveryTarget, DomainError, DomainState, Instruction, InteractionPayload,
     PrState, PullRequest, PROTOCOL_VERSION,
 };
@@ -207,7 +207,7 @@ pub(crate) fn hand_back_conflicts(domain: &crate::domain_runtime::DomainRuntime,
     }
 }
 
-fn conflicts_sent(state: &DomainState, pr: &alondra_core::domain_v2::PullRequest) -> bool {
+fn conflicts_sent(state: &DomainState, pr: &alondra_core::domain::PullRequest) -> bool {
     state.interactions.values().any(|interaction| matches!(&interaction.payload,
         InteractionPayload::Delivery { targets, feedback, .. }
             if feedback.iter().any(|f| f.instruction == Instruction::Conflicts)
@@ -237,7 +237,7 @@ fn parse(id: &str, number: u64, view: &Value) -> Details {
 #[cfg(test)]
 mod tests {
     use super::{Details, PrDetails, hand_back_conflicts, parse};
-    use alondra_core::domain_v2::{
+    use alondra_core::domain::{
         Actor, Command, CommandEnvelope, DeliveryTarget, Instruction, InteractionPayload, MergeMethod, PrState,
     };
     use serde_json::json;
@@ -256,7 +256,7 @@ mod tests {
     fn present(domain: &crate::domain_runtime::DomainRuntime, id: &str, head: &str) {
         run(domain, Actor::Agent { agent_id: "agent".into() }, id, Command::PresentResult { attachments: vec![],
             task_id: "task".into(), interaction_id: id.into(), body: "Ready".into(), is_final: true,
-            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }], card: alondra_core::domain_v2::CardSpec::delivery("Review the result", &[], true) });
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: head.into() }], card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true) });
     }
 
     fn conflicts_told(domain: &crate::domain_runtime::DomainRuntime) -> Vec<(String, String)> {

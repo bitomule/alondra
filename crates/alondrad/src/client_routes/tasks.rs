@@ -1,7 +1,7 @@
 //! What a task's page needs beyond the projection: how it got where it is, and why the user
 //! cancelled it.
 use super::{Client, Reply, storage};
-use alondra_core::domain_v2::{DomainError, TaskId, TaskState};
+use alondra_core::domain::{DomainError, TaskId, TaskState};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;

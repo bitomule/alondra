@@ -723,7 +723,7 @@ mod tests {
     }
 
     #[test]
-    fn the_cutover_starts_v2_empty_and_archives_the_legacy_data_without_importing_it() {
+    fn the_cutover_starts_the_domain_store_empty_and_archives_the_legacy_data_without_importing_it() {
         let (root, home) = legacy_home("empty");
         let before = legacy_digests(&home);
         assert!(refuse_legacy_home(&home).is_err());
@@ -814,7 +814,7 @@ mod tests {
     }
 
     #[test]
-    fn rollback_restores_the_legacy_home_and_sets_the_empty_v2_store_aside() {
+    fn rollback_restores_the_legacy_home_and_sets_the_empty_domain_store_aside() {
         let (root, home) = legacy_home("rollback");
         let before = legacy_digests(&home);
         let backup = root.join("backup");

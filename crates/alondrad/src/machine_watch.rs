@@ -237,7 +237,7 @@ fn waiters(domain: &DomainRuntime) -> Vec<Waiter> {
             continue;
         }
         let name = state.as_ref().and_then(|state| {
-            let agent = alondra_core::domain_v2::AgentId(session.clone());
+            let agent = alondra_core::domain::AgentId(session.clone());
             state.tasks.values().find(|task| task.agent_id.as_ref() == Some(&agent) && !task.archived).map(|task| task.title.clone())
                 .or_else(|| state.agents.get(&agent).map(|agent| agent.name.clone()))
         }).unwrap_or_else(|| session.chars().take(8).collect());
@@ -249,7 +249,7 @@ fn waiters(domain: &DomainRuntime) -> Vec<Waiter> {
 
 /// The answer "I've fixed it" on the open card, taken once.
 fn fixed(domain: &DomainRuntime, incident: Option<&Incident>) -> bool {
-    use alondra_core::domain_v2::{InteractionId, InteractionPayload};
+    use alondra_core::domain::{InteractionId, InteractionPayload};
     let Some(card) = incident.and_then(|incident| incident.card.as_ref()) else { return false };
     let Ok(state) = domain.state() else { return false };
     matches!(state.interactions.get(&InteractionId(card.clone())).map(|card| &card.payload),
@@ -275,14 +275,14 @@ async fn act(domain: &DomainRuntime, alerts: &impl Alerts, sample: impl Fn() -> 
         match action {
             Action::Raise { id, card } => {
                 let (need, why) = card.text(Lang::En);
-                let option = alondra_core::domain_v2::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] };
+                let option = alondra_core::domain::QuestionOption { id: MACHINE_FIXED_OPTION.into(), label: MACHINE_FIXED_LABEL.into(), description: None, inputs: vec![] };
                 if let Err(error) = domain.raise_worded_problem(&id, need, why, card.to_body(), vec![option]) {
                     log!("could not put the machine's card in front of the user, pushing it instead: {error:?}");
                     alerts.tell(push_text(card), false).await;
                 }
             }
             Action::Withdraw(id) => {
-                let _ = domain.withdraw_problem(&alondra_core::domain_v2::InteractionId(id));
+                let _ = domain.withdraw_problem(&alondra_core::domain::InteractionId(id));
             }
             Action::Push(card) => alerts.tell(push_text(card), false).await,
             Action::TellOrchestrator(text) => {
@@ -342,7 +342,7 @@ async fn watch(domain: std::sync::Arc<DomainRuntime>, sample: impl Fn() -> Optio
 mod tests {
     use super::*;
     use crate::node_push::testing::Node;
-    use alondra_core::domain_v2::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
+    use alondra_core::domain::{Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION};
     use std::sync::Arc;
 
     const GB: u64 = 1_000_000_000;
@@ -480,7 +480,7 @@ mod tests {
         }
     }
 
-    fn open_machine_cards(domain: &DomainRuntime) -> Vec<alondra_core::domain_v2::Interaction> {
+    fn open_machine_cards(domain: &DomainRuntime) -> Vec<alondra_core::domain::Interaction> {
         let state = domain.state().unwrap();
         state.interactions.values().filter(|card| card.id.0.starts_with(MACHINE_PREFIX) && !card.withdrawn
             && matches!(card.payload, InteractionPayload::Question { answer: None, .. })).cloned().collect()
@@ -545,7 +545,7 @@ mod tests {
         domain.live.machine_watch.set_incident(Some(incident));
         // The card's id is taken already, so the domain refuses it as a full disk would.
         domain.raise_worded_problem("machine-0-2", "taken".into(), "taken".into(), "{}".into(), vec![
-            alondra_core::domain_v2::QuestionOption { id: "x".into(), label: "x".into(), description: None, inputs: vec![] },
+            alondra_core::domain::QuestionOption { id: "x".into(), label: "x".into(), description: None, inputs: vec![] },
         ]).unwrap();
         let watcher = tokio::spawn(watch(domain.clone(), || Some(machine(0, 50)), told.clone(), Duration::from_millis(20)));
         until("the push", || !told.0.lock().unwrap().is_empty()).await;
