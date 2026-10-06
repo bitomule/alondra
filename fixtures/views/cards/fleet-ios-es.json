@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v7d5548c9d04dd2c0",
+  "version": "v1df938c515675882",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
@@ -161,7 +161,7 @@
           "subtitle": "queued",
           "badges": [
             {
-              "text": "Inactivo",
+              "text": "Esperando a Restore the native review experience",
               "tone": "neutral"
             }
           ],
@@ -275,7 +275,7 @@
           "subtitle": "alpha-waiting",
           "badges": [
             {
-              "text": "Inactivo",
+              "text": "En cola",
               "tone": "neutral"
             }
           ],

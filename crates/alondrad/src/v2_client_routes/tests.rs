@@ -1133,7 +1133,7 @@ async fn a_stopped_node_with_an_open_task_stays_in_fleet_under_its_project_with_
     let section = fleet["sections"].as_array().unwrap().iter()
         .find(|section| section["items"].as_array().unwrap().iter().any(|item| item["id"] == "stopped")).unwrap();
     assert_eq!(section["id"], "project:alondra");
-    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("Inactivo".into(), "neutral".into()));
+    assert_eq!(badges(node_row(&fleet, "stopped"))[0], ("En cola".into(), "neutral".into()));
 }
 
 #[tokio::test]

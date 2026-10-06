@@ -102,10 +102,27 @@ pub(super) fn node_state(agent: &AgentId, context: &RenderContext<'_>) -> super:
         (t!(lang, "Delivering results", "Entrega resultado"), Tone::Success)
     } else if !tasks.is_empty() && tasks.iter().all(|state| matches!(state, TaskState::Done | TaskState::Closing | TaskState::Cancelled)) {
         (t!(lang, "Done", "Terminado"), Tone::Success)
+    } else if let Some(title) = awaited_title(agent, context) {
+        return super::Label { text: tf!(lang, "Waiting for {title}", "Esperando a {title}", title = title), tone: Tone::Neutral };
+    } else if tasks.iter().any(|state| matches!(state, TaskState::NotStarted | TaskState::WaitingDependency)) {
+        (t!(lang, "Queued", "En cola"), Tone::Neutral)
     } else {
         (t!(lang, "Idle", "Inactivo"), Tone::Neutral)
     };
     super::Label { text: text.into(), tone }
+}
+
+/// The title, clipped, of the task a node's waiting task is held behind.
+fn awaited_title(agent: &AgentId, context: &RenderContext<'_>) -> Option<String> {
+    let task = common::current_task(context.domain, agent).filter(|task| task.state == TaskState::WaitingDependency)?;
+    let upstream = task.dependencies.iter().chain(task.stack.iter().map(|stack| &stack.upstream_task))
+        .filter_map(|id| context.domain.tasks.get(id))
+        .find(|dependency| !dependency.state.terminal())?;
+    let mut title: String = upstream.title.chars().take(40).collect();
+    if upstream.title.chars().count() > 40 {
+        title.push('…');
+    }
+    Some(title)
 }
 
 fn tokens(count: u64) -> String {

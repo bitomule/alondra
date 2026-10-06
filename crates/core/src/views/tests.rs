@@ -3672,6 +3672,7 @@ fn fleet_fixture() -> (DomainState, LiveSnapshot) {
         task.revision = state.revision;
         state.tasks.insert(task.id.clone(), task);
     }
+    state.tasks.get_mut(&"t-queued".into()).unwrap().dependencies = ["t-651c38484cd2f34e74d5107ba05f7f15".into()].into();
     for (agent, project, working, at) in [
         ("zeta-worker", Some("Zeta"), true, "2026-09-30T09:57:00Z"),
         ("alpha-waiting", Some("Alpha"), false, "2026-09-30T09:20:00Z"),
@@ -3756,5 +3757,28 @@ fn fleet_views_match_goldens() {
         };
         let actual = render(&state, &live, client, lang, "fleet", "2026-09-30T10:00:00Z");
         assert_golden(filename, &actual, expected);
+    }
+}
+
+#[test]
+fn a_node_with_an_open_task_never_reads_idle_and_idle_is_only_for_the_bottom_section() {
+    let (state, live) = fleet_fixture();
+    let label = |lang, id: &str| {
+        let view = render(&state, &live, Client::Ios, lang, "fleet", "");
+        view.sections.iter().flat_map(|section| &section.items).find_map(|item| {
+            if let Item::Row(row) = item && row.id == id { Some(row.badges[0].text.clone()) } else { None }
+        }).unwrap()
+    };
+    assert_eq!(label(Lang::En, "queued"), "Waiting for Restore the native review experience");
+    assert_eq!(label(Lang::Es, "queued"), "Esperando a Restore the native review experience");
+    assert_eq!(label(Lang::En, "alpha-waiting"), "Queued");
+    assert_eq!(label(Lang::Es, "alpha-waiting"), "En cola");
+    let view = render(&state, &live, Client::Ios, Lang::En, "fleet", "");
+    for section in view.sections.iter().filter(|section| section.id.starts_with("project:")) {
+        for item in &section.items {
+            if let Item::Row(row) = item {
+                assert_ne!(row.badges[0].text, "Idle", "{}", row.id);
+            }
+        }
     }
 }

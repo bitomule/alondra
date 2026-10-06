@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "mac",
-  "version": "v3ad6388d51371bdf",
+  "version": "v8d806c8e9b6c5921",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -147,7 +147,7 @@
           "subtitle": "queued",
           "badges": [
             {
-              "text": "Idle",
+              "text": "Waiting for Restore the native review experience",
               "tone": "neutral"
             }
           ],
@@ -245,7 +245,7 @@
           "subtitle": "alpha-waiting",
           "badges": [
             {
-              "text": "Idle",
+              "text": "Queued",
               "tone": "neutral"
             }
           ],

@@ -4,7 +4,7 @@
   "view": "fleet",
   "key": "fleet",
   "client": "tui",
-  "version": "v69fcad250b3b477a",
+  "version": "v15feb6ba95af1dc2",
   "cursor": "cursor-1",
   "title": "Fleet",
   "status": {
@@ -144,7 +144,7 @@
           "subtitle": "queued",
           "badges": [
             {
-              "text": "Idle",
+              "text": "Waiting for Restore the native review experience",
               "tone": "neutral"
             }
           ],
@@ -236,7 +236,7 @@
           "subtitle": "alpha-waiting",
           "badges": [
             {
-              "text": "Idle",
+              "text": "Queued",
               "tone": "neutral"
             }
           ],
