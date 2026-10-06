@@ -232,12 +232,12 @@
                   {
                     "id": "review",
                     "label": "Review each one",
-                    "description": "Each PR the node opens is a card for you; the node waits for your merge"
+                    "description": "Each PR the node opens is a card for you; Alondra merges it when you accept it"
                   },
                   {
                     "id": "auto_merge",
                     "label": "Auto-merge",
-                    "description": "The node merges its own PR once its checks pass"
+                    "description": "Alondra merges the PR once its checks pass"
                   }
                 ]
               },

@@ -232,7 +232,7 @@
                   {
                     "id": "review",
                     "label": "Revisar cada una",
-                    "description": "Cada PR que abre el nodo es una tarjeta para ti; el nodo espera tu fusión"
+                    "description": "Cada PR que abre el nodo es una tarjeta para ti; Alondra la fusiona cuando la aceptas"
                   },
                   {
                     "id": "auto_merge",

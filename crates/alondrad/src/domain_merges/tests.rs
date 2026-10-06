@@ -1,0 +1,448 @@
+use super::*;
+use alondra_core::domain::*;
+use std::collections::BTreeSet;
+use std::os::unix::fs::PermissionsExt;
+
+const HEAD: &str = "0123456789abcdef0123456789abcdef01234567";
+
+struct Home(std::path::PathBuf);
+impl Drop for Home {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+fn command(domain: &DomainRuntime, actor: Actor, id: &str, command: Command) {
+    let state = domain.state().unwrap();
+    domain.execute(&actor, &CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: id.into(),
+        expected_revision: state.revision, command,
+    }, None, || Ok(())).unwrap();
+}
+
+fn user() -> Actor {
+    Actor::User { user_id: "u".into() }
+}
+
+fn targets() -> Vec<DeliveryTarget> {
+    vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: HEAD.into() }]
+}
+
+fn now() -> Merger {
+    Merger::with(Duration::ZERO, Duration::ZERO, Duration::from_secs(3600))
+}
+
+/// A node's Task with its PR #7 presented as the final result, which GitHub reports open with
+/// its checks passed.
+fn presented(tag: &str, auto_merge: bool) -> (Home, Arc<DomainRuntime>, FakeGithub) {
+    let home = Home(std::env::temp_dir().join(format!("alondra-merges-{tag}-{}", crate::auth::random_hex(8))));
+    std::fs::create_dir(&home.0).unwrap();
+    let domain = Arc::new(DomainRuntime::open(&home.0).unwrap());
+    command(&domain, Actor::System, "agent", Command::RegisterAgent { agent_id: "a".into(), name: "A".into() });
+    command(&domain, user(), "request", Command::CreateRequest { request_id: "r".into(), body: "Work".into(), auto_merge });
+    command(&domain, user(), "task", Command::CreateTask {
+        task_id: "t".into(), request_id: "r".into(), title: "Task".into(), agent_id: Some("a".into()),
+        review_prs: true, dependencies: BTreeSet::new(), stack: None,
+    });
+    command(&domain, Actor::Agent { agent_id: "a".into() }, "pr", Command::RegisterPr {
+        task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "owner/repo".into(),
+        number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash, MergeMethod::Merge],
+    });
+    command(&domain, Actor::Agent { agent_id: "a".into() }, "present", Command::PresentResult {
+        attachments: vec![], task_id: "t".into(), interaction_id: "d".into(), body: "Ready".into(),
+        targets: targets(), is_final: true, card: CardSpec::delivery("Review the result", &[], true),
+    });
+    let github = FakeGithub::new();
+    github.open(7, HEAD, Checks::Passed);
+    (home, domain, github)
+}
+
+fn accept(domain: &DomainRuntime) {
+    command(domain, user(), "accept", Command::AcceptDelivery { presentation_id: "d".into(), targets: targets() });
+}
+
+fn told(domain: &DomainRuntime) -> Vec<String> {
+    domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
+        .filter(|message| message.agent_id.as_deref() == Some("a")).map(|message| message.message).collect()
+}
+
+fn task(domain: &DomainRuntime) -> TaskState {
+    domain.state().unwrap().tasks[&TaskId::from("t")].state
+}
+
+fn feedback(domain: &DomainRuntime) -> Vec<String> {
+    match &domain.state().unwrap().interactions[&InteractionId::from("d")].payload {
+        InteractionPayload::Delivery { feedback, .. } => feedback.iter().map(|f| f.body.clone()).collect(),
+        _ => vec![],
+    }
+}
+
+fn accepted(domain: &DomainRuntime) -> bool {
+    matches!(&domain.state().unwrap().interactions[&InteractionId::from("d")].payload,
+        InteractionPayload::Delivery { acceptance: Some(a), .. } if a.valid)
+}
+
+fn problems(domain: &DomainRuntime) -> Vec<Interaction> {
+    domain.state().unwrap().interactions.into_values().filter(|card| card.card.kind == CardKind::Problem).collect()
+}
+
+#[tokio::test]
+async fn an_accepted_delivery_is_merged_by_alondra_and_the_node_is_told() {
+    let (_home, domain, github) = presented("accept", false);
+    let mut merger = now();
+    assert!(!merger.merge_due(&domain, &github).await.unwrap());
+    assert!(github.merged.lock().unwrap().is_empty(), "nothing is merged before the user accepts");
+    accept(&domain);
+    assert_eq!(task(&domain), TaskState::Closing);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
+    let state = domain.state().unwrap();
+    assert_eq!(state.pull_requests[&PrId::from("pr")].merged_head.as_deref(), Some(HEAD));
+    assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
+    assert_eq!(task(&domain), TaskState::Done);
+    let told = told(&domain);
+    assert!(told[0].contains("Alondra is merging its pull request"), "{told:?}");
+    assert_eq!(told.last().unwrap(), &merged_notice(7, 0));
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(github.merged.lock().unwrap().len(), 1, "a merged PR is not merged again");
+}
+
+#[tokio::test]
+async fn the_users_merge_button_is_merged_with_the_method_they_chose() {
+    let (_home, domain, github) = presented("authorize", false);
+    command(&domain, user(), "authorize", Command::AuthorizeMerge { authorization_id: "auth".into(),
+        presentation_id: "d".into(), pr_id: "pr".into(), expected_head: HEAD.into(), method: MergeMethod::Merge });
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Merge)]);
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn auto_merge_waits_for_the_checks_then_claims_durably_and_merges() {
+    let (_home, domain, github) = presented("auto", true);
+    github.open(7, HEAD, Checks::Pending);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap(), "pending checks are looked at again");
+    assert!(github.merged.lock().unwrap().is_empty());
+    assert!(domain.state().unwrap().merge_authorizations.is_empty(), "nothing claimed while checks run");
+    assert_eq!(task(&domain), TaskState::InReview);
+    github.open(7, HEAD, Checks::Passed);
+    assert!(!merger.merge_due(&domain, &github).await.unwrap());
+    assert_eq!(*github.merged.lock().unwrap(), vec![(7, HEAD.to_owned(), MergeMethod::Squash)]);
+    let state = domain.state().unwrap();
+    let authorization = state.merge_authorizations.values().next().unwrap();
+    assert_eq!((authorization.user_id.as_str(), authorization.attempt), (Feedback::ALONDRA, MergeAttemptState::Confirmed));
+    assert!(state.pull_requests[&PrId::from("pr")].review.as_ref().unwrap().decisions.is_empty(), "no review is made up");
+    assert_eq!(task(&domain), TaskState::Done);
+    assert_eq!(told(&domain), vec![merged_notice(7, 0)]);
+}
+
+#[tokio::test]
+async fn an_auto_merge_goes_through_the_claims_checks() {
+    let (_home, domain, github) = presented("auto-base", true);
+    github.statuses.lock().unwrap().insert(7, Ok(Status { state: PrState::Open, head: HEAD.into(), base: "develop".into(), checks: Checks::Passed }));
+    assert!(now().merge_due(&domain, &github).await.unwrap());
+    assert!(github.merged.lock().unwrap().is_empty(), "GitHub's base differs from the registered one: the claim refuses");
+    assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Unclaimed);
+}
+
+#[tokio::test]
+async fn feedback_given_while_alondra_reads_github_stops_the_merge() {
+    let (_home, domain, github) = presented("raced", false);
+    accept(&domain);
+    let racing = domain.clone();
+    *github.on_read.lock().unwrap() = Some(Box::new(move || command(&racing, user(), "changes", Command::SubmitFeedback {
+        attachments: vec![], presentation_id: "d".into(), targets: targets(), body: "One more fix".into(), instruction: Instruction::Changes,
+    })));
+    now().merge_due(&domain, &github).await.unwrap();
+    assert!(github.merged.lock().unwrap().is_empty());
+    assert_eq!(task(&domain), TaskState::Running);
+}
+
+#[tokio::test]
+async fn a_cancel_after_alondra_claimed_the_merge_stops_it() {
+    let (_home, domain, github) = presented("cancelled", false);
+    github.merges.lock().unwrap().insert(7, Err("Required status check \"build\" is expected.".into()));
+    accept(&domain);
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Claimed);
+    github.merges.lock().unwrap().remove(&7);
+    let racing = domain.clone();
+    *github.on_read.lock().unwrap() = Some(Box::new(move || command(&racing, user(), "cancel", Command::CancelTask { task_id: "t".into() })));
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(github.merged.lock().unwrap().is_empty(), "the delivery is read again right before merging");
+}
+
+#[tokio::test]
+async fn no_checks_at_all_wait_for_a_grace_period_before_they_count_as_passed() {
+    let (_home, domain, github) = presented("no-checks", true);
+    github.open(7, HEAD, Checks::None);
+    let mut patient = Merger::with(Duration::from_secs(3600), Duration::ZERO, Duration::from_secs(3600));
+    assert!(patient.merge_due(&domain, &github).await.unwrap());
+    assert!(github.merged.lock().unwrap().is_empty());
+    now().merge_due(&domain, &github).await.unwrap();
+    assert_eq!(github.merged.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn github_waiting_for_required_checks_keeps_the_acceptance() {
+    let (_home, domain, github) = presented("required", false);
+    github.merges.lock().unwrap().insert(7, Err("Pull request #7 is not mergeable: Required status check \"build\" is expected.".into()));
+    accept(&domain);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert!(feedback(&domain).is_empty() && accepted(&domain));
+    assert_eq!(task(&domain), TaskState::Closing);
+    github.merges.lock().unwrap().remove(&7);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Done, "Alondra's own claim carries on after a restart-free wait");
+}
+
+#[tokio::test]
+async fn a_merge_queue_is_waited_on_and_only_githubs_merged_counts() {
+    let (_home, domain, github) = presented("queue", false);
+    github.queue.lock().unwrap().insert(7, true);
+    accept(&domain);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert_eq!(github.merged.lock().unwrap().len(), 1);
+    assert_eq!(domain.state().unwrap().pull_requests[&PrId::from("pr")].state, PrState::Open, "queued is not merged");
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert_eq!(github.merged.lock().unwrap().len(), 1, "a queued PR is not merged again");
+    github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().state = PrState::Merged;
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn a_pr_the_merge_queue_drops_goes_back_to_the_node() {
+    let (_home, domain, github) = presented("dropped", false);
+    github.queue.lock().unwrap().insert(7, true);
+    accept(&domain);
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    github.queue.lock().unwrap().insert(7, false);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Running);
+    assert!(feedback(&domain)[0].contains("GitHub's merge queue removed it"), "{:?}", feedback(&domain));
+}
+
+#[tokio::test]
+async fn a_pr_the_queue_merges_while_alondra_checks_it_is_recorded_not_handed_back() {
+    let (_home, domain, github) = presented("queue-race", false);
+    github.queue.lock().unwrap().insert(7, true);
+    accept(&domain);
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    github.merged_by_queue.lock().unwrap().insert(7);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(feedback(&domain).is_empty(), "{:?}", feedback(&domain));
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn a_merge_refused_for_access_raises_one_card_while_reads_work_until_a_merge_succeeds() {
+    let (_home, domain, github) = presented("no-access", false);
+    github.merges.lock().unwrap().insert(7, Err("GraphQL: must have admin rights to Repository. (mergePullRequest)".into()));
+    accept(&domain);
+    let mut merger = now();
+    for _ in 0..2 {
+        merger.merge_due(&domain, &github).await.unwrap();
+    }
+    assert!(problems(&domain).is_empty());
+    merger.merge_due(&domain, &github).await.unwrap();
+    merger.merge_due(&domain, &github).await.unwrap();
+    let raised = problems(&domain);
+    assert_eq!(raised.len(), 1, "the successful reads in between do not clear it");
+    assert!(raised[0].card.need.starts_with("Alondra can't merge PR #7: GraphQL: must have admin rights"), "{}", raised[0].card.need);
+    assert!(!raised[0].withdrawn);
+    assert_eq!(task(&domain), TaskState::Closing, "not handed back: only the user can grant access");
+    github.merges.lock().unwrap().remove(&7);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(problems(&domain).iter().all(|card| card.withdrawn));
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn cards_and_state_go_once_the_pr_is_no_longer_due() {
+    let (_home, domain, github) = presented("leaves", true);
+    github.open(7, HEAD, Checks::ActionRequired(vec!["deploy".into()]));
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(problems(&domain).iter().filter(|card| !card.withdrawn).count(), 1);
+    command(&domain, user(), "cancel", Command::CancelTask { task_id: "t".into() });
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(problems(&domain).iter().all(|card| card.withdrawn), "a cancelled task keeps no card");
+    assert_eq!(merger.tracked(), 0);
+}
+
+#[tokio::test]
+async fn failing_checks_go_back_once_and_cancelled_or_skipped_ones_do_not() {
+    let (_home, domain, github) = presented("auto-red", true);
+    github.open(7, HEAD, Checks::Failed(vec!["lint".into()]));
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(github.merged.lock().unwrap().is_empty());
+    assert_eq!(task(&domain), TaskState::Running);
+    let feedback = feedback(&domain);
+    assert_eq!(feedback.len(), 1, "{feedback:?}");
+    assert_eq!(merge_failure(&feedback[0]), Some((7, "its checks failed (lint)")));
+    assert_eq!(told(&domain), feedback, "the node gets the reason as it is");
+}
+
+#[test]
+fn only_failed_checks_fail_and_action_required_asks_the_user() {
+    let checks = |list: serde_json::Value| rollup(&serde_json::json!({"statusCheckRollup": list}));
+    let run = |conclusion: &str| serde_json::json!({"__typename": "CheckRun", "name": conclusion, "status": "COMPLETED", "conclusion": conclusion});
+    assert_eq!(checks(serde_json::json!([])), Checks::None);
+    for passing in ["SUCCESS", "NEUTRAL", "SKIPPED", "CANCELLED", "STALE"] {
+        assert_eq!(checks(serde_json::json!([run(passing)])), Checks::Passed, "{passing}");
+    }
+    for failing in ["FAILURE", "TIMED_OUT", "STARTUP_FAILURE"] {
+        assert_eq!(checks(serde_json::json!([run(failing)])), Checks::Failed(vec![failing.into()]), "{failing}");
+    }
+    assert_eq!(checks(serde_json::json!([run("ACTION_REQUIRED")])), Checks::ActionRequired(vec!["ACTION_REQUIRED".into()]));
+    assert_eq!(checks(serde_json::json!([{"name": "ui", "status": "IN_PROGRESS"}, run("SUCCESS")])), Checks::Pending);
+    assert_eq!(checks(serde_json::json!([{"context": "ci/legacy", "state": "PENDING"}])), Checks::Pending);
+    assert_eq!(checks(serde_json::json!([{"context": "ci/legacy", "state": "ERROR"}])), Checks::Failed(vec!["ci/legacy".into()]));
+}
+
+#[tokio::test]
+async fn checks_that_need_someone_on_github_raise_one_card_and_wait() {
+    let (_home, domain, github) = presented("action", true);
+    github.open(7, HEAD, Checks::ActionRequired(vec!["deploy".into()]));
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    let raised = problems(&domain);
+    assert_eq!(raised.len(), 1);
+    assert_eq!(raised[0].card.need, "Act on the checks of PR #7 on GitHub");
+    assert_eq!(task(&domain), TaskState::InReview, "not handed back");
+    github.open(7, HEAD, Checks::Passed);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(problems(&domain).iter().all(|card| card.withdrawn));
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn a_merge_github_refuses_hands_the_task_back_with_the_reason() {
+    let (_home, domain, github) = presented("refused", false);
+    github.merges.lock().unwrap().insert(7, Err("Pull request owner/repo#7 is not mergeable: the merge commit cannot be cleanly created".into()));
+    accept(&domain);
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Running, "the node fixes it");
+    assert_eq!(domain.state().unwrap().merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Failed);
+    let feedback = feedback(&domain);
+    assert!(feedback[0].contains("the merge commit cannot be cleanly created") && feedback[0].contains("present the result again"),
+        "{feedback:?}");
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(self::feedback(&domain).len(), 1, "a handed back delivery is not retried");
+}
+
+#[tokio::test]
+async fn a_pr_github_says_is_already_merged_is_recorded_not_handed_back() {
+    let (_home, domain, github) = presented("already", false);
+    github.merges.lock().unwrap().insert(7, Err("Pull request owner/repo#7 was already merged".into()));
+    accept(&domain);
+    let mut merger = now();
+    merger.merge_due(&domain, &github).await.unwrap();
+    github.statuses.lock().unwrap().get_mut(&7).unwrap().as_mut().unwrap().state = PrState::Merged;
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(feedback(&domain).is_empty());
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn github_not_answering_is_retried_before_the_task_goes_back() {
+    let (_home, domain, github) = presented("transient", false);
+    github.merges.lock().unwrap().insert(7, Err("error connecting to api.github.com".into()));
+    accept(&domain);
+    let mut merger = now();
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert!(merger.merge_due(&domain, &github).await.unwrap());
+    assert_eq!(task(&domain), TaskState::Closing, "still Alondra's to merge");
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert_eq!(task(&domain), TaskState::Running);
+}
+
+#[tokio::test]
+async fn gh_that_cannot_work_raises_one_card_until_it_works_again() {
+    let (_home, domain, github) = presented("logged-out", false);
+    accept(&domain);
+    github.statuses.lock().unwrap().insert(7, Err("To get started with GitHub CLI, please run:  gh auth login".into()));
+    let mut merger = now();
+    for _ in 0..2 {
+        merger.merge_due(&domain, &github).await.unwrap();
+    }
+    assert!(problems(&domain).is_empty());
+    for _ in 0..3 {
+        merger.merge_due(&domain, &github).await.unwrap();
+    }
+    let raised = problems(&domain);
+    assert_eq!(raised.len(), 1, "one card however long it fails");
+    assert!(raised[0].card.need.starts_with("Alondra can't merge PR #7: To get started"), "{}", raised[0].card.need);
+    assert_eq!(raised[0].scope, Scope::Task { task_id: "t".into() });
+    assert_eq!(task(&domain), TaskState::Closing, "the acceptance stands");
+    github.open(7, HEAD, Checks::Passed);
+    merger.merge_due(&domain, &github).await.unwrap();
+    assert!(problems(&domain).iter().all(|card| card.withdrawn));
+    assert_eq!(task(&domain), TaskState::Done);
+}
+
+#[tokio::test]
+async fn a_waiting_pr_is_read_from_github_at_most_once_per_poll() {
+    let (_home, domain, github) = presented("throttle", true);
+    github.open(7, HEAD, Checks::Pending);
+    let mut merger = Merger::with(Duration::ZERO, Duration::from_secs(3600), Duration::from_secs(3600));
+    for _ in 0..5 {
+        merger.merge_due(&domain, &github).await.unwrap();
+    }
+    assert_eq!(github.reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn a_failing_loop_backs_off_up_to_five_minutes() {
+    let mut backoff = FIRST_BACKOFF;
+    let mut seen = vec![];
+    for _ in 0..10 {
+        seen.push(backoff.as_secs());
+        backoff = next_backoff(backoff);
+    }
+    assert_eq!(seen, [5, 10, 20, 40, 80, 160, 300, 300, 300, 300]);
+}
+
+#[tokio::test]
+async fn the_merge_loop_survives_a_storage_failure() {
+    let (_home, domain, github) = presented("storage", false);
+    let worker = tokio::spawn(run(domain.clone(), Arc::new(github)));
+    domain.store.lock().unwrap().conn_for_test().execute_batch("DROP TABLE domain_meta").ok();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!worker.is_finished(), "a failed read is logged and retried, never the end of merging");
+    worker.abort();
+}
+
+#[tokio::test]
+async fn gh_merges_with_the_method_only_at_the_presented_head_and_reads_status_and_queue() {
+    let home = Home(std::env::temp_dir().join(format!("alondra-merges-gh-{}", crate::auth::random_hex(8))));
+    std::fs::create_dir(&home.0).unwrap();
+    let program = home.0.join("gh");
+    let log = home.0.join("calls");
+    std::fs::write(&program, format!("#!/bin/sh\nprintf '%s\\n' \"$*\" >> {}\ncase \"$*\" in *statusCheckRollup*) printf '%s' '{{\"state\":\"OPEN\",\"headRefOid\":\"{HEAD}\",\"baseRefName\":\"main\",\"statusCheckRollup\":[{{\"name\":\"build\",\"status\":\"COMPLETED\",\"conclusion\":\"SUCCESS\"}},{{\"name\":\"lint\",\"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\"}}]}}';; *graphql*) echo true;; esac\n", log.display())).unwrap();
+    std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let gh = GhCli::at(program);
+    let pr = PullRequest { id: "pr".into(), task_id: "t".into(), host: "github".into(), repository: "owner/repo".into(),
+        number: 7, head: HEAD.into(), base: "main".into(), state: PrState::Open, merged_head: None,
+        allowed_methods: vec![MergeMethod::Squash], review: None };
+    let status = gh.status(&pr).await.unwrap();
+    assert_eq!((status.state, status.head.as_str(), status.checks), (PrState::Open, HEAD, Checks::Failed(vec!["lint".into()])));
+    gh.merge(&pr, HEAD, MergeMethod::Squash).await.unwrap();
+    assert!(gh.in_queue(&pr).await.unwrap());
+    let calls = std::fs::read_to_string(&log).unwrap();
+    assert!(calls.contains(&format!("pr merge https://github.com/owner/repo/pull/7 --squash --match-head-commit {HEAD}")), "{calls}");
+    assert!(calls.contains("api graphql --hostname github.com") && calls.contains("number=7"), "{calls}");
+    assert!(!calls.contains("--delete-branch") && !calls.contains("--auto"), "{calls}");
+}

@@ -209,13 +209,9 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
         ("ask", tool_args(&epoch, "question-1", 0, json!({"kind": "ask_question", "interaction_id": "question-1",
             "scope": scope, "recipient": {"kind": "user"}, "need": "Decide on merging the fix", "why": "The review is done and waits for it", "blocking": true,
             "options": [{"id": "yes", "label": "Yes", "inputs": []}, {"id": "no", "label": "No", "inputs": []}]}))),
-        ("complete_task", tool_args(&epoch, "complete-early", 0, json!({"kind": "complete_task",
-            "task_id": task.id.0, "presentation_id": "info-1"}))),
     ]);
     assert!(!tool_text(&replies[0]).0, "{}", tool_text(&replies[0]).1);
     assert!(!tool_text(&replies[1]).0, "{}", tool_text(&replies[1]).1);
-    let (refused, text) = tool_text(&replies[2]);
-    assert!(refused && text.contains("acceptance_missing") || text.contains("invalid_action_for_kind") || text.contains("acceptance_stale"), "{text}");
     let state = daemon.domain.state().unwrap();
     assert!(matches!(state.interactions[&"question-1".into()].payload, InteractionPayload::Question { .. }));
     assert_ne!(state.tasks[&task.id].state, TaskState::Done);
@@ -232,10 +228,11 @@ async fn a_scheduled_session_commands_and_receives_its_answer_once_across_a_daem
     assert_eq!((line["text"].as_str(), line["as_user"].as_bool()), (Some("Yes."), Some(true)), "{line}");
     assert!(daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap().is_empty(), "written is not handed");
 
-    // The Stop hook keeps its nudge but no longer carries the outbox.
+    // The Stop hook holds back a turn end without a result, and never carries the outbox.
     assert_eq!(hook(&home, json!({"session_id": "stranger", "hook_event_name": "Stop"})), json!({}));
     let stop = hook(&home, json!({"session_id": session, "hook_event_name": "Stop"}));
-    assert!(stop["hookSpecificOutput"]["additionalContext"].as_str().unwrap().starts_with("[Alondra] Your turn ended"), "{stop}");
+    assert_eq!(stop["decision"], "block", "{stop}");
+    assert!(stop["reason"].as_str().unwrap().starts_with("[Alondra] Do not end your turn yet") && !stop["reason"].as_str().unwrap().contains("Yes."), "{stop}");
 
     node_ack(&home, &[&id]);
     let evidence = daemon.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap();

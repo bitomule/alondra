@@ -1,10 +1,10 @@
-//! GitHub facts for domain v2 pull requests. `gh` is the only reader; the
-//! daemon never merges a v2 PR itself. An observation records remote reality,
-//! it never accepts a delivery or completes a Task.
+//! GitHub facts for domain v2 pull requests, read with `gh`. An observation records remote
+//! reality; a merged PR settles the final delivery that presented it. Merging is
+//! `domain_merges`'s, with the same `gh`.
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
 use alondra_core::domain::{
-    Actor, AuthorizationId, Command, CommandEnvelope, DomainState, MergeAttemptState,
+    Actor, Command, CommandEnvelope, DomainState, MergeAttemptState,
     clip, CardSpec, PrId, PrState, PullRequest, Scope, PROTOCOL_VERSION,
 };
 use anyhow::Result;
@@ -48,7 +48,7 @@ impl GhCli {
         Self { program: "gh".into() }
     }
     #[cfg(test)]
-    fn at(program: PathBuf) -> Self {
+    pub(crate) fn at(program: PathBuf) -> Self {
         Self { program }
     }
 }
@@ -73,7 +73,38 @@ impl PrObserver for GhCli {
     }
 }
 
-fn parse(value: &Value) -> Result<PrFacts, String> {
+impl GhCli {
+    pub(crate) async fn run(&self, args: &[&str], dir: Option<&std::path::Path>, limit: Duration) -> Result<Vec<u8>, String> {
+        let mut command = tokio::process::Command::new(&self.program);
+        command.args(args).kill_on_drop(true);
+        if let Some(dir) = dir {
+            command.current_dir(dir);
+        }
+        match tokio::time::timeout(limit, command.output()).await {
+            Ok(Ok(output)) if output.status.success() => Ok(output.stdout),
+            Ok(Ok(output)) => Err(String::from_utf8_lossy(&output.stderr).trim().to_owned()),
+            Ok(Err(error)) => Err(error.to_string()),
+            Err(_) => Err(format!("gh {} did not finish within {} s", args.first().copied().unwrap_or_default(), limit.as_secs())),
+        }
+    }
+
+    /// The open PR GitHub has for the branch checked out in `dir`, as `owner/repo` and number.
+    pub(crate) async fn branch_pr(&self, dir: &std::path::Path, limit: Duration) -> Option<(String, u64)> {
+        let out = self.run(&["pr", "view", "--json", "url,state"], Some(dir), limit).await.ok()?;
+        let value: Value = serde_json::from_slice(&out).ok()?;
+        if value["state"].as_str() != Some("OPEN") {
+            return None;
+        }
+        let (repository, number) = value["url"].as_str()?.split_once("://")?.1.split_once('/')?.1.split_once("/pull/")?;
+        Some((repository.to_owned(), number.trim_end_matches('/').parse().ok()?))
+    }
+}
+
+pub(crate) fn pr_url(host: &str, repository: &str, number: u64) -> String {
+    format!("https://{}/{repository}/pull/{number}", alondra_core::domain::normalize_pr_host(host))
+}
+
+pub(crate) fn parse(value: &Value) -> Result<PrFacts, String> {
     let head = value["headRefOid"].as_str()
         .filter(|head| head.len() == 40 && head.bytes().all(|byte| byte.is_ascii_hexdigit()))
         .ok_or("gh reported no PR head")?;
@@ -93,7 +124,7 @@ fn parse(value: &Value) -> Result<PrFacts, String> {
     })
 }
 
-fn execute_system(domain: &DomainRuntime, command: Command) -> Result<(), StoreError> {
+pub(crate) fn execute_system(domain: &DomainRuntime, command: Command) -> Result<(), StoreError> {
     let state = domain.state().map_err(StoreError::Storage)?;
     let envelope = CommandEnvelope {
         protocol_version: PROTOCOL_VERSION,
@@ -186,8 +217,8 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
         }
     }
     // A claimed attempt cannot succeed any more once GitHub merged another
-    // head or closed the PR; a merge at the authorized head is confirmed by
-    // the observation itself.
+    // head, closed the PR or moved it to a newer head; a merge at the
+    // authorized head is confirmed by the observation itself.
     for authorization in state.merge_authorizations.values().filter(|authorization| {
         authorization.pr_id == pr.id
             && matches!(authorization.attempt, MergeAttemptState::Claimed | MergeAttemptState::Uncertain)
@@ -195,7 +226,7 @@ fn apply(domain: &DomainRuntime, state: &DomainState, pr: &PullRequest, facts: &
         let failed = match facts.state {
             PrState::Closed => true,
             PrState::Merged => facts.merged_head.as_deref() != Some(authorization.head.as_str()),
-            PrState::Open => false,
+            PrState::Open => facts.head != authorization.head,
         };
         if failed {
             match execute_system(domain, Command::ObserveMergeAttempt {
@@ -247,40 +278,6 @@ pub(crate) async fn run(domain: Arc<DomainRuntime>, observer: Arc<impl PrObserve
             known = current;
         }
     }
-}
-
-/// A claim is admitted only when GitHub confirms the head and base the Agent
-/// reports for the authorized PR; the Agent's own word is not the verification.
-pub(crate) async fn verify_claim(
-    domain: &DomainRuntime, observer: &dyn PrObserver, command: &Command,
-) -> Result<(), StoreError> {
-    let Command::ClaimMergeAuthorization { authorization_id, remote_head, remote_base, base_verified } = command else {
-        return Ok(());
-    };
-    let state = domain.state().map_err(StoreError::Storage)?;
-    let facts = observed_authorization(&state, authorization_id, observer).await?;
-    if !base_verified || facts.base != *remote_base {
-        return Err(alondra_core::domain::DomainError::new("stack_not_ready",
-            "GitHub reports a different base than the claim").into());
-    }
-    if facts.state != PrState::Open || facts.head != *remote_head {
-        return Err(alondra_core::domain::DomainError::new("stale_head",
-            "GitHub reports a different head than the claim").into());
-    }
-    Ok(())
-}
-
-async fn observed_authorization(
-    state: &DomainState, authorization_id: &AuthorizationId, observer: &dyn PrObserver,
-) -> Result<PrFacts, StoreError> {
-    let authorization = state.merge_authorizations.get(authorization_id)
-        .ok_or_else(|| alondra_core::domain::DomainError::new("not_found", "Authorization missing"))?;
-    let pr = state.pull_requests.get(&authorization.pr_id)
-        .ok_or_else(|| alondra_core::domain::DomainError::new("not_found", "PR missing"))?;
-    observer.observe(&pr.host, &pr.repository, pr.number).await.map_err(|reason| {
-        alondra_core::domain::DomainError::new("external_read_failed",
-            format!("could not verify the PR on GitHub: {reason}")).into()
-    })
 }
 
 #[cfg(test)]
@@ -374,34 +371,22 @@ mod tests {
         });
     }
 
-    fn complete(domain: &DomainRuntime) -> Result<(), StoreError> {
-        let state = domain.state().unwrap();
-        domain.execute(&Actor::Agent { agent_id: "a".into() }, &CommandEnvelope {
-            protocol_version: PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "complete".into(),
-            expected_revision: state.revision,
-            command: Command::CompleteTask { task_id: "t".into(), presentation_id: "d".into() },
-        }, None, || Ok(())).map(|_| ())
-    }
-
     #[tokio::test]
-    async fn a_merge_the_agent_made_is_observed_and_accepted_only_for_an_auto_merge_request() {
-        for (auto_merge, code) in [(true, None), (false, Some("acceptance_missing"))] {
-            let (_fixture, domain) = open("agent-merge");
+    async fn an_observed_merge_settles_the_delivery_with_or_without_auto_merge() {
+        for auto_merge in [true, false] {
+            let (_fixture, domain) = open("observed-merge");
             presented(&domain, auto_merge);
             let observer = FakeObserver::new();
             observer.set(7, Ok(facts(HEAD, PrState::Merged)));
             reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
-            assert_eq!(domain.state().unwrap().pull_requests[&"pr".into()].state, PrState::Merged);
-            let done = complete(&domain);
-            assert_eq!(done.as_ref().err().map(|error| match error {
-                StoreError::Domain(error) => error.code.as_str(),
-                StoreError::Storage(_) => "storage",
-            }), code, "{done:?}");
+            let state = domain.state().unwrap();
+            assert_eq!(state.pull_requests[&"pr".into()].state, PrState::Merged);
+            assert_eq!(state.tasks[&"t".into()].state, TaskState::Done, "auto_merge {auto_merge}");
         }
     }
 
     #[test]
-    fn the_auto_merge_notice_is_actionable_without_protocol_or_git_metadata() {
+    fn the_auto_merge_notice_says_alondra_merges_without_protocol_or_git_metadata() {
         let (_fixture, domain) = open("notice");
         presented(&domain, true);
         let register = Command::RegisterPr {
@@ -409,8 +394,8 @@ mod tests {
             number: 7, head: HEAD.into(), base: "main".into(), allowed_methods: vec![MergeMethod::Squash],
         };
         let notice = crate::domain_api::auto_merge_notice(&domain, &register).unwrap();
-        assert!(notice.contains("Once its checks pass") && notice.contains("merge the pull request"), "{notice}");
-        for internal in ["github.com", "owner/repo", HEAD, "task_id", "revision", "authorization"] {
+        assert!(notice.contains("Alondra merges it") && notice.contains("do not merge it yourself"), "{notice}");
+        for internal in ["github.com", "owner/repo", HEAD, "task_id", "revision", "authorization", "claim"] {
             assert!(!notice.contains(internal), "{internal} leaked in {notice}");
         }
     }
@@ -557,7 +542,7 @@ mod tests {
         reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
         assert_eq!(domain.state().unwrap().revision, before, "unchanged facts write nothing");
 
-        command(&domain, Actor::Agent { agent_id: "a".into() }, "claim", Command::ClaimMergeAuthorization {
+        command(&domain, Actor::System, "claim", Command::ClaimMergeAuthorization {
             authorization_id: "auth".into(), remote_head: HEAD.into(), remote_base: "main".into(), base_verified: true,
         });
         observer.set(7, Ok(facts(HEAD, PrState::Merged)));
@@ -572,51 +557,46 @@ mod tests {
 
     #[tokio::test]
     async fn a_claimed_attempt_fails_when_github_merged_another_head_or_closed_the_pr() {
-        for (tag, remote) in [("other-head", facts(OTHER, PrState::Merged)), ("closed", facts(HEAD, PrState::Closed))] {
+        for (tag, remote) in [("other-head", facts(OTHER, PrState::Merged)), ("closed", facts(HEAD, PrState::Closed)),
+            ("newer-head", facts(OTHER, PrState::Open))] {
             let (_fixture, domain) = open(tag);
             authorized(&domain);
-            command(&domain, Actor::Agent { agent_id: "a".into() }, "claim", Command::ClaimMergeAuthorization {
-                authorization_id: "auth".into(), remote_head: HEAD.into(), remote_base: "main".into(), base_verified: true,
-            });
+            domain.store.lock().unwrap().claim_as_node("auth", "a");
             let observer = FakeObserver::new();
             observer.set(7, Ok(remote.clone()));
             reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
             let state = domain.state().unwrap();
             assert_eq!(state.pull_requests[&"pr".into()].state, remote.state, "{tag}");
             assert_eq!(state.merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Failed, "{tag}");
-            assert_ne!(state.tasks[&"t".into()].state, TaskState::Done);
+            assert_eq!(state.tasks[&"t".into()].state == TaskState::Done, remote.state == PrState::Merged,
+                "{tag}: only a merge settles the delivery");
         }
     }
 
+    /// PR #727: a node claimed the merge of its first delivery, then resolved conflicts and
+    /// delivered a newer head; the claim left behind held every new merge back.
     #[tokio::test]
-    async fn a_claim_is_verified_against_github_before_it_is_admitted() {
-        let (_fixture, domain) = open("claim");
+    async fn a_node_claim_of_a_superseded_delivery_is_reconciled_and_the_user_can_merge_again() {
+        let (_fixture, domain) = open("superseded-claim");
         authorized(&domain);
+        domain.store.lock().unwrap().claim_as_node("auth", "a");
         let observer = FakeObserver::new();
-        let claim = |head: &str, base: &str, verified: bool| Command::ClaimMergeAuthorization {
-            authorization_id: "auth".into(), remote_head: head.into(), remote_base: base.into(), base_verified: verified,
-        };
-        let code = |result: Result<(), StoreError>| match result {
-            Ok(()) => "ok".to_owned(),
-            Err(StoreError::Domain(error)) => error.code,
-            Err(StoreError::Storage(error)) => panic!("{error:#}"),
-        };
-        assert_eq!(code(verify_claim(&domain, &observer, &claim(HEAD, "main", true)).await), "external_read_failed");
         observer.set(7, Ok(facts(OTHER, PrState::Open)));
-        assert_eq!(code(verify_claim(&domain, &observer, &claim(HEAD, "main", true)).await), "stale_head");
-        observer.set(7, Ok(PrFacts { base: "develop".into(), ..facts(HEAD, PrState::Open) }));
-        assert_eq!(code(verify_claim(&domain, &observer, &claim(HEAD, "main", true)).await), "stack_not_ready");
-        observer.set(7, Ok(facts(HEAD, PrState::Open)));
-        assert_eq!(code(verify_claim(&domain, &observer, &claim(HEAD, "main", false)).await), "stack_not_ready");
-        assert_eq!(code(verify_claim(&domain, &observer, &claim(OTHER, "main", true)).await), "stale_head",
-            "the Agent's own head claim must match GitHub, not only the authorization");
-        assert_eq!(code(verify_claim(&domain, &observer, &claim(HEAD, "main", true)).await), "ok");
-        assert_eq!(code(verify_claim(&domain, &observer, &Command::ClaimMergeAuthorization {
-            authorization_id: "missing".into(), remote_head: HEAD.into(), remote_base: "main".into(), base_verified: true,
-        }).await), "not_found");
-        assert_eq!(code(verify_claim(&domain, &observer, &Command::CancelTask { task_id: "t".into() }).await), "ok",
-            "other commands are not GitHub claims");
-        assert_eq!(domain.state().unwrap().merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Unclaimed);
+        reconcile(&domain, &observer, &mut ObservationFailures::default()).await.unwrap();
+        assert_eq!(domain.state().unwrap().merge_authorizations[&"auth".into()].attempt, MergeAttemptState::Failed);
+        command(&domain, Actor::Agent { agent_id: "a".into() }, "present-2", Command::PresentResult {
+            attachments: vec![], task_id: "t".into(), interaction_id: "d2".into(), body: "Conflicts resolved".into(),
+            targets: vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: OTHER.into() }], is_final: true,
+            card: alondra_core::domain::CardSpec::delivery("Review the result", &[], true),
+        });
+        let projection = domain.state().unwrap().projection();
+        let merge = projection.inbox.iter().find(|item| item.id == "interaction:d2").unwrap()
+            .available_actions.iter().find(|action| action.kind == "authorize_merge").unwrap();
+        assert!(merge.enabled, "{merge:?}");
+        command(&domain, Actor::User { user_id: "u".into() }, "authorize-2", Command::AuthorizeMerge {
+            authorization_id: "auth-2".into(), presentation_id: "d2".into(), pr_id: "pr".into(),
+            expected_head: OTHER.into(), method: MergeMethod::Squash,
+        });
     }
 
     #[tokio::test]
@@ -633,7 +613,6 @@ mod tests {
         assert!(gh.observe("github.com", "owner/repo", 9).await.unwrap_err().contains("no pull requests found"));
         let calls = std::fs::read_to_string(&log).unwrap();
         assert!(calls.contains("pr view https://github.com/owner/repo/pull/7 --json state,headRefOid,baseRefName"), "{calls}");
-        assert!(!calls.contains("merge"), "the daemon never merges a v2 PR");
     }
 
     #[tokio::test]

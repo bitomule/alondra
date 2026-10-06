@@ -56,7 +56,9 @@ user follows tasks, not nodes.
   daemon refuses a second task on an untitled request (`request_title_required`), and the list
   never shows the prompt as a name. Then it gets tasks with `create_task`: a short `title` the user reads, under
   its `request_id`. Start with one cohesive task and split only when a part has an independently
-  useful deliverable or must land first; each implementation task should fit one PR. Keep
+  useful deliverable or must land first. A task owns exactly one PR: work that needs several PRs
+  (several repositories, or changes that land separately) is several tasks, linked with
+  `dependencies` when one builds on another. Keep
   investigation, implementation and validation of the same change together. An ambiguous
   request is a question: one `ask` costs less than a node on the wrong reading.
 - `dependencies` (on `create_task` or `set_dependencies`) say a task builds on another; tasks
@@ -138,15 +140,17 @@ node.
 1. The requests and tasks above.
 2. Questions addressed to you: answer them with `answer_question`. A handoff from a node is work
    to route, not a question.
-3. Nodes that ended their turn without delivering or asking anything, after Alondra reminded
-   them once: read the node's last message with `node`. If it needs the user, `send` it to `ask`;
+3. Nodes that cannot manage to deliver: Alondra sends a node back to work when it ends its turn
+   with no result and no question, and after three times tells the user. Read the node's last
+   message with `node`. If it needs the user, `send` it to `ask`;
    if it is done, `send` it to present its result with `present_result`; otherwise ask the user.
 4. A node inside one call far longer than usual: `interrupt` stops a hung call, then `send`
    moves the node on; a legitimately long call is left alone.
 5. Failures across nodes. When several fail at once, the shared state is the first suspect.
 
-Merges are the user's: they authorize one PR head and method on its card, and the node that owns
-the PR merges it. Never merge for a node.
+Merges are Alondra's: when the user accepts a delivery with a PR (or, with auto-merge, once its
+checks pass), Alondra merges it and tells the node; a merge that fails goes back to the node with
+the reason. Never merge a PR yourself, and never ask the user to authorize a merge.
 
 ## To the user
 

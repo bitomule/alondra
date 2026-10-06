@@ -99,6 +99,9 @@ pub(super) fn effort_label(effort: &str, lang: super::Lang) -> Option<&'static s
 pub(super) fn instruction_label(task: &crate::domain::Task, domain: &crate::domain::DomainState, lang: super::Lang) -> Option<&'static str> {
     use crate::domain::{Instruction, TaskState};
     if task.state != TaskState::Running { return None; }
+    if domain.task_merge_failure(&task.id).is_some() {
+        return Some(super::text::t!(lang, "Alondra couldn't merge it", "Alondra no pudo fusionarla"));
+    }
     Some(match domain.task_handed_back(&task.id)? {
         Instruction::Changes => super::text::t!(lang, "Changes requested", "Cambios solicitados"),
         Instruction::Conflicts => super::text::t!(lang, "Resolving conflicts", "Resolviendo conflictos"),

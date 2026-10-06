@@ -147,6 +147,17 @@ impl DomainState {
             .map(|f| f.instruction)
     }
     /// The same for an active Task, through its current final delivery.
+    /// The PR number and reason when the current final delivery went back because Alondra
+    /// could not merge it.
+    pub fn task_merge_failure(&self, task_id: &TaskId) -> Option<(u64, String)> {
+        self.task_handed_back(task_id).filter(|i| *i == Instruction::Conflicts)?;
+        let task = self.tasks.get(task_id)?;
+        let InteractionPayload::Delivery { feedback, .. } = &self.interactions.get(task.final_presentation.as_ref()?)?.payload else {
+            return None;
+        };
+        let (number, reason) = merge_failure(&feedback.last()?.body)?;
+        Some((number, reason.to_owned()))
+    }
     pub fn task_handed_back(&self, task_id: &TaskId) -> Option<Instruction> {
         let task = self.tasks.get(task_id).filter(|t| !t.state.terminal())?;
         self.handed_back(self.interactions.get(task.final_presentation.as_ref()?)?)
