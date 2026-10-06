@@ -16,11 +16,13 @@ public enum ConnectionProblem: Equatable, Sendable {
     case sessionExpired
     /// The Mac or relay no longer accepts this device; it has to be paired again.
     case deviceRevoked
+    /// An earlier sign-out could not reach the server; it has to finish before signing in again.
+    case signOutIncomplete
     case unexpected
 
     /// Problems only the person can fix. Automatic retries continue, but they cannot succeed.
     public var needsAction: Bool {
-        self == .sessionExpired || self == .deviceRevoked
+        self == .sessionExpired || self == .deviceRevoked || self == .signOutIncomplete
     }
 }
 

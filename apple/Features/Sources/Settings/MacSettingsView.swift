@@ -40,9 +40,6 @@ public struct MacSettingsView<PairingContent: View>: View {
             } header: {
                 Text("Server")
             }
-            if let error = store.error {
-                Section { Text(error).foregroundStyle(failure).textSelection(.enabled) }
-            }
         }
         .sheet(item: $store.scope(state: \.pairing, action: \.pairing)) { pairing in
             NavigationStack {
@@ -107,7 +104,10 @@ public struct MacSettingsView<PairingContent: View>: View {
                 .accessibilityLabel("Mac \(mac.macID)")
                 .accessibilityValue(store.selectedMacID == mac.id ? "Selected" : "")
             }
-            if let error = store.macError { Text(error).foregroundStyle(failure) }
+            if let problem = store.macError {
+                Label { Text(problem.title) } icon: { Image(systemName: problem.systemImage) }
+                    .foregroundStyle(failure)
+            }
             Button("Link another Mac", systemImage: "plus") { store.send(.linkMac) }
                 .disabled(store.selectingMacID != nil || store.pairingCleanup)
             Button("Sign out", systemImage: "link.badge.minus", role: .destructive) { store.send(.logoutTapped) }
@@ -145,6 +145,10 @@ public struct MacSettingsView<PairingContent: View>: View {
                 if store.conflict {
                     Text("Notification settings changed in another window. Your draft has been kept.")
                     Button("Use Current Settings") { store.send(.useCurrent) }.disabled(store.saving)
+                }
+                if let error = store.error {
+                    Label { Text(verbatim: error) } icon: { Image(systemName: "exclamationmark.triangle") }
+                        .foregroundStyle(failure)
                 }
                 #if os(macOS)
                 Button("Save Notification Settings") { store.send(.save) }.disabled(!store.canSave)

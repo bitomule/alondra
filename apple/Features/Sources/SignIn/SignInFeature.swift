@@ -3,14 +3,16 @@ import ComposableArchitecture
 import Foundation
 
 public enum RestoreError: Error, Sendable {
-    case reauthenticationRequired(String)
-    case revocationRequired(String)
+    case reauthenticationRequired
+    case revocationRequired
 }
 
 public struct SignInClient: Sendable {
     public var hasSavedConfiguration: @Sendable () async throws -> Bool = { false }
     public var prepareCamera: @Sendable () async -> Bool = { false }
     public var classify: @Sendable (any Error) -> ConnectionProblem = { _ in .unexpected }
+    /// What a failed sign-in, pairing or sign-out step tells the person, in their language.
+    public var describe: @Sendable (any Error) -> String = { _ in String(localized: "Something went wrong. Try again.") }
     public var restore: @Sendable () async throws -> Bool
     public var login: @Sendable () async throws -> Void
     public var begin: @Sendable (String) async throws -> String
@@ -62,9 +64,9 @@ public struct SignInFeature: Sendable {
         case binding(BindingAction<State>), appeared, login, submit, scanned(String), cancel, logout, camera, cameraReady(Bool)
         case configurationLoaded(Int, Bool), retryRestore, retryNow, reauthenticate
         case restorationFailed(Int, ConnectionProblem)
-        case revocationRequired(Int, String)
+        case revocationRequired(Int)
         case cancelled(Int)
-        case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String)
+        case restored(Int, Bool), loggedOut(Int), loggedIn(Int), pending(Int, String), approved(Int), failed(Int, String?)
     }
     @Dependency(\.cloudPairing) var service
     @Dependency(\.continuousClock) var clock
@@ -94,8 +96,8 @@ public struct SignInFeature: Sendable {
                         await send(.configurationLoaded(generation, configured))
                         if configured { await send(.restored(generation, try await service.restore())) }
                         else { await send(.restored(generation, false)) }
-                    } catch RestoreError.revocationRequired(let message) {
-                        await send(.revocationRequired(generation, message))
+                    } catch RestoreError.revocationRequired {
+                        await send(.revocationRequired(generation))
                     } catch RestoreError.reauthenticationRequired {
                         await send(.restorationFailed(generation, .sessionExpired))
                     } catch {
@@ -106,15 +108,15 @@ public struct SignInFeature: Sendable {
                 guard generation == state.generation else { return .none }
                 state.configuration = saved ? .saved : .missing
                 return .none
-            case .revocationRequired(let generation, let message):
+            case .revocationRequired(let generation):
                 guard generation == state.generation else { return .none }
                 state.logoutIncomplete = true
                 state.configuration = .saved
                 state.phase = .restoring
                 state.restorationInFlight = false
                 state.reauthenticationRequired = false
-                state.restoreProblem = .unexpected
-                state.error = message
+                state.restoreProblem = .signOutIncomplete
+                state.error = nil
                 return .none
             case .retryRestore:
                 if state.logoutIncomplete { return .send(.logout) }
@@ -133,8 +135,8 @@ public struct SignInFeature: Sendable {
                     do {
                         try await service.login()
                         await send(.restored(generation, try await service.restore()))
-                    } catch RestoreError.revocationRequired(let message) {
-                        await send(.revocationRequired(generation, message))
+                    } catch RestoreError.revocationRequired {
+                        await send(.revocationRequired(generation))
                     } catch RestoreError.reauthenticationRequired {
                         await send(.restorationFailed(generation, .sessionExpired))
                     } catch {
@@ -175,7 +177,7 @@ public struct SignInFeature: Sendable {
                 let generation = state.generation
                 return .run { send in
                     do { try await service.login(); await send(.loggedIn(generation)) }
-                    catch { await send(.failed(generation, error.localizedDescription)) }
+                    catch { await send(.failed(generation, error.isCancellation ? nil : service.describe(error))) }
                 }.cancellable(id: CancelID.operation, cancelInFlight: true)
             case .loggedIn(let generation):
                 guard generation == state.generation else { return .none }
@@ -196,7 +198,7 @@ public struct SignInFeature: Sendable {
                         await send(.pending(generation, code))
                         try await service.approve()
                         await send(.approved(generation))
-                    } catch { await send(.failed(generation, error.localizedDescription)) }
+                    } catch { await send(.failed(generation, error.isCancellation ? nil : service.describe(error))) }
                 }.cancellable(id: CancelID.operation, cancelInFlight: true)
             case .pending(let generation, let code):
                 guard generation == state.generation else { return .none }
@@ -212,6 +214,8 @@ public struct SignInFeature: Sendable {
                 state.error = message
                 switch state.phase {
                 case .signingOut:
+                    // The restore screen names this state; the cleanup error stays out of it.
+                    state.error = nil
                     state.phase = .restoring
                     state.configuration = .saved
                     state.logoutIncomplete = true
@@ -249,7 +253,7 @@ public struct SignInFeature: Sendable {
                 return .concatenate(.cancel(id: CancelID.operation), .cancel(id: CancelID.restoreRetry), .run { send in
                     await service.cancel()
                     do { try await service.logout(); await send(.loggedOut(generation)) }
-                    catch { await send(.failed(generation, error.localizedDescription)) }
+                    catch { await send(.failed(generation, service.describe(error))) }
                 })
             }
         }

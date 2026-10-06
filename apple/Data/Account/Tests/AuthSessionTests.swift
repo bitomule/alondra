@@ -204,8 +204,8 @@ private final class MemoryStorage: RefreshTokenStorage, @unchecked Sendable {
     private let lock = NSLock()
     private var token: RefreshCredential?
     private var refusesWrites: Bool
-    init(_ token: String? = nil, refusesWrites: Bool = false) {
-        self.token = token.map { RefreshCredential(token: $0) }
+    init(_ token: String? = nil, status: RefreshCredential.Status = .active, refusesWrites: Bool = false) {
+        self.token = token.map { RefreshCredential(token: $0, status: status) }
         self.refusesWrites = refusesWrites
     }
     func setRefusesWrites(_ value: Bool) { lock.lock(); defer { lock.unlock() }; refusesWrites = value }
@@ -560,7 +560,7 @@ final class AuthSessionTests: XCTestCase {
         XCTAssertTrue(revocations.isEmpty)
     }
 
-    func testAlondraLostRefreshCanRevokeSessionAfterRestartWithoutReplayingRefresh() async throws {
+    func testAlondraLostRefreshCanRevokeSessionAfterRestart() async throws {
         let storage = MemoryStorage("predecessor")
         let browser = FixtureBrowser { _ in XCTFail("Revocation cannot authorize a new session"); return URL(string: "https://invalid.example")! }
         let lost = FixtureTransport { _ in throw URLError(.networkConnectionLost) }
@@ -570,17 +570,15 @@ final class AuthSessionTests: XCTestCase {
         XCTAssertEqual(try storage.read(), RefreshCredential(token: "predecessor", status: .rotationUncertain))
 
         let unavailable = FixtureTransport(revocationResponse: { _ in AuthHTTPResponse(status: 503, body: Data()) }) { _ in
-            XCTFail("Never retry a possibly consumed refresh"); throw AuthError.invalidToken
+            XCTFail("Logout never refreshes"); throw AuthError.invalidToken
         }
         let restarted = AuthSession(transport: unavailable, browser: browser, storage: storage)
         do { try await restarted.logout(); XCTFail("Failed revocation cannot complete cleanup") }
         catch AuthError.httpStatus(503) { }
         XCTAssertEqual(try storage.read(), RefreshCredential(token: "predecessor", status: .rotationUncertain))
 
-        let recovered = FixtureTransport { _ in XCTFail("Cleanup must not refresh"); throw AuthError.invalidToken }
+        let recovered = FixtureTransport { _ in XCTFail("Logout never refreshes"); throw AuthError.invalidToken }
         let retried = AuthSession(transport: recovered, browser: browser, storage: storage)
-        do { _ = try await retried.bearerToken(); XCTFail("Uncertainty still blocks normal use") }
-        catch AuthError.rotationUncertain { }
         try await retried.logout()
         let revocations = await recovered.revocations()
         XCTAssertEqual(revocations.count, 1)
@@ -588,12 +586,62 @@ final class AuthSessionTests: XCTestCase {
         XCTAssertNil(try storage.read())
         let sessionRemains = try await retried.hasSession()
         XCTAssertFalse(sessionRemains)
-        let originalExchanges = await lost.tokenRequests()
-        let failedCleanupExchanges = await unavailable.tokenRequests()
-        let cleanupExchanges = await recovered.tokenRequests()
-        XCTAssertEqual(originalExchanges.count, 1)
-        XCTAssertTrue(failedCleanupExchanges.isEmpty)
-        XCTAssertTrue(cleanupExchanges.isEmpty)
+    }
+
+    func testAlondraReplaysLostRefreshWithSavedTokenAfterRestart() async throws {
+        let storage = MemoryStorage("predecessor")
+        let browser = FixtureBrowser { _ in XCTFail("Recovery must not open sign-in"); return URL(string: "https://invalid.example")! }
+        let lost = FixtureTransport { _ in throw URLError(.networkConnectionLost) }
+        let first = AuthSession(transport: lost, browser: browser, storage: storage)
+        do { _ = try await first.bearerToken(); XCTFail("Expected lost response") }
+        catch let error as URLError { XCTAssertEqual(error.code, .networkConnectionLost) }
+        XCTAssertEqual(try storage.read()?.status, .rotationUncertain)
+
+        let issuer = FixtureTransport { request in
+            XCTAssertEqual(Self.form(request)["refresh_token"], "predecessor")
+            return Self.tokens(access: "recovered-access", refresh: "successor", idToken: nil)
+        }
+        let restarted = AuthSession(transport: issuer, browser: browser, storage: storage)
+        let signedIn = try await restarted.hasSession()
+        XCTAssertTrue(signedIn)
+        let blocked = try await restarted.requiresRevocation()
+        XCTAssertFalse(blocked)
+        let bearer = try await restarted.bearerToken()
+        XCTAssertEqual(bearer, "recovered-access")
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "successor"))
+        let revocations = await issuer.revocations()
+        XCTAssertTrue(revocations.isEmpty)
+    }
+
+    func testAlondraRejectedReplayRevokesOfflineSessionAndAsksToSignIn() async throws {
+        let storage = MemoryStorage("predecessor", status: .rotationUncertain)
+        let browser = FixtureBrowser { _ in XCTFail("Recovery must not open sign-in"); return URL(string: "https://invalid.example")! }
+        let issuer = FixtureTransport { _ in
+            AuthHTTPResponse(status: 400, body: Data("{\"error\":\"invalid_grant\"}".utf8))
+        }
+        let session = AuthSession(transport: issuer, browser: browser, storage: storage)
+        do { _ = try await session.bearerToken(); XCTFail("Rejected replay") }
+        catch AuthError.noSession { }
+        let revocations = await issuer.revocations()
+        XCTAssertEqual(revocations.count, 1)
+        XCTAssertEqual(Self.form(try XCTUnwrap(revocations.first))["token"], "predecessor")
+        XCTAssertNil(try storage.read())
+        XCTAssertEqual(ConnectionClassifier.problem(for: AuthError.noSession, local: false, networkOffline: false), .sessionExpired)
+    }
+
+    func testAlondraReplayThatIsLostAgainStaysRecoverableAndReportsTheNetwork() async throws {
+        let storage = MemoryStorage("predecessor", status: .rotationUncertain)
+        let browser = FixtureBrowser { _ in XCTFail("Recovery must not open sign-in"); return URL(string: "https://invalid.example")! }
+        let offline = FixtureTransport { _ in throw URLError(.timedOut) }
+        let session = AuthSession(transport: offline, browser: browser, storage: storage)
+        do { _ = try await session.bearerToken(); XCTFail("Still offline") }
+        catch let error as URLError {
+            XCTAssertEqual(error.code, .timedOut)
+            XCTAssertEqual(ConnectionClassifier.problem(for: error, local: false, networkOffline: false), .serverUnreachable)
+        }
+        XCTAssertEqual(try storage.read(), RefreshCredential(token: "predecessor", status: .rotationUncertain))
+        let revocations = await offline.revocations()
+        XCTAssertTrue(revocations.isEmpty)
     }
 
     func testDeniedPendingMarkerNeverReportsLogoutAndSuspendsInMemory() async throws {

@@ -83,6 +83,22 @@ final class AccountSnapshotTests: XCTestCase {
         assertScreen([.light], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
     }
 
+    func test_settings_failuresStayInTheirRows() {
+        let store = settings {
+            $0.macError = .macNotAnswering
+            $0.error = "Your notification settings couldn’t be saved. Try again."
+        }
+        assertScreen([.light], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
+    }
+
+    func test_settings_failuresStayInTheirRows_spanish() {
+        let store = settings {
+            $0.macError = .macNotAnswering
+            $0.error = "No se pudieron guardar tus ajustes de notificaciones. Inténtalo de nuevo."
+        }
+        assertScreen([.light], language: .spanish, inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
+    }
+
     func test_settings_accessibilitySize() {
         let store = settings()
         assertScreen([.ax3], inWindow: true) { ScreenFrame(height: 1000) { SettingsView(store: store) } }
@@ -92,7 +108,7 @@ final class AccountSnapshotTests: XCTestCase {
 
     private func lost(_ problem: ConnectionProblem?) -> some View {
         ScreenFrame(height: 700) {
-            ConnectionLostView(problem: problem, retry: {}, signIn: {}, settings: {})
+            ConnectionLostView(problem: problem, retry: {}, signIn: {}, settings: {}, signOut: {})
                 .background(Palette.night)
         }
     }
@@ -107,5 +123,13 @@ final class AccountSnapshotTests: XCTestCase {
 
     func test_connectionLost_deviceDisconnected() {
         assertScreen([.light], inWindow: true) { lost(.deviceRevoked) }
+    }
+
+    func test_connectionLost_signOutIncomplete() {
+        assertScreen([.light, .dark], inWindow: true) { lost(.signOutIncomplete) }
+    }
+
+    func test_connectionLost_signOutIncomplete_spanish() {
+        assertScreen([.light], language: .spanish, inWindow: true) { lost(.signOutIncomplete) }
     }
 }
