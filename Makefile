@@ -4,7 +4,7 @@ LABEL = $(shell $(BIN)/alondra config --get service_label 2>/dev/null)
 DEVICE ?= David iPhone
 export DEVICE
 
-.PHONY: snapshots-record snapshots-verify mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox soak tasks-screen rehearse-cutover cutover-live
+.PHONY: snapshots-record snapshots-verify mac-snapshots-record mac-snapshots-verify no-holds build test install run tui setup launchd unlaunchd restart status doctor cargo-test mac device device-console e2e-sandbox e2e-sandbox-stop e2e-sandbox-logs soak tasks-screen rehearse-cutover cutover-live
 
 build:
 	bazelisk build //crates/... //apple:AlondraMac
@@ -116,9 +116,19 @@ mac:
 	open $(HOME)/Applications/Alondra.app
 
 
+# MACS=n daemons in service mode with a loopback relay and a synthetic phone (tools/e2e-sandbox.sh).
 e2e-sandbox:
-	bazelisk build //crates/alondrad //crates/alondra
-	tools/e2e-sandbox.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null)
+	bazelisk build //crates/alondrad //crates/alondra //crates/relay:alondra-relay //tools/sandbox:alondra-sandbox
+	tools/e2e-sandbox.sh $$(bazelisk cquery --output=files //crates/alondrad 2>/dev/null) $$(bazelisk cquery --output=files //crates/alondra 2>/dev/null) \
+		$$(bazelisk cquery --output=files //crates/relay:alondra-relay 2>/dev/null) $$(bazelisk cquery --output=files //tools/sandbox:alondra-sandbox 2>/dev/null)
+
+e2e-sandbox-stop:
+	tools/e2e-sandbox-stop.sh
+
+# MAC=n for that daemon's log, MAC=relay for the relay's.
+e2e-sandbox-logs:
+	@dir=$${SANDBOX_DIR:-/tmp/alondra-sandbox}; \
+	if [ "$(MAC)" = relay ]; then tail -f $$dir/relay.log; else tail -f $$dir/mac-$${MAC:-1}/alondrad.log; fi
 
 # Full cutover rehearsal on a read-only snapshot of the live HOME; keeps only the report.
 # REHEARSAL_ROOT, LIVE_HOME and LEGACY override the defaults (tools/rehearse-cutover.sh).
