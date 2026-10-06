@@ -106,6 +106,49 @@ pub struct LiveNode {
     /// A node stopped by the usage limit waits for the machine until this local ISO time.
     #[serde(default)]
     pub waiting_until: Option<String>,
+    /// The subagents it runs and the last few it ran.
+    #[serde(default)]
+    pub subagents: Vec<LiveRun>,
+    #[serde(default)]
+    pub workflows: Vec<LiveRun>,
+    /// Its Claude Code task list, in order.
+    #[serde(default)]
+    pub steps: Vec<LiveStep>,
+}
+/// A subagent or a workflow a node started.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveRun {
+    pub label: String,
+    /// The subagent's type (`general-purpose`, `Explore`).
+    #[serde(default)]
+    pub kind: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// How many agents a workflow has started, when known.
+    #[serde(default)]
+    pub agents: Option<u32>,
+    pub since: String,
+    /// How long it ran, once it finished.
+    #[serde(default)]
+    pub ran_secs: Option<u64>,
+    #[serde(default)]
+    pub suspect: bool,
+}
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StepState {
+    #[default]
+    Pending,
+    InProgress,
+    Completed,
+}
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LiveStep {
+    pub subject: String,
+    pub state: StepState,
+    /// What the spinner says while it runs ("Running tests").
+    #[serde(default)]
+    pub active_form: Option<String>,
 }
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LivePullRequest {

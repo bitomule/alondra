@@ -36,8 +36,9 @@ pub(crate) enum Report {
         #[serde(default)]
         cost_usd: Option<f64>,
     },
+    /// The model a request was sent with: the main thread's, or with `agent_id` a subagent's.
     #[serde(rename = "model")]
-    Model { model: String },
+    Model { model: String, #[serde(default)] agent_id: Option<String> },
     #[serde(rename = "turn.start")]
     TurnStart,
     #[serde(rename = "turn.complete")]
@@ -51,11 +52,28 @@ pub(crate) enum Report {
     #[serde(rename = "background")]
     Background { #[serde(default)] tasks: Vec<TaskIn> },
     #[serde(rename = "subagent.start")]
-    SubagentStart { id: String, #[serde(default)] description: Option<String> },
+    SubagentStart {
+        id: String,
+        #[serde(default)]
+        description: Option<String>,
+        #[serde(rename = "type", default)]
+        kind: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+    },
     #[serde(rename = "subagent.end")]
     SubagentEnd { id: String },
     #[serde(rename = "shell.start")]
     ShellStart { id: String, command: String },
+    #[serde(rename = "workflow.start")]
+    WorkflowStart { id: String, name: String, #[serde(default)] transcript_dir: Option<PathBuf> },
+    #[serde(rename = "step.create")]
+    StepCreate(crate::node_work::StepIn),
+    #[serde(rename = "step.update")]
+    StepUpdate(crate::node_work::StepIn),
+    /// The whole task list, as `TaskList` or `TodoWrite` gave it.
+    #[serde(rename = "steps")]
+    Steps { steps: Vec<crate::node_work::StepIn> },
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -67,6 +85,10 @@ pub(crate) struct TaskIn {
     description: String,
     #[serde(default)]
     command: Option<String>,
+    #[serde(default)]
+    agent_type: Option<String>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 #[derive(Deserialize, Debug, PartialEq)]
@@ -155,11 +177,12 @@ pub(crate) struct Reported {
     pub model: Option<String>,
     /// The subagents and background shells the node has running, by the id Claude Code gives them.
     pub background: Vec<(String, BackgroundItem)>,
+    pub work: crate::node_work::NodeWork,
 }
 
 const LABEL_LIMIT: usize = 80;
 
-fn short_label(text: &str) -> String {
+pub(crate) fn short_label(text: &str) -> String {
     let flat = text.split_whitespace().collect::<Vec<_>>().join(" ");
     if flat.chars().count() <= LABEL_LIMIT {
         return flat;
@@ -328,6 +351,7 @@ impl Reports {
                 session.tool = None;
                 session.working_since = None;
                 session.background.clear();
+                session.work.ended(now);
             }
             Report::Measure { context, cost_usd, .. } => {
                 if let Some(context) = context {
@@ -335,7 +359,8 @@ impl Reports {
                 }
                 session.cost_usd = cost_usd.or(session.cost_usd);
             }
-            Report::Model { model } => session.model = Some(model),
+            Report::Model { model, agent_id: None } => session.model = Some(model),
+            Report::Model { model, agent_id: Some(agent) } => session.work.agent_model(&agent, model),
             Report::TurnStart => session.working_since = Some(now),
             Report::TurnComplete { answer, aborted } => {
                 session.working_since = None;
@@ -347,24 +372,46 @@ impl Reports {
                 session.tool = Some(ToolInFlight { tool_use_id, name: tool, summary, since: now });
             }
             Report::Background { tasks } => {
+                let listed: Vec<_> = tasks.iter().map(|task| crate::node_work::Listed {
+                    id: &task.id,
+                    kind: &task.kind,
+                    description: &task.description,
+                    agent_type: task.agent_type.as_deref(),
+                    name: task.name.as_deref(),
+                }).collect();
+                session.work.listed(&listed, now);
                 let known = std::mem::take(&mut session.background);
                 session.background = tasks.into_iter().map(|task| {
                     let started_at = known.iter().find(|(id, _)| *id == task.id).map_or(now, |(_, item)| item.started_at);
                     let (kind, label) = match task.kind.as_str() {
                         "subagent" => (BackgroundKind::Agent, task.description),
                         "shell" => (BackgroundKind::Shell, task.command.unwrap_or(task.description)),
+                        "workflow" => (BackgroundKind::Other, task.name.filter(|name| !name.is_empty()).unwrap_or(task.description)),
                         _ => (BackgroundKind::Other, task.description),
                     };
                     (task.id, BackgroundItem { kind, label: short_label(&label), started_at, suspect: false })
                 }).collect();
             }
-            Report::SubagentStart { id, description } => {
+            Report::SubagentStart { id, description, kind, model } => {
                 if !session.background.iter().any(|(known, _)| *known == id) {
                     let label = short_label(description.as_deref().unwrap_or("subagent"));
-                    session.background.push((id, BackgroundItem { kind: BackgroundKind::Agent, label, started_at: now, suspect: false }));
+                    session.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Agent, label, started_at: now, suspect: false }));
                 }
+                session.work.agent_started(id, description, kind, model, now);
             }
-            Report::SubagentEnd { id } => session.background.retain(|(known, _)| *known != id),
+            Report::SubagentEnd { id } => {
+                session.background.retain(|(known, _)| *known != id);
+                session.work.agent_finished(&id, now);
+            }
+            Report::WorkflowStart { id, name, transcript_dir } => {
+                if !session.background.iter().any(|(known, _)| *known == id) {
+                    session.background.push((id.clone(), BackgroundItem { kind: BackgroundKind::Other, label: short_label(&name), started_at: now, suspect: false }));
+                }
+                session.work.workflow_started(id, name, transcript_dir, now);
+            }
+            Report::StepCreate(step) => session.work.step_created(step),
+            Report::StepUpdate(step) => session.work.step_updated(step),
+            Report::Steps { steps } => session.work.steps_listed(steps),
             Report::ShellStart { id, command } => {
                 if !session.background.iter().any(|(known, _)| *known == id) {
                     session.background.push((id, BackgroundItem { kind: BackgroundKind::Shell, label: short_label(&command), started_at: now, suspect: false }));
@@ -638,6 +685,43 @@ mod tests {
         reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-opus-5-5"})), 1, "2026-10-02");
         reports.apply_on(report(json!({"session_id": "s", "event": "model", "model": "claude-sonnet-5-5"})), 2, "2026-10-02");
         assert_eq!(reports.session("s").unwrap().model.as_deref(), Some("claude-sonnet-5-5"));
+    }
+
+    #[test]
+    fn subagents_workflows_and_the_task_list_reported_by_the_mod_become_the_nodes_work() {
+        use crate::node_work::StepStatus;
+        let reports = Reports::default();
+        let apply = |value: Value, at| reports.apply_on(report(value), at, "2026-10-06");
+        apply(json!({"session_id": "s", "event": "model", "model": "claude-opus-5-5"}), 1);
+        apply(json!({"session_id": "s", "event": "subagent.start", "id": "a1", "description": "Fix the parser",
+            "type": "general-purpose", "model": "claude-sonnet-5"}), 2);
+        apply(json!({"session_id": "s", "event": "model", "model": "claude-haiku-5", "agent_id": "a1"}), 3);
+        apply(json!({"session_id": "s", "event": "workflow.start", "id": "w1", "name": "review-loop", "transcript_dir": "/tmp/w1"}), 4);
+        apply(json!({"session_id": "s", "event": "step.create", "id": "1", "subject": "Read", "active_form": "Reading"}), 5);
+        apply(json!({"session_id": "s", "event": "step.create", "id": "2", "subject": "Fix"}), 6);
+        apply(json!({"session_id": "s", "event": "step.update", "id": "1", "status": "in_progress"}), 7);
+        apply(json!({"session_id": "s", "event": "step.update", "id": "2", "status": "blocked_on_review"}), 8);
+        let session = reports.session("s").unwrap();
+        assert_eq!(session.model.as_deref(), Some("claude-opus-5-5"), "a subagent's model is not the main thread's");
+        assert_eq!(session.work.agents[0].model.as_deref(), Some("claude-haiku-5"));
+        assert_eq!(session.work.agents[0].kind.as_deref(), Some("general-purpose"));
+        assert_eq!(session.work.workflows[0].name, "review-loop");
+        assert_eq!(session.work.steps.iter().map(|step| step.status).collect::<Vec<_>>(), [StepStatus::InProgress, StepStatus::Pending]);
+        assert_eq!(session.background.len(), 2, "a running workflow keeps the node busy like a subagent");
+
+        apply(json!({"session_id": "s", "event": "subagent.end", "id": "a1"}), 9);
+        apply(json!({"session_id": "s", "event": "steps", "steps": [
+            {"id": "1", "subject": "Read", "status": "completed"}, {"id": "2", "subject": "Fix", "status": "completed"}]}), 10);
+        apply(json!({"session_id": "s", "event": "background", "tasks": [
+            {"id": "w1", "type": "workflow", "description": "Review", "name": "review-loop"}]}), 11);
+        let session = reports.session("s").unwrap();
+        assert_eq!(session.work.agents[0].finished_at, Some(9));
+        assert_eq!(session.work.workflows[0].finished_at, None);
+        assert_eq!(session.background[0].1.label, "review-loop");
+        assert!(session.work.steps.iter().all(|step| step.status == StepStatus::Completed));
+
+        apply(json!({"session_id": "s", "event": "background", "tasks": []}), 12);
+        assert_eq!(reports.session("s").unwrap().work.workflows[0].finished_at, Some(12));
     }
 
     #[test]

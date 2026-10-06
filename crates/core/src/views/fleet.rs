@@ -1,5 +1,5 @@
 use super::{
-    BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, Style, Tone,
+    BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, StepState, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
 use crate::domain_v2::{AgentId, MergeAttemptState, PrState, TaskState};
@@ -159,6 +159,89 @@ pub(super) fn activity(node: &super::LiveNode) -> Option<super::Row> {
     Some(row)
 }
 
+/// How far the node's task list has got ("3/5"), while a step is still open.
+fn progress_badge(node: &super::LiveNode) -> Option<super::Label> {
+    let done = node.steps.iter().filter(|step| step.state == StepState::Completed).count();
+    (done < node.steps.len()).then(|| super::Label { text: format!("{done}/{}", node.steps.len()), tone: Tone::Neutral })
+}
+
+fn ran_for(secs: u64) -> String {
+    match secs {
+        0..60 => format!("{secs}s"),
+        60..3600 => format!("{}m {:02}s", secs / 60, secs % 60),
+        _ => format!("{}h {:02}m", secs / 3600, secs % 3600 / 60),
+    }
+}
+
+fn run_row(id: &str, run: &super::LiveRun, subtitle: Option<String>, lang: super::Lang) -> super::Row {
+    let mut row = common::row(id, "node", Icon::History, run.label.clone(), subtitle);
+    row.link = None;
+    match run.ran_secs {
+        Some(secs) => {
+            row.badges.push(super::Label { text: t!(lang, "Finished", "Terminado").into(), tone: Tone::Neutral });
+            row.trailing = Some(Trailing::Text { text: ran_for(secs) });
+        }
+        None => {
+            row.badges.push(super::Label { text: t!(lang, "Running", "En marcha").into(), tone: Tone::Info });
+            row.trailing = Some(Trailing::Time { at: run.since.clone(), format: super::TimeFormat::Relative });
+        }
+    }
+    if run.suspect {
+        row.badges.push(super::Label { text: t!(lang, "Possibly hung", "Quizá colgado").into(), tone: Tone::Warning });
+    }
+    row
+}
+
+/// What the node runs beside its main thread and how far its task list has got: shown on the
+/// node and on the task it works.
+pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<super::Section> {
+    let mut sections = vec![];
+    if !node.steps.is_empty() {
+        let done = node.steps.iter().filter(|step| step.state == StepState::Completed).count();
+        let mut facts = vec![Fact {
+            label: t!(lang, "Progress", "Progreso").into(),
+            value: tf!(lang, "{done} of {total}", "{done} de {total}", done = done, total = node.steps.len()),
+            tone: Some(if done == node.steps.len() { Tone::Success } else { Tone::Info }),
+            link: None,
+        }];
+        if let Some(step) = node.steps.iter().find(|step| step.state == StepState::InProgress) {
+            facts.push(Fact { label: t!(lang, "Now", "Ahora").into(),
+                value: step.active_form.clone().unwrap_or_else(|| step.subject.clone()), tone: None, link: None });
+        }
+        let mut items = vec![Item::Facts(Facts { items: facts })];
+        items.extend(node.steps.iter().enumerate().map(|(index, step)| {
+            let icon = if step.state == StepState::Completed { Icon::Check } else { Icon::Task };
+            let mut row = common::row(&format!("step:{index}"), "node", icon, step.subject.clone(), None);
+            row.link = None;
+            row.struck = step.state == StepState::Completed;
+            if step.state == StepState::InProgress {
+                row.badges.push(super::Label { text: t!(lang, "In progress", "En curso").into(), tone: Tone::Info });
+            }
+            Item::Row(row)
+        }));
+        sections.push(common::section("steps", Some(t!(lang, "Steps", "Pasos").into()), items));
+    }
+    if !node.subagents.is_empty() {
+        let rows = node.subagents.iter().enumerate().map(|(index, run)| {
+            let about = [run.kind.clone(), run.model.as_deref().map(crate::model_label::model_label)]
+                .into_iter().flatten().collect::<Vec<_>>().join(" · ");
+            Item::Row(run_row(&format!("subagent:{index}"), run, (!about.is_empty()).then_some(about), lang))
+        }).collect();
+        sections.push(common::section("subagents", Some(t!(lang, "Subagents", "Subagentes").into()), rows));
+    }
+    if !node.workflows.is_empty() {
+        let rows = node.workflows.iter().enumerate().map(|(index, run)| {
+            let agents = run.agents.map(|count| match count {
+                1 => t!(lang, "1 agent", "1 agente").into(),
+                count => tf!(lang, "{count} agents", "{count} agentes", count = count),
+            });
+            Item::Row(run_row(&format!("workflow:{index}"), run, agents, lang))
+        }).collect();
+        sections.push(common::section("workflows", Some(t!(lang, "Workflows", "Flujos de trabajo").into()), rows));
+    }
+    sections
+}
+
 /// A node and its one task as one Fleet item. On iOS it reads as the task, names the node only
 /// when the name adds something, and says what it does now; the TUI lists the task under the node.
 pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
@@ -208,6 +291,7 @@ pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<
     {
         row.badges.push(super::Label { text: text.clone(), tone: if live.background_suspect { Tone::Warning } else { Tone::Neutral } });
     }
+    row.badges.extend(live.and_then(progress_badge));
     if let Some(model) = live.and_then(|live| live.model.as_deref()) {
         row.badges.push(super::Label { text: crate::model_label::model_label(model), tone: Tone::Neutral });
     }
@@ -458,6 +542,9 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(needs) = live.and_then(|node| node.needs.as_ref()).filter(|needs| !needs.is_empty()) {
         view.sections.push(common::section("needs", Some(t!(context.lang, "What it needs", "Qué necesita").into()),
             vec![Item::Markdown(Markdown { text: needs.clone(), truncated: false, more: None, commentable: false })]));
+    }
+    if let Some(node) = live {
+        view.sections.extend(work_sections(node, context.lang));
     }
     if let Some(node) = live.filter(|node| !node.background.is_empty()) {
         let rows = node.background.iter().map(|background| {

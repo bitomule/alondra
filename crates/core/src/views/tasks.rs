@@ -569,6 +569,11 @@ pub(super) fn detail(id: &str, context: &RenderContext<'_>) -> Result<View, Buil
     if let Some(now) = now_line(task, context) {
         view.sections.push(common::section("now", None, vec![Item::Row(now)]));
     }
+    if let Some(node) = task.agent_id.as_ref()
+        .filter(|agent| !task.state.terminal() && common::current_task(context.domain, agent).is_some_and(|current| current.id == task.id))
+        .and_then(|agent| context.live.nodes.iter().find(|node| node.agent_id == agent.0)) {
+        view.sections.extend(super::fleet::work_sections(node, context.lang));
+    }
     if let Some(history) = context
         .live
         .task_history
