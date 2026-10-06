@@ -42,6 +42,7 @@ mod mods_check;
 mod node_push;
 mod node_reports;
 mod node_revival;
+mod notices;
 mod notifier;
 mod options;
 mod orchestrate;

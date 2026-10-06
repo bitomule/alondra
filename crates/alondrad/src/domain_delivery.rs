@@ -56,7 +56,7 @@ pub async fn run_v2(
     }
 }
 
-async fn deliver_one_v2(
+pub(crate) async fn deliver_one_v2(
     domain: &DomainRuntime,
     home: &Path,
     push: &Push,
