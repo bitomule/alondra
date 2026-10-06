@@ -4,11 +4,11 @@
   "view": "tasks",
   "key": "tasks",
   "client": "ios",
-  "version": "v195587c394dd2bc7",
+  "version": "v38c9341a9e9d5ac2",
   "cursor": "cursor-1",
   "title": "Tareas",
   "status": {
-    "version": "v34d8e0b7a21d7487",
+    "version": "vefbd97604ad4892a",
     "summary": "2 preguntas · 3 por leer · 0 nodos trabajando",
     "badge": 5,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 5
+        "value": 6
       },
       {
         "id": "agents",
@@ -81,7 +81,7 @@
     {
       "id": "active",
       "title": "Activas",
-      "count": 4,
+      "count": 5,
       "collapsed": false,
       "items": [
         {
@@ -272,6 +272,47 @@
           },
           "depth": 0,
           "struck": false
+        },
+        {
+          "type": "row",
+          "id": "r-scheduled",
+          "link": {
+            "kind": "view",
+            "key": "task:t-scheduled-lumo"
+          },
+          "icon": "mission",
+          "title": "Lumo · weekly improvement",
+          "subtitle": "Activa",
+          "depth": 0,
+          "struck": false,
+          "children": [
+            {
+              "id": "t-scheduled-lumo",
+              "link": {
+                "kind": "view",
+                "key": "task:t-scheduled-lumo"
+              },
+              "icon": "mission",
+              "title": "Lumo · weekly improvement",
+              "subtitle": "Trabajando",
+              "badges": [
+                {
+                  "text": "Trabajando",
+                  "tone": "accent"
+                },
+                {
+                  "text": "Programada",
+                  "tone": "neutral"
+                }
+              ],
+              "trailing": {
+                "kind": "count",
+                "value": 0
+              },
+              "depth": 1,
+              "struck": false
+            }
+          ]
         }
       ]
     },

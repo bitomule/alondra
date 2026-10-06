@@ -139,6 +139,15 @@ struct TaskCard: View {
                 if let state = line.state {
                     Text(verbatim: state).font(.caption.weight(.semibold)).foregroundStyle(tint).lineLimit(1)
                 }
+                ForEach(line.marks, id: \.self) { mark in
+                    Text(verbatim: mark)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Palette.hairline, in: .capsule)
+                        .lineLimit(1)
+                }
                 Spacer(minLength: 8)
                 if line.waiting > 0 { WaitingBadge(count: line.waiting) }
                 Image(systemName: "chevron.right")
