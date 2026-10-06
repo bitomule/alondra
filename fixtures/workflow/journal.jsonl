@@ -1,0 +1,7 @@
+{"type":"launched"}
+{"type":"started","key":"v2:16d9792cc6dc9535d054048d3ed2bf9a113d5fe01f12ed4257da4a1f463eb608","agentId":"a15e40322473ae6d9","label":"count-a","phase":"First"}
+{"type":"result","key":"v2:16d9792cc6dc9535d054048d3ed2bf9a113d5fe01f12ed4257da4a1f463eb608","agentId":"a15e40322473ae6d9","result":"79"}
+{"type":"started","key":"v2:8bd8475a0d1169cc4ac990f111327d590b20cd537ac5559820fa63e2598bd6d3","agentId":"ad315649bfc4c9064","label":"count-b","phase":"First"}
+{"type":"result","key":"v2:8bd8475a0d1169cc4ac990f111327d590b20cd537ac5559820fa63e2598bd6d3","agentId":"ad315649bfc4c9064","result":"196"}
+{"type":"started","key":"v2:b8e019cf8947b26ad8fbe95455d51c1e3fb34ed3e6b22476812429bd54d1a2fd","agentId":"a25a90245f5242e1d","label":"count-c","phase":"Second"}
+{"type":"result","key":"v2:b8e019cf8947b26ad8fbe95455d51c1e3fb34ed3e6b22476812429bd54d1a2fd","agentId":"a25a90245f5242e1d","result":"19"}

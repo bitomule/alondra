@@ -192,6 +192,55 @@ fn run_row(id: &str, run: &super::LiveRun, subtitle: Option<String>, lang: super
     row
 }
 
+/// Where a workflow has got: its phase, how many of its agents run and are done, and the most
+/// recent of them.
+fn workflow_items(id: &str, workflow: &super::LiveWorkflow, lang: super::Lang) -> Vec<Item> {
+    let mut facts = vec![];
+    if let Some(phase) = &workflow.phase {
+        let value = match (workflow.phase_index, workflow.phase_count) {
+            (Some(index), Some(count)) => tf!(lang, "{phase} ({index} of {count})", "{phase} ({index} de {count})",
+                phase = phase, index = index, count = count),
+            _ => phase.clone(),
+        };
+        facts.push(Fact { label: t!(lang, "Phase", "Fase").into(), value, tone: None, link: None });
+    }
+    if workflow.running + workflow.done > 0 {
+        let value = tf!(lang, "{running} running · {done} done", "{running} en marcha · {done} terminados",
+            running = workflow.running, done = workflow.done);
+        let tone = if workflow.running > 0 { Tone::Info } else { Tone::Success };
+        facts.push(Fact { label: t!(lang, "Agents", "Agentes").into(), value, tone: Some(tone), link: None });
+    }
+    if let Some(count) = workflow.total_tokens {
+        facts.push(Fact { label: t!(lang, "Tokens", "Tokens").into(), value: tokens(count), tone: None, link: None });
+    }
+    let mut items = vec![];
+    if !facts.is_empty() {
+        items.push(Item::Facts(Facts { items: facts }));
+    }
+    for (index, agent) in workflow.agents.iter().take(super::WORKFLOW_AGENT_ROWS).enumerate() {
+        let about = [agent.phase.clone(), agent.model.as_deref().map(crate::model_label::launched_model_label)]
+            .into_iter().flatten().collect::<Vec<_>>().join(" · ");
+        let icon = if agent.running { Icon::Task } else { Icon::Check };
+        let mut row = common::row(&format!("{id}:agent:{index}"), "node", icon, agent.label.clone(), (!about.is_empty()).then_some(about));
+        row.link = None;
+        row.badges.push(if agent.running {
+            super::Label { text: t!(lang, "Running", "En marcha").into(), tone: Tone::Info }
+        } else {
+            super::Label { text: t!(lang, "Done", "Hecho").into(), tone: Tone::Neutral }
+        });
+        items.push(Item::Row(row));
+    }
+    let shown = workflow.agents.len().min(super::WORKFLOW_AGENT_ROWS);
+    let more = (workflow.running + workflow.done) as usize;
+    if more > shown {
+        let mut row = common::row(&format!("{id}:more"), "node", Icon::History,
+            tf!(lang, "+{count} more", "+{count} más", count = more - shown), None);
+        row.link = None;
+        items.push(Item::Row(row));
+    }
+    items
+}
+
 /// What the node runs beside its main thread and how far its task list has got: shown on the
 /// node and on the task it works.
 pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<super::Section> {
@@ -230,14 +279,18 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
         sections.push(common::section("subagents", Some(t!(lang, "Subagents", "Subagentes").into()), rows));
     }
     if !node.workflows.is_empty() {
-        let rows = node.workflows.iter().enumerate().map(|(index, run)| {
+        let items = node.workflows.iter().enumerate().flat_map(|(index, run)| {
             let agents = run.agents.map(|count| match count {
                 1 => t!(lang, "1 agent", "1 agente").into(),
                 count => tf!(lang, "{count} agents", "{count} agentes", count = count),
             });
-            Item::Row(run_row(&format!("workflow:{index}"), run, agents, lang))
+            let mut items = vec![Item::Row(run_row(&format!("workflow:{index}"), run, agents, lang))];
+            if let Some(workflow) = &run.workflow {
+                items.extend(workflow_items(&format!("workflow:{index}"), workflow, lang));
+            }
+            items
         }).collect();
-        sections.push(common::section("workflows", Some(t!(lang, "Workflows", "Flujos de trabajo").into()), rows));
+        sections.push(common::section("workflows", Some(t!(lang, "Workflows", "Flujos de trabajo").into()), items));
     }
     sections
 }
