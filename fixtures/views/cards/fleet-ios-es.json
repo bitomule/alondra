@@ -4,11 +4,11 @@
   "view": "fleet",
   "key": "fleet",
   "client": "ios",
-  "version": "v1df938c515675882",
+  "version": "v9789eaa1c882fbc4",
   "cursor": "cursor-1",
   "title": "Flota",
   "status": {
-    "version": "va07676e28ebc85d2",
+    "version": "vb05d782b87d67d8a",
     "summary": "2 preguntas · 3 por leer · 1 nodo trabajando",
     "badge": 5,
     "counts": [
@@ -20,7 +20,7 @@
       {
         "id": "tasks",
         "label": "Tareas",
-        "value": 6
+        "value": 4
       },
       {
         "id": "agents",

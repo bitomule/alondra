@@ -1,6 +1,8 @@
 //! Text rendering for daemon-built views. The component switch lives here so new view
 //! components have one deliberate TUI representation.
 
+use std::collections::BTreeSet;
+
 use alondra_core::domain::CardKind;
 use alondra_core::views::{Action, Card, Icon, Item, Label, Row, Section, View};
 use ratatui::{
@@ -30,9 +32,41 @@ pub fn sections(view: &View) -> impl Iterator<Item = &Section> {
 
 /// What a list screen lets the user move over, in order: its rows and its cards, each with the
 /// view it opens and whether it hangs under the one above.
-pub fn entries(view: &View) -> Vec<(String, bool, Option<alondra_core::views::Link>)> {
+const SECTION_HEADER: &str = "section:";
+
+/// Tasks folds its finished and archived sections; the rest of the lists stay open as they were.
+fn folds(view: &View, section: &Section) -> bool {
+    view.key == "tasks" && section.collapsed
+}
+
+/// The list key of a section header the user opens and closes: one the daemon sends folded.
+pub fn header_key(view: &View, section: &Section) -> Option<String> {
+    (folds(view, section) && section.title.is_some() && !section.items.is_empty())
+        .then(|| format!("{SECTION_HEADER}{}", section.id))
+}
+
+/// The section a header key opens and closes.
+pub fn header_section(key: &str) -> Option<&str> {
+    key.strip_prefix(SECTION_HEADER)
+}
+
+/// A section the daemon sends folded stays folded until the user opens it.
+pub fn folded(view: &View, section: &Section, open: &BTreeSet<String>) -> bool {
+    folds(view, section) && !open.contains(&section.id)
+}
+
+pub fn entries(
+    view: &View,
+    open: &BTreeSet<String>,
+) -> Vec<(String, bool, Option<alondra_core::views::Link>)> {
     let mut result = Vec::new();
     for section in &view.sections {
+        if let Some(key) = header_key(view, section) {
+            result.push((key, false, None));
+        }
+        if folded(view, section, open) {
+            continue;
+        }
         for item in &section.items {
             match item {
                 Item::Row(row) if opens_schedules(view, &row.id) => {}

@@ -60,7 +60,7 @@ pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) 
             Count {
                 id: "tasks".into(),
                 label: t!(context.lang, "Tasks", "Tareas").into(),
-                value: projection.tasks.len() as u32,
+                value: projection.tasks.iter().filter(|task| task.active()).count() as u32,
             },
             Count {
                 id: "agents".into(),
