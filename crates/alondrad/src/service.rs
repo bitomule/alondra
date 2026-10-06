@@ -5102,7 +5102,9 @@ agreement_key = "{}"
         .unwrap()
         .unwrap();
         restarted.set_relay_url(service.relay_url());
-        release.add_permits(1);
+        // The aborted read's server handler may still wait for a permit: release one for it
+        // and one for the restarted read, or it can take the only one and starve the read.
+        release.add_permits(2);
         restarted.handle(interrupted, &epoch).await.unwrap();
         assert_eq!(
             opened_results(&service, &phone, &responses).last().unwrap(),
