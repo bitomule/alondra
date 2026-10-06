@@ -12,7 +12,7 @@ extension NotificationRuntime {
         var client = SettingsClient(observe: { [weak self] in
             await MainActor.run { [weak self] in
                 guard let self else { return AsyncStream { $0.finish() } }
-                return SettingsObservation.stream(push: self.push)
+                return SettingsObservation.stream(runtime: self)
             }
         }, save: { [weak self] next, expected in
             try await MainActor.run { [weak self] in
@@ -45,15 +45,17 @@ extension NotificationRuntime {
 }
 
 @MainActor private final class SettingsObservation {
-    let push: PushCenter
+    let runtime: NotificationRuntime
     let continuation: AsyncStream<NotificationSettings>.Continuation
     private var active = true
-    init(push: PushCenter, continuation: AsyncStream<NotificationSettings>.Continuation) {
-        self.push = push; self.continuation = continuation
+    private var push: PushCenter { runtime.push }
+    init(runtime: NotificationRuntime, continuation: AsyncStream<NotificationSettings>.Continuation) {
+        self.runtime = runtime; self.continuation = continuation
     }
-    static func stream(push: PushCenter) -> AsyncStream<NotificationSettings> {
+    static func stream(runtime: NotificationRuntime) -> AsyncStream<NotificationSettings> {
+        let push = runtime.push
         let (stream, continuation) = AsyncStream<NotificationSettings>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        let observation = SettingsObservation(push: push, continuation: continuation)
+        let observation = SettingsObservation(runtime: runtime, continuation: continuation)
         continuation.onTermination = { _ in Task { @MainActor in observation.active = false; observation.continuation.onTermination = nil } }
         observation.track()
         Task { await push.refreshAuthorization() }
@@ -68,12 +70,13 @@ extension NotificationRuntime {
             case .denied: .denied
             case .authorized: .authorized
             }
-            let delivery: NotificationSettings.Delivery = switch push.registration {
+            var delivery: NotificationSettings.Delivery = switch push.registration {
             case .idle: .idle
             case .sending: .registering
             case .registered: .registered
             case .failed(let message): .failed(message)
             }
+            if let error = runtime.error { delivery = .failed(error) }
             return NotificationSettings(permission: permission, delivery: delivery,
                 quietHours: QuietHours(enabled: self.push.quietHours.enabled, start: self.push.quietHours.start, end: self.push.quietHours.end))
         } onChange: { [weak self] in

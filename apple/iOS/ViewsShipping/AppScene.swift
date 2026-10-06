@@ -121,11 +121,6 @@ private struct ApprovedServiceScene: View {
         .onChange(of: owner.store.restorationInFlight) { wasSigningIn, signingIn in
             if wasSigningIn && !signingIn { retry() }
         }
-        .safeAreaInset(edge: .bottom) {
-            if let error = notifications.statusError {
-                Text(error).font(.footnote).padding().accessibilityLabel("Notifications: " + error)
-            }
-        }
         .task {
             await context.connect(services)
             context.consumeNotification(notifications, services: services, active: phase == .active)

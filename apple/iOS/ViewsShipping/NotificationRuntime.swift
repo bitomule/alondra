@@ -23,11 +23,6 @@ final class NotificationRuntime {
     private var identity: ObjectIdentifier?
     private var generation = 0
     private(set) var error: String?
-    var statusError: String? {
-        if let error { return error }
-        if case .failed(let message) = push.registration { return message }
-        return nil
-    }
 
     init() {
         let group = Bundle.main.object(forInfoDictionaryKey: "AlondraPushKeychainAccessGroup") as? String

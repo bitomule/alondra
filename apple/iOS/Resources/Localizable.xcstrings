@@ -55,6 +55,8 @@
     "Search fleet": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Buscar en la flota"}}}},
     "Service is no longer active": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El servicio ya no está activo"}}}},
     "Choose a non-empty file no larger than 20 MiB.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Elige un archivo que no esté vacío y no supere los 20 MiB."}}}},
+    "The Mac didn’t confirm it. Try again.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "El Mac no lo ha confirmado. Inténtalo de nuevo."}}}},
+    "Alondra couldn’t prepare this request.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Alondra no ha podido preparar esta petición."}}}},
     "The attachment could not be loaded.": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "No se pudo cargar el adjunto."}}}},
     "Open attachment": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Abrir adjunto"}}}},
     "Attachments": {"localizations": {"es": {"stringUnit": {"state": "translated", "value": "Adjuntos"}}}},
