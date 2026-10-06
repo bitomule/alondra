@@ -493,6 +493,33 @@ pub fn filter_projects(ranked: &[String], query: &str, suggested: Option<&str>) 
     out
 }
 
+/// How a launched node is told to organise its work.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Approach {
+    #[default]
+    Solo,
+    Subagents,
+    Workflow,
+}
+
+impl Approach {
+    /// The `## How to work` section of a node's mission.
+    pub fn how_to_work(self) -> Vec<String> {
+        let mut lines = vec![
+            "## How to work".to_string(),
+            String::new(),
+            "If this work has more than two steps, write them as tasks in Claude Code's task list (TaskCreate) before starting, mark each one in progress when you start it and completed when it is done (TaskUpdate), so the user can follow your progress.".into(),
+        ];
+        match self {
+            Approach::Solo => {}
+            Approach::Subagents => lines.push("Split independent parts across subagents (the Agent tool) and work on them in parallel. Give each subagent a precise brief: the files, the change and how to check it. Pass model sonnet when the brief is that precise, narrow and low in complexity; pass model opus when the subagent has to design, trace code it does not know, or debug. Review what each subagent returns before you rely on it.".into()),
+            Approach::Workflow => lines.push("Use a workflow (the Workflow tool) to run this: its parts can run in parallel and each has a check. Name a model for each stage: sonnet for stages with a precise, narrow brief; opus for stages that design, trace unfamiliar code or debug. Try it on a small slice first.".into()),
+        }
+        lines
+    }
+}
+
 impl Resolved {
     /// One line for the orchestrator: what the user chose, and that Alondra writes the rules.
     pub fn summary(&self) -> String {
@@ -503,7 +530,7 @@ impl Resolved {
 
     /// The section alondrad appends to a launched node's prompt, so no rule depends on the
     /// orchestrator copying it.
-    pub fn mission_section(&self, request_id: Option<&str>) -> String {
+    pub fn mission_section(&self, request_id: Option<&str>, approach: Approach) -> String {
         let who = match request_id {
             Some(id) => format!("The user chose these for this work (request {id}):"),
             None => "No user request is behind this launch, so these are the defaults:".into(),
@@ -523,6 +550,8 @@ impl Resolved {
         if let Some(issue) = &self.issue {
             lines.push(format!("- This work comes from issue {issue}: write `Fixes {issue}` in the body of the PR that solves it."));
         }
+        lines.push(String::new());
+        lines.extend(approach.how_to_work());
         lines.push(String::new());
         lines.push("When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.".into());
         lines.join("\n")
@@ -697,6 +726,22 @@ on = "Run /review-loop before the merge."
     }
 
     #[test]
+    fn the_mission_says_how_to_work_for_each_approach() {
+        let r = file().resolve(None, &chosen(&[])).unwrap();
+        let section = |a| r.mission_section(None, a);
+        let always = "write them as tasks in Claude Code's task list (TaskCreate)";
+        for approach in [Approach::Solo, Approach::Subagents, Approach::Workflow] {
+            let text = section(approach);
+            assert!(text.contains("## How to work") && text.contains(always), "{approach:?}");
+            assert!(text.find("## How to work") < text.find("`present_result`"), "{approach:?}");
+        }
+        assert!(!section(Approach::Solo).contains("subagents") && !section(Approach::Solo).contains("the Workflow tool"));
+        assert!(section(Approach::Subagents).contains("Split independent parts across subagents (the Agent tool)"));
+        assert!(section(Approach::Workflow).contains("Use a workflow (the Workflow tool)"));
+        assert!(!section(Approach::Workflow).contains("subagents (the Agent tool)"));
+    }
+
+    #[test]
     fn a_request_naming_an_unknown_option_or_value_is_refused() {
         let f = file();
         for (what, c, needle) in [
@@ -713,7 +758,7 @@ on = "Run /review-loop before the merge."
     #[test]
     fn options_become_mission_lines_in_file_order() {
         let r = file().resolve(Some("App"), &chosen(&[("device", Choice::Toggle(true))])).unwrap();
-        let s = r.mission_section(Some("r-7"));
+        let s = r.mission_section(Some("r-7"), Approach::Solo);
         let expected = [
             "## Launch options",
             "",
@@ -723,10 +768,14 @@ on = "Run /review-loop before the merge."
             "- Try on device: yes. Ask the user to try it on a device.",
             "- Adversarial review: yes. Run /review-loop before the merge.",
             "",
+            "## How to work",
+            "",
+            "If this work has more than two steps, write them as tasks in Claude Code's task list (TaskCreate) before starting, mark each one in progress when you start it and completed when it is done (TaskUpdate), so the user can follow your progress.",
+            "",
             "When you reach this point, deliver with `present_result` and is_final true: the orchestrator closes you.",
         ];
         assert_eq!(s, expected.join("\n"));
-        let off = file().resolve(None, &chosen(&[("how_far", val("merge"))])).unwrap().mission_section(None);
+        let off = file().resolve(None, &chosen(&[("how_far", val("merge"))])).unwrap().mission_section(None, Approach::Solo);
         assert!(off.contains("- PR handling: review each PR."), "{off}");
         assert!(off.contains("- How far: merge.\n"), "an empty mission text adds no sentence: {off}");
         assert!(off.contains("- Try on device: no.\n"), "a toggle off without text adds none: {off}");

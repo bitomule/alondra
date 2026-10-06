@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use alondra_core::options::{self, OptionsFile, Resolved};
+use alondra_core::options::{self, Approach, OptionsFile, Resolved};
 
 use crate::hub::Hub;
 
@@ -48,6 +48,6 @@ pub fn launch_args(name: &str, permission_mode: Option<&str>, explicit_model: Op
     args.extend(resolved.launch_flags(explicit_model));
     args.extend(crate::plugins::launch_flags(&[plugin]));
     args.push("--".into());
-    args.push(format!("{}\n\n{}", prompt.trim_end(), resolved.mission_section(request_id)));
+    args.push(format!("{}\n\n{}", prompt.trim_end(), resolved.mission_section(request_id, Approach::Solo)));
     args
 }
