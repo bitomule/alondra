@@ -109,6 +109,14 @@ public struct ActionFeature: Sendable {
     @Dependency(\.viewsClient) var viewsClient
     @Dependency(\.uuid) var uuid
 
+    /// Names the delivery of one command, so a parent that gives up waiting can stop listening for its answer.
+    public struct DeliveryID: Hashable, Sendable {
+        public let commandID: String
+        public init(commandID: String) { self.commandID = commandID }
+    }
+
+    public static var sendFailure: String { String(localized: "Couldn’t send. Try again.") }
+
     public init() {}
 
     public var body: some ReducerOf<Self> {
@@ -259,9 +267,10 @@ public struct ActionFeature: Sendable {
                 await send(.response(reply))
             } catch {
                 await send(.settled(request, applied: false))
-                await send(.failed(String(localized: "Couldn’t send. Try again.")))
+                await send(.failed(Self.sendFailure))
             }
-        })
+        }
+        .cancellable(id: DeliveryID(commandID: request.commandId)))
     }
 
     private func makeRequest(_ state: State, actionID: String) -> ActionRequest {
