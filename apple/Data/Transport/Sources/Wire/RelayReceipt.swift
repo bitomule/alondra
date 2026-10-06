@@ -4,9 +4,9 @@ public struct RelayReceipt: Sendable {
     public let requestID: String
     public let status: String
     public let revision: UInt64
-    public let response: EnvelopeV1?
+    public let response: Envelope?
 
-    public init(requestID: String, status: String, revision: UInt64, response: EnvelopeV1?) {
+    public init(requestID: String, status: String, revision: UInt64, response: Envelope?) {
         self.requestID = requestID
         self.status = status
         self.revision = revision
@@ -15,6 +15,6 @@ public struct RelayReceipt: Sendable {
 }
 
 public protocol RelayRequestTransport: Sendable {
-    func submitRequest(_ envelope: EnvelopeV1) async throws -> RelayReceipt
+    func submitRequest(_ envelope: Envelope) async throws -> RelayReceipt
     func requestStatus(requestID: String) async throws -> RelayReceipt
 }

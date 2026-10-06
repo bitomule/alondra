@@ -2,8 +2,8 @@ use std::sync::OnceLock;
 use std::time::Duration;
 
 use alondra_core::config::Config;
-use alondra_core::domain_v2::reads::{Item, TextChunk};
-use alondra_core::domain_v2::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, Interaction, InteractionId, PROTOCOL_VERSION, Revision};
+use alondra_core::domain::reads::{Item, TextChunk};
+use alondra_core::domain::{AttachmentRef, Command, CommandEnvelope, CommandOutcome, DataEpoch, DomainError, Interaction, InteractionId, PROTOCOL_VERSION, Revision};
 use alondra_core::views::{View as ViewDocument, VIEWS_PROTOCOL};
 use anyhow::{Context, Result, anyhow};
 use serde::de::DeserializeOwned;

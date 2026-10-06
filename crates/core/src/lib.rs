@@ -59,4 +59,4 @@ pub fn now_millis() -> Millis {
         .unwrap_or(0)
 }
 
-pub mod domain_v2;
+pub mod domain;

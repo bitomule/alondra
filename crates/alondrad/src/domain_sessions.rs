@@ -4,7 +4,7 @@
 //! in a private settings file passed with `--settings`: its `env` block reaches the session. The
 //! bearer is written into that file once the launched session's real id is known and bound;
 //! `alondra mcp` reads it from the file the `env` block names. The file goes when the session ends.
-use alondra_core::domain_v2::AgentId;
+use alondra_core::domain::AgentId;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 use std::io::Write;

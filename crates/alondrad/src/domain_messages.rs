@@ -4,7 +4,7 @@
 //! domain command.
 use crate::domain_runtime::DomainRuntime;
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{Actor, AgentId, AttachmentRef, Command, CommandEnvelope, DomainError, InteractionId, PrId, TaskId};
+use alondra_core::domain::{Actor, AgentId, AttachmentRef, Command, CommandEnvelope, DomainError, InteractionId, PrId, TaskId};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::path::Path;
@@ -110,7 +110,7 @@ pub(crate) async fn deliver(domain: &DomainRuntime, home: &Path, user: &Actor, n
 pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user: &Actor, name: &str, pr_id: &PrId) -> Result<Value, DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let pr = state.pull_requests.get(pr_id).ok_or_else(|| refused("not_found", "PR does not exist"))?;
-    if pr.state != alondra_core::domain_v2::PrState::Open {
+    if pr.state != alondra_core::domain::PrState::Open {
         return Err(refused("pr_not_open", format!("{} is no longer open", pr_url(pr))));
     }
     let agent = state.tasks.get(&pr.task_id).and_then(|task| task.agent_id.clone())
@@ -121,12 +121,12 @@ pub(crate) async fn resolve_conflicts(domain: &DomainRuntime, home: &Path, user:
     deliver(domain, home, user, name, &agent, body, false).await
 }
 
-pub(crate) fn pr_url(pr: &alondra_core::domain_v2::PullRequest) -> String {
+pub(crate) fn pr_url(pr: &alondra_core::domain::PullRequest) -> String {
     format!("https://{}/{}/pull/{}", pr.host, pr.repository, pr.number)
 }
 
 /// What the Agent of a conflicting PR is told, whether the user asked or Alondra noticed.
-pub(crate) fn conflicts_text(name: &str, pr: &alondra_core::domain_v2::PullRequest) -> String {
+pub(crate) fn conflicts_text(name: &str, pr: &alondra_core::domain::PullRequest) -> String {
     format!(
         "{name} asks you to resolve the conflicts of {url} with {base}: bring {base} into the branch, resolve them, \
          run the tests and push. When you finish, present the PR again with present_result and its new head. If you cannot resolve them, ask {name}.",
@@ -167,7 +167,7 @@ pub(crate) fn take_held(domain: &DomainRuntime, agent: &AgentId) -> Vec<String> 
 fn mark_read(domain: &DomainRuntime, user: &Actor, interaction_id: InteractionId) -> Result<(), DomainError> {
     let state = domain.state().map_err(|_| refused("storage_unavailable", "domain state unavailable"))?;
     let envelope = CommandEnvelope {
-        protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch,
+        protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch,
         command_id: format!("mark-read-{}", crate::auth::random_hex(8)).into(), expected_revision: state.revision,
         command: Command::MarkRead { interaction_id },
     };
@@ -200,7 +200,7 @@ mod tests {
         let domain = Arc::new(DomainRuntime::open(&home).unwrap());
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
-            let envelope = CommandEnvelope { protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch,
                 command_id: id.into(), expected_revision: state.revision, command };
             domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
         };
@@ -221,14 +221,14 @@ mod tests {
         let (fixture, domain) = world();
         let run = |actor: Actor, id: &str, command: Command| {
             let state = domain.state().unwrap();
-            let envelope = CommandEnvelope { protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch,
+            let envelope = CommandEnvelope { protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch,
                 command_id: id.into(), expected_revision: state.revision, command };
             domain.execute(&actor, &envelope, None, || Ok(())).unwrap();
         };
         run(Actor::Agent { agent_id: "agent-a".into() }, "pr", Command::RegisterPr {
             task_id: "t".into(), pr_id: "pr".into(), host: "github.com".into(), repository: "me/app".into(), number: 7,
             head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
-            allowed_methods: vec![alondra_core::domain_v2::MergeMethod::Squash] });
+            allowed_methods: vec![alondra_core::domain::MergeMethod::Squash] });
         let node = Node::connect(&domain, "agent-a");
         let answer = resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
@@ -238,7 +238,7 @@ mod tests {
         assert_eq!(node.lines.lock().unwrap()[0]["as_user"], false, "a notice from Alondra is not the user's words");
         assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"none".into()).await.unwrap_err().code, "not_found");
         run(Actor::System, "closed", Command::ObservePrState { pr_id: "pr".into(), head: "0123456789abcdef0123456789abcdef01234567".into(),
-            base: "main".into(), state: alondra_core::domain_v2::PrState::Closed, merged_head: None });
+            base: "main".into(), state: alondra_core::domain::PrState::Closed, merged_head: None });
         assert_eq!(resolve_conflicts(&domain, &fixture.0, &user(), "Ana", &"pr".into()).await.unwrap_err().code, "pr_not_open");
         assert_eq!(node.texts().len(), 1, "a refusal sends nothing");
     }
@@ -318,16 +318,16 @@ mod tests {
         let (fixture, domain) = world();
         let state = domain.state().unwrap();
         domain.execute(&Actor::System, &CommandEnvelope {
-            protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "i".into(),
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION, data_epoch: state.data_epoch, command_id: "i".into(),
             expected_revision: state.revision, command: Command::PublishInformation { attachments: vec![], interaction_id: "info-1".into(),
-                scope: alondra_core::domain_v2::Scope::Task { task_id: "t".into() }, recipient: alondra_core::domain_v2::Recipient::User, body: "Done".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update") },
+                scope: alondra_core::domain::Scope::Task { task_id: "t".into() }, recipient: alondra_core::domain::Recipient::User, body: "Done".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update") },
         }, None, || Ok(())).unwrap();
         let _node = Node::connect(&domain, "agent-a");
         let answer = deliver(&domain, &fixture.0, &user(), "Ana", &"agent-a".into(),
             body(json!({"text": "Thanks", "kind": "reply", "interaction_id": "info-1", "mark_read": true})), true).await.unwrap();
         assert_eq!(answer, json!({"delivery_state": "handed"}));
         let read = &domain.state().unwrap().interactions[&InteractionId::from("info-1")].payload;
-        assert!(matches!(read, alondra_core::domain_v2::InteractionPayload::Information { read_by } if !read_by.is_empty()), "{read:?}");
+        assert!(matches!(read, alondra_core::domain::InteractionPayload::Information { read_by } if !read_by.is_empty()), "{read:?}");
     }
 
     #[tokio::test]

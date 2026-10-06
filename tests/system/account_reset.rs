@@ -63,7 +63,7 @@ pub(super) async fn execute(driver: &Driver, after: bool) -> Result<()> {
     let completed = driver
         .call(13, LINKS[link].0, Some(0), "GET", &status_path, vec![], 200)
         .await?;
-    let response: EnvelopeV1 = serde_json::from_value(completed["response"].clone())?;
+    let response: Envelope = serde_json::from_value(completed["response"].clone())?;
     ensure!(
         response
             .open(

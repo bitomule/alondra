@@ -192,7 +192,7 @@ public actor RelaySession: OperationAPI, PushRegistrationAPI {
         return wait
     }
 
-    private func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> EnvelopeV1 {
+    private func sealRequest(requestID: String, method: String, path: String, body: Data?) throws -> Envelope {
         do { return try codec.sealRequest(requestID: requestID, method: method, path: path, body: body) }
         catch EnvelopeError.invalidRequest { throw RelaySessionError.invalidRequest }
     }

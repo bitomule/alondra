@@ -46,7 +46,7 @@ private struct PushFixture {
             "payload": ["aps": ["alert": ["title": context.macID, "body": "Synthetic text"]],
                         "alondra": ["protocol": 1, "kind": "question", "card": "q-42", "data_epoch": "e", "actions": []]]
         ])
-        let envelope = try EnvelopeV1.seal(route: route ?? context.macID, sender: sender ?? context.macID,
+        let envelope = try Envelope.seal(route: route ?? context.macID, sender: sender ?? context.macID,
             recipient: recipientID ?? context.deviceID, requestID: "push-test", kind: "push",
             expiresAtMilliseconds: expiry, plaintext: body, senderKey: signer, recipientKey: recipient.publicKey)
         return try JSONSerialization.data(withJSONObject: ["alondra": [

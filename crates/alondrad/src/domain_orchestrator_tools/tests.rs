@@ -1,6 +1,6 @@
 use super::*;
 use crate::node_push::testing::Node;
-use alondra_core::domain_v2::{AttachmentRef, ModelChooser, TaskModel, TaskState};
+use alondra_core::domain::{AttachmentRef, ModelChooser, TaskModel, TaskState};
 use alondra_core::options::OptionsFile;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -378,8 +378,8 @@ async fn going_over_todays_slice_launches_without_a_warning_and_asks_the_user_on
     let cards = || f.domain.state().unwrap().interactions.values()
         .filter(|card| card.id.0.starts_with("over-pace-")).cloned().collect::<Vec<_>>();
     let [card] = cards().try_into().unwrap();
-    assert_eq!(card.card.kind, alondra_core::domain_v2::CardKind::Decide);
-    assert_eq!(card.author, alondra_core::domain_v2::Author::System);
+    assert_eq!(card.card.kind, alondra_core::domain::CardKind::Decide);
+    assert_eq!(card.author, alondra_core::domain::Author::System);
     assert!(!card.blocking);
     assert_eq!(card.body, "41/18/53");
     crate::usage_pause::raise_over_pace_card(&f.domain, alondra_core::now_millis());

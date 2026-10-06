@@ -2,7 +2,7 @@ use super::{
     BuildError, Client, Icon, Item, Label, Notice, RenderContext, Tone, Trailing, View, common,
     text::{t, tf},
 };
-use crate::domain_v2::{Task, TaskState};
+use crate::domain::{Task, TaskState};
 use std::collections::BTreeMap;
 
 fn task_subtitle(task: &Task, context: &RenderContext<'_>, group: Option<&str>) -> Option<String> {

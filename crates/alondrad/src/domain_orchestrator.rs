@@ -7,7 +7,7 @@ use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::OutboxMessage;
 use crate::orchestrator_process::{self as process, Invocation, Ownership};
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{CardSpec, DomainError, DomainState, InteractionPayload, QuestionOption, Scope};
+use alondra_core::domain::{CardSpec, DomainError, DomainState, InteractionPayload, QuestionOption, Scope};
 use alondra_core::now_millis;
 use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
@@ -282,7 +282,7 @@ impl Executor {
         let output = process::execute(Invocation {
             executable: &self.executable, cwd: &directory, home: &self.home,
             plugins: vec![node_plugin.as_path(), orchestrator_plugin.as_path()],
-            domain_v2: true, projects_root: projects_root.as_deref(),
+            domain: true, projects_root: projects_root.as_deref(),
             capability: Some(capability.expose_for_child_environment()),
             session: &session, resume, execution: &run_id, prompt: &prompt, ownership,
         }, |_| {
@@ -389,7 +389,7 @@ impl Executor {
             &format!("{PROBLEM_PREFIX}{run_id}"),
             Scope::Orchestrator { request_id: None },
             "Decide what to do with the orchestrator's failed batch".into(),
-            alondra_core::domain_v2::clip(error, CardSpec::WHY_MAX),
+            alondra_core::domain::clip(error, CardSpec::WHY_MAX),
             format!("The orchestrator's batch failed and some of its effects may have happened. Last error: {error}"),
             vec![
                 option(PROBLEM_RETRY, "Retry the batch", "Run the same batch again; check its effects first"),
@@ -437,7 +437,7 @@ impl Executor {
 
 /// The durable domain as the orchestrator needs it to act on a batch: its MCP has no read
 /// tool, so every open Request and every Task not archived travels in the prompt.
-fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain_v2::RequestId) -> Option<String>) -> String {
+fn summary(state: &DomainState, choices: impl Fn(&alondra_core::domain::RequestId) -> Option<String>) -> String {
     let mut text = String::from("\nDURABLE DOMAIN (open Requests and Tasks not archived):\n");
     let one_line = |body: &str| body.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(SUMMARY_LINE).collect::<String>();
     for request in state.requests.values().filter(|request| !request.closed) {
@@ -587,7 +587,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alondra_core::domain_v2::*;
+    use alondra_core::domain::*;
     use std::collections::BTreeSet;
 
     const SUCCESS: &str = STUB_SUCCESS;
@@ -629,7 +629,7 @@ mod tests {
         command(domain, Actor::Agent { agent_id: "a".into() }, &format!("question-{n}"), Command::AskQuestion {
             attachments: vec![], interaction_id: format!("q{n}").into(), scope: Scope::Task { task_id: "t".into() },
             recipient: Recipient::Orchestrator, body: format!("Where do I put change {n}?"), blocking: false,
-            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            options: vec![QuestionOption { id: "here".into(), label: "Here".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         });
     }
 
@@ -740,7 +740,7 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
         ask_orchestrator(domain, 2);
         command(domain, Actor::System, "user-info", Command::PublishInformation {
             interaction_id: "info-user".into(), scope: Scope::Task { task_id: "t".into() },
-            recipient: Recipient::User, body: "User notification".into(), attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+            recipient: Recipient::User, body: "User notification".into(), attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
         });
         let cutoff = now_millis().saturating_sub(crate::domain_store::ORCHESTRATOR_MESSAGE_TTL_MS);
         {
@@ -802,12 +802,12 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
 
     fn answer_problem(domain: &DomainRuntime, run_id: &str, option: &str) {
         let state = domain.state().unwrap();
-        domain.execute(&alondra_core::domain_v2::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain_v2::CommandEnvelope {
-            protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION,
+        domain.execute(&alondra_core::domain::Actor::User { user_id: "device:phone".into() }, &alondra_core::domain::CommandEnvelope {
+            protocol_version: alondra_core::domain::PROTOCOL_VERSION,
             data_epoch: state.data_epoch,
             command_id: format!("answer-{option}").into(),
             expected_revision: state.revision,
-            command: alondra_core::domain_v2::Command::AnswerQuestion {
+            command: alondra_core::domain::Command::AnswerQuestion {
                 attachments: vec![], interaction_id: format!("{PROBLEM_PREFIX}{run_id}").into(), option_id: option.into(),
                 inputs: Default::default(),
             },
@@ -824,8 +824,8 @@ printf '%s\n' '{"type":"result","session_id":"'"$session"'","subtype":"success",
             let run = load(&f.executor.home).unwrap().active_run.expect("the failed batch stays claimed");
             let id = format!("{PROBLEM_PREFIX}{}", run.id);
             let problem = domain.state().unwrap().interactions[&id.clone().into()].clone();
-            assert_eq!(problem.card.kind, alondra_core::domain_v2::CardKind::Problem);
-            assert_eq!(problem.author, alondra_core::domain_v2::Author::System);
+            assert_eq!(problem.card.kind, alondra_core::domain::CardKind::Problem);
+            assert_eq!(problem.author, alondra_core::domain::Author::System);
             let InteractionPayload::Question { options, .. } = &problem.payload else { panic!("a Problem is asked like a question") };
             assert_eq!(options.iter().map(|o| o.id.as_str()).collect::<Vec<_>>(), ["retry", "continue", "stop"]);
             assert!(problem.card.why.contains("Claude exited") || !problem.card.why.is_empty(), "{:?}", problem.card);

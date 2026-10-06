@@ -1,7 +1,7 @@
 //! Explicit inspection/resolution of the domain's durable delivery evidence. Never retries a POST.
 use crate::client::Client;
 use alondra_core::delivery::State;
-use alondra_core::domain_v2::{DataEpoch, PROTOCOL_VERSION};
+use alondra_core::domain::{DataEpoch, PROTOCOL_VERSION};
 use anyhow::{Context, Result, ensure};
 use clap::{Args, Subcommand};
 use serde::Deserialize;

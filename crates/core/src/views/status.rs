@@ -3,7 +3,7 @@ use super::{
     text::{t, tf},
     version,
 };
-use crate::domain_v2::DomainProjection;
+use crate::domain::DomainProjection;
 
 pub(super) fn build(projection: &DomainProjection, context: &RenderContext<'_>) -> Status {
     let roots = super::home::waiting(projection);

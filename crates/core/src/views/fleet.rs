@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, RenderContext, StepState, Style, Tone,
     Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain_v2::{AgentId, MergeAttemptState, PrState, TaskState};
+use crate::domain::{AgentId, MergeAttemptState, PrState, TaskState};
 use std::collections::BTreeMap;
 
 fn close_action(id: &str, context: &RenderContext<'_>) -> Option<super::Action> {
@@ -54,7 +54,7 @@ fn interrupt_action(id: &str, context: &RenderContext<'_>) -> Option<super::Acti
 /// then what waits for the user on it, then where its tasks stand.
 /// A node is in Fleet while it is connected, has a task, or is live; one that finished and left
 /// is not, and neither is one the user closed.
-pub(super) fn in_fleet(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> bool {
+pub(super) fn in_fleet(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> bool {
     agent.id.0 != "orchestrator"
         && !context.live.closed_nodes.contains(&agent.id.0)
         && (agent.connected || common::current_task(context.domain, &agent.id).is_some()
@@ -297,7 +297,7 @@ pub(super) fn work_sections(node: &super::LiveNode, lang: super::Lang) -> Vec<su
 
 /// A node and its one task as one Fleet item. On iOS it reads as the task, names the node only
 /// when the name adds something, and says what it does now; the TUI lists the task under the node.
-pub(super) fn node_row(agent: &crate::domain_v2::Agent, context: &RenderContext<'_>) -> super::Row {
+pub(super) fn node_row(agent: &crate::domain::Agent, context: &RenderContext<'_>) -> super::Row {
     let live = context
         .live
         .nodes
@@ -438,11 +438,11 @@ fn recency(agent: &AgentId, context: &RenderContext<'_>) -> Recency {
 fn project_of(agent: &AgentId, context: &RenderContext<'_>) -> String {
     let named = |id: &AgentId| context.live.nodes.iter().find(|node| node.agent_id == id.0)
         .and_then(|node| node.project.as_deref()).filter(|project| *project != "others");
-    let from_request = |task: &crate::domain_v2::Task| {
+    let from_request = |task: &crate::domain::Task| {
         context.domain.tasks.values().filter(|sibling| sibling.request_id == task.request_id)
             .filter_map(|sibling| sibling.agent_id.as_ref()).find_map(named)
     };
-    let from_repository = |task: &crate::domain_v2::Task| {
+    let from_repository = |task: &crate::domain::Task| {
         let pr = context.domain.pull_requests.get(task.pr_id.as_ref()?)?;
         let name = pr.repository.rsplit('/').next()?;
         context.live.projects.iter().map(|entry| entry.name.as_str())

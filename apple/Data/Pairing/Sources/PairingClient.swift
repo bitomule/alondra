@@ -78,7 +78,7 @@ public actor PairingClient {
         let plain = PairingCandidatePlain(deviceID: deviceID, signingKey: signingPublic,
             agreementKey: agreementPublic, displayName: displayName,
             ownerSub: authorization.ownerSub, sessionID: invitation.sessionID)
-        let envelope = try EnvelopeV1.seal(
+        let envelope = try Envelope.seal(
             route: invitation.macID, sender: deviceID, recipient: invitation.macID,
             requestID: invitation.sessionID, kind: "pairing",
             expiresAtMilliseconds: expiry, plaintext: JSONEncoder().encode(plain),

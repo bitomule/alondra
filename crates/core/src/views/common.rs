@@ -96,8 +96,8 @@ pub(super) fn effort_label(effort: &str, lang: super::Lang) -> Option<&'static s
 }
 
 /// A working Task whose delivery Alondra sent back says what it told the node to do.
-pub(super) fn instruction_label(task: &crate::domain_v2::Task, domain: &crate::domain_v2::DomainState, lang: super::Lang) -> Option<&'static str> {
-    use crate::domain_v2::{Instruction, TaskState};
+pub(super) fn instruction_label(task: &crate::domain::Task, domain: &crate::domain::DomainState, lang: super::Lang) -> Option<&'static str> {
+    use crate::domain::{Instruction, TaskState};
     if task.state != TaskState::Running { return None; }
     Some(match domain.task_handed_back(&task.id)? {
         Instruction::Changes => super::text::t!(lang, "Changes requested", "Cambios solicitados"),
@@ -108,8 +108,8 @@ pub(super) fn instruction_label(task: &crate::domain_v2::Task, domain: &crate::d
 }
 
 /// The error of the scheduled launch that should have started this task and did not.
-pub(super) fn failed_launch<'a>(task: &crate::domain_v2::Task, domain: &'a crate::domain_v2::DomainState) -> Option<&'a str> {
-    use crate::domain_v2::{ScheduleRunState, TaskState};
+pub(super) fn failed_launch<'a>(task: &crate::domain::Task, domain: &'a crate::domain::DomainState) -> Option<&'a str> {
+    use crate::domain::{ScheduleRunState, TaskState};
     if task.state != TaskState::NotStarted || task.agent_id.is_some() { return None; }
     domain.schedule.runs.values()
         .filter(|run| run.task_id.as_ref() == Some(&task.id) && run.state == ScheduleRunState::Failed)
@@ -118,7 +118,7 @@ pub(super) fn failed_launch<'a>(task: &crate::domain_v2::Task, domain: &'a crate
 }
 
 /// "Scheduled" on a task a scheduled run created, so it reads apart from the work the user asked for.
-pub(super) fn scheduled_mark(task: &crate::domain_v2::Task, domain: &crate::domain_v2::DomainState,
+pub(super) fn scheduled_mark(task: &crate::domain::Task, domain: &crate::domain::DomainState,
     lang: super::Lang) -> Option<super::Label> {
     domain.schedule.runs.values().any(|run| run.task_id.as_ref() == Some(&task.id)).then(|| super::Label {
         text: super::text::t!(lang, "Scheduled", "Programada").into(),
@@ -127,8 +127,8 @@ pub(super) fn scheduled_mark(task: &crate::domain_v2::Task, domain: &crate::doma
 }
 
 /// A task whose node the user closed and nobody took over yet.
-pub(super) fn node_closed(task: &crate::domain_v2::Task, context: &super::RenderContext<'_>) -> bool {
-    task.state == crate::domain_v2::TaskState::NotStarted && task.agent_id.is_none() && !task.archived
+pub(super) fn node_closed(task: &crate::domain::Task, context: &super::RenderContext<'_>) -> bool {
+    task.state == crate::domain::TaskState::NotStarted && task.agent_id.is_none() && !task.archived
         && context.live.closed_tasks.contains(&task.id.0)
 }
 
@@ -140,8 +140,8 @@ pub(super) fn launch_failed_label(lang: super::Lang) -> &'static str {
     super::text::t!(lang, "Did not start", "No arrancó")
 }
 
-pub(super) fn task_presentation(state: crate::domain_v2::TaskState) -> (super::Icon, super::Tone) {
-    use crate::domain_v2::TaskState as S;
+pub(super) fn task_presentation(state: crate::domain::TaskState) -> (super::Icon, super::Tone) {
+    use crate::domain::TaskState as S;
     use super::{Icon, Tone};
     match state {
         S::Running => (Icon::Mission, Tone::Accent),
@@ -293,13 +293,13 @@ mod tests {
 
 /// The Task a node is on: its open one, else the last it had. A node works on one Task at a time;
 /// state saved before that rule may still give it several open ones, and the newest stands for it.
-pub(super) fn current_task<'a>(domain: &'a crate::domain_v2::DomainState, agent_id: &crate::domain_v2::AgentId) -> Option<&'a crate::domain_v2::Task> {
+pub(super) fn current_task<'a>(domain: &'a crate::domain::DomainState, agent_id: &crate::domain::AgentId) -> Option<&'a crate::domain::Task> {
     let mine = || domain.tasks.values().filter(|task| task.agent_id.as_ref() == Some(agent_id) && !task.archived);
     mine().filter(|task| !task.state.terminal()).max_by_key(|task| task.revision)
         .or_else(|| mine().max_by_key(|task| task.revision))
 }
 
-pub(super) fn agent_label(agent_id: &crate::domain_v2::AgentId, context: &RenderContext<'_>) -> String {
+pub(super) fn agent_label(agent_id: &crate::domain::AgentId, context: &RenderContext<'_>) -> String {
     let domain = context.domain;
     let name = domain.agents.get(agent_id).map(|agent| agent.name.as_str());
     if name.is_some_and(|name| !name.starts_with("scheduled/")) {

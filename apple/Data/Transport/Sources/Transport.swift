@@ -6,7 +6,7 @@ import CryptoKit
 public protocol Transport: RelayRequestTransport {
     func bootstrap() async throws -> RelayBootstrap
     func health() async throws -> Bool
-    func submit(_ envelope: EnvelopeV1) async throws -> RelayJob
+    func submit(_ envelope: Envelope) async throws -> RelayJob
     func status(requestID: String) async throws -> RelayJob
     func changes(since: UInt64, epoch: String?, waitSeconds: UInt64) async throws -> RelayChanges
     func registerPush(_ registration: RelayPushRegistration) async throws

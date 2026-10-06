@@ -1,6 +1,6 @@
 //! The Tasks screen: every request with its task tree, and what the daemon says each task is at.
 
-use alondra_core::domain_v2::{RequestId, TaskId, TaskState};
+use alondra_core::domain::{RequestId, TaskId, TaskState};
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub enum TaskKey {

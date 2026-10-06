@@ -2,8 +2,8 @@
 //! in-process, so their reads and actions exercise that client directly.
 use super::*;
 use crate::auth::Auth;
-use crate::domain_bootstrap::V2Only;
-use alondra_core::domain_v2::{
+use crate::domain_bootstrap::DomainDaemon;
+use alondra_core::domain::{
     Actor, AttachmentRef, Command, CommandEnvelope, CommandOutcome, PROTOCOL_VERSION, Recipient, Scope,
 };
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -46,7 +46,7 @@ impl Fixture {
         let auth = Auth::open(&home).unwrap();
         let key = SigningKey::from_slice(&[31u8; 32]).unwrap();
         let device = auth.pair(&auth.new_pairing_code(), "terminal", &STANDARD.encode(key.verifying_key().to_sec1_bytes())).unwrap();
-        let state = V2Only::open(&home).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         let domain = state.domain();
         let client = state.client();
         let app = crate::domain_bootstrap::router(state.clone())
@@ -178,7 +178,7 @@ fn seed_work(fixture: &Fixture) {
     fixture.command(Actor::Orchestrator { generation: 0 }, "answer-2", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-2".into(),
         scope: Scope::Orchestrator { request_id: Some("request-2".into()) }, recipient: Recipient::User,
-        body: "Nothing to change: it already works".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+        body: "Nothing to change: it already works".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
     });
     fixture.user("close-2", Command::CloseRequest { request_id: "request-2".into(), answer: None, withdrawn: false, title: None });
     fixture.user("request-3", Command::CreateRequest { request_id: "request-3".into(), body: "Never mind".into(), auto_merge: false });
@@ -186,7 +186,7 @@ fn seed_work(fixture: &Fixture) {
     fixture.agent("agent-a", "pr-1", Command::RegisterPr {
         task_id: "task-1".into(), pr_id: "pr-1".into(), host: "github.com".into(), repository: "me/app".into(),
         number: 7, head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
-        allowed_methods: vec![alondra_core::domain_v2::MergeMethod::Squash],
+        allowed_methods: vec![alondra_core::domain::MergeMethod::Squash],
     });
 }
 
@@ -277,7 +277,7 @@ async fn times_are_the_commits_own_and_survive_a_restart() {
 
     fixture.command(Actor::System, "ask", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(),
-        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+        scope: Scope::Task { task_id: "task-1".into() }, recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
     });
     let informed = fixture.runtime_json().await;
     assert_eq!(informed["tasks"]["task-1"]["state_since"], before["tasks"]["task-1"]["state_since"], "information does not move the task's state");
@@ -329,7 +329,7 @@ async fn activity_and_search_answer_as_the_fixture_does() {
 }
 
 #[tokio::test]
-async fn unknown_v2_routes_are_a_bare_404_and_reads_are_named_exactly() {
+async fn unknown_domain_routes_are_a_bare_404_and_reads_are_named_exactly() {
     let fixture = Fixture::start().await;
     for path in ["/nothing", "/runtime/extra", "/agents/a/nothing", "/tasks/a/history",
         "/options", "/projects", "/issues", "/agents/search?q=parser", "/agents/a/activity"] {
@@ -789,7 +789,7 @@ async fn a_tasks_history_lists_the_states_it_entered_with_the_words_that_moved_i
     fixture.agent("agent-a", "ask", Command::AskQuestion {
         attachments: vec![], interaction_id: "q-1".into(), scope: Scope::Task { task_id: "task-1".into() },
         recipient: Recipient::User, body: "Which colour?\nThe blue or the green one.".into(), blocking: true,
-        options: vec![alondra_core::domain_v2::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None, inputs: vec![] }], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+        options: vec![alondra_core::domain::QuestionOption { id: "blue".into(), label: "Blue".into(), description: None, inputs: vec![] }], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
     });
     fixture.user("answer", Command::AnswerQuestion { attachments: vec![], interaction_id: "q-1".into(), option_id: "blue".into(), inputs: Default::default() });
     fixture.user("cancel", Command::CancelTask { task_id: "task-1".into() });
@@ -859,7 +859,7 @@ async fn an_uncertain_delivery_is_resolved_on_this_mac_by_the_paired_device() {
     seed_work(&fixture);
     fixture.command(Actor::System, "info-1", Command::PublishInformation {
         attachments: vec![], interaction_id: "info-1".into(), scope: Scope::Task { task_id: "task-1".into() },
-        recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+        recipient: Recipient::User, body: "FYI".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
     });
     let (attempt, message) = {
         let mut store = fixture.domain.store.lock().unwrap();
@@ -894,7 +894,7 @@ async fn resolving_conflicts_is_refused_before_anything_is_typed_when_it_cannot_
     assert_eq!((status, error["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("invalid_input")));
     fixture.command(Actor::System, "closed", Command::ObservePrState {
         pr_id: "pr-1".into(), head: "0123456789abcdef0123456789abcdef01234567".into(), base: "main".into(),
-        state: alondra_core::domain_v2::PrState::Closed, merged_head: None });
+        state: alondra_core::domain::PrState::Closed, merged_head: None });
     let (status, error) = fixture.local_send(path, &json!({})).await;
     assert_eq!((status, error["code"].as_str()), (StatusCode::CONFLICT, Some("pr_not_open")));
     let unsigned = reqwest::Client::new().post(format!("{}{path}", fixture.base)).json(&json!({})).send().await.unwrap();

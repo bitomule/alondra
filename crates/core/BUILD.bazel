@@ -11,7 +11,7 @@ rust_library(
     deps = all_crate_deps(normal = True),
 )
 
-exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain_v2/tests.rs"])
+exports_files(glob(["fixtures/*.jsonl"]) + ["src/domain/tests.rs"])
 
 rust_test(
     name = "alondra_core_test",

@@ -109,7 +109,7 @@ mod pg_fault_tests {
             .timeout(Duration::from_secs(12))
             .build()?;
         let epoch = server.auth.server_epoch();
-        let envelope = EnvelopeV1::seal_random(
+        let envelope = Envelope::seal_random(
             Context {
                 route: "mac-1",
                 sender: "phone-1",
@@ -262,7 +262,7 @@ mod pg_fault_tests {
             .await?;
         assert_eq!(work.status(), StatusCode::OK);
         let work: Value = work.json().await?;
-        let forwarded: EnvelopeV1 = serde_json::from_value(work["envelope"].clone())?;
+        let forwarded: Envelope = serde_json::from_value(work["envelope"].clone())?;
         assert_eq!(
             forwarded.open(
                 phone.verifying_key(),
@@ -289,7 +289,7 @@ mod pg_fault_tests {
             StatusCode::NO_CONTENT,
             "duplicate did not enqueue another work item"
         );
-        let response = EnvelopeV1::seal_random(
+        let response = Envelope::seal_random(
             Context {
                 route: "mac-1",
                 sender: "mac-1",
@@ -321,7 +321,7 @@ mod pg_fault_tests {
         assert_eq!(result.status(), StatusCode::OK);
         let result: Value = result.json().await?;
         assert_eq!(result["status"], "completed");
-        let result: EnvelopeV1 = serde_json::from_value(result["response"].clone())?;
+        let result: Envelope = serde_json::from_value(result["response"].clone())?;
         assert_eq!(
             result.open(
                 mac.verifying_key(),

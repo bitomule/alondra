@@ -1,6 +1,6 @@
 //! Ephemeral rendezvous for endpoint-controlled pairing. The relay cannot approve a phone.
 //! Its only durable authorization remains a separate Mac-signed `/v1/devices` registration.
-use alondra_e2e::EnvelopeV1;
+use alondra_e2e::Envelope;
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::ecdsa::{Signature, VerifyingKey, signature::Verifier};
 use serde::{Deserialize, Serialize};
@@ -26,7 +26,7 @@ pub struct CandidateRequest {
     pub secret: String,
     pub device_id: String,
     pub signing_key: String,
-    pub envelope: EnvelopeV1,
+    pub envelope: Envelope,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -34,7 +34,7 @@ pub struct CandidateRequest {
 pub struct CandidateView {
     pub device_id: String,
     pub signing_key: String,
-    pub envelope: EnvelopeV1,
+    pub envelope: Envelope,
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -312,8 +312,8 @@ fn valid_id(id: &str) -> bool {
 mod tests {
     use super::*;
     use p256::ecdsa::{SigningKey, signature::Signer};
-    fn envelope() -> EnvelopeV1 {
-        EnvelopeV1 {
+    fn envelope() -> Envelope {
+        Envelope {
             v: 1,
             route: "mac-a".into(),
             sender: "phone-a".into(),

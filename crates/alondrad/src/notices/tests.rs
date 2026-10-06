@@ -1,8 +1,8 @@
 use super::notices;
-use crate::domain_delivery::deliver_one_v2;
+use crate::domain_delivery::deliver_from_runtime;
 use crate::domain_runtime::DomainRuntime;
 use crate::push::Push;
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, CardKind, CardSpec, Command, CommandEnvelope, QuestionOption, Recipient, Scope,
 };
 use alondra_core::views::Lang;
@@ -58,11 +58,11 @@ impl Fixture {
     }
 
     async fn deliver(&self, card: &str) -> String {
-        let client = crate::v2_client_routes::Client::open(self.domain.clone(), &self.home, Default::default());
+        let client = crate::client_routes::Client::open(self.domain.clone(), &self.home, Default::default());
         let message = self.domain.store.lock().unwrap().pending_messages().unwrap().into_iter()
             .find(|message| message.interaction_id.as_deref() == Some(card) && message.recipient_kind == "user")
             .unwrap();
-        deliver_one_v2(&self.domain, &self.home, &Push::open(&self.home).unwrap(), None, &client, message.clone(), Duration::ZERO)
+        deliver_from_runtime(&self.domain, &self.home, &Push::open(&self.home).unwrap(), None, &client, message.clone(), Duration::ZERO)
             .await.unwrap();
         self.domain.store.lock().unwrap().delivery_evidence_page(0).unwrap()
             .into_iter().find(|item| item.message_id == message.id).unwrap().state
@@ -133,7 +133,7 @@ async fn a_card_withdrawn_before_its_push_left_is_never_noticed() {
 async fn only_a_signed_device_on_this_mac_reads_notices() {
     let fixture = Fixture::new();
     drop(DomainRuntime::open(&fixture.home).unwrap());
-    let state = crate::domain_bootstrap::V2Only::open(&fixture.home).unwrap();
+    let state = crate::domain_bootstrap::DomainDaemon::open(&fixture.home).unwrap();
     let auth = state.auth();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = format!("http://{}", listener.local_addr().unwrap());

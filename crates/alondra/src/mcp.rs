@@ -458,9 +458,9 @@ fn call_timeout(tool: &str) -> Duration {
 
 fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
-        "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY),
+        "publish_information" | "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain::NODES_DO_NOT_NOTIFY),
         "answer_clarification" if args.get("text").is_some() => {
-            anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY)
+            anyhow::bail!("forbidden: {} Settle a clarification with replacement, the corrected card.", alondra_core::domain::NODES_DO_NOT_NOTIFY)
         }
         "start_task"
         | "ask"
@@ -486,7 +486,7 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
 
 fn call_orchestrator(client: &Client, name: &str, args: &Value) -> Result<String> {
     match name {
-        "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain_v2::NODES_DO_NOT_NOTIFY),
+        "propose" => anyhow::bail!("forbidden: {}", alondra_core::domain::NODES_DO_NOT_NOTIFY),
         "create_request"
         | "close_request"
         | "title_request"
@@ -731,7 +731,7 @@ fn answer_clarification(client: &Client, args: &Value) -> Result<String> {
                 notice.insert(key.into(), value.clone());
             }
             let first_line = text.lines().map(str::trim).find(|line| !line.is_empty()).unwrap_or(text);
-            notice.insert("need".into(), json!(alondra_core::domain_v2::clip(first_line, alondra_core::domain_v2::CardSpec::NEED_MAX)));
+            notice.insert("need".into(), json!(alondra_core::domain::clip(first_line, alondra_core::domain::CardSpec::NEED_MAX)));
             notice.insert("body".into(), json!(text));
             let bearer = domain_bearer()?;
             submit(client, &bearer, "publish_information", &Value::Object(notice))?;
@@ -830,14 +830,14 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
     attach_card(name, &mut command)?;
     if name == "register_pr" {
         if let Some(host) = command.get("host").and_then(Value::as_str) {
-            let host = alondra_core::domain_v2::normalize_pr_host(host);
+            let host = alondra_core::domain::normalize_pr_host(host);
             command.insert("host".into(), Value::String(host));
         }
     }
     command.insert("kind".into(), Value::String(kind.into()));
     let envelope = json!({"protocol_version":2,"data_epoch":data_epoch,
         "command_id":command_id,"expected_revision":0,"command":command});
-    serde_json::from_value::<alondra_core::domain_v2::CommandEnvelope>(envelope.clone()).map_err(|error| {
+    serde_json::from_value::<alondra_core::domain::CommandEnvelope>(envelope.clone()).map_err(|error| {
         anyhow::anyhow!("invalid_input: {error}. Fix the arguments of {name} to match its schema and call it again")
     })?;
     Ok(envelope)
@@ -890,7 +890,7 @@ fn asks_together(command: &Value) -> bool {
 fn recommend_marked(options: Option<&mut Value>, recommended: &mut Option<Value>) {
     let Some(options) = options.and_then(Value::as_array_mut) else { return };
     for option in options {
-        let bare = option["label"].as_str().and_then(alondra_core::domain_v2::without_recommended_suffix);
+        let bare = option["label"].as_str().and_then(alondra_core::domain::without_recommended_suffix);
         if let Some(bare) = bare {
             if recommended.is_none() {
                 *recommended = Some(option["id"].clone()).filter(|id| id.is_string());
@@ -1005,7 +1005,7 @@ fn attach_card(name: &str, command: &mut serde_json::Map<String, Value>) -> Resu
                 anyhow::bail!("invalid_input: where and what are required: say where to test it (build, version, screen) and what to look at");
             }
             if why.is_empty() {
-                why = alondra_core::domain_v2::clip(&format!("{place}: {what}"), alondra_core::domain_v2::CardSpec::WHY_MAX);
+                why = alondra_core::domain::clip(&format!("{place}: {what}"), alondra_core::domain::CardSpec::WHY_MAX);
             }
             content = content.or_else(|| Some(json!({"kind":"steps","body":format!("Where: {place}\nWhat to look at: {what}")})));
             command.insert("options".into(), json!([choice("works", "Works", true), choice("fails", "Doesn't work", true)]));
@@ -1502,7 +1502,7 @@ mod tests {
     }
 
     #[test]
-    fn the_v2_fleet_and_node_answers_read_through_the_8ccd131_summaries() {
+    fn the_fleet_and_node_answers_read_through_the_8ccd131_summaries() {
         let fleet = json!({
             "nodes": [{"session_id": "agent-a", "name": "Instance A", "short_id": "", "project": "App", "state": "working", "alive": true, "in_daemon": false}],
             "open_questions": [{"id": "q", "title": "Ship?", "node_name": "Instance A", "to_orchestrator": false, "action": false, "session_id": "agent-a"}],
@@ -1543,7 +1543,7 @@ mod tests {
     }
 
     #[test]
-    fn v2_catalog_is_selected_before_a_bearer_handoff() {
+    fn the_domain_catalog_is_selected_before_a_bearer_handoff() {
         let catalog = tools(Role::Orchestrator, "User");
         let tools = catalog.as_array().unwrap();
         let ask = tools.iter().find(|tool| tool["name"] == "ask").unwrap();
@@ -1830,7 +1830,7 @@ mod tests {
 #[cfg(test)]
 mod card_tool_tests {
     use super::*;
-    use alondra_core::domain_v2::DomainError;
+    use alondra_core::domain::DomainError;
 
     fn tool(role: Role, name: &str) -> Value {
         tools(role, "Ana").as_array().unwrap().iter().find(|t| t["name"] == name)
@@ -1994,10 +1994,10 @@ mod card_tool_tests {
             "a missing need is not read from the body: alondrad refuses it with the field and the fix");
         assert!(without["card"].get("content").is_none());
 
-        let parsed: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(
+        let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(
             domain_envelope("ask", &with(json!({"need":"Pick a name","why":"Why","options":options(),"blocking":false})), "epoch", "id").unwrap(),
         ).unwrap();
-        assert!(matches!(parsed.command, alondra_core::domain_v2::Command::AskQuestion { .. }));
+        assert!(matches!(parsed.command, alondra_core::domain::Command::AskQuestion { .. }));
     }
 
     #[test]
@@ -2019,8 +2019,8 @@ mod card_tool_tests {
             (Some("Which name?"), Some("It goes on the tag"), Some("a")));
         assert_eq!(questions[1]["options"][0]["label"], "Yes", "the mark is taken off the label");
         assert_eq!(questions[1]["recommended"], "y", "and becomes the recommendation");
-        let parsed: alondra_core::domain_v2::CommandEnvelope = serde_json::from_value(envelope).unwrap();
-        let alondra_core::domain_v2::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
+        let parsed: alondra_core::domain::CommandEnvelope = serde_json::from_value(envelope).unwrap();
+        let alondra_core::domain::Command::AskQuestions { questions, blocking, .. } = parsed.command else { panic!("ask questions") };
         assert_eq!((questions.len(), blocking), (2, true));
     }
 

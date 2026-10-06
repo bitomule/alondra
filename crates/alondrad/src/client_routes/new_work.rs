@@ -4,7 +4,7 @@
 use super::close::Answer;
 use super::{Client, Reply};
 use crate::domain_store::{RequestLaunch, TransportIdentity};
-use alondra_core::domain_v2::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
+use alondra_core::domain::{Actor, AttachmentRef, Command, CommandEnvelope, DomainError, PROTOCOL_VERSION};
 use alondra_core::options::{Choice, OptionsFile};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};

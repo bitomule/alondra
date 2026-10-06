@@ -1,7 +1,7 @@
 //! Serialization boundary for the SQL domain and its authenticated producers.
 use crate::domain_authority::{Authority, Capability, Principal};
 use crate::domain_store::{DomainStore, StoreError, TransportIdentity};
-use alondra_core::domain_v2::*;
+use alondra_core::domain::*;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -15,12 +15,12 @@ pub struct DomainRuntime {
     changed: watch::Sender<Revision>,
     schedule_changed: watch::Sender<Revision>,
     pub(crate) reads: crate::domain_reads::Cache,
-    pub(crate) live: crate::v2_client_routes::Live,
+    pub(crate) live: crate::client_routes::Live,
     /// User messages for sessions in the user's own terminal, handed at their next Stop hook.
     pub(crate) held:
-        Mutex<std::collections::BTreeMap<alondra_core::domain_v2::AgentId, Vec<String>>>,
+        Mutex<std::collections::BTreeMap<alondra_core::domain::AgentId, Vec<String>>>,
     /// Tasks whose Agent was already reminded, at a turn end, to report through Alondra.
-    pub(crate) nudged: Mutex<std::collections::BTreeSet<alondra_core::domain_v2::TaskId>>,
+    pub(crate) nudged: Mutex<std::collections::BTreeSet<alondra_core::domain::TaskId>>,
     rejections: rejections::Rejections,
 }
 impl DomainRuntime {
@@ -53,7 +53,7 @@ impl DomainRuntime {
             changed,
             schedule_changed,
             reads: Default::default(),
-            live: crate::v2_client_routes::Live::persisted_in(home),
+            live: crate::client_routes::Live::persisted_in(home),
             held: Default::default(),
             nudged: Default::default(),
             rejections: Default::default(),
@@ -584,7 +584,7 @@ mod producer_revision_tests {
                     task_id: "task-a".into(),
                 },
                 recipient: Recipient::Orchestrator,
-                body: "Progress".into(), card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+                body: "Progress".into(), card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
             },
         );
         let revision = runtime.state().unwrap().revision;

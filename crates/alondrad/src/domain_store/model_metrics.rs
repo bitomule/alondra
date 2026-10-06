@@ -2,7 +2,7 @@
 //! joined with each Task's history.
 use super::DomainStore;
 use alondra_core::Millis;
-use alondra_core::domain_v2::ModelChooser;
+use alondra_core::domain::ModelChooser;
 use alondra_core::model_report::{Attempt, Group, ModelReport, Outcome};
 use alondra_core::options::Approach;
 use anyhow::Result;

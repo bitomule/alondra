@@ -9,7 +9,7 @@ mod tasks;
 
 use crate::auth::Signed;
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     AgentId, DomainError, DomainState, InteractionPayload, Recipient, Scope, TaskId,
 };
 use axum::extract::rejection::JsonRejection;
@@ -301,7 +301,7 @@ impl Client {
         if !body.as_object().is_some_and(|fields| fields.is_empty()) {
             return Reply::error(DomainError::new("invalid_input", "invalid request"));
         }
-        let user = alondra_core::domain_v2::Actor::User { user_id: user_id.to_owned() };
+        let user = alondra_core::domain::Actor::User { user_id: user_id.to_owned() };
         match crate::domain_messages::resolve_conflicts(&self.domain, &self.home, &user, &crate::domain_messages::user_name(), &pr.into()).await {
             Ok(answer) => Reply::ok(answer),
             Err(error) => Reply::error(error),

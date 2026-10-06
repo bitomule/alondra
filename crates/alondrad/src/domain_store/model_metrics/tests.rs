@@ -1,6 +1,6 @@
 use super::*;
 use crate::domain_store::tests::{Fixture, seeded};
-use alondra_core::domain_v2::*;
+use alondra_core::domain::*;
 
 fn decision(task: &str, agent: &str, at: Millis, kind: DecisionKind, model: &str, effort: Option<&str>, approach: Approach) -> Decision {
     Decision {

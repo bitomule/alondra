@@ -4,7 +4,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use alondra_core::domain_v2::InteractionId;
+use alondra_core::domain::InteractionId;
 use alondra_core::views::{self, Lang};
 use axum::extract::{ConnectInfo, Query, State};
 use axum::http::HeaderMap;
@@ -15,10 +15,10 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 
 use crate::auth::Signed;
-use crate::domain_bootstrap::V2Only;
+use crate::domain_bootstrap::DomainDaemon;
 use crate::domain_runtime::DomainRuntime;
 
-pub(crate) fn router() -> Router<Arc<V2Only>> {
+pub(crate) fn router() -> Router<Arc<DomainDaemon>> {
     Router::new().route("/notices", get(local))
 }
 
@@ -28,7 +28,7 @@ struct Params {
 }
 
 async fn local(
-    State(state): State<Arc<V2Only>>,
+    State(state): State<Arc<DomainDaemon>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
     headers: HeaderMap,
     signed: Option<Extension<Signed>>,
@@ -37,7 +37,7 @@ async fn local(
     if !crate::auth::is_local(&peer, &headers)
         || crate::domain_bootstrap::signed_device(state.client().home(), &signed).is_none()
     {
-        return crate::domain_api::domain_error(alondra_core::domain_v2::DomainError::new(
+        return crate::domain_api::domain_error(alondra_core::domain::DomainError::new(
             "forbidden",
             "signed local device required",
         ));
@@ -46,7 +46,7 @@ async fn local(
     let domain = state.domain();
     match tokio::task::spawn_blocking(move || notices(&domain, lang)).await {
         Ok(Ok(body)) => Json(body).into_response(),
-        _ => crate::domain_api::domain_error(alondra_core::domain_v2::DomainError::new(
+        _ => crate::domain_api::domain_error(alondra_core::domain::DomainError::new(
             "storage_unavailable",
             "notices could not be read",
         )),

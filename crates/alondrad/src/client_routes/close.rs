@@ -2,7 +2,7 @@
 //! elsewhere, and refusing while the session still has something pending. An interactive
 //! session is not a job `claude rm` knows: it only leaves the fleet and its terminal stays open.
 use super::{Client, Reply};
-use alondra_core::domain_v2::{AgentId, DomainError};
+use alondra_core::domain::{AgentId, DomainError};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

@@ -62,7 +62,7 @@ public enum RelayHTTPChallenge {
     }
 }
 
-public struct EnvelopeV1: Codable, Sendable, Equatable {
+public struct Envelope: Codable, Sendable, Equatable {
     public let v: UInt8
     public let route: String
     public let sender: String

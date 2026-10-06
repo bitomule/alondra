@@ -1,9 +1,9 @@
 //! One v2-only daemon on a temporary HOME. A fake Claude session speaks to it the
 //! way a real one does: through the real `alondra mcp-node` binary with the
 //! capability the scheduler issued, and through `alondra hook` on the hook socket.
-use crate::domain_bootstrap::{V2Only, router};
+use crate::domain_bootstrap::{DomainDaemon, router};
 use crate::domain_runtime::DomainRuntime;
-use alondra_core::domain_v2::*;
+use alondra_core::domain::*;
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -28,7 +28,7 @@ struct Daemon {
 impl Daemon {
     async fn start(home: &Path) -> Self {
         drop(DomainRuntime::open(home).unwrap());
-        let state = V2Only::open(home).unwrap();
+        let state = DomainDaemon::open(home).unwrap();
         let domain = state.domain();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();

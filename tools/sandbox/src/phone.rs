@@ -1,7 +1,7 @@
 //! A synthetic phone: its own keys per Mac, the same envelopes and relay calls as the iPhone.
 use std::{fs, os::unix::fs::OpenOptionsExt, path::PathBuf, time::Duration};
 
-use alondra_e2e::{Context as Envelope, EnvelopeV1};
+use alondra_e2e::{Context as Envelope, Envelope};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use p256::{SecretKey, ecdsa::SigningKey};
@@ -152,7 +152,7 @@ impl<'a> Phone<'a> {
     }
 
     pub fn seal(&self, target: &Target, link: &Link, request_id: &str, plaintext: &Value) -> Result<Vec<u8>> {
-        let envelope = EnvelopeV1::seal_random(
+        let envelope = Envelope::seal_random(
             Envelope {
                 route: &target.mac.id,
                 sender: &link.device_id,
@@ -191,7 +191,7 @@ impl<'a> Phone<'a> {
             let value: Value = serde_json::from_slice(&reply)?;
             Ok((value["status"] == "completed").then_some(value))
         })?;
-        let envelope: EnvelopeV1 = serde_json::from_value(result["response"].clone())?;
+        let envelope: Envelope = serde_json::from_value(result["response"].clone())?;
         let clear = envelope
             .open(&target.mac.verifying(), &link.agreement, &target.mac.id, &link.device_id, &target.mac.id, now_ms())
             .map_err(|error| anyhow!("open response: {error:?}"))?;

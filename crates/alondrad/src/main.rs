@@ -68,7 +68,7 @@ mod store;
 mod updates;
 mod usage_pause;
 mod uploads;
-mod v2_client_routes;
+mod client_routes;
 mod views;
 mod wake;
 mod watcher;
@@ -222,7 +222,7 @@ fn relaunch_now() -> ! {
 }
 
 /// Critical v2 workers must not disappear while the local listener remains healthy.
-async fn supervise_v2_workers<S>(
+async fn supervise_workers<S>(
     server: S,
     outbox: tokio::task::JoinHandle<Result<()>>,
     scheduler: tokio::task::JoinHandle<Result<()>>,
@@ -394,7 +394,7 @@ fn empty_domain_sidecar(path: &Path, allow_older_empty_schema: bool) -> Result<b
 
 /// A committed HOME has one SQL authority shared by local and encrypted adapters.
 async fn run_domain(config: &Config) -> Result<()> {
-    let state = domain_bootstrap::V2Only::open(&config.home)?;
+    let state = domain_bootstrap::DomainDaemon::open(&config.home)?;
     let auth = state.auth();
     let service = service::Service::open(&config.home, config.port, auth.clone())?.map(|service| {
         Arc::new(
@@ -434,7 +434,7 @@ async fn run_domain(config: &Config) -> Result<()> {
         domain.clone(),
         usage_pause::PushAlerts { domain: domain.clone(), push: push.clone(), service: service.clone(), client: client.clone() },
     ));
-    let outbox = tokio::spawn(domain_delivery::run_v2(
+    let outbox = tokio::spawn(domain_delivery::run(
         domain.clone(),
         config.home.clone(),
         push,
@@ -463,8 +463,8 @@ async fn run_domain(config: &Config) -> Result<()> {
         domain,
         Arc::new(domain_github::GhCli::new()),
     ));
-    tokio::spawn(machine::run_v2(gauges, state_domain.clone()));
-    tokio::spawn(client.run(Arc::new(v2_client_routes::GhView)));
+    tokio::spawn(machine::run(gauges, state_domain.clone()));
+    tokio::spawn(client.run(Arc::new(client_routes::GhView)));
     let orchestrator = config.wake.then(|| {
         tokio::spawn(domain_orchestrator::run(
             state_domain,
@@ -476,20 +476,20 @@ async fn run_domain(config: &Config) -> Result<()> {
     tokio::spawn(updates::updater(config).run());
     start_guard::served();
     tokio::select! {
-        stopped = supervise_v2_workers(server, outbox, scheduler, transport, github, orchestrator, connector) => stopped,
+        stopped = supervise_workers(server, outbox, scheduler, transport, github, orchestrator, connector) => stopped,
         () = replaced(config) => relaunch_now(),
     }
 }
 
 #[cfg(test)]
-mod v2_worker_supervision_tests {
+mod worker_supervision_tests {
     use super::*;
 
     #[tokio::test]
     async fn unexpected_connector_or_outbox_exit_stops_listener() {
         let server = || std::future::pending::<std::io::Result<()>>();
         let pending = || tokio::spawn(std::future::pending::<Result<()>>());
-        let exit = supervise_v2_workers(
+        let exit = supervise_workers(
             server(),
             pending(),
             pending(),
@@ -501,7 +501,7 @@ mod v2_worker_supervision_tests {
         .await
         .unwrap_err();
         assert!(exit.to_string().contains("connector stopped unexpectedly"));
-        let panic = supervise_v2_workers(
+        let panic = supervise_workers(
             server(),
             pending(),
             pending(),
@@ -513,7 +513,7 @@ mod v2_worker_supervision_tests {
         .await
         .unwrap_err();
         assert!(panic.to_string().contains("connector failed"));
-        let stopped_outbox = supervise_v2_workers(
+        let stopped_outbox = supervise_workers(
             server(),
             tokio::spawn(async { Ok(()) }),
             pending(),
@@ -529,7 +529,7 @@ mod v2_worker_supervision_tests {
                 .to_string()
                 .contains("outbox worker stopped unexpectedly")
         );
-        let failed_outbox = supervise_v2_workers(
+        let failed_outbox = supervise_workers(
             server(),
             tokio::spawn(async { anyhow::bail!("synthetic SQL failure") }),
             pending(),
@@ -541,7 +541,7 @@ mod v2_worker_supervision_tests {
         .await
         .unwrap_err();
         assert!(failed_outbox.to_string().contains("synthetic SQL failure"));
-        let failed_scheduler = supervise_v2_workers(
+        let failed_scheduler = supervise_workers(
             server(),
             pending(),
             tokio::spawn(async { anyhow::bail!("synthetic Schedule failure") }),
@@ -557,7 +557,7 @@ mod v2_worker_supervision_tests {
                 .to_string()
                 .contains("synthetic Schedule failure")
         );
-        let failed_transport = supervise_v2_workers(
+        let failed_transport = supervise_workers(
             server(),
             pending(),
             pending(),
@@ -573,7 +573,7 @@ mod v2_worker_supervision_tests {
                 .to_string()
                 .contains("synthetic hook failure")
         );
-        let failed_github = supervise_v2_workers(
+        let failed_github = supervise_workers(
             server(),
             pending(),
             pending(),
@@ -636,7 +636,7 @@ mod argument_tests {
         domain_cutover::refuse_legacy_home(&home).unwrap();
         ensure_domain_protocol(&home).unwrap();
         let _domain = domain_runtime::DomainRuntime::open(&home).unwrap();
-        domain_bootstrap::V2Only::open(&home).unwrap();
+        domain_bootstrap::DomainDaemon::open(&home).unwrap();
         assert!(home.join("domain.db").is_file());
         assert!(!home.join("alondra.db").exists());
         std::fs::remove_dir_all(home).unwrap();

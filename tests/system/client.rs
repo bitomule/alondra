@@ -1,5 +1,5 @@
 //! Disposable system-test client. Uses real OIDC, signed HTTP and encrypted envelopes.
-use alondra_e2e::{Context, EnvelopeV1, sign_http_challenge};
+use alondra_e2e::{Context, Envelope, sign_http_challenge};
 use anyhow::{Context as _, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
 use p256::{SecretKey, ecdsa::SigningKey, elliptic_curve::sec1::ToSec1Point};
@@ -248,7 +248,7 @@ impl Driver {
         Ok(value)
     }
     fn envelope(&self, link: usize, mac: usize, id: &str) -> Result<Vec<u8>> {
-        Ok(serde_json::to_vec(&EnvelopeV1::seal_random(
+        Ok(serde_json::to_vec(&Envelope::seal_random(
             Context {
                 route: MACS[mac],
                 sender: LINKS[link].0,
@@ -289,7 +289,7 @@ impl Driver {
             )
             .await?;
         ensure!(work["request_id"] == id, "work routed to incorrect request");
-        let incoming: EnvelopeV1 = serde_json::from_value(work["envelope"].clone())?;
+        let incoming: Envelope = serde_json::from_value(work["envelope"].clone())?;
         let clear = incoming.open(
             key(11 + link as u8).verifying_key(),
             &agreement(21 + mac as u8),
@@ -312,7 +312,7 @@ impl Driver {
             200,
         )
         .await?;
-        let response = EnvelopeV1::seal_random(
+        let response = Envelope::seal_random(
             Context {
                 route: MACS[mac],
                 sender: MACS[mac],
@@ -350,7 +350,7 @@ impl Driver {
             result["status"] == "completed",
             "missing completed response"
         );
-        let response: EnvelopeV1 = serde_json::from_value(result["response"].clone())?;
+        let response: Envelope = serde_json::from_value(result["response"].clone())?;
         let clear = response.open(
             key(code).verifying_key(),
             &agreement(31 + link as u8),

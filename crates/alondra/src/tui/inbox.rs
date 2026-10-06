@@ -3,7 +3,7 @@
 
 use std::collections::BTreeMap;
 
-use alondra_core::domain_v2::PrId;
+use alondra_core::domain::PrId;
 use alondra_core::now_millis;
 use crossterm::event::{KeyCode, KeyEvent};
 

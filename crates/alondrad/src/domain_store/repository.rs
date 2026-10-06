@@ -1,4 +1,4 @@
-use alondra_core::domain_v2::*;
+use alondra_core::domain::*;
 use anyhow::{Context, Result, ensure};
 use rusqlite::{Connection, OptionalExtension, params, types::Value as SqlValue};
 use serde::{Serialize, de::DeserializeOwned};

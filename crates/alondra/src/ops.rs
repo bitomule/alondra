@@ -2,7 +2,7 @@
 //! message to an agent, closing a session, the orchestrator's recovery and the like. Each is
 //! one resource route; the TUI and the CLI build them here so both send the same body.
 
-use alondra_core::domain_v2::{AgentId, AttachmentRef, InteractionId, PrId, TaskId};
+use alondra_core::domain::{AgentId, AttachmentRef, InteractionId, PrId, TaskId};
 use serde_json::{Value, json};
 
 use crate::mcp::urlencode;

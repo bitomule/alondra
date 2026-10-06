@@ -10,7 +10,7 @@ public struct RelayJob: Decodable, Sendable {
     public let requestID: String
     public let status: String
     public let revision: UInt64
-    public let response: EnvelopeV1?
+    public let response: Envelope?
     enum CodingKeys: String, CodingKey { case requestID = "request_id", status, revision, response }
 }
 

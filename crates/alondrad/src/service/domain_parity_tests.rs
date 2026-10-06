@@ -1,7 +1,7 @@
 //! The retained signed loopback and sealed service resource reads see the same
 //! domain state. Everything here runs in a synthetic HOME and loopback relay.
 use super::*;
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION, QuestionOption,
     Recipient, Scope,
 };
@@ -73,7 +73,7 @@ fn sealed(service: &Service, key: &SigningKey, id: &str, request: Value) -> Work
     let sender = &service.devices.snapshot().remove(0).0;
     Work {
         request_id: id.into(),
-        envelope: EnvelopeV1::seal_random(
+        envelope: Envelope::seal_random(
             EnvelopeContext {
                 route: "mac-parity",
                 sender,
@@ -101,7 +101,7 @@ async fn encrypted(
     let work = sealed(service, key, id, request);
     service.handle(work, &[9; 16]).await.unwrap();
     let bytes = responses.lock().unwrap().pop().unwrap();
-    let envelope: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
+    let envelope: Envelope = serde_json::from_slice(&bytes).unwrap();
     let recipient = &service.devices.snapshot().remove(0).0;
     let body = envelope
         .open(
@@ -177,7 +177,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
             },
             recipient: Recipient::User,
             body: "Synthetic information".into(),
-            attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Know, "Read the update"),
+            attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Know, "Read the update"),
         },
     );
     execute(
@@ -203,7 +203,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
                     inputs: vec![],
                 })
                 .collect(),
-            attachments: vec![], card: alondra_core::domain_v2::CardSpec::derived(alondra_core::domain_v2::CardKind::Provide, "Answer the question"),
+            attachments: vec![], card: alondra_core::domain::CardSpec::derived(alondra_core::domain::CardKind::Provide, "Answer the question"),
         },
     );
     let source = b"# Synthetic design\n";
@@ -421,7 +421,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
         .unwrap();
     assert_eq!(receipt_count, 1);
     drop(receipts);
-    let envelope: EnvelopeV1 = serde_json::from_slice(&first_bytes).unwrap();
+    let envelope: Envelope = serde_json::from_slice(&first_bytes).unwrap();
     let opened = envelope
         .open(
             mac_signing.verifying_key(),

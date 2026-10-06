@@ -4,7 +4,7 @@
 //! durable attempt per device ID so a relay-side revocation survives reconnects and restarts.
 use crate::auth::Auth;
 use crate::push::{in_quiet_hours, local_minutes, valid_push_binding};
-use alondra_e2e::{Context as EnvelopeContext, EnvelopeV1, sign_http_challenge};
+use alondra_e2e::{Context as EnvelopeContext, Envelope, sign_http_challenge};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
@@ -219,7 +219,7 @@ pub struct Service {
     inflight: InFlight,
     hub: Option<Arc<crate::hub::Hub>>,
     domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
-    routes: Option<Arc<crate::v2_client_routes::Client>>,
+    routes: Option<Arc<crate::client_routes::Client>>,
 }
 
 /// A verified encrypted sender with persisted approval and enrollment.
@@ -239,7 +239,7 @@ impl ApprovedDevice<'_> {
 #[derive(Deserialize)]
 struct Work {
     request_id: String,
-    envelope: EnvelopeV1,
+    envelope: Envelope,
 }
 #[derive(Deserialize)]
 struct Bootstrap {
@@ -263,8 +263,8 @@ fn approval_bound_read_digest(envelope: &[u8], binding: &str) -> [u8; 32] {
     hash.finalize().into()
 }
 
-/// Where a v2 client registers its push preferences; the v1 route serves the legacy daemon.
-const PUSH_BINDING_V2: &str = "/device/push-binding";
+/// Where a domain client registers its push preferences; the older route serves the legacy daemon.
+const PUSH_BINDING_ROUTE: &str = "/device/push-binding";
 
 fn parse_push_preferences(
     request: &LocalRequest,
@@ -371,7 +371,7 @@ impl Service {
         self.domain = Some(domain);
         self
     }
-    pub(crate) fn with_client(mut self, client: Arc<crate::v2_client_routes::Client>) -> Self {
+    pub(crate) fn with_client(mut self, client: Arc<crate::client_routes::Client>) -> Self {
         self.routes = Some(client);
         self
     }
@@ -396,8 +396,8 @@ impl Service {
             return crate::domain_api::is_resource_mutation_path(&request.method, &request.path)
                 || crate::views::actions::approved_path(&request.method, &request.path)
                 || request.method == "POST"
-                    && (request.path == PUSH_BINDING_V2
-                        || crate::v2_client_routes::atomic_write_path(&request.path)
+                    && (request.path == PUSH_BINDING_ROUTE
+                        || crate::client_routes::atomic_write_path(&request.path)
                         || agent_message(&request.path).is_some()
                         || crate::domain_orchestrator::decision_route(&request.path).is_some()
                         || crate::domain_api::resolve_delivery_attempt_id(&request.path)
@@ -419,14 +419,14 @@ impl Service {
 
     async fn execute_atomic_local(
         &self,
-        envelope: &EnvelopeV1,
+        envelope: &Envelope,
         device: &Device,
         request: &LocalRequest,
         digest: &[u8; 32],
     ) -> Result<Vec<u8>> {
         self.require_device_approval(&envelope.sender, device)?;
         if request.path == "/v1/service/push-binding"
-            || self.domain.is_some() && request.path == PUSH_BINDING_V2
+            || self.domain.is_some() && request.path == PUSH_BINDING_ROUTE
         {
             let (binding, quiet, revision) = match parse_push_preferences(request) {
                 Ok(parsed) => parsed,
@@ -454,7 +454,7 @@ impl Service {
                         quiet,
                         revision,
                         |mut result| {
-                            if request.path == PUSH_BINDING_V2
+                            if request.path == PUSH_BINDING_ROUTE
                                 && result["error"] == "stale_push_preferences"
                             {
                                 result["kind"] = json!("stale_push_preferences");
@@ -518,8 +518,8 @@ impl Service {
                     decision,
                     request.body.as_ref(),
                 )
-            } else if let Some(route) = crate::v2_client_routes::parse_write(&request.path)
-                .filter(|_| crate::v2_client_routes::atomic_write_path(&request.path))
+            } else if let Some(route) = crate::client_routes::parse_write(&request.path)
+                .filter(|_| crate::client_routes::atomic_write_path(&request.path))
             {
                 let routes = self.routes.as_ref().context("client routes unavailable")?;
                 let body = request.body.as_ref().context("request body required")?;
@@ -969,12 +969,12 @@ impl Service {
                         &request.path,
                         request.body.is_some()
                     )
-                    || crate::v2_client_routes::approved_read_path(&request.path)
-                    || crate::v2_client_routes::approved_write_path(&request.path)
-                    || crate::v2_client_routes::parse_put(&request.path).is_some()
+                    || crate::client_routes::approved_read_path(&request.path)
+                    || crate::client_routes::approved_write_path(&request.path)
+                    || crate::client_routes::parse_put(&request.path).is_some()
                     || agent_message(&request.path).is_some()
                     || crate::domain_orchestrator::decision_route(&request.path).is_some()
-                    || request.path == PUSH_BINDING_V2
+                    || request.path == PUSH_BINDING_ROUTE
                     || crate::views::routes::approved_read_path(&request.path)
                     || crate::views::actions::approved_path(&request.method, &request.path))
                     && approved_method(&request).is_ok(),
@@ -982,12 +982,12 @@ impl Service {
             );
         } else {
             anyhow::ensure!(
-                request.path != PUSH_BINDING_V2,
+                request.path != PUSH_BINDING_ROUTE,
                 "a v2 route is not served by the legacy daemon"
             );
         }
         let body = serde_json::to_vec(e)?;
-        let approval_bound_read = request.body.is_none() && v2_read_route(&request);
+        let approval_bound_read = request.body.is_none() && domain_read_route(&request);
         let digest: [u8; 32] = if approval_bound_read {
             // Completed encrypted receipts must not bypass a newer approval generation.
             // Legacy routes retain their original digest contract.
@@ -1064,7 +1064,7 @@ impl Service {
                 .await?,
         )
         .await?;
-        if request.body.is_none() && v2_read_route(&request) {
+        if request.body.is_none() && domain_read_route(&request) {
             let binding = self.read_receipt_binding(&e.sender, &device)?;
             let current = approval_bound_read_digest(&serde_json::to_vec(e)?, &binding);
             anyhow::ensure!(
@@ -1142,14 +1142,14 @@ impl Service {
 
     fn encode_response(
         &self,
-        request: &EnvelopeV1,
+        request: &Envelope,
         device: &Device,
         result: &Value,
         local_request: &LocalRequest,
     ) -> Result<Vec<u8>> {
         let seal = |value: &Value| -> Result<Vec<u8>> {
             let payload = serde_json::to_vec(value)?;
-            let envelope = EnvelopeV1::seal_random(
+            let envelope = Envelope::seal_random(
                 EnvelopeContext {
                     route: &self.mac_id,
                     sender: &self.mac_id,
@@ -1190,7 +1190,7 @@ impl Service {
         .await
     }
 
-    async fn dispatch_v2(
+    async fn dispatch_domain(
         &self,
         domain: &Arc<crate::domain_runtime::DomainRuntime>,
         sender: &str,
@@ -1233,7 +1233,7 @@ impl Service {
                 approved.recheck()?;
                 return Ok(result);
             }
-            if crate::v2_client_routes::upload_step(&request.path).is_some() {
+            if crate::client_routes::upload_step(&request.path).is_some() {
                 let body = request
                     .body
                     .clone()
@@ -1245,7 +1245,7 @@ impl Service {
                     request.path.clone(),
                 );
                 let result = tokio::task::spawn_blocking(move || {
-                    transfers.dispatch_v2(&home, &owner, &route, body)
+                    transfers.dispatch_domain(&home, &owner, &route, body)
                 })
                 .await?;
                 approved.recheck()?;
@@ -1257,8 +1257,8 @@ impl Service {
                 });
             }
             let routes = self.routes.as_ref().context("client routes unavailable")?;
-            let route = crate::v2_client_routes::parse_write(&request.path)
-                .or_else(|| crate::v2_client_routes::parse_put(&request.path))
+            let route = crate::client_routes::parse_write(&request.path)
+                .or_else(|| crate::client_routes::parse_put(&request.path))
                 .context("v2-only write is not approved")?;
             let body = request.body.as_ref().context("write body required")?;
             let reply = routes
@@ -1313,7 +1313,7 @@ impl Service {
         reader: &impl crate::http::ReviewHead,
     ) -> Result<Value> {
         if let Some(domain) = &self.domain {
-            return self.dispatch_v2(domain, sender, request).await;
+            return self.dispatch_domain(domain, sender, request).await;
         }
         if request.path == "/schedules" || request.path.starts_with("/schedules/") {
             approved_method(request)?;
@@ -1334,7 +1334,7 @@ impl Service {
         }
         if request.method == "GET"
             && (crate::domain_api::approved_resource_read_path(&request.path)
-                || crate::v2_client_routes::approved_read_path(&request.path))
+                || crate::client_routes::approved_read_path(&request.path))
             && request.body.is_none()
         {
             approved_method(request)?;
@@ -1729,7 +1729,7 @@ pub(crate) fn seal_push(
         .fill(&mut id_bytes)
         .map_err(|_| anyhow!("OS randomness failed"))?;
     let request_id = URL_SAFE_NO_PAD.encode(id_bytes);
-    let envelope = EnvelopeV1::seal_random(
+    let envelope = Envelope::seal_random(
         EnvelopeContext {
             route: mac_id,
             sender: mac_id,
@@ -1843,22 +1843,22 @@ fn id_action(path: &str, prefix: &str, action: &str, numeric: bool) -> bool {
         .is_some_and(|s| if numeric { number(s) } else { id(s) })
 }
 
-fn v2_read_route(request: &LocalRequest) -> bool {
+fn domain_read_route(request: &LocalRequest) -> bool {
     request.method == "GET"
         && (crate::domain_api::approved_resource_read_path(&request.path)
-            || crate::v2_client_routes::approved_read_path(&request.path)
+            || crate::client_routes::approved_read_path(&request.path)
             || crate::views::routes::approved_read_path(&request.path))
 }
 
 /// The agent a relayed `POST /agents/{id}/messages` writes to.
-fn agent_message(path: &str) -> Option<alondra_core::domain_v2::AgentId> {
+fn agent_message(path: &str) -> Option<alondra_core::domain::AgentId> {
     path.strip_prefix("/agents/")?
         .strip_suffix("/messages")
-        .filter(|id| v2_read_id(id))
+        .filter(|id| domain_read_id(id))
         .map(Into::into)
 }
 
-fn v2_read_id(id: &str) -> bool {
+fn domain_read_id(id: &str) -> bool {
     !id.is_empty()
         && id.len() <= 256
         && id
@@ -1890,7 +1890,7 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     }
     if request.method == "GET"
         && request.body.is_none()
-        && crate::v2_client_routes::approved_read_path(&request.path)
+        && crate::client_routes::approved_read_path(&request.path)
     {
         return Ok(Method::GET);
     }
@@ -1912,8 +1912,8 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     }
     if request.method == "POST"
         && request.body.is_some()
-        && (request.path == PUSH_BINDING_V2
-            || crate::v2_client_routes::upload_step(&request.path).is_some()
+        && (request.path == PUSH_BINDING_ROUTE
+            || crate::client_routes::upload_step(&request.path).is_some()
             || agent_message(&request.path).is_some()
             || crate::domain_orchestrator::decision_route(&request.path).is_some()
             || crate::domain_api::resolve_delivery_attempt_id(&request.path).is_some())
@@ -1922,13 +1922,13 @@ fn approved_method(request: &LocalRequest) -> Result<Method> {
     }
     if request.method == "POST"
         && request.body.is_some()
-        && crate::v2_client_routes::approved_write_path(&request.path)
+        && crate::client_routes::approved_write_path(&request.path)
     {
         return Ok(Method::POST);
     }
     if request.method == "PUT"
         && request.body.is_some()
-        && crate::v2_client_routes::parse_put(&request.path).is_some()
+        && crate::client_routes::parse_put(&request.path).is_some()
     {
         return Ok(Method::from_bytes(request.method.as_bytes())?);
     }
@@ -2460,8 +2460,8 @@ impl Journal {
 }
 
 #[cfg(test)]
-#[path = "service/domain_v2_parity_tests.rs"]
-mod domain_v2_parity_tests;
+#[path = "service/domain_parity_tests.rs"]
+mod domain_parity_tests;
 
 #[cfg(test)]
 mod tests {
@@ -3942,7 +3942,7 @@ agreement_key = "{}"
         assert!(!wire.contains(&binding));
         let decoded: Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(decoded["device_id"], "phone-1");
-        let envelope: EnvelopeV1 = serde_json::from_value(decoded["envelope"].clone()).unwrap();
+        let envelope: Envelope = serde_json::from_value(decoded["envelope"].clone()).unwrap();
         assert_eq!(envelope.kind, "push");
         assert_eq!(envelope.route, "mac-1");
         assert_eq!(envelope.recipient, "phone-1");
@@ -3971,7 +3971,7 @@ agreement_key = "{}"
             .unwrap();
         let wire_text = String::from_utf8(quiet_wire.clone()).unwrap();
         assert!(!wire_text.contains("passive") && !wire_text.contains("quiet_start"));
-        let envelope: EnvelopeV1 = serde_json::from_value(
+        let envelope: Envelope = serde_json::from_value(
             serde_json::from_slice::<Value>(&quiet_wire).unwrap()["envelope"].clone(),
         )
         .unwrap();
@@ -3999,7 +3999,7 @@ agreement_key = "{}"
             .encode_push_or_minimal("phone-1", &device, &binding, &huge, true, PushDelivery::Alert)
             .expect("oversized content becomes a generic alert instead of being dropped");
         assert!(minimal.len() <= MAX_PUSH_BODY);
-        let envelope: EnvelopeV1 = serde_json::from_value(
+        let envelope: Envelope = serde_json::from_value(
             serde_json::from_slice::<Value>(&minimal).unwrap()["envelope"].clone(),
         )
         .unwrap();
@@ -4391,7 +4391,7 @@ agreement_key = "{}"
         for body in sent.iter() {
             assert_eq!(body["device_id"], "phone-1");
             assert!(!body.to_string().contains("Prueba cifrada"));
-            let envelope: EnvelopeV1 = serde_json::from_value(body["envelope"].clone()).unwrap();
+            let envelope: Envelope = serde_json::from_value(body["envelope"].clone()).unwrap();
             let plaintext = envelope
                 .open(
                     service.signing.verifying_key(),
@@ -4567,7 +4567,7 @@ agreement_key = "{}"
             assert!(sent[0].get("push_type").is_none());
             assert_eq!(sent[1]["push_type"], "background");
             assert!(sent[1].get("collapse_id").is_none());
-            let envelope: EnvelopeV1 = serde_json::from_value(sent[1]["envelope"].clone()).unwrap();
+            let envelope: Envelope = serde_json::from_value(sent[1]["envelope"].clone()).unwrap();
             let plaintext: Value = serde_json::from_slice(&envelope
                 .open(service.signing.verifying_key(), &phone_agreement, "mac-1", "phone-1", "mac-1", now_ms())
                 .unwrap()).unwrap();
@@ -4590,7 +4590,7 @@ agreement_key = "{}"
     }
 
     fn changes_work(service: &Service, request_id: &str, request: Value) -> Work {
-        let envelope = EnvelopeV1::seal_random(
+        let envelope = Envelope::seal_random(
             EnvelopeContext {
                 route: "mac-1",
                 sender: "phone-1",
@@ -4679,7 +4679,7 @@ agreement_key = "{}"
             .unwrap()
             .iter()
             .map(|bytes| {
-                let envelope: EnvelopeV1 = serde_json::from_slice(bytes).unwrap();
+                let envelope: Envelope = serde_json::from_slice(bytes).unwrap();
                 let bytes = envelope
                     .open(
                         service.signing.verifying_key(),
@@ -4696,14 +4696,14 @@ agreement_key = "{}"
     }
 
     #[tokio::test]
-    async fn a_v2_only_service_registers_the_phones_push_preferences_and_the_legacy_one_refuses_the_route()
+    async fn a_domain_service_registers_the_phones_push_preferences_and_the_legacy_one_refuses_the_route()
      {
         let (service, phone_agreement) = push_fixture();
         let phone_signing = SigningKey::from_slice(&[33u8; 32]).unwrap();
         let home = service.home.clone();
         let sealed = |service: &Service, request_id: &str, body: Value| Work {
             request_id: request_id.into(),
-            envelope: EnvelopeV1::seal_random(
+            envelope: Envelope::seal_random(
                 EnvelopeContext {
                     route: "mac-1",
                     sender: "phone-1",
@@ -4768,7 +4768,7 @@ agreement_key = "{}"
                     )
                     .await
                     .unwrap();
-                let answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
+                let answer: Envelope = serde_json::from_slice(&bytes).unwrap();
                 serde_json::from_slice::<Value>(
                     &answer
                         .open(
@@ -4814,7 +4814,7 @@ agreement_key = "{}"
         assert!(
             approved_method(&LocalRequest {
                 method: "POST".into(),
-                path: PUSH_BINDING_V2.into(),
+                path: PUSH_BINDING_ROUTE.into(),
                 body: None
             })
             .is_err(),
@@ -4823,7 +4823,7 @@ agreement_key = "{}"
         assert!(
             approved_method(&LocalRequest {
                 method: "GET".into(),
-                path: PUSH_BINDING_V2.into(),
+                path: PUSH_BINDING_ROUTE.into(),
                 body: None
             })
             .is_err()
@@ -5275,7 +5275,7 @@ agreement_key = "{}"
         let attacker = SigningKey::from_slice(&[71; 32]).unwrap();
         let trusted = SigningKey::from_slice(&[33; 32]).unwrap();
         let seal = |key: &SigningKey, id: &str| {
-            EnvelopeV1::seal_random(
+            Envelope::seal_random(
                 EnvelopeContext {
                     route: "mac-1",
                     sender: "phone-1",
@@ -6264,7 +6264,7 @@ agreement_key = "{}"
         );
         assert!(registered.load(Ordering::SeqCst));
         assert!(service.journal.enrollment_pending("phone-pending").unwrap());
-        let request = EnvelopeV1::seal_random(
+        let request = Envelope::seal_random(
             EnvelopeContext {
                 route: "mac-1",
                 sender: "phone-pending",
@@ -6465,7 +6465,7 @@ agreement_key = "{}"
         );
         let plaintext =
             br#"{"method":"POST","path":"/v1/questions/1/answer","body":{"text":"hello"}}"#;
-        let e = EnvelopeV1::seal_random(
+        let e = Envelope::seal_random(
             EnvelopeContext {
                 route: "mac-1",
                 sender: "phone-1",
@@ -6488,7 +6488,7 @@ agreement_key = "{}"
             &LocalRequest { method: "GET".into(), path: "/views/card:i-1".into(), body: None },
         ).unwrap();
         assert!(delivered.len() > 256 * 1024 && delivered.len() <= MAX_RELAY_RESPONSE);
-        let envelope: EnvelopeV1 = serde_json::from_slice(&delivered).unwrap();
+        let envelope: Envelope = serde_json::from_slice(&delivered).unwrap();
         let opened = envelope.open(service.signing.verifying_key(), &phone_agreement,
             "mac-1", "phone-1", "mac-1", now_ms()).unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&opened).unwrap(), near_limit);
@@ -6505,7 +6505,7 @@ agreement_key = "{}"
             )
             .unwrap();
         assert!(oversized.len() <= MAX_RELAY_RESPONSE);
-        let oversized_envelope: EnvelopeV1 = serde_json::from_slice(&oversized).unwrap();
+        let oversized_envelope: Envelope = serde_json::from_slice(&oversized).unwrap();
         let opened = oversized_envelope
             .open(
                 service.signing.verifying_key(),
@@ -6528,7 +6528,7 @@ agreement_key = "{}"
         let sent = responses.lock().unwrap();
         assert_eq!(sent.len(), 2);
         assert_eq!(sent[0], sent[1]);
-        let response: EnvelopeV1 = serde_json::from_slice(&sent[0]).unwrap();
+        let response: Envelope = serde_json::from_slice(&sent[0]).unwrap();
         let opened = response
             .open(
                 service.signing.verifying_key(),
@@ -6558,7 +6558,7 @@ agreement_key = "{}"
                 .is_err()
         );
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let interrupted = EnvelopeV1::seal_random(
+        let interrupted = Envelope::seal_random(
             EnvelopeContext {
                 route: "mac-1",
                 sender: "phone-1",
@@ -6594,7 +6594,7 @@ agreement_key = "{}"
             "interrupted action must not run twice"
         );
         let saved = responses.lock().unwrap();
-        let uncertain: EnvelopeV1 = serde_json::from_slice(saved.last().unwrap()).unwrap();
+        let uncertain: Envelope = serde_json::from_slice(saved.last().unwrap()).unwrap();
         let opened = uncertain
             .open(
                 service.signing.verifying_key(),
@@ -6659,7 +6659,7 @@ agreement_key = "{}"
             3,
             "removing a phone from service.toml must not suppress its relay revocation"
         );
-        let revoked = EnvelopeV1::seal_random(
+        let revoked = Envelope::seal_random(
             EnvelopeContext {
                 route: "mac-1",
                 sender: "phone-1",
@@ -6719,7 +6719,7 @@ agreement_key = "{}"
         let service = Service::open(&home, 0, auth.clone()).unwrap().unwrap();
         let work = Work {
             request_id: "request-1".into(),
-            envelope: EnvelopeV1::seal_random(
+            envelope: Envelope::seal_random(
                 EnvelopeContext {
                     route: "mac-1",
                     sender: "phone-a",
@@ -6781,7 +6781,7 @@ agreement_key = "{}"
     }
 
     #[tokio::test]
-    async fn committed_service_accepts_only_encrypted_v2_routes_and_fences_revoked_reader() {
+    async fn committed_service_accepts_only_encrypted_domain_routes_and_fences_revoked_reader() {
         use std::os::unix::fs::PermissionsExt;
         let home =
             std::env::temp_dir().join(format!("alondra-v2-service-{}", crate::auth::random_hex(8)));
@@ -6816,7 +6816,7 @@ agreement_key = "{}"
         service.journal.activate_enrollment("phone-a").unwrap();
         let sealed = |request_id: &str, path: &str| Work {
             request_id: request_id.into(),
-            envelope: EnvelopeV1::seal_random(
+            envelope: Envelope::seal_random(
                 EnvelopeContext {
                     route: "mac-1",
                     sender: "phone-a",
@@ -6887,13 +6887,13 @@ agreement_key = "{}"
         let state = domain.state().unwrap();
         domain
             .execute(
-                &alondra_core::domain_v2::Actor::System,
-                &alondra_core::domain_v2::CommandEnvelope {
-                    protocol_version: alondra_core::domain_v2::PROTOCOL_VERSION,
+                &alondra_core::domain::Actor::System,
+                &alondra_core::domain::CommandEnvelope {
+                    protocol_version: alondra_core::domain::PROTOCOL_VERSION,
                     data_epoch: state.data_epoch,
                     command_id: "agent".into(),
                     expected_revision: state.revision,
-                    command: alondra_core::domain_v2::Command::RegisterAgent {
+                    command: alondra_core::domain::Command::RegisterAgent {
                         agent_id: "agent-a".into(),
                         name: "Instance A".into(),
                     },
@@ -6922,7 +6922,7 @@ agreement_key = "{}"
         auth.approve_service("phone-a", "Test", &signing_wire)
             .unwrap();
         let client =
-            crate::v2_client_routes::Client::open(domain.clone(), &home, Default::default());
+            crate::client_routes::Client::open(domain.clone(), &home, Default::default());
         let service = Service::open(&home, 0, auth.clone())
             .unwrap()
             .unwrap()
@@ -6935,7 +6935,7 @@ agreement_key = "{}"
         service.journal.activate_enrollment("phone-a").unwrap();
         let sealed = |request_id: &str, path: &str| Work {
             request_id: request_id.into(),
-            envelope: EnvelopeV1::seal_random(
+            envelope: Envelope::seal_random(
                 EnvelopeContext {
                     route: "mac-1",
                     sender: "phone-a",
@@ -7067,7 +7067,7 @@ agreement_key = "{}"
             .await
             .unwrap();
         assert_eq!(finished["status"], 200, "{finished}");
-        let attachment: alondra_core::domain_v2::AttachmentRef =
+        let attachment: alondra_core::domain::AttachmentRef =
             serde_json::from_value(finished["body"]["attachment"].clone()).unwrap();
         assert_eq!(
             (
@@ -7199,7 +7199,7 @@ agreement_key = "{}"
         }));
         let new_request = Work {
             request_id: "request-1".into(),
-            envelope: EnvelopeV1::seal_random(EnvelopeContext {
+            envelope: Envelope::seal_random(EnvelopeContext {
                 route: "mac-1", sender: "phone-a", recipient: "mac-1", request_id: "request-1",
                 kind: "request", expires_at_ms: now_ms() + 60_000,
             }, serde_json::to_vec(&json!({"method":"POST","path":"/requests","body":{"request_id": "request-9", "text": "Ship it", "options": {"effort": "hard"}, "attachments": []}})).unwrap().as_slice(),
@@ -7224,7 +7224,7 @@ agreement_key = "{}"
             )
             .await
             .unwrap();
-        let sealed_answer: EnvelopeV1 = serde_json::from_slice(&bytes).unwrap();
+        let sealed_answer: Envelope = serde_json::from_slice(&bytes).unwrap();
         let answer: Value = serde_json::from_slice(
             &sealed_answer
                 .open(

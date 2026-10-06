@@ -100,11 +100,11 @@ pub fn is_image(name: &str) -> bool {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Upload {
     Sending,
-    Stored(alondra_core::domain_v2::AttachmentRef),
+    Stored(alondra_core::domain::AttachmentRef),
 }
 
 /// The references of the chips already stored; one still copying is never sent half-way.
-pub fn stored(chips: &[Chip]) -> Vec<alondra_core::domain_v2::AttachmentRef> {
+pub fn stored(chips: &[Chip]) -> Vec<alondra_core::domain::AttachmentRef> {
     chips
         .iter()
         .filter_map(|c| match &c.upload {

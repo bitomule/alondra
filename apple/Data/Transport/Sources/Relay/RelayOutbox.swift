@@ -35,11 +35,11 @@ public struct RelayOutboxEntry: Codable, Sendable, Equatable {
 
     public let requestID: String
     public let scope: RelayOutboxScope
-    public var envelope: EnvelopeV1?
+    public var envelope: Envelope?
     public var phase: Phase
     public var lastStatus: String?
     public var lastRevision: UInt64?
-    public var lastResponse: EnvelopeV1?
+    public var lastResponse: Envelope?
     /// Keyed request binding; contains no plaintext and survives retirement.
     public var semanticTag: Data? = nil
 
@@ -64,7 +64,7 @@ public actor RelayOutbox {
 
     /// The caller must seal a fresh envelope before this call. A record is durable before POST.
     /// Network errors and post-send disk errors are both uncertain; neither authorizes retry.
-    public func submitNew(_ envelope: EnvelopeV1, semanticTag: Data? = nil) async throws -> RelaySubmission {
+    public func submitNew(_ envelope: Envelope, semanticTag: Data? = nil) async throws -> RelaySubmission {
         _ = try envelope.signedBytes()
         guard envelope.kind == "request" else { throw RelayOutboxError.invalidEnvelope }
         guard try JSONEncoder().encode(envelope).count <= 256 * 1024 else {
@@ -110,7 +110,7 @@ public actor RelayOutbox {
     /// Call only after the verified completed response has been durably applied to app state.
     /// Keeps a small request-ID tombstone so the same ID can never be POSTed again.
     public func retireAppliedResponse(requestID: String, revision: UInt64,
-                                      verifiedResponse: EnvelopeV1) throws {
+                                      verifiedResponse: Envelope) throws {
         guard var record = records[requestID] else { throw RelayOutboxError.persistenceFailed }
         guard record.phase == .acknowledged, record.lastStatus == "completed",
               record.lastRevision == revision, record.lastResponse == verifiedResponse

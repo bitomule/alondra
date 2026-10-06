@@ -8,7 +8,7 @@
 
 use crate::domain_runtime::DomainRuntime;
 use crate::domain_store::StoreError;
-use alondra_core::domain_v2::{
+use alondra_core::domain::{
     Actor, AgentId, Command, CommandEnvelope, CommandId, CommandOutcome, DataEpoch, DomainError,
     Revision, PROTOCOL_VERSION,
 };
