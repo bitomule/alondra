@@ -615,7 +615,9 @@ pub(crate) fn render(state: &DomainState, message: &OutboxMessage) -> String {
     let Some(interaction) = interaction else { return message.message.clone() };
     let (options, answer) = match &interaction.payload {
         InteractionPayload::Question { options, answer } | InteractionPayload::ActionRequest { options, answer } => (options, answer),
-        InteractionPayload::Delivery { .. } | InteractionPayload::Information { .. } => return message.message.clone(),
+        InteractionPayload::Delivery { .. } => return message.message.clone(),
+        InteractionPayload::Information { .. } if matches!(interaction.recipient, Recipient::Orchestrator) => return interaction.body.clone(),
+        InteractionPayload::Information { .. } => return message.message.clone(),
     };
     let Some(answer) = answer else {
         let mut text = interaction.body.clone();

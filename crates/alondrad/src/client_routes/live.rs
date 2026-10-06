@@ -38,6 +38,7 @@ pub(crate) struct Live {
     pub(crate) sandbox: std::sync::atomic::AtomicBool,
     pub(crate) losses: crate::node_revival::Losses,
     pub(crate) usage_pause: crate::usage_pause::UsagePause,
+    pub(crate) machine_watch: crate::machine_watch::MachineWatch,
     watching: Mutex<std::collections::HashSet<String>>,
     reconnecting: Mutex<std::collections::HashSet<String>>,
     closed: Mutex<std::collections::BTreeSet<String>>,
@@ -57,6 +58,7 @@ impl Live {
             closed_tasks_file: Some(closed_tasks_file),
             mods: crate::node_reports::Reports::persisted_in(home),
             usage_pause: crate::usage_pause::UsagePause::persisted_in(home),
+            machine_watch: crate::machine_watch::MachineWatch::persisted_in(home),
             closed: Mutex::new(closed),
             closed_file: Some(file),
             ..Self::default()
