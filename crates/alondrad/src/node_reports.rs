@@ -541,6 +541,11 @@ impl Reports {
         self.apply(Envelope { session_id: session_id.into(), report }, alondra_core::now_millis());
     }
 
+    /// The session started with a launch key, which only Alondra's own launches carry.
+    pub(crate) fn started_with_a_launch_key(&self, session_id: &str) -> bool {
+        self.launches.lock().expect("launch keys poisoned").values().any(|session| session == session_id)
+    }
+
     pub(crate) fn session(&self, session_id: &str) -> Option<Reported> {
         self.sessions.lock().expect("node reports poisoned").get(session_id).cloned()
     }

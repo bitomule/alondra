@@ -8,7 +8,7 @@ pub const FILE_NAME: &str = "config.toml";
 pub const DEFAULT_LABEL: &str = "dev.alondra.alondrad";
 pub const DEFAULT_RETENTION_HOURS: f64 = 14.0 * 24.0;
 pub const DEFAULT_ARCHIVED_TASKS_DAYS: f64 = 30.0;
-pub const DEFAULT_CLOSE_FREE_NODES_AFTER: Duration = Duration::from_secs(7 * 24 * 3600);
+pub const DEFAULT_CLOSE_FREE_NODES_AFTER: Duration = Duration::from_secs(30 * 60);
 pub const DEFAULT_COMPACT_IDLE_NODES_AT: f64 = 30.0;
 pub const DEFAULT_COMPACT_ORCHESTRATOR_AT: f64 = 50.0;
 pub const OFF: &str = "off";
@@ -36,7 +36,8 @@ pub struct FileConfig {
     pub service_label: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resume_dead_nodes: Option<bool>,
-    /// How long a node stays idle before Alondra closes it, as `30m`, `2h` or `7d`, or `off`.
+    /// How long Alondra waits for the node of a finished task to clean up before it closes the node
+    /// anyway, as `30m`, `2h` or `7d`, or `off` to close it only once the node says it cleaned up.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub close_free_nodes_after: Option<String>,
     /// How full an idle node's context may be, in percent, before Alondra compacts it to give it
@@ -121,8 +122,8 @@ pub struct Config {
     pub sandbox: bool,
     /// Restart a node whose process ended while it still had work. Only with `wake`.
     pub resume_dead_nodes: bool,
-    /// Close a node once it has been idle this long with nothing pending, or ask the user when
-    /// something is. A week unless set; `None` is off.
+    /// How long Alondra waits for the node of a finished task to clean up before it closes the node
+    /// anyway. 30 minutes unless set; `None` closes it only once the node says it cleaned up.
     pub close_free_nodes_after: Option<Duration>,
     /// Compact an idle node whose context is at least this full, in percent, before typing it
     /// a new task. 30 unless set; `None` is off.
@@ -327,10 +328,10 @@ mod tests {
     }
 
     #[test]
-    fn dead_nodes_are_resumed_and_idle_nodes_closed_after_a_week_unless_the_config_says_otherwise() {
+    fn dead_nodes_are_resumed_and_finished_tasks_nodes_closed_after_30_minutes_unless_the_config_says_otherwise() {
         let c = resolve(&FileConfig::default(), &[]);
         assert!(c.resume_dead_nodes);
-        assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(7 * 86_400)));
+        assert_eq!(c.close_free_nodes_after, Some(Duration::from_secs(1_800)));
         assert_eq!(resolve(&FileConfig::parse("close_free_nodes_after = \"off\"").unwrap(), &[]).close_free_nodes_after, None);
         assert_eq!(resolve(&FileConfig::default(), &[("ALONDRA_CLOSE_FREE_NODES_AFTER", "off")]).close_free_nodes_after, None);
 

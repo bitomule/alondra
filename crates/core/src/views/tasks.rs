@@ -2,7 +2,7 @@ use super::{
     BuildError, Confirm, Fact, Facts, Icon, Item, Link, LocalLink, Markdown, Notice, RenderContext,
     Style, Tone, Trailing, View, action_id::Verb, common, text::{t, tf},
 };
-use crate::domain::{DomainState, ModelChooser, Request, RequestId, Task, TaskId, TaskState};
+use crate::domain::{DomainState, ModelChooser, NodeEnd, Request, RequestId, Task, TaskId, TaskState};
 use std::collections::{BTreeMap, BTreeSet};
 
 fn state(task: &Task, context: &RenderContext<'_>) -> &'static str {
@@ -491,9 +491,12 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
             .map(|pr| line(
                 tf!(context.lang, "waits for PR #{number} to be merged",
                     "espera a que se fusione el PR #{number}", number = pr.number), None)),
-        TaskState::Closing => Some(line(t!(context.lang,
-            "merged; the node does what the merge unblocks",
-            "fusionada; el nodo hace lo que desbloquea la fusión").into(), None)),
+        TaskState::Closing => Some(line(if task.wrap_up.asked_at.is_some() {
+            t!(context.lang, "finished; the node cleans up before Alondra closes it",
+                "terminada; el nodo limpia antes de que Alondra lo cierre").into()
+        } else {
+            t!(context.lang, "accepted; Alondra merges its pull request", "aceptada; Alondra fusiona su PR").into()
+        }, None)),
         TaskState::NotStarted => common::failed_launch(task, context.domain).map(|error| line(
             if error.is_empty() {
                 t!(context.lang, "the scheduled run could not launch its node",
@@ -502,7 +505,13 @@ fn now_line(task: &Task, context: &RenderContext<'_>) -> Option<super::Row> {
                 tf!(context.lang, "the scheduled run could not launch its node: {error}",
                     "la ejecución programada no pudo lanzar su nodo: {error}", error = error)
             }, None)),
-        TaskState::Running | TaskState::Done | TaskState::Cancelled => None,
+        TaskState::Done | TaskState::Cancelled => task.wrap_up.node.map(|end| line(match end {
+            NodeEnd::Closed => t!(context.lang, "node closed", "nodo cerrado"),
+            NodeEnd::Gone => t!(context.lang, "node already closed", "el nodo ya estaba cerrado"),
+            NodeEnd::KeptByUser => t!(context.lang, "node left open: you chose to keep it", "nodo abierto: elegiste dejarlo"),
+            NodeEnd::UsersOwn => t!(context.lang, "node left open: it is your own session", "nodo abierto: es tu propia sesión"),
+        }.into(), None)),
+        TaskState::Running => None,
     }
 }
 

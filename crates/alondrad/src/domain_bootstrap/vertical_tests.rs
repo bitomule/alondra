@@ -139,6 +139,13 @@ impl Fixture {
             "command_id":format!("vertical-{}",self.next_id),"command":command})
     }
 
+    /// The task waits in Closing for its node; Alondra records it closed and the task is done.
+    fn end_node(&mut self, task: &str) {
+        assert_eq!(self.domain.state().unwrap().tasks[&task.into()].state, TaskState::Closing);
+        let envelope: CommandEnvelope = serde_json::from_value(self.envelope(json!({"kind":"record_node_end", "task_id":task, "end":"closed"}))).unwrap();
+        self.domain.execute(&Actor::System, &envelope, None, || Ok(())).unwrap();
+    }
+
     async fn post(&self, bearer: &str, envelope: &Value) -> (StatusCode, Value) {
         let command = envelope["command"].as_object().unwrap();
         let kind = command["kind"].as_str().unwrap();
@@ -147,6 +154,7 @@ impl Fixture {
         let (method, path) = match kind {
             "create_request" => ("POST", "/requests".to_owned()),
             "create_task" => ("POST", format!("/requests/{}/tasks", command["request_id"].as_str().unwrap())),
+            "title_request" => ("POST", format!("/requests/{}/title", command["request_id"].as_str().unwrap())),
             "register_pr" => ("POST", format!("/tasks/{}/pull-requests", task.unwrap())),
             "present_result" => ("POST", format!("/tasks/{}/results", task.unwrap())),
             "complete_task" => ("POST", format!("/tasks/{}/completion", task.unwrap())),
@@ -227,14 +235,10 @@ impl Fixture {
             "body":format!("Work on {id}")}),
         )
         .await;
-        self.producer(
-            true,
-            json!({"kind":"create_task", "task_id":id,
+        self.user(json!({"kind":"create_task", "task_id":id,
             "request_id":format!("request-{id}"), "title":format!("Task {id}"),
             "agent_id":"agent-a", "review_prs":review_prs,
-            "dependencies":[], "stack":null}),
-        )
-        .await;
+            "dependencies":[], "stack":null}));
     }
 
     async fn finish(mut self) {
@@ -279,6 +283,7 @@ async fn http_producer_answer_and_document_are_persisted() {
         json!({"kind":"accept_delivery", "presentation_id":"answer-delivery",
         "targets":[text]}),
     );
+    fixture.end_node("answer-task");
     assert_eq!(
         fixture.domain.state().unwrap().tasks[&"answer-task".into()].state,
         TaskState::Done
@@ -327,6 +332,7 @@ async fn http_producer_answer_and_document_are_persisted() {
         json!({"kind":"decide_document_review", "task_id":"doc-task",
         "document_id":"doc-1", "revision_id":"doc-v1", "accepted":true}),
     );
+    fixture.end_node("doc-task");
     assert_eq!(fixture.domain.state().unwrap().tasks[&"doc-task".into()].state, TaskState::Done);
     let reopened = DomainRuntime::open(&fixture.home).unwrap();
     let persisted = reopened.state().unwrap();
@@ -474,6 +480,44 @@ async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_n
     let state = fixture.domain.state().unwrap();
     assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
     assert_eq!(state.pull_requests[&"pr-7".into()].merged_head.as_deref(), Some(head));
-    assert_eq!(state.tasks[&"merge-task".into()].state, TaskState::Done);
+    fixture.end_node("merge-task");
+    assert_eq!(fixture.domain.state().unwrap().tasks[&"merge-task".into()].state, TaskState::Done);
     fixture.finish().await;
+}
+
+#[tokio::test]
+async fn http_the_orchestrator_creates_tasks_for_fresh_nodes_and_plans_the_ones_that_wait() {
+    let mut fixture = Fixture::start().await;
+    let epoch = fixture.domain.state().unwrap().data_epoch;
+    let register = CommandEnvelope {
+        protocol_version: PROTOCOL_VERSION, data_epoch: epoch, command_id: "register-b".into(),
+        expected_revision: fixture.domain.state().unwrap().revision,
+        command: Command::RegisterAgent { agent_id: "agent-b".into(), name: "Fresh node".into() },
+    };
+    fixture.domain.execute(&Actor::System, &register, None, || Ok(())).unwrap();
+    fixture.producer(true, json!({"kind":"create_request", "request_id":"request-plan", "body":"Work in two steps"})).await;
+    fixture.producer(true, json!({"kind":"title_request", "request_id":"request-plan", "title":"Two steps"})).await;
+    let task = |id: &str, agent: Value, dependencies: Value, launch: Value| {
+        let mut command = json!({"kind":"create_task", "task_id":id, "request_id":"request-plan", "title":id,
+            "agent_id":agent, "review_prs":false, "dependencies":dependencies, "stack":null});
+        if !launch.is_null() { command["launch"] = launch; }
+        command
+    };
+    fixture.producer(true, task("first", json!("agent-b"), json!([]), Value::Null)).await;
+
+    let orchestrator = fixture.orchestrator.clone();
+    let envelope = fixture.envelope(task("second", json!("agent-b"), json!([]), Value::Null));
+    let (status, body) = fixture.post(&orchestrator, &envelope).await;
+    assert_eq!((status, body["code"].as_str()), (StatusCode::CONFLICT, Some("agent_busy")), "{body}");
+
+    let envelope = fixture.envelope(task("later", Value::Null, json!(["first"]), Value::Null));
+    let (status, body) = fixture.post(&orchestrator, &envelope).await;
+    assert_eq!((status, body["code"].as_str()), (StatusCode::UNPROCESSABLE_ENTITY, Some("launch_plan_required")), "{body}");
+    assert!(fixture.domain.state().unwrap().tasks.get(&"later".into()).is_none(), "nothing was created");
+
+    let cwd = fixture.home.to_str().unwrap().to_owned();
+    let launch = json!({"name": "app/later", "cwd": cwd, "model": "sonnet", "reason": "clear change"});
+    fixture.producer(true, task("later", Value::Null, json!(["first"]), launch)).await;
+    let stored = fixture.domain.launch_plan(&"later".into()).unwrap().unwrap();
+    assert_eq!((stored.name.as_str(), stored.model.as_deref()), ("app/later", Some("sonnet")));
 }

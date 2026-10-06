@@ -12,8 +12,13 @@ public enum PairingError: LocalizedError, Equatable, Sendable {
     case missingAttempt
     case alreadyLinked
     public var errorDescription: String? {
-        if case .alreadyLinked = self { return String(localized: "This Mac is already linked. Select it in Settings.") }
-        return nil
+        switch self {
+        case .alreadyLinked: String(localized: "This Mac is already linked. Select it in Settings.")
+        case .invalidInvitation: String(localized: "This QR code isn’t from Alondra. Scan the code your Mac shows.")
+        case .expired: String(localized: "This QR code has expired. Show a new one on your Mac and scan it.")
+        case .invalidApproval, .invalidIdentity, .invalidResponse, .missingAttempt, .unexpectedStatus:
+            String(localized: "Linking didn’t finish. Show a new QR code on your Mac and scan it again.")
+        }
     }
 }
 

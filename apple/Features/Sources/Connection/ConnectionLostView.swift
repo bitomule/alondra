@@ -9,14 +9,16 @@ public struct ConnectionLostView: View {
     let retry: () -> Void
     let signIn: (() -> Void)?
     let settings: (() -> Void)?
+    let signOut: (() -> Void)?
 
     /// `problem == nil` means the first attempt is still in flight.
     public init(problem: ConnectionProblem?, retry: @escaping () -> Void,
-                signIn: (() -> Void)? = nil, settings: (() -> Void)? = nil) {
+                signIn: (() -> Void)? = nil, settings: (() -> Void)? = nil, signOut: (() -> Void)? = nil) {
         self.problem = problem
         self.retry = retry
         self.signIn = signIn
         self.settings = settings
+        self.signOut = signOut
     }
 
     public var body: some View {
@@ -70,6 +72,11 @@ public struct ConnectionLostView: View {
                     .buttonStyle(.glassProminent)
                     .controlSize(.large)
                     .tint(Palette.dawn)
+            } else if problem == .signOutIncomplete, let signOut {
+                Button("Finish Signing Out", systemImage: "rectangle.portrait.and.arrow.right", action: signOut)
+                    .buttonStyle(.glassProminent)
+                    .controlSize(.large)
+                    .tint(Palette.dawn)
             } else if problem == .deviceRevoked, let settings {
                 Button("Open Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.glassProminent)
@@ -86,7 +93,7 @@ public struct ConnectionLostView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            if let settings, problem != .deviceRevoked {
+            if let settings, problem != .deviceRevoked, problem != .signOutIncomplete {
                 Button("Settings", systemImage: "gearshape", action: settings)
                     .buttonStyle(.borderless)
                     .font(.footnote)

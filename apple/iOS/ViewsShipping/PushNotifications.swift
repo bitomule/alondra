@@ -116,7 +116,7 @@ final class PushCenter {
         do {
             _ = try await center.requestAuthorization(options: [.alert, .sound, .badge])
         } catch {
-            registration = .failed(error.localizedDescription)
+            registration = .failed(String(localized: "Alerts couldn’t be turned on. Try again in a moment."))
         }
         await refreshAuthorization()
         guard authorization == .authorized else { return }
@@ -139,7 +139,7 @@ final class PushCenter {
     }
 
     func didFailToRegister(_ error: any Error) {
-        registration = .failed(error.localizedDescription)
+        registration = .failed(String(localized: "This iPhone couldn’t sign up for alerts. Alondra tries again when you reopen the app."))
     }
 
     func install(_ entries: [NotificationRoutingCoordinator.Entry], selected: NotificationPayload.Binding?) throws {
@@ -163,7 +163,10 @@ final class PushCenter {
         do {
             try registrations.update(clients: clients, token: token, environment: Self.environment.rawValue,
                 quietStart: quietStart, quietEnd: quietEnd)
-        } catch { registration = .failed(error.localizedDescription) }
+        } catch {
+            registration = .failed((error as? LocalizedError)?.errorDescription
+                ?? String(localized: "This iPhone couldn’t sign up for alerts. Alondra tries again when you reopen the app."))
+        }
     }
 
     private func currentBinding() -> NotificationPayload.Binding? { client?.binding }

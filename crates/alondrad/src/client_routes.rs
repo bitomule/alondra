@@ -23,7 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-pub(crate) use close::Sessions;
+pub(crate) use crate::node_close::Sessions;
 pub(crate) use new_work::Github;
 pub(crate) use live::{ClosedNode, Live};
 pub(crate) use pr_details::{hand_back_conflicts, GhView, Merge, PrView};
@@ -250,7 +250,7 @@ impl Client {
             pr_view: std::sync::Mutex::new(Arc::new(GhView)),
             views: Default::default(),
             feeds: Default::default(),
-            sessions: std::sync::Mutex::new(Arc::new(close::Machine)),
+            sessions: std::sync::Mutex::new(Arc::new(crate::node_close::Machine)),
             github: std::sync::Mutex::new(Arc::new(new_work::Gh)),
             options: Default::default(),
             issue_cache: Default::default(),

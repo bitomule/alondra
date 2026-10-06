@@ -51,6 +51,12 @@ public final class AccountSession {
         $0.cloudPairing.classify = {
             ConnectionClassifier.problem(for: $0, local: false, networkOffline: NetworkReachability.shared.isOffline)
         }
+        $0.cloudPairing.describe = { error in
+            if let error = error as? PairingError, let message = error.errorDescription { return message }
+            if let error = error as? AuthError, let message = error.errorDescription { return message }
+            let problem = ConnectionClassifier.problem(for: error, local: false, networkOffline: NetworkReachability.shared.isOffline)
+            return String(localized: problem.title)
+        }
         $0.cloudPairing.hasSavedConfiguration = { [self] in
             if try await auth.requiresRevocation() { return true }
             return try await pairing.approvedPairing() != nil
@@ -107,19 +113,17 @@ public final class AccountSession {
     private func restoreApprovedPairing() async throws -> Bool {
         let current = generation
         do { _ = try await auth.hasSession() }
-        catch AuthError.pendingRevocation {
-            throw RestoreError.revocationRequired(AuthError.pendingRevocation.localizedDescription)
-        } catch AuthError.rotationUncertain {
-            throw RestoreError.revocationRequired(AuthError.rotationUncertain.localizedDescription)
+        catch AuthError.pendingRevocation, AuthError.rotationUncertain {
+            throw RestoreError.revocationRequired
         }
         let collection = try await pairing.approvedPairings()
         guard !collection.pairings.isEmpty else { return false }
         let subject: String
         do { subject = try await auth.verifiedSubject() }
-        catch AuthError.noSession { throw RestoreError.reauthenticationRequired("Sign in again to reconnect your saved workspace.") }
+        catch AuthError.noSession { throw RestoreError.reauthenticationRequired }
         let authorized = collection.pairings.filter { $0.ownerSub == subject }
         guard !authorized.isEmpty else {
-            throw RestoreError.reauthenticationRequired("Sign in with the account that paired this workspace.")
+            throw RestoreError.reauthenticationRequired
         }
         for approved in authorized { try Self.validateRelay(approved.relayURL) }
         try Task.checkCancellation()

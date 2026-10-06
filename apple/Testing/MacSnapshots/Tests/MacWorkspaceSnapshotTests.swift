@@ -134,4 +134,10 @@ final class MacWorkspaceSnapshotTests: XCTestCase {
         let store = try presentation(detail: "fleet-mac")
         assertWindow(size: CGSize(width: 900, height: 520)) { MacServiceDetail(presentation: store) }
     }
+
+    func test_connectionLost_signOutIncomplete() {
+        assertWindow(size: CGSize(width: 900, height: 600)) {
+            ConnectionLostView(problem: .signOutIncomplete, retry: {}, settings: {}, signOut: {})
+        }
+    }
 }

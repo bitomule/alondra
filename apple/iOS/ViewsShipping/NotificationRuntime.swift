@@ -21,7 +21,7 @@ final class NotificationRuntime {
     @ObservationIgnored private lazy var responder = NotificationResponder(push: push, prepare: { [weak self] in
         guard let self else { return }
         do { try await prepareSession?() }
-        catch { self.error = error.localizedDescription }
+        catch { self.error = String(localized: "Alondra couldn’t reconnect to answer this alert. Open the app to reconnect.") }
     })
     private var identity: ObjectIdentifier?
     private var generation = 0
@@ -91,7 +91,7 @@ final class NotificationRuntime {
                 if push.authorization == .authorized { push.registerWithAPNs() }
             }
         } catch {
-            if current == generation { self.error = error.localizedDescription }
+            if current == generation { self.error = String(localized: "Alerts for this Mac couldn’t be set up. Alondra tries again when you reopen the app.") }
             throw error
         }
     }
@@ -110,7 +110,7 @@ final class NotificationRuntime {
             try vault.clear()
             if current == generation { error = nil }
         } catch {
-            if current == generation { self.error = error.localizedDescription }
+            if current == generation { self.error = String(localized: "This iPhone couldn’t remove its saved alert keys. Sign out again to retry.") }
             throw error
         }
     }

@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import OSLog
 import Security
 
 private struct Discovery: Decodable {
@@ -43,11 +44,16 @@ private enum Audience: Decodable {
 
 /// Owns credentials only. A relay request still requires the paired device's signature.
 public actor AuthSession {
+    /// Keeps the process alive while a refresh is on the wire. The grant calls `expired` when
+    /// the system takes the time back; the returned closure ends it.
+    public typealias RefreshGrant = @Sendable (_ expired: @escaping @Sendable () -> Void) async -> @Sendable () async -> Void
+    private static let log = Logger(subsystem: "com.bitomule.alondra", category: "auth")
     private let configuration: OIDCConfiguration
     private let transport: any AuthHTTPTransport
     private let browser: any AuthBrowser
     private let storage: any RefreshTokenStorage
     private let now: @Sendable () -> Date
+    private let refreshGrant: RefreshGrant
     private var accessToken: String?
     private var expiresAt: Date = .distantPast
     private var refreshTask: Task<String, Error>?
@@ -91,6 +97,7 @@ public actor AuthSession {
                 browser: any AuthBrowser,
                 storage: any RefreshTokenStorage = KeychainRefreshTokenStorage(),
                 now: @escaping @Sendable () -> Date = { Date() },
+                refreshGrant: @escaping RefreshGrant = { _ in { } },
                 sessionLost: @escaping @Sendable () -> Void = {}) {
         self.configuration = configuration
         self.sessionLost = sessionLost
@@ -98,6 +105,7 @@ public actor AuthSession {
         self.browser = browser
         self.storage = storage
         self.now = now
+        self.refreshGrant = refreshGrant
     }
 
     public func login() async throws {
@@ -187,7 +195,9 @@ public actor AuthSession {
         guard let saved = credential, !saved.token.isEmpty else { throw AuthError.noSession }
         let startedAt = epoch
         let permit = reserveMutation()
-        let task = Task { [self] in try await refresh(saved: saved.token, startedAt: startedAt, permit: permit) }
+        let task = Task { [self] in
+            try await refresh(saved: saved.token, uncertain: saved.status == .rotationUncertain, startedAt: startedAt, permit: permit)
+        }
         let taskID = UUID()
         refreshTaskID = taskID
         refreshTask = task
@@ -247,15 +257,25 @@ public actor AuthSession {
         if sessionSuspended { return true }
         if refreshTask != nil { return false }
         guard let credential = try storage.read() else { return false }
-        return credential.status != .active
+        switch credential.status {
+        case .active: return false
+        case .pendingRevocation: return true
+        case .rotationUncertain: return !replaysUncertainRefresh
+        case .rejected: return false
+        }
     }
+
+    private var replaysUncertainRefresh: Bool { configuration.refreshReplay == .predecessorStaysValid }
 
     private func activeCredential() throws -> RefreshCredential? {
         guard let credential = try storage.read() else { return nil }
         switch credential.status {
         case .active: return credential
         case .pendingRevocation: throw AuthError.pendingRevocation
-        case .rotationUncertain: throw AuthError.rotationUncertain
+        case .rejected: throw AuthError.noSession
+        case .rotationUncertain:
+            guard replaysUncertainRefresh else { throw AuthError.rotationUncertain }
+            return credential
         }
     }
 
@@ -298,7 +318,7 @@ public actor AuthSession {
 
     private func revokeStoredCredential() async throws {
         guard var credential = try unpersistedCredential ?? storage.read() else { return }
-        if credential.status == .rotationUncertain {
+        if credential.status == .rotationUncertain || credential.status == .rejected {
             guard case .offlineSession = configuration.revocationScope else { throw AuthError.rotationUncertain }
             // Keep uncertainty durable until revocation succeeds. A failed request
             // must not downgrade it into an ordinary credential-only cleanup.
@@ -320,39 +340,86 @@ public actor AuthSession {
         try storage.delete()
     }
 
-    private func refresh(saved: String, startedAt: Int, permit: AsyncStream<Void>) async throws -> String {
+    private func refresh(saved: String, uncertain: Bool, startedAt: Int, permit: AsyncStream<Void>) async throws -> String {
         await awaitMutation(permit)
         defer { releaseMutation() }
+        let endGrant = await refreshGrant { Task { await self.expireRefresh() } }
+        defer { Task { await endGrant() } }
         let document = try await discovery()
         // Persist the possibility of rotation before dispatch. A killed process or
-        // missing response must not reuse a token whose successor is unknown.
+        // missing response must not reuse a token whose successor is unknown, unless
+        // the issuer keeps the predecessor valid (refreshReplay).
         try storage.write(RefreshCredential(token: saved, status: .rotationUncertain))
+        Self.log.info("refresh started replaying=\(uncertain, privacy: .public)")
         let result: TokenResponse
         do {
             result = try await exchange(at: document.token_endpoint, fields: [
                 "grant_type": "refresh_token", "refresh_token": saved, "client_id": configuration.clientID,
             ])
         } catch AuthError.oauth(let status, let code) {
+            Self.log.error("refresh rejected status=\(status, privacy: .public) code=\(code, privacy: .public) replaying=\(uncertain, privacy: .public)")
             if code == "invalid_grant" {
-                try storage.delete()
                 sessionLost()
+                try await endRejectedSession(uncertain: uncertain)
                 throw AuthError.noSession
             }
             // An explicit OAuth rejection did not issue a rotated credential.
             try storage.write(RefreshCredential(token: saved))
             throw AuthError.oauth(status: status, code: code)
+        } catch let error as URLError where Self.neverReachedIssuer(error) {
+            // Nothing left this device, so the issuer cannot have rotated anything.
+            Self.log.error("refresh not sent urlError=\(error.code.rawValue, privacy: .public) replaying=\(uncertain, privacy: .public)")
+            try storage.write(RefreshCredential(token: saved, status: uncertain ? .rotationUncertain : .active))
+            throw error
+        } catch let error as URLError {
+            Self.log.error("refresh response lost urlError=\(error.code.rawValue, privacy: .public) replaying=\(uncertain, privacy: .public)")
+            throw error
         } catch {
             // Preserve the transport/configuration error for the current caller;
             // the durable uncertain state prevents unsafe subsequent refreshes.
+            Self.log.error("refresh failed \(String(describing: type(of: error)), privacy: .public) replaying=\(uncertain, privacy: .public)")
             throw error
         }
         let rotated = result.refresh_token.flatMap { $0.isEmpty ? nil : $0 } ?? saved
         try persistIssuedCredential(RefreshCredential(token: rotated))
+        Self.log.info("refresh succeeded replaying=\(uncertain, privacy: .public)")
         // Persistence precedes cancellation/generation checks: logout needs this token.
         guard epoch == startedAt, transitions == 0 else { throw CancellationError() }
         accessToken = result.access_token
         expiresAt = now().addingTimeInterval(TimeInterval(result.expires_in))
         return result.access_token
+    }
+
+    /// The issuer refused the saved token. After a lost response its successor may still be
+    /// live, so end the whole offline session; signing in again revokes it if this fails.
+    private func endRejectedSession(uncertain: Bool) async throws {
+        guard uncertain else { try storage.delete(); return }
+        do {
+            try await revokeStoredCredential()
+            Self.log.info("rejected uncertain session revoked")
+        } catch {
+            // Park it: the next sign-in revokes it before opening the browser, and no
+            // further refresh replays a token the issuer already refused.
+            if let credential = try? storage.read() {
+                try storage.write(RefreshCredential(token: credential.token, status: .rejected))
+            }
+            Self.log.error("rejected uncertain session revocation failed \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func expireRefresh() {
+        Self.log.error("refresh background time expired")
+        refreshTask?.cancel()
+    }
+
+    /// Failures raised before any byte of the request reached the issuer.
+    static func neverReachedIssuer(_ error: URLError) -> Bool {
+        [.notConnectedToInternet, .dataNotAllowed, .internationalRoamingOff, .callIsActive,
+         .cannotFindHost, .dnsLookupFailed, .cannotConnectToHost,
+         .secureConnectionFailed, .serverCertificateUntrusted, .serverCertificateHasBadDate,
+         .serverCertificateNotYetValid, .serverCertificateHasUnknownRoot,
+         .clientCertificateRejected, .clientCertificateRequired,
+         .appTransportSecurityRequiresSecureConnection].contains(error.code)
     }
 
     private func discovery() async throws -> Discovery {
