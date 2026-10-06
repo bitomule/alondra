@@ -5,11 +5,15 @@ rust_binary(
     name = "alondrad",
     srcs = glob(["src/**/*.rs"]),
     compile_data = [
+        "Info.plist",
         "src/domain_store/schema.sql",
         "src/domain_store/schedule_launch_transition.sql",
         "src/domain_store/model_metrics.sql",
     ],
     edition = "2024",
+    # macOS asks for Local Network access before alondrad may advertise on Bonjour; a
+    # standalone executable carries the reason in an embedded Info.plist (TN3179).
+    rustc_flags = ["-Clink-arg=-Wl,-sectcreate,__TEXT,__info_plist,$(execpath Info.plist)"],
     version = "0.1.0",
     visibility = ["//visibility:public"],
     deps = all_crate_deps(normal = True) + ["//crates/core:alondra_core", "//crates/e2e:alondra_e2e"],

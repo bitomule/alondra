@@ -1,6 +1,7 @@
 //! The retained signed loopback and sealed service resource reads see the same
 //! domain state. Everything here runs in a synthetic HOME and loopback relay.
 use super::*;
+use reqwest::StatusCode;
 use alondra_core::domain::{
     Actor, Command, CommandEnvelope, InteractionPayload, PROTOCOL_VERSION, QuestionOption,
     Recipient, Scope,
@@ -352,7 +353,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
     };
     let blocked_command = sealed(&legacy_service, &phone_key, "legacy-command-blocked",
         json!({"method":"POST","path":"/commands","body":legacy_command}));
-    assert!(legacy_service.prepare_work(&blocked_command).is_err(),
+    assert!(legacy_service.prepare_work(&blocked_command, Transport::Relay).is_err(),
         "generic command paths are rejected before dispatch");
     assert_eq!(domain.state().unwrap(), before_schedule);
     let blocked_resolve = encrypted(&legacy_service, &phone_key, &phone_agreement, &responses,
@@ -615,7 +616,7 @@ async fn signed_loopback_and_sealed_service_share_reads_errors_and_command_recei
                 &phone_key,
                 "after-revoke",
                 json!({"method":"GET","path":"/capabilities"})
-            ))
+            ), Transport::Relay)
             .is_err()
     );
     local.abort();

@@ -24,6 +24,7 @@ pub(crate) struct DomainDaemon {
     auth: Arc<crate::auth::Auth>,
     client: Arc<crate::client_routes::Client>,
     service: std::sync::OnceLock<Arc<crate::service::Service>>,
+    direct: std::sync::OnceLock<Arc<crate::direct::Direct>>,
 }
 
 impl DomainDaemon {
@@ -53,11 +54,16 @@ impl DomainDaemon {
             gauges,
             auth: Arc::new(crate::auth::Auth::open(home)?),
             service: std::sync::OnceLock::new(),
+            direct: std::sync::OnceLock::new(),
         }))
     }
 
     pub(crate) fn attach_service(&self, service: Arc<crate::service::Service>) {
         let _ = self.service.set(service);
+    }
+
+    pub(crate) fn attach_direct(&self, direct: Arc<crate::direct::Direct>) {
+        let _ = self.direct.set(direct);
     }
 
     fn reload_service_devices(&self) -> Result<()> {
@@ -106,6 +112,9 @@ pub(crate) fn router(state: Arc<DomainDaemon>) -> Router {
         .route("/pairing", post(new_pairing))
         .route("/pair", post(pair))
         .route("/devices", get(devices))
+        .route("/devices/pending", get(pending_devices))
+        .route("/devices/pending/{id}/approve", post(approve_pending_device))
+        .route("/devices/pending/{id}/deny", post(deny_pending_device))
         .route("/models", get(models))
         .route("/devices/{id}", axum::routing::delete(revoke_device))
         .route("/service/bootstrap", get(service_bootstrap))
@@ -147,6 +156,95 @@ fn local_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
     (!is_local(peer, headers)).then(|| forbidden("local request required"))
 }
 
+/// A decision taken on this Mac: loopback, JSON, no browser `Origin`, and a loopback `Host`,
+/// so a web page open on the Mac cannot approve a pairing request it created itself.
+fn local_decision_only(peer: &SocketAddr, headers: &HeaderMap) -> Option<Response> {
+    if let Some(refused) = local_only(peer, headers) {
+        return Some(refused);
+    }
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|value| value.to_str().ok())
+        .map(|host| host.rsplit_once(':').map_or(host, |(name, _)| name))
+        .unwrap_or_default();
+    let loopback_host = matches!(host, "127.0.0.1" | "localhost" | "[::1]");
+    (headers.contains_key(axum::http::header::ORIGIN)
+        || !loopback_host
+        || !crate::direct::json_body(headers))
+    .then(|| forbidden("pairing decisions come only from this Mac"))
+}
+
+fn pairing_refused(error: crate::direct::pairing::PairingError) -> Response {
+    use crate::direct::pairing::PairingError;
+    let status = match &error {
+        PairingError::NotFound => StatusCode::NOT_FOUND,
+        PairingError::Expired => StatusCode::GONE,
+        PairingError::Internal(detail) => {
+            log!("pairing decision failed: {detail}");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
+        _ => StatusCode::CONFLICT,
+    };
+    (status, Json(json!({"error": error.code()}))).into_response()
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
+}
+
+/// The pairing requests from the local network that wait for someone on this Mac.
+async fn pending_devices(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+) -> Response {
+    if let Some(refused) = local_only(&peer, &headers) {
+        return refused;
+    }
+    let pending = state.direct.get().map(|direct| direct.pairings().pending(now_ms())).unwrap_or_default();
+    Json(json!({"pending": pending})).into_response()
+}
+
+async fn approve_pending_device(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    if let Some(refused) = local_decision_only(&peer, &headers) {
+        return refused;
+    }
+    let Some(direct) = state.direct.get().cloned() else {
+        return pairing_refused(crate::direct::pairing::PairingError::NotFound);
+    };
+    match tokio::task::spawn_blocking(move || direct.approve(&id)).await {
+        Ok(Ok(())) => Json(json!({"ok": true})).into_response(),
+        Ok(Err(error)) => pairing_refused(error),
+        Err(_) => storage(),
+    }
+}
+
+async fn deny_pending_device(
+    State(state): State<Arc<DomainDaemon>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    RoutePath(id): RoutePath<String>,
+) -> Response {
+    if let Some(refused) = local_decision_only(&peer, &headers) {
+        return refused;
+    }
+    let Some(direct) = state.direct.get() else {
+        return pairing_refused(crate::direct::pairing::PairingError::NotFound);
+    };
+    match direct.pairings().deny(&id, now_ms()) {
+        Ok(()) => Json(json!({"ok": true})).into_response(),
+        Err(error) => pairing_refused(error),
+    }
+}
+
 /// The paired device the middleware verified, while its approval persists.
 pub(crate) fn signed_device(home: &Path, signed: &Option<Extension<Signed>>) -> Option<Signed> {
     let Extension(signed) = signed.as_ref()?;
@@ -174,7 +272,9 @@ async fn daemon(
     Json(
         json!({"version": env!("CARGO_PKG_VERSION"), "update": crate::updates::status(&state.home),
         "preflight_rejected": crate::relaunch::rejected(), "machine": machine, "usage": usage,
-        "mods": crate::mods_check::status()}),
+        "mods": crate::mods_check::status(),
+        "direct": state.service.get().filter(|_| state.direct.get().is_some()).map(|service| json!({
+            "port": service.direct_config().port, "bonjour": crate::direct::bonjour::status()}))}),
     )
     .into_response()
 }
@@ -851,6 +951,56 @@ mod tests {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use p256::ecdsa::{Signature, SigningKey, signature::Signer};
     use std::net::SocketAddr;
+
+    #[tokio::test]
+    async fn the_old_code_pairing_answers_only_on_loopback() {
+        use axum::extract::connect_info::MockConnectInfo;
+        let home = std::env::temp_dir().join(format!("alondra-pair-loopback-{}", crate::auth::random_hex(8)));
+        std::fs::create_dir_all(&home).unwrap();
+        drop(DomainRuntime::open(&home).unwrap());
+        for (peer, refused) in [("192.168.1.5:5000", true), ("127.0.0.1:5000", false)] {
+            let state = DomainDaemon::open(&home).unwrap();
+            let auth = state.auth();
+            let app = router(state)
+                .layer(axum::middleware::from_fn_with_state(auth, crate::auth::guard))
+                .layer(MockConnectInfo(peer.parse::<SocketAddr>().unwrap()));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let base = format!("http://{}", listener.local_addr().unwrap());
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let body = reqwest::Client::new()
+                .post(format!("{base}/pair"))
+                .header("content-type", "application/json")
+                .body(r#"{"code":"nope","device_name":"x","public_key":"y"}"#)
+                .send()
+                .await
+                .unwrap()
+                .text()
+                .await
+                .unwrap();
+            assert_eq!(!body.contains("pairing code"), refused, "{peer}: {body}");
+            server.abort();
+        }
+    }
+
+    #[test]
+    fn pairing_decisions_need_loopback_json_and_no_browser_origin() {
+        let loopback: SocketAddr = "127.0.0.1:5000".parse().unwrap();
+        let lan: SocketAddr = "192.168.1.5:5000".parse().unwrap();
+        let headers = |pairs: &[(&'static str, &'static str)]| {
+            let mut map = HeaderMap::new();
+            for (name, value) in pairs {
+                map.insert(*name, value.parse().unwrap());
+            }
+            map
+        };
+        let good = headers(&[("host", "127.0.0.1:47800"), ("content-type", "application/json")]);
+        assert!(local_decision_only(&loopback, &good).is_none());
+        assert!(local_decision_only(&loopback, &headers(&[("host", "localhost:47800"), ("content-type", "application/json; charset=utf-8")])).is_none());
+        assert!(local_decision_only(&lan, &good).is_some());
+        assert!(local_decision_only(&loopback, &headers(&[("host", "127.0.0.1:47800"), ("content-type", "application/json"), ("origin", "https://evil.example")])).is_some());
+        assert!(local_decision_only(&loopback, &headers(&[("host", "127.0.0.1:47800"), ("content-type", "text/plain")])).is_some());
+        assert!(local_decision_only(&loopback, &headers(&[("host", "evil.example:47800"), ("content-type", "application/json")])).is_some());
+    }
 
     #[tokio::test]
     async fn pair_approves_a_service_phone_with_the_macs_signature() {

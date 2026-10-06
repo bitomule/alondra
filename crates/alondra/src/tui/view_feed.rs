@@ -6,17 +6,21 @@ use std::{
 };
 
 use super::Msg;
-use crate::client::Client;
+use crate::client::{Client, Target};
 
 /// Fetches TUI views and drives the long poll for the open screen and selected detail.
-pub(super) fn start(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>) {
+pub(super) fn start(
+    tx: SyncSender<Msg>,
+    open_views: Arc<Mutex<HashMap<String, String>>>,
+    target: Target,
+) {
     let _ = thread::Builder::new()
         .name("alondra-views-feed".into())
-        .spawn(move || run(tx, open_views));
+        .spawn(move || run(tx, open_views, &target));
 }
 
-fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>) {
-    let client = Client::for_tui(Duration::from_secs(70));
+fn run(tx: SyncSender<Msg>, open_views: Arc<Mutex<HashMap<String, String>>>, target: &Target) {
+    let client = Client::for_target(target, Duration::from_secs(70));
     let mut cursor: Option<String> = None;
     loop {
         match client.views("home", None) {

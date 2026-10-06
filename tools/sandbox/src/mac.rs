@@ -60,7 +60,7 @@ pub fn agreement_wire(key: &PublicKey) -> String {
     B64.encode(key.to_sec1_point(false).as_bytes())
 }
 
-pub fn provision(home: &Path, relay: &str) -> Result<String> {
+pub fn provision(home: &Path, relay: &str, direct_port: u16, direct_listen: &str) -> Result<String> {
     let keys = home.join("service-keys");
     if keys.exists() {
         bail!("{} already has a Mac identity", home.display());
@@ -84,6 +84,10 @@ pub fn provision(home: &Path, relay: &str) -> Result<String> {
         signing_key_path = "service-keys/signing.key"
         agreement_key_path = "service-keys/agreement.key"
         devices = []
+
+        [direct]
+        port = (i64::from(direct_port))
+        listen = direct_listen
     };
     fs::write(home.join("service.toml"), toml::to_string(&service)?)?;
     Ok(public.mac_id)

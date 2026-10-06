@@ -1,4 +1,6 @@
-//! Source-free Mac enrollment. User OIDC authorizes only a new route; phone pairing still
+//! Source-free Mac enrollment. Every Mac gets its service keys and a `service.toml` without an
+//! account, so devices can pair with it on the local network. Enrolling with the relay is a
+//! separate, explicit step: user OIDC authorizes only a new route; phone pairing still
 //! requires the Mac-local key and cannot be granted by an account administrator.
 mod recovery;
 use std::{
@@ -43,6 +45,29 @@ struct ServiceConfig {
 #[derive(Deserialize)]
 struct Bootstrap {
     epoch: String,
+}
+
+/// The fields every `service.toml` has, with or without a relay.
+#[derive(Deserialize)]
+struct KeyPaths {
+    mac_id: String,
+    signing_key_path: String,
+    agreement_key_path: String,
+    #[serde(default)]
+    journal_path: Option<String>,
+    #[serde(default)]
+    relay_url: Option<String>,
+}
+
+/// A Mac without a relay: devices reach it only on the local network.
+#[derive(Serialize)]
+struct LocalServiceConfig {
+    mac_id: String,
+    signing_key_path: String,
+    agreement_key_path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    journal_path: Option<String>,
+    devices: Vec<toml::Value>,
 }
 
 fn random<const N: usize>() -> Result<[u8; N]> {
@@ -246,8 +271,85 @@ fn register_at(identity: &PublicMac, signing: &SigningKey, token: &str, relay: &
 fn service_file(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool) -> Result<bool> {
     service_file_at(home, identity, owner_sub, write, RELAY)
 }
+
+fn key_paths(home: &Path) -> Result<(String, String, Option<String>)> {
+    let base = identity_base(home)?;
+    let prefix = base.strip_prefix(home)?.to_string_lossy();
+    let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
+    Ok((
+        format!("{prefix}service-keys/{SIGNING_FILE}"),
+        format!("{prefix}service-keys/{AGREEMENT_FILE}"),
+        if prefix.is_empty() { None } else { Some(format!("{prefix}service-receipts.sqlite")) },
+    ))
+}
+
+fn existing_paths(path: &Path) -> Result<Option<KeyPaths>> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) if meta.is_file() => Ok(Some(toml::from_str(&fs::read_to_string(path)?)?)),
+        Ok(_) => bail!("service.toml must be a regular file"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn check_identity(existing: &KeyPaths, identity: &PublicMac, paths: &(String, String, Option<String>)) -> Result<()> {
+    if existing.mac_id != identity.mac_id
+        || existing.signing_key_path != paths.0
+        || existing.agreement_key_path != paths.1
+        || existing.journal_path != paths.2
+    {
+        bail!("existing service.toml belongs to another Mac or key path");
+    }
+    Ok(())
+}
+
+/// Creates `service.toml` without a relay, or checks the one that exists (with or without).
+fn local_service_file(home: &Path, identity: &PublicMac) -> Result<bool> {
+    let path = home.join(SERVICE_FILE);
+    let paths = key_paths(home)?;
+    if let Some(existing) = existing_paths(&path)? {
+        check_identity(&existing, identity, &paths)?;
+        return Ok(false);
+    }
+    let config = LocalServiceConfig {
+        mac_id: identity.mac_id.clone(),
+        signing_key_path: paths.0,
+        agreement_key_path: paths.1,
+        journal_path: paths.2,
+        devices: vec![],
+    };
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(path)?;
+    file.write_all(toml::to_string_pretty(&config)?.as_bytes())?;
+    file.sync_all()?;
+    Ok(true)
+}
+
+/// Adds the relay to a `service.toml` that has none, keeping its devices and other settings.
+fn add_relay(home: &Path, owner_sub: &str, relay: &str) -> Result<()> {
+    let _lock = alondra_core::service_config::ServiceConfigLock::exclusive(home)?;
+    let path = home.join(SERVICE_FILE);
+    let mut table: toml::Table = toml::from_str(&fs::read_to_string(&path)?)?;
+    table.insert("relay_url".into(), relay.into());
+    table.insert("owner_sub".into(), owner_sub.into());
+    let temp = path.with_extension("toml.relay");
+    let mut file = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temp)?;
+    file.write_all(toml::to_string_pretty(&table)?.as_bytes())?;
+    file.sync_all()?;
+    fs::rename(&temp, &path)?;
+    Ok(())
+}
+
 fn service_file_at(home: &Path, identity: &PublicMac, owner_sub: &str, write: bool, relay: &str) -> Result<bool> {
     let path = home.join(SERVICE_FILE);
+    if let Some(existing) = existing_paths(&path)?
+        && existing.relay_url.is_none()
+    {
+        check_identity(&existing, identity, &key_paths(home)?)?;
+        if write {
+            add_relay(home, owner_sub, relay)?;
+        }
+        return Ok(write);
+    }
     let base = identity_base(home)?;
     let prefix = base.strip_prefix(home)?.to_string_lossy();
     let prefix = if prefix.is_empty() { String::new() } else { format!("{prefix}/") };
@@ -290,6 +392,24 @@ fn service_file_at(home: &Path, identity: &PublicMac, owner_sub: &str, write: bo
     file.write_all(toml::to_string_pretty(&expected)?.as_bytes())?;
     file.sync_all()?;
     Ok(true)
+}
+
+/// Whether this Mac's `service.toml` names a relay; setup keeps enrolling such a Mac.
+pub fn has_relay(home: &Path) -> Result<bool> {
+    Ok(existing_paths(&home.join(SERVICE_FILE))?.is_some_and(|paths| paths.relay_url.is_some()))
+}
+
+/// Gives this Mac its service keys and a relay-free `service.toml`, so devices on the local
+/// network can pair with it. Returns whether the file is new and the daemon must restart.
+pub fn prepare_local(home: &Path) -> Result<bool> {
+    let _lock = alondra_core::home_lock::HomeLock::shared(home)?;
+    alondra_core::home_lock::ensure_ready(home)?;
+    let (identity, _) = load_or_create_keys(&identity_base(home)?)?;
+    let created = local_service_file(home, &identity)?;
+    if created {
+        println!("Mac {} is ready for devices on the local network.", identity.mac_id);
+    }
+    Ok(created)
 }
 
 /// Returns whether service.toml was newly created and an existing daemon must restart.
@@ -373,12 +493,49 @@ mod tests {
         assert!(service_file(&home, &identity, "owner", false).is_err());
         fs::remove_dir_all(home).unwrap();
     }
+
+    #[test]
+    fn a_new_mac_is_ready_for_local_devices_without_an_account() {
+        let home = std::env::temp_dir().join(format!("alondra-service-local-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&home).unwrap();
+        assert!(prepare_local(&home).unwrap());
+        assert!(!prepare_local(&home).unwrap());
+        let table: toml::Table = toml::from_str(&fs::read_to_string(home.join(SERVICE_FILE)).unwrap()).unwrap();
+        assert!(table.get("relay_url").is_none() && table.get("owner_sub").is_none());
+        assert!(table["mac_id"].as_str().unwrap().starts_with("mac-"));
+        assert!(!has_relay(&home).unwrap());
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn enrolling_a_local_mac_adds_the_relay_and_keeps_its_devices() {
+        let home = std::env::temp_dir().join(format!("alondra-service-upgrade-{}", SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()));
+        fs::create_dir_all(&home).unwrap();
+        prepare_local(&home).unwrap();
+        let (identity, _) = load_or_create_keys(&home).unwrap();
+        let path = home.join(SERVICE_FILE);
+        let with_device = fs::read_to_string(&path).unwrap().replace(
+            "devices = []",
+            "[[devices]]\ndevice_id = \"client-1\"\nsigning_key = \"s\"\nagreement_key = \"a\"",
+        );
+        fs::write(&path, format!("{with_device}\n[direct]\nport = 47999\n")).unwrap();
+        assert!(!service_file(&home, &identity, "owner", false).unwrap());
+        assert!(service_file(&home, &identity, "owner", true).unwrap());
+        let table: toml::Table = toml::from_str(&fs::read_to_string(&path).unwrap()).unwrap();
+        assert_eq!(table["relay_url"].as_str(), Some(RELAY));
+        assert_eq!(table["owner_sub"].as_str(), Some("owner"));
+        assert_eq!(table["devices"][0]["device_id"].as_str(), Some("client-1"));
+        assert_eq!(table["direct"]["port"].as_integer(), Some(47999));
+        assert!(has_relay(&home).unwrap());
+        assert!(!service_file(&home, &identity, "owner", false).unwrap());
+        fs::remove_dir_all(home).unwrap();
+    }
 }
 
 fn identity_base(home: &Path) -> Result<std::path::PathBuf> {
     let path = home.join(SERVICE_FILE);
     if !path.try_exists()? { return Ok(home.to_owned()); }
-    let config: ServiceConfig = toml::from_str(&fs::read_to_string(path)?)?;
+    let config: KeyPaths = toml::from_str(&fs::read_to_string(path)?)?;
     if config.signing_key_path == "service-keys/signing.key" && config.agreement_key_path == "service-keys/agreement.key" && config.journal_path.is_none() {
         return Ok(home.to_owned());
     }

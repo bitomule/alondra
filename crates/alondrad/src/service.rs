@@ -1,31 +1,33 @@
-//! Optional outbound Mac connector. Enabled only by `~/.alondra/service.toml`.
-//! The relay never supplies trusted endpoint keys: those are pinned in this Mac's config.
-//! A device must also remain approved in the local pairing registry. Enrollment is a one-time
-//! durable attempt per device ID so a relay-side revocation survives reconnects and restarts.
+//! The Mac's encrypted service, enabled by `~/.alondra/service.toml`. Devices reach it through the
+//! relay connector (`service/relay.rs`) or directly over the local network (`crate::direct`);
+//! both carry the same end-to-end envelopes into this core.
+//! Trusted endpoint keys are pinned in this Mac's config, never supplied by a transport.
+//! A device must also remain approved in the local pairing registry. Relay enrollment is a
+//! one-time durable attempt per device ID so a relay-side revocation survives reconnects and
+//! restarts; the direct transport needs only the local approval.
 use crate::auth::Auth;
-use crate::push::{in_quiet_hours, local_minutes, valid_push_binding};
-use alondra_e2e::{Context as EnvelopeContext, Envelope, sign_http_challenge};
+use crate::push::{in_quiet_hours, valid_push_binding};
+use alondra_e2e::{Context as EnvelopeContext, Envelope};
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use p256::{
     PublicKey, SecretKey,
     ecdsa::{SigningKey, VerifyingKey},
 };
-use reqwest::{Client, Method, StatusCode, Url};
+use reqwest::{Client, Method};
 use ring::rand::{SecureRandom, SystemRandom};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::{
-        Arc, Mutex, RwLock,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, Mutex, RwLock},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
+
+mod relay;
 
 // Base64 adds ~33%; 760 KiB plus encryption and envelope metadata stays below 1 MiB.
 pub(crate) const MAX_LOCAL_RESPONSE: usize = 760 * 1024;
@@ -42,7 +44,46 @@ const MAX_CHANGES_PER_DEVICE: usize = 1;
 const MAX_CHANGES_TOTAL: usize = 16;
 
 type WorkKey = (String, String);
-type InFlight = Arc<Mutex<HashMap<WorkKey, ([u8; 32], bool)>>>;
+type InFlight = Arc<InFlightSet>;
+
+/// The envelopes executing now, and a wake-up for a direct retry waiting on one of them.
+#[derive(Default)]
+struct InFlightSet {
+    work: Mutex<HashMap<WorkKey, ([u8; 32], bool)>>,
+    done: tokio::sync::Notify,
+}
+
+impl std::ops::Deref for InFlightSet {
+    type Target = Mutex<HashMap<WorkKey, ([u8; 32], bool)>>;
+    fn deref(&self) -> &Self::Target {
+        &self.work
+    }
+}
+
+/// The same request ID arrived with different encrypted bytes.
+#[derive(Debug)]
+struct ReusedRequestId;
+
+impl std::fmt::Display for ReusedRequestId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("request ID reused with different encrypted bytes")
+    }
+}
+
+impl std::error::Error for ReusedRequestId {}
+
+/// Why the direct transport refused an envelope; it maps to the HTTP status.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum DirectRefusal {
+    /// Addressed to another Mac, or not a request.
+    Misdirected,
+    /// Not from a device approved on this Mac, badly signed or expired.
+    Unauthorized,
+    /// The request ID was used before with other bytes.
+    Conflict,
+    /// From an approved device, but not something the service runs.
+    Rejected(String),
+}
 
 /// A live executor owns the receipt until response upload finishes. A lease
 /// redelivery must not mistake its durable `executing` row for a crashed process.
@@ -58,6 +99,7 @@ impl Drop for WorkGuard {
             .lock()
             .expect("inflight lock poisoned")
             .remove(&self.key);
+        self.inflight.done.notify_waiters();
     }
 }
 
@@ -114,14 +156,41 @@ impl QuietHours {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Config {
-    relay_url: String,
+    #[serde(default)]
+    relay_url: Option<String>,
     mac_id: String,
-    owner_sub: String,
+    #[serde(default)]
+    owner_sub: Option<String>,
     signing_key_path: PathBuf,
     agreement_key_path: PathBuf,
     #[serde(default)]
     journal_path: Option<PathBuf>,
     devices: Vec<DeviceConfig>,
+    #[serde(default)]
+    direct: DirectConfig,
+}
+
+/// The local-network listener in `service.toml`'s `[direct]` table.
+#[derive(Deserialize, Clone, Debug, PartialEq)]
+#[serde(deny_unknown_fields, default)]
+pub(crate) struct DirectConfig {
+    pub(crate) enabled: bool,
+    pub(crate) port: u16,
+    pub(crate) listen: std::net::IpAddr,
+}
+
+impl Default for DirectConfig {
+    fn default() -> Self {
+        Self { enabled: true, port: 47810, listen: std::net::Ipv4Addr::UNSPECIFIED.into() }
+    }
+}
+
+/// How an envelope reached the Mac. Both need the device approved on this Mac; only the relay
+/// also needs the device enrolled with the relay.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Transport {
+    Relay,
+    Direct,
 }
 
 #[derive(Deserialize)]
@@ -202,15 +271,12 @@ fn load_devices(mac_id: &str, configured: Vec<DeviceConfig>) -> Result<HashMap<S
 }
 
 pub struct Service {
-    relay: Url,
+    relay: Option<relay::RelayConnector>,
     client: Client,
     mac_id: String,
-    owner_sub: String,
     signing: SigningKey,
     agreement: SecretKey,
     devices: Devices,
-    resync: AtomicBool,
-    wake: tokio::sync::Notify,
     auth: Arc<Auth>,
     journal: Journal,
     local_port: u16,
@@ -220,19 +286,23 @@ pub struct Service {
     hub: Option<Arc<crate::hub::Hub>>,
     domain: Option<Arc<crate::domain_runtime::DomainRuntime>>,
     routes: Option<Arc<crate::client_routes::Client>>,
+    direct: DirectConfig,
+    /// Commands from either transport run one at a time; only changes reads run beside them.
+    lane: tokio::sync::Mutex<()>,
 }
 
-/// A verified encrypted sender with persisted approval and enrollment.
+/// A verified encrypted sender with persisted approval (and, through the relay, enrollment).
 /// Only Service can construct it; readers recheck after asynchronous work.
 pub(crate) struct ApprovedDevice<'a> {
     service: &'a Service,
     sender: &'a str,
     device: &'a Device,
+    transport: Transport,
 }
 impl ApprovedDevice<'_> {
     pub(crate) fn recheck(&self) -> Result<()> {
         self.service
-            .require_device_approval(self.sender, self.device)
+            .require_device_approval(self.sender, self.device, self.transport)
     }
 }
 
@@ -240,10 +310,6 @@ impl ApprovedDevice<'_> {
 struct Work {
     request_id: String,
     envelope: Envelope,
-}
-#[derive(Deserialize)]
-struct Bootstrap {
-    epoch: String,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -376,8 +442,13 @@ impl Service {
         self
     }
 
-    fn read_receipt_binding(&self, sender: &str, device: &Device) -> Result<String> {
-        let binding = self.approval_binding(sender, device)?;
+    fn read_receipt_binding(
+        &self,
+        sender: &str,
+        device: &Device,
+        transport: Transport,
+    ) -> Result<String> {
+        let binding = self.approval_binding(sender, device, transport)?;
         let domain = self
             .domain
             .as_deref()
@@ -423,8 +494,9 @@ impl Service {
         device: &Device,
         request: &LocalRequest,
         digest: &[u8; 32],
+        transport: Transport,
     ) -> Result<Vec<u8>> {
-        self.require_device_approval(&envelope.sender, device)?;
+        self.require_device_approval(&envelope.sender, device, transport)?;
         if request.path == "/v1/service/push-binding"
             || self.domain.is_some() && request.path == PUSH_BINDING_ROUTE
         {
@@ -444,7 +516,7 @@ impl Service {
             };
             return approval_bound_commit(
                 &self.home,
-                || self.require_device_approval(&envelope.sender, device),
+                || self.require_device_approval(&envelope.sender, device, transport),
                 || {
                     self.journal.complete_push_preferences(
                         &envelope.sender,
@@ -475,7 +547,7 @@ impl Service {
                     &envelope.sender,
                     body,
                     (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device),
+                    || self.require_device_approval(&envelope.sender, device, transport),
                 )
                 .await?
             } else if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
@@ -487,7 +559,7 @@ impl Service {
                     &request.path,
                     request.body.as_ref(),
                     (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device),
+                    || self.require_device_approval(&envelope.sender, device, transport),
                 )
                 .await?
             } else if let Some(attempt_id) =
@@ -500,7 +572,7 @@ impl Service {
                     attempt_id,
                     request.body.as_ref(),
                     (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device),
+                    || self.require_device_approval(&envelope.sender, device, transport),
                 )?
             } else if let Some(agent) = agent_message(&request.path) {
                 crate::domain_messages::relayed(
@@ -534,7 +606,7 @@ impl Service {
                         route,
                         body,
                         Some(identity),
-                        &|| self.require_device_approval(&envelope.sender, device),
+                        &|| self.require_device_approval(&envelope.sender, device, transport),
                     )
                     .await?
                     .into_value()
@@ -551,7 +623,7 @@ impl Service {
                     &request.path,
                     request.body.as_ref(),
                     (&envelope.sender, &envelope.request_id, digest),
-                    || self.require_device_approval(&envelope.sender, device),
+                    || self.require_device_approval(&envelope.sender, device, transport),
                 )
             } else {
                 bail!("v2-only service command path is not approved");
@@ -585,7 +657,7 @@ impl Service {
                 digest,
                 &request.path,
                 request.body.as_ref(),
-                || self.require_device_approval(&envelope.sender, device),
+                || self.require_device_approval(&envelope.sender, device, transport),
             )
             .await?
         };
@@ -602,21 +674,16 @@ impl Service {
         }
         let config: Config = toml::from_str(&std::fs::read_to_string(&file)?)
             .with_context(|| format!("invalid {}", file.display()))?;
-        if config.mac_id.is_empty() || config.owner_sub.is_empty() {
-            bail!("service Mac ID and owner subject are required");
+        if config.mac_id.is_empty() {
+            bail!("service Mac ID is required");
         }
-        let relay = Url::parse(&config.relay_url)?;
-        let loopback =
-            relay.scheme() == "http" && matches!(relay.host_str(), Some("127.0.0.1" | "localhost"));
-        if !(relay.scheme() == "https" || loopback)
-            || relay.path() != "/"
-            || relay.query().is_some()
-            || relay.fragment().is_some()
-            || !relay.username().is_empty()
-            || relay.password().is_some()
-        {
-            bail!("relay_url must be an HTTPS origin (loopback HTTP allowed for tests)");
-        }
+        let relay = match (config.relay_url, config.owner_sub) {
+            (None, None) => None,
+            (Some(url), Some(owner)) if !owner.is_empty() => {
+                Some(relay::RelayConnector::new(relay::checked_origin(&url)?, owner))
+            }
+            _ => bail!("relay_url and owner_sub go together"),
+        };
         let signing =
             SigningKey::from_slice(&private_key(&resolve(home, &config.signing_key_path))?)?;
         let agreement =
@@ -654,12 +721,9 @@ impl Service {
             relay,
             client,
             mac_id: config.mac_id,
-            owner_sub: config.owner_sub,
             signing,
             agreement,
             devices: devices.into(),
-            resync: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
             auth,
             journal,
             local_port,
@@ -669,6 +733,8 @@ impl Service {
             hub: None,
             domain: None,
             routes: None,
+            direct: config.direct,
+            lane: tokio::sync::Mutex::new(()),
         }))
     }
 
@@ -684,9 +750,55 @@ impl Service {
         );
         self.devices
             .replace(load_devices(&self.mac_id, config.devices)?);
-        self.resync.store(true, Ordering::SeqCst);
-        self.wake.notify_one();
+        if let Some(relay) = &self.relay {
+            relay.resync();
+        }
         Ok(())
+    }
+
+    pub(crate) fn has_relay(&self) -> bool {
+        self.relay.is_some()
+    }
+
+    pub(crate) fn direct_config(&self) -> &DirectConfig {
+        &self.direct
+    }
+
+    pub(crate) fn mac_id(&self) -> &str {
+        &self.mac_id
+    }
+
+    pub(crate) fn signing_key(&self) -> &SigningKey {
+        &self.signing
+    }
+
+    pub(crate) fn agreement_public_key(&self) -> PublicKey {
+        self.agreement.public_key()
+    }
+
+    pub(crate) fn agreement_secret(&self) -> &SecretKey {
+        &self.agreement
+    }
+
+    pub(crate) fn home(&self) -> &Path {
+        &self.home
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enroll_with_relay_for_tests(&self, id: &str) {
+        let key = self.devices.get(id).expect("device configured").signing.to_sec1_bytes();
+        self.journal.reserve_enrollment(id, &key).unwrap();
+        self.journal.activate_enrollment(id).unwrap();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_relay_for_tests(&mut self, url: reqwest::Url) {
+        self.set_relay_url(url);
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn handle_relay_for_tests(&self, envelope: Envelope, epoch: &[u8; 16]) -> Result<()> {
+        self.handle(Work { request_id: envelope.request_id.clone(), envelope }, epoch).await
     }
 
     #[cfg(test)]
@@ -694,239 +806,7 @@ impl Service {
         self.devices.get(id).is_some()
     }
 
-    fn endpoint(&self, path: &str) -> Result<Url> {
-        Ok(self.relay.join(path.trim_start_matches('/'))?)
-    }
-
-    async fn bootstrap(&self) -> Result<[u8; 16]> {
-        let response = self
-            .client
-            .get(self.endpoint("/v1/bootstrap")?)
-            .send()
-            .await?
-            .error_for_status()?;
-        let boot: Bootstrap = response.json().await?;
-        decoded(&boot.epoch)?
-            .try_into()
-            .map_err(|_| anyhow!("invalid relay epoch"))
-    }
-
-    async fn signed(
-        &self,
-        method: Method,
-        path: &str,
-        body: Vec<u8>,
-        epoch: &[u8; 16],
-    ) -> Result<reqwest::Response> {
-        let mut nonce = [0u8; 16];
-        SystemRandom::new()
-            .fill(&mut nonce)
-            .map_err(|_| anyhow!("OS randomness failed"))?;
-        let timestamp = now_ms();
-        let signature = sign_http_challenge(
-            &self.signing,
-            &self.mac_id,
-            method.as_str(),
-            path,
-            epoch,
-            &body,
-            timestamp,
-            &nonce,
-        )
-        .map_err(|e| anyhow!("sign request: {e}"))?;
-        Ok(self
-            .client
-            .request(method, self.endpoint(path)?)
-            .header("x-device-id", &self.mac_id)
-            .header("x-device-timestamp-ms", timestamp.to_string())
-            .header("x-device-nonce", URL_SAFE_NO_PAD.encode(nonce))
-            .header("x-device-signature", signature)
-            .header("x-relay-epoch", URL_SAFE_NO_PAD.encode(epoch))
-            .header("content-type", "application/json")
-            .body(body)
-            .send()
-            .await?)
-    }
-
-    async fn enroll(&self, epoch: &[u8; 16]) -> Result<()> {
-        for (id, device) in &self.devices.snapshot() {
-            if !self.auth.approved_key_matches(id, &device.signing) {
-                continue;
-            }
-            // Record one attempt before any network write. A relay-side revocation must
-            // survive retries and restarts; a new approval needs a new device ID.
-            let (owned, key) = (id.clone(), device.signing.to_sec1_bytes());
-            match self
-                .journal
-                .off_runtime(move |journal| journal.reserve_enrollment(&owned, &key))
-                .await?
-            {
-                EnrollmentDecision::New => {}
-                EnrollmentDecision::Pending => {
-                    log!(
-                        "service device {id}: enrollment outcome unknown; approve again with a new device ID"
-                    );
-                    continue;
-                }
-                EnrollmentDecision::Active | EnrollmentDecision::Revoked => continue,
-            }
-            let body = serde_json::to_vec(
-                &json!({"device_id":id,"owner_sub":self.owner_sub,"signing_key":device.signing_wire}),
-            )?;
-            self.signed(Method::POST, "/v1/devices", body, epoch)
-                .await?
-                .error_for_status()?;
-            let owned = id.clone();
-            if self.auth.approved_key_matches(id, &device.signing) {
-                self.journal
-                    .off_runtime(move |journal| journal.activate_enrollment(&owned))
-                    .await?;
-            } else {
-                self.journal
-                    .off_runtime(move |journal| journal.revoke_enrollment(&owned))
-                    .await?;
-                let path = format!("/v1/devices/{id}");
-                self.signed(Method::DELETE, &path, Vec::new(), epoch)
-                    .await?
-                    .error_for_status()?;
-            }
-        }
-        Ok(())
-    }
-
-    async fn sync_revocations(&self, epoch: &[u8; 16], synced: &mut HashSet<String>) -> Result<()> {
-        // Walk the durable enrollment journal, not service.toml. An operator may
-        // remove a device from that file while the connector is stopped; the
-        // relay must still receive its signed revocation on the next start.
-        for (id, state) in self.journal.enrollments()? {
-            let approved = self
-                .devices
-                .get(&id)
-                .is_some_and(|device| self.auth.approved_key_matches(&id, &device.signing));
-            if approved && state == "active" {
-                continue;
-            }
-            let owned = id.clone();
-            self.journal
-                .off_runtime(move |journal| journal.revoke_enrollment(&owned))
-                .await?;
-            if synced.contains(&id) {
-                continue;
-            }
-            let path = format!("/v1/devices/{id}");
-            self.signed(Method::DELETE, &path, Vec::new(), epoch)
-                .await?
-                .error_for_status()?;
-            synced.insert(id);
-        }
-        Ok(())
-    }
-
-    pub async fn run(self: Arc<Self>) {
-        let mut changes = tokio::task::JoinSet::new();
-        let mut enrolled_epoch: Option<[u8; 16]> = None;
-        let mut revoked_this_epoch = HashSet::new();
-        loop {
-            while let Some(result) = changes.try_join_next() {
-                match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => log!("service changes: {error:#}"),
-                    Err(error) => log!("service changes task: {error}"),
-                }
-            }
-            let result = self
-                .poll_work(&mut enrolled_epoch, &mut revoked_this_epoch, &mut changes)
-                .await;
-            if let Err(e) = result {
-                log!("service connector: {e:#}");
-                tokio::time::sleep(Duration::from_secs(3)).await;
-            }
-        }
-    }
-
-    /// One bounded iteration; any failure forces a fresh epoch next time. POSTs
-    /// are never replayed here; work redelivery keeps its durable journal rules.
-    async fn poll_work(
-        self: &Arc<Self>,
-        enrolled_epoch: &mut Option<[u8; 16]>,
-        revoked_this_epoch: &mut HashSet<String>,
-        changes: &mut tokio::task::JoinSet<Result<()>>,
-    ) -> Result<()> {
-        if self.resync.swap(false, Ordering::SeqCst) {
-            *enrolled_epoch = None;
-        }
-        let result = async {
-                let epoch = match *enrolled_epoch {
-                    Some(epoch) => epoch,
-                    None => self.bootstrap().await?,
-                };
-                if *enrolled_epoch != Some(epoch) {
-                    revoked_this_epoch.clear();
-                }
-                self.sync_revocations(&epoch, revoked_this_epoch)
-                    .await?;
-                if *enrolled_epoch != Some(epoch) {
-                    self.enroll(&epoch).await?;
-                    *enrolled_epoch = Some(epoch);
-                }
-                let path = "/v1/work?wait_s=25";
-                let response = tokio::select! {
-                    response = self.signed(Method::GET, path, Vec::new(), &epoch) => response?.error_for_status()?,
-                    () = self.wake.notified() => return Ok(()),
-                };
-                if response.status() == StatusCode::NO_CONTENT {
-                    return Ok::<_, anyhow::Error>(());
-                }
-                let work: Work = response.json().await?;
-                self.schedule_work(work, epoch, changes).await
-        }.await;
-        if result.is_err() {
-            *enrolled_epoch = None;
-        }
-        result
-    }
-
-    async fn drain_ack(response: reqwest::Response) -> Result<()> {
-        let mut response = response.error_for_status()?;
-        let mut bytes = 0usize;
-        while let Some(chunk) = response.chunk().await? {
-            bytes += chunk.len();
-            if bytes > 4096 {
-                bail!("relay acknowledgement too large");
-            }
-        }
-        Ok(())
-    }
-
-    /// Only validated changes reads leave the serial work loop. The guard is
-    /// acquired synchronously before spawning, including for lease redelivery.
-    async fn schedule_work(
-        self: &Arc<Self>,
-        work: Work,
-        epoch: [u8; 16],
-        changes: &mut tokio::task::JoinSet<Result<()>>,
-    ) -> Result<()> {
-        let Some(prepared) = self.prepare_work(&work)? else {
-            return Ok(());
-        };
-        if prepared.guard.changes {
-            let service = self.clone();
-            changes.spawn(async move { service.handle_prepared(work, &epoch, prepared).await });
-            Ok(())
-        } else {
-            self.handle_prepared(work, &epoch, prepared).await
-        }
-    }
-
-    #[cfg(test)]
-    async fn handle(&self, work: Work, epoch: &[u8; 16]) -> Result<()> {
-        let Some(prepared) = self.prepare_work(&work)? else {
-            return Ok(());
-        };
-        self.handle_prepared(work, epoch, prepared).await
-    }
-
-    fn prepare_work(&self, work: &Work) -> Result<Option<PreparedWork>> {
+    fn prepare_work(&self, work: &Work, transport: Transport) -> Result<Option<PreparedWork>> {
         let e = &work.envelope;
         if e.request_id != work.request_id
             || e.kind != "request"
@@ -939,7 +819,7 @@ impl Service {
             .devices
             .get(&e.sender)
             .context("work from unapproved device")?;
-        self.require_device_approval(&e.sender, &device)?;
+        self.require_device_approval(&e.sender, &device, transport)?;
         let plaintext = e
             .open(
                 &device.signing,
@@ -975,6 +855,7 @@ impl Service {
                     || agent_message(&request.path).is_some()
                     || crate::domain_orchestrator::decision_route(&request.path).is_some()
                     || request.path == PUSH_BINDING_ROUTE
+                    || request.path == crate::direct::routes::PATH
                     || crate::views::routes::approved_read_path(&request.path)
                     || crate::views::actions::approved_path(&request.method, &request.path))
                     && approved_method(&request).is_ok(),
@@ -991,7 +872,7 @@ impl Service {
         let digest: [u8; 32] = if approval_bound_read {
             // Completed encrypted receipts must not bypass a newer approval generation.
             // Legacy routes retain their original digest contract.
-            let binding = match self.read_receipt_binding(&e.sender, &device) {
+            let binding = match self.read_receipt_binding(&e.sender, &device, transport) {
                 Ok(binding) => binding,
                 Err(error) => return Err(error),
             };
@@ -1006,10 +887,9 @@ impl Service {
         let key = (e.sender.clone(), e.request_id.clone());
         let mut inflight = self.inflight.lock().expect("inflight lock poisoned");
         if let Some((prior, _)) = inflight.get(&key) {
-            anyhow::ensure!(
-                *prior == digest,
-                "request ID reused with different encrypted bytes"
-            );
+            if *prior != digest {
+                return Err(ReusedRequestId.into());
+            }
             return Ok(None);
         }
         if is_changes && crate::views::feed::approved_path(&request.path) {
@@ -1041,38 +921,45 @@ impl Service {
         }))
     }
 
-    async fn handle_prepared(
+    /// Runs one prepared envelope exactly once and returns its sealed response. `accepted` runs
+    /// once the journal holds the receipt, before execution: the relay acknowledges there.
+    /// The guard stays with the caller until the response is delivered.
+    async fn execute<A, F>(
         &self,
-        work: Work,
-        epoch: &[u8; 16],
+        e: &Envelope,
         prepared: PreparedWork,
-    ) -> Result<()> {
+        transport: Transport,
+        accepted: A,
+    ) -> Result<(Vec<u8>, Arc<Device>, WorkGuard)>
+    where
+        A: FnOnce() -> F,
+        F: std::future::Future<Output = Result<()>>,
+    {
         let PreparedWork {
             request,
             digest,
             guard,
         } = prepared;
-        let e = &work.envelope;
         let device = self
             .devices
             .get(&e.sender)
             .context("work from unapproved device")?;
+        let _lane = if guard.changes {
+            None
+        } else {
+            Some(self.lane.lock().await)
+        };
         let disposition = self.journal.accept(&e.sender, &e.request_id, &digest)?;
-        let receipt_path = format!("/v1/work/{}/receipt", e.request_id);
-        Self::drain_ack(
-            self.signed(Method::POST, &receipt_path, Vec::new(), epoch)
-                .await?,
-        )
-        .await?;
+        accepted().await?;
         if request.body.is_none() && domain_read_route(&request) {
-            let binding = self.read_receipt_binding(&e.sender, &device)?;
+            let binding = self.read_receipt_binding(&e.sender, &device, transport)?;
             let current = approval_bound_read_digest(&serde_json::to_vec(e)?, &binding);
             anyhow::ensure!(
                 current == digest,
                 "resource read approval generation changed while acknowledging work"
             );
         }
-        self.require_device_approval(&e.sender, &device)?;
+        self.require_device_approval(&e.sender, &device, transport)?;
         // A read interrupted by a crash or restart has no effect to protect, so it runs
         // again; an interrupted command stays uncertain and is never applied twice.
         let interrupted_read = matches!(disposition, Disposition::Executing)
@@ -1081,7 +968,7 @@ impl Service {
         let response = match disposition {
             Disposition::Completed(bytes) => bytes,
             Disposition::ExecutingLocal => {
-                self.execute_atomic_local(e, &device, &request, &digest)
+                self.execute_atomic_local(e, &device, &request, &digest, transport)
                     .await?
             }
             Disposition::Executing if !interrupted_read => {
@@ -1090,13 +977,13 @@ impl Service {
                 bytes
             }
             Disposition::Accepted | Disposition::Executing => {
-                // Receipt upload can wait on the relay; re-read durable local
-                // approval and enrollment immediately before loopback dispatch.
-                self.require_device_approval(&e.sender, &device)?;
+                // Acknowledging can wait on the relay; re-read durable local
+                // approval (and enrollment) immediately before dispatch.
+                self.require_device_approval(&e.sender, &device, transport)?;
                 if !interrupted_read && self.atomic_local(&request) {
                     self.journal
                         .executing_local(&e.sender, &e.request_id, &digest)?;
-                    self.execute_atomic_local(e, &device, &request, &digest)
+                    self.execute_atomic_local(e, &device, &request, &digest, transport)
                         .await?
                 } else {
                     if !interrupted_read {
@@ -1105,7 +992,7 @@ impl Service {
                     let result = if guard.saturated {
                         json!({"status":429,"error":"changes_busy"})
                     } else {
-                        match self.dispatch(&e.sender, &request).await {
+                        match self.dispatch(&e.sender, &request, transport).await {
                             Ok(value) => value,
                             Err(error) if error.is::<ResponseTooLarge>() => {
                                 json!({"status":502,"error":"response_too_large","detail":response_size_detail(&request)})
@@ -1124,20 +1011,51 @@ impl Service {
                 }
             }
         };
-        let response_path = format!("/v1/work/{}/response", e.request_id);
-        approval_bound_delivery(
-            &self.home,
-            || self.require_device_approval(&e.sender, &device),
-            || async {
-                Self::drain_ack(
-                    self.signed(Method::POST, &response_path, response, epoch)
-                        .await?,
-                )
-                .await
-            },
-        )
-        .await?;
-        Ok(())
+        Ok((response, device, guard))
+    }
+
+    /// One envelope that reached the Mac directly over the local network. The answer is the
+    /// sealed response, returned with the approval lease the caller holds while handing it over.
+    /// A retry of an envelope still executing waits for it and gets the stored response.
+    pub(crate) async fn handle_direct(
+        &self,
+        envelope: Envelope,
+    ) -> std::result::Result<(Vec<u8>, crate::approval_lease::ApprovalLease), DirectRefusal> {
+        if envelope.kind != "request" || envelope.route != self.mac_id || envelope.recipient != self.mac_id {
+            return Err(DirectRefusal::Misdirected);
+        }
+        let device = self.devices.get(&envelope.sender).ok_or(DirectRefusal::Unauthorized)?;
+        self.require_device_approval(&envelope.sender, &device, Transport::Direct)
+            .map_err(|_| DirectRefusal::Unauthorized)?;
+        envelope
+            .verify_signature(&device.signing, &envelope.sender, &self.mac_id, &self.mac_id, now_ms())
+            .map_err(|_| DirectRefusal::Unauthorized)?;
+        let refusal = |error: anyhow::Error| {
+            if error.is::<ReusedRequestId>() {
+                DirectRefusal::Conflict
+            } else {
+                DirectRefusal::Rejected(format!("{error:#}"))
+            }
+        };
+        let work = Work { request_id: envelope.request_id.clone(), envelope };
+        let prepared = loop {
+            let finished = self.inflight.done.notified();
+            tokio::pin!(finished);
+            finished.as_mut().enable();
+            match self.prepare_work(&work, Transport::Direct).map_err(refusal)? {
+                Some(prepared) => break prepared,
+                None => finished.await,
+            }
+        };
+        let (response, device, _guard) = self
+            .execute(&work.envelope, prepared, Transport::Direct, || async { Ok(()) })
+            .await
+            .map_err(refusal)?;
+        let lease = crate::approval_lease::ApprovalLease::shared(&self.home)
+            .map_err(|error| DirectRefusal::Rejected(format!("{error:#}")))?;
+        self.require_device_approval(&work.envelope.sender, &device, Transport::Direct)
+            .map_err(|_| DirectRefusal::Unauthorized)?;
+        Ok((response, lease))
     }
 
     fn encode_response(
@@ -1180,10 +1098,16 @@ impl Service {
         Ok(fallback)
     }
 
-    async fn dispatch(&self, sender: &str, request: &LocalRequest) -> Result<Value> {
+    async fn dispatch(
+        &self,
+        sender: &str,
+        request: &LocalRequest,
+        transport: Transport,
+    ) -> Result<Value> {
         self.dispatch_with(
             sender,
             request,
+            transport,
             &crate::prs::GhCli,
             &crate::http::LiveReviewHead,
         )
@@ -1195,10 +1119,11 @@ impl Service {
         domain: &Arc<crate::domain_runtime::DomainRuntime>,
         sender: &str,
         request: &LocalRequest,
+        transport: Transport,
     ) -> Result<Value> {
         approved_method(request)?;
         let device = self.devices.get(sender).context("unapproved device")?;
-        let approved = self.approved_device(sender, &device)?;
+        let approved = self.approved_device(sender, &device, transport)?;
         if request.method == "POST" || request.method == "PUT" {
             if crate::domain_api::is_resource_mutation_path(&request.method, &request.path) {
                 let body = request.body.as_ref().context("resource body required")?;
@@ -1309,16 +1234,28 @@ impl Service {
         &self,
         sender: &str,
         request: &LocalRequest,
+        transport: Transport,
         gh: &impl crate::prs::Gh,
         reader: &impl crate::http::ReviewHead,
     ) -> Result<Value> {
+        if request.path == crate::direct::routes::PATH {
+            anyhow::ensure!(request.method == "GET" && request.body.is_none(), "routes is a read");
+            let device = self.devices.get(sender).context("unapproved device")?;
+            self.require_device_approval(sender, &device, transport)?;
+            if !self.direct.enabled {
+                return Ok(json!({"status":404,"body":{"error":"direct_off"}}));
+            }
+            let routes = crate::direct::routes::current(self.direct.port, self.direct.listen).await;
+            self.require_device_approval(sender, &device, transport)?;
+            return Ok(json!({"status":200,"body":routes}));
+        }
         if let Some(domain) = &self.domain {
-            return self.dispatch_domain(domain, sender, request).await;
+            return self.dispatch_domain(domain, sender, request, transport).await;
         }
         if request.path == "/schedules" || request.path.starts_with("/schedules/") {
             approved_method(request)?;
             let device = self.devices.get(sender).context("unapproved device")?;
-            self.require_device_approval(sender, &device)?;
+            self.require_device_approval(sender, &device, transport)?;
             return Ok(json!({"status":409,"body":{
                 "code":"incompatible_protocol",
                 "message":"Schedule v2 requires v2-only domain authority",
@@ -1340,7 +1277,7 @@ impl Service {
             approved_method(request)?;
             let hub = self.hub.clone().context("domain read requires local hub")?;
             let device = self.devices.get(sender).context("unapproved device")?;
-            let approved = self.approved_device(sender, &device)?;
+            let approved = self.approved_device(sender, &device, transport)?;
             let response = crate::domain_api::encrypted_read(hub, &approved, &request.path).await?;
             let status = response.status().as_u16();
             let bytes = axum::body::to_bytes(response.into_body(), MAX_LOCAL_RESPONSE).await?;
@@ -1392,7 +1329,7 @@ impl Service {
         }
         let method = approved_method(request)?;
         if method == Method::POST && crate::http::prepared_service_path(&request.path) {
-            return self.dispatch_prepared(sender, request, gh, reader).await;
+            return self.dispatch_prepared(sender, request, transport, gh, reader).await;
         }
         let url = format!("http://127.0.0.1:{}{}", self.local_port, request.path);
         let mut builder = self.client.request(method, url);
@@ -1429,6 +1366,7 @@ impl Service {
         &self,
         sender: &str,
         request: &LocalRequest,
+        transport: Transport,
         gh: &impl crate::prs::Gh,
         reader: &impl crate::http::ReviewHead,
     ) -> Result<Value> {
@@ -1446,7 +1384,7 @@ impl Service {
                 .context("prepared operation body required")?,
             gh,
             reader,
-            || self.require_device_approval(sender, &device),
+            || self.require_device_approval(sender, &device, transport),
         )
         .await;
         let status = response.status().as_u16();
@@ -1500,6 +1438,9 @@ impl Service {
         with_sound: bool,
         payload_for_device: impl Fn(&str) -> Value,
     ) -> Result<(usize, usize)> {
+        if self.relay.is_none() {
+            return Ok((0, 0));
+        }
         let mut epoch = None;
         let mut attempted = 0;
         let mut accepted = 0;
@@ -1532,7 +1473,7 @@ impl Service {
             .devices
             .get(id)
             .context("device is not configured for the service")?;
-        self.require_device_approval(id, &device)?;
+        self.require_device_approval(id, &device, Transport::Relay)?;
         let binding = self
             .journal
             .push_binding(id)?
@@ -1545,8 +1486,8 @@ impl Service {
             .await
     }
 
-    fn approval_binding(&self, id: &str, device: &Device) -> Result<String> {
-        self.require_device_approval(id, device)?;
+    fn approval_binding(&self, id: &str, device: &Device, transport: Transport) -> Result<String> {
+        self.require_device_approval(id, device, transport)?;
         let persisted = Auth::open(&self.home)?;
         let approval = persisted
             .list()
@@ -1561,14 +1502,16 @@ impl Service {
         ))
     }
 
-    fn require_device_approval(&self, id: &str, device: &Device) -> Result<()> {
+    fn require_device_approval(&self, id: &str, device: &Device, transport: Transport) -> Result<()> {
         // The diagnostic is a separate process: re-read persisted approval so
         // revocation by the running daemon is observed after bootstrap too.
         if !self.auth.approved_key_matches(id, &device.signing)
             || !Auth::open(&self.home)?.approved_key_matches(id, &device.signing)
-            || !self.journal.enrollment_active(id)?
         {
-            bail!("device is not actively enrolled and locally approved");
+            bail!("device is not locally approved");
+        }
+        if transport == Transport::Relay && !self.journal.enrollment_active(id)? {
+            bail!("device is not actively enrolled with the relay");
         }
         Ok(())
     }
@@ -1576,65 +1519,15 @@ impl Service {
         &'a self,
         id: &'a str,
         device: &'a Device,
+        transport: Transport,
     ) -> Result<ApprovedDevice<'a>> {
-        self.require_device_approval(id, device)?;
+        self.require_device_approval(id, device, transport)?;
         Ok(ApprovedDevice {
             service: self,
             sender: id,
             device,
+            transport,
         })
-    }
-
-    async fn send_device_push(
-        &self,
-        id: &str,
-        device: &Device,
-        binding: &str,
-        payload: &Value,
-        with_sound: bool,
-        delivery: PushDelivery,
-        epoch: &mut Option<[u8; 16]>,
-    ) -> Result<()> {
-        self.require_device_approval(id, device)?;
-        let (payload, with_sound) = match delivery {
-            PushDelivery::Alert => self.journal.quiet_hours(id)?.apply(payload, with_sound, local_minutes()),
-            PushDelivery::Background | PushDelivery::Badge => (payload.clone(), false),
-        };
-        let mut body = self.encode_push_or_minimal(id, device, binding, &payload, with_sound, delivery)?;
-        let current_epoch = match *epoch {
-            Some(epoch) => epoch,
-            None => {
-                let fresh = self.bootstrap().await?;
-                *epoch = Some(fresh);
-                fresh
-            }
-        };
-        self.require_device_approval(id, device)?;
-        if self.journal.push_binding(id)?.as_deref() != Some(binding) {
-            bail!("device push binding changed while preparing delivery");
-        }
-        loop {
-            let response = self
-                .signed(Method::POST, "/v1/mac/push", body.clone(), &current_epoch)
-                .await?;
-            let status = response.status();
-            if status == reqwest::StatusCode::ACCEPTED {
-                return Ok(());
-            }
-            let code = relay_error_code(&response.bytes().await.unwrap_or_default());
-            if status == reqwest::StatusCode::BAD_REQUEST && code == "invalid_push" {
-                match without_relay_extensions(&body)? {
-                    Some(older) if delivery == PushDelivery::Alert => {
-                        body = older;
-                        continue;
-                    }
-                    Some(_) if delivery == PushDelivery::Background => bail!("the relay predates background pushes: deploy the current relay so answered cards leave the phone"),
-                    Some(_) => bail!("the relay predates badge pushes: deploy the current relay so the icon badge drops while the app is closed"),
-                    None => {}
-                }
-            }
-            bail!("relay did not accept encrypted push (HTTP {status}, error {code})");
-        }
     }
 
     /// Content that does not fit Apple's encrypted budget is never dropped: the
@@ -1869,6 +1762,9 @@ fn domain_read_id(id: &str) -> bool {
 /// The relay carries opaque JSON. Only these app operations may be replayed on loopback.
 /// There is deliberately no general URL proxy, no pairing/device management, and no upload.
 fn approved_method(request: &LocalRequest) -> Result<Method> {
+    if request.method == "GET" && request.body.is_none() && request.path == crate::direct::routes::PATH {
+        return Ok(Method::GET);
+    }
     if request.method == "GET"
         && request.body.is_none()
         && crate::views::feed::approved_path(&request.path)
@@ -2417,7 +2313,7 @@ impl Journal {
             params![sender,id], |r| Ok((r.get(0)?,r.get(1)?,r.get(2)?,r.get(3)?))).optional()?;
         let state = match previous {
             Some((prior, _, _, _)) if prior != digest => {
-                bail!("request ID reused with different encrypted bytes")
+                return Err(ReusedRequestId.into());
             }
             Some((_, state, response, _)) if state == "completed" => {
                 Disposition::Completed(response.context("completed receipt missing response")?)
@@ -2466,6 +2362,9 @@ mod domain_parity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reqwest::{StatusCode, Url};
+    use std::collections::HashSet;
+    use crate::push::local_minutes;
     use axum::{
         Router,
         body::Bytes,
@@ -3151,6 +3050,14 @@ mod tests {
         assert_eq!(count, 0);
     }
 
+    #[test]
+    fn routes_is_a_read_every_device_may_make() {
+        let request = |method: &str, body: Option<Value>| LocalRequest { method: method.into(), path: "/routes".into(), body };
+        assert_eq!(approved_method(&request("GET", None)).unwrap(), Method::GET);
+        assert!(approved_method(&request("POST", Some(json!({})))).is_err());
+        assert!(approved_method(&request("GET", Some(json!({})))).is_err());
+    }
+
     fn push_fixture() -> (Service, SecretKey) {
         let home = std::env::temp_dir().join(format!(
             "alondra-encrypted-push-{}-{}",
@@ -3233,7 +3140,7 @@ agreement_key = "{}"
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let relay_task = tokio::spawn(axum::serve(listener, relay).into_future());
         let epoch = [7; 16];
         let work = changes_work(
@@ -3316,7 +3223,7 @@ agreement_key = "{}"
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
-        service.relay = url.clone();
+        service.set_relay_url(url.clone());
         let work = changes_work(
             &service,
             "atomic-report-read",
@@ -3348,7 +3255,7 @@ agreement_key = "{}"
             .unwrap()
             .unwrap()
             .with_hub(hub.clone());
-        service.relay = url;
+        service.set_relay_url(url);
         service
             .handle(repeat_work(&work), &[1u8; 16])
             .await
@@ -3460,7 +3367,7 @@ agreement_key = "{}"
                     "preserve conservative external receipt recovery"
                 );
                 service
-                    .require_device_approval("phone-1", &service.devices.get("phone-1").unwrap())
+                    .require_device_approval("phone-1", &service.devices.get("phone-1").unwrap(), Transport::Relay)
                     .unwrap();
                 service
                     .journal
@@ -3478,6 +3385,7 @@ agreement_key = "{}"
                 let mut pending = Box::pin(service.dispatch_with(
                     "phone-1",
                     &request,
+                    Transport::Relay,
                     &preparation,
                     &preparation,
                 ));
@@ -3593,7 +3501,7 @@ agreement_key = "{}"
             let held = hub.starts.lock().await;
             let phone = service.devices.get("phone-1").unwrap();
             let mut pending =
-                Box::pin(service.execute_atomic_local(&work.envelope, &phone, &request, &[1; 32]));
+                Box::pin(service.execute_atomic_local(&work.envelope, &phone, &request, &[1; 32], Transport::Relay));
             // Poll exactly to the mutex wait: authorization already passed, mutation has not run.
             let waker = std::task::Waker::noop();
             assert!(
@@ -3693,7 +3601,7 @@ agreement_key = "{}"
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
-        service.relay = url.clone();
+        service.set_relay_url(url.clone());
         let work = changes_work(
             &service,
             "atomic-artifact-review",
@@ -3730,7 +3638,7 @@ agreement_key = "{}"
             .unwrap()
             .unwrap()
             .with_hub(hub.clone());
-        service.relay = url;
+        service.set_relay_url(url);
         service
             .handle(repeat_work(&work), &[1u8; 16])
             .await
@@ -3803,7 +3711,7 @@ agreement_key = "{}"
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
         let relay_task = tokio::spawn(async move { axum::serve(listener, relay).await.unwrap() });
-        service.relay = url.clone();
+        service.set_relay_url(url.clone());
         let work = changes_work(
             &service,
             "atomic-schedule-create",
@@ -3835,7 +3743,7 @@ agreement_key = "{}"
             .unwrap()
             .unwrap()
             .with_hub(hub.clone());
-        service.relay = url;
+        service.set_relay_url(url);
         service
             .handle(repeat_work(&work), &[1u8; 16])
             .await
@@ -3897,7 +3805,7 @@ agreement_key = "{}"
             body: Some(json!({"push_binding":binding})),
         };
         assert_eq!(
-            service.dispatch("phone-1", &request).await.unwrap()["status"],
+            service.dispatch("phone-1", &request, Transport::Relay).await.unwrap()["status"],
             204
         );
         assert_eq!(
@@ -3909,14 +3817,14 @@ agreement_key = "{}"
             path: "/v1/service/push-binding".into(),
             body: Some(json!({"push_binding":binding,"unexpected":true})),
         };
-        assert!(service.dispatch("phone-1", &bad_request).await.is_err());
+        assert!(service.dispatch("phone-1", &bad_request, Transport::Relay).await.is_err());
         let quiet_request = LocalRequest {
             method: "POST".into(),
             path: "/v1/service/push-binding".into(),
             body: Some(json!({"push_binding":binding,"quiet_start":"23:00","quiet_end":"08:00"})),
         };
         assert_eq!(
-            service.dispatch("phone-1", &quiet_request).await.unwrap()["status"],
+            service.dispatch("phone-1", &quiet_request, Transport::Relay).await.unwrap()["status"],
             204
         );
         let invalid_quiet = LocalRequest {
@@ -3925,7 +3833,7 @@ agreement_key = "{}"
             ),
             ..quiet_request
         };
-        assert!(service.dispatch("phone-1", &invalid_quiet).await.is_err());
+        assert!(service.dispatch("phone-1", &invalid_quiet, Transport::Relay).await.is_err());
         assert_eq!(
             service.journal.push_binding("phone-1").unwrap().as_deref(),
             Some(binding.as_str())
@@ -4105,7 +4013,7 @@ agreement_key = "{}"
                     }),
                 );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let service = Arc::new(service);
         let mut epoch = None;
@@ -4204,7 +4112,7 @@ agreement_key = "{}"
         activate_push(&service);
         let (url, connections, paths, server) =
             ack_server(vec![(200, br#"{"ok":true}"#.to_vec()); 4]).await;
-        service.relay = url;
+        service.set_relay_url(url);
         for id in ["ack-one", "ack-two"] {
             // Invalid local route returns a bounded encrypted error without any
             // loopback request, leaving only the two real relay POSTs per work.
@@ -4234,7 +4142,7 @@ agreement_key = "{}"
             let (mut service, _) = push_fixture();
             activate_push(&service);
             let (url, _, paths, server) = ack_server(vec![(status, body)]).await;
-            service.relay = url;
+            service.set_relay_url(url);
             let work = changes_work(
                 &service,
                 "bad-ack",
@@ -4316,7 +4224,7 @@ agreement_key = "{}"
                 .await
                 .unwrap_err()
                 .to_string()
-                .contains("not actively enrolled")
+                .contains("not locally approved")
         );
         std::fs::remove_dir_all(&service.home).unwrap();
     }
@@ -4365,7 +4273,7 @@ agreement_key = "{}"
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         assert!(
             service
@@ -4464,12 +4372,13 @@ agreement_key = "{}"
                     }),
                 );
             let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-            service.relay =
-                Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+            service.set_relay_url(
+                Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap(),
+            );
             let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
             let error = service.test_push("phone-1").await.unwrap_err().to_string();
             assert!(error.contains(if revoke {
-                "not actively enrolled"
+                "not locally approved"
             } else {
                 "binding changed"
             }));
@@ -4493,7 +4402,7 @@ agreement_key = "{}"
                 post(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let report = service
             .broadcast_push_report(&json!({"aps":{"alert":"hint"},"alondra":{}}), true)
@@ -4550,7 +4459,7 @@ agreement_key = "{}"
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
         let card = json!({"aps":{"alert":{"title":"Approve"}},"alondra":{"card":"t-1-result-1"}});
         let retract = json!({"aps":{"badge":0},"alondra":{"kind":"retract","open":[]}});
@@ -4635,7 +4544,7 @@ agreement_key = "{}"
             "domain-read-before-revoke",
             json!({"method":"GET","path":"/capabilities"}),
         );
-        let prepared = service.prepare_work(&work).unwrap().unwrap();
+        let prepared = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
         let digest = prepared.digest;
         drop(prepared);
         assert!(matches!(
@@ -4662,7 +4571,7 @@ agreement_key = "{}"
         ));
         Auth::open(&home).unwrap().revoke("phone-1").unwrap();
         assert!(
-            service.prepare_work(&work).is_err(),
+            service.prepare_work(&work, Transport::Relay).is_err(),
             "cached ciphertext must not reach revoked devices"
         );
         drop(service);
@@ -4734,7 +4643,7 @@ agreement_key = "{}"
                     &service,
                     "legacy",
                     json!({"push_binding": binding})
-                ))
+                ), Transport::Relay)
                 .is_err(),
             "the legacy daemon does not serve v2 routes"
         );
@@ -4745,7 +4654,7 @@ agreement_key = "{}"
             let phone_agreement = &phone_agreement;
             let work = sealed(service, request_id, body);
             async move {
-                let prepared = service.prepare_work(&work).unwrap().unwrap();
+                let prepared = service.prepare_work(&work, Transport::Relay).unwrap().unwrap();
                 assert!(
                     service.atomic_local(&prepared.request),
                     "a registration commits atomically with its receipt"
@@ -4764,7 +4673,7 @@ agreement_key = "{}"
                         &work.envelope,
                         &device,
                         &prepared.request,
-                        &prepared.digest,
+                        &prepared.digest, Transport::Relay,
                     )
                     .await
                     .unwrap();
@@ -5051,7 +4960,7 @@ agreement_key = "{}"
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
         let service = Arc::new(service);
         let mut tasks = tokio::task::JoinSet::new();
@@ -5192,7 +5101,7 @@ agreement_key = "{}"
         )
         .unwrap()
         .unwrap();
-        restarted.relay = service.relay.clone();
+        restarted.set_relay_url(service.relay_url());
         release.add_permits(1);
         restarted.handle(interrupted, &epoch).await.unwrap();
         assert_eq!(
@@ -5215,14 +5124,14 @@ agreement_key = "{}"
             "first-device-waiter",
             json!({"method":"GET","path":"/v1/changes"}),
         );
-        let first = service.prepare_work(&first).unwrap().unwrap();
+        let first = service.prepare_work(&first, Transport::Relay).unwrap().unwrap();
         assert!(first.guard.changes);
         let second = changes_work(
             &service,
             "second-device-waiter",
             json!({"method":"GET","path":"/v1/changes"}),
         );
-        let second = service.prepare_work(&second).unwrap().unwrap();
+        let second = service.prepare_work(&second, Transport::Relay).unwrap().unwrap();
         assert!(second.guard.saturated, "one device may keep only one legacy changes waiter");
         drop(second);
         drop(first);
@@ -5238,7 +5147,7 @@ agreement_key = "{}"
             "bounded",
             json!({"method":"GET","path":"/v1/changes"}),
         );
-        let prepared = service.prepare_work(&read).unwrap().unwrap();
+        let prepared = service.prepare_work(&read, Transport::Relay).unwrap().unwrap();
         assert!(prepared.guard.saturated);
         assert!(!prepared.guard.changes);
         drop(prepared);
@@ -5248,11 +5157,11 @@ agreement_key = "{}"
             "write",
             json!({"method":"POST","path":"/v1/questions/1/answer","body":{}}),
         );
-        let prepared = service.prepare_work(&mutation).unwrap().unwrap();
+        let prepared = service.prepare_work(&mutation, Transport::Relay).unwrap().unwrap();
         assert!(!prepared.guard.saturated);
         drop(prepared);
         service.inflight.lock().unwrap().clear();
-        assert!(service.prepare_work(&read).unwrap().unwrap().guard.changes);
+        assert!(service.prepare_work(&read, Transport::Relay).unwrap().unwrap().guard.changes);
         assert!(service.inflight.lock().unwrap().is_empty());
         std::fs::remove_dir_all(&service.home).unwrap();
     }
@@ -5361,7 +5270,7 @@ agreement_key = "{}"
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let origin = format!("http://{}/", listener.local_addr().unwrap());
-        service.relay = Url::parse(&origin).unwrap();
+        service.set_relay_url(Url::parse(&origin).unwrap());
         let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
         let home = service.home.clone();
         let service = Arc::new(service);
@@ -5400,7 +5309,7 @@ agreement_key = "{}"
         let mut restarted = Service::open(&home, 0, Arc::new(Auth::open(&home).unwrap()))
             .unwrap()
             .unwrap();
-        restarted.relay = Url::parse(&origin).unwrap();
+        restarted.set_relay_url(Url::parse(&origin).unwrap());
         let restarted = Arc::new(restarted);
         assert!(
             restarted
@@ -5470,7 +5379,7 @@ agreement_key = "{}"
             }),
         );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
         let service = Arc::new(service);
         let mut tasks = tokio::task::JoinSet::new();
@@ -5621,15 +5530,14 @@ agreement_key = "{}"
         ));
         std::fs::create_dir_all(&home).unwrap();
         let service = Service {
-            relay: Url::parse("http://127.0.0.1:1/").unwrap(),
+            relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
+            direct: DirectConfig::default(),
+            lane: tokio::sync::Mutex::new(()),
             client: Client::new(),
             mac_id: "mac-test".into(),
-            owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new().into(),
-            resync: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
@@ -5652,7 +5560,7 @@ agreement_key = "{}"
                         method: "GET".into(),
                         path: format!("/v1/file?path={file}"),
                         body: None,
-                    },
+                    }, Transport::Relay,
                 )
                 .await
                 .unwrap();
@@ -5680,7 +5588,7 @@ agreement_key = "{}"
                             method: "GET".into(),
                             path: path.into(),
                             body: None,
-                        }
+                        }, Transport::Relay
                     )
                     .await
                     .unwrap(),
@@ -5715,15 +5623,14 @@ agreement_key = "{}"
         ));
         std::fs::create_dir_all(&home).unwrap();
         let service = Service {
-            relay: Url::parse("http://127.0.0.1:1/").unwrap(),
+            relay: Some(relay::RelayConnector::new(Url::parse("http://127.0.0.1:1/").unwrap(), "owner".into())),
+            direct: DirectConfig::default(),
+            lane: tokio::sync::Mutex::new(()),
             client: Client::new(),
             mac_id: "mac-test".into(),
-            owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new().into(),
-            resync: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
@@ -5741,7 +5648,7 @@ agreement_key = "{}"
                     method: "GET".into(),
                     path: "/v1/prs/7/diff-snapshot".into(),
                     body: None,
-                },
+                }, Transport::Relay,
             )
             .await
             .unwrap();
@@ -5945,7 +5852,7 @@ agreement_key = "{}"
                 }),
             );
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        service.relay = Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        service.set_relay_url(Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap());
         let relay_server = tokio::spawn(axum::serve(listener, relay).into_future());
         let work = changes_work(
             &service,
@@ -6003,7 +5910,7 @@ agreement_key = "{}"
         )
         .unwrap()
         .unwrap();
-        restarted.relay = service.relay.clone();
+        restarted.set_relay_url(service.relay_url());
         restarted
             .handle(repeat_work(&work), &[7; 16])
             .await
@@ -6089,15 +5996,14 @@ agreement_key = "{}"
                 let port = listener.local_addr().unwrap().port();
                 tokio::spawn(axum::serve(listener, relay).into_future());
                 let service = Service {
-                    relay: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+                    relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
+                    direct: DirectConfig::default(),
+                    lane: tokio::sync::Mutex::new(()),
                     client: Client::new(),
                     mac_id: "mac-1".into(),
-                    owner_sub: "owner".into(),
                     signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
                     agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
                     devices: HashMap::new().into(),
-                    resync: AtomicBool::new(false),
-                    wake: tokio::sync::Notify::new(),
                     home: scenario_home.clone(),
                     transfers: Arc::default(),
                     inflight: Arc::default(),
@@ -6230,10 +6136,11 @@ agreement_key = "{}"
             "created_at":0,"last_seen":null
         }])).unwrap()).unwrap();
         let service = Service {
-            relay: Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(),
+            relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{port}/")).unwrap(), "owner".into())),
+            direct: DirectConfig::default(),
+            lane: tokio::sync::Mutex::new(()),
             client: Client::new(),
             mac_id: "mac-1".into(),
-            owner_sub: "owner".into(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::from([(
@@ -6245,8 +6152,6 @@ agreement_key = "{}"
                 },
             )])
             .into(),
-            resync: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
@@ -6392,10 +6297,11 @@ agreement_key = "{}"
         let auth = Arc::new(Auth::open(&home).unwrap());
         let journal_path = home.join("service-receipts.sqlite");
         let service = Service {
-            relay: Url::parse(&format!("http://127.0.0.1:{relay_port}/")).unwrap(),
+            relay: Some(relay::RelayConnector::new(Url::parse(&format!("http://127.0.0.1:{relay_port}/")).unwrap(), "owner".into())),
+            direct: DirectConfig::default(),
+            lane: tokio::sync::Mutex::new(()),
             client: Client::new(),
             mac_id: "mac-1".into(),
-            owner_sub: "owner".into(),
             signing: mac_signing,
             agreement: mac_agreement,
             devices: HashMap::from([(
@@ -6408,8 +6314,6 @@ agreement_key = "{}"
                 },
             )])
             .into(),
-            resync: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
@@ -6429,10 +6333,11 @@ agreement_key = "{}"
             "reconnect cannot resurrect a relay-revoked device"
         );
         let restarted = Service {
-            relay: service.relay.clone(),
+            relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
+            direct: DirectConfig::default(),
+            lane: tokio::sync::Mutex::new(()),
             client: Client::new(),
             mac_id: service.mac_id.clone(),
-            owner_sub: service.owner_sub.clone(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::from([(
@@ -6445,8 +6350,6 @@ agreement_key = "{}"
                 },
             )])
             .into(),
-            resync: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
@@ -6631,15 +6534,14 @@ agreement_key = "{}"
             "local revoke remains denied after restart and reconnect"
         );
         let removed_from_config = Service {
-            relay: service.relay.clone(),
+            relay: Some(relay::RelayConnector::new(service.relay_url(), "owner".into())),
+            direct: DirectConfig::default(),
+            lane: tokio::sync::Mutex::new(()),
             client: Client::new(),
             mac_id: service.mac_id.clone(),
-            owner_sub: service.owner_sub.clone(),
             signing: SigningKey::from_slice(&[1u8; 32]).unwrap(),
             agreement: SecretKey::from_slice(&[2u8; 32]).unwrap(),
             devices: HashMap::new().into(),
-            resync: AtomicBool::new(false),
-            wake: tokio::sync::Notify::new(),
             home: home.clone(),
             transfers: Arc::default(),
             inflight: Arc::default(),
@@ -6737,7 +6639,7 @@ agreement_key = "{}"
             .unwrap(),
         };
         assert!(
-            service.prepare_work(&work).is_err(),
+            service.prepare_work(&work, Transport::Relay).is_err(),
             "no phone is configured yet"
         );
 
@@ -6752,16 +6654,16 @@ agreement_key = "{}"
             "[[devices]]\ndevice_id = \"phone-a\"\nsigning_key = \"{signing_wire}\"\nagreement_key = \"{agreement_wire}\"\n"
         ))).unwrap();
         assert!(
-            service.prepare_work(&work).is_err(),
+            service.prepare_work(&work, Transport::Relay).is_err(),
             "the running service still has the list it started with"
         );
         service.reload_devices().unwrap();
         assert!(
-            service.resync.load(Ordering::SeqCst),
+            service.relay.as_ref().unwrap().resync_pending(),
             "the connector loop must enroll the new phone"
         );
         assert!(
-            service.prepare_work(&work).unwrap().is_some(),
+            service.prepare_work(&work, Transport::Relay).unwrap().is_some(),
             "the reloaded service accepts the phone"
         );
 
@@ -6771,7 +6673,7 @@ agreement_key = "{}"
             !service.has_device("phone-a"),
             "a phone removed from service.toml is gone without a restart"
         );
-        assert!(service.prepare_work(&work).is_err());
+        assert!(service.prepare_work(&work, Transport::Relay).is_err());
 
         std::fs::write(home.join("service.toml"), "not toml").unwrap();
         assert!(service.reload_devices().is_err());
@@ -6835,12 +6737,12 @@ agreement_key = "{}"
         };
         assert!(
             service
-                .prepare_work(&sealed("old", "/v1/overview"))
+                .prepare_work(&sealed("old", "/v1/overview"), Transport::Relay)
                 .is_err()
         );
-        assert!(service.prepare_work(&sealed("pair", "/v1/pair")).is_err());
+        assert!(service.prepare_work(&sealed("pair", "/v1/pair"), Transport::Relay).is_err());
         let valid = sealed("domain", "/capabilities");
-        assert!(service.prepare_work(&valid).unwrap().is_some());
+        assert!(service.prepare_work(&valid, Transport::Relay).unwrap().is_some());
         let read = service
             .dispatch(
                 "phone-a",
@@ -6848,14 +6750,14 @@ agreement_key = "{}"
                     method: "GET".into(),
                     path: "/capabilities".into(),
                     body: None,
-                },
+                }, Transport::Relay,
             )
             .await
             .unwrap();
         assert_eq!(read["status"], 200);
         assert_eq!(read["body"]["protocol_version"], 2);
         auth.revoke("phone-a").unwrap();
-        assert!(service.prepare_work(&sealed("revoked", "/domain")).is_err());
+        assert!(service.prepare_work(&sealed("revoked", "/domain"), Transport::Relay).is_err());
         assert!(
             service
                 .dispatch(
@@ -6864,7 +6766,7 @@ agreement_key = "{}"
                         method: "GET".into(),
                         path: "/domain".into(),
                         body: None,
-                    }
+                    }, Transport::Relay
                 )
                 .await
                 .is_err()
@@ -6966,16 +6868,16 @@ agreement_key = "{}"
         {
             assert!(
                 service
-                    .prepare_work(&sealed(&format!("accepted-{index}"), path))
+                    .prepare_work(&sealed(&format!("accepted-{index}"), path), Transport::Relay)
                     .unwrap()
                     .is_some(),
                 "{path} is accepted from a paired phone"
             );
-            let answer = service.dispatch("phone-a", &read(path)).await.unwrap();
+            let answer = service.dispatch("phone-a", &read(path), Transport::Relay).await.unwrap();
             assert_eq!(answer["status"], 200, "{path}: {answer}");
         }
         let home_view = service
-            .dispatch("phone-a", &read("/views/home?protocol=1&client=ios&lang=en"))
+            .dispatch("phone-a", &read("/views/home?protocol=1&client=ios&lang=en"), Transport::Relay)
             .await
             .unwrap();
         assert_eq!(home_view["body"]["key"], "home");
@@ -6986,7 +6888,7 @@ agreement_key = "{}"
         {
             assert!(
                 service
-                    .prepare_work(&sealed(&format!("refused-{index}"), path))
+                    .prepare_work(&sealed(&format!("refused-{index}"), path), Transport::Relay)
                     .is_err(),
                 "{path} is refused"
             );
@@ -7006,7 +6908,7 @@ agreement_key = "{}"
                     method: "POST".into(),
                     path: "/agents/nobody/close".into(),
                     body: Some(json!({"force": true})),
-                },
+                }, Transport::Relay,
             )
             .await
             .unwrap();
@@ -7055,7 +6957,7 @@ agreement_key = "{}"
                 body: Some(body),
             };
             let service = &service;
-            async move { service.dispatch("phone-a", &request).await }
+            async move { service.dispatch("phone-a", &request, Transport::Relay).await }
         };
         let started = step("start", json!({"transfer_id": transfer, "name": "shot.png", "bytes": bytes.len(), "sha256": digest})).await.unwrap();
         assert_eq!(started["status"], 200, "{started}");
@@ -7095,7 +6997,7 @@ agreement_key = "{}"
             if let Some(version) = &version {
                 path.push_str(&format!("&version={version}"));
             }
-            let chunk = service.dispatch("phone-a", &read(&path)).await.unwrap();
+            let chunk = service.dispatch("phone-a", &read(&path), Transport::Relay).await.unwrap();
             assert_eq!(chunk["status"], 200, "{chunk}");
             let chunk = &chunk["body"];
             assert_eq!(
@@ -7121,7 +7023,7 @@ agreement_key = "{}"
         let outside = service
             .dispatch(
                 "phone-a",
-                &read("/files/chunk?path=%2Fetc%2Fhosts&offset=0"),
+                &read("/files/chunk?path=%2Fetc%2Fhosts&offset=0"), Transport::Relay,
             )
             .await
             .unwrap();
@@ -7175,7 +7077,7 @@ agreement_key = "{}"
             );
         }
         let options = service
-            .dispatch("phone-a", &read("/options"))
+            .dispatch("phone-a", &read("/options"), Transport::Relay)
             .await
             .unwrap();
         assert_eq!(
@@ -7187,7 +7089,7 @@ agreement_key = "{}"
         );
         assert_eq!(
             service
-                .dispatch("phone-a", &read("/projects"))
+                .dispatch("phone-a", &read("/projects"), Transport::Relay)
                 .await
                 .unwrap()["status"],
             200
@@ -7205,7 +7107,7 @@ agreement_key = "{}"
             }, serde_json::to_vec(&json!({"method":"POST","path":"/requests","body":{"request_id": "request-9", "text": "Ship it", "options": {"effort": "hard"}, "attachments": []}})).unwrap().as_slice(),
             &phone_signing, &service.agreement.public_key()).unwrap(),
         };
-        let prepared = service.prepare_work(&new_request).unwrap().unwrap();
+        let prepared = service.prepare_work(&new_request, Transport::Relay).unwrap().unwrap();
         service
             .journal
             .accept("phone-a", "request-1", &prepared.digest)
@@ -7220,7 +7122,7 @@ agreement_key = "{}"
                 &new_request.envelope,
                 &device,
                 &prepared.request,
-                &prepared.digest,
+                &prepared.digest, Transport::Relay,
             )
             .await
             .unwrap();
@@ -7270,7 +7172,7 @@ agreement_key = "{}"
         }
         assert_eq!(
             service
-                .dispatch("phone-a", &read("/tasks/nothing/history"))
+                .dispatch("phone-a", &read("/tasks/nothing/history"), Transport::Relay)
                 .await
                 .unwrap()["status"],
             404
@@ -7307,7 +7209,7 @@ agreement_key = "{}"
         let missing = service
             .dispatch(
                 "phone-a",
-                &put("/tasks/nothing/cancel-reason", Some(json!({"reason": "x"}))),
+                &put("/tasks/nothing/cancel-reason", Some(json!({"reason": "x"}))), Transport::Relay,
             )
             .await
             .unwrap();
@@ -7322,7 +7224,7 @@ agreement_key = "{}"
                     method: "POST".into(),
                     path: "/activity".into(),
                     body: Some(json!({"client": "phone"})),
-                },
+                }, Transport::Relay,
             )
             .await
             .unwrap();
@@ -7334,7 +7236,7 @@ agreement_key = "{}"
         auth.revoke("phone-a").unwrap();
         assert!(
             service
-                .dispatch("phone-a", &read("/runtime"))
+                .dispatch("phone-a", &read("/runtime"), Transport::Relay)
                 .await
                 .is_err(),
             "a revoked phone reads nothing"

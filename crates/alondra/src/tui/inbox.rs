@@ -46,6 +46,14 @@ impl App {
         0
     }
 
+    /// Items waiting for the user, as the daemon counts them, else as the inbox shows them.
+    pub fn attention(&self) -> usize {
+        self.view_status
+            .as_ref()
+            .and_then(|s| s.counts.iter().find(|c| c.id == "inbox"))
+            .map_or_else(|| self.inbox_count(), |c| c.value as usize)
+    }
+
     pub(super) fn move_inbox(&mut self, to: isize) {
         let keys = self.inbox_keys();
         if keys.is_empty() {

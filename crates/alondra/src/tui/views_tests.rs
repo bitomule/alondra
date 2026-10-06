@@ -93,3 +93,93 @@ fn failed_views_feed_marks_cached_status_offline_until_recovery() {
     })));
     assert!(!app.offline);
 }
+
+fn direct_mac(id: &str) -> MacTarget {
+    let mac: crate::direct_client::DirectMac = serde_json::from_value(json!({
+        "mac_id": id, "name": id, "mac_signing_key": "k", "mac_agreement_key": "k",
+        "device_id": "d", "signing_key": "k", "agreement_key": "k", "routes": ["192.168.1.20:47801"]
+    }))
+    .unwrap();
+    MacTarget::Direct(std::sync::Arc::new(crate::direct_client::Connection::new(mac)))
+}
+
+#[test]
+fn each_mac_instance_sends_its_requests_to_its_own_mac() {
+    let (tx, _rx) = std::sync::mpsc::sync_channel(8);
+    let mut here = App::with_target(tx.clone(), MacTarget::Local);
+    let mut studio = App::with_target(tx.clone(), direct_mac("mac-studio"));
+    let mut mini = App::with_target(tx, direct_mac("mac-mini"));
+    for app in [&mut here, &mut studio, &mut mini] {
+        app.load_screen_view();
+        app.fetch("/content/report.md");
+    }
+    assert_eq!(*here.spawned.borrow(), vec![None, None]);
+    assert_eq!(*studio.spawned.borrow(), vec![Some("mac-studio".to_owned()); 2]);
+    assert_eq!(*mini.spawned.borrow(), vec![Some("mac-mini".to_owned()); 2]);
+    assert_eq!(here.remote_mac(), None);
+    assert_eq!(studio.remote_mac().as_deref(), Some("mac-studio"));
+}
+
+fn waiting(id: &str) -> PendingDevice {
+    PendingDevice {
+        id: id.into(),
+        name: format!("Device {id}"),
+        code: "482913".into(),
+        expires_at_ms: now_millis() + 60_000,
+    }
+}
+
+#[test]
+fn p_allows_and_d_denies_the_device_the_prompt_shows() {
+    let mut app = app();
+    app.on_msg(Msg::PendingDevices(vec![waiting("p-1"), waiting("p-2")]));
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.pairing_prompt().map(|d| d.id.as_str()), Some("p-2"));
+    press(&mut app, KeyCode::Char('d'));
+    assert_eq!(app.pairing_prompt(), None);
+    assert_eq!(
+        *app.posted.borrow(),
+        vec![
+            ("/devices/pending/p-1/approve".to_owned(), json!({})),
+            ("/devices/pending/p-2/deny".to_owned(), json!({})),
+        ]
+    );
+
+    app.on_msg(Msg::PendingDevices(vec![waiting("p-1"), waiting("p-2")]));
+    assert_eq!(app.pairing_prompt(), None, "an answered device stays answered");
+
+    app.on_msg(Msg::PendingDevices(vec![waiting("p-3")]));
+    app.composer = Some(Composer {
+        target: Target::Form { view: "new_request".into() },
+        input: TextInput::default(),
+        chips: vec![],
+        form: None,
+    });
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.posted.borrow().len(), 2, "p while typing is a letter");
+    assert_eq!(app.pairing_prompt().map(|d| d.id.as_str()), Some("p-3"));
+}
+
+#[test]
+fn a_failed_answer_brings_the_prompt_back() {
+    let mut app = app();
+    app.on_msg(Msg::PendingDevices(vec![waiting("p-1")]));
+    press(&mut app, KeyCode::Char('p'));
+    assert_eq!(app.pairing_prompt(), None);
+    app.on_msg(Msg::PairingAnswered {
+        device: waiting("p-1"),
+        allow: true,
+        result: Err("refused".into()),
+    });
+    assert_eq!(app.pairing_prompt().map(|d| d.id.as_str()), Some("p-1"));
+    assert!(app.flash.as_ref().is_some_and(|f| f.error));
+}
+
+#[test]
+fn the_switch_key_asks_for_the_next_mac_unless_typing() {
+    let mut app = app();
+    let key = KeyEvent::new(KeyCode::Char(']'), KeyModifiers::NONE);
+    assert!(matches!(app.on_key(key), Flow::NextMac));
+    app.cmdline = Some(TextInput::default());
+    assert!(!matches!(app.on_key(key), Flow::NextMac));
+}

@@ -38,6 +38,8 @@ struct ServiceConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     journal_path: Option<String>,
     devices: Vec<ServiceDevice>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    direct: Option<toml::Value>,
 }
 #[derive(Serialize, Deserialize)]
 struct ServiceDevice {
@@ -382,15 +384,21 @@ fn complete_pending(
                 && device.agreement_key == phone.agreement_key => {}
         Some(_) => bail!("pending device ID conflicts with Mac service config"),
         None => {
+            let lock = alondra_core::service_config::ServiceConfigLock::exclusive(home)?;
+            alondra_core::service_config::add_device(
+                home,
+                &lock,
+                &alondra_core::service_config::NewDevice {
+                    device_id: &phone.device_id,
+                    signing_key: &phone.signing_key,
+                    agreement_key: &phone.agreement_key,
+                },
+            )?;
             config.devices.push(ServiceDevice {
                 device_id: phone.device_id.clone(),
                 signing_key: phone.signing_key.clone(),
                 agreement_key: phone.agreement_key.clone(),
             });
-            atomic_write(
-                &home.join("service.toml"),
-                toml::to_string_pretty(config)?.as_bytes(),
-            )?;
         }
     }
     local_approve(agent, local_origin, public, signing, phone)?;
@@ -475,13 +483,11 @@ fn abandon_expired(
     if status != 204 {
         bail!("could not revoke expired phone ({status}); retry setup");
     }
+    let lock = alondra_core::service_config::ServiceConfigLock::exclusive(home)?;
+    alondra_core::service_config::remove_device(home, &lock, &pending.phone.device_id)?;
     config
         .devices
         .retain(|d| d.device_id != pending.phone.device_id);
-    atomic_write(
-        &home.join("service.toml"),
-        toml::to_string_pretty(config)?.as_bytes(),
-    )?;
     let local_url = format!("{}/devices/{}", local_origin, pending.phone.device_id);
     let response = agent.delete(local_url).call()?;
     if !matches!(response.status().as_u16(), 200 | 404) {
@@ -574,7 +580,11 @@ pub fn run(home: &Path) -> Result<()> {
     let _home_lock = HomeLock::shared(home)?;
     alondra_core::home_lock::ensure_ready(home)?;
     let path = home.join("service.toml");
-    let mut config: ServiceConfig = toml::from_str(&fs::read_to_string(&path)?)?;
+    let text = fs::read_to_string(&path)?;
+    if toml::from_str::<toml::Table>(&text)?.get("relay_url").is_none() {
+        bail!("this Mac has no relay: devices on the same network pair on their own (alondra connect, or the app's search); to pair through the relay, run alondra setup --relay first");
+    }
+    let mut config: ServiceConfig = toml::from_str(&text)?;
     let origin = url::Url::parse(&config.relay_url)?;
     if origin.scheme() != "https"
         || origin.path() != "/"
@@ -840,6 +850,7 @@ mod tests {
                 signing_key: "key".into(),
                 agreement_key: "key".into(),
             }],
+            direct: None,
         };
         let pending = Pending {
             session_id: "pair-test".into(),
@@ -855,6 +866,7 @@ mod tests {
             },
         };
         fs::write(home.join("service-pairing-pending.json"), serde_json::to_vec(&pending).unwrap()).unwrap();
+        fs::write(home.join("service.toml"), toml::to_string(&config).unwrap()).unwrap();
         abandon_expired(&home, &local, &mut config, &public, &mac, &http(), &[3; 16], &pending).unwrap();
         relay.join().unwrap();
         daemon_server.join().unwrap();
@@ -920,6 +932,7 @@ mod tests {
                 signing_key: URL_SAFE_NO_PAD.encode([7u8; 65]),
                 agreement_key: "unused".into(),
             }],
+            direct: None,
         };
         fs::write(dir.join("service.toml"), toml::to_string(&config).unwrap()).unwrap();
         let local = vec![LocalDevice {

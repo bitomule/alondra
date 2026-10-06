@@ -63,6 +63,8 @@ pub struct Args {
     pub dry_run: bool,
     #[arg(long, help = tr!("Never ask; use flags and defaults", "No pregunta nunca; usa los parámetros y los valores por defecto"))]
     pub no_input: bool,
+    #[arg(long, help = tr!("Also enroll this Mac with the Alondra relay, to reach it from anywhere", "Da de alta también este Mac en el relay de Alondra, para llegar a él desde cualquier sitio"))]
+    pub relay: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
@@ -783,11 +785,13 @@ pub fn run(args: Args) -> Result<()> {
     } else {
         context.ensure(args.no_input)?;
     }
-    let service_created = if !args.dry_run {
+    let service_created = if args.dry_run {
+        println!("would prepare this Mac for devices on the local network, and enroll it with the relay if it already uses one or --relay is given");
+        false
+    } else if args.relay || crate::service_setup::has_relay(&paths.alondra_home)? {
         crate::service_setup::enroll(&paths.alondra_home, args.no_input)?
     } else {
-        println!("would sign in if needed and enroll this Mac with the Alondra service");
-        false
+        crate::service_setup::prepare_local(&paths.alondra_home)?
     };
     for step in &plan.steps {
         if !args.dry_run && defer_brew_service_start && is_launchd_lifecycle_step(step) {
