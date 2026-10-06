@@ -4114,3 +4114,24 @@ fn a_node_with_an_open_task_never_reads_idle_and_idle_is_only_for_the_bottom_sec
         }
     }
 }
+
+#[test]
+fn every_refusal_a_card_can_meet_has_its_own_words() {
+    let codes = [
+        "already_read", "withdrawn", "forbidden", "task_not_active", "invalid_action_for_kind", "stale_revision",
+        "blocked", "clarification_pending", "delivery_uncertain", "stale_head", "acceptance_stale",
+        "acceptance_missing", "merge_not_confirmed", "blocking_interaction", "blocking_open", "stack_not_ready",
+        "dependency_not_done", "dependency_cycle", "not_found", "not_assigned", "agent_busy",
+        "question_already_answered", "already_answered", "already_withdrawn", "ask_already_open",
+        "subject_already_linked", "pr_mismatch", "pr_owned_by_other_task", "task_already_has_pr", "unknown_target",
+        "no_task", "request_title_required", "archive_task", "stale_generation", "stale_epoch", "conflict",
+        "idempotency_conflict", "payload_too_large", "incompatible_protocol", "invalid_input",
+    ];
+    for lang in [Lang::En, Lang::Es] {
+        let fallback = card::disabled_reason("an unknown code", lang);
+        for code in codes {
+            assert_ne!(card::disabled_reason(code, lang), fallback, "{code} needs its own words");
+        }
+    }
+    assert_eq!(card::disabled_reason("delivery_uncertain", Lang::En), "Alondra is already merging this pull request");
+}

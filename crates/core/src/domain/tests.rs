@@ -466,7 +466,7 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
     present(&mut s, "delivery", text());
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "delivery".into(),
@@ -507,7 +507,7 @@ fn explicit_acceptance_completes_the_task_and_feedback_revokes_it_first() {
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "delivery".into(),
@@ -541,16 +541,9 @@ fn reassigning_a_task_waiting_for_its_merge_needs_fresh_acceptance() {
     )
     .unwrap();
     assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    reject_unchanged(&mut s, Actor::System, complete(), "acceptance_missing");
     merged_by_someone_else(&mut s);
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
-    reject_unchanged(
-        &mut s,
-        Actor::Agent {
-            agent_id: "b".into(),
-        },
-        complete(),
-        "acceptance_missing",
-    );
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "a merged delivery needs no acceptance");
 }
 #[test]
 fn an_option_carries_an_optional_description() {
@@ -622,7 +615,7 @@ fn typed_option_ids_and_open_question_guard() {
     assert_eq!(s.tasks[&"t".into()].state, TaskState::NeedsYou);
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "d".into(),
@@ -751,6 +744,21 @@ fn the_owning_task_corrects_its_registration_of_the_same_pr() {
         "task_already_has_pr",
     );
 }
+#[test]
+fn a_second_pr_for_a_task_is_refused_and_the_node_is_told_to_ask_for_a_new_task() {
+    let mut s = fixture();
+    register(&mut s);
+    let mut second = register_with("github.com", "head9");
+    if let Command::RegisterPr { pr_id, number, .. } = &mut second {
+        *pr_id = "pr-2".into();
+        *number = 2;
+    }
+    let error = exec(&mut s, agent(), second).unwrap_err();
+    assert_eq!(error.code, "task_already_has_pr");
+    assert!(error.message.starts_with("This task already has PR #1") && error.message.contains("ask the orchestrator for a new task"),
+        "{}", error.message);
+    assert_eq!(s.pull_requests.len(), 1);
+}
 fn pr_targets() -> Vec<DeliveryTarget> {
     vec![DeliveryTarget::PullRequest {
         pr_id: "pr".into(),
@@ -784,19 +792,84 @@ fn an_observed_merge_completes_an_auto_merge_task_without_the_users_authorizatio
     s.requests.get_mut(&"r".into()).unwrap().auto_merge = true;
     register(&mut s);
     present(&mut s, "d", pr_targets());
-    reject_unchanged(&mut s, agent(), complete(), "merge_not_confirmed");
+    reject_unchanged(&mut s, Actor::System, complete(), "merge_not_confirmed");
     merged_by_someone_else(&mut s);
     assert_eq!(s.pull_requests[&"pr".into()].state, PrState::Merged);
-    exec(&mut s, agent(), complete()).unwrap();
-    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the merge settles the delivery, no call needed");
 }
 #[test]
-fn an_observed_merge_of_a_task_that_did_not_ask_for_auto_merge_still_needs_the_users_acceptance() {
+fn a_pr_merged_outside_alondra_while_in_review_closes_the_task_and_tells_the_node() {
     let mut s = fixture();
     register(&mut s);
     present(&mut s, "d", pr_targets());
-    merged_by_someone_else(&mut s);
-    reject_unchanged(&mut s, agent(), complete(), "acceptance_missing");
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::InReview);
+    let out = exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head1".into(),
+        base: "main".into(), state: PrState::Merged, merged_head: Some("head1".into()) }).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done, "the user does not have to accept a merged delivery");
+    assert_eq!(out.effects, vec![DomainEffect::NotifyAgent { agent_id: "a".into(), task_id: Some("t".into()),
+        interaction_id: None, message: merged_notice(1, 0) }]);
+    assert_eq!(merged_notice(1, 0), "Pull request #1 is merged; no pull request of this task is left to merge.");
+}
+#[test]
+fn a_node_can_neither_claim_a_merge_nor_complete_its_task() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    let claim = Command::ClaimMergeAuthorization { authorization_id: "auth".into(), remote_head: "head1".into(),
+        remote_base: "main".into(), base_verified: true };
+    for command in [claim, complete()] {
+        let before = s.clone();
+        let error = exec(&mut s, agent(), command).unwrap_err();
+        assert_eq!((error.code.as_str(), error.message.as_str()), ("forbidden", ALONDRA_MERGES));
+        assert_eq!(s, before);
+    }
+}
+#[test]
+fn accepting_a_pr_delivery_authorizes_alondra_to_merge_it() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    let out = exec(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() }).unwrap();
+    let authorization = s.merge_authorizations.values().next().expect("an authorization for the PR");
+    assert_eq!((authorization.head.as_str(), authorization.method, authorization.attempt, authorization.valid),
+        ("head1", MergeMethod::Squash, MergeAttemptState::Unclaimed, true));
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing, "accepted, waiting for Alondra's merge");
+    assert!(matches!(&out.effects[..], [DomainEffect::NotifyAgent { message, .. }] if message.contains("Alondra is merging")),
+        "{:?}", out.effects);
+}
+#[test]
+fn a_node_claim_left_from_before_is_taken_over_by_alondra() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    let a = s.merge_authorizations.get_mut(&"auth".into()).unwrap();
+    a.attempt = MergeAttemptState::Claimed;
+    a.claimed_by = Some("a".into());
+    let claim = Command::ClaimMergeAuthorization { authorization_id: "auth".into(), remote_head: "head1".into(),
+        remote_base: "main".into(), base_verified: true };
+    exec(&mut s, Actor::System, claim.clone()).unwrap();
+    assert_eq!(s.merge_authorizations[&"auth".into()].claimed_by, None);
+    reject_unchanged(&mut s, Actor::System, claim, "delivery_uncertain");
+}
+#[test]
+fn a_claimed_attempt_of_a_superseded_delivery_does_not_hold_back_the_new_merge() {
+    let mut s = fixture();
+    register(&mut s);
+    present(&mut s, "d", pr_targets());
+    authorize(&mut s);
+    let a = s.merge_authorizations.get_mut(&"auth".into()).unwrap();
+    a.attempt = MergeAttemptState::Claimed;
+    a.claimed_by = Some("a".into());
+    let again = |id: &str, presentation: &str, head: &str| Command::AuthorizeMerge { authorization_id: id.into(),
+        presentation_id: presentation.into(), pr_id: "pr".into(), expected_head: head.into(), method: MergeMethod::Squash };
+    reject_unchanged(&mut s, user(), again("auth-same", "d", "head1"), "delivery_uncertain");
+    exec(&mut s, Actor::System, Command::ObservePrState { pr_id: "pr".into(), head: "head2".into(), base: "main".into(),
+        state: PrState::Open, merged_head: None }).unwrap();
+    present(&mut s, "d2", vec![DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "head2".into() }]);
+    exec(&mut s, user(), again("auth2", "d2", "head2")).unwrap();
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Closing);
 }
 #[test]
 fn authorization_merge_and_completion_are_three_distinct_steps() {
@@ -807,7 +880,7 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
     assert_eq!(s.pull_requests[&"pr".into()].state, PrState::Open);
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "d".into(),
@@ -816,7 +889,7 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
     );
     exec(
         &mut s,
-        agent(),
+        Actor::System,
         Command::ClaimMergeAuthorization {
             authorization_id: "auth".into(),
             remote_head: "head1".into(),
@@ -827,7 +900,7 @@ fn authorization_merge_and_completion_are_three_distinct_steps() {
     .unwrap();
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::ClaimMergeAuthorization {
             authorization_id: "auth".into(),
             remote_head: "head1".into(),
@@ -870,7 +943,7 @@ fn head_push_invalidates_authorization_and_merge_external_does_not_accept() {
     .unwrap();
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::ClaimMergeAuthorization {
             authorization_id: "auth".into(),
             remote_head: "head2".into(),
@@ -1078,7 +1151,7 @@ fn document_revision_invalidates_entire_joint_delivery() {
     .unwrap();
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "d".into(),
@@ -1388,7 +1461,7 @@ fn old_epoch_revision_generation_and_actor_rejected() {
             task_id: "t".into(),
             presentation_id: "d".into(),
         },
-        "not_assigned",
+        "forbidden",
     );
 }
 #[test]
@@ -1722,9 +1795,15 @@ fn reassign_fences_old_agent_and_preserves_historical_author() {
     reject_unchanged(
         &mut s,
         agent(),
-        Command::CompleteTask {
+        Command::RegisterPr {
             task_id: "t".into(),
-            presentation_id: "d".into(),
+            pr_id: "pr".into(),
+            host: "github.com".into(),
+            repository: "owner/repo".into(),
+            number: 1,
+            head: "head1".into(),
+            base: "main".into(),
+            allowed_methods: vec![MergeMethod::Squash],
         },
         "not_assigned",
     );
@@ -1736,9 +1815,7 @@ fn reassign_fences_old_agent_and_preserves_historical_author() {
     );
     reject_unchanged(
         &mut s,
-        Actor::Agent {
-            agent_id: "b".into(),
-        },
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "d".into(),
@@ -1748,21 +1825,12 @@ fn reassign_fences_old_agent_and_preserves_historical_author() {
 }
 
 #[test]
-fn review_off_does_not_authorize_and_external_merge_does_not_complete() {
+fn review_off_records_no_pr_decision_and_an_external_merge_completes() {
     let mut s = fixture();
     s.tasks.get_mut(&"t".into()).unwrap().review_prs = false;
     register(&mut s);
     present(&mut s, "d", pr_targets());
     assert!(s.pull_requests[&"pr".into()].review.is_none());
-    reject_unchanged(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets: pr_targets(),
-        },
-        "acceptance_missing",
-    );
     exec(
         &mut s,
         Actor::System,
@@ -1775,15 +1843,8 @@ fn review_off_does_not_authorize_and_external_merge_does_not_complete() {
         },
     )
     .unwrap();
-    reject_unchanged(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-        "acceptance_missing",
-    );
+    assert!(s.pull_requests[&"pr".into()].review.is_none());
+    assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
 }
 
 #[test]
@@ -2033,7 +2094,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
         remote_base: "upstream-branch".into(),
         base_verified: true,
     };
-    reject_unchanged(&mut s, agent_b(), claim.clone(), "stack_not_ready");
+    reject_unchanged(&mut s, Actor::System, claim.clone(), "stack_not_ready");
     authorize(&mut s);
     exec(
         &mut s,
@@ -2047,7 +2108,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
         },
     )
     .unwrap();
-    reject_unchanged(&mut s, agent_b(), claim, "stack_not_ready");
+    reject_unchanged(&mut s, Actor::System, claim, "stack_not_ready");
     exec(
         &mut s,
         Actor::System,
@@ -2066,7 +2127,7 @@ fn stack_readiness_is_explicit_and_merge_requires_upstream_merge_and_retarget() 
     );
     exec(
         &mut s,
-        agent_b(),
+        Actor::System,
         Command::ClaimMergeAuthorization {
             authorization_id: "auth-down".into(),
             remote_head: "head-down".into(),
@@ -2090,7 +2151,7 @@ fn cancellation_during_merge_preserves_observation_without_completion() {
     authorize(&mut s);
     exec(
         &mut s,
-        agent(),
+        Actor::System,
         Command::ClaimMergeAuthorization {
             authorization_id: "auth".into(),
             remote_head: "head1".into(),
@@ -2127,7 +2188,7 @@ fn cancellation_during_merge_preserves_observation_without_completion() {
     assert!(!s.merge_authorizations[&"auth".into()].valid);
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "d".into(),
@@ -2270,7 +2331,7 @@ fn mixed_package_needs_merge_authorization_and_document_decision() {
     let complete = |s: &mut DomainState| {
         exec(
             s,
-            agent(),
+            Actor::System,
             Command::CompleteTask {
                 task_id: "t".into(),
                 presentation_id: "d".into(),
@@ -2433,7 +2494,7 @@ fn complete_task_requires_registered_pr_merged_and_presented_or_closed() {
     .unwrap();
     reject_unchanged(
         &mut s,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "d".into(),
@@ -2455,7 +2516,7 @@ fn complete_task_requires_registered_pr_merged_and_presented_or_closed() {
     .unwrap();
     reject_unchanged(
         &mut merged_unpresented,
-        agent(),
+        Actor::System,
         Command::CompleteTask {
             task_id: "t".into(),
             presentation_id: "d".into(),
@@ -2953,54 +3014,15 @@ fn unknown_and_foreign_ids_are_typed_rejections_never_panics() {
     }
 }
 #[test]
-fn external_merge_requires_explicit_delivery_acceptance_not_retroactive_authorization() {
+fn an_external_merge_settles_the_delivery_without_authorization_or_acceptance() {
     let mut s = fixture();
     register(&mut s);
     present(&mut s, "d", pr_targets());
-    exec(
-        &mut s,
-        Actor::System,
-        Command::ObservePrState {
-            pr_id: "pr".into(),
-            head: "head1".into(),
-            base: "main".into(),
-            state: PrState::Merged,
-            merged_head: Some("head1".into()),
-        },
-    )
-    .unwrap();
-    reject_unchanged(
-        &mut s,
-        agent(),
-        Command::CompleteTask {
-            task_id: "t".into(),
-            presentation_id: "d".into(),
-        },
-        "acceptance_missing",
-    );
-    reject_unchanged(
-        &mut s,
-        user(),
-        Command::AuthorizeMerge {
-            authorization_id: "auth".into(),
-            presentation_id: "d".into(),
-            pr_id: "pr".into(),
-            expected_head: "head1".into(),
-            method: MergeMethod::Squash,
-        },
-        "invalid_action_for_kind",
-    );
-    exec(
-        &mut s,
-        user(),
-        Command::AcceptDelivery {
-            presentation_id: "d".into(),
-            targets: pr_targets(),
-        },
-    )
-    .unwrap();
+    merged_by_someone_else(&mut s);
     assert!(s.merge_authorizations.is_empty());
     assert_eq!(s.tasks[&"t".into()].state, TaskState::Done);
+    reject_unchanged(&mut s, user(), Command::AcceptDelivery { presentation_id: "d".into(), targets: pr_targets() },
+        "task_not_active");
 }
 
 #[test]

@@ -18,7 +18,6 @@ use std::sync::Arc;
 pub(crate) struct DomainDaemon {
     domain: Arc<DomainRuntime>,
     home: PathBuf,
-    observer: Box<dyn crate::domain_github::PrObserver>,
     gauges: crate::machine::Gauges,
     /// The one approval list the guard verifies against and the pairing routes extend.
     auth: Arc<crate::auth::Auth>,
@@ -28,13 +27,6 @@ pub(crate) struct DomainDaemon {
 
 impl DomainDaemon {
     pub(crate) fn open(home: &Path) -> Result<Arc<Self>> {
-        Self::open_with(home, Box::new(crate::domain_github::GhCli::new()))
-    }
-
-    pub(crate) fn open_with(
-        home: &Path,
-        observer: Box<dyn crate::domain_github::PrObserver>,
-    ) -> Result<Arc<Self>> {
         let database = crate::domain_database_migration::active_path(home);
         let metadata = std::fs::symlink_metadata(&database).with_context(|| {
             format!("committed domain database missing: {}", database.display())
@@ -47,7 +39,6 @@ impl DomainDaemon {
         let gauges = crate::machine::Gauges::default();
         Ok(Arc::new(Self {
             home: home.to_owned(),
-            observer,
             client: crate::client_routes::Client::open(domain.clone(), home, gauges.clone()),
             domain,
             gauges,
@@ -90,9 +81,6 @@ impl crate::domain_api::DomainHost for DomainDaemon {
     }
     fn cutover_committed(&self) -> bool {
         true
-    }
-    fn pr_observer(&self) -> &dyn crate::domain_github::PrObserver {
-        &*self.observer
     }
     fn new_work_client(&self) -> Option<&crate::client_routes::Client> {
         Some(&self.client)

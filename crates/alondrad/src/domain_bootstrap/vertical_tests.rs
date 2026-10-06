@@ -41,7 +41,6 @@ struct Fixture {
     orchestrator: String,
     agent: String,
     next_id: u64,
-    github: Arc<crate::domain_github::FakeObserver>,
     pr_view: Arc<crate::client_routes::FakePrView>,
     // Dropped after the runtime, including when an assertion panics.
     _cleanup: Cleanup,
@@ -67,8 +66,7 @@ impl Fixture {
                 &STANDARD.encode(key.verifying_key().to_sec1_bytes()),
             )
             .unwrap();
-        let github = Arc::new(crate::domain_github::FakeObserver::new());
-        let state = DomainDaemon::open_with(&home, Box::new(github.clone())).unwrap();
+        let state = DomainDaemon::open(&home).unwrap();
         let domain = state.domain();
         let pr_view = Arc::new(crate::client_routes::FakePrView::default());
         state.client().use_pr_view(pr_view.clone());
@@ -127,7 +125,6 @@ impl Fixture {
             orchestrator,
             agent,
             next_id: 0,
-            github,
             pr_view,
             _cleanup: Cleanup(home),
         }
@@ -158,7 +155,6 @@ impl Fixture {
             "accept_delivery" => ("POST", format!("/interactions/{}/acceptance", interaction.unwrap())),
             "create_document" => ("POST", format!("/tasks/{}/documents", task.unwrap())),
             "decide_document_review" => ("PUT", format!("/tasks/{}/documents/{}/review", task.unwrap(), command["document_id"].as_str().unwrap())),
-            "claim_merge_authorization" => ("POST", "/merge-authorizations/claim".to_owned()),
             _ => panic!("vertical test command has no resource route: {kind}"),
         };
         let mut body = serde_json::Map::new();
@@ -167,8 +163,7 @@ impl Fixture {
         }
         for (key, value) in command {
             if key != "kind" && !(key == "request_id" && path != "/requests")
-                && !(key == "task_id" && (path.starts_with("/tasks/") || kind == "claim_merge_authorization"))
-                && !(key == "authorization_id" && kind == "claim_merge_authorization") {
+                && !(key == "task_id" && path.starts_with("/tasks/")) {
                 body.insert(key.clone(), value.clone());
             }
         }
@@ -451,56 +446,34 @@ async fn http_presenting_a_pr_github_cannot_report_still_creates_the_card() {
 }
 
 #[tokio::test]
-async fn http_merge_claim_is_admitted_only_with_github_confirmation_and_the_merge_is_observed() {
+async fn http_an_accepted_pr_is_merged_by_alondra_and_a_node_can_neither_claim_nor_complete() {
     use crate::domain_github::PrFacts;
+    use crate::domain_merges::{FakeGithub, merge_due};
     use alondra_core::domain::{MergeAttemptState, PrState};
     let mut fixture = Fixture::start().await;
-    fixture.task("claim-task", true).await;
+    fixture.task("merge-task", true).await;
     let head = "0123456789abcdef0123456789abcdef01234567";
-    fixture.producer(false, json!({"kind":"register_pr", "task_id":"claim-task", "pr_id":"pr-7",
+    fixture.producer(false, json!({"kind":"register_pr", "task_id":"merge-task", "pr_id":"pr-7",
         "host":"github.com", "repository":"example/project", "number":7, "head":head, "base":"main",
         "allowed_methods":["squash"]})).await;
-    fixture.producer(false, json!({"kind":"present_result", "task_id":"claim-task",
+    fixture.producer(false, json!({"kind":"present_result", "task_id":"merge-task",
         "interaction_id":"delivery-7", "body":"Code ready", "is_final":true,
         "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]})).await;
-    fixture.user(json!({"kind":"authorize_merge", "authorization_id":"auth-7", "presentation_id":"delivery-7",
-        "pr_id":"pr-7", "expected_head":head, "method":"squash"}));
-    let claim = json!({"kind":"claim_merge_authorization", "task_id":"claim-task", "authorization_id":"auth-7",
-        "remote_head":head, "remote_base":"main", "base_verified":true});
-    let envelope = fixture.envelope(claim.clone());
-    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["code"], "external_read_failed", "GitHub unavailable: the claim is not admitted");
-    fixture.github.set(7, Ok(PrFacts { head: "89abcdef0123456789abcdef0123456789abcdef".into(),
-        base: "main".into(), state: PrState::Open, merged_head: None }));
-    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
-    assert_eq!(status, StatusCode::CONFLICT, "{body}");
-    assert_eq!(body["code"], "stale_head", "the Agent's head claim must match GitHub");
-    assert_eq!(fixture.domain.state().unwrap().merge_authorizations[&"auth-7".into()].attempt,
-        MergeAttemptState::Unclaimed);
-    fixture.github.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Open, merged_head: None }));
+    let claim = fixture.client.post(format!("{}/merge-authorizations/claim", fixture.base)).bearer_auth(&fixture.agent)
+        .json(&json!({"remote_head":head, "remote_base":"main", "base_verified":true})).send().await.unwrap();
+    assert!(claim.status().is_client_error(), "nodes have no merge claim any more: {}", claim.status());
+    let completion = fixture.envelope(json!({"kind":"complete_task", "task_id":"merge-task", "presentation_id":"delivery-7"}));
+    let (status, body) = fixture.post(&fixture.agent, &completion).await;
+    assert_eq!((status, body["code"].as_str()), (StatusCode::FORBIDDEN, Some("forbidden")), "{body}");
+    fixture.user(json!({"kind":"accept_delivery", "presentation_id":"delivery-7",
+        "targets":[{"kind":"pull_request", "pr_id":"pr-7", "head":head}]}));
+    let github = FakeGithub::new();
+    github.observer.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Open, merged_head: None }));
+    merge_due(&fixture.domain, &github, &mut Default::default()).await.unwrap();
+    assert_eq!(github.merged.lock().unwrap().len(), 1);
     let state = fixture.domain.state().unwrap();
-    let authorization = &state.merge_authorizations[&"auth-7".into()];
-    assert!(authorization.valid);
-    assert_eq!(authorization.head, head);
-    assert_eq!(state.tasks[&authorization.task_id].agent_id.as_ref().map(|agent| agent.0.as_str()), Some("agent-a"));
-    let (status, body) = fixture.post(&fixture.agent, &envelope).await;
-    assert_eq!(status, StatusCode::OK, "{body}");
-    assert_eq!(body, json!({"message":"Merge the pull request you presented using squash."}));
-    for internal in ["data_epoch", "revision", "authorization_id", "task_id", "pr_id"] {
-        assert!(body.get(internal).is_none(), "{internal} leaked in {body}");
-    }
-    assert_eq!(fixture.domain.state().unwrap().merge_authorizations[&"auth-7".into()].attempt,
-        MergeAttemptState::Claimed);
-    let (status, replay) = fixture.post(&fixture.agent, &envelope).await;
-    assert_eq!(status, StatusCode::OK, "{replay}");
-    assert_eq!(replay, body, "the exact claim replays its receipt");
-    fixture.github.set(7, Ok(PrFacts { head: head.into(), base: "main".into(), state: PrState::Merged,
-        merged_head: Some(head.into()) }));
-    crate::domain_github::reconcile(&fixture.domain, &fixture.github, &mut Default::default()).await.unwrap();
-    let state = fixture.domain.state().unwrap();
-    assert_eq!(state.merge_authorizations[&"auth-7".into()].attempt, MergeAttemptState::Confirmed);
+    assert_eq!(state.merge_authorizations.values().next().unwrap().attempt, MergeAttemptState::Confirmed);
     assert_eq!(state.pull_requests[&"pr-7".into()].merged_head.as_deref(), Some(head));
-    assert_eq!(state.tasks[&"claim-task".into()].state, TaskState::Done, "the confirmed merge of the authorized head completes it");
+    assert_eq!(state.tasks[&"merge-task".into()].state, TaskState::Done);
     fixture.finish().await;
 }

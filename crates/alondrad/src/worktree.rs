@@ -1,9 +1,10 @@
 use std::path::{Path, PathBuf};
 
+use alondra_core::domain::{DeliveryTarget, DomainError, DomainState, TaskId};
 use serde_json::Value;
 use tokio::process::Command;
 
-fn worktree_of(session_id: &str) -> Option<PathBuf> {
+pub(crate) fn worktree_of(session_id: &str) -> Option<PathBuf> {
     let short = session_id.get(..8)?;
     let job = std::fs::read_to_string(crate::watcher::claude_home().join("jobs").join(short).join("state.json")).ok()?;
     let dir = serde_json::from_str::<Value>(&job).ok()?.get("worktreePath")?.as_str().map(PathBuf::from)?;
@@ -18,7 +19,11 @@ async fn git(dir: &Path, args: &[&str]) -> Option<String> {
 /// What a node would leave behind in its worktree: uncommitted files or commits no remote has.
 /// None when the node has no worktree of its own or it is clean.
 pub async fn leftovers(session_id: &str) -> Option<String> {
-    let dir = worktree_of(session_id)?;
+    leftovers_in(&worktree_of(session_id)?).await
+}
+
+pub async fn leftovers_in(dir: &Path) -> Option<String> {
+    let dir = dir.to_path_buf();
     let changed = git(&dir, &["status", "--porcelain"]).await?.lines().count();
     let unpushed: usize = git(&dir, &["rev-list", "--count", "HEAD", "--not", "--remotes"]).await?.parse().ok()?;
     let mut parts = vec![];
@@ -45,6 +50,34 @@ pub async fn unmerged_in(dir: &Path) -> Option<String> {
     let _ = tokio::time::timeout(std::time::Duration::from_secs(60), fetch).await;
     let merged = Command::new("git").arg("-C").arg(dir).args(["merge-base", "--is-ancestor", "HEAD", &default]).output().await.is_ok_and(|o| o.status.success());
     (!merged).then(|| format!("its work in {} is not on {default}", dir.display()))
+}
+
+/// Why a node's final delivery cannot be taken yet: its worktree holds work no remote has, or
+/// work that is neither on the default branch nor in the PR registered for its Task. Nothing
+/// when the node has no worktree of its own.
+pub(crate) async fn final_refusal(state: &DomainState, session_id: &str, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
+    final_refusal_in(state, &worktree_of(session_id)?, task, targets).await
+}
+
+pub(crate) async fn final_refusal_in(state: &DomainState, dir: &Path, task: &TaskId, targets: &[DeliveryTarget]) -> Option<DomainError> {
+    let user = crate::domain_messages::user_name();
+    if let Some(left) = leftovers_in(dir).await {
+        return Some(DomainError::new("worktree_not_clean", format!(
+            "Nothing was presented: your worktree has {left}. Commit and push your work (open a PR and register it with \
+             register_pr if the work belongs in the code), then present the final result again. If some of it should be thrown \
+             away, ask {user} with ask before discarding anything."
+        )));
+    }
+    let in_pr = targets.iter().any(|target| matches!(target, DeliveryTarget::PullRequest { .. }))
+        || state.tasks.get(task).is_some_and(|task| task.pr_id.is_some());
+    if in_pr {
+        return None;
+    }
+    let unmerged = unmerged_in(dir).await?;
+    Some(DomainError::new("work_not_delivered", format!(
+        "Nothing was presented: {unmerged} and this task has no registered pull request. Open a pull request for your branch, \
+         register it with register_pr, and present the final result again with that pull request in targets."
+    )))
 }
 
 /// Deletes the node's worktree with whatever it holds, so `claude rm` closes the node: its
@@ -144,6 +177,44 @@ mod tests {
 
         run(&clone, &["push", "-q", "origin", "feature:main"]);
         assert_eq!(unmerged_in(&clone).await, None, "merged on the remote, fetched before the check");
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_final_delivery_needs_the_work_pushed_and_on_the_default_branch_or_in_the_tasks_pr() {
+        let root = std::env::temp_dir().join(format!("alondra-final-{}-{}", std::process::id(), alondra_core::now_millis()));
+        let (remote, clone) = (root.join("remote.git"), root.join("clone"));
+        std::fs::create_dir_all(&root).unwrap();
+        run(&root, &["init", "-q", "--bare", "-b", "main", remote.to_str().unwrap()]);
+        run(&root, &["clone", "-q", remote.to_str().unwrap(), clone.to_str().unwrap()]);
+        for args in [&["config", "user.email", "t@t"][..], &["config", "user.name", "t"], &["commit", "-q", "--allow-empty", "-m", "base"], &["push", "-q", "origin", "HEAD:main"]] {
+            run(&clone, args);
+        }
+        run(&clone, &["remote", "set-head", "origin", "main"]);
+        let state = DomainState::new("epoch");
+        let task = TaskId::from("t");
+        let text = [DeliveryTarget::Text { text: "Report".into() }];
+        let pr = [DeliveryTarget::PullRequest { pr_id: "pr".into(), head: "h".into() }];
+        let code = |refusal: Option<DomainError>| refusal.map(|error| (error.code, error.message));
+        assert_eq!(code(final_refusal_in(&state, &clone, &task, &text).await), None, "nothing left, nothing to merge");
+
+        std::fs::write(clone.join("notes.txt"), "draft").unwrap();
+        let (refused, message) = code(final_refusal_in(&state, &clone, &task, &pr).await).unwrap();
+        assert_eq!(refused, "worktree_not_clean");
+        assert!(message.starts_with("Nothing was presented: your worktree has 1 uncommitted file(s)"), "{message}");
+
+        run(&clone, &["checkout", "-q", "-b", "feature"]);
+        run(&clone, &["add", "notes.txt"]);
+        run(&clone, &["commit", "-q", "-m", "work"]);
+        let (refused, message) = code(final_refusal_in(&state, &clone, &task, &pr).await).unwrap();
+        assert_eq!(refused, "worktree_not_clean");
+        assert!(message.contains("1 commit(s) not pushed"), "{message}");
+
+        run(&clone, &["push", "-q", "origin", "feature"]);
+        assert_eq!(code(final_refusal_in(&state, &clone, &task, &pr).await), None, "pushed and delivered in its PR");
+        let (refused, message) = code(final_refusal_in(&state, &clone, &task, &text).await).unwrap();
+        assert_eq!(refused, "work_not_delivered");
+        assert!(message.contains("is not on origin/main") && message.contains("register_pr"), "{message}");
         std::fs::remove_dir_all(root).unwrap();
     }
 }

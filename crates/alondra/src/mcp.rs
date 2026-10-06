@@ -19,11 +19,11 @@ fn instructions(role: Role, user: &str) -> String {
         crate::i18n::Lang::En => "English",
     };
     let common = format!(
-        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion. Reading, accepting a delivery, authorizing a merge, claiming its execution and completing a task are separate durable transitions. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
+        "Alondra manages durable task state. The user is {user}; write user-facing content in {language}. Use the Alondra tools for durable changes; Alondra supplies their protocol metadata internally. A published result is not task completion: a task is done when the user accepts its final result or, for a pull request, when it is merged. Everything the user reads (a card's need, why and content, a result's title and summary) must be clear on its own: say the work or the decision itself, never process jargon, steps Alondra takes itself (merging, authorizing, retrying) or internal ids. An old session without a daemon-issued capability must resume with the current plugin; public session IDs and process ancestry never grant task authority."
     );
     match role {
         Role::Node => format!(
-            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base; one Task owns at most one PR for its lifetime. For a report or answer without code, no PR is required. When {user} accepts your final result, Alondra completes the Task itself (a PR delivery once its presented head is confirmed merged); there is nothing left to call. complete_task is only for a Request with auto-merge, after you merged its PR yourself. When Alondra tells you that a PR merge is authorized, call claim_merge_authorization; the daemon verifies the authorization, remote PR head and base before allowing the merge. Never infer authorization or invoke merge without it. Ending a Claude turn does not complete a task. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
+            "{common} A node works on one Task at a time: work only on your assigned Task; never install, restart or replace the Alondra daemon or CLI on the user's machine (no make install, brew, launchctl, alondra setup or update): test with the e2e sandbox (make e2e-sandbox), because deployment is the coordinator's job; its id is in your mission, and your subagents work on it too. Your terminal does not reach {user}: these tools do, and Alondra types {user}'s answers into this session. Every card needs `need` (what you need from {user}, imperative, one line, at most 90 characters) and, for ask, request_action, and request_input, `why` (one or two sentences, at most 240, naming tasks and PRs by title or number, never by an internal id like t-foo): long text goes in `content`, never in `why`. Pick the tool by what you need. `ask` puts a decision with 2 to 8 options in front of {user}; prefer a recommendation (`recommended`, never \"(Recommended)\" in a label); several related questions go together in one ask with `questions` (2 to 4, each with its own options): each is its own card, {user} answers them one by one and you get all the answers together. Every question must stand on its own and be clear without your internal context; `why` and `content` are only context (why each option matters), never more questions or options. End your turn after it and the answer arrives here. `request_input` asks for a file, text or secret only {user} has. `request_action` hands {user} something to do outside Alondra and says in `verify` how you will check it. `request_test` asks {user} to try a build or screen. You never send notices: there is no tool for status chatter, findings or notes that you are waiting; report results in `present_result`. You hold one blocking ask at a time: correct or replace a card with `replaces`, and after {user} asks for a clarification settle it with `answer_clarification`. Alondra has no tool to authorize anything: permission prompts reach {user} through Claude Code. A refused card was not sent and is never a permission; fix the field the refusal names and send it again with the same interaction_id (a retry never duplicates), and when a call says it could not reach Alondra, do not proceed: retry it. A plan goes through plan mode: EnterPlanMode, then ExitPlanMode, which {user} approves or sends back with comments; never write a plan as a document or ask about it. For another document {user} must approve, create_document, then ask, then link_interaction_subject on that question with the document_review revision: {user} reviews the whole document with comments there, so never ask a separate question about it. When you are done, deliver with present_result and is_final true: a file or a final message left in this session never reaches {user}. While you work on your own there is nothing to send. Call register_pr with its explicit task_id, canonical host/repository/number, observed head and base. A Task owns exactly one PR for its whole life: more work for the Task goes on that PR, and work that needs another PR is another Task, which you ask the orchestrator for (ask with recipient orchestrator). For a report or answer without code, no PR is required. Before a final result, commit and push everything in your worktree: Alondra refuses a final result while your worktree holds uncommitted files, unpushed commits, or work that is neither on the default branch nor in your registered PR. Deliver with present_result and is_final true; Alondra merges the PR and tells you (once {user} accepts it, or with auto-merge once its checks pass), and a PR merged on GitHub also completes the Task. Never merge a PR yourself and never ask {user} to authorize or re-authorize a merge: describe the change itself in your result. When a merge fails, Alondra sends you the reason: fix it, push, and present again. Ending a Claude turn does not complete a task, and Alondra sends you back to work when you end your turn without a result or a question. Keep stack retarget and dependency checks. Technical permission requests remain separate from task questions. When you stop only because the machine lacks resources (memory, a build queue, a usage limit), say so with wait_for_machine. Withdraw a card of yours that no longer needs an answer with withdraw."
         ),
         Role::Orchestrator => format!(
             "{common} Name every Request you split with title_request (a few words, in the user's language, what it is about, never a copy of the prompt) before its second Task: create_task refuses a second Task on an untitled Request (request_title_required). Then define cohesive Tasks under it with create_task. A code Task should fit one PR; reports and answers may have none. Assign each Task and associate its outputs explicitly. A node works on one Task at a time. Start work on a Task with launch (a new node for that Task, with the options its Request was asked for) or with send to a free node whose finished work it continues and whose model fits (candidates with model says so; send refuses another model with model_mismatch). When the Request's effort is auto, launch needs model: the lowest that can reliably finish; a node still on another Task is refused, so launch a new one and tell it in its mission what the busy node is doing when their work touches; interrupt stops a node stuck in one call, and machine shows capacity and usage before a launch. Retitle a Task with retitle_task, withdraw a card you sent that no longer needs an answer with withdraw, and close a Request that needs no Task with close_request (answer: what you told the user in one line; withdrawn: true when the user withdrew it; title: a short name). The user only sees what you put on a card: answer a Request without a Task with publish_information (need: a headline, body: the answer) before close_request, with a headline of your own; if you close with an answer and sent none, Alondra tells the user with the answer as it stands. Every card needs `need` (imperative, one line, at most 90 characters) and, for ask, request_action and request_input, `why`; long text goes in `content`, never in `why`. Use ask for a decision (prefer `recommended`), request_input for a file, text or secret, request_action for something the user does. When a launch fails, a batch cannot be handled or something you cannot fix is stuck, call raise_problem with what failed, the diagnosis in content and the options the user can choose; do not hide it in an ask. A refused card was not sent and is never an answer; fix the field it names and send it again with the same interaction_id. Create durable scheduled work for the user with schedule_create. fleet shows the live nodes and what waits on someone, node one node in detail, and candidates the free live nodes a Task or project could go to, with the busy ones apart. Finish an invocation after handling its durable batch; that is not Task completion. Never infer a Task, PR owner, User acceptance or completion from hook text. The daemon does not automatically merge PRs."
@@ -141,7 +141,7 @@ fn blocks_schema() -> Value {
 }
 
 fn need_schema() -> Value {
-    json!({"type":"string","minLength":1,"maxLength":90,"description":"What you need from the reader, in the imperative and on one line (at most 90 characters)"})
+    json!({"type":"string","minLength":1,"maxLength":90,"description":"What you need from the reader, in the imperative and on one line (at most 90 characters). Clear on its own: the work or the decision itself, never process steps Alondra takes (merging, authorizing, retrying) or internal ids"})
 }
 
 fn why_schema() -> Value {
@@ -215,7 +215,7 @@ fn card_tools(user: &str, interaction: &Value, node: bool) -> Vec<Value> {
         ]}});
         tools.push(domain_tool(
             "present_result",
-            &format!("Present a result to {user}. With is_final true it is a Review card, and {user} must accept it before the Task is done; with is_final false it is a progress notice. need says what to review, content carries the report, diff or document (a final result needs content). Final results are refused while one of your cards still blocks the Task."),
+            &format!("Present a result to {user}. With is_final true it is a Review card: {user} accepts it, and for a PR Alondra then merges it and tells you (with auto-merge, once its checks pass); a PR merged on GitHub also completes the Task. With is_final false it is a progress notice. need says what to review and content carries the report, diff or document (a final result needs content): both describe the change itself, never the merge or an approval to give. A final result is refused while your worktree holds uncommitted or unpushed work, or work outside the default branch and your registered PR. Final results are refused while one of your cards still blocks the Task."),
             json!({"task_id":{"type":"string"},"interaction_id":interaction["interaction_id"],"need":need_schema(),"why":why_schema(),"content":content_schema(),"targets":target,"is_final":{"type":"boolean"},"body":interaction["body"],"attachments":attachments}),
             &["task_id", "interaction_id", "need", "targets", "is_final"],
         ));
@@ -323,20 +323,6 @@ fn node_domain_tools(user: &str) -> Vec<Value> {
             "Report whether your presented PR is ready for its dependent stack.",
             json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"},"pr_id":{"type":"string"},"head":{"type":"string"},"ready":{"type":"boolean"}}),
             vec!["task_id", "presentation_id", "pr_id", "head", "ready"],
-        ),
-        (
-            "complete_task",
-            "complete_task",
-            "Complete your Task after you merged its PR under auto-merge. An accepted final delivery completes its Task on its own.",
-            json!({"task_id":{"type":"string"},"presentation_id":{"type":"string"}}),
-            vec!["task_id", "presentation_id"],
-        ),
-        (
-            "claim_merge_authorization",
-            "claim_merge_authorization",
-            "Confirm the remote head and base for the merge the user just authorized. The daemon resolves and validates the matching authorization internally.",
-            json!({"remote_head":{"type":"string"},"remote_base":{"type":"string"},"base_verified":{"type":"boolean","const":true}}),
-            vec!["remote_head", "remote_base", "base_verified"],
         ),
     ];
     tools.extend(
@@ -477,8 +463,6 @@ fn call_node(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "link_interaction_subject"
         | "present_result"
         | "publish_stack_readiness"
-        | "complete_task"
-        | "claim_merge_authorization"
         | "wait_for_machine" => execute_tool(client, name, args),
         _ => anyhow::bail!("incompatible_protocol: this tool is unavailable to the node MCP"),
     }
@@ -532,25 +516,6 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         }
     };
     Ok(match name {
-        "claim_merge_authorization" => {
-            let bearer = domain_bearer()?;
-            let capabilities = client.domain_get("/capabilities", &bearer)?;
-            let data_epoch = capabilities.get("data_epoch").and_then(Value::as_str)
-                .ok_or_else(|| anyhow::anyhow!("incompatible_protocol: daemon returned no data epoch"))?;
-            let mut body = args.as_object().cloned()
-                .ok_or_else(|| anyhow::anyhow!("tool arguments must be an object"))?;
-            body.insert("data_epoch".into(), Value::String(data_epoch.to_owned()));
-            body.insert("command_id".into(), Value::String(crate::client::new_id("mcp")));
-            body.insert("expected_revision".into(), Value::from(0));
-            let response = client.domain_call(
-                "POST",
-                "/merge-authorizations/claim",
-                &bearer,
-                Some(&Value::Object(body)),
-            )?;
-            response.get("message").and_then(Value::as_str)
-                .unwrap_or("Merge confirmed.").to_owned()
-        }
         "answer_clarification" => answer_clarification(client, args)?,
         "ask"
         | "request_action"
@@ -576,7 +541,6 @@ fn execute_tool(client: &Client, name: &str, args: &Value) -> Result<String> {
         | "link_interaction_subject"
         | "present_result"
         | "publish_stack_readiness"
-        | "complete_task"
         | "cancel_task"
         | "reopen_task" => submit(client, &domain_bearer()?, name, args)?,
         "launch" | "send" | "interrupt" => {
@@ -777,7 +741,6 @@ pub(crate) fn resource_target(name: &str, command: &Value) -> Result<(&'static s
         "link_interaction_subject" => ("PUT", format!("/interactions/{}/subject", id("interaction_id")?)),
         "present_result" => ("POST", format!("/tasks/{}/results", id("task_id")?)),
         "publish_stack_readiness" => ("POST", format!("/tasks/{}/stack-readiness", id("task_id")?)),
-        "complete_task" => ("POST", format!("/tasks/{}/completion", id("task_id")?)),
         "cancel_task" => ("POST", format!("/tasks/{}/cancellation", id("task_id")?)),
         "reopen_task" => ("POST", format!("/tasks/{}/reopening", id("task_id")?)),
         "archive_task" => ("POST", format!("/tasks/{}/archival", id("task_id")?)),
@@ -810,7 +773,6 @@ fn domain_envelope(name: &str, args: &Value, data_epoch: &str, command_id: &str)
         "link_interaction_subject" => "link_interaction_subject",
         "present_result" => "present_result",
         "publish_stack_readiness" => "publish_stack_readiness",
-        "complete_task" => "complete_task",
         "cancel_task" => "cancel_task",
         "reopen_task" => "reopen_task",
         _ => anyhow::bail!("unknown domain tool: {name}"),
@@ -1444,8 +1406,10 @@ mod tests {
         let catalog = tools(Role::Node, "User");
         assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "register_pr"));
         assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "domain_command"));
-        assert!(catalog.as_array().unwrap().iter().any(|tool| tool["name"] == "complete_task"));
-        assert!(instructions(Role::Node, "User").contains("Alondra completes the Task itself"));
+        assert!(catalog.as_array().unwrap().iter().all(|tool| tool["name"] != "complete_task"));
+        assert!(instructions(Role::Node, "User").contains("Alondra merges the PR and tells you"));
+        assert!(instructions(Role::Node, "User").contains("A Task owns exactly one PR for its whole life"));
+        assert!(instructions(Role::Node, "User").contains("never ask User to authorize or re-authorize a merge"));
         assert!(instructions(Role::Node, "Ana").contains("Your terminal does not reach Ana: these tools do"));
         assert!(instructions(Role::Node, "Ana").contains("deliver with present_result and is_final true"));
         assert!(instructions(Role::Node, "Ana").contains("never install, restart or replace the Alondra daemon or CLI"));
@@ -1466,7 +1430,8 @@ mod tests {
         fn names(role: Role) -> HashSet<String> { tools(role,"User").as_array().unwrap().iter().map(|t|t["name"].as_str().unwrap().to_owned()).collect() }
         let node=names(Role::Node); let orchestrator=names(Role::Orchestrator);
         for c in [&node,&orchestrator] { for hidden in ["domain_command","register_agent","observe_agent","authorize_merge","mark_read","submit_feedback","accept_delivery","observe_pr_state","create_schedule"] { assert!(!c.contains(hidden),"{hidden}"); } }
-        for n in ["register_pr","present_result","complete_task","create_document","claim_merge_authorization"] { assert!(node.contains(n),"{n}"); }
+        for n in ["register_pr","present_result","create_document"] { assert!(node.contains(n),"{n}"); }
+        for n in ["complete_task","claim_merge_authorization"] { assert!(!node.contains(n),"{n}: Alondra merges and completes"); }
         for n in ["create_request","close_request","create_task","assign_task","set_dependencies","link_task_document"] { assert!(orchestrator.contains(n),"{n}"); }
         for n in ["create_task","close_request","link_task_document"] { assert!(!node.contains(n),"{n}"); }
         for n in ["present_result","complete_task","register_pr","claim_merge_authorization"] { assert!(!orchestrator.contains(n),"{n}"); }
@@ -1494,11 +1459,6 @@ mod tests {
         }
         let answer=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="answer_question").unwrap();
         assert_eq!(answer["inputSchema"]["properties"]["inputs"]["additionalProperties"]["oneOf"][0]["properties"]["kind"]["const"],"text");
-        let claim=node_catalog.as_array().unwrap().iter().find(|t|t["name"]=="claim_merge_authorization").unwrap();
-        assert_eq!(claim["inputSchema"]["properties"]["base_verified"]["const"],true);
-        assert!(claim["inputSchema"]["properties"].get("authorization_id").is_none());
-        assert!(claim["inputSchema"]["properties"].get("task_id").is_none(),
-            "the bearer-bound daemon determines the claim target");
     }
 
     #[test]
@@ -1530,7 +1490,7 @@ mod tests {
     }
 
     #[test]
-    fn catalogs_and_instructions_offer_only_the_merge_claim_path_to_nodes() {
+    fn catalogs_and_instructions_leave_merging_to_alondra() {
         for role in [Role::Node, Role::Orchestrator] {
             let catalog = tools(role, "User");
             assert!(catalog.as_array().unwrap().iter().all(|tool|
@@ -1538,7 +1498,8 @@ mod tests {
             let instructions = instructions(role, "User");
             assert!(!instructions.contains("domain_cursor"));
             assert!(!instructions.contains("data_epoch") && !instructions.contains("expected_revision"));
-            assert_eq!(instructions.contains("claim_merge_authorization"), role == Role::Node);
+            assert!(!instructions.contains("claim_merge_authorization") && !instructions.contains("complete_task"));
+            assert!(instructions.contains("never process jargon, steps Alondra takes itself"));
         }
     }
 

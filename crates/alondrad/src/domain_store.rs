@@ -24,6 +24,9 @@ const SCHEMA: &str = concat!(
 /// gains it without being moved aside.
 const TASK_MODELS: &str = "CREATE TABLE IF NOT EXISTS task_models(task_id TEXT PRIMARY KEY REFERENCES tasks(id), model TEXT NOT NULL CHECK(length(model)>0), chosen_by TEXT NOT NULL CHECK(chosen_by IN('orchestrator','user')));";
 const MODEL_METRICS: &str = include_str!("domain_store/model_metrics.sql");
+/// How many turn ends in a row Alondra held back for a Task, since its node last delivered or
+/// asked (`marker`, the order of that card). Kept outside the domain state, like task_models.
+const STOP_BLOCKS: &str = "CREATE TABLE IF NOT EXISTS stop_blocks(task_id TEXT PRIMARY KEY, blocks INTEGER NOT NULL CHECK(blocks>=0), marker INTEGER NOT NULL);";
 #[cfg(test)]
 pub(crate) use repository::statement_counts;
 pub(crate) type TransportIdentity<'a> = (&'a str, &'a str, &'a [u8; 32]);
@@ -187,6 +190,7 @@ impl DomainStore {
         }
         tx.execute_batch(TASK_MODELS)?;
         tx.execute_batch(MODEL_METRICS)?;
+        tx.execute_batch(STOP_BLOCKS)?;
         if version != 0 {
             tx.execute_batch("DROP TRIGGER IF EXISTS schedule_launch_transition;")?;
             tx.execute_batch(SCHEDULE_LAUNCH_TRANSITION)?;
@@ -610,6 +614,20 @@ impl DomainStore {
             }
         }
         Ok(times)
+    }
+    pub(crate) fn stop_blocks(&self, task_id: &TaskId) -> Result<Option<(u32, i64)>> {
+        Ok(self.conn.query_row("SELECT blocks,marker FROM stop_blocks WHERE task_id=?1", [&task_id.0],
+            |row| Ok((row.get(0)?, row.get(1)?))).optional()?)
+    }
+    pub(crate) fn set_stop_blocks(&self, task_id: &TaskId, blocks: u32, marker: i64) -> Result<()> {
+        self.conn.execute("INSERT INTO stop_blocks(task_id,blocks,marker) VALUES(?1,?2,?3) ON CONFLICT(task_id) DO UPDATE SET blocks=excluded.blocks,marker=excluded.marker",
+            params![task_id.0, blocks, marker])?;
+        Ok(())
+    }
+    /// A merge attempt a node claimed under the flow where nodes merged their own PRs.
+    #[cfg(test)]
+    pub(crate) fn claim_as_node(&mut self, authorization: &str, agent: &str) {
+        self.conn.execute("UPDATE merge_authorizations SET attempt='claimed',claimed_by=?2 WHERE id=?1", params![authorization, agent]).unwrap();
     }
     pub(crate) fn set_cancel_reason(&self, task_id: &TaskId, reason: &str) -> Result<()> {
         self.conn.execute("INSERT INTO task_cancel_reason(task_id,reason) VALUES(?1,?2) ON CONFLICT(task_id) DO UPDATE SET reason=excluded.reason",

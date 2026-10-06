@@ -157,7 +157,7 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
         .iter()
         .map(|tool| tool["name"].as_str().unwrap())
         .collect();
-    assert!(names.contains(&"present_result") && names.contains(&"complete_task"));
+    assert!(names.contains(&"present_result") && !names.contains(&"complete_task") && !names.contains(&"claim_merge_authorization"));
     assert!(!names.contains(&"domain_command") && !names.contains(&"create_task"));
 
     let (_, forwarded) = mcp_exchange(
@@ -194,19 +194,6 @@ fn named_tools_construct_commands_and_publish_separate_catalogs() {
     assert_eq!(forwarded.1["body"], "The requested answer");
     assert_eq!(forwarded.1["card"]["kind"], "review");
     assert!(forwarded.1.get("kind").is_none() && forwarded.1.get("protocol_version").is_none());
-
-    let (node, forwarded) = mcp_exchange(
-        "mcp-node",
-        "claim_merge_authorization",
-        json!({"remote_head":"abc123", "remote_base":"main", "base_verified":true}),
-    );
-    let claim = node[1]["result"]["tools"].as_array().unwrap().iter()
-        .find(|tool| tool["name"] == "claim_merge_authorization").unwrap();
-    assert!(claim["inputSchema"]["properties"].get("authorization_id").is_none());
-    assert_eq!(forwarded.0, "post /merge-authorizations/claim http/1.1");
-    assert_eq!(forwarded.1["remote_head"], "abc123");
-    assert!(forwarded.1.get("authorization_id").is_none());
-    assert_eq!(node[2]["result"]["content"][0]["text"], "Merge confirmed.");
 }
 
 #[test]
