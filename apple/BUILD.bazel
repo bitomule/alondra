@@ -150,6 +150,7 @@ swift_library(
         "//apple/Design:AlondraDesign",
         "//apple/Data/Transport:AlondraTransport",
         "//apple/Data/Account:AlondraAccount",
+        "//apple/Data/Notifications:AlondraNotifications",
         "//apple/Contract:AlondraContract",
         "//apple/Data/Sync:AlondraNetworkReachability",
         "//apple/Data/Attachments:AlondraAttachments",

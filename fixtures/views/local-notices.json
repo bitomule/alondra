@@ -1,0 +1,16 @@
+{
+  "data_epoch": "fixture-epoch",
+  "notices": [
+    {
+      "body": "The tests need one.",
+      "card": "question-a",
+      "id": 2,
+      "level": "active",
+      "thread": "task-a",
+      "title": "Pick the parser"
+    }
+  ],
+  "open": [
+    "question-a"
+  ]
+}

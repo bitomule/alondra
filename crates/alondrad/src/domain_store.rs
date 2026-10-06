@@ -647,6 +647,20 @@ impl DomainStore {
         }
         Ok(false)
     }
+    /// The latest user notice the push gate let through for each card, by its message id: what a
+    /// phone was told about that card, and what the Mac app tells the user while it is not in front.
+    pub(crate) fn handed_user_notices(&self, interaction_ids: &[InteractionId]) -> Result<Vec<(i64, InteractionId)>> {
+        let mut q = self.conn.prepare("SELECT MAX(m.id) FROM domain_messages m JOIN domain_message_user_targets u ON u.message_id=m.id
+            JOIN domain_outbox o ON o.message_id=m.id WHERE m.interaction_id=?1 AND o.state IN('handed','uncertain')")?;
+        let mut notices = Vec::new();
+        for id in interaction_ids {
+            if let Some(message) = q.query_row([&id.0], |row| row.get::<_, Option<i64>>(0))? {
+                notices.push((message, id.clone()));
+            }
+        }
+        notices.sort();
+        Ok(notices)
+    }
     /// Expire orchestrator inbox entries older than the supplied cutoff.
     /// User notifications share the `orchestrator` recipient kind but are
     /// distinguished by their user-target row and keep their own delivery policy.

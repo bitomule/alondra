@@ -133,6 +133,7 @@ pub(crate) fn router(state: Arc<V2Only>) -> Router {
         .route("/agents/waiting-machine", post(agent_waiting_machine))
         .merge(crate::domain_api::routes())
         .merge(crate::views::routes::router())
+        .merge(crate::notices::router())
         .with_state(state)
         .merge(crate::v2_client_routes::router(client))
 }
