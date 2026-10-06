@@ -1,0 +1,30 @@
+# Opt-in like the tests/system lab: real daemons, relay and loopback ports, outside `make test`.
+sh_test(
+    name = "scenarios",
+    timeout = "long",
+    srcs = ["scenarios.sh"],
+    args = [
+        "$(rootpath //crates/alondrad)",
+        "$(rootpath //crates/alondra)",
+        "$(rootpath //crates/relay:alondra-relay)",
+        "$(rootpath //tools/sandbox:alondra-sandbox)",
+    ],
+    data = [
+        "//:plugin_files",
+        "//:tools/e2e-sandbox.sh",
+        "//:tools/e2e-sandbox-stop.sh",
+        "//crates/alondra",
+        "//crates/alondrad",
+        "//crates/relay:alondra-relay",
+        "//tools/sandbox:alondra-sandbox",
+    ],
+    env_inherit = [
+        "HOME",
+        "PATH",
+    ],
+    tags = [
+        "local",
+        "manual",
+        "requires-network",
+    ],
+)

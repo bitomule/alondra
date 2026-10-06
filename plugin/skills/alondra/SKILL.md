@@ -133,6 +133,8 @@ launches another node for it.
 ## Probes and end-to-end tests
 
 Probes and end-to-end tests run against a sandbox, never the user's live Alondra: anything they
-send lands in the user's real inbox. `make e2e-sandbox` in the Alondra repo starts a throwaway
-daemon and prints the `claude --bg --name test/<probe> …` line for a probe node. Name probes
-`test/<something>` and remove them and their worktrees when done.
+send lands in the user's real inbox. `make e2e-sandbox` in the Alondra repo starts throwaway
+daemons in the background (`MACS=2` for two Macs, `SANDBOX_PORT` and `SANDBOX_DIR` when another
+sandbox is running) and prints the `claude --bg --name test/<probe> …` line for a probe node on
+each. Name probes `test/<something>`, remove them and their worktrees when done, then run
+`make e2e-sandbox-stop`.
