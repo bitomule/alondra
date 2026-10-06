@@ -41,6 +41,7 @@ mod markdown;
 mod mods_check;
 mod node_push;
 mod node_reports;
+mod node_work;
 mod node_revival;
 mod notices;
 mod notifier;

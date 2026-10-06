@@ -225,19 +225,77 @@ test('subagents and background shells are reported when they start, and the list
     cwd: '/work',
     hook_event_name: 'Stop',
     stop_hook_active: false,
-    background_tasks: [{ id: 'b1', type: 'shell', status: 'running', description: 'Wait', command: 'until false; do sleep 5; done' }],
+    background_tasks: [
+      { id: 'b1', type: 'shell', status: 'running', description: 'Wait', command: 'until false; do sleep 5; done' },
+      { id: 'w1', type: 'workflow', status: 'running', description: 'Review the branch', name: 'review-loop' },
+    ],
   })
   await settle()
 
   expect(reports.filter((report) => !String(report.event).startsWith('tool.'))).toEqual([
     { event: 'session.start', version: '2.1.287', cwd: '/work' },
-    { event: 'subagent.start', id: 'agent-1', description: 'Fix the parser' },
+    { event: 'subagent.start', id: 'agent-1', description: 'Fix the parser', type: 'general-purpose', model: 'sonnet' },
     { event: 'shell.start', id: 'shell-1', command: 'until false; do sleep 5; done' },
     { event: 'subagent.end', id: 'agent-1' },
     {
       event: 'background',
-      tasks: [{ id: 'b1', type: 'shell', description: 'Wait', command: 'until false; do sleep 5; done' }],
+      tasks: [
+        { id: 'b1', type: 'shell', description: 'Wait', command: 'until false; do sleep 5; done' },
+        { id: 'w1', type: 'workflow', description: 'Review the branch', name: 'review-loop' },
+      ],
     },
+  ])
+})
+
+test('the task list, the todo list and a started workflow are reported from the calls that change them', async ($, on) => {
+  mock.clock(on)
+  const reports: Record<string, unknown>[] = []
+  on('session.start', () => ({ cwd: '/work' }))
+  on('session.id', () => ({ value: 'session-1' }))
+  on('session.version', () => ({ value: { version: '2.1.287' } }))
+  on('env.get', () => ({ value: undefined }))
+  on('process.run', ($, e) => {
+    const { session_id, ...report } = JSON.parse(e.init.stdin)
+    reports.push(report)
+    return { value: { exitCode: 0, stdout: '', stderr: '' } }
+  })
+  on('process.spawn', async function* () {
+    await new Promise(() => {})
+  })
+  const results: Record<string, unknown> = {
+    TaskCreate: { task: { id: '1', subject: 'Run the tests' } },
+    TaskUpdate: { success: true, taskId: '1', updatedFields: ['status'] },
+    TaskList: { tasks: [{ id: '1', subject: 'Run the tests', status: 'in_progress', blockedBy: [] }] },
+    TodoWrite: { oldTodos: [], newTodos: [] },
+    Workflow: { status: 'async_launched', taskId: 'w1', workflowName: 'review-loop', transcriptDir: '/tmp/w1' },
+  }
+  on('tool.call', ($, e) => ({ result: results[e.tool] ?? 'ok' }))
+
+  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+  await $.tool.call({ tool: 'TaskCreate', tool_use_id: 'c1', subject: 'Run the tests', description: 'All of them', activeForm: 'Running the tests' })
+  await $.tool.call({ tool: 'TaskUpdate', tool_use_id: 'c2', taskId: '1', status: 'in_progress', agentId: 'sub-1' } as never)
+  await $.tool.call({ tool: 'TaskList', tool_use_id: 'c3' })
+  await $.tool.call({
+    tool: 'TodoWrite',
+    tool_use_id: 'c4',
+    todos: [{ content: 'Read', status: 'completed', activeForm: 'Reading' }, { content: 'Fix', status: 'pending', activeForm: 'Fixing' }],
+  })
+  await $.tool.call({ tool: 'TodoWrite', tool_use_id: 'c5', todos: [], agentId: 'sub-1' } as never)
+  await $.tool.call({ tool: 'Workflow', tool_use_id: 'c6', name: 'review-loop' } as never)
+  await settle()
+
+  expect(reports.filter((report) => !String(report.event).startsWith('tool.') && report.event !== 'session.start')).toEqual([
+    { event: 'step.create', id: '1', subject: 'Run the tests', active_form: 'Running the tests' },
+    { event: 'step.update', id: '1', status: 'in_progress' },
+    { event: 'steps', steps: [{ id: '1', subject: 'Run the tests', status: 'in_progress' }] },
+    {
+      event: 'steps',
+      steps: [
+        { id: '1', subject: 'Read', status: 'completed', active_form: 'Reading' },
+        { id: '2', subject: 'Fix', status: 'pending', active_form: 'Fixing' },
+      ],
+    },
+    { event: 'workflow.start', id: 'w1', name: 'review-loop', transcript_dir: '/tmp/w1' },
   ])
 })
 

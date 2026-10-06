@@ -1068,6 +1068,46 @@ async fn the_background_badges_come_from_the_mods_subagent_shell_and_end_of_turn
 }
 
 #[tokio::test]
+async fn a_node_shows_the_subagents_workflows_and_task_list_its_mod_reports_and_lists_a_subagent_once() {
+    let fixture = Fixture::start().await;
+    seed_work(&fixture);
+    observe_sessions(&fixture);
+    let mods = &fixture.domain.live.mods;
+    let now = alondra_core::now_millis();
+    let report = |report: Value, at: i64| {
+        let mut report = report;
+        report["session_id"] = json!("agent-a");
+        mods.apply(serde_json::from_value(report).unwrap(), at);
+    };
+    let hello: crate::node_reports::Hello = serde_json::from_value(json!({"session_id": "agent-a", "version": "2.1.287"})).unwrap();
+    mods.connect(hello, now);
+    report(json!({"event": "subagent.start", "id": "sa-1", "description": "Fix the parser", "type": "Explore", "model": "claude-haiku-4-5"}), now);
+    report(json!({"event": "workflow.start", "id": "w1", "name": "review-loop"}), now);
+    report(json!({"event": "shell.start", "id": "u1", "command": "cargo build"}), now);
+    report(json!({"event": "step.create", "id": "1", "subject": "Read"}), now);
+    report(json!({"event": "step.create", "id": "2", "subject": "Fix", "active_form": "Fixing"}), now);
+    report(json!({"event": "step.update", "id": "1", "status": "completed"}), now);
+    report(json!({"event": "step.update", "id": "2", "status": "in_progress"}), now);
+
+    let detail = view_json(&fixture, "node:agent-a", "es").await;
+    let section = |id: &str| detail["sections"].as_array().unwrap().iter().find(|section| section["id"] == id).cloned()
+        .unwrap_or_else(|| panic!("no {id} section in {detail}"));
+    let rows = |id: &str| section(id)["items"].as_array().unwrap().iter()
+        .filter(|item| item["type"] == "row").cloned().collect::<Vec<_>>();
+    assert_eq!(section("steps")["title"], "Pasos");
+    assert_eq!(rows("steps").len(), 2);
+    let subagents = rows("subagents");
+    assert_eq!((subagents[0]["title"].as_str(), subagents[0]["subtitle"].as_str()), (Some("Fix the parser"), Some("Explore · Haiku 4.5")));
+    assert_eq!(rows("workflows")[0]["title"], "review-loop");
+    let background = rows("background");
+    assert_eq!(background.len(), 1, "a subagent or workflow is listed once, under its own section: {background:?}");
+    assert_eq!(background[0]["title"], "cargo build");
+
+    let fleet = view_json(&fixture, "fleet", "en").await;
+    assert!(badges(node_row(&fleet, "agent-a")).iter().any(|(text, _)| text == "1/2"));
+}
+
+#[tokio::test]
 async fn a_background_shell_running_for_long_in_an_idle_node_is_flagged_and_stops_counting_as_work() {
     let fixture = Fixture::start().await;
     seed_work(&fixture);
