@@ -168,6 +168,18 @@ impl DomainRuntime {
         self.execute_with(actor, envelope, transport, None, authorize)
     }
 
+    pub(crate) fn record_model_decision(&self, decision: &crate::domain_store::model_metrics::Decision) -> Result<()> {
+        self.store.lock().expect("domain store poisoned").record_model_decision(decision)
+    }
+
+    pub(crate) fn record_node_cost(&self, cost: &crate::domain_store::model_metrics::NodeCost) -> Result<()> {
+        self.store.lock().expect("domain store poisoned").record_node_cost(cost)
+    }
+
+    pub(crate) fn model_report(&self, since: Option<alondra_core::Millis>, until: alondra_core::Millis) -> Result<alondra_core::model_report::ModelReport> {
+        self.store.lock().expect("domain store poisoned").model_report(since, until)
+    }
+
     /// What the user chose when asking for the Request, if it was asked for with choices.
     pub(crate) fn request_launch(
         &self,
