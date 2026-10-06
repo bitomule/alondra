@@ -641,11 +641,15 @@ fn held_option(hold: Hold, option: &QuestionOption, lang: Lang) -> (String, Inpu
     (label.to_owned(), input)
 }
 
-/// What Alondra's own cards about the pace of the week's usage say, in the viewer's language.
+/// What Alondra's own cards about the pace of the week's usage and about the machine say, in the
+/// viewer's language.
 fn pace_text(interaction: &Interaction, lang: Lang) -> Option<(String, String)> {
     use crate::usage::{OVER_PACE_PREFIX, PACE_RESUME_PREFIX, PaceNumbers};
     if interaction.author != Author::System {
         return None;
+    }
+    if interaction.id.0.starts_with(crate::machine_incident::MACHINE_PREFIX) {
+        return crate::machine_incident::MachineCard::from_body(&interaction.body).map(|card| card.text(lang));
     }
     if interaction.id.0.starts_with(OVER_PACE_PREFIX) {
         let numbers = PaceNumbers::from_body(&interaction.body)?;
@@ -672,6 +676,10 @@ fn fixed_option_text(option: &QuestionOption, lang: Lang) -> (String, Option<Str
             Some(t!(lang, "Nothing starts and nodes wait until midnight, then carry on", "No arranca nada y los nodos esperan hasta medianoche; luego continúan")),
         ),
         ("keep_going", "Keep going") => (t!(lang, "Keep going", "Seguir"), None),
+        ("fixed", "I've fixed it") => (
+            t!(lang, "I've fixed it", "Ya lo he arreglado"),
+            Some(t!(lang, "Alondra measures again now and wakes the nodes if the Mac is fine", "Alondra vuelve a medir ahora y despierta a los nodos si el Mac está bien")),
+        ),
         ("resume_now", "Resume now") => (t!(lang, "Resume now", "Reanudar ahora"), None),
         ("stay_paused", "Stay paused") => (t!(lang, "Stay paused", "Seguir en pausa"), None),
         ("done", "Done") => (t!(lang, "Done", "Hecho"), None),
